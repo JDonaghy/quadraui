@@ -524,7 +524,9 @@ impl Tooltip {
 pub(crate) mod native_surface_paint {
     use super::{Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
     use crate::paint_surface::PaintSurface;
+    use crate::style::Style;
     use crate::theme::Theme;
+    use crate::types::Color;
     use crate::{Point, Rect};
 
     /// Paint a [`Tooltip`] at its resolved `tooltip_layout` onto
@@ -536,7 +538,11 @@ pub(crate) mod native_surface_paint {
     /// backend — though TUI itself never calls this, see the module
     /// doc's *Why TUI stays out* on [`PaintSurface`]). `padding_x` is
     /// halved when `chrome.border` is [`TooltipBorder::None`], since
-    /// there is no border column to clear first.
+    /// there is no border column to clear first. `style` supplies the
+    /// corner radius/border width/shadow elevation the box
+    /// paints with when `chrome.border` is [`TooltipBorder::Full`] —
+    /// callers pass `&self.style()`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         tooltip: &Tooltip,
         tooltip_layout: &TooltipLayout,
@@ -545,6 +551,7 @@ pub(crate) mod native_surface_paint {
         padding_x: f32,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        style: &Style,
     ) {
         let bounds = tooltip_layout.bounds;
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
@@ -555,7 +562,20 @@ pub(crate) mod native_surface_paint {
         let fg = tooltip.fg.unwrap_or(theme.hover_fg);
         let border = theme.hover_border;
 
-        surface.surface_fill_rect(bounds, bg);
+        // Only the fully-bordered box gets the VS-Code-style
+        // elevated-card treatment — `Sides`/`None` chrome has no closed
+        // box for a shadow/radius to outline.
+        if matches!(chrome.border, TooltipBorder::Full) {
+            surface.surface_draw_shadow(
+                bounds,
+                style.corner_radius,
+                style.shadow_elevation,
+                Color::rgba(0, 0, 0, 100),
+            );
+            surface.surface_fill_rounded_rect(bounds, style.corner_radius, bg);
+        } else {
+            surface.surface_fill_rect(bounds, bg);
+        }
 
         // Content normally starts 2 units below the top edge; a title
         // pushes that down further, since its real font height
@@ -567,7 +587,12 @@ pub(crate) mod native_surface_paint {
 
         match chrome.border {
             TooltipBorder::Full => {
-                surface.surface_stroke_rect(bounds, border, 1.0);
+                surface.surface_stroke_rounded_rect(
+                    bounds,
+                    style.corner_radius,
+                    border,
+                    style.border_width,
+                );
 
                 if let Some(title) = chrome
                     .title

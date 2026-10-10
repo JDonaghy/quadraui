@@ -1665,18 +1665,29 @@ pub(crate) mod native_surface_paint {
             return;
         }
 
-        let mut blocks: Vec<(String, Color)> = Vec::new();
+        // The action block paints as a bordered button (a stroked box
+        // around the label), not a `[ label ]` glyph — the TUI painter
+        // keeps the brackets. Every other block is plain centred text,
+        // so the two shapes are kept distinct rather than forcing a
+        // button through the same `(String, Color)` tuple the text
+        // blocks use.
+        enum EmptyBlock {
+            Text(String, Color),
+            Button(String),
+        }
+
+        let mut blocks: Vec<EmptyBlock> = Vec::new();
         if let Some(icon) = &empty.icon {
-            blocks.push((icon.fallback.clone(), theme.foreground));
+            blocks.push(EmptyBlock::Text(icon.fallback.clone(), theme.foreground));
         }
         let primary = plain_text(&empty.text);
         if !primary.is_empty() {
-            blocks.push((primary, theme.foreground));
+            blocks.push(EmptyBlock::Text(primary, theme.foreground));
         }
         if let Some(hint) = &empty.hint {
             let hint_str = plain_text(hint);
             if !hint_str.is_empty() {
-                blocks.push((hint_str, theme.muted_fg));
+                blocks.push(EmptyBlock::Text(hint_str, theme.muted_fg));
             }
         }
         if let Some(action) = &empty.action {
@@ -1684,22 +1695,42 @@ pub(crate) mod native_surface_paint {
                 .tooltip
                 .clone()
                 .unwrap_or_else(|| action.icon.fallback.clone());
-            blocks.push((format!("[ {label} ]"), theme.accent_fg));
+            blocks.push(EmptyBlock::Button(label));
         }
         if blocks.is_empty() {
             return;
         }
 
+        const BUTTON_PAD_X: f32 = 12.0;
+
         let total_h = blocks.len() as f32 * line_height;
         let mut block_y = bounds.y + (bounds.height - total_h).max(0.0) / 2.0;
-        for (text, color) in &blocks {
-            let (tw, th) = surface.surface_measure_text(text);
-            let block_x = bounds.x + (bounds.width - tw).max(0.0) / 2.0;
-            surface.surface_draw_text_run(
-                Rect::new(block_x, block_y + (line_height - th) / 2.0, tw, th),
-                text,
-                *color,
-            );
+        for block in &blocks {
+            match block {
+                EmptyBlock::Text(text, color) => {
+                    let (tw, th) = surface.surface_measure_text(text);
+                    let block_x = bounds.x + (bounds.width - tw).max(0.0) / 2.0;
+                    surface.surface_draw_text_run(
+                        Rect::new(block_x, block_y + (line_height - th) / 2.0, tw, th),
+                        text,
+                        *color,
+                    );
+                }
+                EmptyBlock::Button(label) => {
+                    let (tw, th) = surface.surface_measure_text(label);
+                    let btn_w = tw + BUTTON_PAD_X * 2.0;
+                    let btn_h = (line_height - 4.0).max(th + 4.0);
+                    let btn_x = bounds.x + (bounds.width - btn_w).max(0.0) / 2.0;
+                    let btn_y = block_y + (line_height - btn_h) / 2.0;
+                    let btn_rect = Rect::new(btn_x, btn_y, btn_w, btn_h);
+                    surface.surface_stroke_rect(btn_rect, theme.accent_fg, 1.0);
+                    surface.surface_draw_text_run(
+                        Rect::new(btn_x + BUTTON_PAD_X, btn_y + (btn_h - th) / 2.0, tw, th),
+                        label,
+                        theme.accent_fg,
+                    );
+                }
+            }
             block_y += line_height;
         }
     }
@@ -1793,6 +1824,8 @@ pub(crate) mod native_surface_paint {
             texts: Vec<(Rect, String, Color, usize)>,
             /// Stack of pushed clip rects; popped on `surface_pop_clip`.
             clips: Vec<Rect>,
+            /// One entry per `surface_stroke_rect` call.
+            strokes: Vec<(Rect, Color, f32)>,
         }
 
         impl PaintSurface for RecordingSurface {
@@ -1816,7 +1849,17 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
                 self.fills.push((rect, color));
             }
-            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.texts
                     .push((rect, text.to_string(), color, self.clips.len()));
@@ -1953,6 +1996,58 @@ pub(crate) mod native_surface_paint {
             );
             assert_eq!(surface.fills.len(), 1, "only the background fill");
             assert!(surface.texts.is_empty());
+        }
+
+        /// The empty-state action paints as a bordered button — a
+        /// `surface_stroke_rect` around the label — not a
+        /// `[ label ]` text glyph. Regression guard for the drawn-vs-text
+        /// affordance swap.
+        #[test]
+        fn empty_body_action_paints_a_stroked_button_not_bracket_text() {
+            let mut surface = RecordingSurface::default();
+            let empty = EmptyBody {
+                icon: None,
+                text: StyledText::plain("No results"),
+                hint: None,
+                action: Some(HeaderAction {
+                    id: crate::primitives::multi_section_view::ActionId::from("open-folder"),
+                    icon: crate::types::Icon::new("", "Open"),
+                    tooltip: Some("Open Folder".to_string()),
+                    enabled: true,
+                }),
+            };
+            paint_empty_body(
+                &mut surface,
+                Rect::new(0.0, 0.0, 200.0, 100.0),
+                &empty,
+                &Theme::default(),
+                16.0,
+            );
+
+            assert!(
+                !surface
+                    .texts
+                    .iter()
+                    .any(|(_, text, _, _)| text.contains('[')),
+                "no bracket glyph should be painted for the action button; \
+                 texts were {:?}",
+                surface.texts,
+            );
+            assert!(
+                surface
+                    .texts
+                    .iter()
+                    .any(|(_, text, _, _)| text == "Open Folder"),
+                "the action label itself must still be painted; texts were {:?}",
+                surface.texts,
+            );
+            assert_eq!(
+                surface.strokes.len(),
+                1,
+                "the action button must stroke exactly one bordering rect; \
+                 strokes were {:?}",
+                surface.strokes,
+            );
         }
 
         #[test]

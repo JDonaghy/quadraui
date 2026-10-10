@@ -25,7 +25,9 @@ use crate::event::Rect as QRect;
 use crate::primitives::board::{BoardLayout, BoardMeasure, BoardModel};
 use crate::primitives::chart::{Chart, ChartLayout, ChartMeasure};
 use crate::primitives::data_table::{ColumnMeasure, DataTable, DataTableLayout};
-use crate::primitives::form::{FieldKind, FormField, FormFieldMeasure, FormItemMeasure};
+use crate::primitives::form::{
+    FieldKind, FormField, FormFieldMeasure, FormItemMeasure, ValidationState,
+};
 use crate::primitives::list::{ListItemMeasure, ListView, ListViewLayout};
 use crate::primitives::minimap::{Minimap, MinimapLayout, MinimapScale, MinimapSizing};
 use crate::primitives::multi_section_view::{
@@ -119,6 +121,14 @@ pub mod pixel {
 
     /// [`crate::DataTable`] width reserved for the vertical scrollbar.
     pub const DATA_TABLE_SCROLLBAR_WIDTH: f32 = 8.0;
+
+    /// [`crate::Form`] horizontal padding (both sides combined) reserved
+    /// around a `ButtonRow` / `SegmentedControl` item's label. Replaces
+    /// measuring the label wrapped in `"[label]"` bracket glyphs — that
+    /// over-counted width by the bracket chars' own measured width
+    /// while the GUI painter never actually drew them, and read as a
+    /// terminal affordance on a pixel canvas.
+    pub const FORM_BUTTON_ITEM_PADDING: f32 = 16.0;
 
     /// [`crate::primitives::minimap::Minimap`] buffer lines painted per
     /// minimap row. Every pixel backend shows one buffer line per row (no
@@ -406,6 +416,19 @@ fn label_text(field: &FormField) -> String {
     field.label.spans.iter().map(|s| s.text.as_str()).collect()
 }
 
+/// `field.validation`'s message, when present and non-empty — the text a
+/// GUI painter reserves a second line beneath the field for, rather
+/// than painting it on top of the label at the same vertical centre
+/// (see `native_surface_paint::paint`'s doc in `form.rs`).
+fn validation_message(field: &FormField) -> Option<&str> {
+    match &field.validation {
+        Some(ValidationState::Error(m)) | Some(ValidationState::Warning(m)) if !m.is_empty() => {
+            Some(m.as_str())
+        }
+        _ => None,
+    }
+}
+
 /// Measure one `Form` field at `row_h`, using `measure` for any
 /// per-item glyph widths (`ToggleGroup` / `ButtonRow` /
 /// `SegmentedControl` / `Toolbar`).
@@ -417,7 +440,27 @@ fn label_text(field: &FormField) -> String {
 /// here would be a silent behavior change beyond #499's scope, not a
 /// dedup. Do that as its own follow-up once a backend actually renders
 /// it.
+///
+/// When the field carries a non-empty [`ValidationState`] message, the
+/// returned height is `row_h` **plus** one more approximate text line
+/// (`row_h / 1.4`, inverting [`form_row_height`]) reserved for that
+/// message — so the field no longer squeezes the message into the same
+/// single row the label occupies. Every other field still measures
+/// exactly one `row_h`, as
+/// `form_field_measure_height_is_one_row_for_every_field_kind` asserts.
 pub fn form_field_measure(
+    field: &FormField,
+    row_h: f32,
+    measure: &dyn TextMeasure,
+) -> FormFieldMeasure {
+    let mut m = form_field_measure_inner(field, row_h, measure);
+    if validation_message(field).is_some() {
+        m.height += row_h / 1.4;
+    }
+    m
+}
+
+fn form_field_measure_inner(
     field: &FormField,
     row_h: f32,
     measure: &dyn TextMeasure,
@@ -440,7 +483,7 @@ pub fn form_field_measure(
                 .iter()
                 .map(|b| FormItemMeasure {
                     id: b.id.clone(),
-                    width: measure.width_of(&format!("[{}]", b.label)),
+                    width: measure.width_of(&b.label) + pixel::FORM_BUTTON_ITEM_PADDING,
                 })
                 .collect();
             FormFieldMeasure::with_items(row_h, start_x, 8.0, items)
@@ -452,7 +495,7 @@ pub fn form_field_measure(
                 .enumerate()
                 .map(|(idx, opt)| FormItemMeasure {
                     id: WidgetId::new(format!("{}__seg_{idx}", field.id.as_str())),
-                    width: measure.width_of(&format!("[{opt}]")),
+                    width: measure.width_of(opt) + pixel::FORM_BUTTON_ITEM_PADDING,
                 })
                 .collect();
             // Segments butt up against each other — no inter-item gap.
@@ -1024,6 +1067,35 @@ mod tests {
         assert_eq!(m.item_measures[1].width, 4.0 * 6.0);
     }
 
+    /// A `ButtonRow` item's width is the label's own measured width
+    /// plus [`pixel::FORM_BUTTON_ITEM_PADDING`] — not the label wrapped
+    /// in `"[label]"` bracket glyphs (which the GUI painter never
+    /// actually draws, so that formula over-measured).
+    #[test]
+    fn form_field_measure_button_row_item_width_has_no_bracket_glyphs() {
+        use crate::primitives::form::ButtonRowItem;
+
+        let field = field_with(
+            "actions",
+            "",
+            FieldKind::ButtonRow {
+                buttons: vec![ButtonRowItem {
+                    id: WidgetId::new("find"),
+                    label: "Find".into(), // 4 chars * 6.0 = 24.0
+                    disabled: false,
+                    icon: None,
+                }],
+            },
+        );
+        let m = form_field_measure(&field, 20.0, &FakeMeasure);
+        assert_eq!(
+            m.item_measures[0].width,
+            4.0 * 6.0 + pixel::FORM_BUTTON_ITEM_PADDING,
+            "width must be the plain label width plus the padding \
+             constant, not a `[Find]` bracket-wrapped measurement"
+        );
+    }
+
     #[test]
     fn form_field_measure_segmented_control_has_no_item_gap() {
         let field = field_with(
@@ -1079,6 +1151,37 @@ mod tests {
         assert!(m.item_measures.is_empty());
         assert_eq!(m.items_start_x, 0.0);
         assert_eq!(m.item_gap, 0.0);
+    }
+
+    /// A field with a non-empty validation message measures one extra
+    /// approximate text line beyond `row_h`, so the GUI painter has
+    /// real room to put the message below the label instead of
+    /// overlapping it. A field with no validation (or an
+    /// empty message) is unaffected.
+    #[test]
+    fn form_field_measure_reserves_extra_height_for_validation_message() {
+        use crate::primitives::form::ValidationState;
+
+        const ROW_H: f32 = 20.0;
+        let mut field = field_with("name", "Name", FieldKind::Button);
+        let base = form_field_measure(&field, ROW_H, &FakeMeasure);
+        assert_eq!(base.height, ROW_H);
+
+        field.validation = Some(ValidationState::Error("Required".to_string()));
+        let with_msg = form_field_measure(&field, ROW_H, &FakeMeasure);
+        assert!(
+            with_msg.height > ROW_H,
+            "a non-empty validation message must reserve extra height \
+             beyond row_h ({ROW_H}), got {}",
+            with_msg.height
+        );
+
+        field.validation = Some(ValidationState::Error(String::new()));
+        let empty_msg = form_field_measure(&field, ROW_H, &FakeMeasure);
+        assert_eq!(
+            empty_msg.height, ROW_H,
+            "an empty validation message must not reserve extra height"
+        );
     }
 
     /// Parity guard for issue #710: `GtkBackend::form_layout`,

@@ -1020,6 +1020,28 @@ impl TerminalSession {
         cwd: &Path,
         history_capacity: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::spawn_with_args(cols, rows, shell, &[], cwd, history_capacity)
+    }
+
+    /// [`spawn`](Self::spawn), plus extra argv entries passed straight to
+    /// [`CommandBuilder::args`].
+    ///
+    /// Crate-private: not part of the public API surface a consuming app
+    /// should build on — `spawn` covers every production call site, since a
+    /// consumer picks its shell via [`default_shell`] and never needs to
+    /// hand it flags. This exists so Windows-gated tests can start
+    /// `powershell.exe` with `-NoLogo -NoProfile`, which removes two sources
+    /// of real-hardware startup-time variance (the copyright banner, and a
+    /// profile-script existence check across up to four disk paths) that
+    /// have nothing to do with the behaviour those tests verify.
+    pub(crate) fn spawn_with_args(
+        cols: u16,
+        rows: u16,
+        shell: &str,
+        args: &[&str],
+        cwd: &Path,
+        history_capacity: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         // See `MIN_VT100_ROWS`/`MIN_VT100_COLS`'s docs — vt100 panics below these.
         let (cols, rows) = clamp_vt100_size(cols, rows);
         let pty_system = native_pty_system();
@@ -1031,6 +1053,7 @@ impl TerminalSession {
         })?;
 
         let mut cmd = CommandBuilder::new(shell);
+        cmd.args(args);
         cmd.env("TERM", "xterm-256color");
         // Present the embedded terminal as a clean, top-level terminal. When
         // the host app is itself launched from inside tmux,
@@ -1104,8 +1127,7 @@ impl TerminalSession {
         let mut changed = false;
         while let Ok(data) = self.rx.try_recv() {
             changed = true;
-            self.respond_to_terminal_queries(&data);
-            self.process_with_capture(&data);
+            self.ingest(&data);
         }
         if !self.exited {
             if let Ok(Some(status)) = self.child.try_wait() {
@@ -1146,6 +1168,21 @@ impl TerminalSession {
             let _ = self.writer.write_all(&reply);
             let _ = self.writer.flush();
         }
+    }
+
+    /// Consume one chunk of child output: answer any terminal queries in
+    /// it, then parse it into the screen and scrollback.
+    ///
+    /// Every path that drains `rx` must go through here, not straight to
+    /// [`process_with_capture`](Self::process_with_capture). A query that
+    /// is parsed but never answered is lost for good, and on Windows an
+    /// unanswered start-up handshake (see
+    /// [`respond_to_terminal_queries`](Self::respond_to_terminal_queries))
+    /// leaves the session permanently blank — which is what a resize issued
+    /// before the shell's first output would otherwise cause.
+    fn ingest(&mut self, data: &[u8]) {
+        self.respond_to_terminal_queries(data);
+        self.process_with_capture(data);
     }
 
     /// Send raw bytes as keyboard input to the shell.
@@ -1681,7 +1718,7 @@ impl TerminalSession {
         // change dimensions, so in-flight redraws land on the grid they were
         // computed for rather than the one we are about to re-size to.
         while let Ok(data) = self.rx.try_recv() {
-            self.process_with_capture(&data);
+            self.ingest(&data);
         }
         self.cols = cols;
         self.rows = rows;
@@ -1729,7 +1766,7 @@ impl TerminalSession {
     /// vt100 parse time never inflates the idle-gap measurement.
     fn settle_after_resize(&mut self) {
         for chunk in collect_post_resize_output(&self.rx) {
-            self.process_with_capture(&chunk);
+            self.ingest(&chunk);
         }
     }
 
@@ -3680,16 +3717,45 @@ mod tests {
     ///      contains `expected_marker`.
     ///   2. The process exits, and `is_exited()` observes it.
     ///   3. `exit_code()` resolves to `Some(0)`.
+    ///
+    /// `args` is forwarded to [`TerminalSession::spawn_with_args`] — e.g.
+    /// PowerShell's `-NoLogo -NoProfile` to cut two real-hardware sources of
+    /// startup-time variance that have nothing to do with what this test
+    /// verifies: the copyright banner, and an up-to-four-path profile-script
+    /// existence check. `timeout_ms` is a *bounded* poll deadline, not a
+    /// fixed sleep — `poll_until` below returns the moment the marker shows
+    /// up, so a generous budget costs nothing on a fast run and only buys
+    /// headroom on a loaded CI runner.
+    ///
+    /// Before sending `send_line`, this waits for a prompt (`>`) to appear
+    /// in `full_text()`. Without that handshake, `send_str` races the
+    /// shell's own startup: the bytes can land in the ConPTY input buffer
+    /// before the shell has even started reading it, a failure mode that a
+    /// longer `timeout_ms` budget alone does not close, since the race is
+    /// about *order*, not *time*.
     #[cfg(target_os = "windows")]
     fn windows_conpty_spawn_echo_exit(
         shell: &str,
+        args: &[&str],
         send_line: &str,
         expected_marker: &str,
         timeout_ms: u64,
     ) {
         let cwd = std::env::temp_dir();
-        let mut sess = TerminalSession::spawn(80, 24, shell, &cwd, 1000)
+        let mut sess = TerminalSession::spawn_with_args(80, 24, shell, args, &cwd, 1000)
             .unwrap_or_else(|e| panic!("failed to spawn {shell}: {e}"));
+
+        // Wait for the shell's own prompt before sending any input, so
+        // `send_str` below can never race the shell's startup: the ConPTY
+        // input buffer only needs to hold bytes typed after the shell is
+        // already reading from it.
+        let ready = poll_until(&mut sess, timeout_ms, |s| {
+            s.full_text().contains('>') || s.exited
+        });
+        assert!(
+            ready,
+            "{shell} did not show a ready prompt within {timeout_ms}ms"
+        );
 
         // Every Windows console line editor (cmd.exe and powershell.exe
         // alike) wants a carriage return to submit a line, same as a real
@@ -3738,6 +3804,7 @@ mod tests {
         let marker = format!("MARK_{arch}_END");
         windows_conpty_spawn_echo_exit(
             "cmd.exe",
+            &[],
             "echo MARK_%PROCESSOR_ARCHITECTURE%_END\r\n",
             &marker,
             5_000,
@@ -3746,15 +3813,24 @@ mod tests {
 
     /// `default_shell()`'s own Windows branch — this is the shell
     /// `TerminalSession::spawn` actually receives in production, and the
-    /// one `cmd.exe` coverage above cannot stand in for: console-host
-    /// banner text, VT mode initialisation and process start-up are all
-    /// slower and shaped differently than `cmd.exe`'s. PowerShell's variable
+    /// one `cmd.exe` coverage above cannot stand in for: VT mode
+    /// initialisation and process start-up are slower and shaped
+    /// differently than `cmd.exe`'s. PowerShell's variable
     /// syntax (`$env:NAME`) differs from cmd.exe's (`%NAME%`), so the send
     /// line is PowerShell-specific; the subexpression form
     /// `$($env:PROCESSOR_ARCHITECTURE)` avoids the string-interpolation
     /// variable-name ambiguity a bare `$env:PROCESSOR_ARCHITECTURE_END`
-    /// would hit. A longer timeout than the `cmd.exe` case reflects
-    /// PowerShell's slower start-up on a loaded runner.
+    /// would hit.
+    ///
+    /// `-NoLogo -NoProfile` strips two sources of real-hardware
+    /// startup-time variance that are orthogonal to what this test checks:
+    /// the copyright banner `full_text()` would otherwise have to scroll
+    /// past, and a profile-script existence probe across up to four disk
+    /// paths. Production still spawns bare `powershell.exe` — see
+    /// `default_shell()` — this only tightens the *test's* variance, not
+    /// the behaviour under test. A longer timeout than the `cmd.exe` case
+    /// — still a bounded `poll_until` deadline, not a fixed sleep — covers
+    /// what startup time remains on a loaded CI runner.
     #[test]
     #[cfg(target_os = "windows")]
     fn windows_powershell_session_send_str_screen_text_and_exit_code() {
@@ -3762,9 +3838,32 @@ mod tests {
         let marker = format!("MARK_{arch}_END");
         windows_conpty_spawn_echo_exit(
             "powershell.exe",
+            &["-NoLogo", "-NoProfile"],
             "echo \"MARK_$($env:PROCESSOR_ARCHITECTURE)_END\"\r\n",
             &marker,
-            15_000,
+            30_000,
+        );
+    }
+
+    /// A resize issued before the shell's first output must not swallow
+    /// ConPTY's start-up handshake. `resize` drains pending output itself;
+    /// if that drain parsed the `ESC[6n` query without answering it, the
+    /// console host would wait for a reply forever and the session would
+    /// never paint a prompt.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_resize_before_first_output_still_answers_startup_handshake() {
+        let cwd = std::env::temp_dir();
+        let mut sess = TerminalSession::spawn_with_args(80, 24, "cmd.exe", &[], &cwd, 1000)
+            .unwrap_or_else(|e| panic!("failed to spawn cmd.exe: {e}"));
+        sess.resize(78, 21);
+        let ready = poll_until(&mut sess, 30_000, |s| {
+            s.full_text().contains('>') || s.exited
+        });
+        assert!(
+            ready && !sess.is_exited(),
+            "cmd.exe never showed a prompt after an early resize: {:?}",
+            sess.full_text()
         );
     }
 

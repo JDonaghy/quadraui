@@ -181,6 +181,31 @@ impl PaintSurface for CairoSurface<'_> {
         self.cr.stroke().ok();
     }
 
+    /// Same clamp/stroke recipe as `GtkBackend`'s own override.
+    fn surface_stroke_rounded_rect(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        color: Color,
+        stroke_width: f32,
+    ) {
+        super::set_source(self.cr, color);
+        self.cr.set_line_width(stroke_width as f64);
+        let r = (radius as f64)
+            .min(rect.width as f64 / 2.0)
+            .min(rect.height as f64 / 2.0)
+            .max(0.0);
+        super::rounded_rect_path(
+            self.cr,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            r,
+        );
+        self.cr.stroke().ok();
+    }
+
     fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
         let layout = self.layout_or_panic();
         layout.set_text(text);
@@ -301,6 +326,47 @@ mod tests {
             (0, 0, 0),
             "a corner pixel well inside a radius-15 fillet on a 40x40 box must stay \
              untouched"
+        );
+    }
+
+    /// `CairoSurface::surface_stroke_rounded_rect` must reach the
+    /// same real rounded-corner Cairo path `GtkBackend`'s own override
+    /// does — the adapter-level twin of
+    /// `gtk_backend_paint_surface_stroke_rounded_rect_clips_the_corners`.
+    #[test]
+    fn cairo_surface_stroke_rounded_rect_clips_the_corners() {
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+        let blue = Color::rgb(60, 120, 220);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let mut adapter = CairoSurface {
+                cr: &cr,
+                layout: None,
+                translucent_fill: true,
+            };
+            adapter.surface_stroke_rounded_rect(Rect::new(0.0, 0.0, 40.0, 40.0), 15.0, blue, 4.0);
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_eq!(
+            probe_pixel(&data, stride, 20, 1),
+            (blue.r, blue.g, blue.b),
+            "the straight middle of the top edge must land the stroke colour"
+        );
+        assert_eq!(
+            probe_pixel(&data, stride, 1, 1),
+            (0, 0, 0),
+            "a corner pixel well inside a radius-15 fillet on a 40x40 box must stay \
+             untouched"
+        );
+        assert_eq!(
+            probe_pixel(&data, stride, 20, 20),
+            (0, 0, 0),
+            "the box's centre, far from any stroke, must stay untouched"
         );
     }
 }

@@ -319,6 +319,15 @@ pub(crate) mod native_surface_paint {
             fn surface_stroke_rect(&mut self, rect: Rect, color: Color, width: f32) {
                 self.strokes.push((rect, color, width));
             }
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                rect: Rect,
+                _radius: f32,
+                color: Color,
+                width: f32,
+            ) {
+                self.strokes.push((rect, color, width));
+            }
             fn surface_draw_line(
                 &mut self,
                 _from: crate::event::Point,

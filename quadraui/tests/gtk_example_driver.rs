@@ -62,6 +62,10 @@ use context_menu_style_demo::ContextMenuStyleDemo;
 mod submenu_app;
 use submenu_app::SubmenuApp;
 
+#[path = "../examples/common/form_scroll.rs"]
+mod form_scroll;
+use form_scroll::FormScrollApp;
+
 // Pixel canvas — big enough for five stage boxes + arrow connectors + the
 // bottom status bar at GTK's native (pixel, not cell) scale.
 const W: i32 = 800;
@@ -483,12 +487,28 @@ fn data_table_body_rows_draw_separators_at_same_x_as_header() {
         "sanity: table should have more than one column"
     );
 
-    let header_y = (layout.header_height / 2.0) as i32;
+    // Header reference scanline: the band between the bottom of the
+    // header's text box (`row_height` tall, painted from the header's
+    // top edge) and the bottom of the header (`header_height`, 1.2x the
+    // line height). No glyph ink — ascender, descender, or a
+    // right-aligned title ending flush at the column edge — reaches it,
+    // so the pixel at `sep_x` there is "separator blended over header
+    // background" for any UI font.
+    let header_y = ((layout.row_height + layout.header_height) / 2.0) as i32;
+    assert!(
+        (header_y as f32) >= layout.row_height && (header_y as f32) < layout.header_height,
+        "sanity: header reference y={header_y} should sit below the header text box \
+         (row_height {}) and inside the header (header_height {})",
+        layout.row_height,
+        layout.header_height
+    );
     // Row 1, not row 0: `DataTableApp` starts with row 0 selected, and
     // the selection highlight tints the row background under the
     // separator's antialiased blend — comparing against a differently
     // -tinted body row would fail even with the fix correctly applied.
-    let body_y = (layout.header_height + layout.row_height * 1.5) as i32;
+    let row_top = layout.header_height + layout.row_height;
+    let body_ys: Vec<i32> =
+        ((row_top.ceil() as i32)..((row_top + layout.row_height).floor() as i32)).collect();
 
     // Antialiasing rasterizes the header's and body's separator rects
     // independently (different heights: `header_height` vs `line_height`),
@@ -507,11 +527,18 @@ fn data_table_body_rows_draw_separators_at_same_x_as_header() {
         let col = layout.columns[col_idx];
         let sep_x = (col.x + col.width) as i32;
         let header_px = driver.pixel(sep_x, header_y);
-        let body_px = driver.pixel(sep_x, body_y);
+        // Body cells have no text padding, so a right-aligned cell's
+        // glyphs end flush against the separator and blend into the
+        // `sep_x` pixel on whichever scanlines the glyph shapes cover —
+        // which scanlines those are depends on the UI font. Scan the
+        // whole row and require the separator signature on at least one
+        // ink-free scanline: a missing body separator leaves plain row
+        // background (or ink) on every scanline and still fails.
+        let body_pxs: Vec<(u8, u8, u8)> = body_ys.iter().map(|&y| driver.pixel(sep_x, y)).collect();
         assert!(
-            close(body_px, header_px, 3),
+            body_pxs.iter().any(|&px| close(px, header_px, 3)),
             "column {col_idx}'s body separator should sit at the same x={sep_x} as the \
-             header's: header pixel {header_px:?}, body pixel {body_px:?}"
+             header's: header pixel {header_px:?}, body pixels down the row {body_pxs:?}"
         );
     }
 }
@@ -1271,6 +1298,81 @@ fn submenu_menu_bar_dropdown_opens_two_nested_levels() {
     assert!(
         driver.screen_contains("activated: export-png-lossless"),
         "activating the deepest leaf should report its id: {:?}",
+        driver.painted_texts()
+    );
+}
+
+// ─── FormScrollApp: keyboard editing of Form text fields (GTK) ────────────
+//
+// GUI-reference leg of `tests/tui_example_driver.rs`'s "FormScrollApp"
+// block: same `AppLogic`, same `FormController::handle_cached` doing all
+// the key decoding, this time painted by the GTK rasteriser via
+// `primitives/form.rs::paint_bracketed_text`. Proves the keyboard-editing
+// wiring in `compose::form_controller` is backend-agnostic rather than an
+// artifact of how TUI happens to render a `TextInput`.
+
+const FORM_SCROLL_W: i32 = 900;
+const FORM_SCROLL_H: i32 = 700;
+
+#[test]
+fn form_scroll_gtk_typing_into_the_focused_name_field_edits_it() {
+    let mut driver = GtkDriver::new(FormScrollApp::new(), FORM_SCROLL_W, FORM_SCROLL_H);
+
+    // `FormScrollApp::new()` starts with the name field already focused.
+    driver.type_char('J');
+    driver.type_char('o');
+    driver.type_char('e');
+
+    // The Name field's value paints as its own standalone run, exactly
+    // `"Joe"` (`paint_bracketed_text`'s unselected-text branch) — unlike
+    // the status bar's run, which is the whole segment string
+    // (`" scroll=0 | name = \"Joe\" "`). Asserting an *exact* match
+    // (rather than `contains`) ties this to the form field itself having
+    // painted the typed value, not just the status bar's echo of the
+    // emitted event, and sidesteps `GtkBackend::painted_text`'s double
+    // bookkeeping for hand-rolled labels like the status bar (recorded
+    // once logically by `draw_status_bar`, once again as a Pango glyph
+    // run — see that field's doc) that would otherwise throw off a
+    // substring-count assertion.
+    let texts = driver.painted_texts();
+    assert_eq!(
+        texts.iter().filter(|t| **t == "Joe").count(),
+        1,
+        "expected exactly one painted run containing exactly \"Joe\" — the \
+         rendered Name field's value: {texts:?}"
+    );
+    assert!(
+        driver.screen_contains("name = \"Joe\""),
+        "each keystroke should emit FormEvent::TextInputChanged, logged to \
+         the status bar: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn form_scroll_gtk_tab_moves_focus_from_name_to_first_toggle_and_back() {
+    let mut driver = GtkDriver::new(FormScrollApp::new(), FORM_SCROLL_W, FORM_SCROLL_H);
+
+    driver.press_named(NamedKey::Tab);
+    assert!(
+        driver.screen_contains("focus → toggle-0"),
+        "Tab from the name field should move focus to the first toggle: {:?}",
+        driver.painted_texts()
+    );
+
+    driver.press_named(NamedKey::BackTab);
+    assert!(
+        driver.screen_contains("focus → name"),
+        "Shift+Tab (BackTab) should move focus back to the name field: {:?}",
+        driver.painted_texts()
+    );
+
+    // Typing now edits the name field again, confirming focus actually
+    // round-tripped rather than merely logging the right id.
+    driver.type_char('X');
+    assert!(
+        driver.screen_contains("name = \"X\""),
+        "after Tab then Shift+Tab, typing should still reach the name field: {:?}",
         driver.painted_texts()
     );
 }

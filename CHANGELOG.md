@@ -59,6 +59,95 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-10
+
+### Added
+
+- Bundled Microsoft's codicon icon font (CC-BY-4.0; license text ships at
+  `quadraui/assets/CODICON_LICENSE`) and self-register it on every GUI
+  backend with no app configuration required (issue #1377). Tree
+  expand/collapse chevrons, tab dirty/close marks, the context-menu
+  submenu arrow, and (GTK) data-table sort arrows now paint as codicon
+  glyphs on GTK, macOS and Windows instead of plain text characters; TUI
+  output is unchanged.
+- `Backend::set_editor_v_scrollbar_width(Option<f32>)` (issue #1411) — a
+  provided (default no-op) trait method a GUI host calls once to size the
+  editor's vertical scrollbar column in pixels, e.g. `Some(14.0)` to match
+  VS Code's fixed 14px editor scrollbar independent of font size. Honoured
+  by the GTK, macOS and Win backends in `draw_editor` and in
+  `Backend::editor_layout` (so hit-testing agrees with the paint); TUI
+  keeps its one-cell column. `Backend::editor_v_scrollbar_width()` reads
+  it back. `None` (the default) keeps the existing one-`char_width`
+  column.
+- `Editor::layout_with_options_and_v_scrollbar_w(viewport, cell_width,
+  line_height, options, v_scrollbar_w)` — the layout behind the above:
+  `Some(px)` sizes `v_scrollbar_bounds` (and the text-area narrowing it
+  causes) independently of `cell_width`. `Editor::layout_with_options` is
+  unchanged and delegates with `None`. Purely additive:
+  `EditorPaintOptions` is untouched.
+- `Style` grows five new tokens (issue #1378): `padding`, `corner_radius`,
+  `border_width`, `shadow_elevation` (`0..=3`), `control_height`, each with
+  its own `with_*` builder and a default chosen to match VS Code's own
+  chrome metrics. `PaintSurface` grows `surface_stroke_rounded_rect`
+  (required; implemented on GTK/macOS/Win), `surface_draw_shadow` and
+  `surface_draw_path` (both defaulted, composed out of existing verbs) plus
+  the new `PathVerb` enum. `Toast`, `Tooltip` (its `Full`-border chrome),
+  `ContextMenu`, `Palette` and `Dialog` now paint a rounded, bordered,
+  shadowed box on every GUI backend instead of a square, borderless (for
+  `ContextMenu`) or unshadowed one; `ProgressBar`'s track/fill paint with
+  `corner_radius`. TUI is unchanged. See
+  `quadraui/docs/decisions/DECISIONS.md` D-020 for the full design.
+
+### Changed
+
+- `GtkBackend`/`MacBackend`/`WinBackend` now default `nerd_fonts_enabled`
+  to `true` (issue #1377) — the bundled codicon font removes the
+  "Nerd Font not installed" risk that kept every backend defaulting to
+  `false`, so an app's own `Icon::glyph` paints with no
+  `Backend::set_nerd_fonts` call. TUI's default is unchanged (`false`).
+  An app that needs the old default can call `set_nerd_fonts(false)`
+  itself.
+
+### Fixed
+
+- **macOS, GTK, and Win native: editor body text was top-anchored in its
+  row instead of centred** (issue #1412). A host sets the editor's row
+  pitch (`line_height`) independently of the font's own natural
+  ascent/descent, and each backend positioned text glyphs straight at a
+  row's raw top edge: on macOS the gutter number centred itself but the
+  body text and block-cursor glyph repaint did not, putting them on
+  different baselines; on Win the gutter number centred itself
+  per-glyph while body text and the block-cursor glyph repaint stayed
+  top-anchored; on GTK every text paint (gutter, body, ghost
+  continuation, the after-cursor AI ghost suggestion, inline annotation,
+  the code-action lightbulb) was top-anchored. All three backends now
+  derive one `text_v_offset` from the font's natural line height vs. the
+  host-set row pitch and add it
+  to every text (not row-fill) paint in a row, so gutter and body share
+  a baseline and rows read centred like VS Code. Row-sized fills
+  (cursor rect, selection, cursorline, diagnostic/spell underlines) are
+  unaffected — they stay anchored to the full row, matching VS Code.
+- **macOS native: the editor painted no vertical scrollbar at all**
+  (issue #1411), even when the buffer overflowed the viewport and VS
+  Code showed a 14px one on the same screen. `Editor::layout` already
+  reserved the column (`v_scrollbar_bounds`), but no macOS rasteriser
+  call ever filled it in. `macos::editor::draw_editor` now paints it
+  through the same shared scrollbar paint GTK already uses, narrowing
+  the text clip to match so no glyph paints under the reserved column.
+  The Win backend's `draw_editor` likewise now paints the column through
+  `Backend::draw_scrollbar`.
+- **macOS native: editor text looked heavy and blocky next to VS Code**
+  (issue #1405). The "Lines + gutter" paint loop drew every line's
+  `raw_text` once in the default foreground colour, then re-drew each
+  `line.spans` slice *on top of it* in its own colour — Core Text
+  anti-aliases glyph edges, and compositing the same glyph twice turns
+  edge alpha `a` into `1-(1-a)²`, saturating soft edges and making every
+  stroke look thicker and stair-stepped. The line is now painted as
+  contiguous, non-overlapping runs (default-coloured gaps + each span's
+  own colour), so every glyph is painted exactly once — matching GTK
+  (single Pango layout + `AttrList`) and Windows (coalesced
+  non-overlapping `DrawText` runs), which never had this bug.
+
 ## [0.1.2] - 2026-10-09
 
 ### Fixed

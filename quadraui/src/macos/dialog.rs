@@ -46,6 +46,7 @@ pub unsafe fn draw_dialog(
         line_height as f32,
         &mut surface,
         theme,
+        &crate::style::Style::default(),
     );
 
     // DialogInput::Toolbar isn't painted by the shared `paint` — see

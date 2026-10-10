@@ -119,10 +119,12 @@ mod tests {
         );
     }
 
-    /// Regression for #1085 divergence 5: the action-button label used to
-    /// paint flush to `ab.y` on macOS (ignoring the button's own height);
-    /// it now centres like GTK/Windows, so the glyph ink should not touch
-    /// the very top row of `action_bounds`.
+    /// The action-button label centres in its button like GTK/Windows
+    /// rather than painting flush to `ab.y`. The button carries a 1px
+    /// `accent_bg` border on its outer rows/columns, so the "no glyph
+    /// ink near the top" probe starts two rows inside the border and
+    /// skips the side-border columns; the border itself is asserted
+    /// separately on the top row.
     #[test]
     fn action_button_label_is_vertically_centred() {
         let view = make_view();
@@ -130,22 +132,31 @@ mod tests {
         let ab = layout.stages[1]
             .action_bounds
             .expect("stage 1 has an action button");
-        // The top-most row of the action strip should be clear of glyph
-        // ink (just the translucent tint) once the label is centred
-        // rather than flush to the top.
-        let mut top_row_has_dark_glyph_ink = false;
-        for x in (ab.x as u32)..(ab.x + ab.width) as u32 {
-            let (r, g, b, _) = surface.pixel(x, ab.y as u32);
-            // Glyph ink here is painted in `accent_bg`; the tint alone is
-            // a much darker blend toward the black background. Look for
-            // a near-pure accent_bg pixel specifically at the top row.
-            let theme = Theme::default();
-            if (r, g, b) == (theme.accent_bg.r, theme.accent_bg.g, theme.accent_bg.b) {
-                top_row_has_dark_glyph_ink = true;
-            }
-        }
+        let theme = Theme::default();
+        let accent = (theme.accent_bg.r, theme.accent_bg.g, theme.accent_bg.b);
+        let is_accent = |x: u32, y: u32| {
+            let (r, g, b, _) = surface.pixel(x, y);
+            (r, g, b) == accent
+        };
+
+        let top = ab.y as u32;
+        let x0 = ab.x as u32;
+        let x1 = (ab.x + ab.width) as u32;
+
         assert!(
-            !top_row_has_dark_glyph_ink,
+            (x0..x1).any(|x| is_accent(x, top)),
+            "the action button's top row should carry its accent border",
+        );
+
+        // Glyph ink is painted in `accent_bg`; the tint alone is a much
+        // darker blend toward the black background. A near-pure
+        // accent_bg pixel just inside the border means the label is
+        // hugging the top of the button.
+        let probe_y = top + 2;
+        let top_rows_have_glyph_ink =
+            ((x0 + 2)..x1.saturating_sub(2)).any(|x| is_accent(x, probe_y));
+        assert!(
+            !top_rows_have_glyph_ink,
             "action label should be vertically centred in its button, not flush to the top row",
         );
     }

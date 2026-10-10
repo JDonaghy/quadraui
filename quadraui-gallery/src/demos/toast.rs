@@ -1,12 +1,21 @@
 //! `Toast` demo — the gallery's seed exhibit, adapted from
-//! `quadraui/examples/common/toast_app.rs`.
+//! `quadraui/examples/common/toast_app.rs` and extended with the
+//! keyboard-focus/action behaviour from
+//! `quadraui/examples/common/toast_actions_app.rs` — `Tab` gives the
+//! toast stack keyboard focus, `Tab`/`Shift+Tab`/`Left`/`Right` cycle
+//! its buttons, `Up`/`Down` move between toasts, `Enter` activates the
+//! focused button, and `Esc` returns focus to the demo. The two source
+//! examples are one widget, so they live in this one module rather than
+//! two.
 //!
-//! Exercises [`ToastOverlay`] with varying severities, dismiss, and an
-//! action button, proving the gallery harness end to end before the
-//! other groups are ported (separate follow-up issues).
+//! Exercises [`ToastOverlay`] with varying severities, dismiss, an
+//! action button, and keyboard-driven focus, proving the gallery
+//! harness end to end before the other groups are ported (separate
+//! follow-up issues).
 
+use quadraui::compose::{ToastStackController, ToastStackEvent};
 use quadraui::{
-    Backend, BackendCaps, Color, InteractionState, Key, Reaction, Rect, StatusBar,
+    Backend, BackendCaps, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
     StatusBarSegment, Toast, ToastButton, ToastCorner, ToastHit, ToastOverlay, ToastSeverity,
     UiEvent, WidgetId,
 };
@@ -24,6 +33,7 @@ const SOURCE: &str = include_str!("toast.rs");
 pub struct ToastDemo {
     toasts: Vec<Toast>,
     next_id: usize,
+    controller: ToastStackController,
 }
 
 impl ToastDemo {
@@ -32,12 +42,13 @@ impl ToastDemo {
             toasts: vec![Toast {
                 id: WidgetId::new("gallery:toast:welcome"),
                 title: "Welcome".into(),
-                body: "Press 1-4 to add a toast, a for one with an action".into(),
+                body: "1-4=add  a=add with action  Tab=focus stack".into(),
                 severity: ToastSeverity::Info,
                 actions: Vec::new(),
                 accent: None,
             }],
             next_id: 1,
+            controller: ToastStackController::new(),
         }
     }
 
@@ -65,15 +76,20 @@ impl ToastDemo {
             id: WidgetId::new("gallery:toast-stack"),
             corner: ToastCorner::BottomRight,
             toasts: self.toasts.clone(),
-            focus: None,
+            focus: self.controller.focus(),
         }
     }
 
-    fn hint_bar() -> StatusBar {
+    fn hint_bar(&self) -> StatusBar {
+        let text = if self.controller.is_focused() {
+            " Tab/\u{2190}/\u{2192}=cycle buttons  \u{2191}/\u{2193}=toast  Enter=activate  Esc=unfocus "
+        } else {
+            " 1-4=add severity | a=add with action | Tab=focus stack | click \u{d7}=dismiss "
+        };
         StatusBar {
             id: WidgetId::new("gallery:toast-hint"),
             left_segments: vec![StatusBarSegment {
-                text: " 1-4=add severity | a=add with action | click \u{d7}=dismiss ".into(),
+                text: text.into(),
                 fg: Color::rgb(190, 190, 190),
                 bg: Color::rgb(30, 30, 30),
                 bold: false,
@@ -113,7 +129,7 @@ impl Demo for ToastDemo {
         let hint_rect = Rect::new(area.x, area.y, area.width, lh);
         let _ = backend.draw_status_bar_interactive(
             hint_rect,
-            &Self::hint_bar(),
+            &self.hint_bar(),
             &InteractionState::new(),
         );
 
@@ -128,7 +144,41 @@ impl Demo for ToastDemo {
         backend: &mut dyn Backend,
         area: Rect,
     ) -> Reaction {
+        // The controller only ever consumes `KeyPressed` while the stack
+        // has focus — every other event (including every key while
+        // unfocused) comes back `Ignored`, so the severity/action keys
+        // below still work unimpeded until `Tab` claims focus.
+        let stack = self.stack();
+        match self.controller.handle(event, &stack) {
+            ToastStackEvent::Action(id) => {
+                if let Some(t) = self
+                    .toasts
+                    .iter()
+                    .find(|t| t.actions.iter().any(|a| a.id == id))
+                {
+                    let toast_id = t.id.clone();
+                    self.toasts.retain(|t| t.id != toast_id);
+                }
+                return Reaction::Redraw;
+            }
+            ToastStackEvent::Dismiss(id) => {
+                self.toasts.retain(|t| t.id != id);
+                return Reaction::Redraw;
+            }
+            ToastStackEvent::Consumed | ToastStackEvent::FocusReturned => {
+                return Reaction::Redraw;
+            }
+            ToastStackEvent::Ignored => {}
+        }
+
         match event {
+            UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Tab),
+                ..
+            } => {
+                self.controller.give_focus(&stack);
+                Reaction::Redraw
+            }
             UiEvent::KeyPressed {
                 key: Key::Char('1'),
                 ..

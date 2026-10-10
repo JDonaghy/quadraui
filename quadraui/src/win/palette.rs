@@ -73,6 +73,7 @@ pub fn draw_palette(
         nerd_fonts_enabled,
         &mut surface,
         &theme,
+        &crate::style::Style::default(),
     );
 }
 

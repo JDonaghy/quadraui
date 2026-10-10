@@ -1,0 +1,124 @@
+name: Deploy site
+
+# Builds the mdBook site in `site/` and deploys it to GitHub Pages
+# (quadraui#1349). Runs on pushes to `develop` only — this repo's GitHub
+# default branch (see CLAUDE.md's "Branching + releases": `main` only
+# moves via a reviewed `develop` -> `main` promotion, so `develop` is
+# where "the latest" actually lives day to day) — never on a PR or any
+# other branch, so an in-progress feature branch never clobbers the
+# live site, and a fork's PR never needs Pages permissions at all.
+#
+# Three generated inputs feed the site, none of them hand-maintained
+# per-widget (CLAUDE.md's "Demos are mandatory" rule, one level up):
+#   1. `quadraui-gallery --dump-registry` — every demo's name, group,
+#      variants and `// gallery:begin`/`// gallery:end` code region
+#      (`quadraui-gallery/src/site_export.rs`).
+#   2. `quadraui-gallery --capture` — one SVG per (demo, variant) on
+#      this runner's TUI backend, plus `manifest.json` describing every
+#      other backend as `unsupported`/`capture-pending`
+#      (`quadraui-gallery/src/capture.rs`). Ubuntu has no GTK/macOS/
+#      Windows headless driver yet (see that module's own doc), so this
+#      leg's grid only ever has a real TUI column — that is an honest
+#      reflection of where the capture pipeline is today, not a bug in
+#      this workflow.
+#   3. `tools/site_gen.py` joins (1) and (2) into `site/src/gallery/`
+#      and `site/src/SUMMARY.md`, which `mdbook build` then turns into
+#      the deployed HTML alongside the hand-maintained
+#      `site/src/introduction.md` / `site/src/getting-started.md`.
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Only one Pages deployment at a time; a second push while one is still
+# building supersedes the queued one rather than racing it (the opposite
+# of CI's own per-ref concurrency groups, since Pages has exactly one live
+# target, not one per branch/PR). `cancel-in-progress` stays `false`
+# deliberately: GitHub's own Pages guidance is not to cancel an
+# in-progress production deployment (`deploy-pages` mid-flight can leave
+# the environment with a pending deployment); queuing the newest run
+# behind it gets the same "newest wins" outcome without aborting one that
+# is already live.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build site
+    runs-on: ubuntu-latest
+    # #1292-style sizing: a `tui`-feature gallery build + capture run +
+    # one `mdbook build` over ~40 generated pages, normally a few
+    # minutes once the toolchain/cache steps are warm.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Toolchain is pinned in rust-toolchain.toml; see that file's own
+      # header for why this Action's "default" isn't what actually pins
+      # the version used below.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Downloads a prebuilt mdbook binary instead of `cargo install
+      # mdbook` (which compiles from source and adds several minutes to
+      # every run for a tool this workflow only *invokes*, never
+      # modifies).
+      - uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: "0.5.4"
+
+      - name: Dump demo registry
+        run: |
+          mkdir -p target/site
+          cargo run -p quadraui-gallery --bin quadraui-gallery --features tui -- \
+            --dump-registry target/site/registry.json
+
+      - name: Capture demo screenshots (TUI)
+        run: |
+          cargo run -p quadraui-gallery --bin quadraui-gallery --features tui -- \
+            --capture target/site/capture-tui
+
+      - name: Generate gallery pages
+        run: |
+          python3 tools/site_gen.py \
+            --registry target/site/registry.json \
+            --capture target/site/capture-tui \
+            --out site/src
+
+      - name: Build mdBook
+        run: mdbook build site
+
+      # No `actions/configure-pages@v5` step here: that action's only
+      # output is `base_url`/`origin` metadata, neither of which this job
+      # passes to `mdbook build` (mdBook needs no runtime base-path
+      # injection the way some static-site generators do), and the action
+      # itself calls `GET /repos/{owner}/{repo}/pages`, which needs the
+      # `pages: write` permission this job deliberately does not hold
+      # (that scope lives on the `deploy` job below, which is the one
+      # that actually talks to the Pages API). Running it here would just
+      # add a permission this job has no other reason to need.
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/book
+
+  deploy:
+    name: deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

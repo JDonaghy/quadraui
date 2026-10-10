@@ -91,6 +91,7 @@ pub unsafe fn draw_tooltip_with_chrome(
         padding_x as f32,
         &mut surface,
         theme,
+        &crate::style::Style::default(),
     );
 }
 

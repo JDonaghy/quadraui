@@ -881,16 +881,11 @@ pub(crate) mod native_surface_paint {
             // of `row_x`, so scrolled-off glyphs would paint outside the
             // row band without an explicit clip.
             surface.surface_push_clip(row_rect);
+            // No `▶ ` prefix glyph on GUI — `row_bg` above already marks
+            // the selected row with `theme.selected_bg`, so the chevron
+            // is a redundant terminal affordance here (the TUI painter
+            // still draws it — it has no row-fill cue to lean on).
             let mut cursor_x = row_x + 2.0 - h_off_px;
-
-            let prefix = if is_selected { "▶ " } else { "  " };
-            let (pw, ph) = surface.surface_measure_text(prefix);
-            surface.surface_draw_text_run(
-                Rect::new(cursor_x, row_y + (row_h - ph) / 2.0, pw, ph),
-                prefix,
-                decoration_fg,
-            );
-            cursor_x += pw;
 
             if let Some(ref icon) = item.icon {
                 let glyph = if nerd_fonts_enabled {
@@ -1040,6 +1035,14 @@ pub(crate) mod native_surface_paint {
                 self.fills.push((rect, color));
             }
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.texts.push((rect, text.to_string(), color));
             }
@@ -1259,6 +1262,37 @@ pub(crate) mod native_surface_paint {
                         && (r.y - row1_rect.y).abs() < 0.01
                         && *c == theme.selected_bg),
                 "selected row must paint theme.selected_bg at its own bounds"
+            );
+        }
+
+        /// No `▶` chevron glyph is painted for a selected row on GUI —
+        /// `theme.selected_bg` (asserted above) is the only selection
+        /// cue; the TUI painter keeps the chevron.
+        #[test]
+        fn selected_row_paints_no_chevron_glyph() {
+            let mut list = vlist(3);
+            list.selected_idx = 1;
+            list.has_focus = true;
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let mut surface = RecordingSurface::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &Theme::default(),
+            );
+
+            assert!(
+                !surface.texts.iter().any(|(_, t, _)| t.contains('▶')),
+                "no chevron glyph should be painted on GUI; texts were {:?}",
+                surface.texts,
             );
         }
 

@@ -35,7 +35,14 @@ pub unsafe fn draw_context_menu(
         ctx,
         font: Some(font),
     };
-    native_surface_paint::paint(menu, menu_layout, Platform::Macos, &mut surface, theme)
+    native_surface_paint::paint(
+        menu,
+        menu_layout,
+        Platform::Macos,
+        &mut surface,
+        theme,
+        &crate::style::Style::default(),
+    )
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 //!
 //! Every other primitive in this crate is a closed shape — an app that
 //! wants a diagram, a custom gauge, a sparkline with bespoke decoration,
-//! or any pixel the 40 other shipped primitives don't already draw has no way
+//! or any pixel the 41 other shipped primitives don't already draw has no way
 //! to put it on screen. `Canvas` is the escape hatch: a declarative list
 //! of [`DrawOp`]s (rect, rounded rect, line, path, text run, image,
 //! push/pop clip) that every backend paints through the same seam —
@@ -377,6 +377,14 @@ pub(crate) mod native_surface_paint {
                 self.rounded_fills.push((rect, radius, color));
             }
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.text_runs.push((rect, text.to_string(), color));
             }

@@ -359,6 +359,14 @@ pub(crate) mod native_surface_paint {
                 self.fills.push((rect, color));
             }
             fn surface_stroke_rect(&mut self, _rect: QRect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: QRect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
             fn surface_draw_text_run(&mut self, _rect: QRect, _text: &str, _color: Color) {}
             fn surface_draw_line(
                 &mut self,

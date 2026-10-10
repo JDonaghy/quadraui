@@ -38,7 +38,9 @@ use crate::theme::Theme;
 /// order — same contract as [`crate::Backend::draw_dialog`].
 ///
 /// `dwrite` is the font the whole dialog paints in — see this module's
-/// doc for why the caller now passes the chrome handle.
+/// doc for why the caller now passes the chrome handle. Paints with
+/// [`crate::Style::default`] — see [`draw_dialog_with_style`] for the
+/// live-backend entry point that honours a real `&self.style()`.
 pub fn draw_dialog(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -46,13 +48,44 @@ pub fn draw_dialog(
     dialog_layout: &DialogLayout,
     line_height: f32,
 ) -> Vec<Rect> {
+    draw_dialog_with_style(
+        target,
+        dwrite,
+        dialog,
+        dialog_layout,
+        line_height,
+        &crate::style::Style::default(),
+    )
+}
+
+/// [`draw_dialog`] with an explicit `&Style` instead of always
+/// [`crate::Style::default`] — `pub(crate)` rather than growing
+/// `draw_dialog`'s own signature, which stays additive-only (see
+/// `PRIMITIVE_RULES.md` rule 8) since it is `pub` and this crate cannot
+/// grep its downstream consumers' call sites to know whether a breaking
+/// change is safe. [`crate::win::backend::WinBackend::draw_dialog`] is
+/// the one caller, passing its own live `self.style()`.
+pub(crate) fn draw_dialog_with_style(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    dialog: &Dialog,
+    dialog_layout: &DialogLayout,
+    line_height: f32,
+    style: &crate::style::Style,
+) -> Vec<Rect> {
     let theme = Theme::default();
     let mut surface = super::surface::D2dSurface {
         target,
         dwrite: Some(dwrite),
     };
-    let button_rects =
-        native_surface_paint::paint(dialog, dialog_layout, line_height, &mut surface, &theme);
+    let button_rects = native_surface_paint::paint(
+        dialog,
+        dialog_layout,
+        line_height,
+        &mut surface,
+        &theme,
+        style,
+    );
 
     // DialogInput::Toolbar isn't painted by the shared `paint` — see
     // that fn's module doc — so render it here, exactly as before this
@@ -186,10 +219,13 @@ mod tests {
         let px = surface.pixel_at((r0.x + 2.0) as u32, (r0.y + r0.height / 2.0) as u32);
         assert_eq!((px.r, px.g, px.b), (sel.r, sel.g, sel.b));
 
-        // Dialog background is painted at a corner clear of any chrome.
+        // Dialog background is painted at its left edge, mid-height,
+        // clear of any chrome — not a corner (a near-corner probe would
+        // land outside the rounded fillet and see the surface's
+        // untouched clear value instead of the box).
         let bg = Theme::default().surface_bg;
         let b = layout.bounds;
-        let corner = surface.pixel_at((b.x + 2.0) as u32, (b.y + 2.0) as u32);
+        let corner = surface.pixel_at((b.x + 2.0) as u32, (b.y + b.height / 2.0) as u32);
         assert_eq!((corner.r, corner.g, corner.b), (bg.r, bg.g, bg.b));
     }
 

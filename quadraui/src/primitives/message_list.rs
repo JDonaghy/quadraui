@@ -364,6 +364,14 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
             fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.text_runs.push((rect, text.to_string(), color));
             }

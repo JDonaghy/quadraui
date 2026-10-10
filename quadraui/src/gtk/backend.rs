@@ -255,6 +255,10 @@ pub struct GtkBackend {
     /// App alongside `current_line_height`. Required by primitives
     /// that map cells to pixels (e.g. `draw_terminal`).
     current_char_width: f64,
+    /// Editor vertical scrollbar column width set through
+    /// [`Backend::set_editor_v_scrollbar_width`]; `None` = one
+    /// `current_char_width` wide.
+    editor_v_scrollbar_w: Option<f32>,
     /// Per-frame Pango advance for `ui_font` (the chrome twin of
     /// `current_char_width`), in DIPs — backs [`Backend::list_char_width`].
     /// `draw_list` paints row text in `ui_font`, not the editor font
@@ -275,6 +279,16 @@ pub struct GtkBackend {
     /// (vimcode reads `engine.settings.use_nerd_fonts`); kubeui has
     /// its own toggle. Mirrors the `TuiBackend` field of the same
     /// name (#268).
+    ///
+    /// Defaults to `true` on this backend — unlike TUI,
+    /// where a wrong `true` paints tofu for a terminal with no Nerd
+    /// Font installed (see [`crate::Backend::set_nerd_fonts`]'s own
+    /// doc for that risk calculus), a GTK host always has the bundled
+    /// codicon font available (`GtkBackend::new` self-registers it
+    /// unconditionally), so an app's own [`crate::Icon::glyph`] built
+    /// from a codicon codepoint paints correctly with no app opt-in.
+    /// An app whose own glyph choice assumes a *different*, uninstalled
+    /// icon font can still call `set_nerd_fonts(false)` to opt back out.
     nerd_fonts_enabled: bool,
     /// Pango font description string for UI chrome (sans-serif text
     /// in title/buttons of `Dialog`, etc). Format is
@@ -550,6 +564,18 @@ impl GtkBackend {
     /// `Rc<RefCell<GtkBackend>>` to every widget callback that needs
     /// access.
     pub fn new() -> Self {
+        // Self-register the bundled codicon font unconditionally,
+        // before anything paints — every chrome rasteriser that reaches
+        // for a codicon glyph assumes it is already resolvable via
+        // `crate::gtk::with_nerd_font_fallback`'s family list. Ignoring a
+        // `false` return here is deliberate: a registration failure
+        // leaves the Nerd-Font fallback chain exactly as it would be
+        // without this call, so the worst case is a missing codicon
+        // falling through to tofu rather than this constructor failing
+        // outright (the same "degrade, don't fail" posture every other
+        // optional font registration in this crate takes).
+        super::app_font::ensure_codicon_registered();
+
         let events = Rc::new(std::cell::RefCell::new(VecDeque::new()));
         // #955: share the same queue with `GtkPlatformServices` so a
         // notification-action activation can push
@@ -574,6 +600,7 @@ impl GtkBackend {
             minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             current_line_height: 16.0,
             current_char_width: 8.0,
+            editor_v_scrollbar_w: None,
             // Arbitrary but plausible seed (mirrors `current_char_width`
             // above) — a real value is only established once
             // `refresh_chrome_char_width` runs inside a live frame; a
@@ -582,7 +609,7 @@ impl GtkBackend {
             // `list_char_width()`, same posture as `current_char_width`.
             current_chrome_char_width: 8.0,
             pango_ctx: None,
-            nerd_fonts_enabled: false,
+            nerd_fonts_enabled: true,
             ui_font: "Sans 11".to_string(),
             editor_font_family: "Monospace".to_string(),
             editor_font_size_pt: 11.0,
@@ -1040,6 +1067,18 @@ impl GtkBackend {
         self.pango_ctx.as_ref().map(pango::Layout::new)
     }
 
+    /// A fresh layout on the stored Pango context carrying the chrome
+    /// font (`chrome_font_description(&self.ui_font)`), for the no-paint
+    /// `*_layout` twins of chrome rasterisers that paint in `ui_font`.
+    /// Measuring with the context's own font instead lets the layout's
+    /// column/label widths diverge from what the painter resolves on
+    /// platforms where the two descriptions shape differently.
+    fn chrome_measure_layout(&self) -> Option<pango::Layout> {
+        let pl = self.pango_ctx.as_ref().map(pango::Layout::new)?;
+        pl.set_font_description(Some(&crate::gtk::chrome_font_description(&self.ui_font)));
+        Some(pl)
+    }
+
     /// Measure a plain string width in pixels using Pango if
     /// available, falling back to `chars().count() * char_w`.
     fn pango_str_width(
@@ -1464,8 +1503,18 @@ impl GtkBackend {
         font_scale: f32,
     ) -> crate::StatusBarLayout {
         let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-        let mut ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        if font_scale != 1.0 {
+        // Status bar segments are chrome, painted in `ui_font` —
+        // `GtkBackend`'s own `PaintSurface` impl now resolves that font
+        // straight from `self.ui_font` on every text verb (see the
+        // cross-reference comment just above `impl PaintSurface for
+        // GtkBackend` below), so there is no shared-layout font to swap
+        // onto for the plain `font_scale == 1.0` case any more. A real
+        // `font_scale` still needs a scoped override: save `self.ui_font`,
+        // replace it with a size-scaled copy for the paint below, then
+        // restore it so later draws in this frame aren't left painting
+        // chrome text at the scaled size.
+        let saved_ui_font = if font_scale != 1.0 {
+            let mut scaled_desc = pango::FontDescription::from_string(&self.ui_font);
             // Pango sizes are in `PANGO_SCALE`-ths of a point — scale the
             // raw integer so a caller-friendly `f32` multiplier (e.g.
             // `0.85`) survives the round-trip without losing precision to
@@ -1475,23 +1524,14 @@ impl GtkBackend {
             // which would fall back to some other ambient size instead of
             // painting (nearly) nothing, the honest behaviour a caller
             // asking for size `~0` should get.
-            let scaled = ((ui_font_desc.size() as f32) * font_scale).round() as i32;
-            ui_font_desc.set_size(scaled.max(1));
-        }
-        // #624: status bar segments are chrome, painted in `ui_font` —
-        // save the editor font that's on the shared layout, swap in
-        // `ui_font` for the paint (and the shared `paint`'s own internal
-        // width measurement, which shares this same layout via
-        // `PaintSurface::surface_measure_text_styled`), then restore the
-        // editor font so later draws in this frame aren't left painting
-        // chrome-sized text.
-        let saved_font = {
-            let (_cr, layout) = self
-                .current_frame_refs()
-                .expect("GtkBackend::draw_status_bar called outside enter_frame_scope");
-            let saved = layout.font_description();
-            layout.set_font_description(Some(&ui_font_desc));
-            saved
+            let scaled = ((scaled_desc.size() as f32) * font_scale).round() as i32;
+            scaled_desc.set_size(scaled.max(1));
+            Some(std::mem::replace(
+                &mut self.ui_font,
+                scaled_desc.to_str().to_string(),
+            ))
+        } else {
+            None
         };
         let theme = self.current_theme;
         // #1179: was `self.current_line_height`, so a caller that hands
@@ -1512,11 +1552,8 @@ impl GtkBackend {
             hovered_id,
             pressed_id,
         );
-        {
-            let (_cr, layout) = self
-                .current_frame_refs()
-                .expect("GtkBackend::draw_status_bar called outside enter_frame_scope");
-            layout.set_font_description(saved_font.as_ref());
+        if let Some(saved) = saved_ui_font {
+            self.ui_font = saved;
         }
         // Record each visible segment's label into the painted-text map
         // GtkDriver::find scans (quadraui#447, GD-2) — resolve the text
@@ -2388,9 +2425,19 @@ impl Backend for GtkBackend {
     ) -> crate::DataTableLayout {
         let lh = self.current_line_height;
         let theme = self.current_theme;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_data_table called outside enter_frame_scope");
+        // `DataTable` is chrome, not editor content — save the editor
+        // font on the shared layout, paint the table in `ui_font`, then
+        // restore, matching `Self::draw_tree`'s save/swap/restore.
+        // `crate::gtk::draw_data_table` derives its bold/icon font
+        // variants from whatever base font `layout` carries in, so
+        // without this swap it painted with whatever the ambient
+        // per-frame font happened to be (the editor font by default).
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
         let table_layout = crate::gtk::draw_data_table(
             cr,
             layout,
@@ -2403,6 +2450,7 @@ impl Backend for GtkBackend {
             lh,
             hovered_idx,
         );
+        layout.set_font_description(saved_font.as_ref());
 
         // Record header + visible body + footer cell text into the
         // painted-text map `GtkDriver::find`/`find_bounds`/`painted_texts`
@@ -2505,7 +2553,7 @@ impl Backend for GtkBackend {
     /// `Self::status_bar_layout`/`Self::form_layout`/`Self::toast_stack_layout`.
     fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
         let char_w = self.current_char_width as f32;
-        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+        let pango_layout = self.chrome_measure_layout();
         let measure = PangoTextMeasure {
             layout: &pango_layout,
             char_w,
@@ -2583,9 +2631,20 @@ impl Backend for GtkBackend {
             let row_w = vf.bounds.width as f64;
             let row_h = vf.bounds.height as f64;
 
+            let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
             let (cr, layout) = self
                 .current_frame_refs()
                 .expect("GtkBackend::draw_form called outside enter_frame_scope");
+            // A `Toolbar` field's label and embedded toolbar are
+            // chrome, like every other form field label `paint` above
+            // already paints in `ui_font` via `GtkBackend`'s own
+            // (chrome-defaulting) `PaintSurface` impl — save/swap/restore
+            // around this raw `(cr, layout)` measurement + paint too, the
+            // same shape `Self::draw_tree` uses, since neither this
+            // method nor `crate::gtk::toolbar::draw_toolbar` goes through
+            // `PaintSurface`.
+            let saved_font = layout.font_description();
+            layout.set_font_description(Some(&ui_font_desc));
             let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
             let no_label = label_text.is_empty();
             layout.set_text(&label_text);
@@ -2602,6 +2661,7 @@ impl Backend for GtkBackend {
                 );
                 layout.set_attributes(None);
             }
+            layout.set_font_description(saved_font.as_ref());
         }
     }
 
@@ -2609,21 +2669,50 @@ impl Backend for GtkBackend {
         // #455: see `modal_stack.rs`'s "Paint-consistency detection" docs —
         // records that this palette's surface was actually painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&palette.id);
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_palette called outside enter_frame_scope");
-        crate::gtk::draw_palette(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            palette,
-            &self.current_theme,
-            self.current_line_height,
-            self.nerd_fonts_enabled,
-        );
+        // The command palette is chrome, not editor content — same
+        // save/swap/restore as `Self::draw_tree`, since
+        // `crate::gtk::draw_palette` paints directly against whatever
+        // font `layout` carries in rather than going through
+        // `PaintSurface`.
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
+        // Calls the shared paint directly (rather than through
+        // `crate::gtk::draw_palette`, whose public signature stays
+        // additive-only and so cannot take a live `&Style`) so this live
+        // backend path honours `Self::set_style` overrides.
+        if rect.width >= 20.0 && rect.height >= self.current_line_height as f32 * 4.0 {
+            let (palette_layout, rows_h) = crate::gtk::gtk_palette_layout(
+                rect.width as f64,
+                rect.height as f64,
+                palette,
+                self.current_line_height,
+            );
+            let area = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
+            let style = self.style();
+            let nerd_fonts_enabled = self.nerd_fonts_enabled;
+            let mut surface = crate::gtk::surface::CairoSurface {
+                cr,
+                layout: Some(layout),
+                translucent_fill: true,
+            };
+            crate::primitives::palette::native_surface_paint::paint(
+                palette,
+                area,
+                &palette_layout,
+                rows_h as f32,
+                self.current_line_height as f32,
+                nerd_fonts_enabled,
+                &mut surface,
+                &self.current_theme,
+                &style,
+            );
+            layout.set_attributes(None);
+        }
+        layout.set_font_description(saved_font.as_ref());
     }
 
     fn palette_layout(&self, rect: QRect, palette: &Palette) -> crate::PaletteLayout {
@@ -2644,9 +2733,16 @@ impl Backend for GtkBackend {
         placeholder: &str,
         active: bool,
     ) {
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_settings_chrome called outside enter_frame_scope");
+        // The settings panel header/search box is chrome, not editor
+        // content — save the editor font on the shared layout, paint in
+        // `ui_font`, then restore, matching `Self::draw_tree`'s
+        // save/swap/restore.
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
         crate::gtk::draw_settings_chrome(
             cr,
             layout,
@@ -2661,6 +2757,7 @@ impl Backend for GtkBackend {
             active,
             &self.current_theme,
         );
+        layout.set_font_description(saved_font.as_ref());
     }
 
     // ─── Layout-passthrough primitives ─────────────────────────────────────
@@ -3397,9 +3494,15 @@ impl Backend for GtkBackend {
                 // entirely — e.g. a cursor-blink tick with no new PTY
                 // output).
                 if !rows.is_empty() {
+                    // The terminal is editor-class — paint through
+                    // `EditorSurface` so its cell glyphs keep painting
+                    // in the editor font even though `GtkBackend`'s own
+                    // `PaintSurface` impl now defaults to `ui_font` (see
+                    // that impl's doc).
+                    let mut surface = EditorSurface { backend: self };
                     crate::primitives::terminal::paint(
                         term,
-                        self,
+                        &mut surface,
                         &theme,
                         rect.x,
                         rect.y,
@@ -3430,9 +3533,13 @@ impl Backend for GtkBackend {
                 // through every uncovered pixel.
                 self.surface_fill_rect(rect, theme.background);
 
+                // See the matching comment on the fast-path call above
+                // — the terminal needs `EditorSurface`, not bare
+                // `self`.
+                let mut surface = EditorSurface { backend: self };
                 crate::primitives::terminal::paint(
                     term,
-                    self,
+                    &mut surface,
                     &theme,
                     rect.x,
                     rect.y,
@@ -3528,7 +3635,17 @@ impl Backend for GtkBackend {
         let theme = self.current_theme;
         let line_height = self.current_line_height as f32;
         let char_width = self.current_char_width as f32;
-        crate::primitives::text_display::paint(td, rect, self, &theme, line_height, char_width);
+        // The text display is editor-class — see the matching comment
+        // on `Self::draw_terminal` / `EditorSurface`'s own doc.
+        let mut surface = EditorSurface { backend: self };
+        crate::primitives::text_display::paint(
+            td,
+            rect,
+            &mut surface,
+            &theme,
+            line_height,
+            char_width,
+        );
     }
 
     fn draw_command_line(&mut self, rect: QRect, cmd: &CommandLine) {
@@ -3607,10 +3724,21 @@ impl Backend for GtkBackend {
         let theme = self.current_theme;
         let lh = self.current_line_height;
         let cw = self.current_char_width;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_text_input called outside enter_frame_scope");
-        crate::gtk::draw_text_input(cr, pango_layout, rect, ti, &theme, lh, cw)
+        // `TextInput` is chrome (not in
+        // `crate::font_role::EditorClassPrimitive::ALL`) — same
+        // save/swap/restore as `Self::draw_tree`, since
+        // `crate::gtk::draw_text_input` paints directly against whatever
+        // font `pango_layout` carries in rather than going through
+        // `PaintSurface`.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let result = crate::gtk::draw_text_input(cr, pango_layout, rect, ti, &theme, lh, cw);
+        pango_layout.set_font_description(saved_font.as_ref());
+        result
     }
 
     fn text_input_layout(
@@ -3636,19 +3764,38 @@ impl Backend for GtkBackend {
         layout_arg: &crate::TooltipLayout,
         chrome: &crate::TooltipChrome,
     ) {
+        let style = self.style();
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_tooltip called outside enter_frame_scope");
-        crate::gtk::draw_tooltip_with_chrome(
+        // Tooltip text is chrome, not editor content — save the editor
+        // font on the shared layout, paint in `ui_font`, then restore,
+        // matching `Self::draw_tree`'s save/swap/restore.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        // Calls the shared paint directly (rather than through
+        // `crate::gtk::draw_tooltip_with_chrome`, whose public signature
+        // stays additive-only and so cannot take a live `&Style`) so
+        // this live backend path honours `Self::set_style` overrides —
+        // see `crate::gtk::draw_tooltip_with_chrome`'s own doc.
+        let mut surface = crate::gtk::surface::CairoSurface {
             cr,
-            pango_layout,
+            layout: Some(pango_layout),
+            translucent_fill: true,
+        };
+        crate::primitives::tooltip::native_surface_paint::paint(
             tooltip,
             layout_arg,
             chrome,
-            self.current_line_height,
-            self.current_char_width,
+            self.current_line_height as f32,
+            self.current_char_width as f32,
+            &mut surface,
             &self.current_theme,
+            &style,
         );
+        pango_layout.set_attributes(None);
+        pango_layout.set_font_description(saved_font.as_ref());
         // #542: register the tooltip's own surface — see the matching
         // comment on `TuiBackend::draw_tooltip`. GTK already painted a
         // full 4-sided box here before TUI did (#541); this just makes
@@ -3682,20 +3829,27 @@ impl Backend for GtkBackend {
         // `compose::menu_system`, outside this issue's file list.
         let saved_font = pango_layout.font_description();
         pango_layout.set_font_description(Some(&ui_font_desc));
-        let hits = crate::gtk::draw_context_menu(
+        // Calls the shared paint directly (rather than through
+        // `crate::gtk::draw_context_menu`, whose public signature stays
+        // additive-only and so cannot take a live `&Style`) so this live
+        // backend path honours `Self::set_style` overrides.
+        let style = self.style();
+        let mut surface = crate::gtk::surface::CairoSurface {
             cr,
-            pango_layout,
+            layout: Some(pango_layout),
+            translucent_fill: true,
+        };
+        let hits = crate::primitives::context_menu::native_surface_paint::paint(
             menu,
             layout_arg,
-            self.current_line_height,
+            crate::accelerator::Platform::Linux,
+            &mut surface,
             &self.current_theme,
+            &style,
         );
+        pango_layout.set_attributes(None);
         pango_layout.set_font_description(saved_font.as_ref());
-        // Reshape rasteriser's `(x, y, w, h, id)` tuples into
-        // `(Rect, WidgetId)` for the trait return.
-        hits.into_iter()
-            .map(|(x, y, w, h, id)| (QRect::new(x as f32, y as f32, w as f32, h as f32), id))
-            .collect()
+        hits
     }
 
     fn draw_dialog(
@@ -3707,23 +3861,51 @@ impl Backend for GtkBackend {
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let line_height = self.current_line_height;
         let theme = self.current_theme;
+        let style = self.style();
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_dialog called outside enter_frame_scope");
-        let rects = crate::gtk::draw_dialog(
+        // Calls the shared paint directly (rather than through
+        // `crate::gtk::draw_dialog`, whose public signature stays
+        // additive-only and so cannot take a live `&Style`) so this live
+        // backend path honours `Self::set_style` overrides — the
+        // font-swap/toolbar-sub-paint/restore steps below mirror that
+        // free function's own body exactly.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let mut surface = crate::gtk::surface::CairoSurface {
             cr,
-            pango_layout,
-            &ui_font_desc,
+            layout: Some(pango_layout),
+            translucent_fill: true,
+        };
+        let rects = crate::primitives::dialog::native_surface_paint::paint(
             dialog,
             dialog_layout,
-            line_height,
+            line_height as f32,
+            &mut surface,
             &theme,
+            &style,
         );
+        if let (Some(input_b), Some(crate::primitives::dialog::DialogInput::Toolbar(toolbar))) =
+            (dialog_layout.input_bounds, dialog.input.as_ref())
+        {
+            crate::gtk::toolbar::draw_toolbar(
+                cr,
+                pango_layout,
+                input_b.x as f64,
+                input_b.y as f64,
+                input_b.width as f64,
+                input_b.height as f64,
+                toolbar,
+                &theme,
+                None,
+                None,
+            );
+        }
+        pango_layout.set_attributes(None);
+        pango_layout.set_font_description(saved_font.as_ref());
         rects
-            .into_iter()
-            .map(|(x, y, w, h)| QRect::new(x as f32, y as f32, w as f32, h as f32))
-            .collect()
     }
 
     fn draw_float(
@@ -3823,7 +4005,7 @@ impl Backend for GtkBackend {
     fn form_layout(&self, rect: QRect, form: &Form) -> crate::primitives::form::FormLayout {
         let row_h = crate::primitives::layout_metrics::form_row_height(self.current_line_height);
         let char_w = self.current_char_width as f32;
-        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+        let pango_layout = self.chrome_measure_layout();
         let measure = PangoTextMeasure {
             layout: &pango_layout,
             char_w,
@@ -3855,7 +4037,7 @@ impl Backend for GtkBackend {
             .font_description()
             .or_else(|| pango_ctx.font_description());
         let metrics = pango_ctx.metrics(font_desc.as_ref(), None);
-        crate::gtk::draw_editor(
+        super::editor::draw_editor_with_options_and_v_scrollbar_w(
             cr,
             pango_layout,
             &metrics,
@@ -3863,6 +4045,8 @@ impl Backend for GtkBackend {
             &theme,
             char_width,
             line_height,
+            crate::primitives::editor::EditorPaintOptions::default(),
+            self.editor_v_scrollbar_w,
         );
         // Stash the exact layout just painted with — see the field doc
         // on `last_editor_pango_layout` for why this is necessary
@@ -3870,6 +4054,14 @@ impl Backend for GtkBackend {
         self.last_editor_pango_layout = Some(pango_layout.clone());
         let _ = rect;
         crate::backend::EditorPaintResult::default()
+    }
+
+    fn set_editor_v_scrollbar_width(&mut self, px: Option<f32>) {
+        self.editor_v_scrollbar_w = px;
+    }
+
+    fn editor_v_scrollbar_width(&self) -> Option<f32> {
+        self.editor_v_scrollbar_w
     }
 
     fn editor_col_at_x(
@@ -3907,9 +4099,15 @@ impl Backend for GtkBackend {
         list: &crate::primitives::message_list::MessageList,
     ) {
         let line_height = self.current_line_height;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_message_list called outside enter_frame_scope");
+        // MessageList rows are chrome, not editor content — save the
+        // editor font on the shared layout, paint in `ui_font`, then
+        // restore, matching `Self::draw_tree`'s save/swap/restore.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
         crate::gtk::draw_message_list(
             cr,
             pango_layout,
@@ -3920,6 +4118,7 @@ impl Backend for GtkBackend {
             (rect.y + rect.height) as f64,
             line_height,
         );
+        pango_layout.set_font_description(saved_font.as_ref());
     }
 
     fn draw_rich_text_popup(
@@ -4000,10 +4199,19 @@ impl Backend for GtkBackend {
         layout_arg: &crate::primitives::completions::CompletionsLayout,
     ) {
         let theme = self.current_theme;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_completions called outside enter_frame_scope");
+        // The completions popup is chrome, not editor content — same
+        // save/swap/restore as `Self::draw_tree`, since
+        // `crate::gtk::draw_completions` paints directly against
+        // whatever font `pango_layout` carries in rather than going
+        // through `PaintSurface`.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
         crate::gtk::draw_completions(cr, pango_layout, completions, layout_arg, &theme);
+        pango_layout.set_font_description(saved_font.as_ref());
     }
 
     fn draw_scrollbar(
@@ -4229,11 +4437,13 @@ impl Backend for GtkBackend {
         // cr/pango fetch of its own, matching `Self::draw_status_bar`'s
         // #860 shape.
         let theme = self.current_theme;
+        let style = self.style();
         let line_height = self.current_line_height as f32;
         crate::primitives::toast::native_surface_paint::paint(
             stack,
             self,
             &theme,
+            &style,
             rect.x,
             rect.y,
             rect.width,
@@ -4291,7 +4501,8 @@ impl Backend for GtkBackend {
         bar: &crate::primitives::progress::ProgressBar,
     ) -> crate::primitives::progress::ProgressBarLayout {
         let theme = self.current_theme;
-        crate::primitives::progress::native_surface_paint::paint(bar, self, &theme, rect)
+        let style = self.style();
+        crate::primitives::progress::native_surface_paint::paint(bar, self, &theme, rect, &style)
     }
 
     fn progress_layout(
@@ -4314,17 +4525,26 @@ impl Backend for GtkBackend {
         spinner: &crate::primitives::spinner::Spinner,
     ) -> crate::primitives::spinner::SpinnerLayout {
         let theme = self.current_theme;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_spinner called outside enter_frame_scope");
-        crate::gtk::draw_spinner(
+        // Spinner's label (e.g. "Indexing…") is chrome, not editor
+        // content — save the editor font on the shared layout, paint in
+        // `ui_font`, then restore, matching `Self::draw_tree`'s
+        // save/swap/restore.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let spinner_layout = crate::gtk::draw_spinner(
             cr,
             pango_layout,
             rect.x as f64,
             rect.y as f64,
             spinner,
             &theme,
-        )
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        spinner_layout
     }
 
     fn spinner_layout(
@@ -4359,7 +4579,7 @@ impl Backend for GtkBackend {
         // `data_table_layout` had. Sharing `pixel_toast_stack_layout`
         // fixes both at once.
         let char_w = self.current_char_width as f32;
-        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+        let pango_layout = self.chrome_measure_layout();
         let measure = PangoTextMeasure {
             layout: &pango_layout,
             char_w,
@@ -4637,9 +4857,12 @@ impl Backend for GtkBackend {
     ) -> crate::primitives::diff_view::DiffViewLayout {
         let theme = self.current_theme;
         let line_height = self.current_line_height as f32;
+        // The diff view is editor-class — see the matching comment on
+        // `Self::draw_terminal` / `EditorSurface`'s own doc.
+        let mut surface = EditorSurface { backend: self };
         crate::primitives::diff_view::native_surface_paint::paint(
             view,
-            self,
+            &mut surface,
             &theme,
             rect,
             line_height,
@@ -4934,6 +5157,210 @@ impl crate::backend::WindowControl for GtkBackend {
     }
 }
 
+/// The GTK twin of `macos::backend::EditorSurface`. Adapts
+/// `&mut GtkBackend` to [`PaintSurface`], routing text measurement and
+/// painting through [`GtkBackend::editor_font_pango_string`] explicitly
+/// rather than `GtkBackend`'s own [`PaintSurface`] impl (below), which
+/// now defaults every non-editor-class primitive to `ui_font` (the
+/// chrome font — see `crate::font_role`'s module doc). The terminal, the
+/// plain text display and the diff view are the three
+/// `crate::font_role::EditorClassPrimitive`s that paint through this
+/// trait on this backend (`draw_editor`, `draw_minimap` and
+/// `draw_command_line` paint through the raw `(cr, layout)` pair
+/// directly instead — see those methods — so they never pick up
+/// `GtkBackend`'s own `PaintSurface` impl in the first place and need no
+/// adapter here), so each wraps `self` in this type before calling into
+/// its shared `primitives::*::paint`/`native_surface_paint::paint`
+/// helper.
+///
+/// `surface_line_height`/`surface_char_width` are not overridden:
+/// `GtkBackend`'s own impl of those two already reports
+/// `current_line_height`/`current_char_width`, which *are* the editor
+/// font's metrics (refreshed every frame from `editor_font_pango_string`
+/// by `gtk/run.rs::render_frame`), so forwarding is already correct —
+/// unlike the chrome text verbs below, there is no ambient-vs-explicit
+/// gap to close for row pitch. Every other font-agnostic verb (fills,
+/// strokes, clip, lines, images, frame lifecycle) forwards straight
+/// through for the same reason.
+///
+/// Also not overridden: `surface_measure_text_styled` and
+/// `surface_draw_icon_glyph`. The trait defaults for both forward to
+/// `surface_measure_text`/`surface_draw_text_run` respectively, which
+/// *this* impl does override to resolve the editor font — so today's
+/// behaviour is correct by construction, not by an explicit override
+/// here. That's a latent gap, not a bug yet: none of
+/// `terminal::paint`/`text_display::paint`/
+/// `diff_view::native_surface_paint::paint` (the three callers that wrap
+/// themselves in this adapter) call either method today. If one of them
+/// starts calling `surface_measure_text_styled` (e.g. to measure a bold
+/// terminal run) or `surface_draw_icon_glyph`, add an explicit override
+/// here so the result still resolves the editor font rather than
+/// silently depending on the trait default continuing to route through
+/// the two methods above. `macos::backend::EditorSurface` has the same
+/// gap for the same reason (same two methods un-overridden there too).
+struct EditorSurface<'a> {
+    backend: &'a mut GtkBackend,
+}
+
+impl PaintSurface for EditorSurface<'_> {
+    fn surface_begin_frame(&mut self, viewport: Viewport) {
+        self.backend.surface_begin_frame(viewport)
+    }
+
+    fn surface_end_frame(&mut self) {
+        self.backend.surface_end_frame()
+    }
+
+    fn surface_viewport(&self) -> Viewport {
+        self.backend.surface_viewport()
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        self.backend.surface_line_height()
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        self.backend.surface_char_width()
+    }
+
+    /// Forces `editor_font_pango_string()` explicitly rather than
+    /// trusting the shared layout's ambient font — the editor twin of
+    /// `GtkBackend::surface_measure_text`'s own explicit chrome force
+    /// (see that method's doc for why ambient trust is the bug this
+    /// issue closes), so a caller mid-frame never finds this adapter's
+    /// result depends on draw order.
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        let (_cr, layout) = self
+            .backend
+            .current_frame_refs()
+            .expect("EditorSurface::surface_measure_text called outside enter_frame_scope");
+        let saved = layout.font_description();
+        let editor_desc =
+            pango::FontDescription::from_string(&self.backend.editor_font_pango_string());
+        layout.set_font_description(Some(&editor_desc));
+        layout.set_text(text);
+        layout.set_attributes(None);
+        let (w, h) = layout.pixel_size();
+        layout.set_font_description(saved.as_ref());
+        (w as f32, h as f32)
+    }
+
+    fn surface_fill_rect(&mut self, rect: QRect, color: Color) {
+        self.backend.surface_fill_rect(rect, color)
+    }
+
+    fn surface_fill_rounded_rect(&mut self, rect: QRect, radius: f32, color: Color) {
+        self.backend.surface_fill_rounded_rect(rect, radius, color)
+    }
+
+    fn surface_stroke_rect(&mut self, rect: QRect, color: Color, stroke_width: f32) {
+        self.backend.surface_stroke_rect(rect, color, stroke_width)
+    }
+
+    fn surface_stroke_rounded_rect(
+        &mut self,
+        rect: QRect,
+        radius: f32,
+        color: Color,
+        stroke_width: f32,
+    ) {
+        self.backend
+            .surface_stroke_rounded_rect(rect, radius, color, stroke_width)
+    }
+
+    /// See [`Self::surface_measure_text`]'s doc for why this forces
+    /// `editor_font_pango_string()` explicitly.
+    fn surface_draw_text_run(&mut self, rect: QRect, text: &str, color: Color) {
+        let (cr, layout) = self
+            .backend
+            .current_frame_refs()
+            .expect("EditorSurface::surface_draw_text_run called outside enter_frame_scope");
+        let saved = layout.font_description();
+        let editor_desc =
+            pango::FontDescription::from_string(&self.backend.editor_font_pango_string());
+        layout.set_font_description(Some(&editor_desc));
+        layout.set_text(text);
+        layout.set_attributes(None);
+        crate::gtk::set_source(cr, color);
+        cr.move_to(rect.x as f64, rect.y as f64);
+        super::painted_text::show_layout(cr, layout);
+        layout.set_font_description(saved.as_ref());
+    }
+
+    /// The editor-font twin of `GtkBackend`'s own (now chrome-forcing)
+    /// override — same styling/`scale_x` support, the shape
+    /// `primitives::terminal::paint`'s per-cell glyph styling (ANSI
+    /// bold/italic/underline) and wide-glyph advance fix need, just
+    /// forced onto `editor_font_pango_string()` instead of `ui_font`.
+    #[allow(clippy::too_many_arguments)]
+    fn surface_draw_text_run_styled(
+        &mut self,
+        rect: QRect,
+        text: &str,
+        color: Color,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        scale_x: f32,
+    ) {
+        let (cr, layout) = self
+            .backend
+            .current_frame_refs()
+            .expect("EditorSurface::surface_draw_text_run_styled called outside enter_frame_scope");
+        let saved = layout.font_description();
+        let editor_desc =
+            pango::FontDescription::from_string(&self.backend.editor_font_pango_string());
+        layout.set_font_description(Some(&editor_desc));
+        layout.set_text(text);
+        let attrs = pango::AttrList::new();
+        if bold {
+            attrs.insert(pango::AttrInt::new_weight(pango::Weight::Bold));
+        }
+        if italic {
+            attrs.insert(pango::AttrInt::new_style(pango::Style::Italic));
+        }
+        if underline {
+            attrs.insert(pango::AttrInt::new_underline(pango::Underline::Single));
+        }
+        layout.set_attributes(Some(&attrs));
+        crate::gtk::set_source(cr, color);
+        if (scale_x - 1.0).abs() > f32::EPSILON {
+            cr.save().ok();
+            cr.translate(rect.x as f64, rect.y as f64);
+            cr.scale(scale_x as f64, 1.0);
+            cr.move_to(0.0, 0.0);
+            super::painted_text::show_layout(cr, layout);
+            cr.restore().ok();
+        } else {
+            cr.move_to(rect.x as f64, rect.y as f64);
+            super::painted_text::show_layout(cr, layout);
+        }
+        layout.set_attributes(None);
+        layout.set_font_description(saved.as_ref());
+    }
+
+    fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
+        self.backend
+            .surface_draw_line(from, to, color, stroke_width)
+    }
+
+    fn surface_push_clip(&mut self, rect: QRect) {
+        self.backend.surface_push_clip(rect)
+    }
+
+    fn surface_pop_clip(&mut self) {
+        self.backend.surface_pop_clip()
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        rect: QRect,
+        image: &crate::primitives::image::Image,
+    ) -> crate::backend::ImagePaintResult {
+        self.backend.surface_draw_image(rect, image)
+    }
+}
+
 // ─── PaintSurface (#807, Phase 1) ───────────────────────────────────────────
 //
 // The ~15-verb drawing surface underneath `Backend::draw_*`, extracted from
@@ -4944,6 +5371,21 @@ impl crate::backend::WindowControl for GtkBackend {
 // helpers already did, so no `draw_*` call site's behaviour changes. See
 // `paint_surface`'s module doc for the full scope note and why these
 // methods are `surface_`-prefixed instead of colliding with `Backend`'s.
+//
+// The default is inverted now: every text verb below forces `ui_font`
+// (chrome) explicitly rather than trusting the ambient per-frame layout
+// font, so this impl is no longer the "exactly what the private helpers
+// already did" pure extraction the paragraph above describes for the
+// font-role-bearing verbs specifically — see each verb's own doc below
+// for what changed and why.
+//
+// `Self::status_bar_paint_scaled` relies on that inversion: it stopped
+// swapping a font description onto the shared layout for its unscaled
+// (`font_scale == 1.0`) case specifically because every text verb below
+// already resolves `self.ui_font` fresh on every call rather than
+// trusting whatever font the layout carries in. Touching one side of
+// that coupling without the other silently reintroduces drift — see
+// `status_bar_paint_scaled`'s own doc for the matching pointer back here.
 impl PaintSurface for GtkBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
@@ -4965,24 +5407,50 @@ impl PaintSurface for GtkBackend {
         Backend::char_width(self)
     }
 
+    /// `self` is the surface every non-editor-class
+    /// primitive measures/paints through unwrapped (`draw_panel`,
+    /// `draw_toast_overlay`, `draw_split`, …), so this forces `ui_font`
+    /// (the chrome font) explicitly rather than trusting whatever font
+    /// the shared per-frame layout happens to carry in — that ambient
+    /// font is the *editor* font by default (`gtk/run.rs::render_frame`
+    /// seeds it fresh from `editor_font_pango_string` every frame), so
+    /// measuring without forcing chrome here silently measured chrome
+    /// text against editor metrics. Saves and restores the layout's font
+    /// description around the measurement, the same save/swap/restore
+    /// shape [`Self::draw_tree`] already uses for painting, so a caller
+    /// mid-frame never finds the shared layout left on `ui_font` after
+    /// this returns. See [`EditorSurface`]'s doc for the three
+    /// editor-class primitives that opt back into the editor font via a
+    /// dedicated adapter instead, and `crate::font_role`'s module doc
+    /// for why a non-editor-class primitive must never resolve the
+    /// editor font.
     fn surface_measure_text(&self, text: &str) -> (f32, f32) {
         let (_cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::surface_measure_text called outside enter_frame_scope");
+        let saved = layout.font_description();
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        layout.set_font_description(Some(&ui_font_desc));
         layout.set_text(text);
         layout.set_attributes(None);
         let (w, h) = layout.pixel_size();
+        layout.set_font_description(saved.as_ref());
         (w as f32, h as f32)
     }
 
     /// #860: overrides the default (which drops `bold`) — a bold Pango
     /// `AttrList` weight, matching what `gtk::status_bar::draw_status_bar`
     /// measured before its paint moved to
-    /// `primitives::status_bar::native_surface_paint::paint`.
+    /// `primitives::status_bar::native_surface_paint::paint`. Also
+    /// forces `ui_font` now, matching [`Self::surface_measure_text`]'s
+    /// doc above.
     fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
         let (_cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::surface_measure_text_styled called outside enter_frame_scope");
+        let saved = layout.font_description();
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        layout.set_font_description(Some(&ui_font_desc));
         layout.set_text(text);
         if bold {
             let attrs = pango::AttrList::new();
@@ -4993,6 +5461,7 @@ impl PaintSurface for GtkBackend {
         }
         let (w, h) = layout.pixel_size();
         layout.set_attributes(None);
+        layout.set_font_description(saved.as_ref());
         (w as f32, h as f32)
     }
 
@@ -5054,21 +5523,64 @@ impl PaintSurface for GtkBackend {
         cr.stroke().ok();
     }
 
+    /// [`Self::surface_fill_rounded_rect`]'s stroke twin — same
+    /// `crate::gtk::rounded_rect_path` recipe, `cr.stroke()` instead of
+    /// `cr.fill()`.
+    fn surface_stroke_rounded_rect(
+        &mut self,
+        rect: QRect,
+        radius: f32,
+        color: Color,
+        stroke_width: f32,
+    ) {
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_stroke_rounded_rect called outside enter_frame_scope");
+        let r = (radius as f64)
+            .min(rect.width as f64 / 2.0)
+            .min(rect.height as f64 / 2.0)
+            .max(0.0);
+        crate::gtk::set_source(cr, color);
+        cr.set_line_width(stroke_width as f64);
+        crate::gtk::rounded_rect_path(
+            cr,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            r,
+        );
+        cr.stroke().ok();
+    }
+
+    /// Forces `ui_font` explicitly — see
+    /// [`Self::surface_measure_text`]'s doc for why, and [`EditorSurface`]
+    /// for the adapter the three editor-class primitives (`draw_terminal`,
+    /// `draw_text_display`, `draw_diff_view`) wrap `self` in instead so
+    /// their glyphs keep painting in the editor font.
     fn surface_draw_text_run(&mut self, rect: QRect, text: &str, color: Color) {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::surface_draw_text_run called outside enter_frame_scope");
+        let saved = layout.font_description();
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        layout.set_font_description(Some(&ui_font_desc));
         layout.set_text(text);
         layout.set_attributes(None);
         crate::gtk::set_source(cr, color);
         cr.move_to(rect.x as f64, rect.y as f64);
         super::painted_text::show_layout(cr, layout);
+        layout.set_font_description(saved.as_ref());
     }
 
     /// #810: overrides the default (which drops styling) — Pango's
     /// `AttrList` can apply all three, matching what
     /// `gtk::terminal::draw_terminal_cells` did per-cell before its
-    /// paint moved to `primitives::terminal::paint`.
+    /// paint moved to `primitives::terminal::paint`. Also forces
+    /// `ui_font` now, matching [`Self::surface_draw_text_run`]'s doc
+    /// above — the one caller that needs this *not* to happen
+    /// (`draw_terminal`'s per-cell glyphs) goes through [`EditorSurface`]
+    /// instead of bare `self`.
     #[allow(clippy::too_many_arguments)]
     fn surface_draw_text_run_styled(
         &mut self,
@@ -5083,6 +5595,9 @@ impl PaintSurface for GtkBackend {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::surface_draw_text_run_styled called outside enter_frame_scope");
+        let saved = layout.font_description();
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        layout.set_font_description(Some(&ui_font_desc));
         layout.set_text(text);
         let attrs = pango::AttrList::new();
         if bold {
@@ -5108,6 +5623,7 @@ impl PaintSurface for GtkBackend {
             super::painted_text::show_layout(cr, layout);
         }
         layout.set_attributes(None);
+        layout.set_font_description(saved.as_ref());
     }
 
     /// #1073: overrides the default (which ignores `role`) — this is the
@@ -5160,19 +5676,21 @@ impl PaintSurface for GtkBackend {
     /// `gtk/run.rs::render_frame` from `editor_font_pango_string`, with
     /// no fallback appended) is the one real backend where that
     /// assumption is false; see this trait method's own doc for why
-    /// macOS/Win-GUI take the default instead. Temporarily wraps the
-    /// layout's current font description with
+    /// macOS/Win-GUI take the default instead. Temporarily wraps `ui_font`
+    /// (not the ambient layout font — every real call site is a
+    /// chrome primitive's icon glyph, see this method's callers in
+    /// `primitives::{panel,palette,context_menu,tree}`) with
     /// [`crate::gtk::with_nerd_font_fallback`] so `text`'s glyph (e.g. a
     /// Nerd Font Private-Use-Area codepoint) resolves even when the
-    /// primary family can't cover it, then restores the unwrapped
+    /// primary family can't cover it, then restores the layout's prior
     /// description.
     fn surface_draw_icon_glyph(&mut self, rect: QRect, text: &str, color: Color) {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::surface_draw_icon_glyph called outside enter_frame_scope");
         let saved = layout.font_description();
-        let base = saved.clone().unwrap_or_default();
-        let with_fallback = crate::gtk::with_nerd_font_fallback(&base);
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let with_fallback = crate::gtk::with_nerd_font_fallback(&ui_font_desc);
         layout.set_font_description(Some(&with_fallback));
         layout.set_text(text);
         layout.set_attributes(None);
@@ -5343,6 +5861,42 @@ mod tests {
         assert!(
             b.register_font_from_memory(&garbage).is_none(),
             "64 zero bytes are not a parseable font — must report None, not a fabricated family"
+        );
+    }
+
+    // ── bundled codicon font self-registration ───────────────────────────
+
+    /// `GtkBackend::new` self-registers the bundled codicon font before
+    /// any app code runs, so the family is resolvable for painting with
+    /// no app configuration — the GUI half of the contract
+    /// `codicon::FONT_FAMILY` documents.
+    ///
+    /// Deliberately probes with [`crate::gtk::app_font::has_font_family`]
+    /// rather than calling `ensure_codicon_registered()` again:
+    /// `ensure_codicon_registered()` *performs* the registration on
+    /// first call, so asserting its own return value would pass even
+    /// if `GtkBackend::new()` never called it — this test's probe must
+    /// not be able to do the registration itself, or deleting the
+    /// `new()` call site couldn't fail it.
+    #[test]
+    fn gtk_backend_new_self_registers_the_bundled_codicon_font() {
+        let _ = GtkBackend::new();
+        assert!(
+            crate::gtk::app_font::has_font_family(crate::codicon::FONT_FAMILY),
+            "GtkBackend::new() must leave the bundled codicon font registered"
+        );
+    }
+
+    /// `nerd_fonts_enabled` defaults to `true` on this backend — see the
+    /// field's own doc for why that default differs from TUI's. Mirrors
+    /// `WinBackend`'s own `nerd_fonts_enabled_defaults_to_true`.
+    #[test]
+    fn gtk_backend_nerd_fonts_enabled_defaults_to_true() {
+        let b = GtkBackend::new();
+        assert!(
+            b.nerd_fonts_enabled(),
+            "icons are on by default on this GUI backend — the bundled \
+             codicon font is always available here"
         );
     }
 
@@ -7531,6 +8085,198 @@ mod tests {
         );
     }
 
+    /// Same shape as `gtk_backend_draw_tree_uses_ui_font_not_editor_font`
+    /// above, for `DataTable`. `DataTableLayout`'s own `find_bounds`
+    /// equivalent (the bounds `draw_data_table`'s caller records into
+    /// `painted_text`) is derived from the declarative layout, not
+    /// re-measured Pango geometry (see `Self::draw_data_table`'s own
+    /// doc comment on that recording), so it can't be used as a
+    /// font-size oracle the way a `GtkDriver::find_bounds` probe can for
+    /// most other chrome primitives — a pixel scan of the actually
+    /// painted ink is the only oracle that answers "which font shaped
+    /// this glyph" here.
+    ///
+    /// Pins `current_line_height` to a generous 60px (`draw_data_table`'s
+    /// per-cell clip rect is exactly one `line_height` tall) so a large
+    /// chrome glyph's ink isn't clipped away before the scan below ever
+    /// sees it, and scans the whole row band (not one fixed `y`) since a
+    /// much taller glyph's visible ink sits at a different vertical
+    /// offset than a small one's.
+    /// The no-paint `data_table_layout` twin must resolve the same
+    /// content-sized column geometry `draw_data_table` paints with, even
+    /// when the stored Pango context carries a font unlike `ui_font` —
+    /// otherwise click hit-testing and separator positions drift off the
+    /// painted columns.
+    #[test]
+    fn gtk_backend_data_table_layout_matches_painted_columns() {
+        const W: i32 = 1200;
+        const H: i32 = 200;
+        let surface =
+            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                .expect("create ImageSurface");
+        let table = crate::DataTable {
+            id: WidgetId::new("test:data-table-parity"),
+            columns: vec![
+                crate::Column {
+                    title: "Name".to_string(),
+                    width: crate::ColumnWidth::Content {
+                        min: 0.0,
+                        max: 1000.0,
+                    },
+                    align: crate::ColumnAlign::Left,
+                },
+                crate::Column {
+                    title: "Status".to_string(),
+                    width: crate::ColumnWidth::Flex(1.0),
+                    align: crate::ColumnAlign::Left,
+                },
+            ],
+            rows: vec![crate::DataRow {
+                cells: vec![
+                    crate::types::StyledText::plain("a-fairly-long-pod-name-xyz".to_string()),
+                    crate::types::StyledText::plain("Running".to_string()),
+                ],
+                decoration: crate::types::Decoration::Normal,
+            }],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+        };
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+        let stored_ctx = pangocairo::functions::create_context(&cr);
+        stored_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 8"));
+        let frame_ctx = pangocairo::functions::create_context(&cr);
+        frame_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 8"));
+        let frame_layout = pango::Layout::new(&frame_ctx);
+
+        let mut backend = GtkBackend::new();
+        backend.set_pango_context(stored_ctx);
+        Backend::set_current_line_height(&mut backend, 20.0);
+        Backend::set_ui_font(&mut backend, "Sans 20");
+
+        let measured = backend.data_table_layout(rect, &table);
+        let mut painted = None;
+        backend.enter_frame_scope(&cr, &frame_layout, |b| {
+            painted = Some(b.draw_data_table(rect, &table, None));
+        });
+        let painted = painted.expect("draw_data_table ran");
+        let xs = |l: &crate::DataTableLayout| {
+            l.columns.iter().map(|c| (c.x, c.width)).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            xs(&measured),
+            xs(&painted),
+            "data_table_layout must measure with the same chrome font draw_data_table paints with"
+        );
+    }
+
+    #[test]
+    fn gtk_backend_draw_data_table_uses_ui_font_not_editor_font() {
+        let small_editor_font = pango::FontDescription::from_string("Sans 8");
+        let large_editor_font = pango::FontDescription::from_string("Sans 40");
+        const W: i32 = 1600;
+        const H: i32 = 160;
+        const PINNED_LINE_HEIGHT: f32 = 60.0;
+
+        let cell_text_extent = |editor_font: &pango::FontDescription, ui_font: Option<&str>| {
+            let mut surface =
+                pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                    .expect("create ImageSurface");
+            let table = crate::DataTable {
+                id: WidgetId::new("test:data-table"),
+                columns: vec![crate::Column {
+                    title: "col".to_string(),
+                    width: crate::ColumnWidth::Flex(1.0),
+                    align: crate::ColumnAlign::Left,
+                }],
+                rows: vec![crate::DataRow {
+                    cells: vec![crate::types::StyledText::plain("m".to_string())],
+                    decoration: crate::types::Decoration::Normal,
+                }],
+                selected_idx: None,
+                scroll_offset: 0,
+                sort: None,
+                has_focus: false,
+                show_scrollbar: false,
+                min_total_width: None,
+                h_scroll: 0.0,
+                column_overrides: vec![],
+                footer: None,
+            };
+            let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+            {
+                let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+                // White everywhere, including the header band, so the
+                // header's own `tab_bar_bg` fill doesn't itself read as
+                // "non-white" and confuse the body-row ink scan below —
+                // the body row (unlike the header) paints no background
+                // fill of its own when neither selected nor hovered (see
+                // `crate::gtk::draw_data_table`'s body-row loop).
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.paint().ok();
+                let pango_ctx = pangocairo::functions::create_context(&cr);
+                pango_ctx.set_font_description(editor_font);
+                let layout = pango::Layout::new(&pango_ctx);
+                let mut backend = GtkBackend::new();
+                Backend::set_current_line_height(&mut backend, PINNED_LINE_HEIGHT);
+                backend.set_current_theme(crate::Theme {
+                    tab_bar_bg: crate::types::Color::rgb(255, 255, 255),
+                    background: crate::types::Color::rgb(255, 255, 255),
+                    foreground: crate::types::Color::rgb(0, 0, 0),
+                    ..crate::Theme::default()
+                });
+                if let Some(f) = ui_font {
+                    Backend::set_ui_font(&mut backend, f);
+                }
+                backend.enter_frame_scope(&cr, &layout, |b| {
+                    b.draw_data_table(rect, &table, None);
+                });
+            }
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data");
+            // Row 0's vertical span starts at `header_height`
+            // (`(line_height * 1.2).round()` — see
+            // `pixel_data_table_layout`) and is `PINNED_LINE_HEIGHT` tall.
+            // Scanning the whole band (not one fixed `y`) is necessary
+            // because a much taller glyph's visible ink sits at a
+            // different offset within that band than a small one's.
+            let row_top = (PINNED_LINE_HEIGHT * 1.2).round() as usize;
+            let row_bottom = (row_top + PINNED_LINE_HEIGHT as usize).min(H as usize);
+            (0..W as usize)
+                .rev()
+                .find(|&x| {
+                    (row_top..row_bottom).any(|y| {
+                        let off = y * stride + x * 4;
+                        !(data[off] == 255 && data[off + 1] == 255 && data[off + 2] == 255)
+                    })
+                })
+                .unwrap_or(0)
+        };
+
+        let small_editor_extent = cell_text_extent(&small_editor_font, None);
+        let large_editor_extent = cell_text_extent(&large_editor_font, None);
+        assert!(
+            small_editor_extent.abs_diff(large_editor_extent) <= 1,
+            "data table cell glyph extent must be editor-font-size independent: \
+             small_editor={small_editor_extent}, large_editor={large_editor_extent}"
+        );
+
+        let ui_font_extent = cell_text_extent(&small_editor_font, Some("Sans 40"));
+        assert!(
+            ui_font_extent > small_editor_extent + 20,
+            "changing ui_font alone must visibly widen the painted cell label: \
+             default_ui_font={small_editor_extent}, ui_font_Sans_40={ui_font_extent}"
+        );
+    }
+
     /// Build a flat tree of `n_rows` leaf rows for `tree_vscrollbar`
     /// integration tests.
     fn flat_tree(n_rows: usize) -> TreeView {
@@ -8729,6 +9475,70 @@ mod tests {
         backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_editor(rect, &editor));
     }
 
+    /// Paint an overflowing 200x80 editor through `GtkBackend::draw_editor`
+    /// after `set_editor_v_scrollbar_width(v_scrollbar_w)`, returning
+    /// the pixel colour at `(x, 76)` for each `x` in `xs` — a row inside
+    /// the scrollbar track, below the thumb.
+    fn editor_v_scrollbar_probe(v_scrollbar_w: Option<f32>, xs: &[i32]) -> Vec<(u8, u8, u8)> {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+        let rect = QRect::new(0.0, 0.0, 200.0, 80.0);
+        let mut editor = crate::primitives::editor::Editor::new(WidgetId::new("ed"), rect);
+        editor.total_lines = 50;
+        let mut backend = GtkBackend::new();
+        backend.set_editor_v_scrollbar_width(v_scrollbar_w);
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 200, 80).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_editor(rect, &editor));
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        xs.iter()
+            .map(|&x| {
+                let off = 76 * stride + x as usize * 4;
+                (data[off + 2], data[off + 1], data[off])
+            })
+            .collect()
+    }
+
+    /// `Backend::set_editor_v_scrollbar_width(Some(14.0))` makes
+    /// `GtkBackend::draw_editor` paint a scrollbar column exactly 14px
+    /// wide — `[186, 200)` in a 200px viewport — instead of one
+    /// `current_char_width` (8px), and `Backend::editor_layout` reports
+    /// the same column for hit-testing.
+    #[test]
+    fn gtk_backend_set_editor_v_scrollbar_width_paints_14px_column() {
+        let bg = crate::Theme::default().background;
+        let bg = (bg.r, bg.g, bg.b);
+        let xs: Vec<i32> = (185..200).collect();
+        let px = editor_v_scrollbar_probe(Some(14.0), &xs);
+        assert_eq!(px[0], bg, "x=185 lies just left of the 14px column");
+        for (x, p) in xs.iter().zip(&px).skip(1) {
+            assert_ne!(*p, bg, "x={x} lies inside the 14px column [186, 200)");
+        }
+
+        let default_px = editor_v_scrollbar_probe(None, &[191, 192]);
+        assert_eq!(
+            default_px[0], bg,
+            "default column is 8px: x=191 is text area"
+        );
+        assert_ne!(default_px[1], bg, "default column is 8px: x=192 is track");
+
+        let mut backend = GtkBackend::new();
+        backend.set_editor_v_scrollbar_width(Some(14.0));
+        assert_eq!(backend.editor_v_scrollbar_width(), Some(14.0));
+        let rect = QRect::new(0.0, 0.0, 200.0, 80.0);
+        let mut editor = crate::primitives::editor::Editor::new(WidgetId::new("ed"), rect);
+        editor.total_lines = 50;
+        let vsb = Backend::editor_layout(&backend, rect, &editor)
+            .v_scrollbar_bounds
+            .expect("buffer overflows");
+        assert_eq!((vsb.x, vsb.width), (186.0, 14.0));
+    }
+
     /// #416 review follow-up: `SidebarPanel` composes a `Toolbar` header
     /// internally — its button text is measured/drawn via
     /// `PaintSurface::surface_measure_text`/`surface_draw_text_run`
@@ -9667,6 +10477,185 @@ mod tests {
             (0, 0, 0),
             "a corner pixel well inside a radius-15 fillet on a 40x40 box must stay \
              untouched — otherwise this is just `surface_fill_rect` under a new name"
+        );
+    }
+
+    /// `surface_stroke_rounded_rect` must paint a real rounded
+    /// stroke, not a plain rectangle — a point on the (straight) side of
+    /// the box must land the stroke colour, a corner pixel well inside
+    /// the fillet radius must stay untouched (same proof shape as
+    /// `gtk_backend_paint_surface_fill_rounded_rect_clips_the_corners`),
+    /// and the box's centre — far from any stroke — must also stay
+    /// untouched, proving this is a stroke and not a fill.
+    #[test]
+    fn gtk_backend_paint_surface_stroke_rounded_rect_clips_the_corners() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        let blue = Color::rgb(60, 120, 220);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.surface_stroke_rounded_rect(QRect::new(0.0, 0.0, 40.0, 40.0), 15.0, blue, 4.0);
+            });
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_eq!(
+            probe_pixel_417(&data, stride, 20, 1),
+            (blue.r, blue.g, blue.b),
+            "the straight middle of the top edge must land the stroke colour"
+        );
+        assert_eq!(
+            probe_pixel_417(&data, stride, 1, 1),
+            (0, 0, 0),
+            "a corner pixel well inside a radius-15 fillet on a 40x40 box must stay \
+             untouched"
+        );
+        assert_eq!(
+            probe_pixel_417(&data, stride, 20, 20),
+            (0, 0, 0),
+            "the box's centre, far from any stroke, must stay untouched — otherwise \
+             this is `surface_fill_rounded_rect` under a new name"
+        );
+    }
+
+    /// `surface_draw_shadow`'s default decomposes into
+    /// `surface_fill_rounded_rect` layers — elevation `0` must paint
+    /// nothing at all (the explicit "no shadow" tier), proven by the
+    /// whole surface staying at its untouched clear value.
+    #[test]
+    fn gtk_backend_paint_surface_draw_shadow_elevation_zero_is_a_no_op() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        let shadow = Color::rgba(0, 0, 0, 128);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.surface_draw_shadow(QRect::new(10.0, 10.0, 20.0, 20.0), 6.0, 0, shadow);
+            });
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_eq!(
+            probe_pixel_417(&data, stride, 20, 20),
+            (0, 0, 0),
+            "elevation 0 must paint nothing — the box's own centre must stay at the \
+             surface's untouched clear value"
+        );
+    }
+
+    /// A nonzero elevation must actually paint something below
+    /// the box — proven by a pixel just under the box's bottom edge
+    /// (inside the shadow's spread/offset, outside the box itself)
+    /// picking up ink it didn't have before. Fills the whole canvas
+    /// white first — a black-on-transparent probe would read `(0, 0,
+    /// 0)` either way (cairo premultiplies, so a zero-RGB source over a
+    /// zero-alpha destination is indistinguishable from "nothing
+    /// painted"), so this needs a non-black backdrop to actually prove
+    /// the layer composited.
+    #[test]
+    fn gtk_backend_paint_surface_draw_shadow_elevation_three_paints_below_the_box() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        let white = Color::rgb(255, 255, 255);
+        let shadow = Color::rgba(0, 0, 0, 200);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.surface_fill_rect(QRect::new(0.0, 0.0, 40.0, 40.0), white);
+                b.surface_draw_shadow(QRect::new(5.0, 5.0, 20.0, 20.0), 6.0, 3, shadow);
+            });
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_ne!(
+            probe_pixel_417(&data, stride, 15, 29),
+            (white.r, white.g, white.b),
+            "a pixel just below the box's bottom edge must pick up shadow ink at \
+             elevation 3"
+        );
+    }
+
+    /// `surface_draw_path`'s default decomposes a closed
+    /// triangle into `surface_draw_line` segments — each edge's
+    /// midpoint must land the stroke colour, proving `MoveTo`/`LineTo`/
+    /// `Close` each actually painted a segment rather than being
+    /// silently dropped.
+    #[test]
+    fn gtk_backend_paint_surface_draw_path_strokes_every_segment() {
+        use crate::PathVerb;
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        let green = Color::rgb(20, 180, 20);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.surface_draw_path(
+                    &[
+                        PathVerb::MoveTo(Point::new(5.0, 5.0)),
+                        PathVerb::LineTo(Point::new(35.0, 5.0)),
+                        PathVerb::LineTo(Point::new(20.0, 35.0)),
+                        PathVerb::Close,
+                    ],
+                    green,
+                    2.0,
+                );
+            });
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        // Top edge midpoint (MoveTo -> first LineTo) is axis-aligned, so
+        // it paints the solid stroke colour with no antialiasing fuzz.
+        assert_eq!(
+            probe_pixel_417(&data, stride, 20, 5),
+            (green.r, green.g, green.b),
+            "the axis-aligned top edge must paint the solid stroke colour"
+        );
+        // The two diagonal edges antialias, so a probe near their
+        // midpoint only lands a *partial* green/background blend, not
+        // the solid colour — "not still (0, 0, 0)" is still a real
+        // proof that `LineTo`/`Close` each painted a segment.
+        assert_ne!(
+            probe_pixel_417(&data, stride, 28, 20),
+            (0, 0, 0),
+            "the diagonal right edge (first LineTo -> second LineTo) must paint something"
+        );
+        assert_ne!(
+            probe_pixel_417(&data, stride, 12, 20),
+            (0, 0, 0),
+            "the diagonal left edge (second LineTo -> Close) must paint something"
         );
     }
 

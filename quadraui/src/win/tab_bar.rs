@@ -86,7 +86,10 @@ const TAB_ACTIVE_ACCENT_DIP: f32 = 2.0;
 #[cfg(target_os = "windows")]
 fn close_glyph_width(measure: &dyn TextMeasure, bar: &TabBar) -> f32 {
     if bar.show_tab_close {
-        measure.width_of("×")
+        // The codicon close glyph — `measure` (a live `&DWrite`)
+        // always has the bundled codicon fallback baked into its text
+        // format, see `DWrite::new`'s doc.
+        measure.width_of(&crate::codicon::CLOSE.to_string())
     } else {
         0.0
     }
@@ -232,8 +235,9 @@ pub fn win_tab_bar_native_layout(
 ///   [`TAB_ACTIVE_ACCENT_DIP`]-tall top-edge accent line when
 ///   [`TabBar::active_accent`] is `Some` (`None` paints nothing, matching
 ///   every other backend).
-/// - **Dirty tab:** close glyph is `●` instead of `×` (suppressed while
-///   hovered, so the hover state always shows `×` to close).
+/// - **Dirty tab:** close glyph is a codicon filled circle instead of
+///   the codicon close mark (suppressed while hovered, so the hover
+///   state always shows the close mark to close).
 /// - **Right segments:** painted in `tab_inactive_fg`, or `tab_active_fg`
 ///   when `seg.is_active`.
 #[cfg(target_os = "windows")]
@@ -379,10 +383,13 @@ fn paint_tab_bar_icons_from_layout(
                     let _ = fill_rect(target, hover_rect, hover_bg);
                 }
 
+                // Codicon glyphs — `dwrite` always has the bundled
+                // codicon fallback baked into its text format, see
+                // `DWrite::new`'s doc.
                 let close_glyph = if tab.is_dirty && !is_close_hovered {
-                    "●"
+                    crate::codicon::DIRTY.to_string()
                 } else {
-                    "×"
+                    crate::codicon::CLOSE.to_string()
                 };
                 let close_fg = if tab.is_dirty || is_close_hovered {
                     theme.foreground
@@ -391,14 +398,14 @@ fn paint_tab_bar_icons_from_layout(
                 } else {
                     theme.separator
                 };
-                let (cgw, cgh) = dwrite.measure_text(close_glyph).unwrap_or((0.0, 0.0));
+                let (cgw, cgh) = dwrite.measure_text(&close_glyph).unwrap_or((0.0, 0.0));
                 let close_rect = Rect::new(
                     close_x,
                     tab_rect.y + (tab_rect.height - cgh) / 2.0,
                     cgw,
                     cgh,
                 );
-                let _ = dwrite.draw_text(target, close_glyph, close_rect, close_fg);
+                let _ = dwrite.draw_text(target, &close_glyph, close_rect, close_fg);
             }
         }
     }

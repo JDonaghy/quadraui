@@ -28,6 +28,18 @@
 //! glyph. `EditorPaintResult::cursor_position_native` is always `None`
 //! — this backend paints its own caret directly (via [`fill_rect`]),
 //! the same posture `GtkBackend::draw_editor`'s doc documents for GTK.
+//!
+//! ## Scrollbar
+//!
+//! This rasteriser paints no vertical scrollbar itself — it takes a raw
+//! `ID2D1RenderTarget`, not a `PaintSurface`.
+//! [`draw_editor_with_options_and_v_scrollbar_w`] reserves the column:
+//! it lays out through [`Editor::layout_with_options_and_v_scrollbar_w`]
+//! and clips text and selections to the resulting `text_bounds`, so no
+//! glyph paints under the column. `WinBackend::draw_editor` then paints
+//! the column through `Backend::draw_scrollbar` (the shared
+//! `scrollbar::native_surface_paint`), using the same layout, with the
+//! width set through [`crate::Backend::set_editor_v_scrollbar_width`].
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -35,13 +47,16 @@ use super::text::{fill_rect, pop_clip, push_clip, DWrite};
 use crate::backend::EditorPaintResult;
 use crate::event::Rect;
 use crate::primitives::editor::{
-    CursorShape, DiagnosticSeverity, Editor, EditorLine, EditorSelection,
+    CursorShape, DiagnosticSeverity, Editor, EditorLine, EditorPaintOptions, EditorSelection,
 };
 use crate::theme::Theme;
 use crate::types::Color;
 
 /// Draw an [`Editor`] viewport (`editor.rect`) on `target`, at uniform
 /// `cell_width` / `line_height` (DIPs).
+///
+/// Equivalent to [`draw_editor_with_options_and_v_scrollbar_w`] with
+/// `EditorPaintOptions::default()` and no scrollbar-width override.
 ///
 /// # Visual contract
 ///
@@ -70,8 +85,42 @@ pub fn draw_editor(
     line_height: f32,
     theme: &Theme,
 ) -> EditorPaintResult {
+    draw_editor_with_options_and_v_scrollbar_w(
+        target,
+        dwrite,
+        editor,
+        cell_width,
+        line_height,
+        theme,
+        EditorPaintOptions::default(),
+        None,
+    )
+}
+
+/// [`draw_editor`], plus [`EditorPaintOptions`] and a host-settable
+/// vertical scrollbar width in DIPs (`None` = one `cell_width`). Both
+/// feed [`Editor::layout_with_options_and_v_scrollbar_w`], so the text
+/// clip stops short of the reserved column; see the module doc's
+/// "Scrollbar" section for who paints the column itself.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_editor_with_options_and_v_scrollbar_w(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    editor: &Editor,
+    cell_width: f32,
+    line_height: f32,
+    theme: &Theme,
+    options: EditorPaintOptions,
+    v_scrollbar_w: Option<f32>,
+) -> EditorPaintResult {
     let rect = editor.rect;
-    let layout = editor.layout(rect, cell_width, line_height);
+    let layout = editor.layout_with_options_and_v_scrollbar_w(
+        rect,
+        cell_width,
+        line_height,
+        options,
+        v_scrollbar_w,
+    );
 
     let bg = if editor.show_active_bg {
         theme.editor_active_background
@@ -79,6 +128,10 @@ pub fn draw_editor(
         theme.background
     };
     let _ = fill_rect(target, rect, bg);
+
+    // Shared by the gutter, body-text, and block-cursor-glyph paints
+    // below; see [`text_v_offset`]'s doc.
+    let text_v_offset = text_v_offset(dwrite, line_height);
 
     // ── Cursorline (spans the full width, including the gutter — same
     //    as `gtk::editor`, so it's painted before any clip is pushed) ──
@@ -159,13 +212,12 @@ pub fn draw_editor(
                 theme.line_number_fg
             };
             let gutter_w = editor.gutter_char_width as f32 * cell_width;
-            let (gw, gh) = dwrite.measure_text(&line.gutter_text).unwrap_or((0.0, 0.0));
+            let (gw, _) = dwrite.measure_text(&line.gutter_text).unwrap_or((0.0, 0.0));
             let gx = rect.x + (gutter_w - gw).max(0.0);
-            let gy = y + (line_height - gh) / 2.0;
             let _ = dwrite.draw_text(
                 target,
                 &line.gutter_text,
-                Rect::new(gx, gy, gw, gh),
+                Rect::new(gx, y + text_v_offset, gw, line_height),
                 gutter_fg,
             );
         }
@@ -179,6 +231,7 @@ pub fn draw_editor(
             layout.text_bounds.x,
             y,
             line_height,
+            text_v_offset,
             cell_width,
             editor.scroll_left,
             layout.visible_cols,
@@ -225,10 +278,14 @@ pub fn draw_editor(
                     let raw = line.raw_text.trim_end_matches('\n');
                     if let Some(ch) = raw.chars().nth(cursor.pos.col) {
                         let ch = ch.to_string();
+                        // Text, not a row-sized fill — shares the row's
+                        // `text_v_offset` like the gutter and body-text
+                        // paints above, so the repainted glyph still
+                        // lines up with its own un-cursored baseline.
                         let _ = dwrite.draw_text(
                             target,
                             &ch,
-                            Rect::new(x, y, cell_width, line_height),
+                            Rect::new(x, y + text_v_offset, cell_width, line_height),
                             theme.background,
                         );
                     }
@@ -251,6 +308,28 @@ pub fn draw_editor(
     // (above), so there's no terminal-cursor position for the host to
     // reposition — see this module's doc.
     EditorPaintResult::default()
+}
+
+/// Vertical distance from a row's top edge to the top of the glyph box
+/// that centres `dwrite`'s own natural line height inside `line_height`
+/// — Win-GUI's counterpart to [`crate::macos::editor::text_v_offset`].
+///
+/// A host sets the editor's row pitch (`line_height`) independently of
+/// the font's natural height (`DWrite::natural_line_height`, `ascent +
+/// descent + lineGap` at this handle's size); DirectWrite's default
+/// paragraph alignment is top (`DWRITE_PARAGRAPH_ALIGNMENT_NEAR`), so a
+/// glyph box positioned straight at a row's top edge sits high in its
+/// row, with all the slack below it. Every text paint inside one
+/// row — gutter line number, body text, the glyph repainted under a
+/// block cursor — adds this offset, so they share a baseline and the
+/// row reads centred, matching VS Code.
+///
+/// Negative when `line_height` is *tighter* than the font's natural
+/// height, which lifts the glyph by the overflow's half so the row
+/// still reads centred rather than clipping only its bottom — same
+/// unclamped posture as the macOS twin.
+fn text_v_offset(dwrite: &DWrite, line_height: f32) -> f32 {
+    (line_height - dwrite.natural_line_height()) / 2.0
 }
 
 /// Paint one selection range as a translucent overlay across the
@@ -290,6 +369,10 @@ fn paint_selection(
 /// Paint `line`'s visible text window (`[scroll_left, scroll_left +
 /// visible_cols)` characters) at `y`, splitting into contiguous runs by
 /// [`crate::primitives::editor::EditorStyledSpan`] colour.
+///
+/// `text_v_offset` ([`text_v_offset`]) nudges every run's glyph box down
+/// from `y` so it centres in `line_height` rather than sitting at the
+/// row's raw top edge.
 #[allow(clippy::too_many_arguments)]
 fn paint_line_text(
     target: &ID2D1RenderTarget,
@@ -298,6 +381,7 @@ fn paint_line_text(
     text_x: f32,
     y: f32,
     line_height: f32,
+    text_v_offset: f32,
     cell_width: f32,
     scroll_left: usize,
     visible_cols: usize,
@@ -341,7 +425,7 @@ fn paint_line_text(
         let _ = dwrite.draw_text_styled(
             target,
             text,
-            Rect::new(*cursor_x, y, w, h.max(line_height)),
+            Rect::new(*cursor_x, y + text_v_offset, w, h.max(line_height)),
             style.0,
             style.1,
         );
@@ -440,6 +524,39 @@ mod tests {
             cursorline: true,
             lightbulb_glyph: '!',
         }
+    }
+
+    /// The `v_scrollbar_w` override narrows `text_bounds` by exactly
+    /// its delta from `cell_width` — the layout
+    /// `draw_editor_with_options_and_v_scrollbar_w` clips text to. Pure
+    /// layout, no `HeadlessSurface`/`DWrite` needed.
+    #[test]
+    fn v_scrollbar_w_option_narrows_text_bounds() {
+        let mut e = editor(vec![plain_line(0, "line one")]);
+        e.total_lines = 50; // overflow: far more than the viewport's rows
+        let rect = e.rect;
+
+        let baseline = e.layout(rect, CELL_W, LINE_H);
+        let baseline_vsb = baseline
+            .v_scrollbar_bounds
+            .expect("overflowing buffer reserves a vertical scrollbar column");
+        assert_eq!(baseline_vsb.width, CELL_W);
+
+        let widened = e.layout_with_options_and_v_scrollbar_w(
+            rect,
+            CELL_W,
+            LINE_H,
+            EditorPaintOptions::default(),
+            Some(14.0),
+        );
+        let widened_vsb = widened
+            .v_scrollbar_bounds
+            .expect("still overflowing with the override applied");
+        assert_eq!(widened_vsb.width, 14.0);
+        assert_eq!(
+            widened.text_bounds.width,
+            baseline.text_bounds.width - (14.0 - CELL_W)
+        );
     }
 
     /// Painting must not panic across a mix of plain lines, a cursor, a
@@ -694,6 +811,111 @@ mod tests {
              theme.background somewhere inside the cursor cell (col 0, \
              row 0) — got no such pixel, cursor fill likely still hides \
              the glyph entirely"
+        );
+    }
+
+    /// The editor's row pitch is a host decision independent of
+    /// `dwrite`'s own natural line height — mirrors
+    /// `macos::editor::tests::body_text_centred_in_row_and_shares_baseline_with_gutter`
+    /// and `gtk::editor::tests::draw_editor_body_text_centred_in_row_and_shares_baseline_with_gutter`:
+    /// widening the pitch from the font's natural height to a VS
+    /// Code-style wider row should move the body glyph's ink down by
+    /// half the added slack, and the gutter number (same glyph, `"7"`)
+    /// should land on the same rows as the body text once widened.
+    #[test]
+    fn body_text_centred_in_row_and_shares_baseline_with_gutter() {
+        let (dwrite, natural_line_height, _) =
+            DWrite::new("Consolas", 10.0, None).expect("create DWrite");
+        const ROW_PITCH: f32 = 24.0;
+        assert!(
+            natural_line_height < ROW_PITCH,
+            "fixture needs a font natural line height ({natural_line_height}) shorter than \
+             the row pitch ({ROW_PITCH}) to leave any slack to centre in",
+        );
+
+        let gutter_chars = 2usize;
+        let gutter_w = gutter_chars as f32 * CELL_W;
+        let theme = Theme::default();
+
+        let paint_at_pitch = |pitch: f32| -> HeadlessSurface {
+            let surface =
+                HeadlessSurface::new(200, pitch.ceil() as u32 + 8).expect("create surface");
+            let mut line = plain_line(0, "7");
+            line.gutter_text = "7".into();
+            let mut e = editor(vec![line]);
+            e.gutter_char_width = gutter_chars;
+            e.rect = QRect::new(0.0, 0.0, 200.0, pitch + 8.0);
+            surface
+                .paint(|target| {
+                    draw_editor(target, &dwrite, &e, CELL_W, pitch, &theme);
+                })
+                .expect("paint editor");
+            surface
+        };
+
+        // Scan `surface` for the vertical extent of non-background ink
+        // inside `[x_start, x_end) × [0, y_end)` — Win-GUI's counterpart
+        // to the macOS/GTK twins' identically-named test helpers.
+        let ink_extent = |surface: &HeadlessSurface, x_start: u32, x_end: u32, y_end: u32| {
+            const TOL: i32 = 24;
+            let mut extent: Option<(u32, u32)> = None;
+            for y in 0..y_end {
+                let has_ink = (x_start..x_end).any(|x| {
+                    let px = surface.pixel_at(x, y);
+                    (px.r as i32 - theme.background.r as i32).abs() > TOL
+                        || (px.g as i32 - theme.background.g as i32).abs() > TOL
+                        || (px.b as i32 - theme.background.b as i32).abs() > TOL
+                });
+                if has_ink {
+                    extent = Some(match extent {
+                        Some((top, _)) => (top, y),
+                        None => (y, y),
+                    });
+                }
+            }
+            extent
+        };
+
+        let natural_surface = paint_at_pitch(natural_line_height);
+        let natural = ink_extent(
+            &natural_surface,
+            gutter_w.round() as u32,
+            (gutter_w + CELL_W).round() as u32,
+            natural_line_height.ceil() as u32 + 8,
+        )
+        .expect("body glyph should paint some ink at the natural pitch");
+
+        let wide_surface = paint_at_pitch(ROW_PITCH);
+        let wide = ink_extent(
+            &wide_surface,
+            gutter_w.round() as u32,
+            (gutter_w + CELL_W).round() as u32,
+            ROW_PITCH as u32 + 8,
+        )
+        .expect("body glyph should paint some ink at the wide pitch");
+
+        let expected_shift = (ROW_PITCH - natural_line_height) / 2.0;
+        let top_shift = wide.0 as f32 - natural.0 as f32;
+        let bottom_shift = wide.1 as f32 - natural.1 as f32;
+        assert!(
+            (top_shift - expected_shift).abs() <= 2.0
+                && (bottom_shift - expected_shift).abs() <= 2.0,
+            "widening the row pitch from {natural_line_height} to {ROW_PITCH} should move \
+             the body glyph down by half the added slack ({expected_shift}px), got top \
+             {top_shift}px / bottom {bottom_shift}px (ink {natural:?} -> {wide:?})"
+        );
+
+        let gutter = ink_extent(
+            &wide_surface,
+            0,
+            gutter_w.round() as u32,
+            ROW_PITCH as u32 + 8,
+        )
+        .expect("gutter glyph should paint some ink");
+        assert_eq!(
+            gutter, wide,
+            "gutter number and body text (same glyph, \"7\") should share a baseline, got \
+             gutter={gutter:?}, body={wide:?}"
         );
     }
 }

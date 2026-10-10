@@ -483,6 +483,15 @@ fn run_step(d: &mut dyn DynDriver, step: &Step) -> Result<(), String> {
             require_painted(d, text)?;
             d.click_text_at(text, Anchor::Center);
         }
+        Step::ClickTextAny(candidates) => {
+            let text = candidates.iter().find(|c| d.screen_has(c)).ok_or_else(|| {
+                format!(
+                    "cannot act on any of {candidates:?}: none painted; {}",
+                    painted(d)
+                )
+            })?;
+            d.click_text_at(text, Anchor::Center);
+        }
         Step::ClickTextAt { text, anchor } => {
             require_painted(d, text)?;
             d.click_text_at(text, (*anchor).into());

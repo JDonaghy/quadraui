@@ -87,6 +87,14 @@ pub struct DWrite {
     /// share one pitch, so this holds at most a couple of entries per
     /// `DWrite`, not one per row.
     minimap_formats: RefCell<HashMap<i32, IDWriteTextFormat>>,
+    /// `text_format`'s own natural line height — `ascent + descent +
+    /// lineGap` scaled to `size_dip`, the same quantity [`Self::new`]
+    /// returns to seed `WinBackend::current_line_height` — kept on the
+    /// struct too so a host-set row pitch can later diverge from it
+    /// (`WinBackend::set_current_line_height`) without losing the
+    /// font's own metric. [`Self::natural_line_height`] exposes it for
+    /// `win::editor`'s vertical-centring offset.
+    natural_line_height: f32,
 }
 
 impl DWrite {
@@ -204,10 +212,23 @@ impl DWrite {
                 family: family.to_string(),
                 fallback: fallback.cloned(),
                 minimap_formats: RefCell::new(HashMap::new()),
+                natural_line_height: line_height,
             },
             line_height,
             char_width,
         ))
+    }
+
+    /// `text_format`'s own natural line height in DIPs — `ascent +
+    /// descent + lineGap` at this handle's font size, independent of
+    /// whatever row pitch a host later sets via
+    /// `WinBackend::set_current_line_height`. `win::editor`'s
+    /// `text_v_offset` centres a row's text inside that (possibly
+    /// taller) pitch by comparing it against this value, the same way
+    /// [`crate::macos::editor::text_v_offset`] compares a host-set
+    /// pitch against `CTFont::ascent() + descent() + leading()`.
+    pub(crate) fn natural_line_height(&self) -> f32 {
+        self.natural_line_height
     }
 
     /// Build a new `DWrite` for the same family and Nerd-Font fallback as
@@ -553,6 +574,25 @@ pub fn build_nerd_font_fallback(
     family: &str,
     collection: Option<&IDWriteFontCollection1>,
 ) -> WinResult<IDWriteFontFallback> {
+    build_nerd_font_fallback_multi(&[(family, collection)])
+}
+
+/// [`build_nerd_font_fallback`]'s multi-family generalisation: one
+/// `IDWriteFontFallback` carrying an `AddMapping` entry for every
+/// `(family, collection)` pair in `mappings`, each consulted in
+/// order only for characters none of the higher-priority entries before
+/// it (including the system fallback added first) already resolved —
+/// `build_nerd_font_fallback` itself is a thin single-mapping call
+/// into this fn, so the two can never drift on the shared factory/
+/// system-fallback/builder setup. [`crate::win::backend::WinBackend`]
+/// uses this directly to combine the app's own `set_nerd_font_fallback`
+/// family with the bundled codicon family in one `IDWriteFontFallback` —
+/// DirectWrite text formats carry exactly one fallback object each, so
+/// two separate single-family calls cannot be composed after the fact
+/// the way GTK's family-list string or macOS's cascade-list array can.
+pub fn build_nerd_font_fallback_multi(
+    mappings: &[(&str, Option<&IDWriteFontCollection1>)],
+) -> WinResult<IDWriteFontFallback> {
     // SAFETY: `DWriteCreateFactory` takes no pointers here beyond the
     // factory-type enum; the returned `IDWriteFactory2` is a live COM
     // interface owned by this scope for the rest of the function.
@@ -569,35 +609,37 @@ pub fn build_nerd_font_fallback(
         first: 0x0000_0000,
         last: 0x0010_FFFF,
     }];
-    let family_wide = HSTRING::from(family);
-    let family_ptrs = [family_wide.as_ptr()];
-    // `AddMapping` wants an `Option<&IDWriteFontCollection>` (the base
-    // interface), not the `IDWriteFontCollection1` this module otherwise
-    // deals in — `windows-core`'s `Param` blanket impl for `Option<&T>`
-    // requires the exact interface type, so the derived-to-base upcast
-    // has to happen explicitly via `cast` (a `QueryInterface` on the same
-    // underlying COM object, not a new one) rather than relying on the
-    // interface hierarchy to coerce it implicitly.
-    let base_collection: Option<IDWriteFontCollection> = match collection {
-        Some(c) => Some(c.cast()?),
-        None => None,
-    };
-    // SAFETY: `builder` is the live interface built above; `ranges` and
-    // `family_ptrs` are local arrays (`family_ptrs`'s pointer comes from
-    // `family_wide`, a local `HSTRING` that outlives this call);
-    // `base_collection` is either `None` or a live, just-cast interface;
-    // `PCWSTR::null()` for the optional locale-fallback name needs no
-    // backing buffer.
-    unsafe {
-        builder.AddMapping(
-            &ranges,
-            &family_ptrs,
-            base_collection.as_ref(),
-            &HSTRING::from("en-us"),
-            PCWSTR::null(),
-            1.0,
-        )?
-    };
+    for &(family, collection) in mappings {
+        let family_wide = HSTRING::from(family);
+        let family_ptrs = [family_wide.as_ptr()];
+        // `AddMapping` wants an `Option<&IDWriteFontCollection>` (the base
+        // interface), not the `IDWriteFontCollection1` this module otherwise
+        // deals in — `windows-core`'s `Param` blanket impl for `Option<&T>`
+        // requires the exact interface type, so the derived-to-base upcast
+        // has to happen explicitly via `cast` (a `QueryInterface` on the same
+        // underlying COM object, not a new one) rather than relying on the
+        // interface hierarchy to coerce it implicitly.
+        let base_collection: Option<IDWriteFontCollection> = match collection {
+            Some(c) => Some(c.cast()?),
+            None => None,
+        };
+        // SAFETY: `builder` is the live interface built above; `ranges` and
+        // `family_ptrs` are local arrays (`family_ptrs`'s pointer comes from
+        // `family_wide`, a local `HSTRING` that outlives this call);
+        // `base_collection` is either `None` or a live, just-cast interface;
+        // `PCWSTR::null()` for the optional locale-fallback name needs no
+        // backing buffer.
+        unsafe {
+            builder.AddMapping(
+                &ranges,
+                &family_ptrs,
+                base_collection.as_ref(),
+                &HSTRING::from("en-us"),
+                PCWSTR::null(),
+                1.0,
+            )?
+        };
+    }
     // SAFETY: `builder` is still the live interface, now with every
     // mapping added above.
     unsafe { builder.CreateFontFallback() }
@@ -1010,6 +1052,46 @@ pub(crate) fn stroke_rect(
     Ok(())
 }
 
+/// [`stroke_rect`]'s rounded-corner twin —
+/// `ID2D1RenderTarget::DrawRoundedRectangle` with both radii set to
+/// `radius`, clamped the same way [`fill_rounded_rect`]'s is. Same
+/// inside-the-bounds inset as [`stroke_rect`], for the same reason (see
+/// that function's doc).
+pub(crate) fn stroke_rounded_rect(
+    target: &ID2D1RenderTarget,
+    rect: Rect,
+    radius: f32,
+    color: Color,
+    stroke_width: f32,
+) -> WinResult<()> {
+    let brush = get_or_create_brush(target, color)?;
+    let inset = (stroke_width / 2.0)
+        .min(rect.width / 2.0)
+        .min(rect.height / 2.0)
+        .max(0.0);
+    let r = (radius - inset)
+        .min(rect.width / 2.0 - inset)
+        .min(rect.height / 2.0 - inset)
+        .max(0.0);
+    let rounded = D2D1_ROUNDED_RECT {
+        rect: D2D_RECT_F {
+            left: rect.x + inset,
+            top: rect.y + inset,
+            right: rect.x + rect.width - inset,
+            bottom: rect.y + rect.height - inset,
+        },
+        radiusX: r,
+        radiusY: r,
+    };
+    // SAFETY: `target` is still the live render target; `rounded` is a
+    // local built immediately above and `brush` a live interface (just
+    // created or fetched from the cache), both borrowed only for this
+    // call; `None` for stroke style asks for Direct2D's default solid
+    // stroke.
+    unsafe { target.DrawRoundedRectangle(&rounded, &brush, stroke_width, None) };
+    Ok(())
+}
+
 /// Push an axis-aligned clip rect (DIPs, target-relative) onto `target`.
 /// Every push must be balanced by a [`pop_clip`] — content rasterisers
 /// that paint per-row / per-cell text wider than their own bounds (e.g.
@@ -1351,6 +1433,62 @@ mod tests {
             found,
             "a label box sized to exactly its own measured width must still paint at \
              least one non-background pixel"
+        );
+    }
+
+    /// End-to-end proof that [`register_font_from_memory`] +
+    /// [`build_nerd_font_fallback_multi`] actually resolve
+    /// [`crate::codicon::CLOSE`] through the bundled font, mirroring the
+    /// exact pipeline `WinBackend::new`/`set_nerd_font_fallback` run:
+    /// register the real [`crate::codicon::FONT_BYTES`], build a
+    /// fallback mapping just that one family, bake it into a
+    /// `DWrite` via `fallback: Some(&fallback)`, and paint the glyph.
+    /// If registration or the fallback mapping were ever silently
+    /// broken (wrong family name, dropped mapping), DirectWrite would
+    /// have nothing to resolve that Private-Use-Area codepoint against
+    /// and this would paint zero ink, the same failure mode
+    /// `draw_text_paints_a_label_sized_to_its_own_measured_width` above
+    /// guards for ordinary text.
+    #[test]
+    fn codicon_close_glyph_resolves_through_the_registered_fallback_and_paints_ink() {
+        const BG: Color = Color::rgb(10, 20, 30);
+        const FG: Color = Color::rgb(220, 40, 40);
+
+        let (collection, names) = register_font_from_memory(crate::codicon::FONT_BYTES)
+            .expect("the bundled codicon.ttf must register with DirectWrite");
+        assert!(
+            names.iter().any(|n| n == crate::codicon::FONT_FAMILY),
+            "registered family names {names:?} should include {:?}",
+            crate::codicon::FONT_FAMILY
+        );
+        let fallback =
+            build_nerd_font_fallback_multi(&[(crate::codicon::FONT_FAMILY, Some(&collection))])
+                .expect("build a fallback mapping just the registered codicon family");
+
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 16.0, Some(&fallback)).expect("create DWrite");
+        let glyph = crate::codicon::CLOSE.to_string();
+        let (width, height) = dwrite.measure_text(&glyph).expect("measure_text");
+
+        let rect = Rect::new(4.0, 4.0, width.max(1.0), height.max(1.0));
+        let surface = HeadlessSurface::new(40, 40).expect("create surface");
+        surface
+            .paint(|target| {
+                let _ = fill_rect(target, Rect::new(0.0, 0.0, 40.0, 40.0), BG);
+                dwrite
+                    .draw_text(target, &glyph, rect, FG)
+                    .expect("draw_text");
+            })
+            .expect("paint");
+
+        let bg = (BG.r, BG.g, BG.b);
+        let found = (rect.y as u32..(rect.y + rect.height) as u32)
+            .flat_map(|y| (rect.x as u32..(rect.x + rect.width) as u32).map(move |x| (x, y)))
+            .map(|(x, y)| surface.pixel_at(x, y))
+            .any(|px| (px.r, px.g, px.b) != bg);
+        assert!(
+            found,
+            "the codicon close glyph, painted through the registered-font fallback, must \
+             paint at least one non-background pixel"
         );
     }
 

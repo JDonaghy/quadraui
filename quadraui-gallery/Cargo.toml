@@ -13,17 +13,40 @@ publish = false
 # silently pull in a rendering backend the caller didn't ask for.
 #
 # Each feature here just forwards to the identically-named feature on
-# `quadraui` itself; this crate has no backend-specific code of its own
-# (CLAUDE.md's portability commitment) — only `src/main.rs`'s per-backend
-# `fn main` bodies branch on these, and each one is ~5 lines.
+# `quadraui` itself; this crate has no backend-specific *application*
+# code of its own (CLAUDE.md's portability commitment) — `GalleryApp`
+# and every `Demo` are plain `ShellApp`/`Demo` code shared across all
+# four backends. `src/main.rs`'s per-backend `fn main` bodies branch on
+# these (each one is ~5 lines), and so does `src/capture.rs`: capture
+# mode is headless *test/tooling* infrastructure driven through each
+# backend's own `quadraui::<backend>::testing` driver — exactly the kind
+# of per-backend branching `tests/gallery_driver.rs` already does under
+# `#![cfg(feature = "tui")]` — not application rendering code, so it
+# doesn't violate the portability commitment the comment above
+# describes.
 tui = ["quadraui/tui"]
 gtk = ["quadraui/gtk"]
+# PTY + vt100 engine, no rasteriser of its own — pairs with either `tui`
+# or `gtk`. `demos::terminal` (the `Terminal` demo) is only compiled and
+# only registered (see `registry::registry`) when this is enabled, so a
+# plain `tui`/`gtk` gallery build never pulls in portable-pty + vt100
+# just to compile a demo it has no feature support for.
+terminal = ["quadraui/terminal"]
 # `quadraui::macos` only exists when `target_os = "macos"` *and* this
 # feature is enabled (see `quadraui/src/lib.rs`'s `pub mod macos` cfg
 # gate) — enabling the Cargo feature alone compiles nothing extra on a
 # non-macOS host. `src/main.rs` mirrors that with
 # `#[cfg(all(feature = "macos", target_os = "macos"))]`.
-macos = ["quadraui/macos"]
+#
+# `dep:image` is tied to this feature (rather than always-on) for the
+# same reason: `src/capture.rs`'s macOS leg (PNG encoding of
+# `BitmapSurface`'s raw RGBA bytes) only ever compiles under
+# `all(feature = "macos", target_os = "macos")`, so a `tui`-only build
+# (the Linux CI capture leg) never pulls in an image codec it can't
+# reach. Pinned to the same `0.25` series `quadraui` itself already
+# resolves transitively (via `arboard/image-data`), so this adds no new
+# major version to the workspace's dependency graph.
+macos = ["quadraui/macos", "dep:image"]
 # Unlike `macos`, `quadraui::win` compiles on every host (only the real
 # WinAPI calls inside it are `cfg(target_os = "windows")`), so this
 # feature needs no extra target gate.
@@ -31,4 +54,18 @@ win = ["quadraui/win"]
 
 [dependencies]
 quadraui = { path = "../quadraui" }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# PNG encoder for capture mode's macOS leg only (`src/capture.rs`) — see
+# the `macos` feature's comment above for why it's wired there instead
+# of always-on. `default-features = false` + `features = ["png"]` keeps
+# it to just the one codec capture mode needs, not every image format
+# `image` supports.
+image = { version = "0.25", optional = true, default-features = false, features = [
+    "png",
+] }
+# Used by `demos::file_picker` to materialise a small, fixed synthetic
+# directory tree for `FilePickerDemo`'s pickers to list — not a
+# dev-only dependency, since that tree is built at demo construction
+# time (every gallery launch), not just under `cargo test`.
+tempfile = "3"

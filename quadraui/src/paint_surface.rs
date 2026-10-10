@@ -106,6 +106,29 @@
 use crate::backend::ImagePaintResult;
 use crate::{Color, Image, Point, Rect, Viewport};
 
+/// A single segment of the open or closed polyline [`PaintSurface::surface_draw_path`]
+/// strokes.
+///
+/// Deliberately straight-segments-only — no `ArcTo`/`CurveTo` variant
+/// yet. None of the overlay primitives this verb is wired up for
+/// (`Palette`'s chevron, `Dialog`'s callout pointer) need a curve; a
+/// future caller that does gets its own variant added the same
+/// additive way every other [`PaintSurface`] verb grew bold/scale_x/role
+/// parameters over time, not by generalizing this enum speculatively
+/// ahead of a real caller.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum PathVerb {
+    /// Start a new subpath at `Point`, with no segment drawn to it.
+    MoveTo(Point),
+    /// Draw a straight segment from the current point to `Point`.
+    LineTo(Point),
+    /// Draw a straight segment from the current point back to the most
+    /// recent [`PathVerb::MoveTo`] point. A no-op if no `MoveTo` has
+    /// been seen yet.
+    Close,
+}
+
 /// The ~15 drawing verbs shared by every pixel backend, extracted from
 /// helpers each of [`crate::gtk::backend::GtkBackend`],
 /// [`crate::macos::backend::MacBackend`] and
@@ -255,8 +278,54 @@ pub trait PaintSurface {
     /// geometry this convention exists to keep crisp.
     fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32);
 
+    /// [`Self::surface_stroke_rect`]'s rounded-corner twin — the border
+    /// every overlay styled with
+    /// [`crate::Style::corner_radius`] strokes its box outline with,
+    /// mirroring how [`Self::surface_fill_rounded_rect`] is
+    /// [`Self::surface_fill_rect`]'s rounded-corner twin.
+    ///
+    /// `radius` is clamped the same way, and for the same reason, as
+    /// [`Self::surface_fill_rounded_rect`]'s own doc describes. The
+    /// stroke itself lands fully inside `rect`, matching
+    /// [`Self::surface_stroke_rect`]'s own inset convention.
+    ///
+    /// Default: falls back to [`Self::surface_stroke_rect`], ignoring
+    /// `radius` — the same square border a surface without rounded-stroke
+    /// support (e.g. the TUI cell grid) already paints. Having a default
+    /// keeps this an additive change for out-of-crate implementors of
+    /// this trait. Every in-crate pixel backend overrides it to stroke a
+    /// real rounded-rect path.
+    fn surface_stroke_rounded_rect(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        color: Color,
+        stroke_width: f32,
+    ) {
+        let _ = radius;
+        self.surface_stroke_rect(rect, color, stroke_width);
+    }
+
     /// Paint `text` at `rect`'s top-left corner in `color`, using this
     /// surface's current font.
+    ///
+    /// "This surface's current font" is an implementor's choice, not a
+    /// fixed rule, for every primitive-generic adapter that paints more
+    /// than one kind of primitive through the same `&mut dyn
+    /// PaintSurface` (every pixel backend implementing this trait
+    /// directly on itself, rather than on a role-dedicated wrapper): the
+    /// convention such an adapter should follow is to default to
+    /// [`crate::FontRole::Chrome`], since most primitives reaching this
+    /// method are chrome, and give the few genuinely editor-class callers
+    /// (see `crate::font_role::EditorClassPrimitive`) their own
+    /// role-dedicated adapter instead, mirroring
+    /// [`crate::macos::backend::MacBackend`]'s `ChromeSurface`/
+    /// `EditorSurface` pair — see `crate::font_role`'s module doc for the
+    /// fuller account of why a primitive-generic adapter defaulting to
+    /// the *editor* font instead is the wrong shape.
+    /// [`Self::surface_draw_text_run_with_role`] is for the rarer case of
+    /// a single call site needing to choose per-call rather than
+    /// per-adapter.
     fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color);
 
     /// [`Self::surface_draw_text_run`] with optional bold/italic/underline
@@ -383,6 +452,94 @@ pub trait PaintSurface {
     /// `stroke_width`.
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32);
 
+    // ─── Shadow + path ─────────────────────────────────────────────────
+    /// Paint an elevation-based drop shadow behind the rounded box
+    /// described by `rect`/`radius`, in `color` (typically a near-black
+    /// translucent tint the caller already has to hand — this trait has
+    /// no dedicated "shadow color" of its own, deliberately: see
+    /// [`crate::Style`]'s module doc for why `Theme` doesn't grow a new
+    /// field just for this). `elevation` is [`crate::Style::shadow_elevation`]'s
+    /// own `0`–`3` scale: `0` paints nothing; `1`–`3` paint a
+    /// progressively larger, softer, more vertically-offset shadow —
+    /// VS Code's own hover/menu/modal elevation tiers. Values above `3`
+    /// are clamped to `3`.
+    ///
+    /// Default: composed entirely out of [`Self::surface_fill_rounded_rect`]
+    /// — three concentric translucent layers, widest-and-faintest first,
+    /// narrowest-and-most-opaque last, each wider than `rect` by a
+    /// `spread` that shrinks per layer while `color`'s own alpha grows,
+    /// approximating a soft blur with no blur primitive at all. This is
+    /// correct (not just a stand-in) for every pixel backend today:
+    /// `GtkBackend`/`MacBackend`/`WinBackend` all already implement
+    /// `surface_fill_rounded_rect` for real, so the composed shadow
+    /// paints identically — and deliberately so, rather than each
+    /// backend reaching for its own native shadow primitive (Cairo has
+    /// none; CoreGraphics' `CGContextSetShadow` and Direct2D's
+    /// `ID2D1Effect` blur both exist but would make the *same* elevation
+    /// look different per platform, which is exactly the inconsistency
+    /// a fixed VS-Code-style token set exists to avoid). No implementor
+    /// overrides this.
+    fn surface_draw_shadow(&mut self, rect: Rect, radius: f32, elevation: u8, color: Color) {
+        let elevation = elevation.min(3);
+        if elevation == 0 {
+            return;
+        }
+        let elevation = f32::from(elevation);
+        let base_alpha = color.a as f64 / 255.0;
+        const LAYERS: u8 = 3;
+        for layer in (1..=LAYERS).rev() {
+            let t = f32::from(layer) / f32::from(LAYERS);
+            let spread = elevation * t * 1.5;
+            let offset_y = elevation * t * 2.0;
+            let alpha = base_alpha * f64::from(1.0 - t) * 0.35 + base_alpha * 0.05;
+            let shadow_rect = Rect::new(
+                rect.x - spread,
+                rect.y - spread + offset_y,
+                rect.width + spread * 2.0,
+                rect.height + spread * 2.0,
+            );
+            self.surface_fill_rounded_rect(shadow_rect, radius + spread, color.with_alpha(alpha));
+        }
+    }
+
+    /// Stroke the open or closed polyline described by `verbs` in
+    /// `color` at `stroke_width` — the shape every chevron/arrow/
+    /// pointer-triangle rasteriser not yet ported onto `PaintSurface`
+    /// needs (`Palette`'s dropdown chevron, `Dialog`'s callout pointer,
+    /// a menu's submenu arrow), none of which are axis-aligned rects or
+    /// single line segments.
+    ///
+    /// Default: decomposed entirely into [`Self::surface_draw_line`]
+    /// calls, one per `LineTo`/`Close` verb — correct because
+    /// [`PathVerb`] is deliberately straight-segments-only today (no
+    /// arc verb yet; see [`PathVerb`]'s own doc for why that's a
+    /// separate, later addition rather than scope creep here). No
+    /// implementor overrides this.
+    fn surface_draw_path(&mut self, verbs: &[PathVerb], color: Color, stroke_width: f32) {
+        let mut current: Option<Point> = None;
+        let mut start: Option<Point> = None;
+        for verb in verbs {
+            match *verb {
+                PathVerb::MoveTo(p) => {
+                    current = Some(p);
+                    start = Some(p);
+                }
+                PathVerb::LineTo(p) => {
+                    if let Some(from) = current {
+                        self.surface_draw_line(from, p, color, stroke_width);
+                    }
+                    current = Some(p);
+                }
+                PathVerb::Close => {
+                    if let (Some(from), Some(to)) = (current, start) {
+                        self.surface_draw_line(from, to, color, stroke_width);
+                        current = Some(to);
+                    }
+                }
+            }
+        }
+    }
+
     // ─── Clipping ──────────────────────────────────────────────────────
     /// Push an axis-aligned clip rect. Every push must be balanced by a
     /// [`Self::surface_pop_clip`] — see the crate-private
@@ -402,4 +559,207 @@ pub trait PaintSurface {
     /// categorically [`ImagePaintResult::Unsupported`] until a real
     /// `NSImage` decoder lands, #802; Win-GUI: Direct2D bitmap decode).
     fn surface_draw_image(&mut self, rect: Rect, image: &Image) -> ImagePaintResult;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal mock recording every call it receives — proves the
+    /// *default* decompositions of [`PaintSurface::surface_draw_shadow`]
+    /// and [`PaintSurface::surface_draw_path`] call the right lower-level
+    /// verbs the right number of times, independent of any real pixel
+    /// backend (those get their own paint-and-probe proof in
+    /// `gtk::backend::tests`/`win::backend::tests`).
+    #[derive(Default)]
+    struct RecordingSurface {
+        fill_rounded_rects: Vec<(Rect, f32, Color)>,
+        lines: Vec<(Point, Point, Color, f32)>,
+    }
+
+    impl PaintSurface for RecordingSurface {
+        fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> Viewport {
+            Viewport::new(0.0, 0.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            0.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            0.0
+        }
+        fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
+            (0.0, 0.0)
+        }
+        fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+        fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+            self.fill_rounded_rects.push((rect, radius, color));
+        }
+        fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+        fn surface_stroke_rounded_rect(
+            &mut self,
+            _rect: Rect,
+            _radius: f32,
+            _color: Color,
+            _stroke_width: f32,
+        ) {
+        }
+        fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+        fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
+            self.lines.push((from, to, color, stroke_width));
+        }
+        fn surface_push_clip(&mut self, _rect: Rect) {}
+        fn surface_pop_clip(&mut self) {}
+        fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+            ImagePaintResult::Unsupported
+        }
+    }
+
+    /// Elevation `0` is the explicit "no shadow" tier — the default must
+    /// return before calling `surface_fill_rounded_rect` at all.
+    #[test]
+    fn surface_draw_shadow_elevation_zero_calls_nothing() {
+        let mut surface = RecordingSurface::default();
+        surface.surface_draw_shadow(Rect::new(0.0, 0.0, 10.0, 10.0), 4.0, 0, Color::rgb(0, 0, 0));
+        assert!(
+            surface.fill_rounded_rects.is_empty(),
+            "elevation 0 must not paint any shadow layer"
+        );
+    }
+
+    /// A nonzero elevation paints a fixed three-layer stack, widest
+    /// first — the shape the module doc promises.
+    #[test]
+    fn surface_draw_shadow_nonzero_elevation_paints_three_layers() {
+        let mut surface = RecordingSurface::default();
+        surface.surface_draw_shadow(
+            Rect::new(10.0, 10.0, 20.0, 20.0),
+            6.0,
+            2,
+            Color::rgba(0, 0, 0, 128),
+        );
+        assert_eq!(
+            surface.fill_rounded_rects.len(),
+            3,
+            "every nonzero elevation paints exactly three layers"
+        );
+        // Widest-and-faintest layer first.
+        let (first_rect, _first_radius, first_color) = surface.fill_rounded_rects[0];
+        let (last_rect, _last_radius, last_color) = surface.fill_rounded_rects[2];
+        assert!(
+            first_rect.width > last_rect.width,
+            "the first layer must be wider than the last — widest first"
+        );
+        assert!(
+            first_color.a < last_color.a,
+            "the first (widest) layer must be the faintest"
+        );
+    }
+
+    /// Elevation is clamped to `3` — a caller passing e.g. `200` must
+    /// paint the same three layers an elevation of exactly `3` does, not
+    /// scale up without bound.
+    #[test]
+    fn surface_draw_shadow_clamps_elevation_above_three() {
+        let mut clamped = RecordingSurface::default();
+        clamped.surface_draw_shadow(
+            Rect::new(0.0, 0.0, 10.0, 10.0),
+            4.0,
+            200,
+            Color::rgb(0, 0, 0),
+        );
+        let mut exact = RecordingSurface::default();
+        exact.surface_draw_shadow(Rect::new(0.0, 0.0, 10.0, 10.0), 4.0, 3, Color::rgb(0, 0, 0));
+        assert_eq!(clamped.fill_rounded_rects, exact.fill_rounded_rects);
+    }
+
+    /// `MoveTo`/`LineTo`/`Close` must each decompose into exactly one
+    /// `surface_draw_line` call, in order, closing back to the most
+    /// recent `MoveTo` point.
+    #[test]
+    fn surface_draw_path_decomposes_into_lines() {
+        let mut surface = RecordingSurface::default();
+        let a = Point::new(0.0, 0.0);
+        let b = Point::new(10.0, 0.0);
+        let c = Point::new(10.0, 10.0);
+        surface.surface_draw_path(
+            &[
+                PathVerb::MoveTo(a),
+                PathVerb::LineTo(b),
+                PathVerb::LineTo(c),
+                PathVerb::Close,
+            ],
+            Color::rgb(0, 255, 0),
+            2.0,
+        );
+        assert_eq!(
+            surface.lines,
+            vec![
+                (a, b, Color::rgb(0, 255, 0), 2.0),
+                (b, c, Color::rgb(0, 255, 0), 2.0),
+                (c, a, Color::rgb(0, 255, 0), 2.0),
+            ],
+            "MoveTo draws no segment; each LineTo draws from the current point; \
+             Close draws back to the last MoveTo"
+        );
+    }
+
+    /// A lone `LineTo`/`Close` with no preceding `MoveTo` has no current
+    /// point to draw from, so it must be silently skipped rather than
+    /// panicking.
+    #[test]
+    fn surface_draw_path_without_a_moveto_draws_nothing() {
+        let mut surface = RecordingSurface::default();
+        surface.surface_draw_path(
+            &[PathVerb::LineTo(Point::new(5.0, 5.0)), PathVerb::Close],
+            Color::rgb(0, 255, 0),
+            1.0,
+        );
+        assert!(surface.lines.is_empty());
+    }
+
+    /// Implements only the required verbs, so `surface_stroke_rounded_rect`
+    /// runs the trait's default body.
+    #[derive(Default)]
+    struct SquareOnlySurface {
+        strokes: Vec<(Rect, Color, f32)>,
+    }
+
+    impl PaintSurface for SquareOnlySurface {
+        fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> Viewport {
+            Viewport::new(0.0, 0.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            0.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            0.0
+        }
+        fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
+            (0.0, 0.0)
+        }
+        fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+        fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+        fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+            self.strokes.push((rect, color, stroke_width));
+        }
+        fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+        fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _w: f32) {}
+        fn surface_push_clip(&mut self, _rect: Rect) {}
+        fn surface_pop_clip(&mut self) {}
+        fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+            ImagePaintResult::Unsupported
+        }
+    }
+
+    #[test]
+    fn surface_stroke_rounded_rect_default_falls_back_to_square_stroke() {
+        let mut surface = SquareOnlySurface::default();
+        let rect = Rect::new(1.0, 2.0, 30.0, 40.0);
+        surface.surface_stroke_rounded_rect(rect, 6.0, Color::rgb(9, 9, 9), 1.5);
+        assert_eq!(surface.strokes, vec![(rect, Color::rgb(9, 9, 9), 1.5)]);
+    }
 }

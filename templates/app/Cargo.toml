@@ -1,0 +1,32 @@
+[package]
+name = "{{project-name}}"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# No `default` key, deliberately — same reasoning as `quadraui`'s own
+# `[features]` table: a bare `cargo build`/`cargo run` with no `--features`
+# flag should fail loudly (see `src/main.rs`'s fallback `fn main`) rather
+# than silently pick a backend you didn't ask for.
+[features]
+tui = ["quadraui/tui"]
+gtk = ["quadraui/gtk"]
+# `quadraui::macos` only exists when `target_os = "macos"` *and* this
+# feature is enabled — enabling the Cargo feature alone compiles nothing
+# extra on a non-macOS host. `src/main.rs` mirrors that with
+# `#[cfg(all(feature = "macos", target_os = "macos"))]`.
+macos = ["quadraui/macos"]
+# Unlike `macos`, `quadraui::win` compiles on every host (only the real
+# WinAPI calls inside it are `cfg(target_os = "windows")`), so this
+# feature needs no extra target gate.
+win = ["quadraui/win"]
+
+[dependencies]
+# Same lead dependency shape as the root `README.md`'s own "Getting
+# started" section: a resolvable crates.io version, with no base
+# features — every backend is opt-in through this crate's own
+# `[features]` table above instead, so `cargo build` with no `--features`
+# flag pulls in no rendering backend at all. Pin a `git` + `rev` instead
+# to track unreleased quadraui work ahead of the next crates.io release
+# (see the root README for that shape).
+quadraui = { version = "0.1" }

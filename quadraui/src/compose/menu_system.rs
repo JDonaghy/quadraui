@@ -39,8 +39,29 @@ use crate::{FontRole, Key, Modifiers, MouseButton, NamedKey};
 fn dropdown_width(backend: &dyn Backend, items: &[ContextMenuItem], lh: f32) -> f32 {
     let role = FontRole::Chrome;
     let space_w = backend.measure_text(" ", role).0;
-    let checked_w = backend.measure_text("✓", role).0 + space_w;
-    let arrow_w = space_w + backend.measure_text("▶", role).0;
+    // On a GUI backend, `primitives::context_menu::native_surface_paint`
+    // paints the codicon check/chevron glyphs (`codicon::CHECK` /
+    // `codicon::CHEVRON_RIGHT`, hardcoded here rather than referencing
+    // the `codicon` module directly since that module isn't compiled
+    // in a TUI-only build this function also has to run under) instead
+    // of the plain `✓`/`▶` text `tui::context_menu` paints — and
+    // codicon glyphs are square-advance at the font em, wider than
+    // either plain-text glyph's own chrome-font advance. Reserve
+    // against whichever glyph the paint path for this backend will
+    // actually use, detected the same way every other codicon call
+    // site confirms registration: `has_font_family` answers `Some(_)`
+    // only on a GUI backend (TUI takes the trait's `None` default),
+    // and every GUI backend's own `*Backend::new` self-registers
+    // "codicon" unconditionally, so `Some(true)` here means the real
+    // paint path really will resolve the codicon glyph.
+    let codicon_available = backend.has_font_family("codicon") == Some(true);
+    let (check_glyph, arrow_glyph): (&str, &str) = if codicon_available {
+        ("\u{eab2}", "\u{eab6}")
+    } else {
+        ("✓", "▶")
+    };
+    let checked_w = backend.measure_text(check_glyph, role).0 + space_w;
+    let arrow_w = space_w + backend.measure_text(arrow_glyph, role).0;
     let max_content_w = items
         .iter()
         .filter(|item| !item.is_separator())

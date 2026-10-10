@@ -7,6 +7,14 @@ members = [
     "kubeui-gtk",
     "tools/lint",
 ]
+# `templates/app` is a `cargo generate` starter template, not a crate
+# this repo itself builds. Its `Cargo.toml` uses `{{project-name}}` /
+# `{{crate_name}}` placeholders that aren't valid Rust/TOML identifiers
+# until `cargo generate` substitutes them, so it must never be resolved as
+# a member of this workspace. `.github/workflows/ci.yml`'s `template` job
+# is what actually exercises it: generating a real copy into a temp dir
+# and testing that.
+exclude = ["templates/app"]
 resolver = "2"
 
 [workspace.package]

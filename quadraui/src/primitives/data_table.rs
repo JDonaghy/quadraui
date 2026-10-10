@@ -962,12 +962,15 @@ pub(crate) mod native_surface_paint {
             }
             let sort_suffix = match &table.sort {
                 Some((si, dir)) if *si == col_idx => match dir {
-                    SortDirection::Ascending => " \u{25B2}",
-                    SortDirection::Descending => " \u{25BC}",
+                    SortDirection::Ascending => Some(crate::codicon::SORT_ASCENDING),
+                    SortDirection::Descending => Some(crate::codicon::SORT_DESCENDING),
                 },
-                _ => "",
+                _ => None,
             };
-            let title = format!("{}{}", col.title, sort_suffix);
+            let title = match sort_suffix {
+                Some(glyph) => format!("{} {glyph}", col.title),
+                None => col.title.clone(),
+            };
             let col_x = rect.x + rc.x - h_off;
             let col_w = rc.width;
 
@@ -1228,6 +1231,14 @@ pub(crate) mod native_surface_paint {
                 self.fills_alpha.push((rect, color, alpha));
             }
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.text_runs.push((rect, text.to_string(), color));
             }
@@ -1315,6 +1326,39 @@ pub(crate) mod native_surface_paint {
             // Body cell text via plain (non-bold) runs.
             assert!(surface.text_runs.iter().any(|r| r.1 == "alpha"));
             assert!(surface.text_runs.iter().any(|r| r.1 == "beta"));
+        }
+
+        /// Cross-backend parity: the sorted column's title
+        /// carries the same codicon glyph `gtk::data_table` paints, not
+        /// the plain `▲`/`▼` text this shared path baked in before —
+        /// macOS and Win-GUI both go through this one derivation, so a
+        /// future glyph change can't drift between the three GUI
+        /// backends again.
+        #[test]
+        fn sorted_column_title_carries_the_codicon_sort_glyph_not_a_plain_triangle() {
+            let theme = Theme::default();
+            let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+
+            let mut ascending = two_col_table();
+            ascending.sort = Some((0, SortDirection::Ascending));
+            let mut surface = RecordingSurface::default();
+            paint(&ascending, &mut surface, &theme, rect, 16.0, None);
+            let expected_asc = format!("Name {}", crate::codicon::SORT_ASCENDING);
+            assert!(
+                surface.styled_runs.iter().any(|r| r.1 == expected_asc),
+                "expected a header run {:?}, got {:?}",
+                expected_asc,
+                surface.styled_runs
+            );
+            assert!(!surface.styled_runs.iter().any(|r| r.1.contains('\u{25B2}')));
+
+            let mut descending = two_col_table();
+            descending.sort = Some((0, SortDirection::Descending));
+            let mut surface = RecordingSurface::default();
+            paint(&descending, &mut surface, &theme, rect, 16.0, None);
+            let expected_desc = format!("Name {}", crate::codicon::SORT_DESCENDING);
+            assert!(surface.styled_runs.iter().any(|r| r.1 == expected_desc));
+            assert!(!surface.styled_runs.iter().any(|r| r.1.contains('\u{25BC}')));
         }
 
         /// #1084's RED-before-the-port case: `macos::data_table` used to

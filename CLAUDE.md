@@ -1,346 +1,200 @@
 # CLAUDE.md — quadraui
 
-Agent-facing guide for working in the **quadraui** repo. This file
-stays slim — reference docs live in `quadraui/docs/` and are read on
-demand.
+Agent-facing rules for the **quadraui** repo. Re-read on every turn, so it holds
+only what a diff can violate. Rationale, history and long playbooks live in
+[`docs/AGENT_REFERENCE.md`](docs/AGENT_REFERENCE.md) — read a
+section of it only when your task touches that area.
 
-This repo is **self-contained at design time**: no consumer depends on
-quadraui from inside the repo at compile time except the demo apps
-(`kubeui*`), and no primitive should encode a specific consumer's domain
-model. **It is not self-contained at delivery time** — two external
-consumers build against this repo's `develop` tip with no version pin.
-Read *Downstream consumers* below before changing any `pub` item.
+quadraui is **self-contained at design time** (no primitive encodes a consumer's
+domain model) but **not at delivery time**: published consumers build against it.
+Read *Downstream consumers* before changing any `pub` item.
 
 ## Codebase navigation — query the graph first
 
-This repo ships a **graphify** knowledge graph in `graphify-out/` (`graph.json`,
-`GRAPH_REPORT.md`), kept current automatically by `post-commit` / `post-checkout`
-git hooks. For any architecture / "where is this handled" / "what calls this" /
-file-relationship question, **query the graph first** (the `graphify` skill, or the
-graphify CLI) before reaching for grep/Read. Grep/Read are for exact-string or
-line-level confirmation — not the first move.
+`graphify-out/` holds a knowledge graph of this repo. For "where is this handled /
+what calls this" questions, query it (the `graphify` skill or CLI) before grep/Read.
 
-## Session Start Protocol
+## Background docs — on demand only
 
-1. Read `README.md` for the high-level shape (workspace, primitives, status).
-2. Read `quadraui/docs/DECISIONS.md` for primitive-distinctness principles.
-3. Read `quadraui/docs/BACKEND_TRAIT_PROPOSAL.md` §4 (Backend trait shape) and §9 (resolved decisions log).
-4. Read the *Cross-backend portability commitment* below.
-5. Run `gh issue list --state open` to see active work.
-
-**Read on demand** (when the task requires it):
-
-- `quadraui/docs/ARCHITECTURE.md` — workspace layout, two-layer split, compose helpers, GTK hosting helpers, backend trait.
-- `quadraui/docs/PRIMITIVE_RULES.md` — the 8 rules for adding/changing primitives + maturity levels. **Rule 8 (public-API lifecycle) is mandatory reading before removing or renaming anything `pub`.**
-- `quadraui/docs/CONSUMER_PATTERNS.md` — MSV debug-sidebar and SC panel recipes. **Read when working on consumer integrations.**
-- `quadraui/docs/TESTING.md` — coverage taxonomy, backend testability requirement, quality gate commands. **Read when writing tests.**
-- `quadraui/docs/LESSONS.md` — durable rules from real failures + "What NOT to do." **Read at session start; apply as you work.**
+No reading chain is required at session start. The background docs (README,
+`quadraui/docs/decisions/DECISIONS.md`, `ARCHITECTURE.md`, `TESTING.md`,
+`LESSONS.md`, …) are large; open one only when the task needs it — the index is
+in `AGENT_REFERENCE.md`. **Exception:** read `quadraui/docs/PRIMITIVE_RULES.md`
+rule 8 before removing or renaming anything `pub`.
 
 ## Cross-backend portability commitment
 
-**The goal: a future agent should be able to write the entire Windows or macOS backend with almost no input — just by implementing the `Backend` trait against Direct2D / Core Graphics. Zero consumer-side changes. Zero per-example rewrites.**
+Goal: a future agent can write a whole new backend (Windows, macOS) just by
+implementing the `Backend` trait — zero consumer-side changes, zero per-example
+rewrites. Non-negotiable:
 
-This is non-negotiable. Every architectural decision in this repo serves it.
+1. **Every primitive MUST have a `Backend` trait method.** TUI + GTK rasterisers
+   with no trait method is a bug — add the trait method.
+2. **Apps and examples go through `AppLogic` + `quadraui::{tui,gtk}::run`.** Render
+   code is backend-generic; one `AppLogic` impl drives every backend.
+3. **Examples are paired by shape, not backend:** one `AppLogic` in
+   `examples/common/<shape>.rs`, one ~10-line runner per backend.
+4. **Bypassing the runner is a smell** — an example with its own event loop means
+   the trait is missing something. Fix the trait, not the example.
+5. **Layout helpers go through `Backend` too**; consumer click routers stay
+   backend-agnostic.
+6. **Events are unified at `UiEvent`** before reaching `AppLogic::handle`.
 
-1. **Every primitive MUST have a `Backend` trait method.** If a primitive has TUI and GTK rasterisers but no trait method, that's a bug — file an issue and add the trait method.
-2. **Apps and examples MUST go through `AppLogic` + `quadraui::{tui,gtk}::run`.** Render code is fully backend-generic. The same `AppLogic` impl drives every backend.
-3. **Examples are paired by shape, not by backend.** One `AppLogic` impl in `examples/common/<shape>.rs`, one ~10-line runner per backend.
-4. **Bypassing the runner is a smell.** If an example writes its own event loop, the `Backend` trait is missing the primitive. Fix the trait, not the example.
-5. **Layout helpers go through `Backend` too.** Each backend supplies native metrics internally. Consumer click routers stay backend-agnostic.
-6. **Events are unified at the `UiEvent` boundary.** Every backend translates native events into `quadraui::UiEvent` before reaching `AppLogic::handle`.
+**TUI is a first-class backend.** A user-facing capability (menus, pickers,
+dialogs, buttons, text boxes, lists) must *work* on TUI, not return
+`Unsupported`/`None` — reserve that for things physically absent on a terminal
+(tray icon, dock badge, OS global shortcut). **The crate owns the degrade, in
+`compose/`, behind the same call** (pattern: `compose::FolderPickerController`).
+When adding a capability, state its TUI story and ship a `tui_*` test.
 
-If you're tempted to take a shortcut — bypass the runner, copy-paste an example across backends, build a per-backend layout helper — **stop and ask: does this violate the portability commitment?** If yes, fix the trait gap first.
+**One backend per issue.** A quadraui issue targets exactly one backend (`tui`, `gtk`, `macos` or `win`) and is verified only on that backend's host; the Test stage routes it there. A cross-backend feature is split into a backend-neutral seam issue (trait method, primitive, layout, with a `tui_*`/headless test) plus one issue per backend that implements it. TUI issues are verified with the headless `TuiDriver`, which runs on any host; a real-terminal check on Linux, macOS and Windows is needed only when the issue is about terminal behaviour itself. If your issue spans several backends, do the one it names (or the seam) and list the rest in your final message instead of doing them.
 
-### TUI is not a second-class backend — capabilities must *work* there, not merely report their absence
-
-**An app written on quadraui must actually be usable on TUI.** Menus, file and
-folder pickers, message dialogs, buttons, text boxes, lists — all of it has to
-function. It does not have to look like the GUI. It has to *work*. vimcode's TUI
-build is the existence proof: it drives the same `AppShell`, activity bar and
-omnibar as the GUI backends.
-
-So `Unsupported` / `None` is **not** an acceptable answer for a capability the
-user is meant to interact with. Reserve it for things that are *physically*
-absent on a terminal — a tray icon, a dock badge, an OS global shortcut. There
-is nothing to degrade to for those. There is always something to degrade to for
-a dialog.
-
-**The crate owns the degrade, not the app.** A `PlatformServices` method that
-returns `None` on TUI and tells the app to "provide an in-canvas picker instead"
-pushes the work onto every consumer — the duplication this crate exists to
-prevent. The degrade belongs in `compose/`, behind the same call, so one
-app-side call site gets a native dialog on GUI and an in-canvas one on TUI.
-
-`compose::FolderPickerController` is the pattern done right: it began as
-vimcode's TUI-local `FolderPickerState` and was lifted here verbatim, so today
-vimcode drives one backend-neutral picker on every backend and branches nowhere.
-Copy that shape. What is still missing is a **file** open/save picker (only the
-folder one exists) and a **message-dialog** controller — `primitives/dialog.rs`
-paints, but nothing drives the show-block-return-a-choice contract
-`show_message_dialog` has. Until those land, `show_file_open_dialog`,
-`show_file_save_dialog` and `show_message_dialog` are GUI-only.
-
-A synchronous in-canvas degrade is not a novelty: GTK's own
-`show_message_dialog` already pumps its loop (`pump_until_ready`) to make a
-native dialog block. A TUI nested draw-and-read loop is the same shape.
-
-When adding any capability, state its TUI story explicitly and ship a `tui_*`
-test for it. "Terminal, so no" is a conclusion that has to be *earned* per
-capability, not assumed.
+**Clipboard events:** `UiEvent::ClipboardPaste(String)` inserts pasted text into
+the focused input; `UiEvent::TextCopied(String)` only confirms a copy happened.
+Ctrl-C copy in a new backend/primitive emits `TextCopied`, never `ClipboardPaste`.
 
 ## Downstream consumers — READ BEFORE CHANGING ANY `pub` ITEM
 
-quadraui is `publish = false`, `version = "0.0.1"`. **Nothing anywhere pins a published version of this crate.** `vimcode` depends on it by *relative path to a sibling checkout*, and its CI clones `develop`. `coord-tui` used to as well, but since `claude-coordinator#1973` (2026-08-10) it pins `quadraui` to a fixed git rev instead — a *deliberate, reviewable* dependency bump on coord-tui's side, not automatic drift:
+quadraui is **published on crates.io** (`quadraui/Cargo.toml` `version`, 0.1.x);
+`release.yml` publishes when a `develop` → `main` promotion carries a version bump.
 
-**coord-tui moved repos on 2026-08-29.** `claude-coordinator#2899` deleted `tui/` from the coordinator repo and split it into a standalone `JDonaghy/coord-tui` (the coordinator repo itself was renamed `claude-coordinator` → `code-coordinator`; GitHub still redirects the old URL). Anything in this repo that referenced `claude-coordinator/tui` as a *path* — the blast-radius grep below, `ci.yml`'s `downstream` job — had to move with it. `JDonaghy/coord-tui` is **not anonymously readable**, so the `downstream` job's coord-tui leg only runs when a repo secret `COORD_TUI_TOKEN` (read-only, `contents:read` on coord-tui) is present; without it that leg skips with a loud `::warning::` and **only vimcode is compile-checked**. Until that secret exists, treat coord-tui's compile status as *unverified by CI* and do the blast-radius grep by hand.
-
-| Consumer | Declaration | Its CI |
+| Consumer | Declaration | Breaks when |
 |---|---|---|
-| `coord-tui` — `JDonaghy/coord-tui` (repo root *is* the crate root) | `quadraui = { git = "https://github.com/JDonaghy/quadraui", rev = "<pinned sha>", features = ["tui","terminal"] }` | its own CI builds against the pinned rev, **not** `develop`'s tip |
-| `vimcode` — `JDonaghy/vimcode` | `quadraui = { path = "../quadraui/quadraui", … }` **plus** `vt100 = { path = "../quadraui/vendor/vt100-0.16.2-patched" }` | `ci.yml` clones `--branch develop`, hard-pinned further by `build.rs` against `quadraui-pin.txt` (vimcode#638) |
+| `vimcode` — `JDonaghy/vimcode` | `quadraui = { version = "0.1.x", … }` from crates.io | the next 0.1.x it `cargo update`s to — so **a breaking change in a 0.1.x release is a semver violation** |
+| `coord-tui` — `JDonaghy/coord-tui` | `quadraui = { git = …, rev = "<pinned sha>" }` | its next deliberate rev bump |
 
-Consequences, all of which have already bitten:
-
-- A breaking change is **live in vimcode's CI the instant it merges to `develop`** (coord-tui is insulated from this by its rev pin, but only until someone bumps that rev). Not at their next release — at their next `cargo build`.
-- It turns **every open vimcode PR red**, including PRs that touch nothing related, retroactively.
-- There is **no version bump to blame**, so a breaking merge can't be spotted by "which release did this."
-
-`ci.yml`'s `downstream` job (#528) now `cargo check --all-targets`s both consumers against every PR's quadraui — for coord-tui this means overriding its git-rev pin with a `.cargo/config.toml` `paths` override onto the PR's checkout (the same mechanism coord-tui documents for local co-development in `cargo-config-local-quadraui.toml.example`, written with an absolute path so it can't drift when their checkout layout moves — as it did in #2899), and for vimcode it means setting `VIMCODE_QUADRAUI_UNPINNED=1` so `build.rs`'s pin-mismatch check downgrades to a warning instead of aborting the build before any real compilation happens — with a control run against `develop`'s tip quadraui so pre-existing consumer breakage doesn't fail quadraui's own CI. That catches "doesn't compile" before merge — it does not catch "compiles but does the wrong thing." You are still the gate for everything the compiler can't see.
-
-Three details in that job are load-bearing and easy to "tidy" into a permanently-green no-op — if you touch it, keep all three:
-
-- **Each cargo step `cd`s into the consumer** (`working-directory:`), never `cargo check --manifest-path …` from the workspace root. Cargo finds `.cargo/config.toml` by walking up from the *process CWD*, not from `--manifest-path`'s directory, so the coord-tui `paths` override is silently discarded by the `--manifest-path` form and the check quietly builds the pinned git rev instead of the PR. A `cargo metadata` assertion step fails the job loudly if that ever regresses.
-- **`--all-targets`, not a bare `cargo check`.** quadraui's most-consumed public surface, `tui::testing::{TuiDriver, driver_with_shell}`, is referenced only from coord-tui's *test* targets, which a bare `cargo check` never compiles.
-- **`RUSTFLAGS: ""` overrides the workflow-level `-D warnings`**, so a rule-3 `#[deprecated]` shim stays green downstream (see rule 3's *deprecated lint* note below). The features are each consumer's own default (`tui,terminal` for coord-tui via its dep line; `gui` for vimcode, which is why the job apt-installs GTK4 — that also buys consumer compile-truth for quadraui's GTK backend).
-
-This is not hypothetical. #476 ("de-coord board.rs") replaced `Stage` with `CardBadge`, renamed `BadgeStatus::RequestChanges` → `Warning`, deleted two `BoardCard` fields and `BoardAction`'s domain verbs — all correct as *design*. Both consumers broke on 2026-08-05 and coord-tui needed a migration PR (`claude-coordinator#1864`). The change shipped believing it was safe partly because this file used to claim consumers "pin a published version externally." They never did.
-
-**The design rule and the delivery rule point in opposite directions, and both hold.** Keep one consumer's vocabulary *out* of the primitives (that is what #476 was fixing, and it was right). Keep both consumers' *compile status* in mind while landing it.
+`ci.yml`'s `downstream` job `cargo check --all-targets`s both consumers against the
+PR (coord-tui only when the `COORD_TUI_TOKEN` secret exists). It proves "compiles",
+not "behaves" — you are the gate for the rest. **If you touch that job, keep its
+three load-bearing properties** (`working-directory:` not `--manifest-path`,
+`--all-targets`, `RUSTFLAGS: ""`); details in `AGENT_REFERENCE.md`.
 
 ### Before you change, rename, or remove any `pub` item
 
-1. **Measure the blast radius.** Both consumers are checked out beside this repo:
-   ```bash
-   grep -rn '<symbol>' ~/src/coord-tui/src ~/src/vimcode/src
-   ```
-   (`~/src/coord-tui`, not `~/src/claude-coordinator/tui` — see the repo-move note above.)
-   Zero hits in both, and no in-tree use ⇒ free to remove; **paste the grep output in the PR body** rather than asserting it. Any hit ⇒ this is a breaking change, and rules 2–4 apply.
-2. **Prefer a shape that isn't breaking at all.** In order:
-   - a **default impl on any trait a consumer implements** — today that is `ShellApp` and `AppLogic`, the only quadraui traits `coord-tui` and `vimcode` implement. (`Backend` is in-tree-only: rule 7's deliberate no-default compile error is a to-do list for our own backends and costs consumers nothing. Don't "fix" it with defaults.)
-   - `#[non_exhaustive]` on public structs and enums, so later fields and variants are additive;
-   - a new field carrying `Default`, or a builder, instead of a new required constructor argument;
-   - a new function *alongside* the old one instead of a rename.
-3. **If it must break, deprecate first — that is two PRs, not one.**
-   - **PR 1** adds the new shape **and keeps the old one compiling** behind `#[deprecated(since = "…", note = "use X instead")]`: a `pub use Old as New` alias, a `From` impl, a forwarding method. Consumers keep building, with a warning that names their fix. Open the consumer migration issue in the same session and link it here.
-   - **PR 2** deletes the shim, *after* those migrations merge. Reference them.
+1. **Measure the blast radius** and **paste the grep output in the PR body**:
+   `grep -rn '<symbol>' ~/src/coord-tui/src ~/src/vimcode/src`. Zero hits and no
+   in-tree use ⇒ free to remove. Any hit ⇒ breaking; rules 2–4 apply.
+2. **Prefer a non-breaking shape**, in order: a default impl on a trait consumers
+   implement (`ShellApp`, `AppLogic` — *not* `Backend`, which is in-tree-only and
+   deliberately has no defaults); `#[non_exhaustive]` on public structs/enums; a
+   new `Default` field or builder instead of a new required argument; a new
+   function alongside the old one instead of a rename.
+3. **If it must break, deprecate first — two PRs.** PR 1 adds the new shape and
+   keeps the old one compiling behind `#[deprecated(since = "…", note = "use X
+   instead")]` (alias / `From` / forwarding method), migrates every **in-repo**
+   call site in the same PR (`deprecated` is denied in-repo by `-D warnings`), and
+   opens the consumer migration issue. PR 2 deletes the shim after the migrations
+   merge. A `deprecated` warning must never fail a consumer's CI — if it does, fix
+   that gate, don't stop deprecating.
+4. **One breaking change per PR.** Don't batch unrelated removals.
+5. **Declare it.** A PR touching a `pub` item has a `## Downstream impact` section
+   naming each consumer file that must move (or "no consumer hits" + the grep), and
+   a `CHANGELOG.md` `[Unreleased]` entry (`Added` / `Deprecated` / `Removed` /
+   `Fixed`). Review sends back a public-API PR missing either.
 
-   A rename under this rule costs one `pub use` + one attribute. That is the entire difference between a compiler warning and two repos' CI going red.
+Mechanics and shim patterns: `quadraui/docs/PRIMITIVE_RULES.md` rule 8.
 
-   **The `deprecated` lint is denied in-repo and allowed downstream — deliberately, and the two must not drift together.**
-   `ci.yml` sets `RUSTFLAGS: "-D warnings"` workflow-wide, so the instant PR 1 lands, `#[deprecated]` turns every remaining in-repo call site into a build failure. That split is intentional, not a bug to "fix" by relaxing this repo's lint:
-   - **In-repo (this repo's `ci.yml`): `deprecated` stays denied.** quadraui migrates its own call sites (examples, `kubeui*` demo apps, tests) in the *same* PR that adds the `#[deprecated]` attribute — PR 1 doesn't merge with a warning still live in-tree. That's what forces the shim to actually compile clean here rather than just existing on paper.
-   - **Downstream (the consumer lint gate, #543): `deprecated` is allowed.** `coord-tui` and `vimcode` build against this repo's `develop` tip with no version pin (see *Downstream consumers* above), so a consumer mid-migration is expected to keep calling the old shape for a while after PR 1 merges — that's the whole point of deprecate-then-remove instead of a hard break. If the downstream gate denies `deprecated` too, a rule-3-compliant PR 1 turns both consumers' CI red on merge, which is exactly the failure this rule exists to prevent, and indistinguishable from just breaking the API outright. Worse: the non-compliant path (skip the deprecation shim, break it directly) would stay green under a `-D warnings` downstream gate, since there's no warning to deny — so a strict downstream gate quietly *punishes* following this rule and rewards skipping it.
-   - Consequence: **a `deprecated` warning must never fail CI in `coord-tui` or `vimcode`** on account of a quadraui shim. If it does, the downstream gate has drifted from this policy — fix the gate (#543), don't stop deprecating.
-4. **Don't batch unrelated removals.** #476 removed a type, renamed a variant, deleted two fields and gutted a keymap in one commit, so the consumer migration was all-or-nothing with no partially-compiling state to bisect from. One breaking change per PR.
-5. **Declare it.** Any PR touching a `pub` item gets a `## Downstream impact` section naming each consumer file that must move (or stating "no consumer hits", with the grep). **A public-API PR without that section should be sent back at review.**
+## Development workflow
 
-Mechanics, worked examples, and the deprecation-shim patterns live in `quadraui/docs/PRIMITIVE_RULES.md` rule 8.
-
-## Development Workflow
-
-All non-trivial work should be tracked via GitHub Issues.
-
-**Documentation-only changes** (pure `.md` edits) may be committed directly to `develop` and pushed. No branch, no smoke test.
-
-**For all other changes:**
-
-1. **Always work on a local branch off `develop`.** Never commit code directly to `develop`. Branch naming: `issue-{number}-{short-description}` or `{kind}-{short-description}`.
-2. **Run the full quality gate before each commit** (see `quadraui/docs/TESTING.md`).
-3. **Do NOT push the branch yet.** Keep it local until smoke tests pass or the user agrees they're not needed. For primitive paint/click changes, the round-trip harness IS the smoke test.
-4. **Once approved, ask the user which landing path:**
-   - **Path A — merge locally + push.** Small/trivial changes. Fast-forward merge into `develop`, push, delete branch.
-   - **Path B — push branch + open PR.** Normal feature work, anything closing an issue. `gh pr create --base develop`.
-5. **When a merge closes an issue**, immediately `gh issue close <number> -c "Implemented in PR #N"`.
-
-**When in doubt, default to Path B.** Primitive changes, new rasterisers, harness additions, and public API changes all warrant Path B.
-
-**Creating issues:** at session end, create issues for planned but unstarted work. Include full design context — file paths, primitive shape, expected behavior, harness requirements. Issues should be self-contained.
-
-**Cross-repo prereq tracking:** label blocked issues `blocked` and reference the prereq as `<owner>/<repo>#<N>`.
+- Work on a branch off `develop` (`issue-{number}-{short-description}`); never
+  commit code directly to `develop`. PRs target `develop`. Interactive sessions:
+  ask the user before pushing or merging.
+- Label issues blocked on another repo `blocked` and reference the prereq as
+  `<owner>/<repo>#<N>`.
 
 ## Quality Gate
 
-These are the *exact* commands `.github/workflows/ci.yml` runs. Copy them
-verbatim — the package selection flags are load-bearing, not noise:
+**Workers: run the narrowest relevant tests, not the matrix below.** For your diff:
+`cargo test -p quadraui --features <feature> <filter>` for the modules/features you
+touched, `cargo clippy -p quadraui --features <feature> -- -D warnings` for those
+features, and `cargo fmt --all --check`. The full matrix is CI's job (and the
+coordinator's Test stage runs the routed command it is given, not this whole
+block). Never run a bare root-level `cargo test --features tui`: it drags in
+`kubeui-gtk` → GTK → `pkg-config` and fails for reasons unrelated to your diff.
+
+The matrix CI runs (kept in sync with ci.yml by `quadraui-repo-lint`; annotated
+copy in `AGENT_REFERENCE.md`):
 
 ```bash
-# tui leg — kubeui-gtk is EXCLUDED (it has no `tui` feature, and its
-# unconditional gtk4/pangocairo dep needs pkg-config + the GTK4 -dev
-# packages). Excluding it is what lets the whole tui gate run on a
-# machine with no GTK toolchain installed.
 cargo build  --features tui --workspace --exclude kubeui-gtk
 cargo test   --features tui --workspace --exclude kubeui-gtk
 cargo clippy --features tui --workspace --exclude kubeui-gtk -- -D warnings
-
-# gtk leg — kubeui (the TUI demo binary) is excluded instead. Needs
-# pkg-config + libgtk-4-dev; skip this leg locally if you don't have them
-# and let CI's gtk job cover it.
 cargo build  --features gtk,tui --workspace --exclude kubeui
 cargo test   --features gtk,tui --workspace --exclude kubeui --no-fail-fast
 cargo clippy --features gtk,tui --workspace --exclude kubeui -- -D warnings
-
-# win leg — no GTK, no Windows host required. `src/win/` is compiled on
-# every platform (only its WinAPI calls are `cfg(target_os = "windows")`),
-# so both of these run anywhere. They are a TYPE-CHECK of the
-# `cfg(target_os = "windows")` arms, not a test of them: on Linux every
-# real WinAPI call compiles to its `todo!()` fallback body. If your diff
-# touches `src/win/`, these two passing means nothing about whether your
-# rasteriser works — see "Win-GUI: building and testing for real" below.
 cargo check -p quadraui --features win
 cargo test  -p quadraui --features win
-
 cargo fmt --all --check
 ```
 
-**Do NOT substitute a bare `cargo test --features tui` at the workspace
-root.** It selects every member, so it drags in `kubeui-gtk` → `gtk4` →
-`glib-sys` → `pkg-config`, and on any machine without those system
-packages it fails in a build script before compiling a single line of
-quadraui — a failure that says nothing whatsoever about your diff. That
-is why CI spells out `--workspace --exclude kubeui-gtk`, and why you
-should too.
-
 ## Win-GUI: building and testing for real
 
-**The Windows build is no longer CI-only.** `dell64` (WSL2 on a Windows 11 host)
-cross-compiles `x86_64-pc-windows-msvc` from the Linux side via `cargo-xwin` and
-**runs the resulting `.exe` on its own Windows host** through WSL interop — against
-a live Direct2D stack, not a stub. If your issue is in the Win-GUI milestone you are
-dispatched there specifically so you can run your own code; do not settle for
-`cargo check`.
-
-```bash
-# build
-RUSTFLAGS="-C target-feature=+crt-static" \
-  cargo xwin build --target x86_64-pc-windows-msvc -p quadraui --features win
-
-# test — real execution on the Windows host, driven from this Linux shell
-RUSTFLAGS="-C target-feature=+crt-static" \
-CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=env \
-  cargo xwin test --target x86_64-pc-windows-msvc -p quadraui --features win
-```
-
-Both env vars are mandatory, and every one of these traps has already cost real
-time — none of them produces an error that points at its own cause:
-
-1. **`-C target-feature=+crt-static`.** The host has no `vcruntime140.dll` (no VC++
-   redistributable; installing one needs a UAC click at the console). Without it the
-   `.exe` exits **53 with completely empty output** — indistinguishable from a
-   program that ran and printed nothing.
-2. **`CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=env`.** `cargo xwin test` silently
-   injects a `wine` runner and dies with `could not execute process 'wine ...'`.
-   Override it and `binfmt_misc` (registered for the PE `MZ` magic) does the exec
-   directly; wine is never needed. stdout and exit codes round-trip intact.
-3. **CWD becomes `C:\Windows`.** Launching a PE from a WSL path prints `UNC paths
-   are not supported. Defaulting to Windows directory.`, so relative paths in tests
-   resolve there. Use `CARGO_MANIFEST_DIR` or absolute paths.
-4. **`WNDCLASSW` / `RegisterClassW` need the `Win32_Graphics_Gdi` feature**, not just
-   `Win32_UI_WindowsAndMessaging` — the struct carries `HBRUSH`/`HICON`. The error is
-   a bare "cannot find struct ... in this scope", which does not name the feature.
-
-**No interactive Windows desktop is required** for rasteriser work. `src/win/testing.rs`
-`HeadlessSurface` is `ID2D1DCRenderTarget` + `CreateDIBSection` with
-`D2D1_RENDER_TARGET_TYPE_SOFTWARE` (WARP): real Direct2D, no HWND, no GPU, no session.
-That is what the milestone's paint↔click round-trip tests run against, and it works
-from a headless shell. Only a live-HWND GUI smoke needs a desktop, and that tier is
-operator-run.
-
-**Scope warning for every rasteriser issue in this milestone.** They all replace
-`todo!()` stubs in the *same* file, `quadraui/src/win/backend.rs`. Touch only the
-`draw_*` methods your issue names — a drive-by fix to a neighbouring stub is what
-turns a serialized lane into a rebase conflict.
+The `--features win` lines above are a type-check on non-Windows hosts, not a test
+of Windows code. **Win-GUI milestone work runs for real on `dell64`**: build with
+`cargo xwin build` and test with `tools/win-test.sh` (playbook + traps in
+`quadraui/docs/TESTING.md` and `AGENT_REFERENCE.md`). Rasteriser issues there all
+edit `quadraui/src/win/backend.rs` — touch only the `draw_*` methods your issue
+names.
 
 ## Code Style
 
-- `rustfmt` defaults (4-space indent).
-- `PascalCase` types, `snake_case` functions/vars.
+- `rustfmt` defaults; `PascalCase` types, `snake_case` functions/vars.
 - Tests in `#[cfg(test)] mod tests` at file bottom.
-- Doc comments on public types/functions; `//!` module headers describe intent + invariants.
-- **Comments describe the code as it is, never its history.** No issue numbers (`#123`) and no
-  history phrases ("used to", "no longer", "before #", "this PR", "the reviewer", "adversarial
-  review") in `//`/`#` comments. That history goes in the commit message. CI's
-  **Comment-history lint (ratchet)** (`tools/comment_history_lint.py`) counts both per module
-  and fails a PR that raises any module's count, so a stray `// see #1234` is a red PR and a
-  wasted fix round. Run `python3 tools/comment_history_lint.py` before pushing. The only
-  exception is a load-bearing workaround reference whose removal is gated on that issue
-  closing (policy: `CONTRIBUTING.md` "Comment policy").
+- Doc comments on public items; `//!` module headers describe intent + invariants.
+- **Comments describe the code as it is, never its history.** No issue numbers
+  (`#123`) and no history phrases ("used to", "no longer", "before #", "this PR",
+  "the reviewer", "adversarial review") in `//`/`#` comments — history goes in the
+  commit message. CI's comment-history ratchet (`tools/comment_history_lint.py`)
+  fails a PR that raises any module's count; run
+  `python3 tools/comment_history_lint.py` before pushing. Only exception: a
+  load-bearing workaround reference gated on that issue closing
+  (`CONTRIBUTING.md` "Comment policy").
 
 ## Commit conventions
 
-`<type>(<scope>): <imperative summary>`. Examples:
-
-- `feat(quadraui): add TreeView column headers`
-- `fix(quadraui): MSV scrollbar bounds clip body width correctly`
-- `test(quadraui): TUI tree paint/click round-trip harness`
-- `refactor(quadraui): extract tui_tree_layout helper`
-
-Scope is `quadraui` for library changes, `kubeui` / `kubeui-gtk` / `kubeui-core` for demo changes.
+`<type>(<scope>): <imperative summary>` — e.g. `feat(quadraui): add TreeView column
+headers`, `test(quadraui): TUI tree paint/click round-trip harness`. Scope is
+`quadraui` for the library, `kubeui` / `kubeui-gtk` / `kubeui-core` for demos.
 
 ## Demos are mandatory for visual features
 
-**Any new primitive, new interaction, or visual behaviour change must ship with a runnable demo.**
-
-- New primitive → new `examples/tui_<name>.rs` (and `examples/gtk_<name>.rs` if GTK is in scope)
-- New interaction on an existing primitive → extend the relevant existing example or add a new one
-- The demo must exercise the changed code path visually — not just compile
-- Name demos after the feature: `tui_list_hscroll.rs`, not `tui_issue276.rs`
-- Verify with `cargo run --example <name> --features tui` (or `--features gtk`) before declaring done
-
-Examples follow a paired pattern: one `AppLogic` impl in `examples/common/<shape>.rs`, one ~10-line runner per backend. See `examples/tui_pipeline.rs` + `examples/gtk_pipeline.rs` as reference.
-
-**Every TUI example also ships an automated black-box test** (the acceptance bar — #304). A runnable demo proves it compiles + paints; a driver test proves it *behaves* and catches regressions with no human re-running it. A new or changed `tui_*` example → a **`TuiDriver` end-to-end test** in `tests/tui_example_driver.rs` (Tier-1, #300): build the example's `AppLogic` / `ShellApp`, drive the real `event → handle → render` path against the headless `TestBackend`, and assert with `find()` + `screen_contains()` — **never hardcode coordinates**. (`quadraui::tui::testing::{TuiDriver, driver_with_shell}`.) Primitive paint/click changes stay covered by the round-trip harness (Tier-2, above); GTK-example coverage waits on `GtkDriver` (#301) — **TUI only for now**. The tier-by-tier *how* lives in [`quadraui/docs/TESTING.md`](quadraui/docs/TESTING.md); this is the *bar*. The **adversarial reviewer enforces it** — a PR that adds or changes a `tui_*` example without its driver test should be rejected.
+- A new primitive, new interaction, or visual behaviour change ships a runnable
+  demo: `examples/tui_<name>.rs` (+ `examples/gtk_<name>.rs` if GTK is in scope),
+  paired via `examples/common/<shape>.rs` (reference: `tui_pipeline.rs` +
+  `gtk_pipeline.rs`). Name it after the feature (`tui_list_hscroll.rs`, not
+  `tui_issue276.rs`); it must exercise the changed path visually. Verify with
+  `cargo run --example <name> --features tui`.
+- **Every TUI example also ships an automated black-box test** — the acceptance
+  bar. A new or changed `tui_*` example gets a `TuiDriver` end-to-end test in
+  `tests/tui_example_driver.rs`: drive the real `event → handle → render` path on
+  the headless backend and assert with `find()` + `screen_contains()` — **never
+  hardcode coordinates** (`quadraui::tui::testing::{TuiDriver, driver_with_shell}`).
+  Primitive paint/click changes stay covered by the round-trip harness. GTK-example
+  coverage waits on `GtkDriver` — **TUI only for now**. The adversarial reviewer
+  rejects a `tui_*` example change without its driver test. Tier details:
+  `quadraui/docs/TESTING.md`.
 
 ## Oracle acceptance suite (sealed — do not edit)
 
-`quadraui/tests/acceptance.rs` is the sealed entrypoint the oracle loop drives (#556). The fleet config's `acceptance.drivers.quadraui` entry (`~/src/coord-settings/coord/coordinator.yml` on the daemon host — not in this repo) runs:
+`quadraui/tests/acceptance.rs` is the sealed entrypoint the oracle loop drives
+(`cd quadraui && RUSTC_BOOTSTRAP=1 cargo test --test acceptance --features tui,gtk
+-- -Z unstable-options --format json`). Its sealed block, below the `SEALED` banner,
+`include!`s per-milestone slices from repo-root `tests/acceptance/<ms>/`.
 
-```sh
-cd quadraui && RUSTC_BOOTSTRAP=1 cargo test --test acceptance --features tui,gtk -- -Z unstable-options --format json
-```
-
-The file has two parts: an unsealed seam (fixture `#[path]` includes into `examples/common/`, plus one driver test per backend proving the harness reaches an example `AppLogic`) and a **sealed block**, marked with a `SEALED` banner comment, that `include!`s each milestone's acceptance slices from the repo-root `tests/acceptance/<ms>/<name>.rs` (e.g. `tests/acceptance/ms-11/`).
-
-**Workers must not create, edit, or delete anything under the repo-root `tests/acceptance/` directory, and must not touch the sealed block in `quadraui/tests/acceptance.rs` below its `SEALED` marker.** Those slices are authored independently as part of a milestone's own Gate A sign-off (`coord gate-a --approved`), not by a Work dispatch — see `quadraui/tests/acceptance.rs`'s module doc for the full seam/sealed split.
-
-## Event model: TextCopied vs ClipboardPaste
-
-Two clipboard events that must not be conflated:
-
-| Event | Meaning |
-|---|---|
-| `UiEvent::ClipboardPaste(String)` | User pasted text into an input (bracketed paste). Route to focused text field. |
-| `UiEvent::TextCopied(String)` | Broadcast after text was copied to clipboard. Used for copy-confirmation UI. |
-
-`ClipboardPaste` inserts text. `TextCopied` confirms a copy happened. When implementing Ctrl-C copy in a new backend or primitive, emit `TextCopied` — not `ClipboardPaste`.
+**Workers must not create, edit, or delete anything under repo-root
+`tests/acceptance/`, and must not touch `quadraui/tests/acceptance.rs` below its
+`SEALED` marker.** Those slices are authored at a milestone's Gate A, not by a Work
+dispatch.
 
 ## Branching + releases
 
-- `main` — released/stable. Only updated by release merges from `develop`.
-- `develop` — integration branch. All feature work merges here first.
+- `main` — released/stable; only updated by `develop` → `main` promotion merges
+  (a version bump in one triggers the crates.io publish).
+- `develop` — integration branch; all feature work merges here first.
 
-## Reference consumer: vimcode (`~/src/vimcode`)
+## Reference consumer: vimcode
 
-**vimcode is quadraui's primary consumer and R&D lab.** Every primitive, rasteriser, hit_test pattern, and compose helper in quadraui was first prototyped as per-backend code in vimcode, then extracted. When building new quadraui features — especially the runtime epics (#202 GTK, #203 TUI, #204 macOS) — **read vimcode's existing implementation first:**
-
-| quadraui feature | vimcode reference code |
-|-----------------|----------------------|
-| `Backend::draw_frame()` (#199) | `src/gtk/draw.rs::draw_editor()` — 3874-line orchestration function that calls each `draw_*` in z-order. This is the spec for what `draw_frame` must do. |
-| `FrameHitMap` / unified click dispatch (#197, #198) | `src/gtk/click.rs::pixel_to_click_target()` — zone detection pipeline using `screen_zone_hit_test` + `window_zone_hit_test`. Shows every click zone the hit map must cover. |
-| GTK widget tree (#202 Stage 1) | `src/gtk/mod.rs::fn init()` (~2122 lines) — creates every GTK widget, event controller, and draw closure. This is the mechanical boilerplate `AppShell` must generate. |
-| Event wiring (#202 Stage 2) | `src/gtk/mod.rs::fn init()` event controller blocks + `enum Msg` (~333 variants) + `fn update()` (~736-line dispatch). Shows every GDK event type that must be translated. |
-| TUI event loop (#203) | `src/tui_main/mod.rs` — crossterm poll loop, `handle_mouse()` dispatch, `draw_frame()` calls. Same structure the TUI runtime must own. |
-| Cached layout hit-test pattern | `CompletionsLayout::hit_test()`, `ContextMenuLayout::hit_test()`, `BottomPanelGeometry` + `resolve_bottom_panel_zone()` — all proven in vimcode Sessions 379. Cache at paint, hit-test at click. |
-| SidebarSystem GTK rasteriser (#200) | `src/gtk/draw.rs::draw_source_control_panel()` (405 lines) — bespoke Cairo rendering that should delegate to quadraui. TUI already delegates via `SidebarSystem`. |
-| Per-panel handlers (#202 Stage 5) | `src/gtk/mod.rs::handle_*_msg()` functions (~1500 lines total) — explorer, SC, extensions, debug, settings, terminal, AI, dialog. Shows what engine methods the runtime must call. |
-
-**How to use this:** Before implementing a quadraui runtime feature, `cd ~/src/vimcode` and read the corresponding backend code. The vimcode implementation is the working prototype — extract the pattern, don't reinvent it. The goal is that vimcode's `src/gtk/` shrinks from 16K lines to ~60 lines as each stage lands.
+vimcode (`~/src/vimcode`) is where most primitives, rasterisers and hit-test patterns
+were first prototyped. Before building a new runtime feature, read vimcode's
+equivalent code and extract the pattern rather than reinventing it — the
+feature → file map is in `AGENT_REFERENCE.md`.

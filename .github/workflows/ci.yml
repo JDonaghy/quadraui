@@ -338,6 +338,10 @@ jobs:
       # somewhere in CI instead of only on a worker's local machine.
       - name: release_decide.py unit tests
         run: python3 scripts/test_release_decide.py
+      - name: site_gen.py unit tests
+        run: python3 tools/test_site_gen.py
+      - name: introduction.md / README.md hello-world sync check
+        run: python3 tools/test_introduction_matches_readme.py
 
   tui:
     name: tui + win (build, test, clippy) — ${{ matrix.os }}
@@ -502,9 +506,18 @@ jobs:
       # order). Same gap, same fix shape as the `win`/`macos` compile
       # gates above: a typo'd `run_with_shell` call in the gallery's `win`
       # arm would otherwise ship green.
+      #
+      # `--all-targets` so the gallery lib's own `#[cfg(test)]` modules
+      # compile with `tui` off: a `quadraui::tui::…` reference from an
+      # ungated test module is invisible to every `tui`-feature step
+      # above and to `macos.yml` (whose `paths` filter is
+      # `quadraui/src/**`, which gallery sources don't match), so it
+      # would land green here and break the macOS lane on an unrelated
+      # PR. This leg needs no system packages, so it is the cheapest
+      # place to catch a `tui`-off gallery build.
       - name: Compile check (gallery, win feature)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p quadraui-gallery --features win
+        run: cargo check -p quadraui-gallery --features win --all-targets
       # macOS compile gate, cross-target — the same trick the win compile
       # gate above plays, for the one backend that had no Linux-side gate
       # at all. `lib.rs` cfg's `mod macos` on `target_os = "macos"`, so a
@@ -686,6 +699,25 @@ jobs:
       # rather than `--workspace`: examples aren't workspace-wide.
       - name: Build (tui_terminal example, tui + terminal features)
         run: cargo build -p quadraui --example tui_terminal --features tui,terminal
+      # Same gap, same fix, one layer up: `quadraui-gallery`'s own `terminal`
+      # feature (`demos::terminal`, gated in `registry::registry`) is never
+      # turned on by the plain `cargo {build,test} --features tui --workspace`
+      # steps near the top of this job — `--workspace --features tui` only
+      # enables features actually named `tui` on each member, so
+      # `quadraui-gallery`'s `terminal` feature stays off and
+      # `src/demos/terminal.rs` (and its `#[cfg(feature = "terminal")]` driver
+      # test in `tests/gallery_driver.rs`) has never actually been compiled or
+      # run by CI. `-p quadraui-gallery --features tui,terminal` (not
+      # `--workspace`) scopes this to the one crate the feature lives on;
+      # `--all-targets` on the check step so the test binary (which only
+      # exists under `terminal`) is actually type-checked, matching the
+      # gallery `win`/`gtk` compile-check steps elsewhere in this workflow.
+      - name: Compile check (gallery, tui + terminal features)
+        run: cargo check -p quadraui-gallery --features tui,terminal --all-targets
+      - name: Test (gallery, tui + terminal features)
+        run: cargo test -p quadraui-gallery --features tui,terminal
+      - name: Clippy (gallery, tui + terminal features)
+        run: cargo clippy -p quadraui-gallery --features tui,terminal --all-targets -- -D warnings
       # `terminal_engine.rs` (the PTY + vt100 + scrollback engine) is gated
       # on `feature = "terminal"` alone (lib.rs), so its 54 `#[cfg(test)]`
       # unit tests are never compiled by the plain `--features tui` test
@@ -834,8 +866,10 @@ jobs:
       # green despite the issue's headline deliverable being exactly
       # `cargo run -p quadraui-gallery --features gtk`. `--features gtk`
       # alone (no `tui`) is what actually reaches the arm.
+      # `--all-targets` for the same reason the `win` gallery gate uses
+      # it: the lib's `#[cfg(test)]` modules must compile with `tui` off.
       - name: Compile check (gallery, gtk feature only)
-        run: cargo check -p quadraui-gallery --features gtk
+        run: cargo check -p quadraui-gallery --features gtk --all-targets
       # Both backends registered at once, so the artifact from this job is
       # the full cross-backend matrix rather than a single column.
       - name: Conformance matrix (gtk + tui)
@@ -1053,24 +1087,23 @@ jobs:
           fi
 
   downstream:
-    # Compile truth for the two external consumers (#528). quadraui is
-    # `publish = false`, nothing pins a published version, and vimcode's own
-    # CI clones this repo's `develop` tip by relative path — so quadraui
-    # being green here has historically proven nothing about the consumers
-    # (#476 broke both on 2026-08-05, silently, until their next CI run).
-    # This job clones both consumers as siblings of this checkout so
-    # vimcode's `path = "../quadraui/quadraui"` dep resolves straight onto
-    # the PR's quadraui. coord-tui no longer has a path dep at all — since
-    # claude-coordinator#1973 it pins `quadraui` to a fixed git rev — so for
-    # coord-tui specifically, the steps below also drop a `.cargo/config.toml`
-    # `paths` override into its checkout to redirect that pinned dep onto
-    # the sibling checkout too — and, because cargo discovers that config by
-    # walking up from the *process CWD* and not from `--manifest-path`, every
-    # cargo step below sets `working-directory:` into the consumer rather
-    # than passing `--manifest-path` from the workspace root. Getting that
-    # wrong makes the override a no-op and the coord-tui leg silently inert;
-    # a `cargo metadata` assertion below fails the job loudly if it ever
-    # regresses. Both consumers are then `cargo check --all-targets`ed.
+    # Compile truth for the two external consumers: quadraui being green on
+    # its own proves nothing about whether vimcode and coord-tui still build
+    # against it. This job clones both consumers as siblings of this
+    # checkout, redirects each one's `quadraui` dependency onto the tested
+    # quadraui, and `cargo check --all-targets`es them.
+    #
+    # Neither consumer resolves `quadraui` to this checkout on its own:
+    # vimcode depends on the crates.io release, coord-tui pins a fixed git
+    # rev. So the steps below write a `.cargo/config.toml` override into each
+    # consumer's checkout — a `[patch.crates-io]` table appended to vimcode's
+    # own config, a `paths` override for coord-tui. Because cargo discovers
+    # that config by walking up from the *process CWD* and not from
+    # `--manifest-path`, every cargo step below sets `working-directory:`
+    # into the consumer rather than passing `--manifest-path` from the
+    # workspace root. Getting that wrong makes the override a no-op and the
+    # leg silently inert, so a `cargo metadata` assertion per consumer fails
+    # the job loudly unless `quadraui` really resolved to this checkout.
     #
     # coord-tui lives in `JDonaghy/coord-tui` since claude-coordinator#2899
     # (2026-08-29) split it out of the coordinator repo — repo root = crate
@@ -1228,6 +1261,41 @@ jobs:
           mkdir -p "$D/.cargo"
           printf 'paths = ["%s"]\n' "$Q" > "$D/.cargo/config.toml"
 
+      # vimcode depends on `quadraui = { version = "0.1.x", ... }` from
+      # crates.io, so without an override it compiles against the published
+      # crate and this leg says nothing about the PR. A `[patch.crates-io]`
+      # entry replaces that registry source with the checked-out quadraui.
+      #
+      # vimcode commits its own `.cargo/config.toml` (a `[target.*]` rustflags
+      # table), so the patch table is *appended*, never written over it:
+      # appending a new table is valid TOML and keeps vimcode's settings,
+      # whereas a top-level key such as `paths = [...]` appended after that
+      # table would land inside it. If vimcode ever grows its own
+      # `[patch.crates-io]` table, a second one is a TOML duplicate-table
+      # error, so that case fails here with a pointed message instead.
+      #
+      # The patch only applies while this checkout's version still satisfies
+      # vimcode's requirement (the lock entry is re-resolved to it below);
+      # past that cargo warns "patch was not used" and quietly falls back to
+      # crates.io. The assertion step below turns that
+      # into a hard failure, which is the signal to bump vimcode's dependency.
+      - name: Point vimcode at this PR's quadraui, not crates.io
+        run: |
+          set -euo pipefail
+          D="$(dirname "$GITHUB_WORKSPACE")/vimcode"
+          Q="$(cd "$GITHUB_WORKSPACE/quadraui" && pwd -P)"
+          mkdir -p "$D/.cargo"
+          if grep -qE '^[[:space:]]*\[patch\.crates-io\]' "$D/.cargo/config.toml" 2>/dev/null; then
+            echo "::error::vimcode's .cargo/config.toml already has a [patch.crates-io] table. Merge the quadraui entry into it here rather than appending a second table."
+            exit 1
+          fi
+          printf '\n[patch.crates-io]\nquadraui = { path = "%s" }\n' "$Q" >> "$D/.cargo/config.toml"
+          cat "$D/.cargo/config.toml"
+          # vimcode's Cargo.lock pins the published quadraui version; a patch
+          # with a different (still semver-compatible) version is ignored
+          # until the lock entry is re-resolved against it.
+          (cd "$D" && cargo update -p quadraui)
+
       # Placed after the consumer clone (and the coord-tui .cargo override
       # above) so the action's Cargo.lock hashing can actually see the
       # consumer manifests it's told to cache below — caching this job at
@@ -1277,10 +1345,8 @@ jobs:
       # linked the *git* source; invoked with CWD inside the manifest's
       # directory it linked the *local override*. Do not "simplify" these
       # back to a bare `--manifest-path` from the workspace root.
-      # vimcode has no `.cargo/config.toml` today (its build.rs resolves the
-      # sibling quadraui from CARGO_MANIFEST_DIR, so it is CWD-independent),
-      # but its steps below cd in too, so adding one upstream can't silently
-      # re-open this same hole.
+      # The same holds for vimcode: its `[patch.crates-io]` override lives in
+      # its `.cargo/config.toml` too, so its steps below cd in as well.
       #
       # `working-directory: ${{ env.COORD_TUI_DIR }}` rather than a literal
       # path: the clone step above resolves the crate directory (repo root
@@ -1308,28 +1374,29 @@ jobs:
         working-directory: ${{ env.COORD_TUI_DIR }}
         run: cargo check --all-targets
 
-      # vimcode's build.rs (vimcode#638) panics before compiling any real
-      # source if the sibling quadraui checkout's HEAD doesn't exactly match
-      # the SHA pinned in `quadraui-pin.txt` — which the tip clone above
-      # never will, since this job floats both the PR's and develop's
-      # quadraui rather than the one specific SHA vimcode happens to have
-      # pinned. Left unset, that panic fires unconditionally on every run
-      # (PR side and control side alike), so pr_vimcode and control_vimcode
-      # would always fail identically and the "pre-existing breakage"
-      # classification below would swallow every real signal. vimcode ships
-      # an escape hatch for exactly this — building against a deliberately
-      # different quadraui rev — documented in `quadraui-pin.txt`:
-      # VIMCODE_QUADRAUI_UNPINNED=1 downgrades the mismatch to a warning and
-      # lets the build proceed to actually compile against the checked-out
-      # quadraui. Never set this for a normal vimcode dev build; it is
-      # correct here because floating both sides of the comparison against
-      # the pin is the entire point of this job.
+      # `cargo tree` puts the resolved source in the log for a human reading
+      # it; the `cargo metadata` comparison is what actually gates. A
+      # registry-resolved quadraui shows a `~/.cargo/registry` manifest path
+      # here and fails the job.
+      - name: Assert vimcode actually resolves quadraui to this PR's checkout
+        working-directory: ../vimcode
+        run: |
+          set -euo pipefail
+          want="$(cd "$GITHUB_WORKSPACE/quadraui" && pwd -P)/Cargo.toml"
+          cargo tree -p quadraui --depth 0 | tee /dev/stderr | grep -F "($(dirname "$want"))" \
+            || { echo "::error::cargo tree does not show quadraui from '$(dirname "$want")'."; exit 1; }
+          got="$(cargo metadata --format-version 1 \
+                 | jq -r '.packages[] | select(.name=="quadraui") | .manifest_path')"
+          echo "quadraui resolved to: $got"
+          if [ "$got" != "$want" ]; then
+            echo "::error::vimcode resolved quadraui to '$got', expected this PR's checkout at '$want'. The [patch.crates-io] override did not take effect (crates.io registry source, or this checkout's version no longer satisfies vimcode's requirement), so this gate would build vimcode against the published crate and prove nothing about this PR. Failing loudly rather than passing silently."
+            exit 1
+          fi
+
       - name: cargo check — vimcode (this PR's quadraui)
         id: pr_vimcode
         continue-on-error: true
         working-directory: ../vimcode
-        env:
-          VIMCODE_QUADRAUI_UNPINNED: "1"
         run: cargo check --all-targets
 
       # A consumer can be red for reasons that have nothing to do with this
@@ -1412,13 +1479,44 @@ jobs:
         working-directory: ${{ env.COORD_TUI_CONTROL_DIR }}
         run: cargo check --all-targets
 
+      # Control-side twin of the vimcode patch + assertion. Without the patch
+      # the control leg would build against crates.io rather than develop's
+      # tip, so a vimcode that develop's tip already breaks would be blamed
+      # on the PR under test.
+      - name: Point vimcode (control) at develop's tip quadraui
+        if: steps.pr_vimcode.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/control/vimcode"
+          Q="$(cd "$RUNNER_TEMP/control/quadraui/quadraui" && pwd -P)"
+          mkdir -p "$D/.cargo"
+          if grep -qE '^[[:space:]]*\[patch\.crates-io\]' "$D/.cargo/config.toml" 2>/dev/null; then
+            echo "::error::vimcode's .cargo/config.toml already has a [patch.crates-io] table. Merge the quadraui entry into it here rather than appending a second table."
+            exit 1
+          fi
+          printf '\n[patch.crates-io]\nquadraui = { path = "%s" }\n' "$Q" >> "$D/.cargo/config.toml"
+
+      - name: Assert vimcode (control) resolves quadraui to develop's tip
+        if: steps.pr_vimcode.outcome == 'failure'
+        working-directory: ${{ runner.temp }}/control/vimcode
+        run: |
+          set -euo pipefail
+          want="$(cd "$RUNNER_TEMP/control/quadraui/quadraui" && pwd -P)/Cargo.toml"
+          cargo tree -p quadraui --depth 0 | tee /dev/stderr | grep -F "($(dirname "$want"))" \
+            || { echo "::error::cargo tree does not show quadraui from '$(dirname "$want")'."; exit 1; }
+          got="$(cargo metadata --format-version 1 \
+                 | jq -r '.packages[] | select(.name=="quadraui") | .manifest_path')"
+          echo "quadraui resolved to: $got"
+          if [ "$got" != "$want" ]; then
+            echo "::error::vimcode (control) resolved quadraui to '$got', expected develop's tip at '$want'. The [patch.crates-io] override did not take effect, so the control leg is not a valid comparison against the PR leg."
+            exit 1
+          fi
+
       - name: cargo check — vimcode (control, develop's tip quadraui)
         if: steps.pr_vimcode.outcome == 'failure'
         id: control_vimcode
         continue-on-error: true
         working-directory: ${{ runner.temp }}/control/vimcode
-        env:
-          VIMCODE_QUADRAUI_UNPINNED: "1"
         run: cargo check --all-targets
 
       # This PR broke a consumer only if the PR check failed AND the control
@@ -1453,3 +1551,131 @@ jobs:
             fi
           fi
           exit "$fail"
+
+  template:
+    # `templates/app` is a `cargo generate` starter: a would-be
+    # consumer runs `cargo generate --git https://github.com/JDonaghy/quadraui
+    # templates/app` and gets a binary crate with one backend-generic
+    # `AppLogic`/`ShellApp` already wired to every backend feature. A
+    # template that silently rots — a renamed trait method, a feature flag
+    # that no longer forwards — is worse than no template: it is the very
+    # first thing a new consumer runs, so its breakage is a new consumer's
+    # first impression of this project. This job generates it fresh on
+    # every PR and proves it still builds and passes its own test, the same
+    # "is this still true" question `example-coverage` and `downstream`
+    # (above) ask for examples and consumers.
+    #
+    # `templates/app` is deliberately NOT a workspace member (root
+    # `Cargo.toml`'s `exclude` lists it) — it is a standalone crate shape
+    # cargo-generate copies out of this repo, not something this repo's own
+    # `cargo build --workspace` should ever compile in place. Its
+    # `Cargo.toml` pins `quadraui` to the published crates.io version (the
+    # same lead dependency shape the root README's "Getting started"
+    # section recommends), which this job overrides onto this PR's
+    # checkout with the same `.cargo/config.toml` `paths` override the
+    # `downstream` job above uses for coord-tui's git+rev pin — see that
+    # job's comment for why `working-directory:` (not `--manifest-path`) is
+    # load-bearing for cargo to actually discover it.
+    name: template (cargo generate smoke test)
+    runs-on: ubuntu-latest
+    # #1292: install cargo-generate (a few minutes, cached), generate the
+    # template, and `cargo test --features tui` the result — normally
+    # under 10 minutes with a warm cache.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Shares this runner's `~/.cargo/registry` across both `cargo install
+      # cargo-generate` below and the generated app's own build (which
+      # happens outside this checkout, in `$RUNNER_TEMP`, so the generated
+      # app's `target/` itself isn't what this caches — the registry is).
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-generate
+        run: cargo install cargo-generate --version 0.25.0 --locked
+
+      - name: Generate the template into a temp dir
+        run: |
+          set -euo pipefail
+          # cargo-generate requires `--destination` to already exist; a
+          # missing directory fails with a bare "No such file or directory".
+          mkdir -p "$RUNNER_TEMP/generated"
+          cargo generate \
+            --path "$GITHUB_WORKSPACE/templates/app" \
+            --name quadraui-template-smoke \
+            --destination "$RUNNER_TEMP/generated" \
+            --no-workspace \
+            --force
+
+      # Same mechanism the `downstream` job above uses for coord-tui's
+      # pinned git+rev dependency: a `paths` override matches by package
+      # name regardless of what source (a crates.io version, in this case)
+      # the manifest declares, redirecting it onto this PR's checkout
+      # instead.
+      - name: Point the generated app's quadraui dependency at this PR's checkout
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/generated/quadraui-template-smoke"
+          Q="$(cd "$GITHUB_WORKSPACE/quadraui" && pwd -P)"
+          mkdir -p "$D/.cargo"
+          printf 'paths = ["%s"]\n' "$Q" > "$D/.cargo/config.toml"
+
+      # Asserted, not assumed — same reasoning as the `downstream` job's own
+      # identical check: a silently-inert override would make this job prove
+      # nothing about the PR's quadraui at all.
+      - name: Assert the generated app resolves quadraui to this PR's checkout
+        working-directory: ${{ runner.temp }}/generated/quadraui-template-smoke
+        run: |
+          set -euo pipefail
+          want="$(cd "$GITHUB_WORKSPACE/quadraui" && pwd -P)/Cargo.toml"
+          got="$(cargo metadata --format-version 1 --features tui \
+                 | jq -r '.packages[] | select(.name=="quadraui") | .manifest_path')"
+          echo "quadraui resolved to: $got"
+          if [ "$got" != "$want" ]; then
+            echo "::error::The generated template resolved quadraui to '$got', expected this PR's checkout at '$want'. The .cargo/config.toml paths override did not take effect, so this job would build the template against its pinned crates.io version and prove nothing about this PR."
+            exit 1
+          fi
+
+      - name: cargo test --features tui (the template's own quality bar)
+        working-directory: ${{ runner.temp }}/generated/quadraui-template-smoke
+        run: cargo test --features tui
+
+      - name: cargo fmt --check (generated output matches rustfmt defaults)
+        working-directory: ${{ runner.temp }}/generated/quadraui-template-smoke
+        run: cargo fmt --check
+
+  gallery-capture-tui:
+    # Headless gallery capture mode (#1348): the TUI leg of the two-runner
+    # split described in `quadraui-gallery/src/capture.rs`'s module doc —
+    # this job is the Linux half, `macos.yml`'s `gallery-capture-macos` job
+    # is the macOS half. Both write images to a directory and upload it as
+    # an artifact for whoever is assembling the published gallery (a human,
+    # or a future publishing job) to download — neither is a correctness
+    # test, so `continue-on-error: true` on the job keeps a capture-mode
+    # bug from ever blocking a PR. The acceptance bar for *correctness* is
+    # `tests/capture_driver.rs` (asserted by the `tui` job above, which
+    # already runs `cargo test --features tui --workspace`); this job only
+    # proves the artifact a human would actually look at gets produced.
+    name: gallery capture (tui)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    # #1292: a single `cargo run --features tui -- --capture` over one
+    # registered demo; normally under a minute once the toolchain and
+    # dependencies are cached (shared with the `tui` job's own cache key).
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Capture every registered demo (tui backend)
+        run: |
+          mkdir -p target/gallery-capture
+          cargo run -p quadraui-gallery --features tui --bin quadraui-gallery -- \
+            --capture target/gallery-capture
+      - name: Upload gallery capture (tui)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gallery-capture-tui
+          path: target/gallery-capture
+          if-no-files-found: warn

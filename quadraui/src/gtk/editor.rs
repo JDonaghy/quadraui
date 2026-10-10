@@ -155,12 +155,40 @@ struct EditorPaintCtx<'a> {
     gutter_width: f64,
     text_x_offset: f64,
     editor_geom: EditorLayout,
+    text_v_offset: f64,
+}
+
+/// Vertical distance from a row's top edge to the top of the glyph cell
+/// that centres `font_metrics`'s own natural line height inside
+/// `line_height` — GTK's counterpart to
+/// [`crate::macos::editor::text_v_offset`] (same formula, Pango units
+/// instead of Core Text's). A host sets the editor's row pitch
+/// (`line_height`) independently of the font's natural ascent +
+/// descent — vimcode's VS Code-style 18px rows over a smaller editor
+/// font leaves slack below a glyph painted straight at `cr.move_to`'s
+/// row-top origin. Every text paint inside one row — gutter glyphs,
+/// body text, ghost continuation, inline annotation, the code-action
+/// lightbulb — adds this offset, so they share a baseline and the row
+/// reads centred like VS Code, matching the diagnostic-dot centring
+/// ([`paint_gutter_diagnostic_or_lightbulb`]) that already used
+/// `line_height * 0.5` for its own, unrelated reason.
+///
+/// Negative when `line_height` is tighter than the font's natural
+/// height — see `text_v_offset`'s macOS doc for why that's left
+/// unclamped.
+fn text_v_offset(font_metrics: &pango::FontMetrics, line_height: f64) -> f64 {
+    let natural_height =
+        (font_metrics.ascent() + font_metrics.descent()) as f64 / pango::SCALE as f64;
+    (line_height - natural_height) / 2.0
 }
 
 /// [`draw_editor`], plus [`EditorPaintOptions`] a host can set to
 /// override otherwise-automatic paint decisions — currently just
 /// `suppress_v_scrollbar` (#968; see the module doc's "Minimap
 /// interaction" section).
+///
+/// Equivalent to [`draw_editor_with_options_and_v_scrollbar_w`] with
+/// `v_scrollbar_w: None` (a `char_width`-wide scrollbar column).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_editor_with_options(
     cr: &Context,
@@ -172,6 +200,36 @@ pub fn draw_editor_with_options(
     line_height: f64,
     options: EditorPaintOptions,
 ) {
+    draw_editor_with_options_and_v_scrollbar_w(
+        cr,
+        layout,
+        font_metrics,
+        editor,
+        theme,
+        char_width,
+        line_height,
+        options,
+        None,
+    )
+}
+
+/// [`draw_editor_with_options`], plus a host-settable vertical scrollbar
+/// width in pixels — see [`Editor::layout_with_options_and_v_scrollbar_w`]
+/// for the geometry. `None` sizes the column at `char_width`.
+/// `GtkBackend::draw_editor` calls this with the width set through
+/// [`crate::Backend::set_editor_v_scrollbar_width`].
+#[allow(clippy::too_many_arguments)]
+pub fn draw_editor_with_options_and_v_scrollbar_w(
+    cr: &Context,
+    layout: &pango::Layout,
+    font_metrics: &pango::FontMetrics,
+    editor: &Editor,
+    theme: &Theme,
+    char_width: f64,
+    line_height: f64,
+    options: EditorPaintOptions,
+    v_scrollbar_w: Option<f32>,
+) {
     let rect = &editor.rect;
     let gutter_width = editor.gutter_char_width as f64 * char_width;
     let h_scroll_offset = editor.scroll_left as f64 * char_width;
@@ -181,8 +239,15 @@ pub fn draw_editor_with_options(
     // can be narrowed by the same reserved scrollbar column the
     // scrollbar paint and `EditorLayout::hit_test` already agree on —
     // see the module doc's "Scrollbars" section.
-    let editor_geom =
-        editor.layout_with_options(*rect, char_width as f32, line_height as f32, options);
+    let editor_geom = editor.layout_with_options_and_v_scrollbar_w(
+        *rect,
+        char_width as f32,
+        line_height as f32,
+        options,
+        v_scrollbar_w,
+    );
+
+    let text_v_offset = text_v_offset(font_metrics, line_height);
 
     let ctx = EditorPaintCtx {
         cr,
@@ -196,6 +261,7 @@ pub fn draw_editor_with_options(
         gutter_width,
         text_x_offset,
         editor_geom,
+        text_v_offset,
     };
 
     paint_window_background(&ctx);
@@ -386,6 +452,9 @@ fn paint_gutter_row_number(ctx: &EditorPaintCtx, rl: &EditorLine, y: f64) {
     let (cr, layout, editor, theme, char_width, gutter_width) =
         (*cr, *layout, *editor, *theme, *char_width, *gutter_width);
     let rect = ctx.rect;
+    // Every glyph painted by this function is text, so it shares the
+    // row's `text_v_offset` — see that function's doc.
+    let y = y + ctx.text_v_offset;
     let mut char_offset = 0usize;
 
     // Breakpoint column (leftmost when has_breakpoints).
@@ -485,7 +554,10 @@ fn paint_gutter_diagnostic_or_lightbulb(ctx: &EditorPaintCtx, rl: &EditorLine, y
         cr.set_source_rgb(lr, lg, lb);
         let bulb_layout = layout.clone();
         bulb_layout.set_text(&editor.lightbulb_glyph.to_string());
-        cr.move_to(rect.x as f64 + 1.0, y);
+        // Text glyph, unlike the diagnostic dot above (which centres
+        // itself via `line_height * 0.5`) — shares the row's
+        // `text_v_offset`, same as the gutter number.
+        cr.move_to(rect.x as f64 + 1.0, y + ctx.text_v_offset);
         super::painted_text::show_layout(cr, &bulb_layout);
     }
 }
@@ -534,6 +606,9 @@ fn paint_line_text_ghost_and_annotation(ctx: &EditorPaintCtx, rl: &EditorLine, y
     } = ctx;
     let (cr, layout, theme, char_width, text_x_offset) =
         (*cr, *layout, *theme, *char_width, *text_x_offset);
+    // Every glyph painted by this function is text, so it shares the
+    // row's `text_v_offset` — see that function's doc.
+    let y = y + ctx.text_v_offset;
 
     layout.set_text(&rl.raw_text);
     let attrs = build_pango_attrs(&rl.spans);
@@ -930,7 +1005,7 @@ fn paint_ai_ghost_text(ctx: &EditorPaintCtx) {
         .unwrap_or(rl.raw_text.len());
     let pos = layout.index_to_pos(byte_offset as i32);
     let ghost_x = text_x_offset + pos.x() as f64 / pango::SCALE as f64;
-    let ghost_y = rect.y as f64 + cursor.pos.view_line as f64 * line_height;
+    let ghost_y = rect.y as f64 + cursor.pos.view_line as f64 * line_height + ctx.text_v_offset;
     let (gr, gg, gb) = cairo_rgb(theme.ghost_text_fg);
     cr.set_source_rgb(gr, gg, gb);
     cr.move_to(ghost_x, ghost_y);
@@ -1584,6 +1659,17 @@ mod tests {
         theme: &Theme,
         options: EditorPaintOptions,
     ) -> (Vec<u8>, i32) {
+        scroll_test_paint_with_v_scrollbar_w(editor, theme, options, None)
+    }
+
+    /// [`scroll_test_paint_with_options`], plus a scrollbar-width
+    /// override via [`draw_editor_with_options_and_v_scrollbar_w`].
+    fn scroll_test_paint_with_v_scrollbar_w(
+        editor: &Editor,
+        theme: &Theme,
+        options: EditorPaintOptions,
+        v_scrollbar_w: Option<f32>,
+    ) -> (Vec<u8>, i32) {
         let mut surface = ImageSurface::create(Format::ARgb32, SCROLL_TEST_W, SCROLL_TEST_H)
             .expect("create ImageSurface");
         {
@@ -1597,7 +1683,7 @@ mod tests {
             pango_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 12"));
             let metrics = pango_ctx.metrics(None, None);
 
-            draw_editor_with_options(
+            draw_editor_with_options_and_v_scrollbar_w(
                 &cr,
                 &pango_layout,
                 &metrics,
@@ -1606,6 +1692,7 @@ mod tests {
                 SCROLL_TEST_CHAR_W,
                 SCROLL_TEST_LINE_H,
                 options,
+                v_scrollbar_w,
             );
         }
         surface.flush();
@@ -1721,6 +1808,43 @@ mod tests {
         );
     }
 
+    /// The GTK rasteriser's vertical scrollbar column honours a
+    /// `v_scrollbar_w` override end-to-end — a wider override paints
+    /// further out, matching the layout-level assertions in
+    /// `primitives::editor`'s own tests.
+    ///
+    /// Viewport is `SCROLL_TEST_W` = 200px, `SCROLL_TEST_CHAR_W` = 8.0.
+    /// The default column spans `[192, 200)`; a 14px override spans
+    /// `[186, 200)`. `x = 188` falls in the gap between those two spans
+    /// — plain text-area background at baseline, inside the track once
+    /// widened.
+    #[test]
+    fn draw_editor_v_scrollbar_w_widens_painted_column() {
+        let theme = Theme::default();
+        let overflowing = scroll_test_editor(50, 0, 5);
+
+        let (data0, stride0) = scroll_test_paint(&overflowing, &theme);
+        let baseline_px = scroll_test_pixel(&data0, stride0 as usize, 188, 40);
+        assert_eq!(
+            baseline_px,
+            rgb(theme.background),
+            "x=188 sits outside the default 8px-wide column, [192, 200)"
+        );
+
+        let (data, stride) = scroll_test_paint_with_v_scrollbar_w(
+            &overflowing,
+            &theme,
+            EditorPaintOptions::default(),
+            Some(14.0),
+        );
+        let widened_px = scroll_test_pixel(&data, stride as usize, 188, 40);
+        assert_ne!(
+            widened_px,
+            rgb(theme.background),
+            "a Some(14.0) v_scrollbar_w should widen the painted track to cover x=188 ([186, 200))"
+        );
+    }
+
     /// Regression for #968: horizontal-overflow counterpart of the test
     /// above — a line wider than the viewport must paint a horizontal
     /// scrollbar track in the reserved bottom `line_height`-tall row; a
@@ -1829,6 +1953,259 @@ mod tests {
             scroll_test_pixel(&data, stride, sample_x, row_y(3)),
             rgb(theme.diff_padding_bg),
             "row 3 (diff padding) must show only its diff background, not a selection tint"
+        );
+    }
+
+    // ── Text/gutter vertical centring within a host-set row pitch ──────
+    //
+    // Mirrors `macos::editor::tests::body_text_centred_in_row_and_shares_baseline_with_gutter`:
+    // paints the same digit glyph as both the gutter number and the
+    // body text at two row pitches, and checks the ink shifts down by
+    // half the pitch's slack over the font's own natural height, with
+    // gutter and body sharing a baseline once the offset is applied.
+
+    const CENTRE_TEST_W: i32 = 200;
+    const CENTRE_TEST_ROW_PITCH: f64 = 24.0;
+
+    /// `(ascent + descent, measured "7" width)` for "Monospace 12" —
+    /// the real font metrics every `centre_test_paint` call below also
+    /// resolves (same family/size), used here only to size the fixture.
+    fn centre_test_metrics() -> (f64, f64) {
+        let surface =
+            ImageSurface::create(Format::ARgb32, CENTRE_TEST_W, 40).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        let pango_ctx = pango_layout.context();
+        pango_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 12"));
+        let metrics = pango_ctx.metrics(None, None);
+        let natural_pitch = (metrics.ascent() + metrics.descent()) as f64 / pango::SCALE as f64;
+        pango_layout.set_text("7");
+        let char_w = pango_layout.pixel_size().0 as f64;
+        (natural_pitch, char_w)
+    }
+
+    /// Paint a one-line editor (raw + gutter text both `"7"`) at row
+    /// pitch `pitch`, returning the painted ARGB32 buffer + stride.
+    fn centre_test_paint(pitch: f64, gutter_chars: usize) -> (Vec<u8>, i32) {
+        let theme = Theme::default();
+        let mut surface = ImageSurface::create(Format::ARgb32, CENTRE_TEST_W, pitch.ceil() as i32)
+            .expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let (br, bg, bb) = cairo_rgb(theme.background);
+            cr.set_source_rgb(br, bg, bb);
+            cr.paint().ok();
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let pango_ctx = pango_layout.context();
+            pango_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 12"));
+            let metrics = pango_ctx.metrics(None, None);
+            pango_layout.set_text("7");
+            let char_w = pango_layout.pixel_size().0 as f64;
+
+            let mut line = blank_line(0);
+            line.raw_text = "7".into();
+            line.gutter_text = "7".into();
+            let mut editor = scroll_test_editor(1, 1, 1);
+            editor.lines = vec![line];
+            editor.gutter_char_width = gutter_chars;
+            editor.rect = Rect::new(0.0, 0.0, CENTRE_TEST_W as f32, pitch as f32);
+
+            draw_editor_with_options_and_v_scrollbar_w(
+                &cr,
+                &pango_layout,
+                &metrics,
+                &editor,
+                &theme,
+                char_w,
+                pitch,
+                EditorPaintOptions::default(),
+                None,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride();
+        let data = surface.data().expect("surface data").to_vec();
+        (data, stride)
+    }
+
+    /// Scan `data` for the vertical extent of non-background ink inside
+    /// `[x_start, x_end) × [y_start, y_end)` — GTK's counterpart to
+    /// `macos::editor::tests::ink_vertical_extent`. `None` if the window
+    /// contains no ink.
+    fn centre_test_ink_extent(
+        data: &[u8],
+        stride: i32,
+        x_start: i32,
+        x_end: i32,
+        y_start: i32,
+        y_end: i32,
+        bg: Color,
+    ) -> Option<(i32, i32)> {
+        const TOL: i32 = 24;
+        let mut extent: Option<(i32, i32)> = None;
+        for y in y_start..y_end {
+            let has_ink = (x_start..x_end).any(|x| {
+                let (r, g, b) = scroll_test_pixel(data, stride as usize, x, y);
+                (r as i32 - bg.r as i32).abs() > TOL
+                    || (g as i32 - bg.g as i32).abs() > TOL
+                    || (b as i32 - bg.b as i32).abs() > TOL
+            });
+            if has_ink {
+                extent = Some(match extent {
+                    Some((top, _)) => (top, y),
+                    None => (y, y),
+                });
+            }
+        }
+        extent
+    }
+
+    /// The AI ghost suggestion painted after the cursor sits on the same
+    /// centred baseline as the typed text before it on that row.
+    #[test]
+    fn ai_ghost_text_after_cursor_shares_body_text_baseline() {
+        use crate::primitives::editor::{CursorPos, CursorShape, EditorCursor};
+
+        let mut theme = Theme::default();
+        theme.ghost_text_fg = theme.foreground;
+        let pitch = CENTRE_TEST_ROW_PITCH;
+        let mut surface = ImageSurface::create(Format::ARgb32, CENTRE_TEST_W, pitch.ceil() as i32)
+            .expect("create ImageSurface");
+        let char_w;
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let (br, bg, bb) = cairo_rgb(theme.background);
+            cr.set_source_rgb(br, bg, bb);
+            cr.paint().ok();
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let pango_ctx = pango_layout.context();
+            pango_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 12"));
+            let metrics = pango_ctx.metrics(None, None);
+            pango_layout.set_text("7");
+            char_w = pango_layout.pixel_size().0 as f64;
+
+            let mut line = blank_line(0);
+            line.raw_text = "7".into();
+            line.ghost_suffix = Some("7".into());
+            let mut editor = scroll_test_editor(1, 1, 1);
+            editor.lines = vec![line];
+            editor.gutter_char_width = 0;
+            editor.cursor = Some(EditorCursor {
+                pos: CursorPos {
+                    view_line: 0,
+                    col: 1,
+                },
+                shape: CursorShape::Bar,
+            });
+            editor.rect = Rect::new(0.0, 0.0, CENTRE_TEST_W as f32, pitch as f32);
+
+            draw_editor_with_options_and_v_scrollbar_w(
+                &cr,
+                &pango_layout,
+                &metrics,
+                &editor,
+                &theme,
+                char_w,
+                pitch,
+                EditorPaintOptions::default(),
+                None,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride();
+        let data = surface.data().expect("surface data").to_vec();
+
+        let body = centre_test_ink_extent(
+            &data,
+            stride,
+            0,
+            char_w.round() as i32 - 1,
+            0,
+            pitch as i32,
+            theme.background,
+        )
+        .expect("typed glyph should paint ink");
+        // Skip the 2px bar cursor at the start of the ghost cell.
+        let ghost = centre_test_ink_extent(
+            &data,
+            stride,
+            char_w.round() as i32 + 3,
+            (2.0 * char_w).round() as i32,
+            0,
+            pitch as i32,
+            theme.background,
+        )
+        .expect("ghost glyph should paint ink");
+        assert!(
+            (ghost.0 - body.0).abs() <= 1 && (ghost.1 - body.1).abs() <= 1,
+            "ghost suggestion ink {ghost:?} should share the typed glyph's vertical extent {body:?}"
+        );
+    }
+
+    #[test]
+    fn draw_editor_body_text_centred_in_row_and_shares_baseline_with_gutter() {
+        let theme = Theme::default();
+        let (natural_pitch, char_w) = centre_test_metrics();
+        assert!(
+            natural_pitch < CENTRE_TEST_ROW_PITCH,
+            "fixture needs a font natural line height ({natural_pitch}) shorter than the \
+             row pitch ({CENTRE_TEST_ROW_PITCH}) to leave any slack to centre in",
+        );
+
+        let gutter_chars = 2usize;
+        let gutter_w = gutter_chars as f64 * char_w;
+
+        let (natural_data, natural_stride) = centre_test_paint(natural_pitch, gutter_chars);
+        let natural = centre_test_ink_extent(
+            &natural_data,
+            natural_stride,
+            gutter_w.round() as i32,
+            (gutter_w + char_w).round() as i32,
+            0,
+            natural_pitch.ceil() as i32,
+            theme.background,
+        )
+        .expect("body glyph should paint some ink at the natural pitch");
+
+        let (wide_data, wide_stride) = centre_test_paint(CENTRE_TEST_ROW_PITCH, gutter_chars);
+        let wide = centre_test_ink_extent(
+            &wide_data,
+            wide_stride,
+            gutter_w.round() as i32,
+            (gutter_w + char_w).round() as i32,
+            0,
+            CENTRE_TEST_ROW_PITCH as i32,
+            theme.background,
+        )
+        .expect("body glyph should paint some ink at the wide pitch");
+
+        let expected_shift = (CENTRE_TEST_ROW_PITCH - natural_pitch) / 2.0;
+        let top_shift = wide.0 as f64 - natural.0 as f64;
+        let bottom_shift = wide.1 as f64 - natural.1 as f64;
+        assert!(
+            (top_shift - expected_shift).abs() <= 2.0
+                && (bottom_shift - expected_shift).abs() <= 2.0,
+            "widening the row pitch from {natural_pitch} to {CENTRE_TEST_ROW_PITCH} should \
+             move the body glyph down by half the added slack ({expected_shift}px), got top \
+             {top_shift}px / bottom {bottom_shift}px (ink {natural:?} -> {wide:?})"
+        );
+
+        let gutter = centre_test_ink_extent(
+            &wide_data,
+            wide_stride,
+            0,
+            gutter_w.round() as i32,
+            0,
+            CENTRE_TEST_ROW_PITCH as i32,
+            theme.background,
+        )
+        .expect("gutter glyph should paint some ink");
+        assert_eq!(
+            gutter, wide,
+            "gutter number and body text (same glyph, \"7\") should share a baseline, got \
+             gutter={gutter:?}, body={wide:?}"
         );
     }
 }

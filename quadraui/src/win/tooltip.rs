@@ -77,6 +77,7 @@ pub fn draw_tooltip_with_chrome(
         padding_x,
         &mut surface,
         &theme,
+        &crate::style::Style::default(),
     );
 }
 
