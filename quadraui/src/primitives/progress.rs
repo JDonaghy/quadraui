@@ -12,20 +12,10 @@
 //! a trailing cancel affordance; clicks resolve as
 //! [`ProgressBarHit::Cancel`].
 //!
-//! # Adoption status (#825)
-//!
-//! Kept public without a compose-layer consumer today (unlike
-//! [`Spinner`](super::spinner::Spinner), which
-//! [`crate::compose::chat_controller::ChatController`] already
-//! constructs). Demoting it would mean stripping `draw_progress` /
-//! `progress_layout` from `Backend` across all five implementations
-//! (win/gtk/tui/macos/testing) — deleting complete, working,
-//! cross-backend rasteriser parity that rule 1 of the portability
-//! commitment asks every primitive to have, for a type paired with an
-//! adopted sibling (same shape family, same `frame_idx` convention,
-//! same `examples/common/indicators_app.rs` demo across all four
-//! backends, same `conformance`/`ms-11` acceptance coverage). Recorded
-//! here, not silently ignored — see issue #825.
+//! Kept public as a cross-backend primitive with complete rasteriser
+//! parity across all five implementations (win/gtk/tui/macos/testing),
+//! paired with [`Spinner`](super::spinner::Spinner) as a sibling in the
+//! same shape family.
 
 use crate::event::Rect;
 use crate::types::{Color, WidgetId};
@@ -190,34 +180,11 @@ impl ProgressBar {
     }
 }
 
-// ── PaintSurface paint (shared gtk/macos/win implementation, issue #1085,
-// PaintSurface Phase 4 8/8) ────────────────────────────────────────────
-//
-// Before this, `gtk::progress::draw_progress` (Cairo + Pango),
-// `macos::progress::draw_progress` (Core Graphics + Core Text) and
-// `win::progress::draw_progress` (Direct2D + DirectWrite) each
-// independently painted the same track/fill/label/cancel geometry
-// (already unified by [`ProgressBar::layout`]/[`pixel_progress_layout`])
-// with their own drawing API. `paint` below is the one shared
-// implementation, written against [`crate::paint_surface::PaintSurface`]
-// (#807, Phase 1) instead of any one backend's drawing API — same shape
-// as `diff_view`'s #866 migration and this issue's `board`/`pipeline_view`
-// slices above.
-//
-// ## Divergence found (re-verified, reported here rather than silently
-// resolved — CLAUDE.md's "re-verify before you implement" + this issue's
-// acceptance bar)
-//
-// **Theme ignored on Windows.** `gtk::progress::draw_progress` and
-// `macos::progress::draw_progress` both take a `theme: &Theme` parameter
-// and paint the host's actual active theme. `win::progress::draw_progress`
-// took no theme parameter at all — it called `Theme::default()`
-// internally on every paint, so a Win-GUI host running any theme other
-// than the default painted every progress bar in the wrong colours (see
-// that module's former doc, "`WinBackend` does not yet carry a live
-// `Theme`"). `paint` below takes `theme: &Theme` like its GTK/macOS
-// twins, and `WinBackend::draw_progress` now passes `self.current_theme`
-// — the same live theme every other Win-GUI rasteriser already uses.
+// `paint` is the shared [`crate::paint_surface::PaintSurface`]
+// implementation of progress bar painting (track/fill/label/cancel),
+// replacing independent Cairo, Core Graphics, and Direct2D
+// implementations. It takes `theme: &Theme` so all backends
+// (including Windows) paint in the host's active theme.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -317,7 +284,7 @@ pub(crate) mod native_surface_paint {
         use crate::Image;
 
         /// Records every drawing verb `paint` issues — mirrors
-        /// `primitives::diff_view`'s own `RecordingSurface` (#810/#865/#866).
+        /// `primitives::diff_view`'s own `RecordingSurface`.
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,

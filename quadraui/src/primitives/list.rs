@@ -117,9 +117,7 @@ pub struct ListItem {
 // An optional title row always renders at the top (outside scroll).
 
 /// Horizontal-scrollbar track geometry, shared by every backend's
-/// `list_hscrollbar` rasteriser so `bordered` handling can't drift
-/// between them (#790 — the macOS copy had silently dropped it while
-/// GTK and Windows stayed in sync as 0.98-similarity twins).
+/// `list_hscrollbar` rasteriser.
 ///
 /// `char_w` and `row_h` are the caller's native horizontal/vertical
 /// units: `1.0` / `1.0` on TUI (a cell), `current_char_width` /
@@ -162,7 +160,6 @@ impl ListItemMeasure {
 
     /// Build from the backend's own [`crate::backend::Metrics`]
     /// (`backend.measure()`) — one list row is one text row
-    /// (quadraui#817).
     pub fn from_metrics(m: &crate::backend::Metrics) -> Self {
         Self::new(m.line_height)
     }
@@ -547,14 +544,9 @@ mod hscrollbar_tests {
 mod hscrollbar_track_tests {
     use super::*;
 
-    /// Pixel-unit regression for #790: every pixel backend
-    /// (GTK/Windows/macOS) calls `hscrollbar_track` with `char_w`/`row_h`
-    /// in real pixels, not the `1.0`/`1.0` TUI-cell units the
-    /// `ListView::hscrollbar` wrapper above exercises. Assert the inset
-    /// math holds at those units too, since a bug that only shows up when
-    /// `char_w != 1.0` would slip past `hscrollbar_tests` entirely — which
-    /// is exactly how the macOS `list_hscrollbar` bug (dropping `bordered`
-    /// altogether) went unnoticed: nothing exercised the pixel-unit path.
+    /// Verifies the inset math holds at pixel units (`char_w != 1.0`,
+    /// `row_h != 1.0`), not only at TUI-cell units: a bug that only shows
+    /// up at real pixel dimensions would slip past other tests entirely.
     #[test]
     fn flat_track_spans_full_width_bottom_row() {
         let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
@@ -588,7 +580,7 @@ mod hscrollbar_track_tests {
         let track = hscrollbar_track(rect, true, 8.0, 16.0);
         // The thumb bounds (contained within `track`) must sit strictly
         // inside the border on both sides — the acceptance criterion from
-        // #790: "thumb bounds sit inside the border on a bordered list."
+        // "thumb bounds sit inside the border on a bordered list."
         assert!(track.x >= rect.x + 8.0);
         assert!(track.x + track.width <= rect.x + rect.width - 8.0);
         assert!(track.y + track.height <= rect.y + rect.height - 16.0);
@@ -701,41 +693,29 @@ mod vscrollbar_tests {
     }
 }
 
-// ── PaintSurface paint (#1075, PaintSurface Phase 4 slice 2/8) ───────────
+// ── PaintSurface paint ─────────────────────────────────────────────
 //
-// Before this, `gtk::draw_list` (Cairo), `macos::list::draw_list` (Core
-// Graphics) and `win::list::draw_list` (Direct2D) each independently
-// painted the same title/row/decoration/scrollbar content with their own
-// drawing API. `paint` below is the one shared implementation, written
+// This is the one shared implementation of list painting, written
 // against [`crate::paint_surface::PaintSurface`] instead of any one
 // backend's API — see `crate::primitives::split_tree::native_surface_paint`
 // and `crate::primitives::scrollbar::native_surface_paint` for the same
 // pattern applied to earlier primitives.
 //
-// What this migration fixes (issue #1075's named drift):
+// The vertical scrollbar is now painted via
+// [`crate::primitives::scrollbar::native_surface_paint::paint`],
+// using real track/thumb geometry that `Backend::list_vscrollbar`
+// already provides.
 //
-// - **Missing vertical scrollbar.** `Backend::list_vscrollbar` already
-//   returns real track/thumb geometry on every pixel backend (used for
-//   hit-testing/dragging), but none of the three `draw_list`s ever
-//   painted it — `paint` below does, via
-//   [`crate::primitives::scrollbar::native_surface_paint::paint`], the
-//   same helper the horizontal scrollbar already used on GTK/macOS.
-//
-// What this migration does NOT change: `bordered`'s frame stroke — GTK
+// Note: `bordered`'s frame stroke remains backend-specific — GTK
 // clips to (and later strokes) a *rounded* rect, Windows fills a plain
 // square 1-DIP frame, and macOS renders no frame at all yet (see
-// `macos::list`'s module doc, "Scope omissions"). None of the three
-// backends has a `PaintSurface` verb for a rounded stroke, and
-// unifying "does this backend draw a frame at all" is a real,
-// documented per-backend capability difference rather than paint/click
-// drift — so each backend's thin wrapper still paints its own frame
-// immediately before/after calling this shared `paint` for the content.
-// `supports_border` below only toggles the *content*-side effects of
-// `bordered` (the inset content area + overlay title vs. the flat
-// header+rows layout) that a backend without frame support should skip
-// — matching what `macos::list`'s pre-migration `draw_list` already did
-// (it never took the overlay-title branch, so `title_overlay` is always
-// `false` there, same as passing `supports_border: false`).
+// `macos::list`'s module doc, "Scope omissions"). Each backend's thin
+// wrapper still paints its own frame immediately before/after calling
+// this shared `paint` for the content. `supports_border` below only
+// toggles the *content*-side effects of `bordered` (the inset content
+// area + overlay title vs. the flat header+rows layout) that a backend
+// without frame support should skip — matching what `macos::list`'s
+// pre-migration `draw_list` already did.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -986,7 +966,7 @@ pub(crate) mod native_surface_paint {
             crate::primitives::scrollbar::native_surface_paint::paint(&hsb, surface, theme);
         }
 
-        // ── Vertical scrollbar (#1075 fix: previously never painted) ───
+        // ── Vertical scrollbar ─────────────────────────────────────
         if let Some(vsb) = list.vscrollbar(area, line_height) {
             crate::primitives::scrollbar::native_surface_paint::paint(&vsb, surface, theme);
         }
@@ -1083,14 +1063,9 @@ pub(crate) mod native_surface_paint {
         const LINE_HEIGHT: f32 = 16.0;
         const AREA: Rect = Rect::new(0.0, 0.0, 100.0, 80.0);
 
-        /// #1075 regression: before this migration, none of the three
-        /// backends' `draw_list` painted `ListView::show_v_scrollbar`'s
-        /// track/thumb even though `Backend::list_vscrollbar` already
-        /// exposed real geometry for hit-testing. This test paints
-        /// through the shared fn and asserts a fill lands at the exact
-        /// track rect `ListView::vscrollbar` resolves — this would have
-        /// failed (no such fill recorded) against any of the pre-#1075
-        /// per-backend `draw_list` bodies.
+        /// Verifies that the vertical scrollbar track and thumb are
+        /// painted using the geometry that [`ListView::vscrollbar`]
+        /// resolves.
         #[test]
         fn paints_vertical_scrollbar_track_when_enabled() {
             let list = vlist(50); // overflows AREA's 80px / 16px = 5 rows.

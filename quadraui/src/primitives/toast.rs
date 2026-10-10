@@ -11,7 +11,7 @@
 //! # Backend contract
 //!
 //! **Declarative + overlay.** Render toasts stacked in the configured
-//! `corner`, VS Code-style (#1185): title/body wrap across the box's
+//! `corner`, VS Code-style: title/body wrap across the box's
 //! full width, growing its height up to a cap ([`MAX_BODY_LINES`])
 //! before ellipsizing; the dismiss `×` sits alone near the top-right;
 //! any [`Toast::actions`] sit on their own row at the bottom-right,
@@ -20,7 +20,7 @@
 //! `ToastHit::Action`; the dismiss affordance hits `ToastHit::Dismiss`.
 //!
 //! Toast boxes take keyboard focus only when an app explicitly hands it
-//! to them, via [`crate::compose::ToastStackController`] (#1185) —
+//! to them, via [`crate::compose::ToastStackController`] —
 //! they're otherwise strictly a passive notification surface, and never
 //! steal focus or block input on their own (unlike a modal
 //! [`crate::primitives::dialog::Dialog`]). `ToastOverlay::focus`, set from
@@ -33,10 +33,8 @@
 //! # Naming
 //!
 //! [`ToastOverlay`] (a corner's worth of toasts) holds [`Toast`]s, each
-//! holding [`ToastButton`]s. Their pre-#1185 single-action counterparts —
-//! `ToastStack`, `ToastItem`, `ToastAction` — were deprecated alongside
-//! these shapes and removed outright in issue #1251, once both known
-//! consumers had migrated (zero remaining uses); see `CHANGELOG.md`'s
+//! holding [`ToastButton`]s. Single-action counterparts were deprecated
+//! and removed once known consumers migrated; see `CHANGELOG.md`'s
 //! `Removed` entry.
 
 use crate::event::Rect;
@@ -52,7 +50,7 @@ pub struct ToastOverlay {
     /// Toasts in temporal order — oldest first. Visual order depends on
     /// `corner` (bottom corners stack upward, top corners stack downward).
     pub toasts: Vec<Toast>,
-    /// Which control (if any) currently has keyboard focus (#1185).
+    /// Which control (if any) currently has keyboard focus.
     /// `None` — the common case, since toasts are non-modal and never
     /// steal focus on their own — paints with no focus ring. Set this
     /// from [`crate::compose::ToastStackController::focus`] before
@@ -112,11 +110,10 @@ pub struct Toast {
     /// Visual severity — backends tint the box accordingly.
     #[serde(default)]
     pub severity: ToastSeverity,
-    /// Ordered action buttons (#1185 — was `ToastItem::action: Option<ToastAction>`, at
-    /// most one). Rendered on their own row at the bottom-right of the
-    /// toast box, never inline with the title. Empty = no action row;
-    /// just the dismiss affordance is clickable. At most one entry
-    /// should set [`ToastButton::primary`] — see that field's doc.
+    /// Ordered action buttons. Rendered on their own row at the bottom-right
+    /// of the toast box, never inline with the title. Empty = no action row;
+    /// just the dismiss affordance is clickable. At most one entry should set
+    /// [`ToastButton::primary`] — see that field's doc.
     #[serde(default)]
     pub actions: Vec<ToastButton>,
     /// Override severity's default tint. Most toasts use `None` and let
@@ -141,7 +138,7 @@ pub struct ToastButton {
     pub id: WidgetId,
     pub label: String,
     /// Styled with the theme's accent (filled background) instead of the
-    /// plain secondary-button look (#1185). VS Code convention: at most
+    /// plain secondary-button look. VS Code convention: at most
     /// one action per toast is primary — the "do the thing" button (e.g.
     /// "Install"), with the rest ("Don't ask again", …) staying
     /// secondary. Backends don't enforce the "at most one" rule; a
@@ -151,7 +148,7 @@ pub struct ToastButton {
     pub primary: bool,
 }
 
-/// Keyboard-focus target within a [`ToastOverlay`] (#1185) — set
+/// Keyboard-focus target within a [`ToastOverlay`] — set
 /// [`ToastOverlay::focus`] to one of these so every backend's rasteriser
 /// draws a visible focus ring around it. Produced by
 /// [`crate::compose::ToastStackController`]; the primitive layer only
@@ -175,7 +172,7 @@ pub enum ToastFocusTarget {
     Action(usize),
 }
 
-// ── Text wrapping (#1182) ───────────────────────────────────────────────────
+// ── Text wrapping ───────────────────────────────────────────────────────────
 //
 // Shared between every backend's toast rasteriser: the GUI paint
 // (`native_surface_paint::paint`), its no-paint layout twin
@@ -407,25 +404,22 @@ impl ToastMeasure {
     }
 }
 
-/// Compute a toast's dismiss + action-button rects, toast-local
-/// (relative to the toast box's own top-left) — shared by every
-/// backend's measure closure (#1185: `native_surface_paint::paint`,
-/// `tui::toast`, `layout_metrics::pixel_toast_stack_layout`) so the `×`
-/// affordance's top-right position and the action row's right-aligned,
-/// bottom-edge placement are computed identically everywhere, whether
-/// the caller's unit is pixels or terminal cells.
+/// Compute a toast's dismiss + action-button rects, toast-local (relative to
+/// the toast box's own top-left) — shared by every backend's measure closure,
+/// so the `×` affordance's top-right position and the action row's
+/// right-aligned, bottom-edge placement are computed identically everywhere,
+/// whether the caller's unit is pixels or terminal cells.
 ///
 /// VS Code shape: `×` sits alone near the top-right, clear of the title
 /// row below it in height so it never overlaps a wrapped multi-line
 /// title/body; actions sit on their own row at the bottom-right,
 /// right-to-left (`action_widths[0]` ends up leftmost in the row),
 /// never inline with the title. `action_widths` is each action's
-/// already-measured, already-padded button width, in
-/// [`Toast::actions`] order; the returned `Vec` is aligned 1:1 with
-/// it. Both rects are clamped to stay non-negative even if the box is
-/// smaller than the sum of its own padding/button widths (a degenerate
-/// but non-panicking box, matching this module's existing
-/// `.max(0.0)`-everywhere convention).
+/// already-measured, already-padded button width, in [`Toast::actions`]
+/// order; the returned `Vec` is aligned 1:1 with it. Both rects are
+/// clamped to stay non-negative even if the box is smaller than the sum
+/// of its own padding/button widths (a degenerate but non-panicking box,
+/// matching this module's existing `.max(0.0)`-everywhere convention).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn toast_button_rects(
     width: f32,
@@ -472,13 +466,8 @@ pub struct VisibleToast {
     pub bounds: Rect,
     /// Dismiss affordance (if present).
     pub dismiss_bounds: Option<Rect>,
-    /// Action-button bounds, one per [`Toast::actions`] entry, same
-    /// order. Empty if the toast has no actions.
-    ///
-    /// The pre-#1185 single-action mirror field, `action_bounds`
-    /// (always equal to `action_rects.first().copied()`), was removed
-    /// in issue #1109 (zero uses in coord-tui's `main` and vimcode's
-    /// `develop`).
+    /// Action-button bounds, one per [`Toast::actions`] entry, same order.
+    /// Empty if the toast has no actions.
     pub action_rects: Vec<Rect>,
 }
 
@@ -629,10 +618,6 @@ impl ToastOverlay {
             let bounds = Rect::new(x, y, m.width, m.height);
 
             // Sub-regions come pre-computed toast-local by the measure
-            // closure (#1185 — dismiss near the top-right, actions on
-            // their own row at the bottom-right; see `toast_button_rects`)
-            // — this loop only translates them into the stack's absolute
-            // frame, same as `bounds` itself.
             let dismiss_bounds = m.dismiss_rect.map(|r| shift_rect(r, bounds.x, bounds.y));
             let action_rects: Vec<Rect> = m
                 .action_rects
@@ -677,17 +662,7 @@ impl ToastOverlay {
             }
         }
 
-        // Shift from the viewport-local frame computed above into the
-        // caller's absolute frame. Matches `MenuBar::layout` /
-        // `Panel::layout`'s convention (bounds already carry the origin,
-        // so paint loops use them verbatim and hosts `hit_test` with raw
-        // click coordinates) rather than `TreeView`'s local-frame
-        // convention. Before this, `ToastOverlay::layout` had no origin
-        // parameter at all, so every backend's `*_toast_stack_layout`
-        // silently dropped `rect.x` / `rect.y` — invisible at the origin
-        // (every prior test) and a real drift for any non-zero-origin
-        // overlay (quadraui#494 / LESSONS.md "Layout helpers must return
-        // coords in the same frame across backends").
+        // Shift from the viewport-local frame into the caller's absolute
         if origin_x != 0.0 || origin_y != 0.0 {
             for vt in &mut visible_toasts {
                 vt.bounds = shift_rect(vt.bounds, origin_x, origin_y);
@@ -712,95 +687,53 @@ impl ToastOverlay {
     }
 }
 
-// ── PaintSurface paint (#861, Phase 2d slice 4/9 of the PaintSurface
-// milestone) ────────────────────────────────────────────────────────────
+// ── PaintSurface paint ────────────────────────────────────────────────
 //
-// Before this, `gtk::toast::draw_toast_stack` (Cairo/Pango),
-// `macos::toast::draw_toast_stack` (Core Graphics/Core Text) and
-// `win::toast::draw_toast_stack` (Direct2D/DirectWrite) each independently
-// painted the same toast box (background tint, title/body text, dismiss
-// glyph, action label) with their own drawing API (quadraui#785 child
-// #811, `docs/SMELL_AUDIT_2026-07.md` §5). `paint` below is the one
-// shared implementation, written against
-// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
-// one backend's drawing API — matching the pattern #811 (scrollbar), #859
-// (panel) and #860 (status_bar) already established.
+// This is the one shared implementation of toast painting, written against
+// [`crate::paint_surface::PaintSurface`] instead of any one backend's
+// drawing API.
 //
-// Each backend's own no-paint `*_toast_stack_layout` twin (`gtk_toast_stack_layout`,
-// `mac_toast_stack_layout`, `win_toast_stack_layout`) is untouched by this
-// migration — it's layout-only, consumed by `Backend::toast_stack_layout`
-// for hit-testing without a repaint, and out of this issue's scope (see
-// this primitive's own D6 layout API section above). The margin/gap/
-// dismiss-width/action-padding/box-width constants below are `paint`'s own
-// copy, matching every pre-#861 per-backend constant's value exactly (all
-// three agreed already), same as `status_bar::native_surface_paint::MIN_GAP`'s
-// independent copy of `MIN_GAP_PX`.
+// Each backend's own no-paint `*_toast_stack_layout` twin is untouched —
+// it's layout-only, consumed by `Backend::toast_stack_layout` for
+// hit-testing without a repaint. The margin/gap/dismiss-width/
+// action-padding/box-width constants below match every pre-migration
+// per-backend constant's value exactly.
 //
 // `severity_bg`'s colour formula (the `Success`/`Warning` hardcoded RGB,
-// `Info`/`Error` theme fields) is unchanged — lifting those into `Theme`
-// is quadraui#815's job, not this one.
+// `Info`/`Error` theme fields) is unchanged.
 //
 // # Divergences found — reported, not silently resolved
 //
 // 1. **Win never took a live theme.** `win::toast::draw_toast_stack` had
-//    no `theme: &Theme` parameter at all — `paint_toast` built
-//    `Theme::default()` internally on every call, regardless of
-//    `WinBackend::set_theme`. Quadraui#789 ("win rasterisers paint with
-//    the live theme, not `Theme::default()`") fixed this same class of
-//    bug for six other Win-GUI rasterisers (`activity_bar`, `menu_bar`,
-//    `context_menu`, `completions`, `find_replace`, `status_bar`) but
-//    toast was not in that list — re-verified against #789's own diff
-//    while migrating (per this issue's "re-verify before you implement"),
-//    not assumed. The shared `paint` requires a `theme: &Theme` parameter
-//    (matching gtk/macos, which always had one), so `WinBackend::draw_toast_stack`
-//    now passes `&self.current_theme` — fixing the gap as a side effect of
-//    the unification rather than leaving it for a future issue.
+//    no `theme: &Theme` parameter — it built `Theme::default()` internally
+//    on every call. The shared `paint` requires a `theme: &Theme`
+//    parameter (matching gtk/macos), so `WinBackend::draw_toast_stack`
+//    now passes `&self.current_theme`.
 //
 // 2. **Dismiss/action glyph centring.** `gtk::toast::paint_toast` and
-//    `macos::toast::paint_toast` both centre the dismiss `×` and the
-//    action-button label horizontally within their reserved sub-region
-//    (`dismiss_bounds`/`action_bounds`), using the glyph/label's own
-//    measured width. `win::toast::paint_toast` drew both directly into
-//    the full-height `db`/`ab` rect via `DWrite::draw_text`, which uses
+//    `macos::toast::paint_toast` centre the dismiss `×` and action-button
+//    label horizontally within their reserved sub-region. `win::toast::
+//    paint_toast` drew both directly via `DWrite::draw_text`, using
 //    DirectWrite's default (leading/near) alignment — flush against the
-//    sub-region's own left edge, not centred. The shared `paint` adopts
-//    the 2-of-3 (gtk/macos) centred shape uniformly, which visibly shifts
-//    Win's dismiss `×` and action label rightward to the centre of their
-//    reserved column. Reported here per this issue's instructions, rather
-//    than silently picking one.
+//    sub-region's left edge. The shared `paint` adopts the 2-of-3
+//    (gtk/macos) centred shape uniformly.
 //
 // 3. **Body-line vertical offset.** `gtk::toast::paint_toast` and
-//    `macos::toast::paint_toast` both positioned the body (second) line
-//    at the title's own *measured* pixel height — gtk via
-//    `pango_layout.pixel_size().1`, macos via `measure_text(font,
-//    &toast.title)` — and neither ever used the `line_height` parameter
-//    for this offset (gtk's was even named `_line_height`, unused).
-//    `win::toast::paint_toast` was the outlier, using the nominal
-//    `line_height` argument instead. The shared `paint_toast` adopts the
-//    2-of-3 (gtk/macos) measured-height shape uniformly — calling
-//    `surface.surface_measure_text(&toast.title)` and using its height
-//    for the body offset — which visibly moves Win's body line whenever
-//    a title's real rendered height differs from its nominal
-//    `line_height`. Reported here per this issue's instructions, rather
-//    than silently picking one.
+//    `macos::toast::paint_toast` positioned the body line at the title's
+//    own *measured* pixel height. `win::toast::paint_toast` used the
+//    nominal `line_height` argument instead. The shared `paint` adopts
+//    the 2-of-3 (gtk/macos) measured-height shape uniformly.
 //
 // 4. **Toast-width clamp floor.** `gtk::toast::gtk_toast_stack_layout`
 //    and `macos::toast::macos_toast_stack_layout` computed
 //    `TOAST_WIDTH.min(viewport_width - TOAST_MARGIN * 2.0)` with no
-//    floor — a viewport narrower than `TOAST_MARGIN * 2` (24px) could
-//    drive the resolved width negative. Only
-//    `win::toast::win_toast_stack_layout` already clamped the subtrahend
-//    to `.max(0.0)`. The shared `paint` adopts Win's (safer) clamped
-//    form for all three below. This only changes anything for a
-//    degenerate viewport under 24px wide, and is strictly protective
-//    (a `ToastMeasure` can never receive a negative width), but is
-//    named here for the same transparency reason as 1–3.
+//    floor. Only `win::toast::win_toast_stack_layout` clamped the
+//    subtrahend to `.max(0.0)`. The shared `paint` adopts Win's
+//    (safer) clamped form for all three.
 //
-// `#[allow(dead_code)]`: see `primitives::scrollbar`'s identical note
-// (#811) — only *called* once a real pixel backend is compiled in,
-// exercised by each backend's own `Backend::draw_toast_stack` call site
-// plus this module's own `RecordingSurface` tests on every leg that
-// enables one of the three cfg'd features.
+// `#[allow(dead_code)]`: only called once a real pixel backend is
+// compiled in, exercised by each backend's own `Backend::draw_toast_stack`
+// call site plus this module's own `RecordingSurface` tests.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -824,15 +757,13 @@ pub(crate) mod native_surface_paint {
     const DISMISS_WIDTH: f32 = 28.0;
     const ACTION_PADDING: f32 = 16.0;
     /// Horizontal gap between two adjacent action buttons on the button
-    /// row (#1185).
+    /// row.
     const ACTION_GAP: f32 = 8.0;
     const TOAST_PADDING: f32 = 8.0;
 
-    /// Severity → fallback background tint, used when `Toast::accent`
-    /// is `None`. Duplicated verbatim across `tui::toast` (out of scope
-    /// for this `PaintSurface` migration — see the module doc's TUI
-    /// note in `paint_surface.rs`) — lifting these hardcoded colours
-    /// into `Theme` is quadraui#815's job, not this one.
+    /// Severity → fallback background tint, used when `Toast::accent` is
+    /// `None`. Duplicated across `tui::toast` (out of scope for the
+    /// `PaintSurface` migration).
     fn severity_bg(severity: ToastSeverity, theme: &Theme) -> Color {
         match severity {
             ToastSeverity::Info => theme.surface_bg,
@@ -885,10 +816,7 @@ pub(crate) mod native_surface_paint {
                     .len()
                     .max(1)
                 };
-                // Button row (#1185): a separate row below the title/body,
-                // added only when the toast has actions — never inline
-                // with the title, unlike the pre-#1185 trailing-column
-                // reservation.
+                // Button row: a separate row below the title/body, added
                 let has_actions = !toast.actions.is_empty();
                 let button_row_h = if has_actions {
                     TOAST_PADDING + line_height
@@ -913,7 +841,7 @@ pub(crate) mod native_surface_paint {
                     // (a wide *click-target*, not a tall one) — a short,
                     // body-less, action-less toast is barely taller than
                     // one row plus padding, and a square dismiss target
-                    // that tall would reach past the button row (#1185).
+                    // that tall would reach past the button row.
                     line_height,
                     &action_widths,
                     line_height,
@@ -937,29 +865,21 @@ pub(crate) mod native_surface_paint {
         layout
     }
 
-    /// Paint one resolved toast box: background tint, a theme border
-    /// (#1182 — previously absent on every backend, which left an Info
-    /// toast's `surface_bg` fill blending into a light-theme window),
-    /// title, optional body, a top-right dismiss `×`, and — on their own
-    /// row at the bottom-right, never inline with the title (#1185) —
-    /// zero or more action buttons: the one marked
-    /// [`crate::primitives::toast::ToastButton::primary`] filled with
-    /// `theme.accent_bg`/`theme.foreground` (matching
+    /// Paint one resolved toast box: background tint, a theme border,
+    /// title, optional body, a top-right dismiss `×`, and on their own row
+    /// at the bottom-right (never inline with the title) zero or more action
+    /// buttons: the one marked [`crate::primitives::toast::ToastButton::
+    /// primary`] filled with `theme.accent_bg`/`theme.foreground` (matching
     /// `tui::toolbar`'s focused-action pairing), the rest plain text in
-    /// `theme.link_fg` (a secondary/ghost-button look, matching that
-    /// field's existing "focused-popup border" role — see
-    /// `crate::theme::Theme::link_fg`'s doc). `focus`, when it names a
-    /// control on this toast, gets a `theme.link_fg` focus-ring stroke
-    /// (#1185 — every backend must draw one; see
-    /// [`crate::compose::ToastStackController`]).
+    /// `theme.link_fg` (a secondary/ghost-button look). `focus`, when it
+    /// names a control on this toast, gets a `theme.link_fg` focus-ring
+    /// stroke (every backend must draw one).
     ///
-    /// The title is truncated/ellipsized to the space left of the
-    /// dismiss button — never drawn under it (#1182/#1185: the action
-    /// row moved off the title line entirely, so the title only needs
-    /// to dodge `×` now). The body wraps across up to [`MAX_BODY_LINES`]
-    /// lines at the box's full width, offset below the title by the
-    /// title's own *measured* height, not the nominal `line_height`
-    /// (divergence 3), each subsequent line advancing by `line_height`.
+    /// The title is truncated/ellipsized to the space left of the dismiss
+    /// button — never drawn under it. The body wraps across up to
+    /// [`MAX_BODY_LINES`] lines at the box's full width, offset below the
+    /// title by the title's own *measured* height, not the nominal
+    /// `line_height`, each subsequent line advancing by `line_height`.
     fn paint_toast(
         surface: &mut dyn PaintSurface,
         theme: &Theme,
@@ -1003,11 +923,7 @@ pub(crate) mod native_surface_paint {
         surface.surface_draw_text_run(title_rect, &title_line, theme.foreground);
 
         if !toast.body.is_empty() {
-            // Offset by the title's own measured pixel height (matching
-            // gtk/macos's pre-#861 `pixel_size()`/`measure_text` calls),
-            // not the nominal `line_height` — see this module's doc,
-            // divergence 3. Only `win::toast` used `line_height` here
-            // pre-migration.
+            // Offset by the title's own measured pixel height, not the
             let (_, title_h) = surface.surface_measure_text(&toast.title);
             let body_avail_w = (vt.bounds.width - TOAST_PADDING * 2.0).max(0.0);
             let body_lines = wrap_text_lines(&toast.body, body_avail_w, MAX_BODY_LINES, &|s| {
@@ -1068,10 +984,8 @@ pub(crate) mod native_surface_paint {
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
             text_runs: Vec<(Rect, String, Color)>,
-            /// #1185: records `surface_stroke_rect` calls (previously a
-            /// no-op recorder — nothing asserted on strokes before the
-            /// focus-ring requirement existed) so focus-ring tests can
-            /// confirm one was drawn, and where.
+            /// Records `surface_stroke_rect` calls so focus-ring tests can
+            /// confirm one was drawn and where.
             strokes: Vec<(Rect, Color, f32)>,
             /// Overrides `surface_measure_text`'s returned height when
             /// set — lets a test make the "measured text height" and
@@ -1242,10 +1156,7 @@ pub(crate) mod native_surface_paint {
             assert_eq!(surface.fills[0].1, theme.error_fg);
         }
 
-        /// Regression for this module's divergence 2: the dismiss glyph
-        /// and action label must be painted centred within their own
-        /// reserved sub-region, not flush against its left edge — the
-        /// shape `win::toast` alone lacked pre-#861.
+        /// Regression: the dismiss glyph and action label must be painted
         #[test]
         fn dismiss_and_action_are_centred_in_their_sub_region() {
             let mut t = toast("t1", "Build failed");
@@ -1289,10 +1200,7 @@ pub(crate) mod native_surface_paint {
             assert!((action_rect.x - (ab.x + (ab.width - action_w) / 2.0)).abs() < 0.01);
         }
 
-        /// #1185 acceptance: two actions sit on their own row at the
-        /// bottom-right, right-to-left ordering (`actions[0]` ends up
-        /// leftmost), strictly below the dismiss `×` — never inline
-        /// with the title — and don't overlap each other.
+        /// Acceptance: two actions sit on their own row at the bottom-right,
         #[test]
         fn multiple_actions_are_right_aligned_on_their_own_row() {
             let mut t = toast("t1", "Install Markdown Language Server?");
@@ -1385,7 +1293,7 @@ pub(crate) mod native_surface_paint {
             assert!(!surface.fills.iter().any(|(r, _)| *r == skip_bounds));
         }
 
-        /// #1185: a focused dismiss button gets a `theme.link_fg` stroke
+        /// A focused dismiss button gets a `theme.link_fg` stroke
         /// around its own bounds.
         #[test]
         fn focused_dismiss_gets_a_focus_ring() {
@@ -1417,7 +1325,7 @@ pub(crate) mod native_surface_paint {
                 .any(|(r, c, w)| *r == db && *c == theme.link_fg && *w > 1.0));
         }
 
-        /// #1185: a focused action button gets a `theme.link_fg` stroke
+        /// A focused action button gets a `theme.link_fg` stroke
         /// around its own bounds — a different toast/action combination
         /// than the dismiss ring, confirming the focus target is looked
         /// up per-toast (`ToastFocus::toast_id`), not just "the first
@@ -1504,13 +1412,7 @@ pub(crate) mod native_surface_paint {
             assert_eq!(body_run.0.y, title_run.0.y + 16.0);
         }
 
-        /// Regression for this module's divergence 3: the body line must
-        /// be offset by the title's own *measured* pixel height, not the
-        /// nominal `line_height` passed into `paint` — matching gtk/
-        /// macos's pre-#861 `pixel_size()`/`measure_text` calls, not
-        /// win's pre-#861 `line_height` arithmetic. Sets the surface's
-        /// measured title height (20.0) to disagree with `line_height`
-        /// (16.0) so the two conventions can't coincidentally agree.
+        /// Regression: the body line must be offset by the title's own
         #[test]
         fn body_offset_uses_measured_title_height_not_nominal_line_height() {
             let mut t = toast("t1", "Title");
@@ -1545,13 +1447,7 @@ pub(crate) mod native_surface_paint {
             assert_eq!(body_run.0.y, title_run.0.y + 20.0);
         }
 
-        /// Acceptance regression for #1182: a toast with a long title, an
-        /// action button and a long body must not overlap the title with
-        /// the action, and every painted text run must stay inside the
-        /// toast's own bounds (no run extending past the box, let alone
-        /// the viewport). The pre-fix behaviour drew the full,
-        /// untruncated title straight through the action column and the
-        /// full body as one unwrapped line past the box's right edge.
+        /// Acceptance regression: a toast with a long title, an action
         #[test]
         fn long_title_and_body_stay_inside_bounds_and_dont_overlap_action() {
             let mut t = toast("t1", "Install Markdown Language Server?");
@@ -1603,7 +1499,7 @@ pub(crate) mod native_surface_paint {
                 );
             }
 
-            // #1185: the title run must end at or before the dismiss
+            // The title run must end at or before the dismiss
             // button's left edge (never drawn under `×`) — the action
             // row moved off the title line entirely, so it no longer
             // constrains the title at all, unlike pre-#1185.
@@ -1746,7 +1642,7 @@ mod tests {
         // Dismiss at the trailing (top) edge.
         assert_eq!(db.x + db.width, v.bounds.x + v.bounds.width);
         // Action row sits on its own, lower row — below the dismiss row,
-        // not inline with it (#1185).
+        // not inline with it.
         assert!(ab.y >= db.y + db.height);
 
         // Hit-test on dismiss.
@@ -1766,7 +1662,7 @@ mod tests {
         }
     }
 
-    /// #1185: a toast with two actions produces two, non-overlapping
+    /// A toast with two actions produces two, non-overlapping
     /// `action_rects` entries, aligned 1:1 with `Toast::actions`.
     #[test]
     fn toast_layout_multiple_action_regions() {
@@ -1830,13 +1726,7 @@ mod tests {
         assert!(layout.visible_toasts.len() <= 3);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):
-    /// `ToastOverlay::layout` previously had no origin parameter at all,
-    /// so it could only ever be called with an implicit `(0, 0)`
-    /// origin — a shape no `*_toast_stack_layout` backend wrapper could
-    /// correct for. Confirms every returned bound (toast, dismiss,
-    /// action, hit region) shifts rigidly by `(origin_x, origin_y)`
-    /// relative to the origin-`(0, 0)` layout for the same stack.
+    /// Non-zero-origin regression guard: `ToastOverlay::layout` previously
     #[test]
     fn toast_layout_nonzero_origin_shifts_every_bound() {
         let mut toast = make_toast("t1", "Build failed");

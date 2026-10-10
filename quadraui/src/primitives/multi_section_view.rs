@@ -54,8 +54,7 @@ pub type ActionId = String;
 
 // ── Top-level enums ────────────────────────────────────────────────────────
 
-/// Layout direction for the section stack. Vertical-only rasterisers in
-/// v1; horizontal tracked in #294.
+/// Layout direction for the section stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Axis {
     #[default]
@@ -423,12 +422,10 @@ pub struct MultiSectionViewLayout {
     /// [`ScrollMode::WholePanel`] when content overflows).
     pub panel_scrollbar: Option<Rect>,
     /// Panel-level scrollbar *thumb* bounds — sub-rect of
-    /// [`Self::panel_scrollbar`], computed via [`crate::fit_thumb`] the
-    /// same way [`SectionLayout::thumb_bounds`] is. Published here so
-    /// callers that need the thumb's exact travel distance for drag
-    /// (e.g. [`crate::compose::SidebarSystem`]) read it straight off the
-    /// layout instead of re-deriving the thumb-sizing formula themselves
-    /// (quadraui#820 — that re-derivation used to drift from this one).
+    /// [`Self::panel_scrollbar`], computed via [`crate::fit_thumb`].
+    /// Published here so callers that need the thumb's exact travel
+    /// distance for drag read it straight off the layout instead of
+    /// re-deriving the thumb-sizing formula themselves.
     pub panel_scrollbar_thumb: Option<Rect>,
     /// Ordered hit-region list. Iterated front-to-back by
     /// [`Self::hit_test`].
@@ -477,13 +474,10 @@ impl Default for SectionMeasure {
 /// TUI, pixels for GTK). The host passes their native value; we just
 /// reserve the space.
 ///
-/// Named `MsvLayoutMetrics` (not just `LayoutMetrics`) since #822: the
-/// bare name read as though it were defined in the unrelated
-/// `primitives::layout_metrics` module (which in fact imports *this*
-/// type) — same-crate naming ambiguity, not a compile clash. Matches the
-/// name this type was already re-exported under at the crate root. The
-/// old name's deprecated `pub type` alias was removed in issue #1109
-/// (zero uses in coord-tui's `main` and vimcode's `develop`).
+/// `cell_quantum > 0.0` flags TUI: the painter clamps thumb height to
+/// 1 cell (`.max(1)` in `paint_panel_scrollbar`), so we mirror that
+/// here. GTK keeps the historical 8-pixel floor (clamped up to
+/// `scrollbar_size` when the gutter is wider).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MsvLayoutMetrics {
     /// Header row size in main-axis units (e.g. 1 cell, or
@@ -514,9 +508,6 @@ impl Default for MsvLayoutMetrics {
     }
 }
 
-// Pre-#822 name of `MsvLayoutMetrics`, `LayoutMetrics`, was removed in
-// issue #1109 (zero uses in coord-tui's `main` and vimcode's `develop`).
-
 impl MultiSectionView {
     /// Compute the full chrome layout for this view.
     ///
@@ -536,10 +527,7 @@ impl MultiSectionView {
         match self.axis {
             Axis::Vertical => self.layout_vertical(bounds, metrics, measure),
             Axis::Horizontal => {
-                // Per #294: horizontal rasterisers ship in a follow-up.
-                // For now, return an empty layout so a misconfigured
-                // call doesn't panic — backends surface this as an
-                // unrendered widget.
+                // Horizontal rasterisers not yet implemented; return an empty layout.
                 MultiSectionViewLayout {
                     bounds,
                     axis: self.axis,
@@ -778,13 +766,10 @@ impl MultiSectionView {
                 None
             };
 
-            // Per-section thumb bounds — computed from the body's
-            // scroll state when introspectable (`Tree`, `List`). For
-            // overflowing bodies without row-based scroll the thumb
-            // bounds stay `None`; the hit-region emission below falls
-            // back to a single combined-Thumb region covering the
-            // whole gutter (preserves the pre-#9 behaviour for those
-            // body types).
+            // Per-section thumb bounds — computed from the body's scroll state when
+            // introspectable (Tree, List). For overflowing bodies without row-based
+            // scroll the thumb bounds stay None; the hit-region emission below falls
+            // back to a single combined-Thumb region covering the whole gutter.
             let thumb_bounds = match (scrollbar_bounds, body_scroll_state(&self.sections[i].body)) {
                 (Some(sb), Some((scroll_rows, row_count))) if row_count > 0 => {
                     Some(compute_thumb_bounds(
@@ -829,14 +814,11 @@ impl MultiSectionView {
                 hit_regions.push((body_bounds, MultiSectionViewHit::Body { section: i }));
             }
 
-            // Scrollbar hit regions. When the body's scroll state is
-            // introspectable (Tree, List), split the gutter into
-            // TrackBefore / Thumb / TrackAfter so consumers can route
-            // page-up clicks (track above thumb) and page-down (track
-            // below thumb) without re-deriving thumb geometry. For
-            // overflowing body types without row-based scroll, fall
-            // back to a single combined-Thumb region — same as the
-            // pre-#9 behaviour. Hit-region order matters: Thumb
+            // Scrollbar hit regions. When the body's scroll state is introspectable
+            // (Tree, List), split the gutter into TrackBefore / Thumb / TrackAfter so
+            // consumers can route page-up and page-down clicks without re-deriving
+            // thumb geometry. For overflowing body types without row-based scroll, fall
+            // back to a single combined-Thumb region. Hit-region order matters: Thumb
             // first (front-to-back hit_test), then the two tracks.
             if let Some(sb) = scrollbar_bounds {
                 if let Some(thumb) = thumb_bounds {
@@ -901,14 +883,10 @@ impl MultiSectionView {
             }
         }
 
-        // Panel-level scrollbar (WholePanel mode only). Thumb geometry
-        // goes through the same canonical `fit_thumb` helper the
-        // per-section scrollbars use (`compute_thumb_bounds` below) —
-        // pre-#820 this branch hand-rolled an equivalent-but-separate
-        // formula, and `compose::SidebarSystem` re-derived it a third
-        // time for drag setup. One formula now; the thumb rect is
-        // published on the layout (`panel_scrollbar_thumb`) so drag
-        // setup can read it instead of re-deriving it.
+        // Panel-level scrollbar (WholePanel mode only). Thumb geometry uses the
+        // same canonical fit_thumb helper as per-section scrollbars. The thumb rect
+        // is published on the layout (panel_scrollbar_thumb) so callers can read it
+        // instead of re-deriving it.
         let (panel_scrollbar, panel_scrollbar_thumb) = match self.scroll_mode {
             ScrollMode::WholePanel => {
                 let total_content: f32 = resolved.iter().sum::<f32>() + dividers_total;
@@ -1057,20 +1035,17 @@ fn size_bounds(s: &Section) -> (f32, f32) {
     (lo, hi)
 }
 
-/// Minimum thumb height for the panel-level scrollbar, in the same
-/// units the rest of the layout uses (cells for TUI, pixels for GTK).
+/// Minimum thumb height for the panel-level scrollbar, in the same units
+/// the rest of the layout uses (cells for TUI, pixels for GTK).
 ///
-/// `cell_quantum > 0.0` flags TUI: the painter clamps thumb height to
-/// 1 cell (`.max(1)` in `paint_panel_scrollbar`), so we mirror that
-/// here. GTK keeps the historical 8-pixel floor (clamped up to
-/// `scrollbar_size` when the gutter is wider).
+/// `cell_quantum > 0.0` flags TUI: the painter clamps thumb height to 1 cell
+/// (`.max(1)` in `paint_panel_scrollbar`), so we mirror that here. GTK keeps
+/// the historical 8-pixel floor (clamped up to `scrollbar_size` when the
+/// gutter is wider).
 ///
-/// Exposed `pub(crate)` so [`crate::compose::SidebarSystem`]'s drag
-/// init can compute the same `thumb_h` the layout did, keeping
-/// drag-`travel` consistent with the painted thumb's track distance.
-/// Pre-#241 the compose helper used a different floor (`line_height`),
-/// so in TUI the painted thumb moved ~8× faster than the cursor and
-/// the user-facing symptom was "thumb drag does nothing visible".
+/// Exposed `pub(crate)` so drag init can compute the same `thumb_h` the
+/// layout did, keeping drag travel consistent with the painted thumb's track
+/// distance.
 pub(crate) fn panel_thumb_min(metrics: &MsvLayoutMetrics) -> f32 {
     if metrics.cell_quantum > 0.0 {
         metrics.cell_quantum
@@ -1406,49 +1381,36 @@ fn push_aux_hits(
     }
 }
 
-// ── PaintSurface chrome paint (#1074, PaintSurface Phase 4) ──────────────
-
-/// Shared chrome-paint helpers for the `MultiSectionView` rasterisers
-/// (issue #1074, `PaintSurface` Phase 4, primitive 1/8).
+/// Shared chrome-paint helpers for the `MultiSectionView` rasterisers.
 ///
 /// Only the **chrome** — header row, aux row, per-section and panel-level
-/// scrollbars, divider strip, `Text`/`Empty` bodies — moves here. Each
-/// pixel backend's own `src/{gtk,macos,win}/multi_section_view.rs` keeps
-/// its `draw_multi_section_view` orchestrator and its `paint_body`
-/// dispatcher: `SectionBody::Tree`/`List`/`MessageList` still call each
-/// backend's own native rasteriser (`gtk::draw_tree`, `win::list::draw_list`,
-/// …), which take a raw `(&Context, &pango::Layout)` / `(&ID2D1RenderTarget,
-/// &DWrite)` pair, not `&mut dyn PaintSurface` — those primitives haven't
-/// been ported onto this trait yet (see `crate::paint_surface`'s own doc
-/// for the full ported/unported split). Moving only what's already
-/// expressible through the ~15 verbs on `PaintSurface` mirrors exactly how
-/// `crate::primitives::form::native_surface_paint` left `FieldKind::Toolbar`
-/// (no rounded-rect/hover chrome available) to each backend's own
-/// `draw_form` wrapper.
+/// scrollbars, divider strip, `Text`/`Empty` bodies — is implemented here.
+/// Each pixel backend's own `src/{gtk,macos,win}/multi_section_view.rs` keeps
+/// its `draw_multi_section_view` orchestrator and its `paint_body` dispatcher:
+/// `SectionBody::Tree`/`List`/`MessageList` still call each backend's own
+/// native rasteriser (`gtk::draw_tree`, `win::list::draw_list`, …), which
+/// take a raw `(&Context, &pango::Layout)` / `(&ID2D1RenderTarget, &DWrite)`
+/// pair, not `&mut dyn PaintSurface` — those primitives have not yet been
+/// ported onto this trait (see `crate::paint_surface`'s own doc for the full
+/// ported/unported split). Moving only what is already expressible through
+/// the ~15 verbs on `PaintSurface` mirrors how `crate::primitives::form`
+/// leaves `FieldKind::Toolbar` (no rounded-rect/hover chrome available) to
+/// each backend's own `draw_form` wrapper.
 ///
-/// # Fixed drift (#1074)
+/// # Fixed drift
 ///
-/// Pre-port, only the Win-GUI and macOS `paint_header`s clipped the title
-/// paint to the region between the chevron and the first reserved action
-/// slot; `gtk::multi_section_view::paint_header` painted the title
-/// unclipped (its own comment — "Pango clips automatically when we don't
-/// set width" — was simply wrong: Pango only wraps/ellipsises when a
-/// width *is* set on the layout). A title wider than its title/badge
-/// region bled ink past the header's own trailing margin on GTK. This
-/// shared [`paint_header`] always brackets the title draw in
+/// Pre-port, only Win-GUI and macOS `paint_header`s clipped the title paint
+/// to the region between the chevron and the first reserved action slot; GTK
+/// painted the title unclipped, allowing it to bleed past the header's trailing
+/// margin. This shared [`paint_header`] always brackets the title draw in
 /// [`PaintSurface::surface_push_clip`]/[`PaintSurface::surface_pop_clip`],
-/// unifying on the already-majority-correct behaviour. See
-/// `gtk::multi_section_view::tests::gtk_header_clips_long_title_before_right_margin`
-/// for the regression test (observed RED against the pre-port
-/// unclipped GTK implementation).
+/// unifying on the already-majority-correct behaviour.
 ///
-/// A second drift, not called out in #1074's text but found while
-/// porting: macOS's `paint_panel_scrollbar` (pre-port) recomputed the
-/// panel thumb's position/size itself from `(scroll, total_content)`
-/// instead of consuming the layout's own `panel_scrollbar_thumb` —
-/// exactly the quadraui#820 bug already fixed for GTK/Win. Routing macOS
-/// through this shared [`paint_panel_scrollbar`] (which only ever
-/// consumes a pre-computed `thumb_bounds`) closes that gap too.
+/// A second drift found while porting: macOS's `paint_panel_scrollbar` recomputed
+/// the panel thumb's position/size itself instead of consuming the layout's
+/// `panel_scrollbar_thumb`. Routing macOS through this shared
+/// [`paint_panel_scrollbar`] (which only consumes pre-computed `thumb_bounds`)
+/// closes that gap.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -1552,10 +1514,8 @@ pub(crate) mod native_surface_paint {
 
     /// Paint a section's aux row (`Input`/`Search`/`Toolbar`/`Custom`).
     ///
-    /// `caret_visible` lets a caller with its own blink-timer state
-    /// (macOS, #188) gate the caret paint; a caller without one (GTK,
-    /// Win) passes `true` unconditionally, reproducing their pre-port
-    /// always-on-while-focused behaviour exactly.
+    /// `caret_visible` lets a caller with its own blink-timer state gate the
+    /// caret paint; a caller without one passes `true` unconditionally.
     pub(crate) fn paint_aux(
         surface: &mut dyn PaintSurface,
         bounds: Rect,
@@ -1735,18 +1695,13 @@ pub(crate) mod native_surface_paint {
         }
     }
 
-    /// Paint a per-section scrollbar gutter: a 50%-alpha track with a
-    /// 90%-alpha thumb on top, both real alpha blends against whatever
-    /// is already painted underneath (matching GTK's/macOS's pre-port
-    /// behaviour; Win-GUI's `D2dSurface::surface_fill_rect` has honoured
-    /// real alpha since #791/#1072, so routing it through here is not a
-    /// behaviour change for Win either — see this module's doc for the
-    /// one drift this port does fix).
+    /// Paint a per-section scrollbar gutter: a 50%-alpha track with a 90%-alpha
+    /// thumb on top, both real alpha blends against whatever is already painted
+    /// underneath.
     ///
-    /// `thumb_bounds` comes from the layout when the body's scroll state
-    /// is introspectable (`Tree`, `List`); `None` falls back to a
-    /// 20%-tall top-anchored placeholder thumb, preserving the pre-#9
-    /// visual for other overflowing body types.
+    /// `thumb_bounds` comes from the layout when the body's scroll state is
+    /// introspectable (`Tree`, `List`); `None` falls back to a 20%-tall top-anchored
+    /// placeholder thumb, preserving the visual for other overflowing body types.
     pub(crate) fn paint_scrollbar(
         surface: &mut dyn PaintSurface,
         gutter: Rect,
@@ -1765,16 +1720,12 @@ pub(crate) mod native_surface_paint {
         );
     }
 
-    /// Paint the panel-level scrollbar (`ScrollMode::WholePanel`): an
-    /// opaque track, then an opaque thumb at `thumb_bounds` — geometry
-    /// computed once by
-    /// [`crate::primitives::multi_section_view::MultiSectionView::layout`]
+    /// Paint the panel-level scrollbar (`ScrollMode::WholePanel`): an opaque
+    /// track, then an opaque thumb at `thumb_bounds`. Geometry is computed once
+    /// by [`crate::primitives::multi_section_view::MultiSectionView::layout`]
     /// (`fit_thumb`) and published as
-    /// [`crate::primitives::multi_section_view::MultiSectionViewLayout::panel_scrollbar_thumb`].
-    /// Never re-derived here — see this module's doc for the quadraui#820
-    /// class of bug that re-deriving it caused on three of the four
-    /// backends that have ever painted this scrollbar (GTK, Win, and now
-    /// fixed here, macOS).
+    /// [`crate::primitives::multi_section_view::MultiSectionViewLayout::panel_scrollbar_thumb`],
+    /// never re-derived here.
     pub(crate) fn paint_panel_scrollbar(
         surface: &mut dyn PaintSurface,
         bounds: Rect,
@@ -1893,10 +1844,8 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        /// Regression for #1074: the title text draw must always happen
-        /// while exactly one clip is active (pushed immediately before,
-        /// popped immediately after) — the drift this port fixes was
-        /// GTK's `paint_header` never pushing that clip at all.
+        /// The title text draw must always happen while exactly one clip is active
+        /// (pushed immediately before, popped immediately after).
         #[test]
         fn paint_header_clips_the_title_draw() {
             let header = header_with("a very long title indeed", vec![]);
@@ -1941,10 +1890,8 @@ pub(crate) mod native_surface_paint {
             assert!(surface.texts.is_empty());
         }
 
-        /// Regression for quadraui#791, ported to the shared chrome
-        /// path: per-section scrollbar track/thumb must carry real
-        /// alpha, never a fully-opaque colour pre-blended against a
-        /// hardcoded destination.
+        /// Per-section scrollbar track and thumb must carry real alpha, never a
+        /// fully-opaque colour pre-blended against a hardcoded destination.
         #[test]
         fn scrollbar_track_and_thumb_paint_with_real_alpha() {
             let mut surface = RecordingSurface::default();
@@ -1960,10 +1907,8 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        /// The panel-level scrollbar must consume the layout-supplied
-        /// `thumb_bounds` verbatim rather than re-deriving thumb geometry
-        /// from `(scroll, total)` — the quadraui#820 class of bug this
-        /// module's doc calls out as still present, pre-port, on macOS.
+        /// The panel-level scrollbar must consume the layout-supplied `thumb_bounds`
+        /// verbatim rather than re-deriving thumb geometry from `(scroll, total)`.
         #[test]
         fn panel_scrollbar_uses_supplied_thumb_bounds_not_a_recomputed_one() {
             let mut surface = RecordingSurface::default();
@@ -2439,14 +2384,9 @@ mod tests {
 
     #[test]
     fn cell_quantum_snaps_section_bounds_to_integers() {
-        // Regression: with a fractional EqualShare distribution
-        // (4 sections in 21 cells → 5.25 each), paint snaps via
-        // `bounds.y.round()` while hit_test used to consume raw f32
-        // bounds. Click at the integer row that paint drew the header
-        // on resolved to the previous section's body, breaking
-        // every section after the first. With `cell_quantum: 1.0`
-        // the layout itself snaps to whole cells so paint and click
-        // can never disagree.
+        // With a fractional EqualShare distribution (4 sections in 21 cells → 5.25
+        // each), paint snaps via bounds.y.round() while hit_test used to consume raw
+        // f32 bounds. With cell_quantum: 1.0 the layout itself snaps to whole cells.
         let v = view(vec![
             empty_section("a", SectionSize::EqualShare),
             empty_section("b", SectionSize::EqualShare),

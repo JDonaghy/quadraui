@@ -16,7 +16,7 @@
 //!
 //! **`StatusBar` has narrow-bar handling that backends MUST implement
 //! correctly** or the right segments overlap / touch / overflow the left
-//! segments on narrow widths (issue #159). A purely declarative paint
+//! segments on narrow widths. A purely declarative paint
 //! that just renders all segments left-aligned and all segments right-
 //! aligned looks fine on wide bars and ugly-to-broken on narrow ones.
 //!
@@ -149,13 +149,6 @@ impl StatusBar {
     /// Compute clickable hit regions given the bar's pixel/char width.
     /// Left segments accumulate from column 0; right segments are right-
     /// aligned inside `bar_width`.
-    ///
-    /// Pre-D6 shape (character-column `u16` pairs); kept private, as the
-    /// shared body [`Self::resolve_click`] calls. The public `hit_regions`
-    /// this once backed was removed in issue #1109 (zero uses in
-    /// coord-tui's `main` and vimcode's `develop`) — use [`Self::layout`]
-    /// and [`StatusBarLayout::hit_test`] instead for the crate's `Rect` +
-    /// `Hit`-enum convention.
     fn hit_regions_impl(&self, bar_width: usize) -> Vec<StatusBarHitRegion> {
         let mut regions = Vec::new();
         let mut col: u16 = 0;
@@ -348,7 +341,7 @@ impl StatusBarLayout {
 
 /// Outer edge inset (surface-native units — px on every pixel backend)
 /// reserved between the bar's own left/right edges and its outermost
-/// segments, VS Code-like (issue #1155). Pixel backends (GTK/Win/macOS)
+/// segments, VS Code-like. Pixel backends (GTK/Win/macOS)
 /// pass this to [`StatusBar::layout_padded`]. TUI's char-cell bar has no
 /// use for a sub-cell inset and keeps calling plain [`StatusBar::layout`]
 /// (equivalent to `layout_padded` with `edge_inset = 0.0`).
@@ -356,7 +349,7 @@ pub const PIXEL_EDGE_INSET: f32 = 10.0;
 
 /// Per-segment horizontal padding (surface-native units — px on every
 /// pixel backend), added to *both* sides of each segment's measured text
-/// width, VS Code-like (issue #1155). See [`PIXEL_EDGE_INSET`]'s doc.
+/// width, VS Code-like. See [`PIXEL_EDGE_INSET`]'s doc.
 pub const PIXEL_SEGMENT_PADDING: f32 = 5.0;
 
 impl StatusBar {
@@ -384,7 +377,7 @@ impl StatusBar {
     ///
     /// Equivalent to [`Self::layout_padded`] with `edge_inset = 0.0` and
     /// `segment_padding = 0.0` — no outer inset, no per-segment padding.
-    /// This is what TUI's char-cell bar wants (issue #1155): a monospace
+    /// This is what TUI's char-cell bar wants: a monospace
     /// cell grid has no sub-cell pixels to spend on padding, and its
     /// callers already reserve visual breathing room with literal space
     /// characters inside segment text.
@@ -402,7 +395,7 @@ impl StatusBar {
     }
 
     /// [`Self::layout`] plus a pixel-space outer edge inset and
-    /// per-segment horizontal padding (issue #1155) — what pixel backends
+    /// per-segment horizontal padding — what pixel backends
     /// (GTK/Win/macOS) should call instead of `layout` so the right-most
     /// segment doesn't touch the window edge and adjacent segments get a
     /// visible gap without relying on the consumer's literal space
@@ -533,79 +526,23 @@ impl StatusBar {
     }
 }
 
-// ── PaintSurface paint (#860, Phase 2d slice 3/9 of the PaintSurface
-// milestone) ─────────────────────────────────────────────────────────────
+// Shared implementation for painting status bars across GTK, Windows,
+// and macOS. Each backend's `draw_status_bar` calls [`paint`] with its
+// native [`PaintSurface`], measuring and rendering text with backend-
+// specific overrides as needed.
 //
-// Before this, `gtk::status_bar::draw_status_bar` (Cairo/Pango),
-// `macos::status_bar::draw_status_bar` (Core Graphics/Core Text) and
-// `win::status_bar::draw_status_bar` (Direct2D/DirectWrite) each
-// independently painted the same bar-fill + per-segment chrome with
-// their own drawing API (quadraui#785 child #811, `docs/SMELL_AUDIT_2026-07.md`
-// §5). `paint` below is the one shared implementation, written against
-// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
-// one backend's drawing API.
+// Bold-aware measurement: GTK and Windows measure segment width against
+// the segment's `bold` flag; macOS measures all segments at non-bold
+// weight. The shared `paint` uses [`PaintSurface::surface_measure_text_styled`]
+// which defaults to non-bold (macOS behaviour); GTK and Windows override
+// it to preserve their bold measurement.
 //
-// # Divergences found — reported, not silently resolved
+// Zero-size guard: a non-positive `width` or `line_height` short-
+// circuits without touching the surface, matching the contract of
+// [`crate::Backend::draw_status_bar`].
 //
-// 1. **Bold-aware measurement.** `gtk::status_bar::draw_status_bar` and
-//    `win::status_bar::draw_status_bar` both measured a segment's width
-//    against its own `bold` flag (a Pango `AttrList` weight / DirectWrite
-//    `measure_text_styled`); `macos::status_bar::draw_status_bar` measured
-//    (and rendered) every segment at the same non-bold weight — its own
-//    module doc names this explicitly ("Bold segments — Tracked
-//    separately... bold is currently ignored"). This migration adds
-//    [`PaintSurface::surface_measure_text_styled`] (mirroring
-//    [`PaintSurface::surface_draw_text_run_styled`]'s #810 shape), whose
-//    default drops `bold` — exactly macOS's existing behaviour, so
-//    `MacBackend` needs no override — while `GtkBackend` and `WinBackend`
-//    override it to measure the real bold weight, preserving what they
-//    already painted. No behaviour changes on any of the three backends;
-//    the divergence itself is left unresolved and reported here, per this
-//    issue's instructions.
-//
-// 2. **Zero-size guard + clip.** `macos::status_bar::draw_status_bar` and
-//    `win::status_bar::draw_status_bar` already short-circuited to the
-//    no-paint layout on a non-positive `width`/`line_height`
-//    (quadraui#791 — re-verified while migrating, per this issue's
-//    "re-verify before you implement": both already carried the fix,
-//    contrary to this issue's own text, which claimed only `macos` had
-//    it — reported here rather than assumed).
-//    `gtk::status_bar::draw_status_bar` had no such guard: it still
-//    clipped (so the fill/segments stayed invisible) but continued to
-//    measure every segment's real text width regardless. `paint` below
-//    applies the #791-fixed shape (early return, matching mac/win)
-//    uniformly, which changes GTK's zero-size behaviour from "measure
-//    real widths, paint nothing visible" to "measure nothing, paint
-//    nothing" — invisible either way, so no observable regression, and
-//    it's what #791 already established as the correct shape for the
-//    other two backends.
-//
-// 3. **`find_bounds` semantics now genuinely differ per backend (#1155).**
-//    Each backend's testing driver locates a painted segment's label by
-//    recording where text actually got drawn — but "where text got
-//    drawn" means different rects on different backends, and this PR is
-//    the first change that makes the difference numerically observable.
-//    `GtkBackend::draw_status_bar_interactive` explicitly re-records
-//    `seg.bounds` (the full padded fill rect this `paint` computes) over
-//    whatever Pango recorded, per that call site's own comment — so
-//    `GtkDriver::find_bounds` returns the *segment's padded box*,
-//    starting at `PIXEL_EDGE_INSET` for the lone left segment. macOS and
-//    Windows have no such override: `MacDriver`/`WinDriver::find_bounds`
-//    is backed purely by the glyph draw position this `paint` computes
-//    below (`text_rect`, inset a further `PIXEL_SEGMENT_PADDING` past the
-//    fill rect) — so it returns `PIXEL_EDGE_INSET + PIXEL_SEGMENT_PADDING`
-//    for the same segment. Before this change both conventions happened
-//    to agree (`0.0` either way, no inset or padding existed to diverge
-//    on). Not introduced by this PR — the asymmetry is pre-existing
-//    backend-testing-helper divergence — but worth flagging so a future
-//    change doesn't assume `find_bounds` means the same rect across
-//    `GtkDriver`/`MacDriver`/`WinDriver`.
-//
-// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
-// — only *called* once a real pixel backend is compiled in, exercised by
-// each backend's own `Backend::draw_status_bar` call site plus this
-// module's own `RecordingSurface` tests on every leg that enables one of
-// the three cfg'd features.
+// `#[allow(dead_code)]`: `paint` is only called when a pixel backend
+// (GTK, Windows, or macOS) is compiled in.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -623,30 +560,21 @@ pub(crate) mod native_surface_paint {
     use crate::types::WidgetId;
 
     /// Minimum gap (surface-native units — px on every pixel backend)
-    /// reserved between the left and right segment groups. All three
-    /// pre-#860 per-backend copies agreed on `16.0`
-    /// (`gtk::status_bar::MIN_GAP_PX`, `macos::status_bar::MIN_GAP_PX`,
-    /// `win::status_bar::MIN_GAP_DIP`) — those stay put (each backend's
-    /// own no-paint `*_status_bar_layout` twin still uses its own copy
-    /// for `Backend::status_bar_layout`); this is `paint`'s independent
-    /// copy of the same value.
+    /// reserved between the left and right segment groups.
     const MIN_GAP: f32 = 16.0;
 
     /// Paint a [`StatusBar`] into `(x, y, width, line_height)` on
     /// `surface`, returning the resolved [`StatusBarLayout`] for the
     /// caller's click dispatch — same contract as
     /// [`crate::Backend::draw_status_bar`]: hit regions are **bar-local**
-    /// (relative to `x`/`y`), matching every backend's pre-#860
-    /// rasteriser.
+    /// (relative to `x`/`y`).
     ///
     /// `hovered_id` / `pressed_id` tint the matching clickable segment's
     /// background (lighten on hover, darken on press) — the primitive
     /// itself carries no mouse state.
     ///
     /// A non-positive `width`/`line_height` short-circuits to the
-    /// no-paint layout without touching `surface` at all — see this
-    /// module's doc, divergence 2, for why this is applied uniformly
-    /// (including to GTK, which never had this guard pre-#860).
+    /// no-paint layout without touching `surface` at all.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         bar: &StatusBar,
@@ -673,8 +601,7 @@ pub(crate) mod native_surface_paint {
         let rect = Rect::new(x, y, width, line_height);
         surface.surface_push_clip(rect);
 
-        // Background fill: first segment's bg, else theme bg — matches
-        // every pre-#860 per-backend copy.
+        // Background fill: first segment's bg, else theme bg.
         let fill = bar
             .left_segments
             .first()
@@ -687,7 +614,7 @@ pub(crate) mod native_surface_paint {
         // per-backend (`surface_measure_text_styled`'s default/override
         // split), not decided here.
         //
-        // `layout_padded` (issue #1155) reserves `PIXEL_EDGE_INSET` at
+        // `layout_padded` reserves `PIXEL_EDGE_INSET` at
         // both bar edges and `PIXEL_SEGMENT_PADDING` on both sides of
         // every segment's measured text — VS Code-like outer/per-item
         // padding so the right-most segment doesn't touch the window
@@ -718,11 +645,7 @@ pub(crate) mod native_surface_paint {
                 vs.bounds.height,
             );
 
-            // Hover/press tint — applied only to interactive segments,
-            // matching every pre-#860 per-backend copy.
-            // `action_id.is_some_and(...)` is false for both
-            // non-clickable segments and segments whose id doesn't match
-            // `hovered_id` / `pressed_id`.
+            // Hover/press tint — applied only to interactive segments.
             let effective_bg = if seg
                 .action_id
                 .as_ref()
@@ -739,7 +662,7 @@ pub(crate) mod native_surface_paint {
                 seg.bg
             };
             surface.surface_fill_rect(seg_rect, effective_bg);
-            // Text sits inset within the padded segment box (issue #1155)
+            // Text sits inset within the padded segment box
             // rather than flush against `seg_rect`'s left edge — the fill
             // above still covers the full padded bounds, matching the hit
             // region VS Code-style.
@@ -809,7 +732,7 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// #1073: test-only recorder — `paint` never calls this verb
+            /// Test-only recorder — `paint` never calls this verb
             /// (see this module's own doc for why no primitive here has been
             /// migrated onto it yet); this exists only so `RecordingSurface`
             /// satisfies the trait. Records into the same `fills` list as
@@ -924,10 +847,7 @@ pub(crate) mod native_surface_paint {
             assert_eq!(surface.fills[0].1, bar.left_segments[0].bg);
         }
 
-        /// Regression for the already-fixed quadraui#791 shape (divergence
-        /// 2 above): a degenerate rect must not touch `surface` at all,
-        /// on every backend — including GTK, which had no such guard
-        /// pre-#860.
+        /// A degenerate rect must not touch `surface` at all.
         #[test]
         fn zero_width_short_circuits_without_touching_surface() {
             let bar = sample_bar();
@@ -1116,11 +1036,9 @@ pub(crate) mod native_surface_paint {
             assert_eq!(hit, StatusBarHit::Segment(WidgetId::new("sb:cursor")));
         }
 
-        /// Issue #1155: on every pixel backend (this shared `paint` is
-        /// GTK/Win/macOS's rasteriser) the right-most segment must not
-        /// touch the bar's own right edge, and the left-most segment
-        /// must not touch the left edge — both get `PIXEL_EDGE_INSET`'s
-        /// worth of outer margin.
+        /// On every pixel backend, the right-most segment must not touch the
+        /// bar's own right edge, and the left-most segment must not touch the
+        /// left edge — both get `PIXEL_EDGE_INSET`'s worth of outer margin.
         #[test]
         fn paint_reserves_pixel_edge_inset_at_both_bar_edges() {
             let bar = sample_bar();
@@ -1162,10 +1080,10 @@ pub(crate) mod native_surface_paint {
             );
         }
 
-        /// Issue #1155: the segment's background fill covers the full
-        /// padded box (so hover/press tint and hit region agree), but the
-        /// text itself is drawn inset by `PIXEL_SEGMENT_PADDING` rather
-        /// than flush against the fill's left edge.
+        /// The segment's background fill covers the full padded box (so
+        /// hover/press tint and hit region agree), but the text itself is
+        /// drawn inset by `PIXEL_SEGMENT_PADDING` rather than flush against
+        /// the fill's left edge.
         #[test]
         fn paint_insets_text_within_the_padded_segment_box_but_fills_the_whole_box() {
             let bar = sample_bar();
@@ -1575,7 +1493,7 @@ mod tests {
         );
     }
 
-    // ── issue #1155: outer edge inset + per-segment padding ────────────
+    // Outer edge inset + per-segment padding.
 
     #[test]
     fn layout_padded_insets_left_segment_from_the_bar_edge() {

@@ -31,16 +31,15 @@
 //! hunks. The `Editor` primitive decorates live buffer content with
 //! per-line gutter colours. They are not interchangeable.
 //!
-//! # Shared layout (issue #737)
+//! # Shared layout
 //!
 //! Row/pane geometry — pane widths, the divider position, the optional
-//! header strip, and the scroll-clamped visible-line window — used to be
-//! re-derived independently by every backend's `draw_diff_view` (and the
-//! `row kind → colour` tables three times over). [`DiffView::layout`] is
-//! now the single source of that geometry, and [`row_colors`] /
-//! [`unified_row_style`] / [`unified_row_text`] / [`unified_hunk_header`]
-//! are the single source of colour/text selection. Every backend (gtk,
-//! macos, tui, win) calls these instead of carrying its own copy.
+//! header strip, and the scroll-clamped visible-line window — is now
+//! computed once by [`DiffView::layout`] rather than re-derived by every
+//! backend independently. [`row_colors`] / [`unified_row_style`] /
+//! [`unified_row_text`] / [`unified_hunk_header`] are the single source of
+//! colour/text selection. Every backend (gtk, macos, tui, win) calls these
+//! instead of carrying its own copy.
 
 use crate::event::Rect;
 use crate::theme::Theme;
@@ -74,14 +73,11 @@ pub struct DiffRow {
     pub kind: DiffRowKind,
 }
 
-/// The `row kind → colour` table for **side-by-side** mode — shared by
-/// every backend's rasteriser (gtk, macos, tui, win). This table existed
-/// three times over (`gtk::diff_view::row_colors_gtk`,
-/// `macos::diff_view::row_colors`, `tui::diff_view::row_colors`) before
-/// issue #737; #713's primitive-first rule forbids a fourth copy, so this
-/// single function is the only definition and every backend converts its
-/// `Color` output to its own native colour type at the call site (`qc` on
-/// TUI, `cairo_rgb` on GTK, a passthrough on macOS/Win).
+/// The `row kind → colour` table for **side-by-side** mode — used by
+/// every backend's rasteriser (gtk, macos, tui, win). This single function
+/// is the only definition, and every backend converts its `Color` output to
+/// its own native colour type at the call site (`qc` on TUI, `cairo_rgb`
+/// on GTK, a passthrough on macOS/Win).
 ///
 /// Returns `(left_fg, left_bg, right_fg, right_bg)`.
 pub fn row_colors(kind: DiffRowKind, theme: &Theme) -> (Color, Color, Color, Color) {
@@ -115,7 +111,7 @@ pub fn row_colors(kind: DiffRowKind, theme: &Theme) -> (Color, Color, Color, Col
 
 /// The `row kind → (prefix, colour)` table for **unified** mode — the
 /// single-column twin of [`row_colors`], likewise lifted out of three
-/// backend copies (#737).
+/// backend copies.
 ///
 /// Returns `(prefix_char, fg, bg)`.
 pub fn unified_row_style(kind: DiffRowKind, theme: &Theme) -> (char, Color, Color) {
@@ -131,7 +127,7 @@ pub fn unified_row_style(kind: DiffRowKind, theme: &Theme) -> (char, Color, Colo
 /// The unified-mode content text for a [`DiffRow`]: the left text for a
 /// `Removed` row, otherwise the right text falling back to the left
 /// (`Changed`/`Added`/`Same`). Lifted out of three identical `match`
-/// arms (#737).
+/// arms.
 pub fn unified_row_text(row: &DiffRow) -> &str {
     match row.kind {
         DiffRowKind::Removed => row.left.as_deref().unwrap_or(""),
@@ -157,7 +153,7 @@ pub struct DiffHunk {
 /// `-n` counts rows sourced from the LEFT file (`row.left.is_some()`),
 /// `+m` from the RIGHT (`row.right.is_some()`) — these differ from
 /// `hunk.rows.len()` whenever a change run produces padding rows (unequal
-/// removed/added counts). Lifted out of three identical copies (#737).
+/// removed/added counts). Lifted out of three identical copies.
 pub fn unified_hunk_header(hunk: &DiffHunk) -> String {
     let left_count = hunk.rows.iter().filter(|r| r.left.is_some()).count();
     let right_count = hunk.rows.iter().filter(|r| r.right.is_some()).count();
@@ -306,10 +302,10 @@ pub struct DiffPaneGeometry {
 }
 
 /// Fully-resolved `DiffView` geometry — the row-position/colour-agnostic
-/// half of what every backend's `draw_diff_view` used to re-derive from
-/// scratch (issue #737). Backends still own colour selection
-/// ([`row_colors`] / [`unified_row_style`]) and text painting; this answers
-/// only "where".
+/// spatial layout that backends need to render. Computed once by
+/// [`DiffView::layout`] rather than re-derived independently by each
+/// backend. Backends still own colour selection ([`row_colors`] /
+/// [`unified_row_style`]) and text painting; this answers only "where".
 ///
 /// `lines` already reflects `scroll_offset` — it is the visible window,
 /// not the full row list — so callers never re-implement the scroll-clamp
@@ -361,7 +357,7 @@ impl DiffViewGeometry {
         }
     }
 
-    /// Hit-test a click at `(x, y)` against [`Self::lines`] (quadraui#818).
+    /// Hit-test a click at `(x, y)` against [`Self::lines`].
     ///
     /// Coordinate frame: **ABSOLUTE** — matches every `bounds` field on
     /// [`DiffDisplayLine`], which already carry the `viewport` rect
@@ -395,9 +391,8 @@ impl DiffViewGeometry {
 }
 
 /// Resolve `(start, end)` — the half-open range of the flat display-line
-/// list that is on-screen — from a scroll offset. Shared by both
-/// [`DiffView::layout`] modes; was duplicated inline in every backend's
-/// `draw_diff_view` before #737.
+/// list that is on-screen — from a scroll offset. Used by both
+/// [`DiffView::layout`] modes.
 fn scroll_window(scroll_offset: usize, visible_rows: usize, total: usize) -> (usize, usize) {
     let start = scroll_offset.min(total.saturating_sub(1));
     let end = (start + visible_rows).min(total);
@@ -500,16 +495,12 @@ impl DiffView {
     /// `line_height` (backend-native units: 1.0 for TUI cells, font pixel
     /// height for GTK/macOS/Win).
     ///
-    /// This is the shared "where" half of what every backend's
-    /// `draw_diff_view` used to re-derive independently (issue #737) —
-    /// pane widths, the divider position, the header strip, and the
-    /// scroll-clamped visible-line window. Backends still own colour
-    /// selection ([`row_colors`] / [`unified_row_style`]) and text
-    /// painting.
+    /// Returns pane widths, the divider position, the header strip, and the
+    /// scroll-clamped visible-line window. Backends own colour selection
+    /// ([`row_colors`] / [`unified_row_style`]) and text painting.
     ///
-    /// Returns an empty (zero-`visible_rows`) geometry without painting
-    /// implications when `viewport` or `line_height` is non-positive —
-    /// same guard every pre-#737 backend used.
+    /// Returns an empty (zero-`visible_rows`) geometry when `viewport` or
+    /// `line_height` is non-positive — a guard that prevents division by zero.
     pub fn layout(&self, viewport: Rect, line_height: f32) -> DiffViewGeometry {
         if viewport.width <= 0.0 || viewport.height <= 0.0 || line_height <= 0.0 {
             return DiffViewGeometry {
@@ -620,56 +611,21 @@ impl DiffView {
     }
 }
 
-// ── PaintSurface paint (#866, Phase 2d slice 9/9 of the PaintSurface
-// milestone, #811 / #785) ───────────────────────────────────────────────
+// Unified implementation of `draw_diff_view` for all backends (gtk, macos,
+// tui, win), written against [`crate::paint_surface::PaintSurface`] instead
+// of any one backend's drawing API. Uses the layout geometry from
+// [`DiffView::layout`] and applies row colouring and text from the
+// [`row_colors`] and [`unified_row_style`] functions.
 //
-// Before this, `gtk::diff_view::draw_diff_view` (Cairo + Pango),
-// `macos::diff_view::draw_diff_view` (Core Graphics + Core Text) and
-// `win::diff_view::draw_diff_view` (Direct2D + DirectWrite) each
-// independently painted the same row/pane geometry (already unified by
-// #737's `DiffView::layout`) with their own drawing API. `paint` below is
-// the one shared implementation, written against
-// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
-// one backend's drawing API — same shape as `scrollbar`'s #811 slice 1/9
-// migration (commit `2a47547`).
+// Rendering differences from pre-unified implementations:
 //
-// ## Divergences found (re-verified, reported here rather than silently
-// resolved — CLAUDE.md's "re-verify before you implement" + this issue's
-// acceptance bar)
+// 1. **Row/header text vertical alignment:** draws at the row rect's top
+//    (established by prior primitives `status_bar` and `text_display` via
+//    [`crate::paint_surface::PaintSurface::surface_draw_text_run`]), not
+//    vertically centred as GTK previously did.
 //
-// 1. **Row/header text vertical alignment.** `gtk::diff_view` vertically
-//    centred every text draw within its row's `line_height` band
-//    (`ly + (lh - text_h) / 2.0`, both for the pane header labels and for
-//    row content). `macos::diff_view` and `win::diff_view` both drew
-//    flush to the row's *top* edge instead: `macos::text::draw_text`'s
-//    `y` parameter is documented as "the requested **top** of the glyph"
-//    (it shifts down by the font's ascent internally), and
-//    `win::text::create_text_format` never calls
-//    `IDWriteTextFormat::SetParagraphAlignment`, so DirectWrite defaults
-//    to top alignment too. Every already-migrated primitive that draws a
-//    fixed-height row through [`crate::paint_surface::PaintSurface::surface_draw_text_run`]
-//    (`status_bar`, `text_display`) draws at the row rect's own `y` with
-//    no manual centring offset, so that is this trait method's
-//    established contract — `paint` below follows it (top alignment on
-//    all three backends) rather than reproducing GTK's one-off centring.
-//    Net effect: GTK's row/header text now sits at the top of its row
-//    instead of vertically centred — a visible, if small (line_height
-//    closely tracks glyph height), change on GTK only.
-// 2. **Header-label overflow handling.** `gtk::diff_view` ellipsized an
-//    overflowing `left_label`/`right_label` with Pango's
-//    `EllipsizeMode::End` (a trailing "…"). `macos::diff_view` and
-//    `win::diff_view` both hard-clipped instead (`CGContextClipToRect` /
-//    `D2D1_DRAW_TEXT_OPTIONS_CLIP`), cutting the glyph run off exactly at
-//    the pane edge with no ellipsis. `PaintSurface` has no ellipsize
-//    verb, so `paint` hard-clips header labels on every backend — the
-//    macOS/Windows behaviour. An overlong label on GTK now hard-clips
-//    instead of ellipsizing.
-//
-// `#[allow(dead_code)]`: see `primitives::scrollbar`'s identical note —
-// only *called* once a real pixel backend is compiled in, exercised by
-// each backend's own `Backend::draw_diff_view` call sites plus this
-// module's own `RecordingSurface` tests on every leg that enables one of
-// the three cfg'd features.
+// 2. **Header-label overflow handling:** hard-clips overflowing labels at
+//    the pane edge (as macOS/Windows did), not ellipsized (as GTK did).
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -856,7 +812,7 @@ pub(crate) mod native_surface_paint {
 
         /// Records every drawing verb `paint` issues — mirrors
         /// `primitives::chart`/`primitives::text_display`'s own
-        /// `RecordingSurface` (#810/#865).
+        /// `RecordingSurface`.
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
@@ -883,7 +839,7 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// #1073: test-only recorder — `paint` never calls this verb
+            /// Test-only recorder — `paint` never calls this verb
             /// (see this module's own doc for why no primitive here has been
             /// migrated onto it yet); this exists only so `RecordingSurface`
             /// satisfies the trait. Records into the same `fills` list as
@@ -1167,9 +1123,8 @@ mod tests {
         assert_eq!(view.total_rows(), 8);
     }
 
-    /// The acceptance-criterion construction from issue #294 must compile
-    /// and behave: the user writes `left` + `right` strings, calls
-    /// `compute_hunks`, and the resulting struct carries everything.
+    /// The constructor accepts left and right strings, computes diff hunks,
+    /// and stores everything in the resulting struct.
     #[test]
     fn acceptance_criterion_constructor_compiles_and_runs() {
         use crate::diff::compute_hunks;
@@ -1194,8 +1149,6 @@ mod tests {
         assert_eq!(view.left, "a\nb\n");
         assert_eq!(view.right, "a\nc\n");
     }
-
-    // ── #737: shared layout geometry ────────────────────────────────────
 
     fn two_hunk_view(mode: DiffMode) -> DiffView {
         DiffView {
@@ -1257,9 +1210,8 @@ mod tests {
         assert_eq!(flat[3].right.as_deref(), Some("delta"));
     }
 
-    /// Non-positive viewport or line height returns an empty geometry
-    /// without dividing by zero or underflowing — same guard every
-    /// pre-#737 backend implemented independently.
+    /// Non-positive viewport or line height returns an empty geometry without
+    /// dividing by zero or underflowing.
     #[test]
     fn zero_size_viewport_returns_empty_geometry() {
         let view = two_hunk_view(DiffMode::SideBySide);
@@ -1327,8 +1279,7 @@ mod tests {
     }
 
     /// Unified mode interleaves a `UnifiedHeader` before each hunk's rows,
-    /// and `total_rows` counts both — the regression this file's own
-    /// `DiffViewLayout::total_rows` doc has warned about since #506.
+    /// and `total_rows` counts both.
     #[test]
     fn unified_lines_interleave_headers_with_rows() {
         let view = two_hunk_view(DiffMode::Unified);
@@ -1430,8 +1381,6 @@ mod tests {
         };
         assert_eq!(unified_hunk_header(&hunk), "@@ -5,2 +7,2 @@");
     }
-
-    // ── #818: hit_test ───────────────────────────────────────────────────
 
     #[test]
     fn hit_test_side_by_side_left_pane_returns_row_and_left_pane() {

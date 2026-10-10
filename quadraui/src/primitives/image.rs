@@ -1,14 +1,5 @@
 //! `Image` primitive: a raster image (SVG/PNG/JPEG) painted at a target
-//! rect (#662).
-//!
-//! Motivated by vimcode wanting its app logo left of the `File` menu the
-//! way VS Code does — that needs actual pixels, not a codepoint in an
-//! icon font. Every other "icon" in quadraui ([`crate::types::Icon`],
-//! the per-tab icon sidecar, `ActivityItem::icon`) is a font glyph with
-//! an ASCII fallback; this primitive is the one place quadraui paints
-//! bytes instead of a character.
-//!
-//! # Scope guard
+//! rect.
 //!
 //! This is **chrome** — a fixed-size decorative element (an app logo, a
 //! toolbar button glyph that has no font-icon equivalent). It is
@@ -19,9 +10,6 @@
 //!   hand in — `Image` carries no asset registry, cache eviction policy,
 //!   or lifetime tied to anything but the value itself).
 //!
-//! If a future need grows past this list, that is a new primitive or a
-//! deliberate scope expansion — not a quiet addition here.
-//!
 //! # Decoding is a backend concern
 //!
 //! [`Image`] only carries a source (bytes or a path) plus layout
@@ -29,20 +17,13 @@
 //! `Backend::draw_image` decodes through its native stack — GTK via
 //! `gdk_pixbuf`, macOS via `NSImage`/ImageIO, Win via WIC — so the
 //! primitive stays free of image-format dependencies. See that trait
-//! method's doc comment for the per-backend contract, including why TUI
-//! is a legitimate `Unsupported` rather than a silent no-op (#507).
+//! method's doc comment for the per-backend contract.
 //!
-//! Decoding is also where the per-backend **decode cache** lives (issue
-//! #1014): `draw_image` used to decode `image.source` from scratch on
-//! every single paint call, which measured at +16.5ms/frame on GTK for a
-//! large vector source (vimcode's 1024² app-icon SVG) — expensive enough
-//! that consumers were pre-rasterising icons themselves with toolkit
-//! types in host code just to avoid it. Each backend now keys a small
-//! fixed-capacity LRU (`crate::image_cache::ImageCache`) on a hash of
-//! `image.source` plus the resolved paint size/DPI scale, so repeated
-//! paints of the same source at the same size reuse the decoded bitmap
-//! instead of re-decoding. This is a paint-time optimization, not a new
-//! public surface on `Image` itself — the scope guard above still holds.
+//! Each backend also maintains a small fixed-capacity LRU decode cache
+//! (`crate::image_cache::ImageCache`) keyed on a hash of `image.source`
+//! plus the resolved paint size/DPI scale, so repeated paints of the
+//! same source at the same size reuse the decoded bitmap instead of
+//! re-decoding.
 
 use crate::event::Rect;
 use crate::types::WidgetId;
@@ -50,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 /// Where the image's encoded bytes come from.
 ///
-/// `Hash` (issue #1014): backends key their decode cache on a hash of
+/// `Hash`: backends key their decode cache on a hash of
 /// this value plus the resolved paint size/scale — see
 /// `crate::image_cache::ImageCache`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -60,9 +41,7 @@ pub enum ImageSource {
     /// is carried here.
     Bytes(Vec<u8>),
     /// Filesystem path to an image file, decoded lazily by the backend
-    /// the first time it's needed at a given paint size/scale and cached
-    /// after that (see the module docs' "Decoding is a backend concern"
-    /// section, issue #1014).
+    /// at the given paint size/scale and cached for reuse.
     Path(std::path::PathBuf),
 }
 
@@ -159,7 +138,7 @@ pub enum ImageHit {
 
 impl ImageLayout {
     /// Hit-test a click at `(x, y)` against this layout's resolved
-    /// [`Self::bounds`] (quadraui#818).
+    /// [`Self::bounds`].
     ///
     /// Coordinate frame: **ABSOLUTE** — same frame as [`Self::bounds`],
     /// which already carries the `bounds` rect passed to [`Image::layout`].

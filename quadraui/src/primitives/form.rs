@@ -574,34 +574,21 @@ fn item_x_positions(origin_x: f32, _row_height: f32, gap: f32, widths: &[f32]) -
     xs
 }
 
-// ── PaintSurface paint (#808, Phase 2a of the PaintSurface milestone) ────
-//
-// Before this, `gtk::form::draw_form`, `macos::form::draw_form` and
-// `win::form::draw_form` each independently matched every `FieldKind` and
-// painted it with their own cairo / CoreGraphics / Direct2D calls — 1,813
-// duplicated lines across the three copies (`docs/SMELL_AUDIT_2026-07.md`
-// §5, quadraui#785 child #808). Worse, `macos::form::draw_form` matched
-// only 10 of 14 variants and silently fell through (`_ => {}`) on
-// `Slider`, `ColorPicker`, `Dropdown` and `TextArea` — a form using one of
-// those rendered nothing on macOS, with no error anywhere.
-//
 // `paint` below is the one shared implementation, written against
-// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
-// one backend's drawing API. It handles all 14 variants, so the silent
-// macOS fall-through disappears by construction rather than by
-// four more copy-pasted match arms.
+// [`crate::paint_surface::PaintSurface`] instead of any one backend's
+// drawing API. It handles all 14 variants; before unification, the macOS
+// copy matched only 10 of 14 variants and silently fell through on
+// `Slider`, `ColorPicker`, `Dropdown` and `TextArea`.
 //
-// `#[allow(dead_code)]`: `paint` and its private helpers are only *called*
+// `#[allow(dead_code)]`: `paint` and its private helpers are only called
 // when a real pixel backend is compiled in — `GtkBackend::draw_form`,
 // `MacBackend::draw_form`/`draw_form_body` and `WinBackend::draw_form`/
 // `draw_form_body` are the call sites, and the Win ones live behind a
 // further `target_os = "windows"` gate (see `win::form`'s module doc).
-// `--features win` alone, on a non-Windows host — exactly what `ci.yml`'s
-// win leg (`cargo check -p quadraui --features win`) runs — compiles this
-// module (the `cfg` above is satisfied) but reaches none of those call
-// sites, so nothing here is "dead" in the sense the lint means; it's the
-// same shape `paint_surface.rs`'s own `#[allow(dead_code)]` documents,
-// one level up the call chain.
+// `--features win` alone, on a non-Windows host compiles this module but
+// reaches none of those call sites, so nothing here is "dead" in the lint
+// sense; it's the same shape `paint_surface.rs`'s own `#[allow(dead_code)]`
+// documents, one level up the call chain.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -612,14 +599,12 @@ mod native_surface_paint {
     use super::{FieldKind, Form, FormLayout, ValidationState};
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
-    // The selected-item background pill's rect *and* the widget-state
-    // decision of whether to paint it at all are extracted to
-    // `paint_geometry` (#857) so both are unit-tested outside this
-    // module's own feature-gated `mod tests` too — see
-    // `paint_geometry::selected_item_fill`'s doc for the #808 history
-    // (macOS painted it, GTK painted nothing, Windows painted `hover_bg`
-    // at full row height; unifying on macOS's shape gives every pixel
-    // backend the same at-a-glance "which toggle is on" cue).
+    // The selected-item background pill's rect and the widget-state decision
+    // of whether to paint it are extracted to `paint_geometry` so both are
+    // unit-tested outside this module's own feature-gated `mod tests` too —
+    // see `paint_geometry::selected_item_fill`'s doc for details on unifying
+    // the three backends' shapes (macOS painted it, GTK painted nothing,
+    // Windows painted `hover_bg` at full row height).
     use crate::paint_geometry::selected_item_fill;
     use crate::text_util::snap_to_char_boundary;
     use crate::theme::Theme;
@@ -645,37 +630,30 @@ mod native_surface_paint {
         t.spans.iter().map(|s| s.text.as_str()).collect()
     }
 
-    /// Paint a laid-out [`Form`] using `surface`'s [`PaintSurface`]
-    /// verbs.
+    /// Paint a laid-out [`Form`] using `surface`'s [`PaintSurface`] verbs.
     ///
     /// `flayout` must be the *same* [`FormLayout`] the caller uses for
-    /// hit-testing (typically `Backend::form_layout`'s return value for
-    /// this `form`) — `paint` reads geometry only from `flayout`, never
-    /// recomputes it, so paint and hit-test can never disagree (the #710
-    /// failure class, closed by construction for every backend at once
-    /// instead of per-backend vigilance).
+    /// hit-testing (typically `Backend::form_layout`'s return value for this
+    /// `form`) — `paint` reads geometry only from `flayout`, never recomputes
+    /// it, so paint and hit-test never disagree.
     ///
-    /// `origin` places the form's local `(0, 0)` at `origin` in
-    /// `surface`'s coordinate space — mirrors every other `*_layout`
-    /// primitive's "local layout + host-supplied origin" contract (see
-    /// `mac_form_layout`'s doc for the same convention stated from the
-    /// hit-test side).
+    /// `origin` places the form's local `(0, 0)` at `origin` in `surface`'s
+    /// coordinate space — mirrors every other `*_layout` primitive's
+    /// "local layout + host-supplied origin" contract (see `mac_form_layout`'s
+    /// doc for the same convention stated from the hit-test side).
     ///
     /// # `FieldKind::Toolbar` is not painted here
     ///
     /// `PaintSurface`'s drawing verbs have no rounded-rect or
-    /// hover/pressed/focus-state support, so a `Toolbar` field's full
-    /// chrome (see `crate::gtk::toolbar`'s module doc for the state
-    /// table every pixel backend already implements) can't be
-    /// reproduced through this trait without growing it well past this
-    /// primitive's own scope. `paint` still paints a `Toolbar` field's
-    /// row background / label / validation indicator like any other
-    /// field, but leaves the value column blank — callers must paint the
-    /// embedded `Toolbar` themselves *after* `paint` returns (so the two
-    /// never fight over `surface`'s exclusive borrow), using their
-    /// existing per-backend toolbar rasteriser at the field's
-    /// `VisibleFormField::bounds` / `item_bounds`. See
-    /// `GtkBackend::draw_form` for the reference pattern.
+    /// hover/pressed/focus-state support, so a `Toolbar` field's full chrome
+    /// can't be reproduced through this trait without growing it well past
+    /// this primitive's scope. `paint` still paints a `Toolbar` field's row
+    /// background / label / validation indicator like any other field, but
+    /// leaves the value column blank — callers must paint the embedded
+    /// `Toolbar` themselves *after* `paint` returns (so the two never fight
+    /// over `surface`'s exclusive borrow), using their existing per-backend
+    /// toolbar rasteriser at the field's `VisibleFormField::bounds` /
+    /// `item_bounds`. See `GtkBackend::draw_form` for the reference pattern.
     pub(crate) fn paint(
         form: &Form,
         flayout: &FormLayout,
@@ -727,7 +705,7 @@ mod native_surface_paint {
             let is_header = matches!(field.kind, FieldKind::Label);
 
             let (default_fg, row_bg) = if is_focused {
-                // quadraui#1180: `theme.foreground` (the editor-body text
+                // `theme.foreground` (the editor-body text
                 // colour) has no guaranteed contrast against
                 // `selected_bg` — on `vscode-light` both are near-black
                 // on mid-blue and the focused row goes unreadable.
@@ -925,7 +903,7 @@ mod native_surface_paint {
                     let ix = if no_label { label_x } else { input_right - w };
                     if no_label || ix > label_right + 8.0 {
                         let iy = row_rect.y + (row_h - h) / 2.0;
-                        // quadraui#1180: was unconditionally `theme.muted_fg`,
+                        // Was unconditionally `theme.muted_fg`,
                         // so a focused (`selected_bg`) `ReadOnly` row painted
                         // its value in the same dim colour as an unfocused
                         // one — unreadable on `selected_bg`, unlike every
@@ -1234,12 +1212,8 @@ mod native_surface_paint {
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
-            /// `(rect, text, color)` for every `surface_draw_text_run`
-            /// call. Added for quadraui#1180 so tests can assert a
-            /// focused row's label/value colour, not just its fill —
-            /// the colour bug that issue reports (`theme.foreground` /
-            /// `theme.muted_fg` on `selected_bg`) is invisible to a
-            /// fills-only recorder.
+            /// `(rect, text, color)` for every `surface_draw_text_run` call — tests
+            /// assert a focused row's label/value colour, not just its fill.
             text_runs: Vec<(Rect, String, Color)>,
             /// `(rect, color, stroke_width)` for every
             /// `surface_stroke_rect` call, so tests can assert the drawn
@@ -1352,12 +1326,7 @@ mod native_surface_paint {
             Rect::new(item.x, item.y + 2.0, item.width, item.height - 4.0)
         }
 
-        /// Regression for the #808 unification: the shared painter was
-        /// written from the Windows copy, which never painted an
-        /// on-toggle background — so adopting it silently dropped the
-        /// `selected_bg` pill macOS had behind every *on* toggle, and
-        /// `macos::form`'s `toggle_group_on_item_paints_selected_bg`
-        /// caught it only on the macOS CI leg.
+        /// The shared painter must paint an on-toggle background, matching
         #[test]
         fn toggle_group_fills_selected_bg_behind_on_items_only() {
             let form = one_field_form(
@@ -1408,10 +1377,7 @@ mod native_surface_paint {
             );
         }
 
-        /// Same regression on the sibling variant: the selected segment
-        /// used to fill `hover_bg` at full row height (the Windows
-        /// copy's shape), which reads as a hover cue rather than a
-        /// selection one and mismatched macOS's `selected_bg` pill.
+        /// The selected segment must fill `selected_bg` as a pill, not `hover_bg`
         #[test]
         fn segmented_control_fills_selected_bg_behind_the_selected_segment_only() {
             let form = one_field_form(
@@ -1454,7 +1420,7 @@ mod native_surface_paint {
             );
         }
 
-        /// quadraui#1180: a focused row painted its label in
+        /// A focused row painted its label in
         /// `theme.foreground` — no guaranteed contrast against
         /// `selected_bg` (both near-black on mid-blue under
         /// `vscode-light`) — while `Tree`'s equivalent focused row
@@ -1635,7 +1601,7 @@ mod native_surface_paint {
         // The pill's inset math (degenerate-row fallback, the normal
         // inset-by-2 case, the exact-boundary case) and the
         // widget-state → "does this item get filled at all" decision
-        // both live in `paint_geometry` now (#857) and have their own
+        // both live in `paint_geometry` now and have their own
         // tests there (`form_selection_pill_*`, `selected_item_fill_*`)
         // — deliberately not duplicated here. What this module's tests
         // above still own is the one thing `paint_geometry`'s pure-math
@@ -1779,8 +1745,6 @@ mod tests {
             assert_eq!(event, &back);
         }
     }
-
-    // ── Form field primitive tests (#143 Slider/ColorPicker/Dropdown) ─
 
     #[test]
     fn form_slider_field_serde() {

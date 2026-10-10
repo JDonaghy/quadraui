@@ -218,78 +218,36 @@ impl Split {
     }
 }
 
-// ── PaintSurface paint (#864, Phase 2d slice 7/9 of the PaintSurface
-// milestone, child of #811) ────────────────────────────────────────────
+// Unified paint implementation for split dividers, replacing
+// three independent backend-specific versions (Cairo, Core Graphics,
+// Direct2D). Each originally painted only `layout.divider_bounds` in
+// `theme.separator` with that backend's drawing API.
 //
-// Before this, `gtk::draw_split` (Cairo), `macos::split::draw_split`
-// (Core Graphics) and `win::split::draw_split` (Direct2D) each
-// independently painted the same divider-only chrome with their own
-// drawing API (quadraui#785 child #811, `docs/SMELL_AUDIT_2026-07.md`
-// §5). `paint` below is the one shared implementation, written against
-// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of
-// any one backend's drawing API.
+// All three painted exactly one filled rectangle and nothing else
+// (pane content is the host's job, not the rasteriser's).
 //
-// Re-verified while migrating, per this issue's "re-verify before you
-// implement": all three deleted copies painted exactly one filled
-// rectangle — `layout.divider_bounds` in `theme.separator` — and
-// nothing else (pane content is explicitly the host's job, not the
-// rasteriser's, on every backend).
+// **Note: GTK alpha handling changed.** The old `gtk::draw_split`
+// used `set_source` (drops alpha), while macOS's `CGContextSetRGBFillColor`
+// and Windows's `ID2D1SolidColorBrush` honour real alpha. This code uses
+// `surface_fill_rect`, which calls `gtk::set_source_rgba` on GTK, so GTK
+// now respects alpha in translucent `theme.separator` values (which can
+// occur when `Theme::from_vscode_json` parses an 8-digit `#rrggbbaa` VS Code
+// `editorGroup.border` value). This brings GTK in line with macOS/Windows.
+// The deprecated free-function shim keeps calling opaque `set_source` for
+// backwards compatibility.
 //
-// **Divergence found and reported here (not silently resolved) — the
-// same class of bug `scrollbar` (#811 slice 1) found first.** The
-// deleted `gtk::draw_split` painted with `set_source`, which drops
-// alpha entirely, while macOS's `CGContextSetRGBFillColor` and
-// Windows's `ID2D1SolidColorBrush` both honour the real alpha byte.
-// `theme.separator` is **not** guaranteed opaque: `Theme::from_vscode_json`
-// (`theme.rs`) assigns it through the plain `color()` closure —
-// `Color::from_hex` (`types.rs`) — which parses a real alpha byte out of
-// an 8-digit `#rrggbbaa` VS Code `editorGroup.border` value instead of
-// clamping it to 255 the way `color_over`/`try_from_hex_over` do for
-// genuinely-composited colours. So a loaded theme CAN hand `paint()` a
-// translucent `theme.separator`.
+// Windows: `Backend::draw_split` passes `Theme::default()` since
+// `WinBackend` does not carry a live theme to chrome rasterisers.
 //
-// `paint` above fills through `surface.surface_fill_rect`, which on GTK
-// is `GtkBackend::surface_fill_rect` — already switched from
-// `set_source_rgb` to `gtk::set_source_rgba` by the scrollbar migration
-// (#811 slice 1; see that fn's doc). So this migration silently
-// *inherits* that fix: `Backend::draw_split`'s live GTK path now
-// honours the divider's alpha, where the pre-migration free function
-// did not. **This is a real GTK behaviour change** for any host whose
-// theme sets a translucent `editorGroup.border` — it brings GTK in line
-// with macOS/Windows (the same direction as the scrollbar fix, and
-// arguably desirable), but it is a divergence from the old GTK-only
-// behaviour, so it's reported here rather than asserted away.
+// Geometry (split layout, divider placement) was already unified in
+// [`Split::layout`] before this change; only the *paint* half was
+// triplicated. `paint` takes the resolved [`SplitLayout`], not the raw
+// `Split` + bounds, so callers compute layout once and reuse it for both
+// paint and hit-test.
 //
-// The deprecated `gtk::draw_split` free-function shim's `RawSplitSurface`
-// deliberately keeps calling the opaque `set_source` instead of
-// `set_source_rgba`, so any external caller still holding a direct
-// reference to that free function keeps getting byte-identical output
-// to before this migration — only the sanctioned `Backend::draw_split`
-// entry point's behaviour changed.
-//
-// One further difference worth naming, though it isn't a paint divergence: the
-// pre-migration `win::split::draw_split` always painted with
-// `Theme::default()` rather than any live theme (`WinBackend` doesn't
-// carry one through to chrome rasterisers yet — see that module's old
-// "# Theme" doc section, mirrored now in `win::split`'s module doc).
-// `Backend::draw_split`'s Windows arm preserves that by passing
-// `Theme::default()` to this fn explicitly, same as `draw_split_tree`'s
-// migration did.
-//
-// Unlike `draw_scrollbar`/`draw_panel`, geometry (pane rects + divider
-// placement) was ALREADY the single shared [`Split::layout`] before
-// this issue — only the *paint* half (filling `divider_bounds`) was
-// triplicated. `paint` therefore takes an already-resolved
-// [`SplitLayout`] (the same convention as
-// `primitives::split_tree::native_surface_paint::paint`), not the raw
-// `Split` + bounds — callers compute the layout once and reuse it for
-// both paint and hit-test.
-//
-// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
-// — only *called* once a real pixel backend is compiled in, exercised
-// by each backend's own `Backend::draw_split` call site plus this
-// module's own `RecordingSurface` tests on every leg that enables one
-// of the three cfg'd features.
+// `#[allow(dead_code)]`: only called when a pixel backend is compiled in,
+// exercised by each backend's `Backend::draw_split` and this module's
+// `RecordingSurface` tests.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -349,7 +307,7 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: QRect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// #1073: test-only recorder — `paint` never calls this verb
+            /// Test-only recorder — `paint` never calls this verb
             /// (see this module's own doc for why no primitive here has been
             /// migrated onto it yet); this exists only so `RecordingSurface`
             /// satisfies the trait. Records into the same `fills` list as

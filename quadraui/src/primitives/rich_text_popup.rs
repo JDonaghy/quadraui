@@ -464,7 +464,7 @@ impl RichTextPopup {
                 border,
                 content_bounds.height,
             );
-            // Thumb geometry via the one canonical formula (quadraui#820)
+            // Thumb geometry via the one canonical formula
             // instead of a hand-rolled restatement of it: scroll is
             // row-indexed here, so `scroll_rows -> main-axis units` uses
             // the same "row_main_unit" conversion `multi_section_view`'s
@@ -515,94 +515,22 @@ impl RichTextPopup {
     }
 }
 
-// ── PaintSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
+// Shared painting implementation for macOS and Windows rasterisers.
+// GTK uses a separate implementation in `gtk::rich_text_popup::draw_rich_text_popup`
+// because it shapes entire lines with Pango's `AttrList` to avoid glyph-position
+// drift from kerning/ligatures that occurs when spans are shaped and advanced separately.
 //
-// `paint` below is shared by the **macOS and Windows** rasterisers only
-// — `gtk::rich_text_popup::draw_rich_text_popup` is **not** migrated,
-// and stays a full, bespoke Cairo + Pango implementation. This is a
-// deliberate exception to this issue's "no per-backend paint loop left"
-// acceptance bar, not an oversight — see that module's own doc for the
-// full reasoning, summarised here:
+// macOS and Windows both use per-span manual x-advance (the approach below),
+// so consolidating them closes gaps between the implementations:
 //
-// GTK renders each visible line with a **single** Pango call carrying a
-// per-character `AttrList` (fg/bold/italic ranges, selection-inverted
-// fg, focused-link underline, font-scale), specifically *because* an
-// earlier per-span "measure each span, advance x by its width" approach
-// (the same shape `paint` below uses) was found to drift from Pango's
-// real shaped-line glyph positions for proportional fonts (issue #214:
-// "the per-span manual-advance bug where proportional Pango widths
-// drift from monospace char_width * char_count math"). Adjacent runs
-// shaped separately and summed can differ from the same text shaped as
-// one line (kerning/ligatures aren't strictly compositional) — GTK's
-// fix was to stop manually advancing at all and let Pango shape+position
-// the whole line, using `index_to_pos` afterward only to *locate* spans
-// it already painted.
+// - Selection background + inverted foreground colour.
+// - Bold span styling.
+// - Focused-link underline (whole-span approximation).
+// - Content-area clipping to prevent overlong lines from bleeding past the border.
+// - Scrollbar width + track opacity: wider bar with translucent track.
 //
-// `PaintSurface` has no verb for "shape one line with N attribute
-// ranges, then ask where each range landed" — only single-color/single-
-// style runs (`surface_draw_text_run(_styled)`). Migrating GTK onto
-// `paint` below would mean going back to the per-span manual-advance
-// shape #214 fixed, i.e. deliberately reintroducing a previously-fixed
-// bug, or extending `PaintSurface` with a new attributed-line verb —
-// a real, separate design decision outside this issue's scope (#1073's
-// verb set), not a mechanical "move the code" migration. Per this
-// issue's own "do not tranche silently" instruction: this is that call,
-// made explicitly rather than by quietly skipping the primitive.
-//
-// macOS and Windows never had that problem — both already rendered
-// per-span with manual x-advance (the same shape `paint` below takes),
-// so consolidating *their* two copies carries no such risk. Doing so
-// closes real gaps between them, resolved by adopting the richer side
-// (2-of-3 majority pattern already established by
-// `crate::primitives::palette::native_surface_paint`,
-// `crate::primitives::tooltip::native_surface_paint`,
-// `crate::primitives::dialog::native_surface_paint`):
-//
-// - **Selection background + inverted fg.** Windows already painted a
-//   solid selection-bg rect and swapped a selected span's colour to the
-//   popup bg; macOS's own module doc listed this as a "Scope omission."
-//   `paint` carries it for both now.
-// - **Bold span styling.** Windows already read `span.bold`; macOS's
-//   doc listed this as a scope omission too. `paint` reads it uniformly
-//   via `PaintSurface::surface_draw_text_run_styled` — macOS's own
-//   adapter (`CgSurface`) takes that verb's *default*, which drops
-//   style entirely (see that default's own doc), so this is inert on
-//   macOS: no visual regression, but no new bold rendering there either,
-//   matching every other primitive this default has ever applied to.
-// - **Focused-link underline.** Windows already underlined the whole
-//   span overlapping the focused link's byte range (coarser than GTK's
-//   exact-substring underline, which needs `index_to_pos` — out of
-//   reach here for the same reason as above); macOS's doc listed no
-//   underline at all as a scope omission. `paint` carries Windows's
-//   whole-span approximation for both now.
-// - **Content-area clipping.** GTK and macOS both clip line/selection
-//   painting to `layout.content_bounds` so an overlong line can't bleed
-//   past the popup's own border; Windows painted unclipped. `paint`
-//   clips on every backend now.
-// - **Scrollbar width + track opacity.** GTK and macOS both paint a
-//   [`SB_WIDTH`]-wide, [`SB_INSET`]-inset bar (wider than the
-//   primitive's own `layout.scrollbar` geometry, which is a bare 1-unit
-//   track — see that field's own doc — "wide enough to paint and click
-//   easily" is a rasteriser-level choice layered on top) at
-//   `theme.muted_fg` translucent at `0.3` alpha for the track; Windows
-//   painted `layout.scrollbar.track`/`.thumb` verbatim (the primitive's
-//   thin 1-unit geometry) at fully opaque `theme.muted_fg`. `paint`
-//   adopts the wider, translucent-track treatment for every backend.
-//   (This does not change hit-testing: `RichTextPopupLayout::hit_test`
-//   already only recognises the primitive's own 1-unit
-//   `layout.scrollbar` geometry on every backend, GTK included — a
-//   pre-existing paint/click geometry mismatch this migration doesn't
-//   introduce or fix, out of scope here.)
-//
-// Not carried over on macOS/Windows, matching GTK's own capability
-// gap for the same reason: per-line font scale (`RichTextPopup::line_scales`,
-// markdown heading rows) needs a per-row font swap
-// (`CTFontCreateCopyWithSymbolicTraits` / a scaled `IDWriteTextFormat`)
-// that neither backend's adapter can do mid-line without becoming a
-// live-backend-only capability like `Dialog`'s `FontRole` — a bigger
-// change than this slice attempts. `RichTextPopup::layout` still
-// reserves the taller row height on any backend advertising
-// `scale_rows`; only the *glyph* stays regular-sized.
+// Font scaling per row (via `RichTextPopup::line_scales`) is not implemented
+// — it requires per-row font swaps that would need backend-specific capabilities.
 #[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
@@ -954,7 +882,7 @@ mod tests {
         assert!((layout.visible_lines[1].bounds.height - 10.0).abs() < f32::EPSILON);
     }
 
-    // ── RichTextPopup primitive tests (#214) ─────────────────────────────
+    // ── RichTextPopup primitive tests ────────────────────────────────────
 
     fn make_rich_popup(lines: usize, max_visible: usize, scroll: usize) -> RichTextPopup {
         let line_text: Vec<String> = (0..lines).map(|i| format!("line {i:02}")).collect();

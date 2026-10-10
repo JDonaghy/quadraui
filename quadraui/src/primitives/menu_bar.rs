@@ -65,8 +65,7 @@ pub struct MenuBarItem {
     /// Display label, e.g. `"&File"` (with the `&` marking the
     /// Alt-activation character — backends render the following char
     /// underlined and map Alt+that-char to this item). If no `&` is
-    /// present, the label is never underlined (quadraui#625 — no
-    /// implicit "underline the first char" fallback), though
+    /// present, the label is never underlined, though
     /// [`MenuBar::find_alt_target`]'s keyboard-activation lookup still
     /// falls back to the first character, unrelated to the visual
     /// underline.
@@ -75,7 +74,6 @@ pub struct MenuBarItem {
     #[serde(default)]
     pub disabled: bool,
     /// Declarative dropdown items. When `Some`, native menu installers
-    /// (macOS `NSMenu` via #184 PR 2; future Win32 / GTK installers)
     /// build the dropdown directly from this list. In-window
     /// rasterisers (TUI / GTK `draw_menu_bar`) ignore the field today;
     /// apps that draw their own dropdown via the `MenuSystem` compose
@@ -190,14 +188,12 @@ impl MenuBar {
     /// Like [`Self::layout`], but reserves `leading_width` device units
     /// at the start of `bounds` for a fixed-size leading element — an
     /// app-logo [`crate::Image`] left of the first menu item, VS-Code
-    /// style (#662) — before laying out items.
+    /// style — before laying out items.
     ///
-    /// This exists because the offset math is the actual regression
-    /// risk of a leading slot, not the paint: a consumer that narrows
+    /// The offset math is the key concern: a consumer that narrows
     /// the rect it hands to a paint call but not the rect it hands to a
     /// click-routing call (or vice versa) gets a menu bar whose visible
-    /// items and clickable items silently disagree — the same bug class
-    /// #552 found in `TabBar`'s hit-x-offset. Centralizing the shift
+    /// items and clickable items silently disagree. Centralizing the shift
     /// here means both call sites can pass the *same* `bounds` +
     /// `leading_width` pair instead of each independently computing a
     /// narrowed rect.
@@ -257,45 +253,14 @@ impl MenuBar {
     }
 }
 
-// ── PaintSurface Phase 4 slice 5/8 (#1081) ─────────────────────────────────
-//
-// `paint` below is the one shared paint implementation, written against
+// Shared paint implementation, written against
 // [`crate::paint_surface::PaintSurface`] instead of any one backend's
-// API — see `crate::primitives::context_menu::native_surface_paint` for
-// the same pattern applied three primitives earlier (#1077, slice 1/8 of
-// that issue's own numbering; this repo's issue tracker also carries it
-// forward as slice 5/8 of the overall `PaintSurface` Phase 4 run).
-//
-// Pre-migration, `gtk::menu_bar`, `macos::menu_bar` and `win::menu_bar`
-// agreed on layout, background/active/disabled colouring, and centred
-// label text — but diverged, sometimes substantially, on the Alt-key
-// underline:
-//
-// - **GTK** underlined the activation character via a Pango
-//   `AttrList`/`AttrInt::new_underline` range on just that character —
-//   real per-glyph underline metrics, but a mechanism [`PaintSurface`]
-//   has no verb for (there is no "underline this byte range of a text
-//   run" primitive, only whole-run `surface_draw_text_run_styled`, whose
-//   `underline` flag would underline the entire label).
-// - **Windows** underlined by measuring the prefix before the
-//   activation character and the character's own width, then filling a
-//   manually-positioned `UNDERLINE_HEIGHT_DIP`-tall rectangle beneath
-//   it — reusing the same measure/fill verbs every other rasteriser
-//   already has, no font-shaping API involved.
-// - **macOS had no underline at all** — its own module doc listed this
-//   as a documented "follow-up" scope omission (Core Text's
-//   `kCTUnderlineStyleAttributeName` needs attributed-string plumbing
-//   `super::text::draw_text` didn't have), not a deliberate design
-//   choice.
-//
-// `paint` adopts Windows' manual-rectangle approach for all three
-// backends: it is the only one of the three that maps directly onto
-// [`PaintSurface`]'s existing verbs
-// ([`crate::paint_surface::PaintSurface::surface_measure_text`] +
-// [`crate::paint_surface::PaintSurface::surface_fill_rect`]), and
-// adopting it closes macOS's gap instead of leaving a third rendering
-// path unported. Visually near-identical to GTK's Pango underline at
-// the sizes this bar renders at (a 2px solid bar under one character).
+// API. Manual-rectangle underline approach for the Alt-activation
+// character: measure the prefix and character width, then fill a
+// thin rectangle beneath it. This maps to [`PaintSurface`]'s existing
+// verbs ([`crate::paint_surface::PaintSurface::surface_measure_text`] +
+// [`crate::paint_surface::PaintSurface::surface_fill_rect`]) and works
+// across all backends.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -324,7 +289,7 @@ pub(crate) mod native_surface_paint {
     /// of the Alt-activation character (the character immediately after
     /// `&`), or `None` when `label` carries no `&` at all — mirrors
     /// `win::menu_bar`'s pre-migration `alt_char_index`'s "no implicit
-    /// fallback" contract (quadraui#625).
+    /// fallback" contract.
     pub(super) fn alt_char_index(label: &str) -> Option<usize> {
         let marker_byte = label.find('&')?;
         Some(label[..marker_byte].chars().count())
@@ -463,7 +428,7 @@ pub(crate) mod native_surface_paint {
             assert_eq!(display_text("File"), "File");
         }
 
-        // ── paint()'s Alt-underline drift fix (#1081) ───────────────────
+        // ── paint()'s Alt-underline drift fix ───────────────────────────
         //
         // These run through `paint` itself against a `RecordingSurface`
         // test double (mirrors `primitives::palette::native_surface_paint`'s
@@ -686,9 +651,7 @@ pub(crate) mod native_surface_paint {
 
         #[test]
         fn no_ampersand_means_no_underline_fill_beneath_the_label() {
-            // quadraui#625's "no implicit fallback" contract, carried
-            // forward into the shared paint: "Help" has no `&`, so it
-            // must get no thin underline-shaped fill at all.
+            // No `&` in the label means no underline-shaped fill beneath it.
             let bar = drift_bar();
             let layout = drift_layout(&bar);
             let mut surface = RecordingSurface::default();
@@ -736,12 +699,10 @@ mod tests {
         }
     }
 
-    // #662: a leading icon slot (app logo left of the first menu item)
+    // A leading icon slot (app logo left of the first menu item)
     // must shift every item's x-offset by exactly `leading_width`, and a
     // click that used to land on item 0 pre-shift must land on item 0
-    // again post-shift, at its new (shifted) x. This is the regression
-    // the module doc on `layout_with_leading` calls out — the paint
-    // itself is trivial, keeping paint and hit-test in agreement is not.
+    // again post-shift, at its new (shifted) x.
     #[test]
     fn leading_icon_shifts_item_x_offsets_by_its_width() {
         let bounds = Rect::new(0.0, 0.0, 200.0, 1.0);

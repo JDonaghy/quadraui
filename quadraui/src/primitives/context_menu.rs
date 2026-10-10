@@ -145,9 +145,7 @@ pub struct ContextMenuItem {
     /// Structured keyboard shortcut for the item. When `Some` and
     /// [`Self::detail`] is `None`, rasterisers render
     /// `render_accelerator(acc, platform)` as the right-aligned
-    /// shortcut hint. The macOS NSMenu installer (#184 PR 2) wires
-    /// this directly to `NSMenuItem.keyEquivalent` + the modifier
-    /// mask so OS-level shortcut dispatch works.
+    /// shortcut hint.
     #[serde(default)]
     pub key_equivalent: Option<Accelerator>,
     /// Checkbox / radio state. `None` = item has no state; `Some(true)`
@@ -449,7 +447,7 @@ impl ContextMenu {
 
     /// Derive a menu width (in the same units as `char_width` — TUI
     /// char cells, or pixels on a pixel backend) from each item's label
-    /// length — no real text measurement available (quadraui#419). Same
+    /// length — no real text measurement available. Same
     /// char-cell-approximation rationale as
     /// `crate::primitives::dialog::Dialog::measure_generic`.
     ///
@@ -508,37 +506,20 @@ impl ContextMenu {
     }
 }
 
-// ── PaintSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
-//
 // `paint` below is the one shared paint implementation, written against
 // [`crate::paint_surface::PaintSurface`] instead of any one backend's
 // API — see `crate::primitives::palette::native_surface_paint` for the
-// same pattern applied one primitive earlier (#1076, slice 3/8).
+// same pattern applied one primitive earlier.
 //
-// Pre-migration, `gtk::context_menu`, `macos::context_menu` and
-// `win::context_menu` were near-identical (all three: bg fill, pass 1
-// separators + selection highlight, pass 2 label + right-aligned
-// shortcut text, border stroke on top) with two small drifts, resolved
-// here rather than silently picked:
+// When migrating `gtk::context_menu`, `macos::context_menu` and
+// `win::context_menu`, two small differences were resolved:
 //
-// - **Box corner rounding.** GTK alone drew a 3px-radius rounded
-//   rectangle (both the bg fill and the border stroke) via
-//   `rounded_rect_path`; macOS/Windows both used a plain square rect.
-//   `paint` adopts the majority (square) — [`PaintSurface`] has a
-//   [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]
-//   verb but no rounded-stroke equivalent, so keeping GTK's rounding
-//   would mean a rounded fill under a square border stroke, a visible
-//   seam at the corners worse than just picking one. Low real-world
-//   impact (3px radius on a small chrome popup).
+// - **Box corner rounding.** GTK drew 3px-radius rounded rectangles;
+//   macOS and Windows used plain square rects. `paint` adopts the
+//   majority (square) for consistency.
 // - **Separator stroke weight.** GTK stroked at `0.5` width; macOS
 //   filled a `1.0`-tall rect; Windows drew a `1.0`-width line. `paint`
-//   uses [`PaintSurface::surface_draw_line`] at `1.0` — the 2-of-3
-//   majority.
-//
-// Every other pixel (bg colour, selection highlight inset, text
-// baseline centring, `checked` prefix, shortcut right-alignment) was
-// already byte-identical across all three backends, so nothing else
-// changes.
+//   uses [`PaintSurface::surface_draw_line`] at `1.0` — the majority.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -610,8 +591,6 @@ pub(crate) mod native_surface_paint {
         let mut rects: Vec<(Rect, WidgetId)> = Vec::new();
 
         // Pass 1: backgrounds (separators + selection highlights).
-        // Drawn first so no highlight can overwrite previously
-        // rendered text.
         for vis in &menu_layout.visible_items {
             let row = vis.bounds;
 
@@ -818,8 +797,6 @@ mod tests {
         let m = menu(vec![]);
         assert_eq!(m.move_selection(0, 1), 0);
     }
-
-    // ── #184 PR 1: shape upgrade ─────────────────────────────────────────
 
     #[test]
     fn deserialises_old_shape_without_new_fields() {
@@ -1047,7 +1024,7 @@ mod tests {
         assert_eq!(layout.hit_test(50.0, 15.0), ContextMenuHit::Inert);
     }
 
-    // ── native_surface_paint::shortcut_text (#1077) ───────────────────────
+    // ── native_surface_paint::shortcut_text ───────────────────────────────
 
     #[cfg(any(
         feature = "gtk",
@@ -1103,7 +1080,7 @@ mod tests {
         );
     }
 
-    // ── ContextMenu::measure_generic_width (quadraui#419) ─────────────────
+    // ── ContextMenu::measure_generic_width ────────────────────────────────
 
     #[test]
     fn measure_generic_width_widens_for_longer_label() {

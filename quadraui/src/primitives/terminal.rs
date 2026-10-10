@@ -129,7 +129,7 @@ pub struct TerminalCell {
     /// `char`: use [`TerminalCell::cell_width`] rather than
     /// `text.chars().count()` to measure it. Blank / never-written cells
     /// store a single space (`" "`), matching vt100's own convention for
-    /// an empty cell (quadraui#337).
+    /// an empty cell.
     pub text: String,
     pub fg: Color,
     pub bg: Color,
@@ -139,16 +139,13 @@ pub struct TerminalCell {
     pub italic: bool,
     #[serde(default)]
     pub underline: bool,
-    /// SGR 2 (faint/dim) — `vt100::Cell::dim()`, tracked since vt100
-    /// 0.16 (this crate's pinned floor; vt100 0.15.x silently dropped
-    /// SGR 2 entirely, which is why quadraui#345 was originally filed
-    /// as "blocked on vt100"). Rasterisers don't apply a separate font
-    /// attribute for it (unlike bold/italic/underline): faint text has
-    /// no font-weight equivalent, so
+    /// SGR 2 (faint/dim) — `vt100::Cell::dim()`. Rasterisers don't
+    /// apply a separate font attribute for it (unlike bold/italic/underline):
+    /// faint text has no font-weight equivalent, so
     /// [`crate::terminal_style::resolve_cell_style`] folds it into the
     /// resolved foreground colour instead, blending toward the
     /// resolved background so it reads as "faded" on both dark and
-    /// light themes (quadraui#345).
+    /// light themes.
     #[serde(default)]
     pub dim: bool,
     /// Cell is part of the user's mouse selection.
@@ -166,7 +163,7 @@ pub struct TerminalCell {
     /// Shape of the VT100 cursor at this cell, from the child program's
     /// most recent DECSCUSR request (`ESC [ Ps SP q`) — see
     /// [`crate::terminal_engine::TerminalSession::cursor_shape`]
-    /// (quadraui#338). Meaningful only when [`is_cursor`](Self::is_cursor)
+    ///. Meaningful only when [`is_cursor`](Self::is_cursor)
     /// is `true`; every other cell carries the default (`Block`).
     #[serde(default)]
     pub cursor_shape: TerminalCursorShape,
@@ -176,7 +173,7 @@ pub struct TerminalCell {
     /// Pixel-based rasterisers (GTK/macOS/win, via
     /// [`crate::terminal_style::cursor_blink_visible`]) toggle the
     /// cursor's visibility on a wall-clock timer when this is set; the
-    /// TUI rasteriser ignores it (best-effort, quadraui#338).
+    /// TUI rasteriser ignores it.
     #[serde(default)]
     pub cursor_blinking: bool,
     /// Cell is part of a non-active find match (dim highlight).
@@ -189,15 +186,13 @@ pub struct TerminalCell {
 
 /// Shape of the VT100 cursor, as steered by the child program's DECSCUSR
 /// (`ESC [ Ps SP q`) request — see
-/// [`crate::terminal_engine::TerminalSession::cursor_shape`] (quadraui#338).
+/// [`crate::terminal_engine::TerminalSession::cursor_shape`].
 ///
-/// Distinct from [`crate::primitives::editor::CursorShape`] (issue
-/// #1015), even though the three variants happen to share the same
-/// DECSCUSR vocabulary: a shell's insert-mode bar cursor and an editor's
-/// insert-mode bar cursor are unrelated primitives' concepts, so this
-/// crate keeps them as separate types rather than reusing one across
-/// `Terminal` and `Editor` (`docs/DECISIONS.md`'s primitive-distinctness
-/// principle).
+/// Distinct from [`crate::primitives::editor::CursorShape`], even though
+/// the three variants happen to share the same DECSCUSR vocabulary: a
+/// shell's insert-mode bar cursor and an editor's insert-mode bar cursor
+/// are unrelated primitives' concepts, so this crate keeps them as separate
+/// types rather than reusing one across `Terminal` and `Editor`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TerminalCursorShape {
     /// Filled block — the default when the child never sends DECSCUSR.
@@ -221,7 +216,7 @@ impl TerminalCell {
     /// Delegates to [`crate::text_util::display_width`] — the same
     /// `unicode-width`-backed table vt100 itself consults when it
     /// decides whether to reserve a spacer column for a wide character
-    /// (quadraui#337), so this always agrees with vt100's own column
+    ///, so this always agrees with vt100's own column
     /// accounting for cells built by [`crate::terminal_engine`].
     pub fn cell_width(&self) -> u16 {
         crate::text_util::display_width(&self.text) as u16
@@ -241,7 +236,7 @@ impl TerminalCell {
 /// (char-cell units) for this embedded [`Terminal`] primitive's own layout;
 /// native backends pass the font's advance width and line height.
 ///
-/// Reused for a second, distinct purpose (quadraui#1048): outside this
+/// Reused for a second, distinct purpose: outside this
 /// primitive, [`crate::tui::backend::TuiBackend::cell_pixel_size`] carries
 /// the *real* pixel size of a terminal cell — genuinely non-identity on TUI
 /// — so SGR-Pixels mouse reports (`?1016h`) can be divided back into
@@ -336,10 +331,7 @@ impl Terminal {
     /// otherwise — sorted ascending, deduplicated, and possibly empty
     /// (e.g. a cursor-blink tick that produced an identical grid).
     ///
-    /// This backs the #417 dirty-row repaint optimisation: backends may
-    /// call this to skip re-rasterising cells that haven't changed since
-    /// the last frame (see the high-FPS note in this module's doc
-    /// comment). `TerminalCell` compares by value, so any change to a
+    /// `TerminalCell` compares by value, so any change to a
     /// cell's glyph, colour, or overlay flag (`selected` / `is_cursor` /
     /// `is_find_match` / `is_find_active`) — i.e. scroll, selection,
     /// cursor move, and find-highlight updates — registers the owning
@@ -515,9 +507,9 @@ pub enum TerminalEvent {
     Scroll { delta: i32 },
 }
 
-// ── PaintSurface paint (#810, Phase 2c of the PaintSurface milestone) ────
+// ── PaintSurface paint ────────────────────────────────────────────
 //
-// Before this, `gtk::terminal::draw_terminal_cells`,
+// `gtk::terminal::draw_terminal_cells`,
 // `macos::terminal::draw_terminal_cells` and
 // `win::terminal::draw_terminal_cells` each independently walked
 // `term.cells[row][col]` and painted every cell's background + glyph
@@ -526,49 +518,44 @@ pub enum TerminalEvent {
 // (`resolve_cell_style`, `wide_cell_advance`, `wide_glyph_x_scale`,
 // `divider_geometry`), so only the actual paint calls were duplicated.
 // `paint`/`paint_divider` below are the one shared implementation,
-// written against [`crate::paint_surface::PaintSurface`] (#807, Phase
-// 1).
+// written against [`crate::paint_surface::PaintSurface`].
 //
 // Per-cell glyph styling (`TerminalCell::bold`/`italic`/`underline`) and
-// the wide-glyph horizontal scale (#439/#500/#703) both needed a new
-// verb this trait didn't have at the end of Phase 1 —
-// [`PaintSurface::surface_draw_text_run_styled`] — added in this same
-// PR specifically so unifying this primitive wouldn't force GTK's full
+// the wide-glyph horizontal scale both needed a new
+// verb this trait didn't have — [`PaintSurface::surface_draw_text_run_styled`]
+// — so unifying this primitive wouldn't force GTK's full
 // bold/italic/underline support and Windows's bold support to regress to
-// macOS's weaker (undocumented-as-a-bug, deliberately deferred) "no
+// macOS's weaker (undocumented, deliberately deferred) "no
 // per-cell styling at all" posture. See that method's own doc for
 // exactly which of the three flags (plus `scale_x`) each backend's
 // `PaintSurface` override actually applies — this crate's own
 // `paint_surface.rs` is sealed (`pub(crate)`, no downstream consumer
-// can see it), so growing its vocabulary here is not a breaking change
-// (see that module's doc).
+// can see it), so growing its vocabulary here is not a breaking change.
 //
-// #417's GTK-only dirty-row repaint cache (`TermPaintCache`) stays in
+// GTK's dirty-row repaint cache (`TermPaintCache`) stays in
 // `GtkBackend::draw_terminal` — it's a frame-to-frame *caching* decision
 // (which rows even need repainting this frame), not a paint-time
 // concern, so it has nothing to do with how a given row's cells get
 // painted. `paint`'s own `dirty_rows` parameter is the same "paint only
 // these rows" contract `draw_terminal_cells` already had; macOS and
 // Windows simply never call it with anything but `None` (full repaint
-// every frame, their pre-#810 posture), but nothing stops a future
-// caching layer on either from reusing this without a fourth per-backend
-// dirty-row implementation.
+// every frame), but nothing stops a future caching layer on either from
+// reusing this without a fourth per-backend dirty-row implementation.
 //
-// #492 incidental fix: GTK's pre-#810 `draw_terminal_cells` painted
-// glyphs straight through `pangocairo::functions::show_layout`,
-// bypassing the `painted_text` tracking every other primitive's
-// rasteriser already routed through — so a terminal's cell content never
-// reached `FrameInventory::text_runs()` on GTK. `paint` reaches glyphs
+// GTK's pre-unification `draw_terminal_cells` painted glyphs straight
+// through `pangocairo::functions::show_layout`, bypassing the
+// `painted_text` tracking every other primitive's rasteriser already
+// routed through — so a terminal's cell content never reached
+// `FrameInventory::text_runs()` on GTK. `paint` reaches glyphs
 // through `surface_draw_text_run_styled`, whose `GtkBackend` override
 // goes through `super::painted_text::show_layout` like every other
-// verb — this gap closes as a side effect of unification, not a
-// deliberate #492 fix in its own right.
+// verb — this gap closes as a side effect of unification.
 //
-// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
-// — only *called* once a real pixel backend is compiled in, exercised by
-// each backend's own `Backend::draw_terminal`/`draw_terminal_divider`
-// call sites plus this module's own `RecordingSurface` tests on every
-// leg that enables one of the three cfg'd features.
+// `#[allow(dead_code)]`: only *called* once a real pixel backend is
+// compiled in, exercised by each backend's own `Backend::draw_terminal`/
+// `draw_terminal_divider` call sites plus this module's own
+// `RecordingSurface` tests on every leg that enables one of the three
+// cfg'd features.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -594,7 +581,7 @@ mod native_surface_paint {
     /// `cell_area_w`/`cell_area_h` clip painting to the pane's own
     /// bounds — cells past the right edge, or rows whose top has reached
     /// the bottom, stop being drawn rather than bleeding past the pane
-    /// (quadraui#437). `line_height`/`char_width` are the per-cell
+    ///. `line_height`/`char_width` are the per-cell
     /// dimensions in surface-native units.
     ///
     /// `dirty_rows`: `None` paints every row; `Some(rows)` paints only
@@ -638,7 +625,7 @@ mod native_surface_paint {
                 // following column as an empty continuation
                 // placeholder, so claim it here rather than letting it
                 // paint its own (mismatched) background over the
-                // glyph's right half (#439/#500).
+                // glyph's right half.
                 let (cell_w, cols_advanced) = wide_cell_advance(&cell.text, char_width as f64);
                 let cell_w = cell_w as f32;
                 let is_wide = cols_advanced == 2;
@@ -653,11 +640,9 @@ mod native_surface_paint {
                     let s = cell.text.as_str();
                     let cell_rect = Rect::new(cell_x, row_y, cell_w, line_height);
                     let scale_x = if is_wide {
-                        // The font each backend falls back to for
-                        // CJK/emoji rarely lays the glyph out at
-                        // exactly two cells — scale it to fill `cell_w`
-                        // instead of leaving a ragged gap or overlap
-                        // (#439 follow-up / #500 / #703).
+                        // The font each backend falls back to for CJK/emoji rarely lays the
+                        // glyph out at exactly two cells — scale it to fill `cell_w` instead of
+                        // leaving a ragged gap or overlap.
                         let (natural_w, _) = surface.surface_measure_text(s);
                         wide_glyph_x_scale(natural_w as f64, cell_w as f64) as f32
                     } else {
@@ -674,7 +659,7 @@ mod native_surface_paint {
                     );
                 }
 
-                // Underline/Bar cursor accent (quadraui#338) — `Block`
+                // Underline/Bar cursor accent — `Block`
                 // is already fully painted above via `resolve_cell_style`'s
                 // colour invert, so `cursor_accent_rect` returns `None`
                 // for it and this is a no-op. `cell.fg` (the cell's own,
@@ -724,7 +709,6 @@ mod native_surface_paint {
         /// Records every drawing verb `paint` issues — mirrors
         /// `primitives::chart`/`primitives::find_replace`/
         /// `primitives::text_display`'s own `RecordingSurface`
-        /// (#809/#810).
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
@@ -749,7 +733,7 @@ mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// #1073: test-only recorder — `paint` never calls this verb
+            /// Test-only recorder — `paint` never calls this verb
             /// (see this module's own doc for why no primitive here has been
             /// migrated onto it yet); this exists only so `RecordingSurface`
             /// satisfies the trait. Records into the same `fills` list as
@@ -938,7 +922,7 @@ mod native_surface_paint {
         /// A `dim` cell reaches the styled run with its foreground already
         /// blended toward the background — `paint` sources `cell_fg` from
         /// [`crate::terminal_style::resolve_cell_style`], the single place
-        /// SGR 2 (faint) is applied (quadraui#345), so every pixel backend
+        /// SGR 2 (faint) is applied, so every pixel backend
         /// (GTK/macOS/win, all routed through this shared `paint`) gets the
         /// dimmed colour for free with no per-backend styling flag.
         #[test]
@@ -977,7 +961,7 @@ mod native_surface_paint {
             );
         }
 
-        /// A `Bar`/`Underline` cursor cell (quadraui#338) paints its
+        /// A `Bar`/`Underline` cursor cell paints its
         /// normal (uninverted) background fill *plus* a second, smaller
         /// accent fill in the cell's own foreground colour — unlike
         /// `Block`, which paints only the (inverted) background fill
@@ -1128,13 +1112,12 @@ mod native_surface_paint {
             );
         }
 
-        // ── Grapheme clusters (quadraui#337) ────────────────────────────
+        // ── Grapheme clusters ───────────────────────────────────────────
 
         /// A combining mark appended to a base character (e.g. `e` +
         /// U+0301 COMBINING ACUTE ACCENT) must reach the rasteriser as one
-        /// glyph run, not just the base character — dropping the mark is
-        /// exactly the "combining marks are dropped" defect #337
-        /// describes for the old `ch: char` cell shape.
+        /// glyph run, not just the base character — dropping the mark would be
+        /// a defect.
         #[test]
         fn combining_mark_grapheme_paints_as_one_glyph_run() {
             let fg = Color::rgb(255, 255, 255);
@@ -1392,7 +1375,7 @@ mod tests {
         assert_eq!(sb.effective_scroll_offset(), 0);
     }
 
-    // ── dirty_rows (#417) ────────────────────────────────────────────
+    // ── dirty_rows ───────────────────────────────────────────────────
 
     fn cell(ch: char) -> TerminalCell {
         TerminalCell {
@@ -1412,7 +1395,7 @@ mod tests {
         }
     }
 
-    // ── TerminalCell::cell_width (quadraui#337) ─────────────────────────
+    // ── TerminalCell::cell_width ────────────────────────────────────────
 
     #[test]
     fn cell_width_narrow_text_is_one() {
@@ -1523,7 +1506,7 @@ mod tests {
                     TerminalCell {
                         // Base char + combining acute accent — a
                         // multi-codepoint grapheme cluster, not just a
-                        // single `char` (quadraui#337).
+                        // single `char`.
                         text: "e\u{0301}".to_string(),
                         fg: Color::rgb(200, 200, 200),
                         bg: Color::rgb(20, 20, 20),
