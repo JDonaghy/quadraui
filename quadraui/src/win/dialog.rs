@@ -285,10 +285,10 @@ mod tests {
             .map(|r| r.bounds)
             .expect("second column cell painted");
 
-        // A bare "a" is far narrower than the 40-char-cell hint
-        // converts to in DIPs — without honouring `column_widths`,
-        // "b" would land just past "a"'s own narrow measured width
-        // instead.
+        // A bare "a" is far narrower than whatever the 40-char-cell
+        // hint converts to in DIPs — without honouring
+        // `column_widths`, "b" would land just past "a"'s own narrow
+        // measured width instead.
         assert!(
             b_rect.x > table_b.x + 100.0,
             "second column should be pushed right by the first column's explicit width \

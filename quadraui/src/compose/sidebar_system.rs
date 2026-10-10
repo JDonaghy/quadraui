@@ -559,7 +559,7 @@ impl SidebarSystem {
                 button: MouseButton::Right,
                 position,
                 ..
-            } => self.right_click(rect, *position, lh, metrics),
+            } => self.right_click(rect, *position, lh, metrics, backend),
 
             // ── Double-click → forward to TreeController for RowActivated
             UiEvent::DoubleClick { position, .. } => {
@@ -658,11 +658,27 @@ impl SidebarSystem {
         (layout, map)
     }
 
+    /// Chevron glyph width to feed [`Self::compute_tree_layout`] when the
+    /// caller has no live `backend` (e.g. [`Self::handle_cached`]) or
+    /// hasn't threaded one through this call site at all (e.g.
+    /// [`Self::right_click`]): prefer the live backend's real average
+    /// advance ([`Backend::list_char_width`]) when one is in hand, else
+    /// the value [`Self::cache_form_layouts`] cached from an earlier
+    /// frame, else `lh` itself as a last-resort degrade — never a
+    /// `line_height`-derived fraction.
+    fn tree_char_width(&self, backend: Option<&dyn Backend>, lh: f32) -> f32 {
+        backend
+            .map(|b| b.list_char_width())
+            .or(self.cached_char_width)
+            .unwrap_or(lh)
+    }
+
     fn compute_tree_layout(
         &self,
         body_b: Rect,
         tree: &TreeView,
         lh: f32,
+        char_w: f32,
     ) -> crate::primitives::tree::TreeViewLayout {
         let header_h = (lh * 1.2).round();
         let item_h = (lh * 1.4).round();
@@ -672,10 +688,11 @@ impl SidebarSystem {
             let row = &tree.rows[i];
             let is_header = matches!(row.decoration, crate::types::Decoration::Header);
             let height = if is_header { header_h } else { item_h };
-            // Approximate chevron end x (mirrors gtk_tree_layout).
+            // Chevron end x: left margin + indent + one chevron glyph
+            // (`char_w` — the chrome font's real average advance, not a
+            // `line_height`-derived guess) + trailing gap.
             let chevron_end_x = if row.is_expanded.is_some() && show_chevrons {
-                let est_glyph_w = lh * 0.65;
-                Some(2.0 + row.indent as f32 * indent_px + est_glyph_w + 4.0)
+                Some(2.0 + row.indent as f32 * indent_px + char_w + 4.0)
             } else {
                 None
             };
@@ -972,7 +989,8 @@ impl SidebarSystem {
         };
         let mut shadow = t.clone();
         shadow.scroll_offset = 0;
-        let inner = self.compute_tree_layout(body_b, &shadow, lh);
+        let char_w = self.tree_char_width(None, lh);
+        let inner = self.compute_tree_layout(body_b, &shadow, lh, char_w);
         inner.visible_rows.len()
     }
 
@@ -1099,7 +1117,8 @@ impl SidebarSystem {
                 match &view.sections[msv_idx].body {
                     SectionBody::Tree(t) => {
                         let tree = t.clone();
-                        let inner = self.compute_tree_layout(body_b, &tree, lh);
+                        let char_w = self.tree_char_width(backend, lh);
+                        let inner = self.compute_tree_layout(body_b, &tree, lh, char_w);
                         match inner.hit_test(x - body_b.x, y - body_b.y) {
                             TreeViewHit::Row(idx) => {
                                 let path = tree.rows[idx].path.clone();
@@ -1267,7 +1286,7 @@ impl SidebarSystem {
         y: f32,
         lh: f32,
         metrics: &MsvLayoutMetrics,
-        _backend: Option<&dyn Backend>,
+        backend: Option<&dyn Backend>,
     ) -> SidebarEvent {
         let (layout, map) = self.compute_layout(rect, metrics, lh);
         let (view, _) = self.build_view();
@@ -1279,7 +1298,8 @@ impl SidebarSystem {
                 let body_b = layout.sections[msv_idx].body_bounds;
                 if let SectionBody::Tree(t) = &view.sections[msv_idx].body {
                     let tree = t.clone();
-                    let inner = self.compute_tree_layout(body_b, &tree, lh);
+                    let char_w = self.tree_char_width(backend, lh);
+                    let inner = self.compute_tree_layout(body_b, &tree, lh, char_w);
                     // Both Row and Chevron regions count as double-click → RowActivated.
                     let hit_idx = match inner.hit_test(x - body_b.x, y - body_b.y) {
                         TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => Some(idx),
@@ -1305,6 +1325,7 @@ impl SidebarSystem {
         position: Point,
         lh: f32,
         metrics: &MsvLayoutMetrics,
+        backend: Option<&dyn Backend>,
     ) -> SidebarEvent {
         let (layout, map) = self.compute_layout(rect, metrics, lh);
         let (view, _) = self.build_view();
@@ -1318,7 +1339,8 @@ impl SidebarSystem {
                     SectionBody::Tree(t) => t.clone(),
                     _ => return SidebarEvent::Ignored,
                 };
-                let inner = self.compute_tree_layout(body_b, &tree, lh);
+                let char_w = self.tree_char_width(backend, lh);
+                let inner = self.compute_tree_layout(body_b, &tree, lh, char_w);
                 match inner.hit_test(position.x - body_b.x, position.y - body_b.y) {
                     TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
                         let path = tree.rows[idx].path.clone();
@@ -2783,7 +2805,7 @@ mod tests {
 
         let body_b = Rect::new(0.0, 0.0, 200.0, 200.0);
         let ss = SidebarSystem::new(vec![SidebarSectionDef::new("t", "T")]);
-        let layout = ss.compute_tree_layout(body_b, &tree, lh);
+        let layout = ss.compute_tree_layout(body_b, &tree, lh, lh);
 
         // Header row spans [0, header_h). Click at header_h - 0.5 (bottom pixel)
         // should still land on the header row (index 0), not the child (row 1).
@@ -3004,6 +3026,69 @@ mod tests {
                 assert_eq!(selected_idx, 1, "must resolve to \"Project\", not \"File\"");
             }
             other => panic!("expected FormEvent(SegmentedControlChanged), got {other:?}"),
+        }
+    }
+
+    /// End-to-end through `SidebarSystem::handle_cached`'s Tree branch
+    /// (no live backend): the chevron boundary `compute_tree_layout`
+    /// computes must use the chrome font's real average advance
+    /// (`cached_char_width`), not a `line_height`-derived guess. At
+    /// `indent = 0` the boundary is `6.0 + char_w`; a proportional-font
+    /// chrome width (`8.0`) puts it at `x = 14.0`, while the
+    /// `line_height * 0.65` guess (`line_height = 20.0`) would instead
+    /// put it at `x = 19.0` — a click at `x = 16.0` lands in the Row
+    /// region under the real width but in the Chevron region under the
+    /// guess, so a regression to the old guess flips this assertion.
+    #[test]
+    fn sidebar_handle_cached_tree_click_uses_cached_char_width_not_line_height_guess() {
+        let mut ss = SidebarSystem::new(vec![SidebarSectionDef::new("t", "T")]);
+        ss.set_rows(
+            0,
+            vec![TreeRow {
+                path: vec![0],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain("src/"),
+                badge: None,
+                is_expanded: Some(true),
+                decoration: Decoration::Normal,
+                edit: None,
+            }],
+        );
+        let lh = 20.0;
+        let metrics = MsvLayoutMetrics {
+            header_size: lh,
+            divider_size: 0.0,
+            scrollbar_size: 0.0,
+            cell_quantum: 0.0,
+        };
+        ss.set_backend_info(lh, metrics);
+        // Simulate `cache_form_layouts` having recorded a real chrome
+        // char width on some earlier frame (private-field poke — same
+        // intent `cache_form_layouts` itself would have, just without
+        // needing a live `&dyn Backend` in this unit test).
+        ss.cached_char_width = Some(8.0);
+        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+
+        // Body starts at y=20 (one section header row). The only row is
+        // a branch at indent=0, height (lh*1.4).round()=28, spanning
+        // [20, 48).
+        let ev = ss.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(16.0, 30.0),
+                modifiers: Modifiers::default(),
+            },
+            rect,
+        );
+        match ev {
+            SidebarEvent::RowSelected { section, .. } => {
+                assert_eq!(section, 0);
+            }
+            other => {
+                panic!("expected RowSelected (Row hit under the real char width), got {other:?}")
+            }
         }
     }
 
