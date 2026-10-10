@@ -660,7 +660,7 @@ pub(crate) mod native_surface_paint {
                 // Submenu-parent: show a codicon chevron pull-right
                 // affordance at the far-right column instead of a
                 // keyboard-shortcut hint — mirrors the shape
-                // `crate::tui::draw_context_menu` (#370) paints with a
+                // `crate::tui::draw_context_menu` paints with a
                 // plain `▶` glyph instead. Submenu parents open a child
                 // menu rather than dispatching an action, so a shortcut
                 // hint would never fire anyway.

@@ -743,17 +743,15 @@ impl MacBackend {
     ///
     /// If [`Backend::set_nerd_font_fallback`] was already called, `font`
     /// gets that fallback family applied (via
-    /// [`super::text::font_with_fallback`]) before it's stored — issue
+    /// [`super::text::font_with_builtin_fallback`]) before it's stored — issue
     /// #929, and the reason `set_nerd_font_fallback`/`set_current_font`
     /// can land in either order: whichever runs second re-applies the
     /// other's effect instead of silently dropping it.
     pub fn set_current_font(&mut self, font: CTFont) {
-        // `font_with_builtin_fallback` always appends the
-        // bundled codicon family, plus `nerd_font_fallback_family`
-        // ahead of it when the app has set one — see that fn's own doc
-        // for why this must not stay conditional on
-        // `nerd_font_fallback_family.is_some()` the way `font_with_fallback`
-        // alone would leave it.
+        // `font_with_builtin_fallback` always appends the bundled
+        // codicon family, plus `nerd_font_fallback_family` ahead of it
+        // when the app has set one, so built-in chrome glyphs resolve
+        // whether or not the app ever configured a Nerd-Font fallback.
         let font = super::text::font_with_builtin_fallback(
             &font,
             self.nerd_font_fallback_family.as_deref(),
@@ -784,7 +782,7 @@ impl MacBackend {
     pub fn set_chrome_font(&mut self, font: CTFont) {
         // See `set_current_font`'s matching comment —
         // `font_with_builtin_fallback` always carries the bundled
-        // codicon cascade entry, unlike `font_with_fallback` alone.
+        // codicon cascade entry.
         let font = super::text::font_with_builtin_fallback(
             &font,
             self.nerd_font_fallback_family.as_deref(),
@@ -1323,7 +1321,7 @@ impl Backend for MacBackend {
 
     /// Store `family` as the Nerd-Font (or other PUA-codepoint) fallback
     /// and, if [`Self::set_current_font`] already installed a font,
-    /// re-apply it immediately via [`super::text::font_with_fallback`]
+    /// re-apply it immediately via [`super::text::font_with_builtin_fallback`]
     /// (issue #929) — see that method's doc for why the two setters can
     /// land in either order without either effect being lost.
     ///
@@ -1332,11 +1330,11 @@ impl Backend for MacBackend {
     /// editor ones now).
     fn set_nerd_font_fallback(&mut self, family: &str) {
         self.nerd_font_fallback_family = Some(family.to_string());
-        // `font_with_builtin_fallback`, not `font_with_fallback`
-        // directly — a cascade list is a full replacement, not an
-        // append, so rebuilding it from `family` alone here would drop
-        // the bundled codicon entry `set_current_font`/`set_chrome_font`
-        // already put on these two fonts.
+        // A cascade list is a full replacement, not an append, so it is
+        // rebuilt through `font_with_builtin_fallback` — a list naming
+        // `family` alone would drop the bundled codicon entry
+        // `set_current_font`/`set_chrome_font` already put on these two
+        // fonts.
         if let Some(font) = self.current_font.take() {
             self.current_font = Some(super::text::font_with_builtin_fallback(&font, Some(family)));
         }

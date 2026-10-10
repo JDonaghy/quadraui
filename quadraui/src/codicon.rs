@@ -1,16 +1,13 @@
 //! Bundled codicon icon font.
 //!
-//! Before this module, every GUI backend's built-in chrome glyphs — tree
+//! Every GUI backend paints its built-in chrome glyphs — tree
 //! expand/collapse chevrons, tab dirty/close marks, the context-menu
-//! submenu arrow, the data-table sort arrow — were plain Unicode
-//! characters (`▾`/`▸`/`×`/`●`/`▶`/`▼`) painted in whatever font the
-//! surrounding chrome text used. They rendered, but did not look like
-//! VS Code's own chrome, whose equivalent glyphs are vector icons from
-//! Microsoft's codicon font. Separately, an app's own [`crate::Icon`]
-//! glyphs only painted when the host both supplied a Nerd-Font-based
-//! glyph *and* called [`crate::Backend::set_nerd_fonts`] — a real Nerd
-//! Font is not this crate's to bundle (it is enormous and GPL-licensed),
-//! so that path stays opt-in.
+//! submenu arrow, the GTK data-table sort arrow — as codepoints from
+//! Microsoft's codicon font, the vector icons VS Code's own chrome uses.
+//! TUI paints plain Unicode characters (`▾`/`▸`/`×`/`●`/`▶`/`▼`) in the
+//! same places. An app's own [`crate::Icon`] glyphs are a separate path:
+//! they need a Nerd Font, which is not this crate's to bundle (it is
+//! enormous and GPL-licensed), so the host supplies that font itself.
 //!
 //! codicon is small (≈150 KiB), narrowly scoped (chrome glyphs, not a
 //! general-purpose icon set) and CC-BY-4.0 — licence terms this crate
@@ -39,11 +36,25 @@
 //! codicon-registration call site does) cannot shadow an app-supplied
 //! icon glyph — the two code spaces are disjoint.
 
+// `--features win` type-checks `win::*` on every host, but the WinAPI
+// call sites that register the font and paint the tab close/dirty glyphs
+// are `target_os = "windows"`-only, so a non-Windows `win`-only build
+// compiles these items with no reader. The `allow(dead_code)` below is
+// scoped to exactly that build; every real GUI build still lints them.
+
 /// Raw TTF bytes of the bundled codicon font (codicon 0.0.46-24,
 /// upstream: <https://github.com/microsoft/vscode-codicons>). Registered
 /// once per process by each GUI backend via
 /// [`crate::Backend::register_font_from_memory`]'s own implementation —
 /// see this module's doc for why that happens unconditionally.
+#[cfg_attr(
+    not(any(
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        all(feature = "win", target_os = "windows")
+    )),
+    allow(dead_code)
+)]
 pub(crate) const FONT_BYTES: &[u8] = include_bytes!("../assets/codicon.ttf");
 
 /// The font family name every backend registers [`FONT_BYTES`] under,
@@ -55,32 +66,60 @@ pub(crate) const FONT_BYTES: &[u8] = include_bytes!("../assets/codicon.ttf");
 /// `name` table (confirmed via `fc-scan --format '%{family}\n'`), so a
 /// backend that resolves by name against the font it just registered
 /// needs no translation step.
+#[cfg_attr(
+    not(any(
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        all(feature = "win", target_os = "windows")
+    )),
+    allow(dead_code)
+)]
 pub(crate) const FONT_FAMILY: &str = "codicon";
 
-/// Branch row expanded — `codicon-chevron-down`, replacing the plain
-/// `▾` [`crate::TreeStyle::chevron_expanded`] default paints on TUI.
+/// Branch row expanded — `codicon-chevron-down`, the GUI counterpart of
+/// the plain `▾` [`crate::TreeStyle::chevron_expanded`] default paints on
+/// TUI.
 pub(crate) const CHEVRON_DOWN: char = '\u{eab4}';
 
-/// Branch row collapsed — `codicon-chevron-right`, replacing the plain
-/// `▸` [`crate::TreeStyle::chevron_collapsed`] default paints on TUI.
+/// Branch row collapsed — `codicon-chevron-right`, the GUI counterpart
+/// of the plain `▸` [`crate::TreeStyle::chevron_collapsed`] default paints
+/// on TUI.
 /// Also used for the context-menu submenu pull-right affordance
 /// (`\u{25b6}` on TUI) — codicon has no separate "submenu" glyph, and
 /// VS Code's own context menu reuses this exact chevron for both.
 pub(crate) const CHEVRON_RIGHT: char = '\u{eab6}';
 
-/// Tab close button — `codicon-close`, replacing the plain `×`.
+/// Tab close button — `codicon-close` (TUI paints a plain `×`).
+#[cfg_attr(
+    not(any(
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        all(feature = "win", target_os = "windows")
+    )),
+    allow(dead_code)
+)]
 pub(crate) const CLOSE: char = '\u{ea76}';
 
 /// Tab dirty indicator (shown instead of the close glyph until
-/// hovered) — `codicon-circle-filled`, replacing the plain `●`.
+/// hovered) — `codicon-circle-filled` (TUI paints a plain `●`).
+#[cfg_attr(
+    not(any(
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        all(feature = "win", target_os = "windows")
+    )),
+    allow(dead_code)
+)]
 pub(crate) const DIRTY: char = '\u{ea71}';
 
-/// Sort-ascending column-header indicator — `codicon-triangle-up`,
-/// replacing the plain `▲`.
+/// Sort-ascending column-header indicator — `codicon-triangle-up`
+/// (TUI paints a plain `▲`). Only the GTK data table paints it.
+#[cfg(any(feature = "gtk", test))]
 pub(crate) const SORT_ASCENDING: char = '\u{eb71}';
 
-/// Sort-descending column-header indicator — `codicon-triangle-down`,
-/// replacing the plain `▼`.
+/// Sort-descending column-header indicator — `codicon-triangle-down`
+/// (TUI paints a plain `▼`). Only the GTK data table paints it.
+#[cfg(any(feature = "gtk", test))]
 pub(crate) const SORT_DESCENDING: char = '\u{eb6e}';
 
 #[cfg(test)]

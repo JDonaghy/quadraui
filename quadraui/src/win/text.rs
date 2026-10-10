@@ -561,7 +561,7 @@ pub fn build_nerd_font_fallback(
 /// `(family, collection)` pair in `mappings`, each consulted in
 /// order only for characters none of the higher-priority entries before
 /// it (including the system fallback added first) already resolved —
-/// `build_nerd_font_fallback` itself is now a thin single-mapping call
+/// `build_nerd_font_fallback` itself is a thin single-mapping call
 /// into this fn, so the two can never drift on the shared factory/
 /// system-fallback/builder setup. [`crate::win::backend::WinBackend`]
 /// uses this directly to combine the app's own `set_nerd_font_fallback`

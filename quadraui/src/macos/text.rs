@@ -154,17 +154,14 @@ pub fn system_monospace_font(size_pt: f64) -> CTFont {
 // only" contract Pango's cascade already has), it just has to be
 // requested per font rather than applying automatically.
 
-/// Copy `font` with `fallback_family` appended to its Core Text cascade
-/// list — every metric (size, ascent/descent, any symbolic traits `font`
-/// already carries) is preserved; only glyph resolution for characters
-/// `font`'s own family can't cover changes, consulting `fallback_family`
-/// before Core Text's own system default cascade.
+/// Copy `font` with `fallback_families` appended, in order, to its Core
+/// Text cascade list — every metric (size, ascent/descent, any symbolic
+/// traits `font` already carries) is preserved; only glyph resolution for
+/// characters `font`'s own family can't cover changes, consulting each
+/// fallback family in turn before Core Text's own system default cascade.
 ///
-/// Used by [`super::backend::MacBackend::set_current_font`] /
-/// [`super::backend::MacBackend::set_nerd_font_fallback`] to apply
-/// whatever family `Backend::set_nerd_font_fallback` last set to the
-/// backend's single shared `current_font`, regardless of which of the
-/// two calls happens first.
+/// Reached through [`font_with_builtin_fallback`], which supplies the
+/// family list every `MacBackend` font carries.
 ///
 /// Drops to direct CoreText FFI for `CTFontCreateCopyWithAttributes` —
 /// the same "the safe wrapper doesn't expose what we need" rationale
@@ -174,9 +171,13 @@ pub fn system_monospace_font(size_pt: f64) -> CTFont {
 /// `ptr::null()` for the attributes parameter both times), so a caller
 /// that wants to pass real attributes — a cascade list, here — has no
 /// public wrapper to reach for.
-pub(crate) fn font_with_fallback(font: &CTFont, fallback_family: &str) -> CTFont {
+pub(crate) fn font_with_fallback(font: &CTFont, fallback_families: &[&str]) -> CTFont {
     let cascade_key = unsafe { CFString::wrap_under_get_rule(kCTFontCascadeListAttribute) };
-    let cascade_list = CFArray::from_CFTypes(&[cascade_descriptor_for(fallback_family)]);
+    let entries: Vec<CTFontDescriptor> = fallback_families
+        .iter()
+        .map(|family| cascade_descriptor_for(family))
+        .collect();
+    let cascade_list = CFArray::from_CFTypes(&entries);
     let attrs = CFDictionary::from_CFType_pairs(&[(cascade_key, cascade_list.as_CFType())]);
     let desc = font_descriptor::new_from_attributes(&attrs);
     // SAFETY: `font.as_concrete_TypeRef()` is a valid, live `CTFontRef`;
@@ -200,48 +201,29 @@ pub(crate) fn font_with_fallback(font: &CTFont, fallback_family: &str) -> CTFont
     unsafe { CTFont::wrap_under_create_rule(font_ref) }
 }
 
-/// [`font_with_fallback`]'s always-on counterpart: copy
-/// `font` with [`crate::codicon::FONT_FAMILY`] appended to its Core Text
-/// cascade list — ahead of it, `app_fallback_family` too, when the app
-/// has configured one via `Backend::set_nerd_font_fallback`.
+/// Copy `font` with the cascade list every `MacBackend` font carries:
+/// `app_fallback_family` first, when the app has configured one via
+/// `Backend::set_nerd_font_fallback`, then [`crate::codicon::FONT_FAMILY`]
+/// unconditionally.
 ///
 /// `MacBackend::set_current_font`/`set_chrome_font`/
-/// `set_nerd_font_fallback` call this instead of [`font_with_fallback`]
-/// directly, so every built-in chrome glyph this crate paints through
-/// `current_font`/`chrome_font` (tab dirty/close) resolves its codicon
-/// codepoint whether or not the app has ever called
-/// `set_nerd_font_fallback` — unlike [`font_with_fallback`], which is
-/// only ever reached from behind `self.nerd_font_fallback_family.is_some()`
-/// and so never runs at all for an app that hasn't opted into its own
-/// Nerd-Font fallback. `codicon::FONT_FAMILY`'s own doc explains why
-/// appending it after `app_fallback_family` can never shadow an
-/// app-supplied icon glyph: the two PUA ranges are disjoint by
+/// `set_nerd_font_fallback` all go through this, so every built-in chrome
+/// glyph this crate paints through `current_font`/`chrome_font` (tab
+/// dirty/close) resolves its codicon codepoint whether or not the app has
+/// ever called `set_nerd_font_fallback`. `codicon::FONT_FAMILY`'s own doc
+/// explains why appending it after `app_fallback_family` can never shadow
+/// an app-supplied icon glyph: the two PUA ranges are disjoint by
 /// construction.
 pub(crate) fn font_with_builtin_fallback(
     font: &CTFont,
     app_fallback_family: Option<&str>,
 ) -> CTFont {
-    let cascade_key = unsafe { CFString::wrap_under_get_rule(kCTFontCascadeListAttribute) };
-    let mut entries: Vec<CTFontDescriptor> = Vec::with_capacity(2);
+    let mut families: Vec<&str> = Vec::with_capacity(2);
     if let Some(family) = app_fallback_family {
-        entries.push(cascade_descriptor_for(family));
+        families.push(family);
     }
-    entries.push(cascade_descriptor_for(crate::codicon::FONT_FAMILY));
-    let cascade_list = CFArray::from_CFTypes(&entries);
-    let attrs = CFDictionary::from_CFType_pairs(&[(cascade_key, cascade_list.as_CFType())]);
-    let desc = font_descriptor::new_from_attributes(&attrs);
-    // SAFETY: same contract as [`font_with_fallback`]'s identical call
-    // just above — `font`/`desc` are both live for this synchronous
-    // call, `0.0`/`null()` mean "keep the original size, no transform".
-    let font_ref = unsafe {
-        CTFontCreateCopyWithAttributes(
-            font.as_concrete_TypeRef(),
-            0.0,
-            std::ptr::null(),
-            desc.as_concrete_TypeRef(),
-        )
-    };
-    unsafe { CTFont::wrap_under_create_rule(font_ref) }
+    families.push(crate::codicon::FONT_FAMILY);
+    font_with_fallback(font, &families)
 }
 
 /// Apple's system "no font anywhere covers this" placeholder carries only
@@ -1009,7 +991,7 @@ mod tests {
     #[test]
     fn font_with_fallback_attaches_a_cascade_list_attribute() {
         let base = font();
-        let with_fallback = font_with_fallback(&base, "Helvetica");
+        let with_fallback = font_with_fallback(&base, &["Helvetica"]);
         // `contains_key` needs `ToVoid`, which core-foundation only
         // implements for `*const c_void` and `CFType` — not `CFString`
         // itself — so both the dictionary and the probed key are
@@ -1028,7 +1010,7 @@ mod tests {
     #[test]
     fn font_with_fallback_preserves_family_and_size() {
         let base = font();
-        let with_fallback = font_with_fallback(&base, "Helvetica");
+        let with_fallback = font_with_fallback(&base, &["Helvetica"]);
         assert_eq!(with_fallback.family_name(), base.family_name());
         assert_eq!(with_fallback.pt_size(), base.pt_size());
     }
@@ -1040,7 +1022,7 @@ mod tests {
     #[test]
     fn font_with_fallback_still_measures_ordinary_text() {
         let base = font();
-        let with_fallback = font_with_fallback(&base, "Helvetica");
+        let with_fallback = font_with_fallback(&base, &["Helvetica"]);
         let (w, h) = measure_text(&with_fallback, "hello");
         assert!(
             w > 0.0 && h > 0.0,
@@ -1086,7 +1068,7 @@ mod tests {
         };
 
         let base = font(); // Menlo — doesn't cover PUA itself
-        let with_fallback = font_with_fallback(&base, &nerd_family);
+        let with_fallback = font_with_fallback(&base, &[nerd_family.as_str()]);
         // Mirrors `activity_bar::draw_activity_bar_with_style`'s
         // `font.clone_with_font_size(style.resolved_icon_size_px())`.
         let icon_size_px = crate::ActivityBarStyle::default().resolved_icon_size_px() as f64;
@@ -1237,7 +1219,7 @@ mod tests {
     fn icon_font_with_fallback() -> (CTFont, String) {
         let family = registered_icon_font_family();
         let base = font();
-        (font_with_fallback(&base, &family), family)
+        (font_with_fallback(&base, &[family.as_str()]), family)
     }
 
     /// Host-independent guard for the cascade-pinning fix itself: proves
