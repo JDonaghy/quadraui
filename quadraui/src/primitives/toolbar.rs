@@ -696,37 +696,13 @@ impl Toolbar {
 /// `origin_offset_propagates`) to guarantee they agree bit-for-bit.
 #[cfg(feature = "layout")]
 fn item_cursor_positions(origin_x: f32, bar_height: f32, widths: &[f32]) -> Vec<f32> {
-    use crate::flex::{length, FlexLayout, Size, Style};
-
-    if widths.is_empty() {
-        return Vec::new();
-    }
-
-    let mut flex = FlexLayout::new().without_rounding();
-    let leaves: Vec<_> = widths
-        .iter()
-        .map(|&w| {
-            flex.add_leaf(Style {
-                size: Size {
-                    width: length(w),
-                    height: length(bar_height),
-                },
-                flex_shrink: 0.0,
-                flex_grow: 0.0,
-                ..Default::default()
-            })
-            .expect("toolbar item leaf node")
-        })
-        .collect();
-    let root = flex
-        .add_container(Style::default(), &leaves)
-        .expect("toolbar container node");
-
-    let total_width: f32 = widths.iter().sum();
-    let available = Rect::new(origin_x, 0.0, total_width, bar_height);
-    let computed = flex.compute(root, available).expect("toolbar flex layout");
-
-    leaves.iter().map(|id| computed[id].x).collect()
+    crate::flex::pack_1d(
+        crate::flex::FlexDirection::Row,
+        origin_x,
+        widths,
+        0.0,
+        bar_height,
+    )
 }
 
 /// Same contract as the `layout`-feature arm above, computed by hand.
