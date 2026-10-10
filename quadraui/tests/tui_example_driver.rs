@@ -8558,3 +8558,111 @@ fn status_bar_priority_demo_pressing_q_exits() {
     driver.type_char('q');
     assert!(driver.exited(), "'q' should make the app exit");
 }
+
+// ─── flex-layout rewire: full-screen snapshots must stay byte-identical ────
+//
+// `AppShell`, `Form` and `Toolbar` each route their 1D position arithmetic
+// through `crate::flex::pack_1d` when the `layout` feature is enabled, and
+// through the original hand-rolled arithmetic when it is not. These three
+// tests capture a full-screen snapshot of each primitive and compare it
+// byte-for-byte against the pre-rewire baseline; run this file once with
+// `--features tui` and once with `--features tui,layout` and both runs must
+// print the identical "ok".
+
+#[test]
+fn toolbar_full_screen_snapshot_unchanged_by_flex_rewire() {
+    let driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+    let expected = r#"  Toolbar primitive demo                                                                                                
+[ ▶ Continue (1) ][ ⏸ Pause (2) ] │[ * Filter (3) ][ % Reset (4) ] │[ Debug ] running                                   
+                                  │                                │                                                    
+                                  │                                │                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  Click, Tab to focus, Enter to activate. q=quit                                     n=nerd icons  v=valign:Top  q=quit 
+"#;
+    assert_eq!(
+        driver.screen(),
+        expected,
+        "toolbar snapshot:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn appshell_full_screen_snapshot_unchanged_by_flex_rewire() {
+    let config = AppShellDemo::config();
+    let mut driver = driver_with_shell(AppShellDemo::new(), config, 100, 30);
+    driver.render();
+    let expected = r#" E│ EXPLORER             Tab=focus bar | click icons | drag divider | p=jump to Source Control | Ctr
+ S│ (sidebar content he                                                                             
+ G│                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+  │                                                                                                 
+ *│                                                                                                 
+"#;
+    assert_eq!(
+        driver.screen(),
+        expected,
+        "appshell snapshot:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_groups_full_screen_snapshot_unchanged_by_flex_rewire() {
+    let driver = TuiDriver::new(FormGroupsApp::new(), 100, 20);
+    let expected = r#" Find                                                                                       [hello  
+ Aa Ab| .*                                                                                          
+ Replace                                                                                 [Replace…] 
+ [Find Next] [Replace] [Replace All]                                                                
+ Scope [ Workspace ][ File ][ Selection ]                                                           
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+ last: —                                                                click / Tab / Shift+Tab / q 
+"#;
+    assert_eq!(
+        driver.screen(),
+        expected,
+        "form snapshot:\n{}",
+        driver.screen()
+    );
+}

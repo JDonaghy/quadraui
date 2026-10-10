@@ -343,6 +343,18 @@ macos = [
 # unit-agnostic (plain `f32` in, plain `f32` out, same as `event::Rect`),
 # so it pairs with any backend feature or none at all; see
 # `src/flex.rs`'s module doc for the design.
+#
+# `AppShell`'s chrome-band carve, `Form`'s field stacking, and `Toolbar`'s
+# item packing each delegate their 1D position arithmetic through
+# `crate::flex::pack_1d` when this feature is enabled, and fall
+# back to the identical hand-rolled arithmetic when it is not — verified
+# byte-identical under both configurations by each primitive's own test
+# suite. Enable `layout` alongside `tui`/`gtk`/`win`/`macos` to route that
+# packing through the shared flex engine; leaving it off keeps those three
+# primitives working exactly as before, just without `taffy` in the
+# dependency graph. It is deliberately NOT bundled into any backend
+# feature above — see the `[features]` table's own "No `default` key"
+# comment for why no feature here pulls in another opt-in feature.
 layout = ["dep:taffy"]
 
 [dependencies]
