@@ -4115,7 +4115,7 @@ impl PaintSurface for ChromeSurface<'_> {
 /// which doesn't read the font either way. The line-height/char-width
 /// pitch methods read `current_line_height`/`current_char_width`
 /// directly rather than forwarding, since `MacBackend`'s own impl of
-/// those now reports the *chrome* metric (see
+/// those reports the *chrome* metric (see
 /// [`MacBackend::surface_line_height`]'s doc) — forwarding would hand an
 /// editor-class caller the wrong row pitch. The three text-shaped
 /// methods resolve `current_font` with the same "falls back to
@@ -4139,7 +4139,7 @@ impl PaintSurface for EditorSurface<'_> {
     }
 
     /// Reads `current_line_height` directly rather than forwarding to
-    /// `self.backend.surface_line_height()` — that method now reports
+    /// `self.backend.surface_line_height()` — that method reports
     /// the chrome metric (see its doc), which would hand an
     /// editor-class caller the wrong row pitch the moment chrome and
     /// editor fonts diverge.
@@ -4201,8 +4201,8 @@ impl PaintSurface for EditorSurface<'_> {
     /// The `current_font` twin of [`MacBackend`]'s own
     /// `surface_draw_text_run_styled` — same `bold`/`italic`/`underline`-
     /// unsupported posture, same `scale_x` support via
-    /// [`super::text::draw_text_scaled_x`] (the terminal's wide-glyph
-    /// advance fix, #500/#703), just against `current_font`.
+    /// [`super::text::draw_text_scaled_x`] (which fits the terminal's
+    /// wide glyphs to their cell advance), just against `current_font`.
     ///
     /// No `surface_draw_text_run_with_role` override here (nor on
     /// [`ChromeSurface`]): both adapters are already constructed against
@@ -6972,8 +6972,12 @@ mod tests {
         backend.end_frame();
 
         let theme = crate::theme::Theme::default();
-        let cw = backend.char_width().max(1.0);
-        let lh = backend.line_height().max(1.0);
+        // The popup's geometry comes from the metrics the paint itself
+        // reads — `MacBackend`'s `PaintSurface` grid, which is the chrome
+        // advance and line height — not `Backend::char_width`/
+        // `line_height`, which report the editor font's metrics.
+        let cw = PaintSurface::surface_char_width(&backend).max(1.0);
+        let lh = PaintSurface::surface_line_height(&backend).max(1.0);
         let popup_w = panel.panel_width as f32 * cw;
         let popup_h = 3.0 * lh; // show_replace == false: 1 content row + 2 border rows
         let popup_x = (panel.group_bounds.x + panel.group_bounds.width - popup_w - 10.0)
