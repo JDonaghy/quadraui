@@ -1192,11 +1192,16 @@ impl MacBackend {
     /// "Per-frame idempotence" doc section below for why a per-frame
     /// caller needs this to be idempotent rather than rebuilding the
     /// whole `NSMenu` tree on every call.
-    fn install_menu_bar_if_changed(&mut self, bar: &MenuBar) {
-        if self.last_native_menu_bar.as_ref() != Some(bar) {
-            self.install_menu_bar(bar);
-            self.last_native_menu_bar = Some(bar.clone());
+    ///
+    /// Returns `true` when the `NSMenu` tree was (re)built, `false` when
+    /// the call was a no-op because `bar` matched the last install.
+    fn install_menu_bar_if_changed(&mut self, bar: &MenuBar) -> bool {
+        if self.last_native_menu_bar.as_ref() == Some(bar) {
+            return false;
         }
+        self.install_menu_bar(bar);
+        self.last_native_menu_bar = Some(bar.clone());
+        true
     }
 
     /// The in-window painted menu-bar strip. Reachable as the
@@ -8415,33 +8420,36 @@ mod tests {
     /// unchanged `bar` must not reinstall the `NSMenu` tree the second
     /// time — `install_menu_bar_if_changed` must see `last_native_menu_bar`
     /// already matching and skip straight past `install_menu_bar`.
-    /// Exercised indirectly: `install_menu_bar` itself no-ops off the
-    /// main thread (every `#[test]` fn runs on one), so this pins the
-    /// dirty-tracking field directly rather than observing `NSApp`'s
-    /// menu — `menu_target` only gets set when `install_menu_bar`
-    /// actually runs its AppKit half, which never happens in a test
-    /// process, so the only observable signal here is
-    /// `last_native_menu_bar` itself.
+    /// `install_menu_bar`'s own AppKit half no-ops off the main thread
+    /// (every `#[test]` fn runs off it), so `menu_target` can't be used
+    /// as the signal here; the helper's return value reports whether the
+    /// `NSMenu` rebuild was entered at all, which is exactly the
+    /// per-frame property under test.
     #[test]
     fn install_menu_bar_if_changed_skips_reinstall_for_an_unchanged_bar() {
         let bar = sample_menu_bar_for_native_default_tests();
         let mut backend = MacBackend::new();
 
         assert!(backend.last_native_menu_bar.is_none());
-        backend.install_menu_bar_if_changed(&bar);
+        assert!(
+            backend.install_menu_bar_if_changed(&bar),
+            "the first install of a bar must build the NSMenu tree",
+        );
         assert_eq!(backend.last_native_menu_bar.as_ref(), Some(&bar));
 
-        // Same bar again: the recorded "last installed" value is
-        // unchanged (if a reinstall happened, this assertion itself
-        // can't observe it directly, but it documents the no-op
-        // expectation the paired behavioural test above relies on).
-        backend.install_menu_bar_if_changed(&bar);
+        assert!(
+            !backend.install_menu_bar_if_changed(&bar),
+            "an unchanged bar must not rebuild the NSMenu tree",
+        );
         assert_eq!(backend.last_native_menu_bar.as_ref(), Some(&bar));
 
-        // A genuinely different bar must still update the record.
+        // A genuinely different bar must install again, and update the record.
         let mut other = bar.clone();
         other.items[0].label = "&Edit".to_string();
-        backend.install_menu_bar_if_changed(&other);
+        assert!(
+            backend.install_menu_bar_if_changed(&other),
+            "a changed bar must rebuild the NSMenu tree",
+        );
         assert_eq!(backend.last_native_menu_bar.as_ref(), Some(&other));
     }
 
