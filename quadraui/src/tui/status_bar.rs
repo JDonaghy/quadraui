@@ -273,7 +273,7 @@ mod tests {
     }
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
-    // must return coords in the same frame across backends" (quadraui#494).
+    // must return coords in the same frame across backends".
     // `hit_regions` are bar-local by construction (`bar.layout` only takes
     // width/height, never `area.x`/`area.y`), but `draw_status_bar` paints
     // each segment's text at `area.x + vs.bounds.x` — so the only way to
@@ -345,9 +345,8 @@ mod tests {
         round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md): the
-    /// same hit-region + paint round trip must hold when the bar isn't
-    /// painted at the screen origin.
+    /// The same hit-region + paint round trip must hold when the bar
+    /// isn't painted at the screen origin.
     #[test]
     fn returns_hit_regions_for_action_segments_at_nonzero_origin() {
         round_trip_at(7, 13);

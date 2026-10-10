@@ -159,29 +159,14 @@ pub fn draw_context_menu(
 }
 
 #[doc(hidden)]
-/// Draw a [`ContextMenu`] AND any nested submenus that are currently open
-/// within it ("pull-right" cascading submenus).
-///
-/// # Note
+/// Draw a [`ContextMenu`] and any nested submenus that are currently open
+/// within it (cascading submenus anchored to the right of their parent).
 ///
 /// This function operates directly on a raw `ratatui::buffer::Buffer` and
-/// bypasses the [`crate::backend::Backend`] trait.  The production render path
-/// goes through [`crate::compose::MenuSystem::render`] → `backend.draw_context_menu()`
-/// per level.  This function exists as a lower-level building block used by
-/// the rasteriser unit tests; consumers should use `MenuSystem::render` instead.
-///
-/// **Not promoted to `Backend::draw_context_menu_with_submenus` (issue
-/// #506 audit).** Doing that today would need a default body for
-/// GTK/Win/macOS, and none of them can honour cascading submenus yet
-/// (GTK's is #371) — a no-op default here wouldn't be a harmless
-/// fallback the way `TabChrome`'s is, it would silently make
-/// multi-level menus not cascade on three of four backends while the
-/// trait claimed the capability existed. This function also has zero
-/// production call sites today (no compose helper or example wires it
-/// up), so there's no live consumer being asked to route around a
-/// missing trait method. Revisit once #371 gives GTK a real cascading
-/// rasteriser to pair it with. See `quadraui/docs/decisions/DECISIONS.md` D-007
-/// for the full write-up.
+/// bypasses the [`crate::backend::Backend`] trait. It exists as a lower-level
+/// building block for unit tests; production rendering goes through
+/// [`crate::compose::MenuSystem::render`] → `backend.draw_context_menu()`
+/// per level. Consumers should use `MenuSystem::render` instead.
 ///
 /// # Arguments
 ///
@@ -190,14 +175,14 @@ pub fn draw_context_menu(
 /// * `submenu_path` — depth-first path of open submenus.
 ///   `submenu_path[0]` = `item_idx` in the root menu whose submenu is open;
 ///   `submenu_path[1]` = `item_idx` in *that* submenu whose sub-submenu is open;
-///   etc.  Empty slice → draw only the root.
+///   etc. Empty slice → draw only the root.
 /// * `selected_at_depth` — `selected_at_depth[d]` = selected item index
 ///   inside the submenu at depth `d` (depth 0 = first child of root).
 /// * `viewport` — full paint surface; used for right-edge overflow detection.
 ///
 /// Each child popup anchors its left edge to the parent popup's right
-/// border column.  If that would overflow the viewport's right edge the
-/// popup flips to the **left** of the parent instead.
+/// border column. If that would overflow the viewport's right edge the
+/// popup flips to the left of the parent instead.
 pub fn draw_context_menu_with_submenus(
     buf: &mut Buffer,
     root_menu: &ContextMenu,

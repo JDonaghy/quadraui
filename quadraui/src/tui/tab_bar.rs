@@ -13,7 +13,7 @@ use ratatui::style::Modifier;
 
 use super::text::char_cell_width;
 use super::{ratatui_color, set_cell, set_cell_styled, set_cell_wide, set_cell_wide_styled};
-// `TabBarHits` is `#[deprecated]` (issue #823) — this whole module's job is
+// `TabBarHits` is `#[deprecated]` — this whole module's job is
 // still building one per frame; see that struct's doc for the replacement
 // plan (`TabBarLayout`, which every function below already receives as
 // its `layout` parameter).
@@ -55,7 +55,7 @@ pub const TAB_CLOSE_COLS: u16 = 2;
 ///   `tab_active_fg` when `seg.is_active`). Double-width glyphs
 ///   (per `unicode-width`) use [`set_cell_wide`].
 /// - **Tab labels:** measured and painted in display columns, not
-///   `char`s (#554) — a double-width glyph (per `unicode-width`) uses
+///   `char`s — a double-width glyph (per `unicode-width`) uses
 ///   [`set_cell_wide`]/[`set_cell_wide_styled`] and advances the cursor
 ///   by 2, mirroring the right-segment loop above. The measure side
 ///   (`TuiBackend::draw_tab_bar` / `tab_bar_layout` in `backend.rs`)
@@ -67,7 +67,7 @@ pub const TAB_CLOSE_COLS: u16 = 2;
 ///   doc comment names this fix as the unblocker for switching to a
 ///   `display_width` measure there. coord-tui consumes the same tab
 ///   bar and should be checked for the equivalent assumption.
-#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+#[allow(deprecated)] // returns the deprecated `TabBarHits`
 pub fn draw_tab_bar(
     buf: &mut Buffer,
     area: Rect,
@@ -78,7 +78,7 @@ pub fn draw_tab_bar(
     draw_tab_bar_icons(buf, area, bar, &[], layout, theme)
 }
 
-/// [`draw_tab_bar`] plus per-tab icon glyphs (#620).
+/// [`draw_tab_bar`] plus per-tab icon glyphs.
 ///
 /// `icons` is a sidecar slice parallel to `bar.tabs` (see
 /// [`crate::Backend::draw_tab_bar_icons`]); resolve entries with
@@ -94,7 +94,7 @@ pub fn draw_tab_bar(
 /// `TuiBackend::draw_tab_bar_icons` / `tab_bar_layout_icons`
 /// (`backend.rs`) add to the tab's measured width, so paint and
 /// measurement cannot drift.
-#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+#[allow(deprecated)] // returns the deprecated `TabBarHits`
 pub fn draw_tab_bar_icons(
     buf: &mut Buffer,
     area: Rect,
@@ -106,11 +106,11 @@ pub fn draw_tab_bar_icons(
     draw_tab_bar_icons_with_chrome(buf, area, bar, icons, &TabChrome::default(), layout, theme)
 }
 
-/// [`draw_tab_bar`] with an explicit [`TabChrome`] request (#631).
+/// [`draw_tab_bar`] with an explicit [`TabChrome`] request.
 ///
 /// `&[]` icons + [`TabChrome::default`] reproduces [`draw_tab_bar`] cell
 /// for cell. See [`TabChrome::active_frame`] for what each frame paints.
-#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+#[allow(deprecated)] // returns the deprecated `TabBarHits`
 pub fn draw_tab_bar_with_chrome(
     buf: &mut Buffer,
     area: Rect,
@@ -122,7 +122,7 @@ pub fn draw_tab_bar_with_chrome(
     draw_tab_bar_icons_with_chrome(buf, area, bar, &[], chrome, layout, theme)
 }
 
-/// [`draw_tab_bar_icons`] plus an explicit [`TabChrome`] request (#631).
+/// [`draw_tab_bar_icons`] plus an explicit [`TabChrome`] request.
 ///
 /// When `chrome.active_frame` is [`TabFrame::Brackets`], the active tab's
 /// full content — icon, label, and close glyph — is enclosed in literal
@@ -131,7 +131,7 @@ pub fn draw_tab_bar_with_chrome(
 /// in `backend.rs`, which build the chrome-aware
 /// [`crate::TabMeasure`] before calling [`TabBar::layout`]) — this
 /// function paints from `layout` verbatim and does not recompute widths.
-#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+#[allow(deprecated)] // returns the deprecated `TabBarHits`
 pub fn draw_tab_bar_icons_with_chrome(
     buf: &mut Buffer,
     area: Rect,
@@ -224,7 +224,7 @@ pub fn draw_tab_bar_icons_with_chrome(
             (false, false) => (inactive_fg, bar_bg),
         };
 
-        // #631: when chrome requests bracket framing, the active tab's
+        // When chrome requests bracket framing, the active tab's
         // full content — icon, label, close glyph — is enclosed in `[` /
         // `]`. `lead` shifts every subsequent paint position right by one
         // column to make room for the opening bracket; the closing
@@ -300,7 +300,7 @@ pub fn draw_tab_bar_icons_with_chrome(
         // Filename (after the last ": ") carries the underline accent.
         let prefix_len = tab.label.rfind(": ").map(|p| p + 2).unwrap_or(0);
 
-        // Stride by display width, not by `char` (#554): a double-width
+        // Stride by display width, not by `char`: a double-width
         // glyph (CJK, many emoji) must land in two columns, mirroring the
         // right-segment loop above. `TuiBackend::draw_tab_bar` /
         // `tab_bar_layout` (backend.rs) measure `label_end`'s budget with
@@ -345,7 +345,7 @@ pub fn draw_tab_bar_icons_with_chrome(
             set_cell(buf, x, area.y, close_ch, close_fg, bg);
             x += 1;
         }
-        // #631: the closing bracket lands right after the close glyph
+        // The closing bracket lands right after the close glyph
         // (or right after the label, for a bracket-framed tab with no
         // close button) — taking the place of the plain trailing
         // separator cell a non-bracket tab paints here.
@@ -440,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return — issue #823
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return
     fn returns_full_width_when_no_right_segments() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 1));
         let bar = make_bar(0);
@@ -456,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return — issue #823
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return
     fn reserves_right_segment_width() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 1));
         let bar = TabBar {
@@ -500,15 +500,15 @@ mod tests {
         assert_eq!((start, end), (27.0, 30.0));
     }
 
-    /// Regression guard for #554: a CJK label must paint every glyph in
+    /// Regression guard: a CJK label must paint every glyph in
     /// its own columns, not lose glyphs to a flat `x += 1` stride. This
     /// reconstructs the painted row the way a real terminal (and
     /// `TuiDriver::row_cells`) reads it — stepping by each cell's own
     /// display width and skipping the blank continuation cell that
     /// `set_cell_wide`/`set_cell_wide_styled` leave after a double-width
     /// glyph — rather than concatenating every stored cell verbatim
-    /// (which would hide the bug; see contract.md §2 for the ms-11 slice
-    /// this mirrors at the acceptance layer).
+    /// (which would hide the bug; see contract.md §2 for the equivalent
+    /// check at the acceptance layer).
     #[test]
     fn wide_glyph_label_paints_every_char_across_its_own_columns() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
@@ -570,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return — issue #823
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return
     fn zero_size_is_a_no_op() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
         let bar = make_bar(0);
@@ -587,7 +587,7 @@ mod tests {
         assert!(hits.slot_positions.is_empty());
     }
 
-    /// #620: an icon glyph paints at the tab's leading edge in its own
+    /// An icon glyph paints at the tab's leading edge in its own
     /// [`crate::TabIcon::color`], and the label starts right after it +
     /// the 1-column gap [`crate::tab_icon_cols`] reserves — matching what
     /// `TuiBackend::draw_tab_bar_icons`/`tab_bar_layout_icons`
@@ -659,12 +659,12 @@ mod tests {
         );
     }
 
-    /// #620: an empty icon sidecar must paint exactly what the icon-less
+    /// An empty icon sidecar must paint exactly what the icon-less
     /// [`draw_tab_bar`] entry point paints — that equivalence is what
     /// lets every backend route both entry points through one rasteriser
     /// without changing a single existing pixel.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return — issue #823
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return
     fn empty_icon_sidecar_paints_identically_to_draw_tab_bar() {
         let bar = make_bar(0);
         let area = Rect::new(0, 0, 40, 1);
@@ -688,12 +688,12 @@ mod tests {
         );
     }
 
-    /// #631: `TabFrame::Brackets` must enclose the active tab's close
+    /// `TabFrame::Brackets` must enclose the active tab's close
     /// glyph in literal `[` / `]` — and `close_bounds` must still land on
     /// the glyph itself, not the bracket wrapping it, so a click on `×`
     /// still resolves to `TabClose` rather than `Tab`.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return — issue #823
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return
     fn bracket_frame_encloses_close_glyph_and_close_bounds_stay_on_the_glyph() {
         use crate::primitives::tab_bar::{TabBarHit, TabChrome, TabFrame};
 

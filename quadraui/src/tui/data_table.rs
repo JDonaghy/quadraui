@@ -21,10 +21,7 @@ use crate::theme::Theme;
 /// This is the **single** definition of TUI DataTable geometry: both
 /// [`draw_data_table`] and `Backend::data_table_layout` go through it,
 /// so the layout a cache-free, layout-on-demand hit-test runs against is
-/// bit-for-bit the layout that was painted. Resolving the geometry in
-/// two places instead let them drift on the `h_scroll` rounding below
-/// (#550 round 3) — don't reintroduce a second `table.layout(..)` call
-/// site for the TUI.
+/// bit-for-bit the layout that was painted.
 pub fn data_table_layout(area: Rect, table: &DataTable) -> DataTableLayout {
     let mut layout = table.layout(
         area.width as f32,
@@ -35,16 +32,11 @@ pub fn data_table_layout(area: Rect, table: &DataTable) -> DataTableLayout {
         |col| ColumnMeasure::new(col.title.chars().count() as f32),
     );
 
-    // TUI is cell-granular: every column paints at a *rounded* offset
-    // (`draw_data_table`'s `h_off`), not the raw fractional `h_scroll`.
-    // `hit_test` / `column_hit` do no rounding of their own — they trust
-    // `DataTableLayout::h_scroll` to already equal what was painted — so
-    // this must be rounded here, once, before the layout is handed back
-    // to callers for hit-testing. Skipping this left a gap whenever
-    // `h_scroll`'s fractional part crossed 0.5: painting rounded up a
-    // full cell while hit-testing added the un-rounded value back,
-    // misrouting clicks on the leftmost visible cell of whichever column
-    // scrolled into view (#550 round 2).
+    // TUI is cell-granular: every column paints at a *rounded* offset,
+    // not the raw fractional `h_scroll`. `hit_test` / `column_hit` do no
+    // rounding of their own — they trust `DataTableLayout::h_scroll` to
+    // already equal what was painted — so this must be rounded here, once,
+    // before the layout is handed back to callers for hit-testing.
     layout.h_scroll = table.h_scroll.round();
     layout
 }
@@ -179,9 +171,7 @@ pub fn draw_data_table(
 
             // Column separator on the right edge (skip last column) —
             // drawn regardless of whether this cell has text, mirroring
-            // the header separator. Body rows previously drew none at
-            // all, so adjacent cells butted directly together (#516
-            // defect 2).
+            // the header separator.
             if col_idx + 1 < table.columns.len() {
                 let sep_cx = col_x_raw + col_w as i32 - 1;
                 if sep_cx >= area.x as i32 && sep_cx < (area.x + area.width) as i32 {
@@ -207,10 +197,7 @@ pub fn draw_data_table(
             // Reserve one cell for the separator (except on the last
             // column) — the same `usable_w` term the header already
             // uses — so an over-long body cell is clipped at its own
-            // column boundary instead of painting across its neighbours
-            // (#516 defect 1: this was previously clipped only to the
-            // table's right edge, so it interleaved with every column
-            // to its right).
+            // column boundary instead of painting across its neighbours.
             let usable_w: u16 = if col_idx + 1 < table.columns.len() {
                 col_w.saturating_sub(1)
             } else {
@@ -391,8 +378,7 @@ mod tests {
 
     /// Char-cell index of `needle`'s first occurrence in `line` — unlike
     /// `str::find`, which returns a *byte* offset and desyncs from the
-    /// screen column as soon as a row contains a multi-byte glyph (e.g.
-    /// the `'│'` separator, #516 defect 2).
+    /// screen column as soon as a row contains a multi-byte glyph.
     fn find_char_pos(line: &str, needle: &str) -> Option<usize> {
         let chars: Vec<char> = line.chars().collect();
         let needle: Vec<char> = needle.chars().collect();
@@ -504,12 +490,9 @@ mod tests {
         );
     }
 
-    // ── #516 defect 1 & 2: body clipping, ellipsis, body separators ─────
-
     #[test]
     fn body_rows_draw_column_separator_at_same_x_as_header() {
-        // Previously `'│'` was only drawn in the header loop; body rows
-        // had none at all, so adjacent cells butted directly together.
+        // Column separator is drawn in body rows at the same position as
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
@@ -561,12 +544,7 @@ mod tests {
 
     #[test]
     fn body_cell_wider_than_column_is_clipped_and_does_not_bleed_into_neighbour() {
-        // The core regression: an over-long *middle* column previously
-        // painted straight across every column to its right —
-        // interleaving, not truncation — because the body loop only
-        // clipped to the table's right edge (`area.x + area.width`),
-        // never to the column's own boundary the header loop already
-        // used.
+        // An over-long column cell is clipped to its own boundary, not to
         let table = DataTable {
             id: WidgetId::new("clip-test"),
             columns: vec![
@@ -655,7 +633,7 @@ mod tests {
         assert_eq!(hit, DataTableHit::Header { col: 1 });
     }
 
-    /// LESSONS.md non-zero-origin regression guard (quadraui#494):
+    /// LESSONS.md non-zero-origin regression guard:
     /// `data_table_layout` never reads `area.x`/`area.y` (see its doc
     /// comment) — it, and therefore `hit_test`, is table-**local**, unlike
     /// most of this batch's other layout fns which bake the origin in.
@@ -695,7 +673,7 @@ mod tests {
     }
 
     /// Non-zero-origin sibling of `paint_click_round_trip_row` — see
-    /// `paint_click_round_trip_header_at_nonzero_origin` (quadraui#494).
+    /// `paint_click_round_trip_header_at_nonzero_origin`.
     #[test]
     fn paint_click_round_trip_row_at_nonzero_origin() {
         let table = make_table();
@@ -716,7 +694,7 @@ mod tests {
     /// `tui/activity_bar.rs`'s `hit_regions_do_not_move_when_the_bar_does`:
     /// the resolved column bounds must be byte-for-byte identical no matter
     /// where `area` sits on screen, since `data_table_layout` is table-local
-    /// by construction (quadraui#494).
+    /// by construction.
     #[test]
     fn column_bounds_do_not_move_when_the_table_does() {
         let table = make_table();
@@ -819,9 +797,9 @@ mod tests {
             .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
             .collect();
         // Char-cell position, not byte offset: `str::find` returns a byte
-        // index, and body rows now paint a `'│'` separator (#516 defect
-        // 2) which is 3 bytes but exactly 1 cell — a byte-offset
-        // comparison would fail even though the two cells line up.
+        // index, and body rows now paint a `'│'` separator which is 3 bytes
+        // but exactly 1 cell — a byte-offset comparison would fail even
+        // though the two cells line up.
         let footer_pos = find_char_pos(&footer_line, "4d").expect("footer total painted");
         let body_pos = find_char_pos(&body_line, "3d").expect("body cell painted");
         assert_eq!(
@@ -858,8 +836,8 @@ mod tests {
 
     #[test]
     fn none_footer_body_unaffected() {
-        // Regression guard (#432 req 5): with `footer: None`, the last
-        // paintable row is still a body row, not blank footer space.
+        // With `footer: None`, the last paintable row is still a body row,
+        // not blank footer space.
         let table = make_scrolling_table(3);
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
@@ -873,8 +851,6 @@ mod tests {
             "row 2 should paint normally, got: {row2}"
         );
     }
-
-    // ── #550: paint/click round-trip under horizontal scrolling ────────
 
     /// A table laid out wider than its viewport, so `h_scroll` is
     /// genuinely drivable: 4 × `Fixed(12.0)` columns (48 content cells)
@@ -912,10 +888,10 @@ mod tests {
         }
     }
 
-    /// The core #550 round-trip: whatever header title the rasteriser
-    /// paints at a given screen cell, hit-testing that cell must name the
-    /// same column — at every scroll offset, including one large enough
-    /// to push the first column fully off-screen.
+    /// Whatever header title the rasteriser paints at a given screen cell,
+    /// hit-testing that cell must name the same column — at every scroll
+    /// offset, including one large enough to push the first column fully
+    /// off-screen.
     #[test]
     fn h_scrolled_header_click_resolves_to_the_painted_column() {
         let area = Rect::new(0, 0, 24, 6);
@@ -1000,22 +976,13 @@ mod tests {
         }
     }
 
-    // ── #550 round 2: raw integer pointer coordinates, fractional h_scroll ──
-    //
-    // Every test above (and the primitive-layer sweep in
-    // `primitives::data_table::tests`) drives `hit_test` with cell-centre
-    // coordinates (`cell as f32 + 0.5`). Real TUI pointer input is never
-    // that: `tui::events` builds it as
-    // `Point::new(event.column as f32, event.row as f32)` — a raw
-    // integer cell index. The two only coincide when `h_scroll`'s
-    // fractional part is `< 0.5`; above that, painting rounds up a full
-    // cell while a `+ 0.5` click coordinate still lands inside the
-    // "old" rounding bucket and hides the gap. These tests use raw
-    // integer `x`, matching real input, at deliberately fractional
-    // `h_scroll` values whose fractional part is `>= 0.5`.
+    // TUI pointer input is a raw integer cell index (`Point::new(event.column as f32,
+    // event.row as f32)`), not cell-centre coordinates. Painting rounds fractional
+    // `h_scroll` values; these tests use raw integer `x` at deliberately fractional
+    // `h_scroll` values whose fractional part is `>= 0.5` to verify the layout stays
+    // consistent across rounding.
 
-    /// Exactly the geometry from the #550 round-2 review: 4 ×
-    /// `Fixed(30.0)` columns (content boundaries 0/30/60/90/120) inside a
+    /// 4 × `Fixed(30.0)` columns (content boundaries 0/30/60/90/120) inside a
     /// 60-wide viewport.
     fn make_wide_hscroll_table() -> DataTable {
         let titles = ["Alpha", "Bravo", "Charlie", "Delta"];
@@ -1052,14 +1019,10 @@ mod tests {
 
     #[test]
     fn raw_integer_click_at_fractional_h_scroll_hits_the_painted_column() {
-        // The exact repro from the #550 round-2 review: h_scroll = 15.6
-        // → h_off = round(15.6) = 16. The renderer paints column c1
-        // (content [30,60)) at screen [14,44). A real click at integer
-        // screen x=14 is squarely on c1 as painted, and `column_hit` —
-        // the divider-agnostic "which column is painted here" query — is
-        // the API the review's repro exercises directly (it has no
-        // resize-grab zone to land in, unlike `hit_test`'s header
-        // branch; see the next test for that case).
+        // At h_scroll = 15.6, h_off = round(15.6) = 16. The renderer paints column c1
+        // (content [30,60)) at screen [14,44). A real click at integer screen x=14 is
+        // squarely on c1 as painted, and `column_hit` (the divider-agnostic
+        // "which column is painted here" query) resolves it correctly.
         let area = Rect::new(0, 0, 60, 3);
         let mut table = make_wide_hscroll_table();
         table.h_scroll = 15.6;
@@ -1120,16 +1083,9 @@ mod tests {
 
     #[test]
     fn raw_integer_header_click_at_fractional_h_scroll_does_not_silently_arm_a_resize_drag() {
-        // The header-click half of the same repro, at several fractional
-        // offsets whose fractional part is >= 0.5: the residual always
-        // falls inside DIVIDER_GRAB_PX of *some* boundary (by
-        // construction — see the module doc), so per #550's own
-        // analysis this resolves to `HeaderDivider`, not a wrong
-        // `Header`. This test pins that this is the ONLY acceptable
-        // non-exact-header outcome — never a header for a different,
-        // wrong column (the original defect: a sort click silently
-        // hitting the wrong column instead of silently arming a
-        // resize-drag).
+        // At fractional offsets whose fractional part is >= 0.5, the residual always
+        // falls inside DIVIDER_GRAB_PX of some boundary, so the header click resolves
+        // to `HeaderDivider` rather than a wrong `Header` column.
         let area = Rect::new(0, 0, 60, 3);
         for h_scroll in [15.6_f32, 45.7, 75.9] {
             let mut table = make_wide_hscroll_table();

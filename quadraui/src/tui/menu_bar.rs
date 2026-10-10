@@ -70,12 +70,8 @@ pub fn draw_menu_bar(buf: &mut Buffer, area: Rect, bar: &MenuBar, theme: &Theme)
         // `vi.bounds.x` is already absolute — `tui_menu_bar_layout` passes
         // `bounds.x = area.x` into `MenuBar::layout`, which starts its
         // internal cursor at `bounds.x`, so item bounds already carry the
-        // bar's origin. Adding `area.x` again here double-counted it,
-        // invisibly at `area.x == 0` (every existing test) and shifting
-        // painted glyphs away from their own hit-test bounds at any other
-        // origin — the LESSONS.md "layout helpers must return coords in
-        // the same frame across backends" bug class. Found via the
-        // quadraui#494 non-zero-origin regression test.
+        // bar's origin. The painted glyph position must match the hit-test
+        // bounds, both in the same absolute frame.
         let start_x = vi.bounds.x.round() as u16;
         let end_x = start_x + vi.bounds.width.round() as u16;
 
@@ -114,9 +110,7 @@ fn display_width(label: &str) -> usize {
 }
 
 /// Index (in display chars, skipping `&`) of the Alt-activation char.
-/// The char after `&` — or `None` if the label carries no `&` at all
-/// (quadraui#625: this used to fall back to char 0 unconditionally,
-/// so a label could never opt out of the underline).
+/// The char after `&` — or `None` if the label carries no `&` at all.
 fn alt_char_index(label: &str) -> Option<usize> {
     for (i, ch) in label.chars().enumerate() {
         if ch == '&' {
@@ -165,13 +159,10 @@ mod tests {
     }
 
     /// Shared body for the paint↔click round trip, run at both the origin
-    /// and a non-zero `area` origin (quadraui#494 / LESSONS.md "Layout
-    /// helpers must return coords in the same frame across backends").
-    /// `tui_menu_bar_layout` bakes `area.x`/`area.y` straight into the
-    /// returned bounds (absolute frame, matching the GTK/macOS twins), so
-    /// unlike `activity_bar.rs`'s bar-relative hit regions, both the
-    /// painted glyph position AND the `hit_test` coordinates here must
-    /// shift together with the origin.
+    /// and a non-zero `area` origin. `tui_menu_bar_layout` bakes `area.x`/
+    /// `area.y` straight into the returned bounds (absolute frame), so both
+    /// the painted glyph position and the `hit_test` coordinates must shift
+    /// together with the origin.
     fn paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 40, 1);
         let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 40, origin_y + 1));
@@ -209,7 +200,7 @@ mod tests {
         paint_and_click_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494): same round trip,
+    /// Non-zero-origin regression guard: same round trip,
     /// painted at a shifted `area` origin — proves `hit_test` still
     /// resolves against the absolute (not local) bounds `draw_menu_bar`
     /// painted into.
@@ -300,11 +291,8 @@ mod tests {
         );
     }
 
-    /// quadraui#625: a label with no `&` at all used to fall back to
-    /// underlining char 0 unconditionally (`alt_char_index`'s old
-    /// `0` fallback), so a label could never opt out of the
-    /// underline. Confirms the fix: no cell in the item's row is
-    /// underlined, and the label paints unchanged otherwise.
+    /// A label with no `&` is never underlined. Confirms no cell in the
+    /// item's row is underlined, and the label paints unchanged otherwise.
     #[test]
     fn no_ampersand_label_is_never_underlined() {
         let area = Rect::new(0, 0, 40, 1);

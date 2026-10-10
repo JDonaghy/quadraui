@@ -147,12 +147,10 @@ mod tests {
     }
 
     /// Shared body for the title-bar paint↔click round trip, run at both
-    /// the origin and a non-zero `area` origin (quadraui#494 / LESSONS.md
-    /// "Layout helpers must return coords in the same frame across
-    /// backends"). `tui_panel_layout` bakes `area.x`/`area.y` straight
-    /// into the returned bounds (absolute frame, matching the GTK/macOS
-    /// twins), so both the painted glyph position AND the `hit_test`
-    /// coordinates must shift together with the origin.
+    /// the origin and a non-zero `area` origin. `tui_panel_layout` bakes
+    /// `area.x`/`area.y` straight into the returned bounds (absolute frame,
+    /// matching the GTK/macOS twins), so both the painted glyph position
+    /// AND the `hit_test` coordinates must shift together with the origin.
     fn title_bar_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 30, 10);
         let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 30, origin_y + 10));
@@ -173,7 +171,7 @@ mod tests {
         title_bar_paint_and_click_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494): same round trip,
+    /// Non-zero-origin regression guard: same round trip,
     /// painted at a shifted `area` origin.
     #[test]
     fn title_bar_paint_and_click_round_trip_at_nonzero_origin() {
@@ -209,7 +207,7 @@ mod tests {
         action_button_paint_and_click_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494).
+    /// Non-zero-origin regression guard.
     #[test]
     fn action_button_paint_and_click_round_trip_at_nonzero_origin() {
         action_button_paint_and_click_round_trip_at(7, 13);
@@ -237,7 +235,7 @@ mod tests {
         content_region_paint_and_click_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494).
+    /// Non-zero-origin regression guard.
     #[test]
     fn content_region_paint_and_click_round_trip_at_nonzero_origin() {
         content_region_paint_and_click_round_trip_at(7, 13);

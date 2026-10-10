@@ -146,7 +146,7 @@ pub fn draw_board(buf: &mut Buffer, area: Rect, model: &BoardModel, theme: &Them
             if bh >= 2 {
                 let title_row = by + 1;
                 let inner_w = bw.saturating_sub(2) as usize;
-                // Build label prefix from `labels` (e.g. "#362 ").
+                // Build label prefix from card labels (e.g. "#362 ").
                 let prefix: String = if card.labels.is_empty() {
                     String::new()
                 } else {
@@ -456,7 +456,7 @@ mod tests {
     /// threading), so a click must resolve correctly at a non-zero origin
     /// too — not just at `(0, 0)`, where the LESSONS.md "layout helpers
     /// must return coords in the same frame across backends" bug class is
-    /// invisible (quadraui#494).
+    /// invisible.
     fn hit_test_card_round_trip_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 60, 10);
         let mut buf = Buffer::empty(area);
@@ -553,11 +553,10 @@ mod tests {
 
     #[test]
     fn multi_char_badge_labels_do_not_corrupt_neighbouring_cells() {
-        // Regression test for #476: paint_badges must track each badge's
-        // actual rendered width instead of assuming a fixed "icon + 1
-        // char" stride (a leftover from when `label` was always exactly
-        // one character), or a later badge's icon paints over an earlier
-        // multi-char label's trailing cells.
+        // paint_badges must track each badge's actual rendered width
+        // instead of assuming a fixed "icon + 1 char" stride, or a
+        // later badge's icon paints over an earlier multi-char label's
+        // trailing cells.
         let area = Rect::new(0, 0, 60, 10);
         let mut buf = Buffer::empty(area);
         let mut model = make_model();

@@ -2,11 +2,11 @@
 //!
 //! Iterates `cells[row][col]`, writing styled characters into the
 //! ratatui buffer using [`crate::terminal_style::resolve_cell_style`] —
-//! the overlay ladder shared with the GTK and macOS rasterisers (#500):
+//! the overlay ladder shared with the GTK and macOS rasterisers:
 //! cursor inverts fg/bg, selection uses `theme.selection_bg`, find-match
 //! and find-active use the highlight colours on [`Theme`].
 //!
-//! # Cursor shape (quadraui#338, best-effort)
+//! # Cursor shape (best-effort)
 //!
 //! [`crate::primitives::terminal::TerminalCursorShape::Block`] is painted entirely by
 //! [`resolve_cell_style`]'s colour invert — no extra work here.
@@ -63,7 +63,7 @@ pub fn draw_terminal(buf: &mut Buffer, area: Rect, term: &Terminal, theme: &Them
             // e.g. an accent) rather than a single `char` — `set_symbol`
             // (not `set_char`) is what lets ratatui paint the whole
             // cluster as one glyph instead of silently dropping every
-            // codepoint after the first (quadraui#337). ratatui ≥ 0.30
+            // codepoint after the first. ratatui ≥ 0.30
             // debug_asserts on ASCII control chars in cell symbols, so
             // any control byte in the cluster falls back to a plain
             // space, matching the old single-`char` behaviour.
@@ -180,10 +180,7 @@ mod tests {
         }
     }
 
-    // ── Cursor shape (quadraui#338, best-effort) ────────────────────────
-
-    /// A `Block` cursor still paints as a full colour invert — this
-    /// rasteriser's pre-#338 default behaviour is unchanged.
+    /// A `Block` cursor paints as a full colour invert.
     #[test]
     fn block_cursor_paints_inverted_with_no_underline() {
         let fg = ratatui_color(Color::rgb(200, 200, 200));

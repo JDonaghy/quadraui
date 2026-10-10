@@ -37,16 +37,15 @@ use crate::theme::Theme;
 use crate::types::WidgetId;
 
 /// Resolve which row within `[area.y, area.y + area.height)` button /
-/// label text paints on, per `valign` (issue #260). TUI's own cell-grid
+/// label text paints on, per `valign`. TUI's own cell-grid
 /// twin of [`crate::primitives::toolbar::valign_offset_y`] — kept
 /// separate because a terminal row is already a quantized unit, so
 /// folding this into the pixel-unit `f32` formula would just re-round
 /// it back.
 ///
-/// `Center`'s formula is the pre-#260 arithmetic, unchanged: for even
-/// heights the row *above* centre wins (matches the pixel backends'
-/// `(slot_height - content_height) / 2.0` integer-truncating the same
-/// way).
+/// `Center`'s formula places text on the row above centre for even
+/// heights, matching the pixel backends' `(slot_height - content_height) / 2.0`
+/// integer-truncating behaviour.
 pub(crate) fn tui_text_row(valign: ToolbarVAlign, area: Rect) -> u16 {
     match valign {
         ToolbarVAlign::Top => area.y,
@@ -131,7 +130,7 @@ pub fn draw_toolbar(
 }
 
 /// [`draw_toolbar`], plus [`ToolbarPaintOptions`]: `options.valign`
-/// (issue #260) resolves which row button/label text paints on when
+/// resolves which row button/label text paints on when
 /// `area.height > 1` — see [`tui_text_row`].
 pub fn draw_toolbar_with_options(
     buf: &mut Buffer,
@@ -143,12 +142,8 @@ pub fn draw_toolbar_with_options(
     options: ToolbarPaintOptions,
 ) -> ToolbarLayout {
     if area.width == 0 || area.height == 0 {
-        // `tui_toolbar_layout` forces `bar_height` to `area.height.max(1)`
-        // (so single-row callers don't have to special-case it), which
-        // means a `height == 0` area would otherwise still get back a
-        // fully populated, clickable layout for a row that was never
-        // painted — the same footgun as quadraui#649's command-center
-        // bug. Return an empty layout instead of computing one.
+        // A zero-height area should not produce clickable buttons for a row
+        // that was never painted; return an empty layout instead.
         return ToolbarLayout::empty(crate::event::Rect::new(
             area.x as f32,
             area.y as f32,
@@ -167,7 +162,7 @@ pub fn draw_toolbar_with_options(
     let active_bg = qc(theme.selected_bg);
     let focus_bg = qc(theme.accent_bg);
 
-    // Resolve the text row per `options.valign` (issue #260). On a
+    // Resolve the text row per `options.valign`. On a
     // 1-row slot every variant resolves to `area.y`.
     let text_row = tui_text_row(options.valign, area);
 
@@ -334,7 +329,7 @@ mod tests {
     }
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
-    // must return coords in the same frame across backends" (quadraui#494).
+    // must return coords in the same frame across backends".
     // `tui_toolbar_layout` bakes `area.x`/`area.y` straight into
     // `bar.layout`'s returned bounds (absolute frame), so the regression
     // guard is a full paint+hit_test round trip re-run at a non-zero
@@ -378,9 +373,8 @@ mod tests {
         click_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md): the
-    /// same click round trip must hold when the toolbar isn't painted at
-    /// the screen origin.
+    /// Verify that the same click round trip holds when the toolbar isn't
+    /// painted at the screen origin.
     #[test]
     fn click_round_trip_through_layout_at_nonzero_origin() {
         click_round_trip_at(7, 13);
@@ -453,14 +447,10 @@ mod tests {
         assert_eq!(layout.hit_test(0.0, 0.0), ToolbarHit::Empty);
     }
 
-    /// Issue #649 (same shape as the `CommandCenter` bug it names):
-    /// `tui_toolbar_layout` forces `bar_height` to `area.height.max(1)`,
-    /// so a `height == 0` area used to still come back with real,
-    /// clickable `visible_items` — a row that was never painted, but
-    /// whose action buttons hit-tested as if it had been. A host that
-    /// hides a toolbar by zeroing its height (rather than not calling
-    /// `draw_toolbar` at all) would inherit an invisible-but-clickable
-    /// button.
+    /// A zero-height area must not produce hit-testable buttons. Even though
+    /// `tui_toolbar_layout` forces `bar_height` to `area.height.max(1)`, a
+    /// `height == 0` area should return an empty layout with no clickable
+    /// buttons, not invisible-but-clickable buttons for a row that was never painted.
     #[test]
     fn zero_height_area_has_no_hit_testable_buttons() {
         let buf_area = Rect::new(0, 0, 10, 1);
@@ -518,9 +508,6 @@ mod tests {
     #[test]
     fn multi_row_center_valign_centres_button_text_vertically() {
         // Height 3, `ToolbarVAlign::Center` → text on row 1 (middle).
-        // Pre-#260 this was the *only* behaviour `draw_toolbar` had;
-        // post-#260 it's the explicit opt-in (the default changed to
-        // `Top` — see `multi_row_default_valign_is_top` below).
         let area = Rect::new(0, 0, 12, 3);
         let mut buf = Buffer::empty(area);
         let bar = Toolbar {
@@ -541,14 +528,10 @@ mod tests {
         assert_ne!(cell_char(&buf, 0, 2), '[');
     }
 
-    // ── #260: `ToolbarVAlign` ────────────────────────────────────────────
-
     #[test]
     fn multi_row_default_valign_is_top() {
         // `ToolbarPaintOptions::default()` → `ToolbarVAlign::Top` → text
-        // on row 0, padding below (issue #260's reported complaint,
-        // now the documented default rather than an arithmetic
-        // accident).
+        // on row 0, padding below (the default).
         let area = Rect::new(0, 0, 12, 3);
         let mut buf = Buffer::empty(area);
         let bar = Toolbar {
@@ -565,10 +548,7 @@ mod tests {
 
     #[test]
     fn multi_row_bottom_valign_puts_text_on_last_row() {
-        // `ToolbarVAlign::Bottom` → text on the last row, padding
-        // above — the shape issue #260's Adoption section names for a
-        // sidebar action bar sitting flush against the content below
-        // it.
+        // `ToolbarVAlign::Bottom` → text on the last row, padding above.
         let area = Rect::new(0, 0, 12, 3);
         let mut buf = Buffer::empty(area);
         let bar = Toolbar {
@@ -620,13 +600,7 @@ mod tests {
 
     #[test]
     fn toolbar_valign_defaults_to_top_when_omitted_from_serde() {
-        // Round-trip serde test (issue #260's test plan): an object
-        // that omits `valign` entirely must deserialise to `Top`, not
-        // an error or some other variant. `ToolbarVAlign` isn't
-        // embedded in `Toolbar` itself (see `ToolbarPaintOptions`'s
-        // doc for why), so this round-trips the enum directly via a
-        // throwaway wrapper — the same shape a future serializable
-        // paint-options host would use.
+        // An object that omits `valign` must deserialise to `Top`.
         #[derive(serde::Deserialize)]
         struct Wrapper {
             #[serde(default)]

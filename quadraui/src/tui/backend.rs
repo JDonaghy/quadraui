@@ -30,7 +30,7 @@
 //! Drag-state observation is normally a backend implementation
 //! detail — only `crate::dispatch::*` needs to inspect it directly.
 //! It's still reachable via [`crate::Backend::drag_state_handle`]
-//! (#467, #699, #704) so `&mut dyn Backend` / `&dyn Backend`
+//! so `&mut dyn Backend` / `&dyn Backend`
 //! consumers (e.g. a `ShellApp`'s mouse-dispatch logic) can reach it
 //! without downcasting to the concrete backend.
 //!
@@ -57,10 +57,10 @@ use crate::{
     TerminalCellSize, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
 };
 // `KeyBinding`/`DragTarget`/`AcceleratorScope` are only referenced by
-// `#[cfg(test)]` code below — `route_pointer` (issue #1088) absorbed
+// `#[cfg(test)]` code below — `route_pointer` absorbed
 // `apply_dispatch`'s own `DragTarget::TextSelection` match, and
 // `register_accelerator`/`match_keypress` moved their `AcceleratorScope`
-// check into `BackendCore` (#1090) — so this file's non-test code no
+// check into `BackendCore` — so this file's non-test code no
 // longer names either type directly. Gate the import so a non-test
 // build doesn't flag it as unused.
 #[cfg(test)]
@@ -92,11 +92,11 @@ pub struct TuiBackend {
     /// `Rc<RefCell<>>` (not a plain field) so [`Backend::modal_stack_handle`]
     /// can hand back a handle that outlives any single `&mut self` borrow
     /// — the same shape `GtkBackend` uses for its own callback-driven
-    /// access (quadraui#699).
+    /// access.
     modal_stack: Rc<RefCell<ModalStack>>,
     /// See `modal_stack`'s doc comment — same rationale.
     drag_state: Rc<RefCell<DragState>>,
-    /// Accelerator registry + text-selection bookkeeping (#1090) — see
+    /// Accelerator registry + text-selection bookkeeping — see
     /// [`crate::backend_core::BackendCore`]'s module doc. Replaces the
     /// formerly TUI-local `accelerators`/`parsed_accelerators` fields
     /// verbatim, plus (below) the formerly separate `text_selection`
@@ -114,11 +114,7 @@ pub struct TuiBackend {
     current_theme: crate::Theme,
     /// Whether the rasterisers should use Nerd Font glyphs (`true`)
     /// or ASCII fallbacks (`false`). Apps set this from their own
-    /// settings via [`Self::set_nerd_fonts`]; defaults to `false` —
-    /// see that trait method's doc for why every backend now agrees
-    /// on this default (issue #683; was `true` here and `false` on
-    /// GTK, so the same app showed a different icon variant depending
-    /// on which backend it launched under).
+    /// settings via [`Self::set_nerd_fonts`]; defaults to `false`.
     nerd_fonts_enabled: bool,
     double_click: super::events::DoubleClickDetector,
     /// Whether [`Self::translate_injected`] should run raw `MouseDown`
@@ -126,7 +122,7 @@ pub struct TuiBackend {
     /// `true` (matches production `poll_events`/`wait_events`, which
     /// always fold). [`super::testing::TuiDriver::set_double_click_folding`]
     /// flips this to `false` so a test that means two distinct clicks
-    /// (quadraui#592) isn't at the mercy of `Instant::now()` landing two
+    /// isn't at the mercy of `Instant::now()` landing two
     /// calls inside the 400ms window under load. Only `translate_injected`
     /// (the driver's path) honours this — `poll_events`/`wait_events`
     /// (the live terminal runner) always fold, since a real user's two
@@ -136,7 +132,7 @@ pub struct TuiBackend {
     /// [`crate::Backend::register_zone`]. Cleared at the start of each
     /// frame by [`Self::begin_frame`], mirroring `text_regions`. Read by
     /// [`crate::tui::testing::TuiDriver::inventory`] to populate
-    /// [`crate::testing::FrameInventory::zones`] (quadraui#490).
+    /// [`crate::testing::FrameInventory::zones`].
     zones: Vec<ZoneRec>,
     /// Text extracted from the last rendered buffer for the active
     /// selection. Populated by `apply_selection_highlight` (which has
@@ -154,8 +150,7 @@ pub struct TuiBackend {
     focused_activity_bar: Option<WidgetId>,
     /// Screen-space `(x, y)` for `Frame::set_cursor_position`, cached from
     /// the most recent [`Backend::draw_editor`] call **that reported a
-    /// `Some` position** this frame (quadraui#466, tightened by
-    /// quadraui#1002).
+    /// `Some` position** this frame.
     ///
     /// `draw_editor` only has access to the ratatui buffer, not the `Frame`
     /// itself (see [`Self::current_frame_mut`]'s note on why trait methods
@@ -170,7 +165,7 @@ pub struct TuiBackend {
     /// lifecycle as `text_regions`) so a frame that doesn't paint an editor
     /// doesn't inherit a stale cursor position from the previous one. Within
     /// a frame, the `draw_editor` call site only overwrites this on a
-    /// `Some` result (quadraui#1002) — a frame can call `draw_editor` once
+    /// `Some` result — a frame can call `draw_editor` once
     /// per window (e.g. a split), and only the active window ever reports
     /// `Some`; an inactive window's later, cursor-less call must not
     /// clobber an active window's `Some` recorded earlier in the same
@@ -189,7 +184,7 @@ pub struct TuiBackend {
     /// back the paired rect so callers can shift into absolute
     /// screen-space coordinates. Read by
     /// [`crate::tui::testing::TuiDriver::tab_center`] /
-    /// [`crate::tui::testing::TuiDriver::tab_close_center`] (quadraui#594)
+    /// [`crate::tui::testing::TuiDriver::tab_close_center`]
     /// — every tab paints the same close glyph, so `find` can't
     /// disambiguate tab 3's target from tab 0's the way it can for
     /// uniquely-labeled text.
@@ -199,21 +194,21 @@ pub struct TuiBackend {
     /// environment (`COLORTERM`/`TERM`) at construction time via
     /// [`super::caps::detect_color_depth`]; overridable via
     /// [`Self::set_color_depth`] for tests and hosts that already know
-    /// their terminal's real capability (quadraui#826).
+    /// their terminal's real capability.
     color_depth: ColorDepth,
     /// Whether the kitty keyboard protocol is actually active — seeded
     /// from [`super::caps::detect_kitty_keyboard`]'s cheap environment
     /// heuristic at construction time, then overwritten by
     /// [`super::run::run`] via [`Self::set_kitty_keyboard`] once it has
     /// [`super::caps::probe_kitty_keyboard`]'s live, authoritative answer
-    /// (quadraui#827). Exposed to apps via
+    ///. Exposed to apps via
     /// [`crate::backend::BackendCaps::kitty_keyboard`] — see that field's
     /// doc for why this exists.
     kitty_keyboard: bool,
     /// Whether mouse reporting is actually active for this session.
     /// Defaults to `true`; [`super::run::run_with`] sets this to `false`
     /// when the caller opts into `RunConfig { mouse: false, .. }` — the
-    /// "capture refused" `no-mouse` mode (quadraui#828) — so the terminal
+    /// "capture refused" `no-mouse` mode — so the terminal
     /// never gets `EnableMouseCapture` and every Tier-1 gesture must have
     /// a key path instead.
     ///
@@ -229,7 +224,7 @@ pub struct TuiBackend {
     /// [`Self::mouse_enabled`].
     mouse_enabled: bool,
     /// Whether SGR-Pixels mouse mode (`?1016h`) is actually active for this
-    /// session (quadraui#1048) — seeded from
+    /// session — seeded from
     /// [`super::caps::detect_sgr_pixel_mouse`]'s cheap environment
     /// heuristic at construction time, then overwritten by
     /// [`super::run::run_with`] via [`Self::set_sgr_pixel_mouse`] once it
@@ -243,7 +238,7 @@ pub struct TuiBackend {
     sgr_pixel_mouse: bool,
     /// The pixel size of one terminal cell, used to divide a SGR-Pixels
     /// mouse report's raw pixel `column`/`row` back into a fractional cell
-    /// coordinate (quadraui#1048) — see
+    /// coordinate — see
     /// [`super::events::crossterm_mouse_to_uievent_scaled`]. Defaults to
     /// `TerminalCellSize::new(1.0, 1.0)`, the identity divisor that keeps
     /// every coordinate byte-identical to cell-mode's whole-cell values
@@ -265,7 +260,7 @@ pub struct TuiBackend {
     /// cell's `underline_color` back to `Reset` each frame, instead of
     /// leaving behind the colour ConPTY misparses as blink/faint.
     underline_color_supported: bool,
-    /// Single owner of keyboard focus (issue #830) — see
+    /// Single owner of keyboard focus — see
     /// [`crate::focus`]'s module doc. Mutated only by the shared
     /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
     /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
@@ -287,7 +282,7 @@ pub struct TuiBackend {
     /// ceiling of latency instead of 16ms. A documented, deliberate
     /// tradeoff — see [`Self::request_frame_in`]'s doc.
     user_events: std::sync::Arc<crate::runtime::UserEventQueue>,
-    /// Pending [`Self::request_frame_in`] deadline (issue #832) — see
+    /// Pending [`Self::request_frame_in`] deadline — see
     /// [`crate::runtime::FrameScheduler`]'s doc for why TUI needs this
     /// where GTK/macOS/Windows instead arm a real native timer directly
     /// from `request_frame_in`. Consulted by the live runner
@@ -301,7 +296,7 @@ pub struct TuiBackend {
     /// read it back through [`Self::frame_requests`] /
     /// [`Self::pending_frame_delay`].
     frame_scheduler: crate::runtime::FrameScheduler,
-    /// Pending [`Backend::request_full_repaint`] request (issue #1037) —
+    /// Pending [`Backend::request_full_repaint`] request —
     /// set by that method, consumed once by [`Self::take_full_repaint_requested`]
     /// right before the next frame paints. See that method's doc for the
     /// two call sites that consume it: the live runner's
@@ -366,7 +361,7 @@ impl TuiBackend {
     }
 
     /// How long the run loop may block in [`Backend::wait_events`] before
-    /// it needs to re-check state (quadraui#832) — the pending
+    /// it needs to re-check state — the pending
     /// [`Backend::request_frame_in`] deadline's remaining time, clamped to
     /// `ceiling`, or `ceiling` itself if nothing is pending. See
     /// [`crate::runtime::FrameScheduler::poll_timeout`].
@@ -383,7 +378,7 @@ impl TuiBackend {
     }
 
     /// Consume the pending [`Backend::request_full_repaint`] request
-    /// (issue #1037), if any — returns `true` and clears it, or `false`
+    ///, if any — returns `true` and clears it, or `false`
     /// if nothing was requested since the last call.
     ///
     /// Call once per loop iteration, right before painting the next
@@ -418,7 +413,7 @@ impl TuiBackend {
     }
 
     /// How many times [`Backend::request_frame_in`] has been called on
-    /// this backend since it was constructed (quadraui#832).
+    /// this backend since it was constructed.
     ///
     /// Real hosts never need this — it exists so a headless
     /// [`crate::tui::testing::TuiDriver`] test can assert on an app's
@@ -438,7 +433,7 @@ impl TuiBackend {
     }
 
     /// Time remaining until the pending [`Backend::request_frame_in`]
-    /// deadline, or `None` when no frame is scheduled (quadraui#832).
+    /// deadline, or `None` when no frame is scheduled.
     ///
     /// The companion to [`Self::frame_requests`]: that one proves *how
     /// often* an app asked, this one proves *what interval* it asked
@@ -452,10 +447,9 @@ impl TuiBackend {
 
     /// Override the detected colour depth. Real hosts never need this —
     /// [`Self::new`] already detects it from the environment — but tests
-    /// that want to force a specific SGR shape (quadraui#826's Tier-3 pty
-    /// fixture, or any in-process test asserting quantised output) call
-    /// this to pin the value instead of depending on the process's real
-    /// `TERM`/`COLORTERM`.
+    /// that want to force a specific SGR shape or any in-process test
+    /// asserting quantised output call this to pin the value instead of
+    /// depending on the process's real `TERM`/`COLORTERM`.
     pub fn set_color_depth(&mut self, depth: ColorDepth) {
         self.color_depth = depth;
     }
@@ -473,9 +467,7 @@ impl TuiBackend {
     /// [`super::caps::probe_kitty_keyboard`]'s live answer, overwriting
     /// the environment-only guess [`Self::new`] seeded it with. Also the
     /// hook a test (or a host that already knows its terminal's real
-    /// capability) uses to pin the value without touching a real terminal
-    /// (quadraui#827's Tier-3 pty fixture, or any in-process test
-    /// asserting the flag reaches an app).
+    /// capability) uses to pin the value without touching a real terminal.
     pub fn set_kitty_keyboard(&mut self, supported: bool) {
         self.kitty_keyboard = supported;
     }
@@ -483,7 +475,7 @@ impl TuiBackend {
     /// Drain pending [`crate::UiEvent::User`] payloads without touching
     /// crossterm — the same [`Self::user_events`] queue [`Backend::poll_events`]/
     /// [`Backend::wait_events`] fold in, exposed standalone for
-    /// [`super::testing::TuiDriver`] (issue #831). The driver runs against
+    /// [`super::testing::TuiDriver`]. The driver runs against
     /// ratatui's `TestBackend`, never a live terminal, so it has no
     /// crossterm event source to poll for a background-thread wake to ride
     /// in on — this lets it observe the wake directly instead.
@@ -504,7 +496,7 @@ impl TuiBackend {
     /// [`super::run::run_with`] can call
     /// [`super::services::TuiPlatformServices::set_dialog_surface`] —
     /// the `&dyn PlatformServices` [`Backend::services`] returns can't
-    /// reach that inherent method (issue #965). Mirrors
+    /// reach that inherent method. Mirrors
     /// `GtkPlatformServices::gtk_clipboard`'s reason for existing, minus
     /// the `#[cfg(test)]` gate: this one is called from production, not
     /// only tests.
@@ -514,10 +506,9 @@ impl TuiBackend {
 
     /// Override whether this session has mouse reporting.
     /// [`super::run::run_with`] calls this with `false` when the caller
-    /// opts into `no-mouse` mode (`RunConfig { mouse: false, .. }`,
-    /// quadraui#828), so the terminal is never asked to enable mouse
-    /// capture. Also the hook a test uses to simulate "capture refused"
-    /// without a real terminal.
+    /// opts into `no-mouse` mode (`RunConfig { mouse: false, .. }`),
+    /// so the terminal is never asked to enable mouse capture. Also the
+    /// hook a test uses to simulate "capture refused" without a real terminal.
     pub fn set_mouse_enabled(&mut self, enabled: bool) {
         self.mouse_enabled = enabled;
     }
@@ -548,12 +539,11 @@ impl TuiBackend {
     }
 
     /// Override the cell pixel size used to scale SGR-Pixels mouse reports
-    /// back into fractional cell coordinates (quadraui#1048). [`super::run::run_with`]
+    /// back into fractional cell coordinates. [`super::run::run_with`]
     /// calls this from a real `window_size()` query at startup and again on
     /// every settled `Event::Resize` (a font-size change alters pixel
     /// dimensions without changing the grid's row/column count). Also the
-    /// hook a test uses to exercise pixel-mode scaling without a real
-    /// terminal.
+    /// hook a test uses to exercise pixel-mode scaling without a real terminal.
     pub fn set_cell_pixel_size(&mut self, size: TerminalCellSize) {
         self.cell_pixel_size = size;
     }
@@ -662,7 +652,7 @@ impl TuiBackend {
     /// Widget zones registered via [`crate::Backend::register_zone`] during
     /// the current frame. Read by
     /// [`crate::tui::testing::TuiDriver::inventory`] to populate
-    /// [`crate::testing::FrameInventory::zones`] (quadraui#490).
+    /// [`crate::testing::FrameInventory::zones`].
     pub(crate) fn zones(&self) -> &[ZoneRec] {
         &self.zones
     }
@@ -672,7 +662,7 @@ impl TuiBackend {
     /// bar didn't paint this frame. See [`Self::tab_bar_layouts`]'s docs
     /// for the coordinate-space contract. Read by
     /// [`crate::tui::testing::TuiDriver::tab_center`] /
-    /// [`crate::tui::testing::TuiDriver::tab_close_center`] (quadraui#594).
+    /// [`crate::tui::testing::TuiDriver::tab_close_center`].
     pub(crate) fn cached_tab_bar_layout(&self, id: &WidgetId) -> Option<(QRect, &TabBarLayout)> {
         self.tab_bar_layouts
             .get(id)
@@ -683,8 +673,7 @@ impl TuiBackend {
     //
     // The region registry + active-selection state machine, plus the
     // accelerator registry alongside it, live in
-    // [`crate::backend_core::BackendCore`] (#1090, was `#741`'s
-    // TUI-local `text_selection` field before that). Every method below
+    // [`crate::backend_core::BackendCore`]. Every method below
     // except `apply_selection_highlight`/`extract_selection_text`
     // (live-ratatui-buffer extraction, TUI-only — see that module's doc)
     // is a thin delegation.
@@ -771,7 +760,7 @@ impl TuiBackend {
 
         // Cache text before inverting so we read the original cell content.
         // `text_selection_line_range` reports cell-space columns as f32
-        // (issue #504); TUI cells are always whole units, so round-trip
+        //; TUI cells are always whole units, so round-trip
         // through `u16` for buffer indexing.
         let mut lines: Vec<String> = Vec::with_capacity(ranges.len());
         for &(row, col_start, col_end) in &ranges {
@@ -817,7 +806,7 @@ impl TuiBackend {
     /// Called by [`super::run::render_frame`] once per frame, after the
     /// render closure returns but still inside `terminal.draw(|frame| …)`,
     /// so it can apply `frame.set_cursor_position(pos)` — the only place
-    /// with access to the real `Frame` (quadraui#466). "Take" (not a plain
+    /// with access to the real `Frame`. "Take" (not a plain
     /// getter) because the value is frame-scoped: [`Self::begin_frame`]
     /// clears it again before the next `draw_editor` call, so nothing relies
     /// on the value surviving past this one read.
@@ -859,10 +848,8 @@ impl TuiBackend {
 
     /// `WidgetId` of the `ActivityBar` that declared
     /// `is_keyboard_focused = true` during the most recent render pass,
-    /// if any. Added for quadraui#813's `PreprocessBackend` impl to
-    /// mirror `Gtk`/`Mac`/`WinBackend::focused_activity_bar_id` — TUI
-    /// itself never calls this: [`Self::apply_dispatch`] already redirects
-    /// a focused bar's `KeyPressed` to `UiEvent::ActivityBar` one layer
+    /// if any. TUI itself never calls this: [`Self::apply_dispatch`] already
+    /// redirects a focused bar's `KeyPressed` to `UiEvent::ActivityBar` one layer
     /// upstream of `dispatch_event`, so by the time an event reaches
     /// `preprocess_event` a `KeyPressed` on TUI never has a bar focused —
     /// the shared step's `KeyPressed` guard just never matches here. See
@@ -920,20 +907,17 @@ impl TuiBackend {
 
     /// Walk `events` and rewrite any `UiEvent::KeyPressed` whose key +
     /// modifiers match a registered `Global`-scope accelerator into
-    /// `UiEvent::Accelerator(id, modifiers)`. Stage 6's whole point: the
-    /// app dispatches on stable IDs, never on raw key strings, for
-    /// keybindings the user can rebind.
+    /// `UiEvent::Accelerator(id, modifiers)`. Widget- and Mode-scoped
+    /// accelerators are skipped here — the backend doesn't know which widget
+    /// has focus or what mode the app is in. Apps that want those scopes match
+    /// against `KeyPressed` themselves once they have that context.
     ///
-    /// Widget- and Mode-scoped accelerators are skipped here — the
-    /// backend doesn't know which widget has focus or what mode the app
-    /// is in. Apps that want those scopes match against `KeyPressed`
-    /// themselves once they have that context.
     /// Run raw translated events through the dispatch layer so that
     /// `MouseDown` on a text region begins a `TextSelection` drag and
     /// `MouseMoved` (with button held) emits `TextSelectionChanged`.
     ///
     /// `MouseDown`/`MouseMoved`/`MouseUp` all route through
-    /// [`crate::dispatch::route_pointer`] (issue #1088) — the same one
+    /// [`crate::dispatch::route_pointer`] — the same one
     /// pointer-routing sequence `gtk::run`/`macos::run`/`win::run` use, so
     /// this is no longer a fourth from-scratch copy.
     ///
@@ -946,8 +930,7 @@ impl TuiBackend {
     /// scrollbar drags are unaffected (they continue to be handled by
     /// app-side hit-tests as before). The consequence is that the
     /// "scrollbar wins over an overlapping text region" acceptance
-    /// criterion is not enforced in TUI. Tracked as a follow-up issue
-    /// (scrollbar dispatch epic).
+    /// criterion is not enforced in TUI.
     fn apply_dispatch(&mut self, raw: Vec<UiEvent>) -> Vec<UiEvent> {
         let mut out = Vec::with_capacity(raw.len());
         for event in raw {
@@ -1018,7 +1001,7 @@ impl TuiBackend {
     /// Toggle whether [`Self::translate_injected`] folds a `MouseDown`
     /// into a `DoubleClick` when it lands within the detector's time/radius
     /// window of the previous one. Driver-facing knob for
-    /// [`super::testing::TuiDriver::set_double_click_folding`] (quadraui#592)
+    /// [`super::testing::TuiDriver::set_double_click_folding`]
     /// — disable it so a test that dispatches two deliberate single clicks
     /// in immediate succession gets two `MouseDown`s, not a coin-flip on
     /// wall-clock timing.
@@ -1076,9 +1059,8 @@ impl TuiBackend {
                 self.cell_pixel_size,
             )),
             Err(_) => {
-                // Issue #831: even a crossterm read error shouldn't
-                // drop a background wake that arrived in the same
-                // window — still surface anything already queued.
+                // Even a crossterm read error shouldn't drop a background wake that
+                // arrived in the same window — still surface anything already queued.
                 let mut out = Vec::new();
                 self.user_events.drain_into(&mut out);
                 return out;
@@ -1094,7 +1076,7 @@ impl TuiBackend {
                 Err(_) => break,
             }
         }
-        // See `recover_leaked_sgr_mouse_fragments`'s doc (#293).
+        // See `recover_leaked_sgr_mouse_fragments`'s doc.
         let raw = recover_leaked_sgr_mouse_fragments(raw, self.cell_pixel_size);
         let coalesced = coalesce_mouse_moved(raw);
         let mut out = self.apply_dispatch(coalesced);
@@ -1167,9 +1149,8 @@ impl crate::runtime::PreprocessBackend for TuiBackend {
         ev
     }
 
-    /// TUI-only override (quadraui#496's original audit; preserved by
-    /// #813): tolerates a stray Shift and accepts `'C'` (CapsLock) as
-    /// well as `'c'`. Real terminals attach modifier noise to Ctrl-C
+    /// TUI-only override: tolerates a stray Shift and accepts `'C'` (CapsLock)
+    /// as well as `'c'`. Real terminals attach modifier noise to Ctrl-C
     /// that the crate-wide strict default would silently drop, turning
     /// a real copy request into a no-op.
     fn is_copy_keypress(&self, key: &crate::Key, modifiers: &crate::Modifiers) -> bool {
@@ -1192,7 +1173,7 @@ fn q_rect_to_ratatui(r: QRect) -> Rect {
     Rect::new(x, y, w, h)
 }
 
-/// Reassemble one leaked SGR mouse escape sequence (#293) out of a run of
+/// Reassemble one leaked SGR mouse escape sequence out of a run of
 /// individual `KeyPressed(Char(_))` events, if `events[0]` opens one.
 ///
 /// `events[0]` must already be `KeyPressed(Char('['))` — the caller checks
@@ -1209,7 +1190,7 @@ fn q_rect_to_ratatui(r: QRect) -> Rect {
 ///
 /// See [`recover_leaked_sgr_mouse_fragments`] for why this exists at all.
 /// `cell_size` is forwarded verbatim to [`decode_sgr_mouse_report`] — see
-/// that function's doc (quadraui#1048).
+/// that function's doc.
 fn try_reassemble_sgr_mouse(
     events: &[UiEvent],
     cell_size: TerminalCellSize,
@@ -1269,7 +1250,7 @@ fn try_reassemble_sgr_mouse(
 /// ([`super::events::crossterm_mouse_to_uievent_scaled`]). `cell_size`
 /// should be [`Self::cell_pixel_size`](TuiBackend::cell_pixel_size) when
 /// this recovery path fires on a session with SGR-Pixels mode active
-/// (quadraui#1048), or the identity `TerminalCellSize::new(1.0, 1.0)`
+///, or the identity `TerminalCellSize::new(1.0, 1.0)`
 /// otherwise — this recovery path decodes raw `Cx`/`Cy` exactly as
 /// received, whichever unit the terminal is actually reporting in.
 ///
@@ -1342,7 +1323,7 @@ fn decode_sgr_mouse_report(
 }
 
 /// Recover an SGR mouse escape sequence that leaked into individual
-/// `KeyPressed(Char(_))` events (quadraui#293).
+/// `KeyPressed(Char(_))` events.
 ///
 /// crossterm's own terminal-input reader disambiguates a lone `ESC` byte
 /// by whether more bytes are *already* available in the same read — not
@@ -1373,7 +1354,7 @@ fn decode_sgr_mouse_report(
 /// cleanly decoded one would.
 ///
 /// `cell_size` is forwarded to [`try_reassemble_sgr_mouse`]/
-/// [`decode_sgr_mouse_report`] (quadraui#1048) — pass
+/// [`decode_sgr_mouse_report`] — pass
 /// [`TuiBackend::cell_pixel_size`] so a leaked SGR-Pixels report recovers to
 /// the same fractional coordinate a cleanly decoded one would have.
 fn recover_leaked_sgr_mouse_fragments(
@@ -1525,7 +1506,7 @@ pub(crate) fn poll_fd_revents(fd: std::os::unix::io::RawFd, timeout_ms: i32) -> 
     PollOutcome::Ready(pollfd.revents)
 }
 
-/// Dead-PTY busy-loop guard (quadraui#1295) — a workaround for a real
+/// Dead-PTY busy-loop guard — a workaround for a real
 /// third-party defect in crossterm, kept here until crossterm's own
 /// `UnixInternalEventSource` breaks out of its TTY-readiness read loop
 /// on `Ok(0)` (EOF) the same way it already does on
@@ -1819,7 +1800,7 @@ impl Backend for TuiBackend {
         // `zones` — a bar that stops painting must stop resolving
         // `tab_center`/`tab_close_center` too.
         self.tab_bar_layouts.clear();
-        // #455: clear last frame's modal paint marks so this frame has
+        // Clear last frame's modal paint marks so this frame has
         // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
         self.modal_stack.borrow_mut().reset_frame_paint();
     }
@@ -1841,10 +1822,10 @@ impl Backend for TuiBackend {
         // `terminal.draw(|frame| …)` closure returns; this method
         // exists for parity with backends that need explicit flush.
         //
-        // #455: in debug builds, warn about any modal that's registered
+        // In debug builds, warn about any modal that's registered
         // in the ModalStack (and therefore hit-testable) but that this
         // frame's `AppLogic::render` never painted — the "registered but
-        // invisible" defect class (vimcode#587) made detectable instead
+        // invisible" defect class made detectable instead
         // of silently shipping.
         #[cfg(debug_assertions)]
         for id in self.modal_stack.borrow().unpainted_ids() {
@@ -1880,15 +1861,14 @@ impl Backend for TuiBackend {
             self.user_events.drain_into(&mut out);
             return out;
         }
-        // Drain every queued crossterm event; never blocks. Each
-        // native event translates to zero, one, or more `UiEvent`s
-        // via [`super::events::crossterm_to_uievents_scaled`] (dividing a
-        // mouse report's raw `column`/`row` by `self.cell_pixel_size` —
-        // the identity divisor unless SGR-Pixels mode is active,
-        // quadraui#1048), then runs through the dispatch layer
-        // (text-region hit-test, drag state) and
-        // [`Self::apply_accelerators`].  Consecutive `MouseMoved` events
-        // are coalesced to the final position before dispatch.
+        // Drain every queued crossterm event; never blocks. Each native event
+        // translates to zero, one, or more `UiEvent`s via
+        // [`super::events::crossterm_to_uievents_scaled`] (dividing a mouse
+        // report's raw `column`/`row` by `self.cell_pixel_size` — the identity
+        // divisor unless SGR-Pixels mode is active), then runs through the dispatch
+        // layer (text-region hit-test, drag state) and [`Self::apply_accelerators`].
+        // Consecutive `MouseMoved` events are coalesced to the final position
+        // before dispatch.
         let mut raw = Vec::new();
         while ratatui::crossterm::event::poll(Duration::ZERO).unwrap_or(false) {
             match ratatui::crossterm::event::read() {
@@ -1899,7 +1879,7 @@ impl Backend for TuiBackend {
                 Err(_) => break,
             }
         }
-        // See `recover_leaked_sgr_mouse_fragments`'s doc (#293): recover
+        // See `recover_leaked_sgr_mouse_fragments`'s doc: recover
         // any SGR mouse report that crossterm's own reader split around
         // its leading `ESC`, before it reaches coalescing/dispatch as
         // stray printable characters.
@@ -1908,10 +1888,10 @@ impl Backend for TuiBackend {
         let mut out = self.apply_dispatch(coalesced);
         self.apply_accelerators(&mut out);
         self.double_click.process(&mut out);
-        // Issue #831: fold in any `UiEvent::User` payloads a background
-        // thread queued via `waker()` since the last drain. Unconditional
-        // (not gated on `raw` being non-empty) so a background-only wake
-        // with no concurrent keyboard/mouse activity still surfaces here.
+        // Fold in any `UiEvent::User` payloads a background thread queued via
+        // `waker()` since the last drain. Unconditional (not gated on `raw` being
+        // non-empty) so a background-only wake with no concurrent keyboard/mouse
+        // activity still surfaces here.
         self.user_events.drain_into(&mut out);
         out
     }
@@ -1993,11 +1973,10 @@ impl Backend for TuiBackend {
                     return out;
                 }
                 StdinReadiness::TimedOut => {
-                    // Issue #831: crossterm timed out with no native input,
-                    // but a background thread may have called `waker()`
-                    // during the wait — this is the primary path a pure
-                    // background-thread wake takes, since it has no
-                    // crossterm event of its own to ride in on.
+                    // Crossterm timed out with no native input, but a background thread may
+                    // have called `waker()` during the wait — this is the primary path a pure
+                    // background-thread wake takes, since it has no crossterm event of its own
+                    // to ride in on.
                     let mut out = Vec::new();
                     self.user_events.drain_into(&mut out);
                     return out;
@@ -2060,7 +2039,6 @@ impl Backend for TuiBackend {
     /// [`Self::take_full_repaint_requested`] right before the next frame
     /// paints — see [`crate::Backend::request_full_repaint`]'s doc for
     /// the full contract and why TUI is the one backend that needs this
-    /// (issue #1037).
     fn request_full_repaint(&mut self) {
         self.full_repaint_requested = true;
     }
@@ -2073,7 +2051,7 @@ impl Backend for TuiBackend {
         self.core.unregister_accelerator(id);
     }
 
-    /// #1187: persists via `self.core`, same one-liner delegation as the
+    /// Persists via `self.core`, same one-liner delegation as the
     /// accelerator methods above.
     fn menu_style(&self) -> crate::backend::MenuStyle {
         self.core.menu_style()
@@ -2106,9 +2084,9 @@ impl Backend for TuiBackend {
             return;
         };
         crate::tui::draw_focus_ring(frame.buffer_mut(), area, &theme);
-        // #492 C0 contract §5b: a chrome-only paint (no text of its own)
-        // is only "observable" via a registered zone — mirrors
-        // `draw_terminal_divider`'s identical registration above.
+        // A chrome-only paint (no text of its own) is only "observable" via a
+        // registered zone — mirrors `draw_terminal_divider`'s identical
+        // registration above.
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
 
@@ -2116,7 +2094,7 @@ impl Backend for TuiBackend {
         &self.services
     }
 
-    /// quadraui#492: honest per-method, not aspirational.
+    /// Honest per-method, not aspirational.
     ///
     /// - `mouse` / `scroll` / `drag`: `tui::run` sends crossterm's
     ///   `EnableMouseCapture` on entry, and
@@ -2140,7 +2118,7 @@ impl Backend for TuiBackend {
     ///   `crate::runtime::preprocess_event`'s Ctrl-A interception) — the
     ///   `no-mouse` mode key path for Tier-1's drag-select gesture.
     /// - `notifications`: **deliberately still `false`**, even though
-    ///   `TuiPlatformServices::send_notification` (quadraui#1092) is no
+    ///   `TuiPlatformServices::send_notification` is no
     ///   longer a no-op — it now makes a genuine best-effort attempt (OSC
     ///   9/777 escape plus a native `osascript`/`notify-send` fallback;
     ///   see that method's doc and the module doc's "Notifications"
@@ -2170,8 +2148,8 @@ impl Backend for TuiBackend {
     ///   `show_file_save_dialog` / `show_folder_open_dialog` /
     ///   `show_message_dialog`). The in-canvas `Dialog` primitive
     ///   (`draw_dialog`) stays the only dialog path on this backend
-    ///   (quadraui#666), same posture for `folder_dialogs`
-    ///   (quadraui#935): hosts keep whatever in-canvas picker they
+    ///, same posture for `folder_dialogs`
+    ///: hosts keep whatever in-canvas picker they
     ///   already have.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         crate::backend::BackendCaps {
@@ -2184,7 +2162,7 @@ impl Backend for TuiBackend {
             // `set_title` (OSC 0/2 via crossterm's `SetTitle`) is the one
             // genuine capability behind it, with every other
             // `WindowControl` method staying `Unsupported` on a backend
-            // with no OS window (issue #950).
+            // with no OS window.
             window_control: true,
             // `notifications` deliberately stays `false` — see this
             // method's doc above for why a real `send_notification`
@@ -2206,8 +2184,8 @@ impl Backend for TuiBackend {
 
     /// One terminal cell, same as [`Self::char_width`] — `draw_list`
     /// paints every row on the same fixed character grid `char_width`
-    /// measures, so there is no #912 mismatch on TUI: a column is a
-    /// column regardless of which primitive it belongs to.
+    /// measures, so there is no mismatch on TUI: a column is a column
+    /// regardless of which primitive it belongs to.
     fn list_char_width(&self) -> f32 {
         1.0
     }
@@ -2217,9 +2195,8 @@ impl Backend for TuiBackend {
     /// is always one cell. `width` is [`display_width`]'s cell count,
     /// the same value every TUI layout already derived from
     /// `char_width() * text.chars().count()` before this method existed
-    /// (quadraui#1132, D-014: TUI's story is "degrade", i.e. stay
-    /// char-cell while GUI backends go proportional — this call site is
-    /// bit-for-bit unchanged).
+    /// (TUI's story is "degrade", i.e. stay char-cell while GUI backends
+    /// go proportional — this call site is bit-for-bit unchanged).
     fn measure_text(&self, text: &str, _role: crate::FontRole) -> (f32, f32) {
         (display_width(text) as f32, 1.0)
     }
@@ -2229,7 +2206,7 @@ impl Backend for TuiBackend {
     /// same structural reason [`Self::set_editor_font`]/
     /// [`Self::set_ui_font`] take the trait's no-op default here. Use
     /// [`Self::line_height`]/[`Self::char_width`] for the real
-    /// fixed-cell metrics instead (issue #1156).
+    /// fixed-cell metrics instead.
     fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
         crate::backend::PlatformFontDefaults {
             editor_family: String::new(),
@@ -2241,7 +2218,7 @@ impl Backend for TuiBackend {
 
     /// TUI's terminal scrollbar gutter is one character cell, not GTK's
     /// 8px default — matching `src/tui/terminal.rs`'s
-    /// `sb_cols: … .unwrap_or(1)` (issue #506 review fix).
+    /// `sb_cols: … .unwrap_or(1)` default.
     fn terminal_scrollbar_default_width(&self) -> f32 {
         1.0
     }
@@ -2251,7 +2228,6 @@ impl Backend for TuiBackend {
         // same `.max(0.0).round()` — so a height computed via this method
         // always matches what a rect with that height paints as. A unit
         // test below pins the two against each other so they can't drift
-        // (quadraui#632).
         h.max(0.0).round()
     }
 
@@ -2263,7 +2239,7 @@ impl Backend for TuiBackend {
     // Calling these outside `enter_frame_scope` is a programmer error: a
     // `debug_assert!` makes it loud in dev builds, per
     // `current_frame_mut`'s doc; release builds degrade instead of
-    // aborting (issue #1117) — a void method silently skips the paint, a
+    // aborting — a void method silently skips the paint, a
     // layout-returning method falls back to its pure `*_layout`/
     // `*_hits`-style twin (or an already-computed local `layout`) so a
     // host that queries geometry still gets a real answer, and
@@ -2318,12 +2294,11 @@ impl Backend for TuiBackend {
     }
 
     fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
-        // Must go through the *same* resolver `draw_data_table` uses —
-        // in particular the cell-granular `h_scroll.round()`. This is the
-        // cache-free, layout-on-demand path real apps hit-test through
-        // (see `examples/common/data_table_app.rs`), so resolving the
-        // geometry independently here reopened #550 for every fractional
-        // `h_scroll` (round 3).
+        // Must go through the same resolver `draw_data_table` uses — in
+        // particular the cell-granular `h_scroll.round()`. This is the
+        // cache-free, layout-on-demand path real apps hit-test through, so
+        // resolving the geometry independently here can cause fractional
+        // `h_scroll` mismatches.
         let area = q_rect_to_ratatui(rect);
         crate::tui::data_table_layout(area, table)
     }
@@ -2376,7 +2351,7 @@ impl Backend for TuiBackend {
     }
 
     fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
-        // #455: mark before borrowing the frame — a modal-stack entry
+        // Mark before borrowing the frame — a modal-stack entry
         // whose id matches this palette is now known-painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&palette.id);
         let area = q_rect_to_ratatui(rect);
@@ -2510,10 +2485,10 @@ impl Backend for TuiBackend {
         } else {
             0
         };
-        // Measure in display columns, not `char`s (#554) — a CJK/emoji
+        // Measure in display columns, not `char`s — a CJK/emoji
         // glyph occupies two columns, and `draw_tab_bar_icons` paints
         // with `char_cell_width` strides, so the budget must agree. Also
-        // add `tab_icon_cols` (#620) so a tab's optional icon glyph + gap
+        // add `tab_icon_cols` so a tab's optional icon glyph + gap
         // is reserved the same way the GTK rasteriser reserves its own
         // Pango-measured icon width.
         let tab_widths: Vec<usize> = bar
@@ -2545,7 +2520,7 @@ impl Backend for TuiBackend {
         );
         // Cache the resolved layout for this bar's WidgetId before it's
         // consumed below — `TuiDriver::tab_center`/`tab_close_center`
-        // (quadraui#594) resolve against this, since a driver sitting
+        // resolve against this, since a driver sitting
         // outside the app has no other way to reach a specific tab's
         // geometry (every tab paints the same close glyph, so `find`
         // can't disambiguate tab N's target).
@@ -2556,8 +2531,8 @@ impl Backend for TuiBackend {
                 false,
                 "TuiBackend::draw_tab_bar called outside enter_frame_scope"
             );
-            // `tab_bar_layout_icons` is the pure (no-frame) twin that
-            // resolves the identical `TabBarHits` geometry — issue #1117.
+            // `tab_bar_layout_icons` is the pure (no-frame) twin that resolves the
+            // identical `TabBarHits` geometry.
             return self.tab_bar_layout_icons(rect, bar, icons);
         };
         crate::tui::draw_tab_bar_icons(frame.buffer_mut(), area, bar, icons, &layout, &theme)
@@ -2645,7 +2620,7 @@ impl Backend for TuiBackend {
             0
         };
         let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
-        // #631: a bracket-framed active tab reserves one extra column on
+        // A bracket-framed active tab reserves one extra column on
         // each side of its ordinary close-column reservation — see
         // `tui::tab_bar`'s module doc for the cell-by-cell breakdown.
         let tab_widths: Vec<usize> = bar
@@ -2693,9 +2668,8 @@ impl Backend for TuiBackend {
                 false,
                 "TuiBackend::draw_tab_bar_with_chrome called outside enter_frame_scope"
             );
-            // `tab_bar_layout_with_chrome` is the pure (no-frame) twin
-            // that resolves the identical `TabBarHits` geometry,
-            // brackets included — issue #1117.
+            // `tab_bar_layout_with_chrome` is the pure (no-frame) twin that resolves
+            // the identical `TabBarHits` geometry, brackets included.
             return self.tab_bar_layout_with_chrome(rect, bar, chrome);
         };
         crate::tui::draw_tab_bar_with_chrome(frame.buffer_mut(), area, bar, chrome, &layout, &theme)
@@ -2874,9 +2848,9 @@ impl Backend for TuiBackend {
         };
         // Compute per-tab widths respecting `is_closable`: non-closable tabs
         // get no close-column reservation even when `show_tab_close` is set.
-        // Measured in display columns, not `char`s (#554) — see the twin
+        // Measured in display columns, not `char`s — see the twin
         // computation in `draw_tab_bar_icons` above for why. The
-        // `tab_icon_cols` term is that twin's too (#620): the no-paint
+        // `tab_icon_cols` term is that twin's too: the no-paint
         // path must reserve the icon exactly as the paint does, or click
         // routing lands left of the glyphs the user sees.
         let tab_widths: Vec<usize> = bar
@@ -3136,7 +3110,7 @@ impl Backend for TuiBackend {
             return;
         };
         crate::tui::draw_terminal_divider(frame.buffer_mut(), area.x, area.y, area.height, &theme);
-        // #492: the primitive takes no `WidgetId` of its own (there is at
+        // The primitive takes no `WidgetId` of its own (there is at
         // most one divider on screen at a time), so register a fixed
         // chrome id — otherwise this frame is indistinguishable from one
         // where the no-op trait default silently dropped the call (C0
@@ -3154,7 +3128,7 @@ impl Backend for TuiBackend {
             return;
         };
         crate::tui::draw_solid_fill(frame.buffer_mut(), area, color);
-        // #492: chrome-only paint (no text of its own) — only "observable"
+        // Chrome-only paint (no text of its own) — only "observable"
         // via a registered zone, mirroring `draw_terminal_divider`'s
         // identical registration above. Callers that need a *semantic*
         // id for click routing (e.g. `AppShell`'s divider) register their
@@ -3277,7 +3251,7 @@ impl Backend for TuiBackend {
             return;
         };
         crate::tui::draw_tooltip_with_chrome(frame.buffer_mut(), tooltip, layout, chrome, &theme);
-        // #542: register the tooltip's own surface so a structural-parity
+        // Register the tooltip's own surface so a structural-parity
         // observer (`ConformanceDriver::inventory().zones()`) can see the
         // tooltip was drawn at all, not just infer it from text presence —
         // `screen_has("Keybindings")` stayed true on both backends through
@@ -3286,7 +3260,7 @@ impl Backend for TuiBackend {
         // Register `tooltip_painted_bounds`, not the raw float
         // `layout.bounds` — `draw_tooltip` rounds to whole cells before
         // painting, and registering the unrounded rect would report a
-        // surface that doesn't match what was actually drawn (#542 review).
+        // surface that doesn't match what was actually drawn.
         self.register_zone(
             tooltip.id.clone(),
             crate::tui::tooltip_painted_bounds(layout),
@@ -3298,7 +3272,7 @@ impl Backend for TuiBackend {
         menu: &crate::ContextMenu,
         layout: &crate::ContextMenuLayout,
     ) -> Vec<(QRect, crate::WidgetId)> {
-        // #455: see draw_palette for why this happens before the frame borrow.
+        // See draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&menu.id);
         let theme = self.current_theme;
         // Issue #1117: the returned `Vec` is derived from `layout` (an
@@ -3334,7 +3308,7 @@ impl Backend for TuiBackend {
         dialog: &crate::primitives::dialog::Dialog,
         layout: &crate::primitives::dialog::DialogLayout,
     ) -> Vec<QRect> {
-        // #455: see draw_palette for why this happens before the frame borrow.
+        // See draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let theme = self.current_theme;
         // Issue #1117: same rationale as `draw_context_menu` just above —
@@ -3361,7 +3335,7 @@ impl Backend for TuiBackend {
         float: &crate::primitives::float::Float,
         layout: &crate::primitives::float::FloatLayout,
     ) {
-        // #455: see draw_palette for why this happens before the frame borrow.
+        // See draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&float.id);
         let theme = self.current_theme;
         let Some(frame) = self.current_frame_mut() else {
@@ -3456,12 +3430,12 @@ impl Backend for TuiBackend {
             return crate::backend::EditorPaintResult::default();
         };
         let tui_result = crate::tui::draw_editor(frame.buffer_mut(), area, editor, &theme);
-        // Cache for `render_frame` (quadraui#466) — `draw_editor` only sees
+        // Cache for `render_frame` — `draw_editor` only sees
         // the buffer, not the `Frame`, so it can't call
         // `Frame::set_cursor_position` itself. See
         // `last_cursor_position`'s field doc for the full handoff.
         //
-        // Only overwrite on `Some` (quadraui#1002): a frame can call
+        // Only overwrite on `Some`: a frame can call
         // `draw_editor` once per window (e.g. a split), and only the active
         // window's editor ever reports a `Some` cursor position — inactive
         // windows correctly report `None` (see `RenderedWindow.cursor`'s
@@ -3469,7 +3443,7 @@ impl Backend for TuiBackend {
         // to run last used to win unconditionally, so an inactive window's
         // `None` could clobber the active window's `Some` recorded earlier
         // in the same frame, hiding the caret whenever paint order didn't
-        // happen to place the active window last. `begin_frame` (quadraui#466)
+        // happen to place the active window last. `begin_frame`
         // already resets this to `None` at frame-start, so within a frame we
         // only ever want to move from `None` to `Some`, never back.
         if tui_result.cursor_position.is_some() {
@@ -3479,7 +3453,7 @@ impl Backend for TuiBackend {
             // `tui_result.cursor_position` is the TUI-internal, already
             // cell-rounded `(u16, u16)` shape `Frame::set_cursor_position`
             // needs (see `last_cursor_position`'s doc); widen to the
-            // portable `Point` (issue #504) for the trait's return value.
+            // portable `Point` for the trait's return value.
             cursor_position_native: tui_result
                 .cursor_position
                 .map(|(x, y)| crate::event::Point::new(x as f32, y as f32)),
@@ -3602,7 +3576,7 @@ impl Backend for TuiBackend {
         // `track` bounds; `rect` is unused (the primitive owns layout).
         // Forward-compat parameter for backends that need a clip rect.
         crate::tui::draw_scrollbar(frame.buffer_mut(), scrollbar, &theme, cell_bg);
-        // #492: a scrollbar paints only glyphs (thumb/track), so on a
+        // A scrollbar paints only glyphs (thumb/track), so on a
         // pixel backend it would otherwise be indistinguishable from the
         // no-op default. Register the primitive's own id at its own
         // track bounds (not `_rect`, which the primitive ignores).
@@ -3619,7 +3593,7 @@ impl Backend for TuiBackend {
             return;
         };
         crate::tui::draw_drop_overlay(frame.buffer_mut(), overlay, &theme);
-        // #492: `DropOverlay` carries no `WidgetId` (there is at most one
+        // `DropOverlay` carries no `WidgetId` (there is at most one
         // overlay active at a time), so register a fixed chrome id at
         // whichever sub-rect it actually drew — otherwise this frame is
         // indistinguishable from one where the no-op default silently
@@ -3667,7 +3641,7 @@ impl Backend for TuiBackend {
             return self.split_layout(rect, split);
         };
         let layout = crate::tui::draw_split(frame.buffer_mut(), area, split, &theme);
-        // #492: `Split` paints a divider only — no text of its own — so a
+        // `Split` paints a divider only — no text of its own — so a
         // registered zone is the only way this frame is attributable to
         // the primitive rather than indistinguishable from the trait's
         // no-op default (C0 paint smoke, contract §5b).
@@ -3696,7 +3670,7 @@ impl Backend for TuiBackend {
             return self.split_tree_layout(rect, tree);
         };
         let layout = crate::tui::draw_split_tree(frame.buffer_mut(), area, tree, &theme);
-        // #492: dividers only, and `SplitTree` (unlike `Split`) carries no
+        // Dividers only, and `SplitTree` (unlike `Split`) carries no
         // id of its own — register a fixed chrome id, same pattern as
         // `draw_terminal_divider` / `draw_drop_overlay`.
         self.register_zone(WidgetId::new("chrome:split-tree"), rect);
@@ -4081,7 +4055,7 @@ impl Backend for TuiBackend {
                 false,
                 "TuiBackend::draw_image called outside enter_frame_scope"
             );
-            // Mirrors the win/macOS "no rasteriser" report (issue #924) —
+            // Mirrors the win/macOS "no rasteriser" report —
             // no zone registered either, since nothing was painted.
             return crate::backend::ImagePaintResult::Unsupported;
         };
@@ -4090,7 +4064,7 @@ impl Backend for TuiBackend {
         result
     }
 
-    // ─── Window control (issue #950) ────────────────────────────────────
+    // ─── Window control ─────────────────────────────────────────────────
     fn window(&mut self) -> Option<&mut dyn crate::backend::WindowControl> {
         Some(self)
     }
@@ -4375,7 +4349,7 @@ mod tests {
                 resolved_right_start: 0,
             }
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn draw_tab_bar(
             &mut self,
             _r: QRect,
@@ -4384,7 +4358,7 @@ mod tests {
         ) -> crate::TabBarHits {
             crate::TabBarHits::default()
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn draw_tab_bar_icons(
             &mut self,
             _r: QRect,
@@ -4447,11 +4421,11 @@ mod tests {
                 resolved_right_start: 0,
             }
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn tab_bar_layout(&self, _r: QRect, _b: &TabBar) -> crate::TabBarHits {
             crate::TabBarHits::default()
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn tab_bar_layout_icons(
             &self,
             _r: QRect,
@@ -5120,7 +5094,7 @@ mod tests {
         assert_eq!(mock.modal_stack_handle().borrow().len(), 1);
     }
 
-    /// quadraui#699: `TuiBackend::modal_stack_handle` must hand back a
+    /// `TuiBackend::modal_stack_handle` must hand back a
     /// handle that shares state with the backend's own modal stack (the
     /// same guarantee `GtkBackend::modal_stack_handle` already proves in
     /// `gtk::backend::tests::gtk_backend_modal_stack_handle_shares_state`)
@@ -5136,7 +5110,7 @@ mod tests {
         assert_eq!(h2.borrow().len(), 1);
     }
 
-    /// quadraui#704: the bridge methods this issue removed
+    /// The bridge methods this issue removed
     /// (`modal_stack_mut()` / `drag_and_modal_mut()`) synthesized a
     /// `&mut ModalStack` via `unsafe { Rc::as_ptr(..) }`, which bypassed
     /// `RefCell`'s runtime borrow check entirely — two live mutable
@@ -5184,7 +5158,7 @@ mod tests {
         assert_eq!(defaults.ui_size_pt, 0.0);
     }
 
-    /// quadraui#699: the whole point of `modal_stack_handle` is that
+    /// The whole point of `modal_stack_handle` is that
     /// the handle outlives the borrow that produced it — this is the
     /// stash-then-reuse pattern GTK hosts
     /// (and vimcode's macOS host, once #699 lands there too) depend on.
@@ -5205,7 +5179,7 @@ mod tests {
         assert_eq!(backend.modal_stack_handle().borrow().len(), 1);
     }
 
-    /// quadraui#699: same shared-state guarantee as
+    /// Same shared-state guarantee as
     /// `tui_backend_modal_stack_handle_shares_state`, for
     /// `drag_state_handle`.
     #[test]
@@ -5220,7 +5194,7 @@ mod tests {
         assert!(h2.borrow().is_active());
     }
 
-    /// #455 regression: `TuiBackend::draw_dialog` must mark the modal
+    /// `TuiBackend::draw_dialog` must mark the modal
     /// stack entry it paints, so `ModalStack::unpainted_ids` can catch a
     /// backend that registers a modal for hit-testing but never actually
     /// paints it — vimcode#587's exact failure shape ("registered but
@@ -5966,7 +5940,7 @@ mod tests {
         );
     }
 
-    // ── recover_leaked_sgr_mouse_fragments tests (#293) ─────────────────────
+    // ── recover_leaked_sgr_mouse_fragments tests ────────────────────────────
 
     /// The identity cell size — every pre-#1048 `recover_leaked_sgr_mouse_fragments`
     /// test below passes this so its cell-mode assertions stay
@@ -6013,7 +5987,7 @@ mod tests {
         );
     }
 
-    /// quadraui#1048: a non-identity `cell_size` threads all the way
+    /// A non-identity `cell_size` threads all the way
     /// through `recover_leaked_sgr_mouse_fragments` →
     /// `try_reassemble_sgr_mouse` → `decode_sgr_mouse_report` →
     /// `crossterm_mouse_to_uievent_scaled`, recovering the same fractional
@@ -6381,7 +6355,7 @@ mod tests {
     /// `Backend::snap_height` must agree with `q_rect_to_ratatui`'s height
     /// rounding for every height a rect can carry, since it exists to let
     /// consumers predict that rounding without reimplementing it
-    /// (quadraui#632). If the two ever drift, a consumer's pre-snapped
+    ///. If the two ever drift, a consumer's pre-snapped
     /// layout height stops matching what the rasteriser actually paints —
     /// the exact one-row misalignment that bit coord-tui in #464 and #995.
     #[test]
@@ -6400,7 +6374,7 @@ mod tests {
         }
     }
 
-    /// #776: TUI has no windowing scrollbar overlay to dodge, so it
+    /// TUI has no windowing scrollbar overlay to dodge, so it
     /// relies on `Backend::scrollbar_reserve`'s trait default (0.0)
     /// rather than overriding it — unlike GTK (see
     /// `GtkBackend::scrollbar_reserve`, 8.0).
@@ -6463,7 +6437,7 @@ mod tests {
     /// A pixel backend must not quantize — `snap_height` returns the input
     /// unchanged via the trait's default impl. `MockBackend` doesn't
     /// override `snap_height`, so it stands in for "any backend that only
-    /// paints pixels/DIPs" here (quadraui#632).
+    /// paints pixels/DIPs" here.
     #[test]
     fn snap_height_default_impl_is_identity() {
         let backend = MockBackend::new();
@@ -6476,7 +6450,7 @@ mod tests {
         }
     }
 
-    /// quadraui#666: TUI has no native alert facility — `backend_caps`
+    /// TUI has no native alert facility — `backend_caps`
     /// must not claim `native_dialogs`, and `services().show_message_dialog`
     /// must actually return `None` regardless of what's asked for. Both
     /// halves of the same honesty contract `file_dialogs` already has.
@@ -6844,7 +6818,7 @@ mod tests {
         );
     }
 
-    /// quadraui#1002: an inactive window's `None` cursor must not clobber
+    /// An inactive window's `None` cursor must not clobber
     /// an active window's `Some` position recorded earlier in the same
     /// frame. A split has one `draw_editor` call per window; only the
     /// active window's `Editor.cursor` is `Some` (the consumer only ever
@@ -6932,7 +6906,7 @@ mod tests {
         );
     }
 
-    // ── mouse_enabled / `no-mouse` mode (quadraui#828) ──────────────────
+    // ── mouse_enabled / `no-mouse` mode ─────────────────────────────────
 
     /// `TuiBackend::new()` defaults to mouse reporting enabled — matches
     /// [`super::run::RunConfig::default`] (`mouse: true`), so a backend
@@ -6975,7 +6949,7 @@ mod tests {
         assert!(backend.mouse_enabled());
     }
 
-    // ── SGR-Pixels mouse mode (quadraui#1048) ────────────────────────────
+    // ── SGR-Pixels mouse mode ────────────────────────────────────────────
 
     /// `cell_pixel_size` defaults to the identity divisor — a backend
     /// nobody has called `set_cell_pixel_size` on must leave every mouse
@@ -7041,7 +7015,7 @@ mod tests {
         }
     }
 
-    // ── request_frame_in (quadraui#832) ─────────────────────────────────
+    // ── request_frame_in ────────────────────────────────────────────────
 
     /// With nothing requested, the poll timeout is the full ceiling —
     /// this is the "idle app doesn't poll tightly" behavior the issue's
@@ -7175,7 +7149,7 @@ mod tests {
     #[cfg(not(debug_assertions))]
     fn draw_tree_outside_frame_scope_does_not_panic_in_release() {
         let mut backend = TuiBackend::new();
-        // Must not panic — the whole point of #1117.
+        // Must not panic in release builds.
         backend.draw_tree(QRect::new(0.0, 0.0, 10.0, 5.0), &empty_tree());
     }
 
@@ -7484,7 +7458,7 @@ mod tests {
     }
 }
 
-/// Property tests for the SGR mouse-report decode path (quadraui#1130):
+/// Property tests for the SGR mouse-report decode path:
 /// `cb`/`x`/`y` come from a real terminal's escape-sequence reply — bytes
 /// this crate does not control, parsed as plain decimal numbers by
 /// `try_reassemble_sgr_mouse`'s caller before reaching here — so this

@@ -25,17 +25,11 @@ fn flatten(text: &StyledText) -> String {
 /// Uses the same `tui_item_width` measurer as the toolbar rasteriser so
 /// toolbar button positions agree between paint and hit-test.
 ///
-/// **Not a `Backend::dialog_layout` gap (issue #506 audit).** `Dialog`
-/// is an *overlay-with-caller-anchor* primitive, same class as
-/// `Tooltip`/`ContextMenu`/`Completions`: a host builds its own
-/// `DialogMeasure` from portable `Backend::line_height()` and calls
-/// `dialog.layout(...)` directly (see
-/// `examples/common/modal_occlusion_demo.rs::dialog_layout`), so there
-/// is no `Backend::<name>_layout` for any primitive in that class. This
-/// function is TUI's own internal default measurer for dialogs painted
-/// without a caller-supplied `DialogMeasure` — a backend-private
-/// convenience, not a missing trait method. See
-/// `quadraui/docs/decisions/DECISIONS.md` D-007 for the full write-up.
+/// This function is TUI's own internal default measurer for dialogs painted
+/// without a caller-supplied `DialogMeasure`. `Dialog` is an overlay-with-caller-anchor
+/// primitive (like `Tooltip`, `ContextMenu`, `Completions`): callers build their own
+/// `DialogMeasure` from portable `Backend::line_height()` and call
+/// `dialog.layout(...)` directly. See `quadraui/docs/decisions/DECISIONS.md` D-007.
 pub fn tui_dialog_layout(dialog: &Dialog, viewport: crate::event::Rect) -> DialogLayout {
     use super::toolbar::tui_item_width;
     use crate::primitives::dialog::DialogMeasure;
@@ -599,7 +593,7 @@ mod tests {
     /// `tui_dialog_layout` bakes `viewport.x`/`viewport.y` into `Dialog::layout`'s
     /// `box_x`/`box_y` (absolute frame), so paint + click must agree at a
     /// non-zero viewport origin too, per LESSONS.md's "layout helpers must
-    /// return coords in the same frame across backends" (quadraui#494). The
+    /// return coords in the same frame across backends". The
     /// dialog is centered in an 80×30 viewport and never exceeds ~60×30, so
     /// a buffer sized to the viewport's far corner (`origin + 80/30`) always
     /// has room for it.
@@ -647,7 +641,7 @@ mod tests {
 
     /// Shared body for `body_toolbar_apply_button_also_routes[_at_nonzero_origin]`
     /// — see `body_toolbar_click_routes_to_body_toolbar_button_at` for the
-    /// non-zero-origin rationale (quadraui#494).
+    /// non-zero-origin rationale.
     fn body_toolbar_apply_button_also_routes_at(origin_x: f32, origin_y: f32) {
         let d = make_toolbar_dialog();
         let viewport = crate::event::Rect::new(origin_x, origin_y, 80.0, 30.0);

@@ -36,9 +36,7 @@ use crate::theme::Theme;
 
 /// Compute the TUI [`Palette`] layout — the shared geometry this
 /// module's [`draw_palette`] paints from and `Backend::palette_layout`
-/// (#818) exposes for hit-testing, so the two can't drift the way they
-/// used to (see `docs/decisions/DECISIONS.md` D-007, "Palette: deferred,
-/// not missed" — this closes it for TUI).
+/// exposes for hit-testing, ensuring they remain synchronized.
 ///
 /// Row heights mirror `draw_palette`'s own cell-grid math exactly:
 /// title is always 1 row; the query area is 2 rows (query row +
@@ -57,10 +55,9 @@ use crate::theme::Theme;
 /// column (`sb_col = list_w - 1`), using a whole-row thumb formula
 /// (`thumb_len = visible_rows² / total`) that has no equivalent in
 /// [`Palette::layout`]'s continuous-track `PaletteScrollbar` — reporting
-/// a `ScrollbarThumb`/`ScrollbarTrack` hit region here would invent a
-/// second, disagreeing formula (exactly the drift class D-007 exists to
-/// avoid) for a click target TUI has never made draggable. This is a
-/// real, documented gap, not a placeholder.
+/// a `ScrollbarThumb`/`ScrollbarTrack` hit region here would require a
+/// different formula for a click target TUI has never made draggable.
+/// This is a real, documented gap, not a placeholder.
 pub fn tui_palette_layout(area: Rect, palette: &Palette) -> PaletteLayout {
     let w = area.width as f32;
     let h = (area.height as f32 - 1.0).max(0.0); // reserve the bottom border row
@@ -284,15 +281,12 @@ pub fn draw_palette(
         w - 1
     };
 
-    // The engine updates scroll_top with a conservative heuristic that
-    // doesn't know the actual renderer row count, so the renderer is
-    // authoritative here: resolve scroll_offset against the row count
-    // it just computed, keeping the selected item visible and never
-    // leaving empty rows when there are items above we could show.
-    // `draw_palette` predates `Palette::layout` and lays out its own
-    // cell grid rather than calling it, so it calls the shared
-    // selection-visibility policy directly instead of through
-    // `layout()` (see `Palette::resolved_scroll_offset`, #711).
+    // The renderer is authoritative for row count: resolve scroll_offset
+    // against the row count it just computed, keeping the selected item
+    // visible and never leaving empty rows when there are items above we
+    // could show. `draw_palette` lays out its own cell grid rather than
+    // calling `Palette::layout`, so it calls the shared selection-visibility
+    // policy directly through `Palette::resolved_scroll_offset`.
     let resolved_offset = palette.resolved_scroll_offset(visible_rows);
 
     for (vis_i, item) in palette
@@ -801,13 +795,10 @@ mod tests {
         assert_eq!(cell_char(&buf, 1, 1), '>', "query prompt in Input mode");
     }
 
-    // ── #818: tui_palette_layout / draw_palette parity ──────────────────
-    //
     // Paint into a buffer, find where a glyph actually lands, then
     // hit_test that exact cell and assert it resolves to the region the
-    // paint pass used it for — the round-trip harness PRIMITIVE_RULES.md
-    // rule 4 asks for, verifying `tui_palette_layout` doesn't drift from
-    // `draw_palette`.
+    // paint pass used it for, verifying `tui_palette_layout` doesn't drift
+    // from `draw_palette`.
 
     #[test]
     fn layout_title_region_covers_the_painted_title_row() {

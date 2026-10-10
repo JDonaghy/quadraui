@@ -1,12 +1,9 @@
 //! Terminal cell-width and safe-truncation helpers.
 //!
-//! Every TUI consumer measuring or truncating text needs to reckon in
-//! terminal display columns, not bytes or `char`s: CJK and wide-emoji
-//! glyphs occupy two columns, and a byte-indexed slice (`&s[..n]`) can
-//! land mid-codepoint and panic. Before this module existed, every
-//! consumer re-rolled this by hand (coord-tui alone had ~24 inline
-//! `s.chars().take(n).collect()` sites, none of which accounted for
-//! display width). See issue #472.
+//! TUI text measurement and truncation must reckon in terminal display
+//! columns, not bytes or `char`s: CJK and wide-emoji glyphs occupy two
+//! columns, and a byte-indexed slice (`&s[..n]`) can land mid-codepoint
+//! and panic.
 //!
 //! [`char_cell_width`] and [`display_width`] measure; [`truncate_to_width`]
 //! and [`truncate_to_width_ellipsis`] clip a string to a column budget
@@ -15,14 +12,11 @@
 //!
 //! [`char_cell_width`] and [`display_width`] are re-exports of
 //! [`crate::text_util::char_cell_width`] /
-//! [`crate::text_util::display_width`], not separate implementations —
-//! they moved to that core (feature-independent) module in #471 so
-//! [`crate::types::StyledText::visible_width`] could use real cell-width
-//! measurement too, without pulling in the `tui` feature. They stay
-//! re-exported here for API stability (existing `quadraui::tui::*`
-//! callers). See [`crate::text_util::char_cell_width`]'s doc comment for
-//! the PUA / Nerd-Font-width measurement rationale (kept in one place,
-//! at the implementation, rather than duplicated here).
+//! [`crate::text_util::display_width`]: these functions are defined in the
+//! core `text_util` module so that [`crate::types::StyledText::visible_width`]
+//! can use real cell-width measurement without pulling in the `tui` feature.
+//! See [`crate::text_util::char_cell_width`]'s doc comment for the PUA /
+//! Nerd-Font-width measurement rationale.
 
 use std::borrow::Cow;
 
@@ -91,8 +85,7 @@ mod tests {
         // measure the same width (1), per unicode-width / Nerd Font Mono.
         // BMP PUA, e.g. nf-fa-github (U+F09B).
         let bmp_pua = char_cell_width('\u{F09B}');
-        // Supplementary PUA-A, U+F0000 — inside the range this override
-        // used to hardcode to width 2.
+        // Supplementary PUA-A, U+F0000 — measured as width 1.
         let spua_a = char_cell_width('\u{F0000}');
         assert_eq!(bmp_pua, 1);
         assert_eq!(spua_a, 1);

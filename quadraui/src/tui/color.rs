@@ -1,4 +1,4 @@
-//! SGR colour-depth quantisation (quadraui#826).
+//! SGR colour-depth quantisation.
 //!
 //! [`super::ratatui_color`] (and every rasteriser that calls it) always
 //! produces `RatatuiColor::Rgb` — that conversion stays untouched here on
@@ -212,10 +212,7 @@ impl<B: RtBackend> RtBackend for DepthLimitedBackend<B> {
     /// Quantise every cell's `fg`/`bg`/`underline_color`, then delegate.
     ///
     /// [`ColorDepth::TrueColor`] takes a fast path straight to `inner`
-    /// with no allocation or per-cell work at all — this is what keeps a
-    /// truecolor terminal's output byte-identical to before this wrapper
-    /// existed (quadraui#826's "cannot regress the common case"
-    /// acceptance item).
+    /// with no allocation or per-cell work at all.
     fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,

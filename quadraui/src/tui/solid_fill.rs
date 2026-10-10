@@ -1,13 +1,10 @@
-//! TUI rasteriser for a plain solid-color chrome fill (issue #996).
+//! TUI rasteriser for a plain solid-color chrome fill.
 //!
 //! Fills every cell in `rect` with a blank glyph and `color` as both
 //! foreground and background. For chrome elements that are a solid
-//! color block with no text and no per-row seams — e.g. `AppShell`'s
-//! sidebar/editor resize divider, which used to be faked as N stacked
-//! one-row `StatusBar`s (exact on a cell grid, wrong on a pixel
-//! backend — see `Backend::draw_solid_fill`'s doc for the full story).
-//! Unlike [`super::draw_focus_ring`], this clears the interior; there
-//! is no existing content to preserve.
+//! color block with no text and no per-row seams — e.g. a resize divider
+//! with no existing content to preserve. Unlike [`super::draw_focus_ring`],
+//! this clears the interior.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect as RRect;
