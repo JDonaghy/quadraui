@@ -69,7 +69,7 @@ use crate::primitives::command_line::CommandLine;
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::data_table::{DataTable, DataTableLayout};
-use crate::primitives::dialog::{Dialog, DialogLayout};
+use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout};
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::FormLayout;
@@ -2220,22 +2220,36 @@ impl Backend for MacBackend {
         // `draw_data_table`'s comment.
         let font = &self.chrome_font;
         let theme = self.current_theme;
+        let style = self.style();
         let line_height = self.current_line_height;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::palette::draw_palette(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                palette,
-                &theme,
-                line_height,
-                self.nerd_fonts_enabled,
-            );
+        if rect.width < 20.0 || rect.height < line_height as f32 * 4.0 {
+            return;
         }
+        let (palette_layout, rows_h) = crate::primitives::palette::native_surface_paint::layout(
+            rect.width,
+            rect.height,
+            palette,
+            line_height as f32,
+        );
+        // Calls the shared paint directly (rather than through
+        // `super::palette::draw_palette`, whose public signature stays
+        // additive-only and so cannot take a live `&Style`) so this live
+        // backend path honours `Self::set_style` overrides.
+        let mut surface = super::surface::CgSurface {
+            ctx,
+            font: Some(font),
+        };
+        crate::primitives::palette::native_surface_paint::paint(
+            palette,
+            rect,
+            &palette_layout,
+            rows_h,
+            line_height as f32,
+            self.nerd_fonts_enabled,
+            &mut surface,
+            &theme,
+            &style,
+        );
     }
 
     fn palette_layout(&self, rect: Rect, palette: &Palette) -> crate::PaletteLayout {
@@ -2879,21 +2893,28 @@ impl Backend for MacBackend {
         // `draw_data_table`'s comment.
         let font = &self.chrome_font;
         let theme = self.current_theme;
+        let style = self.style();
         let line_height = self.current_line_height;
         let char_width = self.current_char_width;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::tooltip::draw_tooltip_with_chrome(
-                ctx,
-                font,
-                tooltip,
-                layout,
-                chrome,
-                line_height,
-                char_width,
-                &theme,
-            );
-        }
+        // Calls the shared paint directly (rather than through
+        // `super::tooltip::draw_tooltip_with_chrome`, whose public
+        // signature stays additive-only and so cannot take a live
+        // `&Style`) so this live backend path honours `Self::set_style`
+        // overrides — see that free function's own doc.
+        let mut surface = super::surface::CgSurface {
+            ctx,
+            font: Some(font),
+        };
+        crate::primitives::tooltip::native_surface_paint::paint(
+            tooltip,
+            layout,
+            chrome,
+            line_height as f32,
+            char_width as f32,
+            &mut surface,
+            &theme,
+            &style,
+        );
     }
     fn draw_context_menu(
         &mut self,
@@ -2911,8 +2932,24 @@ impl Backend for MacBackend {
         // (`ChromePrimitive::ContextMenu`) — see `draw_tree`'s comment.
         let font = &self.chrome_font;
         let theme = self.current_theme;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe { super::context_menu::draw_context_menu(ctx, font, menu, layout, &theme) }
+        let style = self.style();
+        // Calls the shared paint directly (rather than through
+        // `super::context_menu::draw_context_menu`, whose public
+        // signature stays additive-only and so cannot take a live
+        // `&Style`) so this live backend path honours `Self::set_style`
+        // overrides.
+        let mut surface = super::surface::CgSurface {
+            ctx,
+            font: Some(font),
+        };
+        crate::primitives::context_menu::native_surface_paint::paint(
+            menu,
+            layout,
+            crate::accelerator::Platform::Macos,
+            &mut surface,
+            &theme,
+            &style,
+        )
     }
     fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect> {
         // #455: see draw_palette for why this happens before the CG borrow.
@@ -2927,9 +2964,46 @@ impl Backend for MacBackend {
         // font swap and why `line_height` stays the editor pitch.
         let font = &self.chrome_font;
         let theme = self.current_theme;
+        let style = self.style();
         let line_height = self.current_line_height;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe { super::dialog::draw_dialog(ctx, font, dialog, layout, line_height, &theme) }
+        // Calls the shared paint directly (rather than through
+        // `super::dialog::draw_dialog`, whose public signature stays
+        // additive-only and so cannot take a live `&Style`) so this live
+        // backend path honours `Self::set_style` overrides — the
+        // toolbar-sub-paint step below mirrors that free function's own
+        // body exactly.
+        let mut surface = super::surface::CgSurface {
+            ctx,
+            font: Some(font),
+        };
+        let button_rects = crate::primitives::dialog::native_surface_paint::paint(
+            dialog,
+            layout,
+            line_height as f32,
+            &mut surface,
+            &theme,
+            &style,
+        );
+        if let (Some(input_b), Some(DialogInput::Toolbar(toolbar))) =
+            (layout.input_bounds, dialog.input.as_ref())
+        {
+            // SAFETY: ctx is non-null inside the frame scope.
+            unsafe {
+                super::toolbar::draw_toolbar(
+                    ctx,
+                    font,
+                    input_b.x as f64,
+                    input_b.y as f64,
+                    input_b.width as f64,
+                    input_b.height as f64,
+                    toolbar,
+                    &theme,
+                    None,
+                    None,
+                );
+            }
+        }
+        button_rects
     }
     fn draw_float(
         &mut self,
@@ -3260,11 +3334,13 @@ impl Backend for MacBackend {
         // this method needs no separate ctx/font fetch of its own,
         // matching `Self::draw_status_bar`'s #860 shape.
         let theme = self.current_theme;
+        let style = self.style();
         let line_height = self.current_line_height as f32;
         crate::primitives::toast::native_surface_paint::paint(
             stack,
             self,
             &theme,
+            &style,
             rect.x,
             rect.y,
             rect.width,
@@ -3325,7 +3401,8 @@ impl Backend for MacBackend {
     /// into one implementation.
     fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
         let theme = self.current_theme;
-        crate::primitives::progress::native_surface_paint::paint(bar, self, &theme, rect)
+        let style = self.style();
+        crate::primitives::progress::native_surface_paint::paint(bar, self, &theme, rect, &style)
     }
     fn progress_layout(&self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
         super::progress::mac_progress_layout(
@@ -4032,6 +4109,17 @@ impl PaintSurface for ChromeSurface<'_> {
         self.backend.surface_stroke_rect(rect, color, stroke_width)
     }
 
+    fn surface_stroke_rounded_rect(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        color: Color,
+        stroke_width: f32,
+    ) {
+        self.backend
+            .surface_stroke_rounded_rect(rect, radius, color, stroke_width)
+    }
+
     fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
         let ctx = self.backend.current_cg();
         debug_assert!(
@@ -4187,6 +4275,17 @@ impl PaintSurface for EditorSurface<'_> {
 
     fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
         self.backend.surface_stroke_rect(rect, color, stroke_width)
+    }
+
+    fn surface_stroke_rounded_rect(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        color: Color,
+        stroke_width: f32,
+    ) {
+        self.backend
+            .surface_stroke_rounded_rect(rect, radius, color, stroke_width)
     }
 
     fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
@@ -4360,6 +4459,24 @@ impl PaintSurface for MacBackend {
         );
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe { ns_stroke_rect(ctx, rect, color, stroke_width as f64) };
+    }
+
+    /// `ns_stroke_rounded_rect`'s twin of
+    /// [`Self::surface_stroke_rect`] above.
+    fn surface_stroke_rounded_rect(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        color: Color,
+        stroke_width: f32,
+    ) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::surface_stroke_rounded_rect called outside enter_frame_scope",
+        );
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe { ns_stroke_rounded_rect(ctx, rect, radius, color, stroke_width as f64) };
     }
 
     /// See [`Self::surface_measure_text`]'s doc for why this reads
@@ -4610,6 +4727,50 @@ pub(crate) unsafe fn ns_stroke_rect(ctx: CGContextRef, rect: Rect, c: Color, lin
     CGContextSetRGBStrokeColor(ctx, r, g, b, a);
     CGContextSetLineWidth(ctx, line_width);
     CGContextStrokeRect(ctx, ns_cg_rect(rect));
+}
+
+/// [`ns_stroke_rect`]'s rounded-corner twin — builds the
+/// same `CGContextAddArcToPoint` tangent-arc path as
+/// [`ns_fill_rounded_rect`], then `CGContextStrokePath` instead of
+/// `CGContextFillPath`. See that function's doc for why this path
+/// technique over `CGPathCreateWithRoundedRect`.
+///
+/// `radius` is clamped the same way [`ns_fill_rounded_rect`]'s is.
+///
+/// # Safety
+/// Same contract as [`ns_fill_rect`].
+pub(crate) unsafe fn ns_stroke_rounded_rect(
+    ctx: CGContextRef,
+    rect: Rect,
+    radius: f32,
+    c: Color,
+    line_width: f64,
+) {
+    let r = (radius as f64)
+        .min(rect.width as f64 / 2.0)
+        .min(rect.height as f64 / 2.0)
+        .max(0.0);
+    let (x, y, w, h) = (
+        rect.x as f64,
+        rect.y as f64,
+        rect.width as f64,
+        rect.height as f64,
+    );
+    let (r0, g0, b0, a0) = ns_color_to_cg(c);
+    CGContextSetRGBStrokeColor(ctx, r0, g0, b0, a0);
+    CGContextSetLineWidth(ctx, line_width);
+    CGContextBeginPath(ctx);
+    CGContextMoveToPoint(ctx, x + r, y);
+    CGContextAddLineToPoint(ctx, x + w - r, y);
+    CGContextAddArcToPoint(ctx, x + w, y, x + w, y + r, r);
+    CGContextAddLineToPoint(ctx, x + w, y + h - r);
+    CGContextAddArcToPoint(ctx, x + w, y + h, x + w - r, y + h, r);
+    CGContextAddLineToPoint(ctx, x + r, y + h);
+    CGContextAddArcToPoint(ctx, x, y + h, x, y + h - r, r);
+    CGContextAddLineToPoint(ctx, x, y + r);
+    CGContextAddArcToPoint(ctx, x, y, x + r, y, r);
+    CGContextClosePath(ctx);
+    CGContextStrokePath(ctx);
 }
 
 /// # Safety

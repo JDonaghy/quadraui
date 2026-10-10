@@ -814,6 +814,7 @@ pub(crate) mod native_surface_paint {
     };
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
+    use crate::style::Style;
     use crate::theme::Theme;
     use crate::types::Color;
 
@@ -849,12 +850,15 @@ pub(crate) mod native_surface_paint {
     /// label width is measured directly against `surface`, so a no-paint
     /// hit-test caller (each backend's own `*_toast_stack_layout`) must
     /// keep using its own equivalent measurement to agree with what this
-    /// painted.
+    /// painted. `style` supplies the corner radius/border
+    /// width/shadow elevation every toast box paints with — callers pass
+    /// `&self.style()`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         stack: &ToastOverlay,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        style: &Style,
         origin_x: f32,
         origin_y: f32,
         viewport_width: f32,
@@ -927,7 +931,7 @@ pub(crate) mod native_surface_paint {
         for vt in &layout.visible_toasts {
             let toast = &stack.toasts[vt.toast_idx];
             let focus = stack.focus.as_ref().filter(|f| f.toast_id == toast.id);
-            paint_toast(surface, theme, vt, toast, line_height, focus);
+            paint_toast(surface, theme, style, vt, toast, line_height, focus);
         }
 
         layout
@@ -959,6 +963,7 @@ pub(crate) mod native_surface_paint {
     fn paint_toast(
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        style: &Style,
         vt: &VisibleToast,
         toast: &Toast,
         line_height: f32,
@@ -967,8 +972,21 @@ pub(crate) mod native_surface_paint {
         let bg_color = toast
             .accent
             .unwrap_or_else(|| severity_bg(toast.severity, theme));
-        surface.surface_fill_rect(vt.bounds, bg_color);
-        surface.surface_stroke_rect(vt.bounds, theme.border_fg, 1.0);
+        // VS-Code-style elevated card: a shadow behind, then a rounded
+        // fill and a rounded border.
+        surface.surface_draw_shadow(
+            vt.bounds,
+            style.corner_radius,
+            style.shadow_elevation,
+            Color::rgba(0, 0, 0, 100),
+        );
+        surface.surface_fill_rounded_rect(vt.bounds, style.corner_radius, bg_color);
+        surface.surface_stroke_rounded_rect(
+            vt.bounds,
+            style.corner_radius,
+            theme.border_fg,
+            style.border_width,
+        );
 
         let dismiss_w = vt.dismiss_bounds.map(|d| d.width).unwrap_or(0.0);
         let title_avail_w = (vt.bounds.width - TOAST_PADDING * 2.0 - dismiss_w).max(0.0);
@@ -1085,17 +1103,40 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// #1073: test-only recorder — `paint` never calls this verb
-            /// (see this module's own doc for why no primitive here has been
-            /// migrated onto it yet); this exists only so `RecordingSurface`
-            /// satisfies the trait. Records into the same `fills` list as
-            /// `surface_fill_rect` (radius dropped) — no test asserts on it
-            /// today.
+            /// `paint_toast` now paints its box through this verb
+            /// (radius dropped — same `fills` list `surface_fill_rect`
+            /// above records into, so every existing `fills[..]`
+            /// assertion still sees the toast's background fill here).
             fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
                 self.fills.push((rect, color));
             }
             fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
                 self.strokes.push((rect, color, stroke_width));
+            }
+            /// `paint_toast`'s border, radius dropped — same
+            /// `strokes` list `surface_stroke_rect` above records into.
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                rect: Rect,
+                _radius: f32,
+                color: Color,
+                stroke_width: f32,
+            ) {
+                self.strokes.push((rect, color, stroke_width));
+            }
+            /// Deliberately does **not** forward to
+            /// `PaintSurface`'s default (which would recurse into
+            /// `surface_fill_rounded_rect` three times and pollute
+            /// `fills` with shadow layers ahead of the real background
+            /// fill every `fills[0]`-indexing test here relies on) — a
+            /// no-op recorder, same posture as `surface_draw_line` below.
+            fn surface_draw_shadow(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _elevation: u8,
+                _color: Color,
+            ) {
             }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.text_runs.push((rect, text.to_string(), color));
@@ -1140,7 +1181,17 @@ pub(crate) mod native_surface_paint {
             let stack = stack_br(vec![]);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            let layout = paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
             assert!(layout.visible_toasts.is_empty());
             assert!(surface.fills.is_empty());
             assert!(surface.text_runs.is_empty());
@@ -1156,7 +1207,17 @@ pub(crate) mod native_surface_paint {
             let stack = stack_br(vec![t]);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
             assert_eq!(surface.fills[0].1, accent);
         }
 
@@ -1167,7 +1228,17 @@ pub(crate) mod native_surface_paint {
             let stack = stack_br(vec![t]);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
             assert_eq!(surface.fills[0].1, theme.error_fg);
         }
 
@@ -1186,7 +1257,17 @@ pub(crate) mod native_surface_paint {
             let stack = stack_br(vec![t]);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            let layout = paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
             let vt = &layout.visible_toasts[0];
             let db = vt.dismiss_bounds.expect("dismiss bounds present");
             let ab = vt.action_rects[0];
@@ -1230,7 +1311,17 @@ pub(crate) mod native_surface_paint {
             let stack = stack_br(vec![t]);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            let layout = paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
             let vt = &layout.visible_toasts[0];
             let db = vt.dismiss_bounds.expect("dismiss bounds present");
             assert_eq!(vt.action_rects.len(), 2);
@@ -1272,7 +1363,17 @@ pub(crate) mod native_surface_paint {
             let stack = stack_br(vec![t]);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            let layout = paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
             let vt = &layout.visible_toasts[0];
             let install_bounds = vt.action_rects[0];
             let skip_bounds = vt.action_rects[1];
@@ -1296,7 +1397,17 @@ pub(crate) mod native_surface_paint {
             });
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            let layout = paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
             let db = layout.visible_toasts[0]
                 .dismiss_bounds
                 .expect("dismiss bounds present");
@@ -1327,7 +1438,17 @@ pub(crate) mod native_surface_paint {
             });
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            let layout = paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
             let t2_visible = layout
                 .visible_toasts
                 .iter()
@@ -1359,7 +1480,17 @@ pub(crate) mod native_surface_paint {
             let stack = stack_br(vec![t]);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
             let title_run = surface
                 .text_runs
                 .iter()
@@ -1390,7 +1521,17 @@ pub(crate) mod native_surface_paint {
                 measured_text_height: Some(20.0),
                 ..Default::default()
             };
-            paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
             let title_run = surface
                 .text_runs
                 .iter()
@@ -1424,7 +1565,17 @@ pub(crate) mod native_surface_paint {
             let stack = stack_br(vec![t]);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            let layout = paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
 
             let vt = &layout.visible_toasts[0];
             let ab = vt.action_rects[0];

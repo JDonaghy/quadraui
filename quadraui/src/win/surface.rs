@@ -57,7 +57,7 @@ use crate::paint_surface::PaintSurface;
 use crate::{Color, Image, Point, Rect, Viewport};
 
 use super::text::{
-    draw_line, fill_rect, fill_rounded_rect, pop_clip, push_clip, stroke_rect,
+    draw_line, fill_rect, fill_rounded_rect, pop_clip, push_clip, stroke_rect, stroke_rounded_rect,
     with_horizontal_scale, DWrite,
 };
 
@@ -127,6 +127,18 @@ impl PaintSurface for D2dSurface<'_> {
 
     fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
         let _ = stroke_rect(self.target, rect, color, stroke_width);
+    }
+
+    /// `super::text::stroke_rounded_rect`'s `ID2D1RenderTarget`
+    /// twin of [`Self::surface_stroke_rect`] above.
+    fn surface_stroke_rounded_rect(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        color: Color,
+        stroke_width: f32,
+    ) {
+        let _ = stroke_rounded_rect(self.target, rect, radius, color, stroke_width);
     }
 
     fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {

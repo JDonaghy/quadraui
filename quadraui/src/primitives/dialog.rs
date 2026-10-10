@@ -744,7 +744,9 @@ pub fn native_dialog_options(d: &Dialog) -> Option<MessageDialogOptions> {
 pub(crate) mod native_surface_paint {
     use super::{Dialog, DialogInput, DialogLayout, DialogTable};
     use crate::paint_surface::PaintSurface;
+    use crate::style::Style;
     use crate::theme::Theme;
+    use crate::types::Color;
     use crate::Rect;
 
     /// Approximate monospace character width used to convert a
@@ -851,21 +853,38 @@ pub(crate) mod native_surface_paint {
     /// `surface` must already be constructed against the **chrome**
     /// font — see this module's doc for why the whole dialog paints in
     /// one font now. `DialogInput::Toolbar` is deliberately not painted
-    /// here; see the module doc.
+    /// here; see the module doc. `style` supplies the
+    /// corner radius/border width/shadow elevation the box paints with
+    /// — callers pass `&self.style()`.
     pub(crate) fn paint(
         dialog: &Dialog,
         dialog_layout: &DialogLayout,
         line_height: f32,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        style: &Style,
     ) -> Vec<Rect> {
         let bounds = dialog_layout.bounds;
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return Vec::new();
         }
 
-        surface.surface_fill_rect(bounds, theme.surface_bg);
-        surface.surface_stroke_rect(bounds, theme.border_fg, 1.0);
+        // Modal dialogs get the heaviest shadow elevation of the
+        // overlays this issue wires up — matching VS Code's own modal
+        // tier.
+        surface.surface_draw_shadow(
+            bounds,
+            style.corner_radius,
+            style.shadow_elevation.max(3),
+            Color::rgba(0, 0, 0, 120),
+        );
+        surface.surface_fill_rounded_rect(bounds, style.corner_radius, theme.surface_bg);
+        surface.surface_stroke_rounded_rect(
+            bounds,
+            style.corner_radius,
+            theme.border_fg,
+            style.border_width,
+        );
 
         if let Some(title_rect) = dialog_layout.title_bounds {
             surface.surface_draw_text_run(

@@ -549,8 +549,9 @@ pub(crate) mod native_surface_paint {
     use super::{ContextMenu, ContextMenuItem, ContextMenuLayout};
     use crate::accelerator::{render_accelerator, Platform};
     use crate::paint_surface::PaintSurface;
+    use crate::style::Style;
     use crate::theme::Theme;
-    use crate::types::WidgetId;
+    use crate::types::{Color, WidgetId};
     use crate::{Point, Rect};
 
     /// Right-aligned shortcut text — sourced from `item.detail`
@@ -573,13 +574,16 @@ pub(crate) mod native_surface_paint {
     /// [`crate::Backend::draw_context_menu`]'s own return contract.
     ///
     /// `platform` selects the key-equivalent render form (`⌘S` vs.
-    /// `Ctrl+S`) — see [`shortcut_text`].
+    /// `Ctrl+S`) — see [`shortcut_text`]. `style` supplies
+    /// the corner radius/border width/shadow elevation the popup box
+    /// paints with — callers pass `&self.style()`.
     pub(crate) fn paint(
         menu: &ContextMenu,
         menu_layout: &ContextMenuLayout,
         platform: Platform,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        style: &Style,
     ) -> Vec<(Rect, WidgetId)> {
         let bounds = menu_layout.bounds;
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
@@ -587,7 +591,21 @@ pub(crate) mod native_surface_paint {
         }
 
         let bg = menu.bg.unwrap_or(theme.hover_bg);
-        surface.surface_fill_rect(bounds, bg);
+        // VS-Code-style elevated card — a shadow behind, a
+        // rounded fill, and a border this popup never had before.
+        surface.surface_draw_shadow(
+            bounds,
+            style.corner_radius,
+            style.shadow_elevation,
+            Color::rgba(0, 0, 0, 100),
+        );
+        surface.surface_fill_rounded_rect(bounds, style.corner_radius, bg);
+        surface.surface_stroke_rounded_rect(
+            bounds,
+            style.corner_radius,
+            theme.border_fg,
+            style.border_width,
+        );
 
         let mut rects: Vec<(Rect, WidgetId)> = Vec::new();
 

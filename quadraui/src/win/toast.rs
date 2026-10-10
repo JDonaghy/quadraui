@@ -135,6 +135,7 @@ mod tests {
                     &stack,
                     &mut raw,
                     &theme,
+                    &crate::style::Style::default(),
                     rect.x,
                     rect.y,
                     rect.width,
@@ -148,11 +149,13 @@ mod tests {
         assert_eq!(layout.visible_toasts.len(), 1);
         let vt = &layout.visible_toasts[0];
 
-        // Probe near the box's own bottom-left corner — inset, away
-        // from glyphs/dismiss/action.
+        // Probe the box's own left edge at mid-height — inset, away
+        // from glyphs/dismiss/action *and* away from the rounded
+        // corners (a near-corner probe would land outside the fillet
+        // and see the backdrop instead of the box).
         let probe = surface.pixel_at(
             (vt.bounds.x + 2.0) as u32,
-            (vt.bounds.y + vt.bounds.height - 2.0) as u32,
+            (vt.bounds.y + vt.bounds.height / 2.0) as u32,
         );
         assert_eq!(
             (probe.r, probe.g, probe.b),
@@ -192,6 +195,7 @@ mod tests {
                     &stack,
                     &mut raw,
                     &theme,
+                    &crate::style::Style::default(),
                     rect.x,
                     rect.y,
                     rect.width,
@@ -228,6 +232,7 @@ mod tests {
                     &stack,
                     &mut raw,
                     &theme,
+                    &crate::style::Style::default(),
                     rect.x,
                     rect.y,
                     rect.width,
@@ -244,9 +249,12 @@ mod tests {
             "toast bounds should be shifted into the overlay's absolute frame"
         );
 
+        // Left edge at mid-height, not a corner — a near-corner
+        // probe would land outside the rounded fillet and see the
+        // backdrop instead of the box.
         let probe = surface.pixel_at(
             (vt.bounds.x + 2.0) as u32,
-            (vt.bounds.y + vt.bounds.height - 2.0) as u32,
+            (vt.bounds.y + vt.bounds.height / 2.0) as u32,
         );
         assert_eq!(
             (probe.r, probe.g, probe.b),

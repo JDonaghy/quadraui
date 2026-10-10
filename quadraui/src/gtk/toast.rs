@@ -144,6 +144,7 @@ mod tests {
                 &stack,
                 &mut raw,
                 &Theme::default(),
+                &crate::style::Style::default(),
                 origin_x as f32,
                 origin_y as f32,
                 VIEW_W as f32,
@@ -158,11 +159,13 @@ mod tests {
         assert_eq!(layout.visible_toasts.len(), 1);
         let vt = &layout.visible_toasts[0];
 
-        // Probe near the box's own bottom-left corner — inset, away
-        // from glyphs/dismiss — must be the toast's fill colour at the
-        // *absolute* bounds `draw_toast_stack` painted into.
+        // Probe near the box's own left edge, at mid-height — inset,
+        // away from glyphs/dismiss *and* away from the rounded corners
+        // (a near-corner probe would land outside the fillet, seeing the
+        // backdrop instead of the box) — must be the toast's fill colour
+        // at the *absolute* bounds `draw_toast_stack` painted into.
         let probe_x = (vt.bounds.x + 2.0) as i32;
-        let probe_y = (vt.bounds.y + vt.bounds.height - 2.0) as i32;
+        let probe_y = (vt.bounds.y + vt.bounds.height / 2.0) as i32;
         assert_eq!(
             pixel(&data, stride, probe_x, probe_y),
             (BOX_COLOR.r, BOX_COLOR.g, BOX_COLOR.b),

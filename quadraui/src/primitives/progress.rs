@@ -229,25 +229,31 @@ pub(crate) mod native_surface_paint {
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::primitives::layout_metrics::{pixel, pixel_progress_layout};
+    use crate::style::Style;
     use crate::theme::Theme;
 
     /// Paint a [`ProgressBar`] into `rect` on `surface`, returning
     /// [`ProgressBarLayout`] for host click dispatch — same contract as
-    /// every deleted per-backend `draw_progress`.
+    /// every deleted per-backend `draw_progress`. `style` supplies the
+    /// corner radius the track/fill paint with — no
+    /// border/shadow: VS Code's own progress indicator is a flat bar
+    /// with no outline or elevation, unlike the card-shaped overlays
+    /// this issue also touches. Callers pass `&self.style()`.
     pub(crate) fn paint(
         bar: &ProgressBar,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         rect: Rect,
+        style: &Style,
     ) -> ProgressBarLayout {
         let layout = pixel_progress_layout(bar, rect.x, rect.y, rect.width, rect.height);
 
         // Track background.
-        surface.surface_fill_rect(rect, theme.surface_bg);
+        surface.surface_fill_rounded_rect(rect, style.corner_radius, theme.surface_bg);
 
         let fill_color = bar.accent.unwrap_or(theme.accent_bg);
         if let Some(fb) = layout.fill_bounds {
-            surface.surface_fill_rect(fb, fill_color);
+            surface.surface_fill_rounded_rect(fb, style.corner_radius, fill_color);
         } else {
             // Indeterminate pulse — same cadence on every backend.
             let bar_w = if bar.cancellable {
@@ -260,8 +266,9 @@ pub(crate) mod native_surface_paint {
                 let pos = (bar.frame_idx as f32 * 4.0) % bar_w;
                 let w = pulse_w.min(bar_w - pos);
                 if w > 0.0 {
-                    surface.surface_fill_rect(
+                    surface.surface_fill_rounded_rect(
                         Rect::new(rect.x + pos, rect.y, w, rect.height),
+                        style.corner_radius,
                         fill_color,
                     );
                 }
@@ -339,6 +346,14 @@ pub(crate) mod native_surface_paint {
                 self.fills.push((rect, color));
             }
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.text_runs.push((rect, text.to_string(), color));
             }
@@ -377,7 +392,13 @@ pub(crate) mod native_surface_paint {
                 ..Theme::default()
             };
             let mut surface = RecordingSurface::default();
-            let layout = paint(&bar, &mut surface, &theme, Rect::new(0.0, 0.0, 200.0, 20.0));
+            let layout = paint(
+                &bar,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 200.0, 20.0),
+                &Style::default(),
+            );
             let fb = layout.fill_bounds.expect("determinate fill present");
             assert!(surface
                 .fills
@@ -391,7 +412,13 @@ pub(crate) mod native_surface_paint {
             bar.label = "Uploading".into();
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&bar, &mut surface, &theme, Rect::new(0.0, 0.0, 200.0, 20.0));
+            paint(
+                &bar,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 200.0, 20.0),
+                &Style::default(),
+            );
             assert!(surface.text_runs.iter().any(|(_, t, _)| t == "Uploading"));
             assert!(surface.text_runs.iter().any(|(_, t, _)| t == "\u{d7}"));
         }
@@ -407,6 +434,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface0,
                 &theme,
                 Rect::new(0.0, 0.0, 200.0, 20.0),
+                &Style::default(),
             );
 
             let mut bar1 = bar(None, false);
@@ -417,6 +445,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface1,
                 &theme,
                 Rect::new(0.0, 0.0, 200.0, 20.0),
+                &Style::default(),
             );
 
             let pulse0 = surface0.fills.last().expect("pulse fill").0;

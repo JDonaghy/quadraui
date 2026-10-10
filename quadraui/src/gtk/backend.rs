@@ -2680,18 +2680,38 @@ impl Backend for GtkBackend {
         // `PaintSurface`.
         let saved_font = layout.font_description();
         layout.set_font_description(Some(&ui_font_desc));
-        crate::gtk::draw_palette(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            palette,
-            &self.current_theme,
-            self.current_line_height,
-            self.nerd_fonts_enabled,
-        );
+        // Calls the shared paint directly (rather than through
+        // `crate::gtk::draw_palette`, whose public signature stays
+        // additive-only and so cannot take a live `&Style`) so this live
+        // backend path honours `Self::set_style` overrides.
+        if rect.width >= 20.0 && rect.height >= self.current_line_height as f32 * 4.0 {
+            let (palette_layout, rows_h) = crate::gtk::gtk_palette_layout(
+                rect.width as f64,
+                rect.height as f64,
+                palette,
+                self.current_line_height,
+            );
+            let area = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
+            let style = self.style();
+            let nerd_fonts_enabled = self.nerd_fonts_enabled;
+            let mut surface = crate::gtk::surface::CairoSurface {
+                cr,
+                layout: Some(layout),
+                translucent_fill: true,
+            };
+            crate::primitives::palette::native_surface_paint::paint(
+                palette,
+                area,
+                &palette_layout,
+                rows_h as f32,
+                self.current_line_height as f32,
+                nerd_fonts_enabled,
+                &mut surface,
+                &self.current_theme,
+                &style,
+            );
+            layout.set_attributes(None);
+        }
         layout.set_font_description(saved_font.as_ref());
     }
 
@@ -3744,6 +3764,7 @@ impl Backend for GtkBackend {
         layout_arg: &crate::TooltipLayout,
         chrome: &crate::TooltipChrome,
     ) {
+        let style = self.style();
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
@@ -3753,16 +3774,27 @@ impl Backend for GtkBackend {
         // matching `Self::draw_tree`'s save/swap/restore.
         let saved_font = pango_layout.font_description();
         pango_layout.set_font_description(Some(&ui_font_desc));
-        crate::gtk::draw_tooltip_with_chrome(
+        // Calls the shared paint directly (rather than through
+        // `crate::gtk::draw_tooltip_with_chrome`, whose public signature
+        // stays additive-only and so cannot take a live `&Style`) so
+        // this live backend path honours `Self::set_style` overrides —
+        // see `crate::gtk::draw_tooltip_with_chrome`'s own doc.
+        let mut surface = crate::gtk::surface::CairoSurface {
             cr,
-            pango_layout,
+            layout: Some(pango_layout),
+            translucent_fill: true,
+        };
+        crate::primitives::tooltip::native_surface_paint::paint(
             tooltip,
             layout_arg,
             chrome,
-            self.current_line_height,
-            self.current_char_width,
+            self.current_line_height as f32,
+            self.current_char_width as f32,
+            &mut surface,
             &self.current_theme,
+            &style,
         );
+        pango_layout.set_attributes(None);
         pango_layout.set_font_description(saved_font.as_ref());
         // #542: register the tooltip's own surface — see the matching
         // comment on `TuiBackend::draw_tooltip`. GTK already painted a
@@ -3797,20 +3829,27 @@ impl Backend for GtkBackend {
         // `compose::menu_system`, outside this issue's file list.
         let saved_font = pango_layout.font_description();
         pango_layout.set_font_description(Some(&ui_font_desc));
-        let hits = crate::gtk::draw_context_menu(
+        // Calls the shared paint directly (rather than through
+        // `crate::gtk::draw_context_menu`, whose public signature stays
+        // additive-only and so cannot take a live `&Style`) so this live
+        // backend path honours `Self::set_style` overrides.
+        let style = self.style();
+        let mut surface = crate::gtk::surface::CairoSurface {
             cr,
-            pango_layout,
+            layout: Some(pango_layout),
+            translucent_fill: true,
+        };
+        let hits = crate::primitives::context_menu::native_surface_paint::paint(
             menu,
             layout_arg,
-            self.current_line_height,
+            crate::accelerator::Platform::Linux,
+            &mut surface,
             &self.current_theme,
+            &style,
         );
+        pango_layout.set_attributes(None);
         pango_layout.set_font_description(saved_font.as_ref());
-        // Reshape rasteriser's `(x, y, w, h, id)` tuples into
-        // `(Rect, WidgetId)` for the trait return.
-        hits.into_iter()
-            .map(|(x, y, w, h, id)| (QRect::new(x as f32, y as f32, w as f32, h as f32), id))
-            .collect()
+        hits
     }
 
     fn draw_dialog(
@@ -3822,23 +3861,51 @@ impl Backend for GtkBackend {
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let line_height = self.current_line_height;
         let theme = self.current_theme;
+        let style = self.style();
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_dialog called outside enter_frame_scope");
-        let rects = crate::gtk::draw_dialog(
+        // Calls the shared paint directly (rather than through
+        // `crate::gtk::draw_dialog`, whose public signature stays
+        // additive-only and so cannot take a live `&Style`) so this live
+        // backend path honours `Self::set_style` overrides — the
+        // font-swap/toolbar-sub-paint/restore steps below mirror that
+        // free function's own body exactly.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let mut surface = crate::gtk::surface::CairoSurface {
             cr,
-            pango_layout,
-            &ui_font_desc,
+            layout: Some(pango_layout),
+            translucent_fill: true,
+        };
+        let rects = crate::primitives::dialog::native_surface_paint::paint(
             dialog,
             dialog_layout,
-            line_height,
+            line_height as f32,
+            &mut surface,
             &theme,
+            &style,
         );
+        if let (Some(input_b), Some(crate::primitives::dialog::DialogInput::Toolbar(toolbar))) =
+            (dialog_layout.input_bounds, dialog.input.as_ref())
+        {
+            crate::gtk::toolbar::draw_toolbar(
+                cr,
+                pango_layout,
+                input_b.x as f64,
+                input_b.y as f64,
+                input_b.width as f64,
+                input_b.height as f64,
+                toolbar,
+                &theme,
+                None,
+                None,
+            );
+        }
+        pango_layout.set_attributes(None);
+        pango_layout.set_font_description(saved_font.as_ref());
         rects
-            .into_iter()
-            .map(|(x, y, w, h)| QRect::new(x as f32, y as f32, w as f32, h as f32))
-            .collect()
     }
 
     fn draw_float(
@@ -4370,11 +4437,13 @@ impl Backend for GtkBackend {
         // cr/pango fetch of its own, matching `Self::draw_status_bar`'s
         // #860 shape.
         let theme = self.current_theme;
+        let style = self.style();
         let line_height = self.current_line_height as f32;
         crate::primitives::toast::native_surface_paint::paint(
             stack,
             self,
             &theme,
+            &style,
             rect.x,
             rect.y,
             rect.width,
@@ -4432,7 +4501,8 @@ impl Backend for GtkBackend {
         bar: &crate::primitives::progress::ProgressBar,
     ) -> crate::primitives::progress::ProgressBarLayout {
         let theme = self.current_theme;
-        crate::primitives::progress::native_surface_paint::paint(bar, self, &theme, rect)
+        let style = self.style();
+        crate::primitives::progress::native_surface_paint::paint(bar, self, &theme, rect, &style)
     }
 
     fn progress_layout(
@@ -5187,6 +5257,17 @@ impl PaintSurface for EditorSurface<'_> {
         self.backend.surface_stroke_rect(rect, color, stroke_width)
     }
 
+    fn surface_stroke_rounded_rect(
+        &mut self,
+        rect: QRect,
+        radius: f32,
+        color: Color,
+        stroke_width: f32,
+    ) {
+        self.backend
+            .surface_stroke_rounded_rect(rect, radius, color, stroke_width)
+    }
+
     /// See [`Self::surface_measure_text`]'s doc for why this forces
     /// `editor_font_pango_string()` explicitly.
     fn surface_draw_text_run(&mut self, rect: QRect, text: &str, color: Color) {
@@ -5438,6 +5519,36 @@ impl PaintSurface for GtkBackend {
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
+        );
+        cr.stroke().ok();
+    }
+
+    /// [`Self::surface_fill_rounded_rect`]'s stroke twin — same
+    /// `crate::gtk::rounded_rect_path` recipe, `cr.stroke()` instead of
+    /// `cr.fill()`.
+    fn surface_stroke_rounded_rect(
+        &mut self,
+        rect: QRect,
+        radius: f32,
+        color: Color,
+        stroke_width: f32,
+    ) {
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_stroke_rounded_rect called outside enter_frame_scope");
+        let r = (radius as f64)
+            .min(rect.width as f64 / 2.0)
+            .min(rect.height as f64 / 2.0)
+            .max(0.0);
+        crate::gtk::set_source(cr, color);
+        cr.set_line_width(stroke_width as f64);
+        crate::gtk::rounded_rect_path(
+            cr,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            r,
         );
         cr.stroke().ok();
     }
@@ -10366,6 +10477,185 @@ mod tests {
             (0, 0, 0),
             "a corner pixel well inside a radius-15 fillet on a 40x40 box must stay \
              untouched — otherwise this is just `surface_fill_rect` under a new name"
+        );
+    }
+
+    /// `surface_stroke_rounded_rect` must paint a real rounded
+    /// stroke, not a plain rectangle — a point on the (straight) side of
+    /// the box must land the stroke colour, a corner pixel well inside
+    /// the fillet radius must stay untouched (same proof shape as
+    /// `gtk_backend_paint_surface_fill_rounded_rect_clips_the_corners`),
+    /// and the box's centre — far from any stroke — must also stay
+    /// untouched, proving this is a stroke and not a fill.
+    #[test]
+    fn gtk_backend_paint_surface_stroke_rounded_rect_clips_the_corners() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        let blue = Color::rgb(60, 120, 220);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.surface_stroke_rounded_rect(QRect::new(0.0, 0.0, 40.0, 40.0), 15.0, blue, 4.0);
+            });
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_eq!(
+            probe_pixel_417(&data, stride, 20, 1),
+            (blue.r, blue.g, blue.b),
+            "the straight middle of the top edge must land the stroke colour"
+        );
+        assert_eq!(
+            probe_pixel_417(&data, stride, 1, 1),
+            (0, 0, 0),
+            "a corner pixel well inside a radius-15 fillet on a 40x40 box must stay \
+             untouched"
+        );
+        assert_eq!(
+            probe_pixel_417(&data, stride, 20, 20),
+            (0, 0, 0),
+            "the box's centre, far from any stroke, must stay untouched — otherwise \
+             this is `surface_fill_rounded_rect` under a new name"
+        );
+    }
+
+    /// `surface_draw_shadow`'s default decomposes into
+    /// `surface_fill_rounded_rect` layers — elevation `0` must paint
+    /// nothing at all (the explicit "no shadow" tier), proven by the
+    /// whole surface staying at its untouched clear value.
+    #[test]
+    fn gtk_backend_paint_surface_draw_shadow_elevation_zero_is_a_no_op() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        let shadow = Color::rgba(0, 0, 0, 128);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.surface_draw_shadow(QRect::new(10.0, 10.0, 20.0, 20.0), 6.0, 0, shadow);
+            });
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_eq!(
+            probe_pixel_417(&data, stride, 20, 20),
+            (0, 0, 0),
+            "elevation 0 must paint nothing — the box's own centre must stay at the \
+             surface's untouched clear value"
+        );
+    }
+
+    /// A nonzero elevation must actually paint something below
+    /// the box — proven by a pixel just under the box's bottom edge
+    /// (inside the shadow's spread/offset, outside the box itself)
+    /// picking up ink it didn't have before. Fills the whole canvas
+    /// white first — a black-on-transparent probe would read `(0, 0,
+    /// 0)` either way (cairo premultiplies, so a zero-RGB source over a
+    /// zero-alpha destination is indistinguishable from "nothing
+    /// painted"), so this needs a non-black backdrop to actually prove
+    /// the layer composited.
+    #[test]
+    fn gtk_backend_paint_surface_draw_shadow_elevation_three_paints_below_the_box() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        let white = Color::rgb(255, 255, 255);
+        let shadow = Color::rgba(0, 0, 0, 200);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.surface_fill_rect(QRect::new(0.0, 0.0, 40.0, 40.0), white);
+                b.surface_draw_shadow(QRect::new(5.0, 5.0, 20.0, 20.0), 6.0, 3, shadow);
+            });
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_ne!(
+            probe_pixel_417(&data, stride, 15, 29),
+            (white.r, white.g, white.b),
+            "a pixel just below the box's bottom edge must pick up shadow ink at \
+             elevation 3"
+        );
+    }
+
+    /// `surface_draw_path`'s default decomposes a closed
+    /// triangle into `surface_draw_line` segments — each edge's
+    /// midpoint must land the stroke colour, proving `MoveTo`/`LineTo`/
+    /// `Close` each actually painted a segment rather than being
+    /// silently dropped.
+    #[test]
+    fn gtk_backend_paint_surface_draw_path_strokes_every_segment() {
+        use crate::PathVerb;
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        let green = Color::rgb(20, 180, 20);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.surface_draw_path(
+                    &[
+                        PathVerb::MoveTo(Point::new(5.0, 5.0)),
+                        PathVerb::LineTo(Point::new(35.0, 5.0)),
+                        PathVerb::LineTo(Point::new(20.0, 35.0)),
+                        PathVerb::Close,
+                    ],
+                    green,
+                    2.0,
+                );
+            });
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        // Top edge midpoint (MoveTo -> first LineTo) is axis-aligned, so
+        // it paints the solid stroke colour with no antialiasing fuzz.
+        assert_eq!(
+            probe_pixel_417(&data, stride, 20, 5),
+            (green.r, green.g, green.b),
+            "the axis-aligned top edge must paint the solid stroke colour"
+        );
+        // The two diagonal edges antialias, so a probe near their
+        // midpoint only lands a *partial* green/background blend, not
+        // the solid colour — "not still (0, 0, 0)" is still a real
+        // proof that `LineTo`/`Close` each painted a segment.
+        assert_ne!(
+            probe_pixel_417(&data, stride, 28, 20),
+            (0, 0, 0),
+            "the diagonal right edge (first LineTo -> second LineTo) must paint something"
+        );
+        assert_ne!(
+            probe_pixel_417(&data, stride, 12, 20),
+            (0, 0, 0),
+            "the diagonal left edge (second LineTo -> Close) must paint something"
         );
     }
 

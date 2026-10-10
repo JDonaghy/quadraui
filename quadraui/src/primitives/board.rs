@@ -958,6 +958,15 @@ pub(crate) mod native_surface_paint {
             fn surface_stroke_rect(&mut self, rect: Rect, color: Color, _stroke_width: f32) {
                 self.strokes.push((rect, color));
             }
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                rect: Rect,
+                _radius: f32,
+                color: Color,
+                _stroke_width: f32,
+            ) {
+                self.strokes.push((rect, color));
+            }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.text_runs.push((rect, text.to_string(), color));
             }
@@ -1110,6 +1119,16 @@ pub(crate) mod native_surface_paint {
                 }
                 fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
                     self.0.surface_stroke_rect(rect, color, stroke_width)
+                }
+                fn surface_stroke_rounded_rect(
+                    &mut self,
+                    rect: Rect,
+                    radius: f32,
+                    color: Color,
+                    stroke_width: f32,
+                ) {
+                    self.0
+                        .surface_stroke_rounded_rect(rect, radius, color, stroke_width)
                 }
                 fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                     self.0.surface_draw_text_run(rect, text, color)
