@@ -957,6 +957,23 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "a terminal cell grid has no sub-cell Rect to paint into — PaintSurface's own module \
          doc, \"Why TUI stays out\", explains why TuiBackend never implements this trait (#1101)",
     ),
+    // ── TUI: `set_editor_v_scrollbar_width` / `editor_v_scrollbar_width`.
+    // The editor's vertical scrollbar on a terminal is one cell wide by
+    // construction — a pixel width has no cell grid to land on — so TUI
+    // ignores the setter and reports `None`, per the trait doc. GUI
+    // backends override both.
+    (
+        "tui",
+        "set_editor_v_scrollbar_width",
+        "a terminal scrollbar column is one cell wide; a pixel width has nothing to map to, \
+         per Backend::set_editor_v_scrollbar_width's own doc",
+    ),
+    (
+        "tui",
+        "editor_v_scrollbar_width",
+        "TUI ignores set_editor_v_scrollbar_width, so the always-None default is the truthful \
+         answer",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.

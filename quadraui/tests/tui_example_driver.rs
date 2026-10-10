@@ -86,6 +86,8 @@ mod folder_picker_app;
 mod form_all_fields;
 #[path = "../examples/common/form_groups.rs"]
 mod form_groups;
+#[path = "../examples/common/form_scroll.rs"]
+mod form_scroll;
 #[path = "../examples/common/frame_demo.rs"]
 mod frame_demo;
 #[path = "../examples/common/full_chrome_demo.rs"]
@@ -194,6 +196,7 @@ use focus_demo::{FocusDemo, LEFT_ID, RIGHT_ID, STATUS_ID};
 use folder_picker_app::FolderPickerApp;
 use form_all_fields::FormAllFieldsApp;
 use form_groups::FormGroupsApp;
+use form_scroll::FormScrollApp;
 use frame_demo::FrameDemo;
 use full_chrome_demo::FullChromeDemo;
 use help_layer_demo::HelpLayerDemo;
@@ -5167,6 +5170,121 @@ fn form_groups_click_toggle_flips_rendered_value() {
         after.contains("last: case=false"),
         "clicking the case-sensitive toggle (starts true) should flip it and show \
          case=false in the status bar:\n{after}"
+    );
+}
+
+// ─── FormScrollApp: keyboard editing of Form text fields ──────────────────
+//
+// `FormController::handle_inner` decodes `KeyPressed`/`CharTyped` for the
+// focused field itself. `FormScrollApp::handle` (unlike `FormGroupsApp`
+// above) has no key-decoding arm of its own for its `name` field — every
+// assertion below exercises `fc.handle_cached` alone turning raw keystrokes
+// into `FormEvent::TextInputChanged`/`TextInputCommitted`/`FocusChanged`,
+// proving "no app-side key plumbing is needed to edit a field".
+
+#[test]
+fn form_scroll_typing_into_the_already_focused_name_field_edits_it() {
+    let mut driver = TuiDriver::new(FormScrollApp::new(), 100, 24);
+
+    // `FormScrollApp::new()` starts with the name field already focused
+    // (so it's reachable without a GUI-only focus ring) — typing
+    // immediately edits it. No `Tab` press here; that's covered by
+    // `form_scroll_tab_moves_focus_from_name_to_first_toggle_and_back`
+    // below.
+    driver.type_char('J');
+    driver.type_char('o');
+    driver.type_char('e');
+
+    let after = driver.screen();
+    // "Joe" must appear twice: once in the rendered Name field itself,
+    // once in the status bar's "name = \"Joe\"" echo of the emitted
+    // event. Asserting just `contains("Joe")` would also pass if the
+    // form field painted nothing at all, since the status bar line
+    // alone already contains it — counting occurrences ties the
+    // assertion to the form field actually rendering the typed value.
+    assert_eq!(
+        after.matches("Joe").count(),
+        2,
+        "expected \"Joe\" once in the rendered Name field and once in the \
+         status bar's TextInputChanged echo:\n{after}"
+    );
+    assert!(
+        after.contains("name = \"Joe\""),
+        "each keystroke should emit FormEvent::TextInputChanged, logged to \
+         the status bar:\n{after}"
+    );
+}
+
+#[test]
+fn form_scroll_backspace_deletes_the_last_typed_char() {
+    let mut driver = TuiDriver::new(FormScrollApp::new(), 100, 24);
+    driver.type_char('J');
+    driver.type_char('o');
+    driver.type_char('e');
+    driver.press_named(quadraui::NamedKey::Backspace);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("name = \"Jo\""),
+        "Backspace should delete the trailing 'e':\n{after}"
+    );
+}
+
+#[test]
+fn form_scroll_enter_commits_the_name_field() {
+    let mut driver = TuiDriver::new(FormScrollApp::new(), 100, 24);
+    driver.type_char('J');
+    driver.type_char('o');
+    driver.press_named(quadraui::NamedKey::Enter);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("name committed: \"Jo\""),
+        "Enter on a focused text field should emit TextInputCommitted, not \
+         insert a newline:\n{after}"
+    );
+}
+
+#[test]
+fn form_scroll_tab_moves_focus_from_name_to_first_toggle_and_back() {
+    let mut driver = TuiDriver::new(FormScrollApp::new(), 100, 24);
+
+    driver.press_named(quadraui::NamedKey::Tab);
+    let after_tab = driver.screen();
+    assert!(
+        after_tab.contains("focus → toggle-0"),
+        "Tab from the name field should move focus to the first toggle:\n{after_tab}"
+    );
+
+    driver.press_named(quadraui::NamedKey::BackTab);
+    let after_backtab = driver.screen();
+    assert!(
+        after_backtab.contains("focus → name"),
+        "Shift+Tab (BackTab) should move focus back to the name field:\n{after_backtab}"
+    );
+
+    // Typing now edits the name field again, confirming focus actually
+    // round-tripped rather than merely logging the right id.
+    driver.type_char('X');
+    let after_type = driver.screen();
+    assert!(
+        after_type.contains("name = \"X\""),
+        "after Tab then Shift+Tab, typing should still reach the name field:\n{after_type}"
+    );
+}
+
+#[test]
+fn form_scroll_typing_q_while_editing_name_does_not_quit() {
+    let mut driver = TuiDriver::new(FormScrollApp::new(), 100, 24);
+    driver.type_char('q');
+    assert!(
+        !driver.exited(),
+        "'q' while the name field is focused should type a 'q', not quit"
+    );
+    let after = driver.screen();
+    assert!(
+        after.contains("name = \"q\""),
+        "the typed 'q' should land in the name field:\n{after}"
     );
 }
 

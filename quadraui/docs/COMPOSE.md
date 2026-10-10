@@ -297,6 +297,27 @@ change/submit from the underlying `Form`), `ScrollChanged`, `Consumed`,
 `Ignored`. Use `handle_cached` instead of `handle` when your event
 handler runs without a `&mut dyn Backend` reference.
 
+**Keyboard editing (quadraui#1376):** `handle`/`handle_cached` route
+`KeyPressed`/`CharTyped` for you — no app-side key decoding needed.
+
+- `Tab` / `Shift+Tab` (or `BackTab`) move focus to the next/previous
+  non-`Label`, non-disabled field, wrapping around, and emit
+  `FormEvent::FocusChanged { id }`. Store `id` and feed it back as
+  `Form.focused_field` on the next `set_form` — the same contract
+  `primitives/form.rs` already documented for Tab traversal.
+- While a `TextInput` / `TextArea` / `PasswordInput` field has focus,
+  typed characters, Backspace/Delete, arrow keys (plain and
+  Shift-extended for selection) all edit that field's `value` through
+  `EditOp::from_key` + `TextEditor::apply`, emitting
+  `FormEvent::TextInputChanged { id, value }`. `Enter` commits instead
+  of inserting a newline, emitting `FormEvent::TextInputCommitted`.
+- The cursor/selection position is cached **inside** `FormController`,
+  not the app — your model only needs the `String` value from
+  `TextInputChanged`/`TextInputCommitted`, same shape as a toggle's
+  `bool`. Cursor-only movement (e.g. a bare arrow key) returns
+  `FormControllerEvent::Consumed`, not a `FormAction`, since no text
+  changed.
+
 **Smallest wiring:**
 
 ```ignore
@@ -309,7 +330,9 @@ if let FormControllerEvent::FormAction(ev) = form.handle(&event, backend) {
 ```
 
 **Example:** `examples/tui_form_scroll.rs` / `examples/gtk_form_scroll.rs`
-(`examples/common/form_scroll.rs`).
+(`examples/common/form_scroll.rs`) — its `name` field demonstrates
+keyboard editing end to end; `FormScrollApp::handle` has no key-decoding
+arm of its own for it.
 
 ---
 

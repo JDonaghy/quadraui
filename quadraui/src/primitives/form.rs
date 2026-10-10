@@ -13,9 +13,14 @@
 //! frames. (Scroll offset, if added later, follows the same
 //! primitive-owned-via-WidgetId pattern as `TreeView`.)
 //!
-//! Keyboard navigation between fields is backend-driven: Tab / Shift-Tab
-//! moves focus forward/backward; arrow keys within a field are handled
-//! by that field's kind-specific logic.
+//! This module is paint/layout/hit-test only — it has no `UiEvent`
+//! handling of its own (there is no `Form::handle`). Keyboard editing
+//! and Tab/Shift-Tab focus traversal are implemented one layer up, in
+//! [`crate::compose::form_controller::FormController`]:
+//! route every event through `FormController::handle`/`handle_cached`
+//! and both "just work" with no app-side key decoding. The *shape* of
+//! what gets emitted — described below — is still owned by this module,
+//! since `FormEvent` lives here.
 //!
 //! # Backend contract
 //!
@@ -24,15 +29,19 @@
 //!
 //! - `Toggle` — checkbox / switch UI; click flips value, emit
 //!   `FormEvent::ToggleChanged`.
-//! - `TextInput` — render text + cursor + selection; route printable
-//!   keys to text mutation, emit `FormEvent::TextInputChanged` per
+//! - `TextInput` — render text + cursor + selection; a consumer going
+//!   through `FormController` gets keystroke routing for free (see this
+//!   module's doc above); emits `FormEvent::TextInputChanged` per
 //!   keystroke and `TextInputCommitted` on Enter.
 //! - `Button` — render label, click emits `FormEvent::ButtonClicked`.
 //! - `Label` — non-interactive header / divider.
 //!
 //! Tab / Shift-Tab move `focused_field` forward/backward through
-//! interactive fields (skip `Label`); emit `FormEvent::FocusChanged
-//! { id }`. The *app* updates `focused_field` on the next frame.
+//! interactive fields (skip `Label`, skip disabled fields); emit
+//! `FormEvent::FocusChanged { id }`. The *app* updates `focused_field`
+//! on the next frame — `FormController` computes `id`, it does not
+//! mutate `Form.focused_field` itself (the description stays app-owned,
+//! per this module's first paragraph).
 //!
 //! No measurement-dependent state — fields are uniform-height per
 //! backend.
@@ -134,9 +143,14 @@ pub enum FieldKind {
     ///
     /// `cursor` is a byte offset into `value`. When `Some(n)`, backends
     /// render a cursor at that position; when `None`, the field is
-    /// displayed read-only (no cursor). The app is responsible for
-    /// updating `cursor` as the user types / moves — the primitive does
-    /// not do its own input handling.
+    /// displayed read-only (no cursor). This primitive itself does no
+    /// input handling — it just paints whatever `cursor` says — but a
+    /// consumer going through
+    /// [`crate::compose::form_controller::FormController`] does not need
+    /// to compute `cursor` by hand: the controller tracks it internally
+    /// across keystrokes and overlays it when rendering.
+    /// A consumer driving `Form` directly (bypassing `FormController`)
+    /// is still responsible for updating `cursor` itself.
     ///
     /// `selection_anchor` is a byte offset into `value`. When `Some(n)`
     /// and `n != cursor`, backends render the range between `anchor` and

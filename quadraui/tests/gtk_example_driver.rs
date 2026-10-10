@@ -62,6 +62,10 @@ use context_menu_style_demo::ContextMenuStyleDemo;
 mod submenu_app;
 use submenu_app::SubmenuApp;
 
+#[path = "../examples/common/form_scroll.rs"]
+mod form_scroll;
+use form_scroll::FormScrollApp;
+
 // Pixel canvas — big enough for five stage boxes + arrow connectors + the
 // bottom status bar at GTK's native (pixel, not cell) scale.
 const W: i32 = 800;
@@ -1271,6 +1275,81 @@ fn submenu_menu_bar_dropdown_opens_two_nested_levels() {
     assert!(
         driver.screen_contains("activated: export-png-lossless"),
         "activating the deepest leaf should report its id: {:?}",
+        driver.painted_texts()
+    );
+}
+
+// ─── FormScrollApp: keyboard editing of Form text fields (GTK) ────────────
+//
+// GUI-reference leg of `tests/tui_example_driver.rs`'s "FormScrollApp"
+// block: same `AppLogic`, same `FormController::handle_cached` doing all
+// the key decoding, this time painted by the GTK rasteriser via
+// `primitives/form.rs::paint_bracketed_text`. Proves the keyboard-editing
+// wiring in `compose::form_controller` is backend-agnostic rather than an
+// artifact of how TUI happens to render a `TextInput`.
+
+const FORM_SCROLL_W: i32 = 900;
+const FORM_SCROLL_H: i32 = 700;
+
+#[test]
+fn form_scroll_gtk_typing_into_the_focused_name_field_edits_it() {
+    let mut driver = GtkDriver::new(FormScrollApp::new(), FORM_SCROLL_W, FORM_SCROLL_H);
+
+    // `FormScrollApp::new()` starts with the name field already focused.
+    driver.type_char('J');
+    driver.type_char('o');
+    driver.type_char('e');
+
+    // The Name field's value paints as its own standalone run, exactly
+    // `"Joe"` (`paint_bracketed_text`'s unselected-text branch) — unlike
+    // the status bar's run, which is the whole segment string
+    // (`" scroll=0 | name = \"Joe\" "`). Asserting an *exact* match
+    // (rather than `contains`) ties this to the form field itself having
+    // painted the typed value, not just the status bar's echo of the
+    // emitted event, and sidesteps `GtkBackend::painted_text`'s double
+    // bookkeeping for hand-rolled labels like the status bar (recorded
+    // once logically by `draw_status_bar`, once again as a Pango glyph
+    // run — see that field's doc) that would otherwise throw off a
+    // substring-count assertion.
+    let texts = driver.painted_texts();
+    assert_eq!(
+        texts.iter().filter(|t| **t == "Joe").count(),
+        1,
+        "expected exactly one painted run containing exactly \"Joe\" — the \
+         rendered Name field's value: {texts:?}"
+    );
+    assert!(
+        driver.screen_contains("name = \"Joe\""),
+        "each keystroke should emit FormEvent::TextInputChanged, logged to \
+         the status bar: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn form_scroll_gtk_tab_moves_focus_from_name_to_first_toggle_and_back() {
+    let mut driver = GtkDriver::new(FormScrollApp::new(), FORM_SCROLL_W, FORM_SCROLL_H);
+
+    driver.press_named(NamedKey::Tab);
+    assert!(
+        driver.screen_contains("focus → toggle-0"),
+        "Tab from the name field should move focus to the first toggle: {:?}",
+        driver.painted_texts()
+    );
+
+    driver.press_named(NamedKey::BackTab);
+    assert!(
+        driver.screen_contains("focus → name"),
+        "Shift+Tab (BackTab) should move focus back to the name field: {:?}",
+        driver.painted_texts()
+    );
+
+    // Typing now edits the name field again, confirming focus actually
+    // round-tripped rather than merely logging the right id.
+    driver.type_char('X');
+    assert!(
+        driver.screen_contains("name = \"X\""),
+        "after Tab then Shift+Tab, typing should still reach the name field: {:?}",
         driver.painted_texts()
     );
 }

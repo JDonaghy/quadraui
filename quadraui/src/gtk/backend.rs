@@ -255,6 +255,10 @@ pub struct GtkBackend {
     /// App alongside `current_line_height`. Required by primitives
     /// that map cells to pixels (e.g. `draw_terminal`).
     current_char_width: f64,
+    /// Editor vertical scrollbar column width set through
+    /// [`Backend::set_editor_v_scrollbar_width`]; `None` = one
+    /// `current_char_width` wide.
+    editor_v_scrollbar_w: Option<f32>,
     /// Per-frame Pango advance for `ui_font` (the chrome twin of
     /// `current_char_width`), in DIPs — backs [`Backend::list_char_width`].
     /// `draw_list` paints row text in `ui_font`, not the editor font
@@ -275,6 +279,16 @@ pub struct GtkBackend {
     /// (vimcode reads `engine.settings.use_nerd_fonts`); kubeui has
     /// its own toggle. Mirrors the `TuiBackend` field of the same
     /// name (#268).
+    ///
+    /// Defaults to `true` on this backend — unlike TUI,
+    /// where a wrong `true` paints tofu for a terminal with no Nerd
+    /// Font installed (see [`crate::Backend::set_nerd_fonts`]'s own
+    /// doc for that risk calculus), a GTK host always has the bundled
+    /// codicon font available (`GtkBackend::new` self-registers it
+    /// unconditionally), so an app's own [`crate::Icon::glyph`] built
+    /// from a codicon codepoint paints correctly with no app opt-in.
+    /// An app whose own glyph choice assumes a *different*, uninstalled
+    /// icon font can still call `set_nerd_fonts(false)` to opt back out.
     nerd_fonts_enabled: bool,
     /// Pango font description string for UI chrome (sans-serif text
     /// in title/buttons of `Dialog`, etc). Format is
@@ -550,6 +564,18 @@ impl GtkBackend {
     /// `Rc<RefCell<GtkBackend>>` to every widget callback that needs
     /// access.
     pub fn new() -> Self {
+        // Self-register the bundled codicon font unconditionally,
+        // before anything paints — every chrome rasteriser that reaches
+        // for a codicon glyph assumes it is already resolvable via
+        // `crate::gtk::with_nerd_font_fallback`'s family list. Ignoring a
+        // `false` return here is deliberate: a registration failure
+        // leaves the Nerd-Font fallback chain exactly as it would be
+        // without this call, so the worst case is a missing codicon
+        // falling through to tofu rather than this constructor failing
+        // outright (the same "degrade, don't fail" posture every other
+        // optional font registration in this crate takes).
+        super::app_font::ensure_codicon_registered();
+
         let events = Rc::new(std::cell::RefCell::new(VecDeque::new()));
         // #955: share the same queue with `GtkPlatformServices` so a
         // notification-action activation can push
@@ -574,6 +600,7 @@ impl GtkBackend {
             minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             current_line_height: 16.0,
             current_char_width: 8.0,
+            editor_v_scrollbar_w: None,
             // Arbitrary but plausible seed (mirrors `current_char_width`
             // above) — a real value is only established once
             // `refresh_chrome_char_width` runs inside a live frame; a
@@ -582,7 +609,7 @@ impl GtkBackend {
             // `list_char_width()`, same posture as `current_char_width`.
             current_chrome_char_width: 8.0,
             pango_ctx: None,
-            nerd_fonts_enabled: false,
+            nerd_fonts_enabled: true,
             ui_font: "Sans 11".to_string(),
             editor_font_family: "Monospace".to_string(),
             editor_font_size_pt: 11.0,
@@ -3855,7 +3882,7 @@ impl Backend for GtkBackend {
             .font_description()
             .or_else(|| pango_ctx.font_description());
         let metrics = pango_ctx.metrics(font_desc.as_ref(), None);
-        crate::gtk::draw_editor(
+        super::editor::draw_editor_with_options_and_v_scrollbar_w(
             cr,
             pango_layout,
             &metrics,
@@ -3863,6 +3890,8 @@ impl Backend for GtkBackend {
             &theme,
             char_width,
             line_height,
+            crate::primitives::editor::EditorPaintOptions::default(),
+            self.editor_v_scrollbar_w,
         );
         // Stash the exact layout just painted with — see the field doc
         // on `last_editor_pango_layout` for why this is necessary
@@ -3870,6 +3899,14 @@ impl Backend for GtkBackend {
         self.last_editor_pango_layout = Some(pango_layout.clone());
         let _ = rect;
         crate::backend::EditorPaintResult::default()
+    }
+
+    fn set_editor_v_scrollbar_width(&mut self, px: Option<f32>) {
+        self.editor_v_scrollbar_w = px;
+    }
+
+    fn editor_v_scrollbar_width(&self) -> Option<f32> {
+        self.editor_v_scrollbar_w
     }
 
     fn editor_col_at_x(
@@ -5343,6 +5380,42 @@ mod tests {
         assert!(
             b.register_font_from_memory(&garbage).is_none(),
             "64 zero bytes are not a parseable font — must report None, not a fabricated family"
+        );
+    }
+
+    // ── bundled codicon font self-registration ───────────────────────────
+
+    /// `GtkBackend::new` self-registers the bundled codicon font before
+    /// any app code runs, so the family is resolvable for painting with
+    /// no app configuration — the GUI half of the contract
+    /// `codicon::FONT_FAMILY` documents.
+    ///
+    /// Deliberately probes with [`crate::gtk::app_font::has_font_family`]
+    /// rather than calling `ensure_codicon_registered()` again:
+    /// `ensure_codicon_registered()` *performs* the registration on
+    /// first call, so asserting its own return value would pass even
+    /// if `GtkBackend::new()` never called it — this test's probe must
+    /// not be able to do the registration itself, or deleting the
+    /// `new()` call site couldn't fail it.
+    #[test]
+    fn gtk_backend_new_self_registers_the_bundled_codicon_font() {
+        let _ = GtkBackend::new();
+        assert!(
+            crate::gtk::app_font::has_font_family(crate::codicon::FONT_FAMILY),
+            "GtkBackend::new() must leave the bundled codicon font registered"
+        );
+    }
+
+    /// `nerd_fonts_enabled` defaults to `true` on this backend — see the
+    /// field's own doc for why that default differs from TUI's. Mirrors
+    /// `WinBackend`'s own `nerd_fonts_enabled_defaults_to_true`.
+    #[test]
+    fn gtk_backend_nerd_fonts_enabled_defaults_to_true() {
+        let b = GtkBackend::new();
+        assert!(
+            b.nerd_fonts_enabled(),
+            "icons are on by default on this GUI backend — the bundled \
+             codicon font is always available here"
         );
     }
 
@@ -8727,6 +8800,70 @@ mod tests {
         let cr = Context::new(&surface).expect("Context::new");
         let pango_layout = pangocairo::functions::create_layout(&cr);
         backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_editor(rect, &editor));
+    }
+
+    /// Paint an overflowing 200x80 editor through `GtkBackend::draw_editor`
+    /// after `set_editor_v_scrollbar_width(v_scrollbar_w)`, returning
+    /// the pixel colour at `(x, 76)` for each `x` in `xs` — a row inside
+    /// the scrollbar track, below the thumb.
+    fn editor_v_scrollbar_probe(v_scrollbar_w: Option<f32>, xs: &[i32]) -> Vec<(u8, u8, u8)> {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+        let rect = QRect::new(0.0, 0.0, 200.0, 80.0);
+        let mut editor = crate::primitives::editor::Editor::new(WidgetId::new("ed"), rect);
+        editor.total_lines = 50;
+        let mut backend = GtkBackend::new();
+        backend.set_editor_v_scrollbar_width(v_scrollbar_w);
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 200, 80).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_editor(rect, &editor));
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        xs.iter()
+            .map(|&x| {
+                let off = 76 * stride + x as usize * 4;
+                (data[off + 2], data[off + 1], data[off])
+            })
+            .collect()
+    }
+
+    /// `Backend::set_editor_v_scrollbar_width(Some(14.0))` makes
+    /// `GtkBackend::draw_editor` paint a scrollbar column exactly 14px
+    /// wide — `[186, 200)` in a 200px viewport — instead of one
+    /// `current_char_width` (8px), and `Backend::editor_layout` reports
+    /// the same column for hit-testing.
+    #[test]
+    fn gtk_backend_set_editor_v_scrollbar_width_paints_14px_column() {
+        let bg = crate::Theme::default().background;
+        let bg = (bg.r, bg.g, bg.b);
+        let xs: Vec<i32> = (185..200).collect();
+        let px = editor_v_scrollbar_probe(Some(14.0), &xs);
+        assert_eq!(px[0], bg, "x=185 lies just left of the 14px column");
+        for (x, p) in xs.iter().zip(&px).skip(1) {
+            assert_ne!(*p, bg, "x={x} lies inside the 14px column [186, 200)");
+        }
+
+        let default_px = editor_v_scrollbar_probe(None, &[191, 192]);
+        assert_eq!(
+            default_px[0], bg,
+            "default column is 8px: x=191 is text area"
+        );
+        assert_ne!(default_px[1], bg, "default column is 8px: x=192 is track");
+
+        let mut backend = GtkBackend::new();
+        backend.set_editor_v_scrollbar_width(Some(14.0));
+        assert_eq!(backend.editor_v_scrollbar_width(), Some(14.0));
+        let rect = QRect::new(0.0, 0.0, 200.0, 80.0);
+        let mut editor = crate::primitives::editor::Editor::new(WidgetId::new("ed"), rect);
+        editor.total_lines = 50;
+        let vsb = Backend::editor_layout(&backend, rect, &editor)
+            .v_scrollbar_bounds
+            .expect("buffer overflows");
+        assert_eq!((vsb.x, vsb.width), (186.0, 14.0));
     }
 
     /// #416 review follow-up: `SidebarPanel` composes a `Toolbar` header

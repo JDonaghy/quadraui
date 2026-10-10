@@ -15,7 +15,8 @@
 //!   adds a new internal doc to [`INTERNAL_DOCS`] without a matching
 //!   `Cargo.toml` entry, or vice versa, with no extra flag required.
 //! - [`published_crate_excludes_internal_docs`]/
-//!   [`published_crate_ships_consumer_docs`] run the actual
+//!   [`published_crate_ships_consumer_docs`]/
+//!   [`published_crate_ships_license_files`] run the actual
 //!   `cargo package --list -p quadraui` cargo would use to build the
 //!   `.crate` tarball, rather than re-implementing cargo's
 //!   gitignore-style include/exclude matching — belt-and-braces proof
@@ -28,6 +29,13 @@
 //!   ```sh
 //!   cargo test -p quadraui --test package_hygiene -- --ignored
 //!   ```
+//!
+//!   [`license_symlinks_resolve_to_real_license_text`] is a third, cheap
+//!   layer specifically for the license symlinks: it doesn't shell out
+//!   to `cargo package`, so it catches the realistic regression (the
+//!   symlinks being deleted) on every plain `cargo test`, without
+//!   waiting on the `--ignored` run above. It's `#[cfg(unix)]` (see its
+//!   own doc comment), so it doesn't run on the Windows CI leg.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -159,6 +167,93 @@ fn published_crate_ships_consumer_docs() {
              consumer-facing documentation the root README and lib.rs \
              rustdoc point readers at, and should NOT be covered by \
              Cargo.toml's `exclude`"
+        );
+    }
+}
+
+/// `quadraui/LICENSE-MIT` and `quadraui/LICENSE-APACHE` are symlinks to
+/// the repo-root originals (see `Cargo.toml`'s `license.workspace`
+/// comment for why symlinks rather than a `license-file` field), so
+/// cargo's default packaging picks them up. This is the regression guard
+/// on that: `cargo package --list` resolving a symlink to a path outside
+/// the crate dir down to zero files, or the symlinks going missing, both
+/// fail silently otherwise — there's no `cargo publish` dry run in this
+/// repo's quality gate that would catch a licenseless tarball on its
+/// own.
+#[test]
+#[ignore = "shells out to a real `cargo package --list` subprocess"]
+fn published_crate_ships_license_files() {
+    let files = packaged_files();
+
+    for license_file in ["LICENSE-MIT", "LICENSE-APACHE"] {
+        assert!(
+            files.contains(license_file),
+            "{license_file} is missing from the published package — this \
+             crate is dual-licensed (`license.workspace = true` resolves \
+             to \"MIT OR Apache-2.0\") but its `.crate` tarball carries no \
+             license text at all. Check that `quadraui/{license_file}` \
+             still exists as a symlink to the repo-root original and \
+             isn't covered by Cargo.toml's `exclude`."
+        );
+    }
+
+    // The bundled codicon font is third-party, CC-BY-4.0-licensed
+    // (README.md's "Third-party assets" section) — separately from the
+    // MIT/Apache dual license above, so its own attribution has to ship
+    // too, not just the font bytes `include_bytes!` already pulls into
+    // the compiled artifact regardless of what `cargo package` does.
+    // `Cargo.toml` uses `exclude`, not `include`, so an `assets/` entry
+    // added there later could silently drop the license text while
+    // leaving the font (and the build) working.
+    for codicon_asset in ["assets/codicon.ttf", "assets/CODICON_LICENSE"] {
+        assert!(
+            files.contains(codicon_asset),
+            "{codicon_asset} is missing from the published package — the \
+             bundled codicon font's CC-BY-4.0 attribution (and the font \
+             itself) must ship in the `.crate` tarball, not just exist in \
+             this checkout."
+        );
+    }
+}
+
+/// Cheap, always-run companion to [`published_crate_ships_license_files`]
+/// above: that test only runs with `--ignored` (see the module doc), so
+/// nothing in a plain `cargo test` would catch someone deleting, or
+/// `.gitignore`-ing, `quadraui/LICENSE-MIT`/`LICENSE-APACHE` outright.
+/// This reads each symlink's target content directly (no `cargo package`
+/// subprocess needed) and checks it starts with the real license header.
+///
+/// ── Unix-only, deliberately (mirrors `tools/lint/src/githooks_worktree.rs`) ──
+///
+/// This asserts on the *content* a symlink resolves to, which only means
+/// what it says on a platform where these paths are actually symlinks. A
+/// Windows checkout without `core.symlinks` enabled in git materialises
+/// each path as a regular file whose contents are the literal target
+/// string (`../LICENSE-MIT`) rather than the license text — not a real
+/// release-hygiene bug on that platform, just how non-symlink-aware
+/// checkouts represent the tracked symlink, so this is `#[cfg(unix)]`
+/// rather than asserting a false positive on Windows CI.
+#[test]
+#[cfg(unix)]
+fn license_symlinks_resolve_to_real_license_text() {
+    for (name, expected_prefix) in [
+        ("LICENSE-MIT", "MIT License"),
+        ("LICENSE-APACHE", "Apache License"),
+    ] {
+        let path = crate_root().join(name);
+        let contents = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+        assert!(
+            contents.trim_start().starts_with(expected_prefix),
+            "{} does not resolve to the real license text (starts with: \
+             {:?}) — most likely cause: a checkout without symlink \
+             support, where this file materialises as a plain text file \
+             containing the literal symlink target path instead of the \
+             license text. Package releases from a checkout with working \
+             symlinks. (Could also mean the symlink was replaced with a \
+             hand-written stub, or the root LICENSE file was truncated.)",
+            path.display(),
+            contents.lines().next().unwrap_or("").trim(),
         );
     }
 }

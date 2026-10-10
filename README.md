@@ -85,7 +85,7 @@ The full version is `quadraui/examples/hello.rs`:
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
   silently doing nothing.
-- **Heavily tested.** Around 4,000 tests, including headless
+- **Heavily tested.** Around 5,100 tests, including headless
   paint-then-click round trips on all four backends, an end-to-end
   `TuiDriver` that drives real example apps through the event loop, and
   benchmarks for 100k-row tables and trees and a 4k-line editor.
@@ -328,3 +328,14 @@ Licensed under either of:
 - MIT License ([LICENSE-MIT](LICENSE-MIT))
 
 at your option.
+
+### Third-party assets
+
+`quadraui/assets/codicon.ttf` bundles Microsoft's [codicon](https://github.com/microsoft/vscode-codicons)
+icon font, Copyright (c) Microsoft Corporation, used by every GUI backend
+(GTK, macOS, Windows) to paint built-in chrome glyphs — tree chevrons, tab
+dirty/close marks, the context-menu submenu arrow, data-table sort arrows —
+without requiring the host to have a Nerd Font installed. Licensed
+separately from the dual license above, under Creative Commons Attribution
+4.0 International (CC-BY-4.0); the full license text ships at
+[`quadraui/assets/CODICON_LICENSE`](quadraui/assets/CODICON_LICENSE).

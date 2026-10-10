@@ -228,14 +228,14 @@ impl runner::DriverFactory for MacFactory {
 // feature, real Windows)` runs `cargo test -p quadraui --features win`
 // on a real host.
 //
-// It registers **burn-down, not blocking** (see `runner::Gating`): that
-// Windows leg is blocking since #674, and `WinBackend` has no
-// painted-text-run recording yet, so every text-locating step in the suite
-// honestly reports "not painted". Gating on those would red the Windows
-// column of every unrelated PR while saying nothing new — the matrix rows
-// *are* the burn-down checklist (#480/#580), which is what quadraui#708
-// asks this registration to produce. `verdict`'s `promotable` check flips
-// it back to blocking automatically once the column stops failing.
+// It registers **blocking, not burn-down** (see `runner::Gating`): the
+// windows-latest leg itself has been blocking since #674 (see `ci.yml`'s
+// `Test (win feature, real Windows)` step), and `WinBackend` has no
+// rasterisers left to build for this Tier-1 scenario suite — a
+// regression here now reds the Windows column of every unrelated PR,
+// which is the point: this column has nothing left to burn down.
+// `c0_paint_smoke`'s own column list is separate and still keeps a `win`
+// burn-down entry.
 #[cfg(all(feature = "win", target_os = "windows"))]
 struct WinFactory;
 
@@ -503,8 +503,11 @@ fn classify_c0_case(
 /// its own follow-up rather than something to paper over here by, say,
 /// special-casing that one row. The `draw_diff_view` row below is proven
 /// on TUI and GTK only — `win`'s column has no needle-text coverage at all
-/// yet (see the burn-down note above), so it says nothing about that row
-/// either, just more loudly.
+/// yet (see this doc's own `win`-is-the-one-exception paragraph above,
+/// *not* the unrelated Tier-1 `backends()` registration note hundreds of
+/// lines above that — this tier gates `win` as `BurnDown` independently
+/// of what Tier-1 does), so it says nothing about that row either, just
+/// more loudly.
 ///
 /// That is a pre-existing limitation inherited from #491's tier-1 suite
 /// rather than something this tier introduced, and it is why the

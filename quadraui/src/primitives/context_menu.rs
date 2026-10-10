@@ -632,17 +632,27 @@ pub(crate) mod native_surface_paint {
             let item = &menu.items[vis.item_idx];
             let row = vis.bounds;
 
-            // Prefix the label with a check glyph when `checked` is
-            // set. `Some(false)` reserves the slot with spaces so a
-            // column of mixed checked/unchecked items aligns.
-            let prefix = match item.checked {
-                Some(true) => "\u{2713} ",
-                Some(false) => "  ",
-                None => "",
+            // Reserve a fixed-width leading slot for the check glyph so
+            // a column of mixed checked/unchecked items aligns —
+            // `Some(false)`/`None` reserve it with two plain spaces,
+            // `Some(true)` fills it with the codicon check glyph
+            // painted *separately* via `surface_draw_icon_glyph`
+            // (below) rather than embedded in this plain
+            // `surface_draw_text_run` call: a PUA codepoint baked into
+            // an ordinary text run resolves through whatever font that
+            // run's own call site already carries, which is not
+            // guaranteed to be the fallback-wrapped description
+            // `surface_draw_icon_glyph` resolves through — the same
+            // reason the submenu pull-right arrow below gets its own
+            // draw call instead of living in this label string.
+            let has_check_slot = item.checked.is_some();
+            let label_text: String = if has_check_slot {
+                std::iter::once("  ".to_string())
+                    .chain(item.label.spans.iter().map(|s| s.text.clone()))
+                    .collect()
+            } else {
+                item.label.spans.iter().map(|s| s.text.clone()).collect()
             };
-            let label_text: String = std::iter::once(prefix.to_string())
-                .chain(item.label.spans.iter().map(|s| s.text.clone()))
-                .collect();
             let label_fg = if vis.clickable {
                 theme.foreground
             } else {
@@ -656,17 +666,29 @@ pub(crate) mod native_surface_paint {
                 label_fg,
             );
 
+            if item.checked == Some(true) {
+                let check = crate::codicon::CHECK.to_string();
+                let (cw, ch) = surface.surface_measure_text(&check);
+                surface.surface_draw_icon_glyph(
+                    Rect::new(row.x + 8.0, text_y, cw.max(1.0), ch.max(1.0)),
+                    &check,
+                    label_fg,
+                );
+            }
+
             if item.submenu.is_some() {
-                // Submenu-parent: show a `▶` pull-right affordance at the
-                // far-right column instead of a keyboard-shortcut hint —
-                // mirrors `crate::tui::draw_context_menu` (#370). Submenu
-                // parents open a child menu rather than dispatching an
-                // action, so a shortcut hint would never fire anyway.
-                const SUBMENU_ARROW: &str = "\u{25b6}";
-                let (aw, ah) = surface.surface_measure_text(SUBMENU_ARROW);
-                surface.surface_draw_text_run(
+                // Submenu-parent: show a codicon chevron pull-right
+                // affordance at the far-right column instead of a
+                // keyboard-shortcut hint — mirrors the shape
+                // `crate::tui::draw_context_menu` paints with a
+                // plain `▶` glyph instead. Submenu parents open a child
+                // menu rather than dispatching an action, so a shortcut
+                // hint would never fire anyway.
+                let submenu_arrow = crate::codicon::CHEVRON_RIGHT.to_string();
+                let (aw, ah) = surface.surface_measure_text(&submenu_arrow);
+                surface.surface_draw_icon_glyph(
                     Rect::new(row.x + row.width - aw - 8.0, text_y, aw.max(1.0), ah),
-                    SUBMENU_ARROW,
+                    &submenu_arrow,
                     label_fg,
                 );
             } else if let Some(shortcut) = shortcut_text(item, platform) {

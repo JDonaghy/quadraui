@@ -246,6 +246,24 @@ pub mod flex;
 #[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
 pub(crate) mod image_cache;
 
+// Bundled codicon icon font: the PUA codepoints + font bytes every GUI
+// backend self-registers so built-in chrome glyphs (tree chevrons, tab
+// dirty/close, the context-menu submenu arrow, the data-table sort
+// arrow) paint as real vector icons instead of plain text glyphs, with
+// no app configuration required. `win` needs no `target_os` gate for
+// the same reason `win::text`/`win::backend` don't — only the real
+// WinAPI/DirectWrite calls built on these constants are
+// `cfg(target_os = "windows")`-gated, so this module itself must
+// type-check on every host under `--features win`. TUI is excluded: it
+// keeps painting the Unicode glyphs it always has, so TUI output stays
+// unchanged.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) mod codicon;
+
 // ── Per-backend rasterisers (#223) ──────────────────────────────────────────
 // Public `draw_*` rasterisers, gated behind feature flags so apps that only
 // consume the data layer don't pull in ratatui / gtk4. Lifted out of vimcode

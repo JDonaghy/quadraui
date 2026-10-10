@@ -15,6 +15,23 @@ repository.workspace = true
 # `root_readme()`, which reads the same file by a different, repo-root-
 # relative path.
 readme = "../README.md"
+# No `license-file` field, deliberately: that field takes exactly one
+# path and is for a *non-standard* license text an SPDX `license`
+# expression can't name. `license.workspace` above resolves to the
+# standard, SPDX-nameable `"MIT OR Apache-2.0"`, which crates.io's own
+# convention satisfies by shipping both full license texts as plain
+# files at the package root instead: `quadraui/LICENSE-MIT` and
+# `quadraui/LICENSE-APACHE` are symlinks to the repo-root copies, rather
+# than duplicate copies that could drift from the originals — the same
+# "canonical copy lives one level up" shape the `readme` comment above
+# uses for `README.md`. `include`/`exclude` globs can't reach outside
+# the crate dir any more than `readme` can point at one directly (see
+# that comment), so a symlink physically inside `quadraui/` is the only
+# way to get cargo's default packaging to pick these files up; `cargo
+# package` resolves a symlink to its target's real content at pack time,
+# not a dangling link, so the shipped `.crate` carries the actual
+# license text. `tests/package_hygiene.rs` asserts both are present in
+# the packaged list.
 documentation = "https://docs.rs/quadraui"
 # crates.io caps this at 5 entries, each <= 20 bytes, lowercase ASCII +
 # `-`/`_`/digits only.
@@ -101,12 +118,11 @@ rust-version = "1.92.0"
 # `COMPOSE.md`, `EVENT_ROUTING_TOUR.md`, `INSTALL.md`,
 # `KITTY_KEYBOARD_PROTOCOL.md`, `decisions/`) is written for app authors
 # consuming this crate and keeps shipping — confirmed with
-# `cargo package --list -p quadraui`: 584 files packaged with this
-# exclude list, vs. 582 with `docs/decisions/` also excluded. The
-# tests/benches-only baseline, with `docs/` untouched by `exclude`
-# entirely, is 629 files / 3.3MiB compressed, down to 580 files / 3.0MiB
-# compressed with just `tests/`/`benches/` excluded. None of the
-# excluded files above are reached by a rustdoc
+# `cargo package --list -p quadraui`: 586 files, 11.9MiB (3.0MiB
+# compressed) with this exclude list in place, vs. 584 files with
+# `docs/decisions/` also excluded, vs. 599 files, 12.3MiB (3.1MiB
+# compressed) with only `tests/`/`benches/` excluded and `docs/` left
+# untouched. None of the excluded files above are reached by a rustdoc
 # `#[doc = include_str!(...)]` — confirmed by grepping `src/` for
 # `include_str!` — so excluding them cannot break the docs.rs build.
 # `src/lib.rs`'s own crate rustdoc (the docs.rs front page) names only
