@@ -974,6 +974,31 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "TUI ignores set_editor_v_scrollbar_width, so the always-None default is the truthful \
          answer",
     ),
+    // ── issue #1380: `invalidate_rect` is a narrowing *hint* on top of a
+    // full repaint every backend already does by other means — see
+    // `Backend::invalidate_rect`'s own "Per-backend support" table just
+    // above its default body in src/backend.rs. GTK's single
+    // `DrawingArea` Cairo draw callback always repaints the whole widget
+    // (same architectural fact `request_full_repaint`'s doc already
+    // states for GTK), so there is no narrower native call for
+    // `GtkBackend` to make yet. Windows' real analogous call —
+    // `InvalidateRect(hwnd, Some(&rect), …)` — is real and exists, but
+    // wiring it up is tracked follow-up (see `win/run.rs`'s module doc),
+    // not an oversight today.
+    (
+        "gtk",
+        "invalidate_rect",
+        "a single DrawingArea's Cairo draw callback always repaints the whole widget; there is \
+         no narrower native call to make (#1380, see Backend::invalidate_rect's per-backend \
+         table)",
+    ),
+    (
+        "win",
+        "invalidate_rect",
+        "InvalidateRect(hwnd, Some(&rect), …) is the real analogous call; wiring it is tracked \
+         follow-up, not done yet (#1380, see Backend::invalidate_rect's per-backend table and \
+         win/run.rs's module doc)",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.

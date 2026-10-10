@@ -731,7 +731,9 @@ impl MacBackend {
         callback: Rc<dyn Fn(crate::event::Rect)>,
         mtm: MainThreadMarker,
     ) {
-        let _ = self.invalidate_callback.set(MainThreadBound::new(callback, mtm));
+        let _ = self
+            .invalidate_callback
+            .set(MainThreadBound::new(callback, mtm));
     }
 
     /// Bookkeeping for [`Backend::invalidate_rect`] — every call since

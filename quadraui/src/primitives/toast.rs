@@ -581,7 +581,13 @@ impl ToastMotion {
                 let from = 1.0 - to;
                 self.transitions.insert(
                     id,
-                    Transition::start_at(now, from, to, CHROME_TRANSITION_DURATION, Easing::EaseOut),
+                    Transition::start_at(
+                        now,
+                        from,
+                        to,
+                        CHROME_TRANSITION_DURATION,
+                        Easing::EaseOut,
+                    ),
                 );
             }
         }
@@ -2076,9 +2082,10 @@ mod tests {
         let plain = stack.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, |_| {
             ToastMeasure::new(300.0, 64.0)
         });
-        let animated = stack.layout_with_motion(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, &motion, now, |_| {
-            ToastMeasure::new(300.0, 64.0)
-        });
+        let animated =
+            stack.layout_with_motion(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, &motion, now, |_| {
+                ToastMeasure::new(300.0, 64.0)
+            });
         assert_eq!(plain, animated);
         assert!(!motion.is_animating(now));
     }
@@ -2155,9 +2162,10 @@ mod tests {
         assert!(motion.is_animating(fully_in));
 
         let mid = fully_in + CHROME_TRANSITION_DURATION / 2;
-        let layout = stack.layout_with_motion(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, &motion, mid, |_| {
-            ToastMeasure::new(300.0, 64.0)
-        });
+        let layout =
+            stack.layout_with_motion(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, &motion, mid, |_| {
+                ToastMeasure::new(300.0, 64.0)
+            });
         let vt = &layout.visible_toasts[0];
         // Hit-testing the body at its *current* (shifted) bounds must
         // resolve, proving `hit_regions` tracked the slide rather than

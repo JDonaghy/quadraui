@@ -237,7 +237,12 @@ impl InteractionState {
         if self.hovered == id {
             return false;
         }
-        Self::start_fade_at(&mut self.hover_fade, self.hovered.as_ref(), id.as_ref(), now);
+        Self::start_fade_at(
+            &mut self.hover_fade,
+            self.hovered.as_ref(),
+            id.as_ref(),
+            now,
+        );
         self.hovered = id;
         true
     }
@@ -256,7 +261,12 @@ impl InteractionState {
         if self.pressed == id {
             return false;
         }
-        Self::start_fade_at(&mut self.press_fade, self.pressed.as_ref(), id.as_ref(), now);
+        Self::start_fade_at(
+            &mut self.press_fade,
+            self.pressed.as_ref(),
+            id.as_ref(),
+            now,
+        );
         self.pressed = id;
         true
     }
@@ -280,7 +290,13 @@ impl InteractionState {
                 };
                 *fade_slot = Some((
                     entering.clone(),
-                    Transition::start_at(now, current, 1.0, CHROME_TRANSITION_DURATION, Easing::EaseOut),
+                    Transition::start_at(
+                        now,
+                        current,
+                        1.0,
+                        CHROME_TRANSITION_DURATION,
+                        Easing::EaseOut,
+                    ),
                 ));
             }
             (Some(leaving), None) => {
@@ -290,7 +306,13 @@ impl InteractionState {
                 };
                 *fade_slot = Some((
                     leaving.clone(),
-                    Transition::start_at(now, current, 0.0, CHROME_TRANSITION_DURATION, Easing::EaseOut),
+                    Transition::start_at(
+                        now,
+                        current,
+                        0.0,
+                        CHROME_TRANSITION_DURATION,
+                        Easing::EaseOut,
+                    ),
                 ));
             }
             (None, None) => {}
@@ -639,7 +661,10 @@ mod tests {
     #[test]
     fn hover_fade_alpha_is_zero_before_any_hover() {
         let state = InteractionState::new();
-        assert_eq!(state.hover_fade_alpha(&WidgetId::new("a"), Instant::now()), 0.0);
+        assert_eq!(
+            state.hover_fade_alpha(&WidgetId::new("a"), Instant::now()),
+            0.0
+        );
     }
 
     #[test]
@@ -655,7 +680,10 @@ mod tests {
             mid > 0.0 && mid < 1.0,
             "midpoint alpha should be strictly between 0 and 1, got {mid}"
         );
-        assert_eq!(state.hover_fade_alpha(&id, t0 + CHROME_TRANSITION_DURATION), 1.0);
+        assert_eq!(
+            state.hover_fade_alpha(&id, t0 + CHROME_TRANSITION_DURATION),
+            1.0
+        );
         // Settled well past the end stays at 1.0, matching `is_hovered`.
         assert_eq!(
             state.hover_fade_alpha(&id, t0 + CHROME_TRANSITION_DURATION * 10),
