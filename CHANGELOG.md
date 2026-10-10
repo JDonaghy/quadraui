@@ -108,6 +108,22 @@ only a push to `main` runs this workflow.
 
 ### Fixed
 
+- **macOS, GTK, and Win native: editor body text was top-anchored in its
+  row instead of centred** (issue #1412). A host sets the editor's row
+  pitch (`line_height`) independently of the font's own natural
+  ascent/descent, and each backend positioned text glyphs straight at a
+  row's raw top edge: on macOS the gutter number centred itself but the
+  body text and block-cursor glyph repaint did not, putting them on
+  different baselines; on Win the gutter number centred itself
+  per-glyph while body text and the block-cursor glyph repaint stayed
+  top-anchored; on GTK every text paint (gutter, body, ghost
+  continuation, inline annotation, the code-action lightbulb) was
+  top-anchored. All three backends now derive one `text_v_offset` from
+  the font's natural line height vs. the host-set row pitch and add it
+  to every text (not row-fill) paint in a row, so gutter and body share
+  a baseline and rows read centred like VS Code. Row-sized fills
+  (cursor rect, selection, cursorline, diagnostic/spell underlines) are
+  unaffected — they stay anchored to the full row, matching VS Code.
 - **macOS native: the editor painted no vertical scrollbar at all**
   (issue #1411), even when the buffer overflowed the viewport and VS
   Code showed a 14px one on the same screen. `Editor::layout` already
