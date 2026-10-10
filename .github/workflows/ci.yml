@@ -1087,24 +1087,23 @@ jobs:
           fi
 
   downstream:
-    # Compile truth for the two external consumers (#528). quadraui is
-    # `publish = false`, nothing pins a published version, and vimcode's own
-    # CI clones this repo's `develop` tip by relative path — so quadraui
-    # being green here has historically proven nothing about the consumers
-    # (#476 broke both on 2026-08-05, silently, until their next CI run).
-    # This job clones both consumers as siblings of this checkout so
-    # vimcode's `path = "../quadraui/quadraui"` dep resolves straight onto
-    # the PR's quadraui. coord-tui no longer has a path dep at all — since
-    # claude-coordinator#1973 it pins `quadraui` to a fixed git rev — so for
-    # coord-tui specifically, the steps below also drop a `.cargo/config.toml`
-    # `paths` override into its checkout to redirect that pinned dep onto
-    # the sibling checkout too — and, because cargo discovers that config by
-    # walking up from the *process CWD* and not from `--manifest-path`, every
-    # cargo step below sets `working-directory:` into the consumer rather
-    # than passing `--manifest-path` from the workspace root. Getting that
-    # wrong makes the override a no-op and the coord-tui leg silently inert;
-    # a `cargo metadata` assertion below fails the job loudly if it ever
-    # regresses. Both consumers are then `cargo check --all-targets`ed.
+    # Compile truth for the two external consumers: quadraui being green on
+    # its own proves nothing about whether vimcode and coord-tui still build
+    # against it. This job clones both consumers as siblings of this
+    # checkout, redirects each one's `quadraui` dependency onto the tested
+    # quadraui, and `cargo check --all-targets`es them.
+    #
+    # Neither consumer resolves `quadraui` to this checkout on its own:
+    # vimcode depends on the crates.io release, coord-tui pins a fixed git
+    # rev. So the steps below write a `.cargo/config.toml` override into each
+    # consumer's checkout — a `[patch.crates-io]` table appended to vimcode's
+    # own config, a `paths` override for coord-tui. Because cargo discovers
+    # that config by walking up from the *process CWD* and not from
+    # `--manifest-path`, every cargo step below sets `working-directory:`
+    # into the consumer rather than passing `--manifest-path` from the
+    # workspace root. Getting that wrong makes the override a no-op and the
+    # leg silently inert, so a `cargo metadata` assertion per consumer fails
+    # the job loudly unless `quadraui` really resolved to this checkout.
     #
     # coord-tui lives in `JDonaghy/coord-tui` since claude-coordinator#2899
     # (2026-08-29) split it out of the coordinator repo — repo root = crate
@@ -1262,6 +1261,36 @@ jobs:
           mkdir -p "$D/.cargo"
           printf 'paths = ["%s"]\n' "$Q" > "$D/.cargo/config.toml"
 
+      # vimcode depends on `quadraui = { version = "0.1.x", ... }` from
+      # crates.io, so without an override it compiles against the published
+      # crate and this leg says nothing about the PR. A `[patch.crates-io]`
+      # entry replaces that registry source with the checked-out quadraui.
+      #
+      # vimcode commits its own `.cargo/config.toml` (a `[target.*]` rustflags
+      # table), so the patch table is *appended*, never written over it:
+      # appending a new table is valid TOML and keeps vimcode's settings,
+      # whereas a top-level key such as `paths = [...]` appended after that
+      # table would land inside it. If vimcode ever grows its own
+      # `[patch.crates-io]` table, a second one is a TOML duplicate-table
+      # error, so that case fails here with a pointed message instead.
+      #
+      # The patch only applies while this checkout's version still satisfies
+      # vimcode's requirement; past that cargo warns "patch was not used" and
+      # quietly falls back to crates.io. The assertion step below turns that
+      # into a hard failure, which is the signal to bump vimcode's dependency.
+      - name: Point vimcode at this PR's quadraui, not crates.io
+        run: |
+          set -euo pipefail
+          D="$(dirname "$GITHUB_WORKSPACE")/vimcode"
+          Q="$(cd "$GITHUB_WORKSPACE/quadraui" && pwd -P)"
+          mkdir -p "$D/.cargo"
+          if grep -qE '^[[:space:]]*\[patch\.crates-io\]' "$D/.cargo/config.toml" 2>/dev/null; then
+            echo "::error::vimcode's .cargo/config.toml already has a [patch.crates-io] table. Merge the quadraui entry into it here rather than appending a second table."
+            exit 1
+          fi
+          printf '\n[patch.crates-io]\nquadraui = { path = "%s" }\n' "$Q" >> "$D/.cargo/config.toml"
+          cat "$D/.cargo/config.toml"
+
       # Placed after the consumer clone (and the coord-tui .cargo override
       # above) so the action's Cargo.lock hashing can actually see the
       # consumer manifests it's told to cache below — caching this job at
@@ -1311,10 +1340,8 @@ jobs:
       # linked the *git* source; invoked with CWD inside the manifest's
       # directory it linked the *local override*. Do not "simplify" these
       # back to a bare `--manifest-path` from the workspace root.
-      # vimcode has no `.cargo/config.toml` today (its build.rs resolves the
-      # sibling quadraui from CARGO_MANIFEST_DIR, so it is CWD-independent),
-      # but its steps below cd in too, so adding one upstream can't silently
-      # re-open this same hole.
+      # The same holds for vimcode: its `[patch.crates-io]` override lives in
+      # its `.cargo/config.toml` too, so its steps below cd in as well.
       #
       # `working-directory: ${{ env.COORD_TUI_DIR }}` rather than a literal
       # path: the clone step above resolves the crate directory (repo root
@@ -1342,28 +1369,29 @@ jobs:
         working-directory: ${{ env.COORD_TUI_DIR }}
         run: cargo check --all-targets
 
-      # vimcode's build.rs (vimcode#638) panics before compiling any real
-      # source if the sibling quadraui checkout's HEAD doesn't exactly match
-      # the SHA pinned in `quadraui-pin.txt` — which the tip clone above
-      # never will, since this job floats both the PR's and develop's
-      # quadraui rather than the one specific SHA vimcode happens to have
-      # pinned. Left unset, that panic fires unconditionally on every run
-      # (PR side and control side alike), so pr_vimcode and control_vimcode
-      # would always fail identically and the "pre-existing breakage"
-      # classification below would swallow every real signal. vimcode ships
-      # an escape hatch for exactly this — building against a deliberately
-      # different quadraui rev — documented in `quadraui-pin.txt`:
-      # VIMCODE_QUADRAUI_UNPINNED=1 downgrades the mismatch to a warning and
-      # lets the build proceed to actually compile against the checked-out
-      # quadraui. Never set this for a normal vimcode dev build; it is
-      # correct here because floating both sides of the comparison against
-      # the pin is the entire point of this job.
+      # `cargo tree` puts the resolved source in the log for a human reading
+      # it; the `cargo metadata` comparison is what actually gates. A
+      # registry-resolved quadraui shows a `~/.cargo/registry` manifest path
+      # here and fails the job.
+      - name: Assert vimcode actually resolves quadraui to this PR's checkout
+        working-directory: ../vimcode
+        run: |
+          set -euo pipefail
+          want="$(cd "$GITHUB_WORKSPACE/quadraui" && pwd -P)/Cargo.toml"
+          cargo tree -p quadraui --depth 0 | tee /dev/stderr | grep -F "($(dirname "$want"))" \
+            || { echo "::error::cargo tree does not show quadraui from '$(dirname "$want")'."; exit 1; }
+          got="$(cargo metadata --format-version 1 \
+                 | jq -r '.packages[] | select(.name=="quadraui") | .manifest_path')"
+          echo "quadraui resolved to: $got"
+          if [ "$got" != "$want" ]; then
+            echo "::error::vimcode resolved quadraui to '$got', expected this PR's checkout at '$want'. The [patch.crates-io] override did not take effect (crates.io registry source, or this checkout's version no longer satisfies vimcode's requirement), so this gate would build vimcode against the published crate and prove nothing about this PR. Failing loudly rather than passing silently."
+            exit 1
+          fi
+
       - name: cargo check — vimcode (this PR's quadraui)
         id: pr_vimcode
         continue-on-error: true
         working-directory: ../vimcode
-        env:
-          VIMCODE_QUADRAUI_UNPINNED: "1"
         run: cargo check --all-targets
 
       # A consumer can be red for reasons that have nothing to do with this
@@ -1446,13 +1474,44 @@ jobs:
         working-directory: ${{ env.COORD_TUI_CONTROL_DIR }}
         run: cargo check --all-targets
 
+      # Control-side twin of the vimcode patch + assertion. Without the patch
+      # the control leg would build against crates.io rather than develop's
+      # tip, so a vimcode that develop's tip already breaks would be blamed
+      # on the PR under test.
+      - name: Point vimcode (control) at develop's tip quadraui
+        if: steps.pr_vimcode.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/control/vimcode"
+          Q="$(cd "$RUNNER_TEMP/control/quadraui/quadraui" && pwd -P)"
+          mkdir -p "$D/.cargo"
+          if grep -qE '^[[:space:]]*\[patch\.crates-io\]' "$D/.cargo/config.toml" 2>/dev/null; then
+            echo "::error::vimcode's .cargo/config.toml already has a [patch.crates-io] table. Merge the quadraui entry into it here rather than appending a second table."
+            exit 1
+          fi
+          printf '\n[patch.crates-io]\nquadraui = { path = "%s" }\n' "$Q" >> "$D/.cargo/config.toml"
+
+      - name: Assert vimcode (control) resolves quadraui to develop's tip
+        if: steps.pr_vimcode.outcome == 'failure'
+        working-directory: ${{ runner.temp }}/control/vimcode
+        run: |
+          set -euo pipefail
+          want="$(cd "$RUNNER_TEMP/control/quadraui/quadraui" && pwd -P)/Cargo.toml"
+          cargo tree -p quadraui --depth 0 | tee /dev/stderr | grep -F "($(dirname "$want"))" \
+            || { echo "::error::cargo tree does not show quadraui from '$(dirname "$want")'."; exit 1; }
+          got="$(cargo metadata --format-version 1 \
+                 | jq -r '.packages[] | select(.name=="quadraui") | .manifest_path')"
+          echo "quadraui resolved to: $got"
+          if [ "$got" != "$want" ]; then
+            echo "::error::vimcode (control) resolved quadraui to '$got', expected develop's tip at '$want'. The [patch.crates-io] override did not take effect, so the control leg is not a valid comparison against the PR leg."
+            exit 1
+          fi
+
       - name: cargo check — vimcode (control, develop's tip quadraui)
         if: steps.pr_vimcode.outcome == 'failure'
         id: control_vimcode
         continue-on-error: true
         working-directory: ${{ runner.temp }}/control/vimcode
-        env:
-          VIMCODE_QUADRAUI_UNPINNED: "1"
         run: cargo check --all-targets
 
       # This PR broke a consumer only if the PR check failed AND the control
