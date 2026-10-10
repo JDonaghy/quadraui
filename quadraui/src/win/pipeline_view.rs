@@ -225,12 +225,12 @@ mod tests {
         );
     }
 
-    /// Regression for #1085 divergence 4: the action-button tint is now a
-    /// real [`crate::paint_surface::PaintSurface::surface_fill_rect_alpha`]
-    /// composite instead of a CPU-side `Color::blend` — probing just
-    /// above the button's centre (clear of the label glyphs) must show a
-    /// colour strictly between the plain box background and a fully
-    /// opaque `accent_bg`.
+    /// The action-button tint is a real
+    /// [`crate::paint_surface::PaintSurface::surface_fill_rect_alpha`]
+    /// composite rather than a CPU-side `Color::blend` — probing a pixel
+    /// inside the button's 1px `accent_bg` border and clear of the
+    /// centred label glyphs must show a colour strictly between the plain
+    /// box background and a fully opaque `accent_bg`.
     #[test]
     fn action_tint_is_a_real_alpha_composite_not_a_cpu_blend() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
@@ -243,7 +243,11 @@ mod tests {
         let ab = layout.stages[1]
             .action_bounds
             .expect("stage 1 has an action button");
-        let px = surface.pixel_at((ab.x + 2.0) as u32, ab.y as u32);
+        // Two pixels in from the left and top edges: clear of the stroked
+        // border (which anti-aliases across the edge row/column) and of
+        // the centred label glyphs.
+        assert!(ab.height > 6.0, "action strip too short to probe: {ab:?}");
+        let px = surface.pixel_at((ab.x + 3.0) as u32, (ab.y + 2.0) as u32);
         assert_ne!(
             (px.r, px.g, px.b),
             (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b),

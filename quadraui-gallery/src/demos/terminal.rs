@@ -318,11 +318,23 @@ mod tests {
         if slot.session.is_err() {
             return;
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // A ConPTY can still drop a line typed while a freshly started
+        // PowerShell is busy loading (see `SessionSlot::poll`'s doc), so
+        // a send that produced nothing is retyped after a quiet spell.
+        // The marker only has to appear once; extra copies are harmless.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        let resend_after = std::time::Duration::from_secs(10);
+        let mut last_send: Option<std::time::Instant> =
+            slot.pending_script.is_none().then(std::time::Instant::now);
+        let mut resends = 0u32;
         let mut found = false;
         while std::time::Instant::now() < deadline {
+            let was_pending = slot.pending_script.is_some();
             slot.poll();
-            let sess = slot.session.as_ref().expect("checked above");
+            if was_pending && slot.pending_script.is_none() {
+                last_send = Some(std::time::Instant::now());
+            }
+            let sess = slot.session.as_mut().expect("checked above");
             if sess.full_text().contains("GALLERYSCRIPTOK") {
                 found = true;
                 break;
@@ -330,12 +342,22 @@ mod tests {
             if sess.is_exited() {
                 break;
             }
+            if let Some(sent) = last_send {
+                if sent.elapsed() >= resend_after {
+                    sess.send_str(SCRIPT);
+                    last_send = Some(std::time::Instant::now());
+                    resends += 1;
+                }
+            }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let sess = slot.session.as_ref().expect("checked above");
         assert!(
             found,
-            "the scripted variant's canned command output should appear after polling: {:?}",
+            "the scripted variant's canned command output should appear after polling \
+             (script sent: {}, resends: {resends}, exited: {}): {:?}",
+            last_send.is_some(),
+            sess.is_exited(),
             sess.full_text()
         );
         assert!(
