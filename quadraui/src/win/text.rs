@@ -87,6 +87,14 @@ pub struct DWrite {
     /// share one pitch, so this holds at most a couple of entries per
     /// `DWrite`, not one per row.
     minimap_formats: RefCell<HashMap<i32, IDWriteTextFormat>>,
+    /// `text_format`'s own natural line height — `ascent + descent +
+    /// lineGap` scaled to `size_dip`, the same quantity [`Self::new`]
+    /// returns to seed `WinBackend::current_line_height` — kept on the
+    /// struct too so a host-set row pitch can later diverge from it
+    /// (`WinBackend::set_current_line_height`) without losing the
+    /// font's own metric. [`Self::natural_line_height`] exposes it for
+    /// `win::editor`'s vertical-centring offset.
+    natural_line_height: f32,
 }
 
 impl DWrite {
@@ -204,10 +212,23 @@ impl DWrite {
                 family: family.to_string(),
                 fallback: fallback.cloned(),
                 minimap_formats: RefCell::new(HashMap::new()),
+                natural_line_height: line_height,
             },
             line_height,
             char_width,
         ))
+    }
+
+    /// `text_format`'s own natural line height in DIPs — `ascent +
+    /// descent + lineGap` at this handle's font size, independent of
+    /// whatever row pitch a host later sets via
+    /// `WinBackend::set_current_line_height`. `win::editor`'s
+    /// `text_v_offset` centres a row's text inside that (possibly
+    /// taller) pitch by comparing it against this value, the same way
+    /// [`crate::macos::editor::text_v_offset`] compares a host-set
+    /// pitch against `CTFont::ascent() + descent() + leading()`.
+    pub(crate) fn natural_line_height(&self) -> f32 {
+        self.natural_line_height
     }
 
     /// Build a new `DWrite` for the same family and Nerd-Font fallback as

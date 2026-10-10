@@ -166,10 +166,10 @@ pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
     let h_scroll_offset = editor.scroll_left as f64 * char_width;
     let text_x_offset = x + gutter_width - h_scroll_offset;
 
-    // Shared by the gutter and block-cursor glyph paints below;
-    // `paint_line_text` derives the same value for the body text from
-    // the same `font`/`line_height` pair.
-    let text_v_offset = text_v_offset(font, line_height);
+    // Shared by the gutter, body-text, and block-cursor glyph paints
+    // below — computed once here and threaded into `paint_line_text`
+    // rather than re-derived per call, so all three read the same value.
+    let v_offset = text_v_offset(font, line_height);
 
     // Computed once up front, before any text paints, so the content
     // clip below can be narrowed by the same reserved scrollbar column
@@ -271,7 +271,7 @@ pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
                 font,
                 &line.gutter_text,
                 gx.max(x + 2.0),
-                line_y + text_v_offset,
+                line_y + v_offset,
                 color_to_cg(theme.line_number_fg),
             );
         }
@@ -306,6 +306,7 @@ pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
             line,
             raw_x,
             line_y,
+            v_offset,
             line_height,
             theme.foreground,
         );
@@ -345,8 +346,8 @@ pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
                 CursorShape::Block => {
                     // The cursor rect itself stays full-row (unchanged);
                     // only the glyph repainted on top of it is
-                    // text-relative, so it gets the same `text_v_offset`
-                    // the body-text paint above uses, to stay aligned.
+                    // text-relative, so it gets the same `v_offset` the
+                    // body-text paint above uses, to stay aligned.
                     fill_rect(ctx, cur_x, cur_y, char_width, line_height, theme.cursor);
                     // Re-paint the glyph under the cursor in background
                     // colour so it reads against the cursor fill.
@@ -361,7 +362,7 @@ pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
                             font,
                             &ch,
                             cur_x,
-                            cur_y + text_v_offset,
+                            cur_y + v_offset,
                             color_to_cg(theme.background),
                         );
                     }
@@ -429,16 +430,19 @@ fn text_v_offset(font: &CTFont, line_height: f64) -> f64 {
 /// defensively: any portion already covered by an earlier run is
 /// skipped rather than re-painted.
 ///
-/// Only the glyph draw is nudged down from `line_y` by
-/// [`text_v_offset`], so it sits centred in `line_height`; the
+/// Only the glyph draw is nudged down from `line_y` by `v_offset`
+/// ([`text_v_offset`], computed once by the caller so every text paint
+/// in the row agrees), so it sits centred in `line_height`; the
 /// span-background fill stays anchored at `line_y`/`line_height` so it
 /// still covers the full row.
+#[allow(clippy::too_many_arguments)]
 unsafe fn paint_line_text(
     ctx: CGContextRef,
     font: &CTFont,
     line: &EditorLine,
     raw_x: f64,
     line_y: f64,
+    v_offset: f64,
     line_height: f64,
     default_fg: Color,
 ) {
@@ -446,7 +450,6 @@ unsafe fn paint_line_text(
     if text.is_empty() {
         return;
     }
-    let text_v_offset = text_v_offset(font, line_height);
 
     let mut ordered_spans: Vec<(usize, usize, Color, Option<Color>)> = line
         .spans
@@ -474,14 +477,7 @@ unsafe fn paint_line_text(
             let (run_w, _) = measure_text(font, slice);
             fill_rect(ctx, run_x, line_y, run_w, line_height, bg);
         }
-        draw_text(
-            ctx,
-            font,
-            slice,
-            run_x,
-            line_y + text_v_offset,
-            color_to_cg(fg),
-        );
+        draw_text(ctx, font, slice, run_x, line_y + v_offset, color_to_cg(fg));
     };
 
     let mut cursor = 0usize;
