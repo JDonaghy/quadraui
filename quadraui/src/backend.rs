@@ -1163,18 +1163,28 @@ pub trait Backend: sealed::Sealed {
     /// `draw_multi_section_view`, `draw_activity_bar`, etc.) render
     /// `Icon::glyph` when `true` and `Icon::fallback` when `false`.
     ///
-    /// **Default value, and why every backend now agrees on it (issue
-    /// #683):** every backend that owns this flag (`TuiBackend`,
-    /// `GtkBackend`, `MacBackend`) starts it at `false` — fallback, not
-    /// glyph. Before #683 the TUI defaulted to `true` and GTK to `false`,
-    /// so identical `ShellConfig` produced a different icon variant
-    /// depending only on which backend launched the app. `false` is the
-    /// safer default of the two failure modes: a wrong `false` shows a
-    /// plain-but-correct ASCII/Unicode glyph, while a wrong `true` shows
-    /// tofu — particularly for the TUI, where Nerd Font availability is a
-    /// property of the user's terminal that the app cannot see or
-    /// control. Hosts that know their environment has Nerd Fonts (or that
-    /// probe for it) call this explicitly to opt in.
+    /// **Default value, and why it differs by backend family:**
+    /// `TuiBackend` starts this flag at `false` — fallback, not glyph.
+    /// For a terminal, Nerd Font availability is a property of the
+    /// user's environment that the app cannot see or control, so
+    /// `false` is the safer of the two failure modes: a wrong `false`
+    /// shows a plain-but-correct ASCII/Unicode glyph, while a wrong
+    /// `true` shows tofu. Hosts that know their terminal has Nerd Fonts
+    /// (or that probe for it) call this explicitly to opt in.
+    ///
+    /// `GtkBackend`, `MacBackend` and `WinBackend` all start this flag
+    /// at `true` instead. None of that terminal risk applies to a GUI
+    /// backend: each of the three bundles the `codicon` font and
+    /// self-registers it unconditionally at construction (see
+    /// `GtkBackend::nerd_fonts_enabled`'s field doc for the registration
+    /// path), so `Icon::glyph` built from a codicon codepoint always
+    /// paints correctly with no app opt-in required. An app whose own
+    /// glyph choice assumes a *different*, uninstalled icon font can
+    /// still call `set_nerd_fonts(false)` to opt back out. The three
+    /// GUI backends therefore agree with each other, and the TUI
+    /// backend is the one deliberate outlier, for the reason above —
+    /// not an accidental drift back to the per-backend inconsistency
+    /// this flag's default once had.
     ///
     /// Call at the start of `render_content()` if the setting can change
     /// at runtime (a settings toggle, a config file reload), or once from

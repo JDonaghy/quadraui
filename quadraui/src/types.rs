@@ -419,9 +419,19 @@ pub struct TreeStyle {
     pub indent: u16,
     /// Draw expand/collapse chevrons on branches.
     pub show_chevrons: bool,
-    /// Chevron drawn for an expanded branch.
+    /// Chevron drawn for an expanded branch. Painted verbatim on TUI.
+    /// On GTK / macOS / Win-GUI, the *default* value (`"▾"`) is instead
+    /// painted as a sharper codicon glyph
+    /// (`crate::codicon::CHEVRON_DOWN`); any non-default override an
+    /// app sets here is still honoured and painted verbatim on every
+    /// backend, GUI included.
     pub chevron_expanded: String,
-    /// Chevron drawn for a collapsed branch.
+    /// Chevron drawn for a collapsed branch. Painted verbatim on TUI.
+    /// On GTK / macOS / Win-GUI, the *default* value (`"▸"`) is instead
+    /// painted as a sharper codicon glyph
+    /// (`crate::codicon::CHEVRON_RIGHT`); any non-default override an
+    /// app sets here is still honoured and painted verbatim on every
+    /// backend, GUI included.
     pub chevron_collapsed: String,
     /// Host override for non-header row height, in the backend's native
     /// unit (pixels for GTK / macOS / Win-GUI). `None` (the default)

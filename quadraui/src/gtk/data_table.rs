@@ -12,6 +12,10 @@ use crate::primitives::data_table::{ColumnAlign, DataTable, DataTableLayout, Sor
 use crate::primitives::layout_metrics::pixel_data_table_layout;
 use crate::theme::Theme;
 
+/// Horizontal gap between a sorted column's title and its codicon
+/// sort-direction glyph.
+const SORT_GAP: f64 = 4.0;
+
 /// Draw a `DataTable` onto `cr`. Returns the layout used for painting.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_data_table(
@@ -60,22 +64,51 @@ pub fn draw_data_table(
     let bold_attrs = pango::AttrList::new();
     bold_attrs.insert(pango::AttrInt::new_weight(pango::Weight::Bold));
 
+    // The sort indicator is a codicon glyph, not a plain `▲`/`▼`
+    // baked into the title string — it needs its own
+    // codicon-fallback-wrapped `FontDescription` (the bold-weight
+    // `AttrList` above is orthogonal: an `AttrList` restyles whatever
+    // family is already on `pango_layout`, it cannot add a fallback
+    // family), so title and glyph are measured and painted as two runs
+    // instead of one concatenated string.
+    let base_font = pango_layout.font_description().unwrap_or_default();
+    let mut bold_icon_font = base_font.clone();
+    bold_icon_font.set_weight(pango::Weight::Bold);
+    let bold_icon_font = super::with_nerd_font_fallback(&bold_icon_font);
+
     for (col_idx, rc) in layout.columns.iter().enumerate() {
         if col_idx >= table.columns.len() || rc.width <= 0.0 {
             break;
         }
         let col = &table.columns[col_idx];
-        let sort_suffix = match &table.sort {
-            Some((si, dir)) if *si == col_idx => match dir {
-                SortDirection::Ascending => " ▲",
-                SortDirection::Descending => " ▼",
-            },
-            _ => "",
+        let sort_glyph = match &table.sort {
+            Some((si, dir)) if *si == col_idx => Some(match dir {
+                SortDirection::Ascending => crate::codicon::SORT_ASCENDING,
+                SortDirection::Descending => crate::codicon::SORT_DESCENDING,
+            }),
+            _ => None,
         };
-        let title = format!("{}{}", col.title, sort_suffix);
-        pango_layout.set_text(&title);
+
+        pango_layout.set_font_description(Some(&base_font));
+        pango_layout.set_text(&col.title);
         pango_layout.set_attributes(Some(&bold_attrs));
-        let (text_w, _) = pango_layout.pixel_size();
+        let (title_w, _) = pango_layout.pixel_size();
+
+        let sort_glyph_str = sort_glyph.map(|g| g.to_string());
+        let sort_w = if let Some(ref g) = sort_glyph_str {
+            pango_layout.set_font_description(Some(&bold_icon_font));
+            pango_layout.set_attributes(None);
+            pango_layout.set_text(g);
+            pango_layout.pixel_size().0 as f64
+        } else {
+            0.0
+        };
+        let text_w = title_w as f64
+            + if sort_glyph_str.is_some() {
+                SORT_GAP + sort_w
+            } else {
+                0.0
+            };
 
         let col_x = x + rc.x as f64 - h_off;
         let col_w = rc.width as f64;
@@ -86,13 +119,27 @@ pub fn draw_data_table(
 
         let text_x = match col.align {
             ColumnAlign::Left => col_x,
-            ColumnAlign::Center => col_x + (col_w - text_w as f64) / 2.0,
-            ColumnAlign::Right => col_x + col_w - text_w as f64,
+            ColumnAlign::Center => col_x + (col_w - text_w) / 2.0,
+            ColumnAlign::Right => col_x + col_w - text_w,
         };
+
+        pango_layout.set_font_description(Some(&base_font));
+        pango_layout.set_attributes(Some(&bold_attrs));
+        pango_layout.set_text(&col.title);
         cr.move_to(text_x, y);
         super::painted_text::show_layout(cr, pango_layout);
+
+        if let Some(ref g) = sort_glyph_str {
+            pango_layout.set_font_description(Some(&bold_icon_font));
+            pango_layout.set_attributes(None);
+            pango_layout.set_text(g);
+            cr.move_to(text_x + title_w as f64 + SORT_GAP, y);
+            super::painted_text::show_layout(cr, pango_layout);
+        }
+
         cr.restore().ok();
     }
+    pango_layout.set_font_description(Some(&base_font));
     pango_layout.set_attributes(None);
 
     // ── Header column separators ──────────────────────────────────────
@@ -506,6 +553,57 @@ mod tests {
             rgb(theme.background),
             "pixel inside column C ({probe_x},{probe_y}) should be background, \
              not B's overflow text bleeding through the clip"
+        );
+    }
+
+    /// A sorted column paints a codicon sort-direction glyph
+    /// after its title, in the same column's header band — not a plain
+    /// `▲`/`▼` baked into the title string. Probes the band right after
+    /// the lone-letter title's own ink (well short of the column's
+    /// separator) for *something* painted there only when `sort` names
+    /// that column, mirroring `draw_context_menu_paints_submenu_arrow_not_shown_on_plain_leaf`'s
+    /// "band differs only when the affordance should show" shape.
+    #[test]
+    fn sorted_column_paints_a_glyph_after_its_title_unsorted_does_not() {
+        let theme = Theme::default();
+
+        let mut sorted = three_col_table("A", "B", "C");
+        sorted.sort = Some((0, SortDirection::Ascending));
+        let (sorted_data, stride, layout) = paint(&sorted, &theme);
+
+        let unsorted = three_col_table("A", "B", "C");
+        let (unsorted_data, stride2, _) = paint(&unsorted, &theme);
+        assert_eq!(stride, stride2, "same canvas size, same stride");
+
+        let col0 = &layout.columns[0];
+        let x0 = col0.x as i32;
+        // Stop short of column 0's right-edge separator, which `sort`
+        // cannot move either way.
+        let x1 = (col0.x + col0.width - 2.0) as i32;
+        let header_y_lo = 1_i32;
+        let header_y_hi = (layout.header_height as i32 - 1).max(header_y_lo + 1);
+
+        // Sorting column 0 only adds ink after its title — it must not
+        // repaint column 0's background or move the title itself, so
+        // every pixel up to *some* x within the column stays identical
+        // between the two renders, and at least one pixel past that
+        // differs (the glyph `sorted` painted that `unsorted` did not).
+        let differs_at = |x: i32| {
+            (header_y_lo..header_y_hi).any(|y| {
+                pixel(&sorted_data, stride as usize, x, y)
+                    != pixel(&unsorted_data, stride2 as usize, x, y)
+            })
+        };
+
+        assert!(
+            !differs_at(x0),
+            "column 0's leading edge (under the title's own first glyph) must render \
+             identically whether or not it is the sort column"
+        );
+        assert!(
+            (x0..x1).any(differs_at),
+            "sorting column 0 should paint a glyph somewhere in x={x0}..{x1} that the \
+             unsorted render does not"
         );
     }
 

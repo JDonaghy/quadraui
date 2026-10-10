@@ -190,4 +190,97 @@ mod tests {
             "plain leaf item (no submenu, no shortcut) must not paint anything there"
         );
     }
+
+    // ── Checked-item ✓ affordance ────────────────────────────────────────
+
+    /// Both items share one label — "Item" — so a row-vs-row pixel diff
+    /// isolates exactly the check glyph's own ink: the real label text
+    /// and its reserved-slot spacing paint byte-identically on both
+    /// rows regardless of what the test font's actual space advance
+    /// turns out to be, so the diff cannot pick up anything but the
+    /// one real difference between the two items (`checked`).
+    fn checked_item_menu() -> ContextMenu {
+        use crate::primitives::context_menu::ContextMenuItem;
+        ContextMenu {
+            id: WidgetId::new("m"),
+            items: vec![
+                ContextMenuItem {
+                    id: Some(WidgetId::new("checked")),
+                    label: StyledText::plain("Item"),
+                    checked: Some(true),
+                    ..Default::default()
+                },
+                ContextMenuItem {
+                    id: Some(WidgetId::new("unchecked")),
+                    label: StyledText::plain("Item"),
+                    checked: Some(false),
+                    ..Default::default()
+                },
+            ],
+            selected_idx: 2,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+        }
+    }
+
+    /// A checked item paints the codicon check glyph in its reserved
+    /// leading slot; an otherwise-identical unchecked item leaves that
+    /// slot's ink untouched. Rather than guessing where the test font's
+    /// own space-glyph advance ends (and risking the label text itself
+    /// landing inside a hardcoded probe band — exactly the "font-
+    /// dependent ink position" problem
+    /// `draw_context_menu_paints_submenu_arrow_not_shown_on_plain_leaf`
+    /// solves by scanning a wide band), this test diffs the checked and
+    /// unchecked rows against each other pixel-for-pixel: since both
+    /// rows share one label, every pixel they'd otherwise disagree on
+    /// comes from the check glyph alone.
+    #[test]
+    fn draw_context_menu_paints_check_glyph_only_on_checked_item() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut surface = ImageSurface::create(Format::ARgb32, 200, 80).expect("create surface");
+        let (checked_row, unchecked_row) = {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+
+            let m = checked_item_menu();
+            let viewport = Rect::new(0.0, 0.0, 200.0, 80.0);
+            let layout = m.layout(10.0, 10.0, viewport, 80.0, |_| {
+                ContextMenuItemMeasure::new(24.0)
+            });
+            let checked_row = layout.visible_items[0].bounds;
+            let unchecked_row = layout.visible_items[1].bounds;
+
+            let _ = draw_context_menu(&cr, &pango_layout, &m, &layout, 24.0, &Theme::default());
+            (checked_row, unchecked_row)
+        };
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        // Scan the leading half of each row (clear of the 1px border
+        // stroke on the left, stopping before the label's own longest
+        // possible extent) at a handful of rows spanning each item's
+        // vertical centre, diffing checked against unchecked at the
+        // same relative offset from its own row's origin.
+        let dy_offset = (checked_row.height / 2.0 - 4.0) as i32;
+        let band_x0 = 2_i32;
+        let band_x1 = (checked_row.width * 0.5) as i32;
+
+        let differs = (0..=8).any(|dy| {
+            (band_x0..band_x1).any(|dx| {
+                let x = (checked_row.x as i32) + dx;
+                let cy = (checked_row.y as i32) + dy_offset + dy;
+                let uy = (unchecked_row.y as i32) + dy_offset + dy;
+                probe_pixel(&data, stride, x, cy) != probe_pixel(&data, stride, x, uy)
+            })
+        });
+
+        assert!(
+            differs,
+            "a checked item must paint something in its leading slot that an \
+             otherwise-identical unchecked item does not"
+        );
+    }
 }

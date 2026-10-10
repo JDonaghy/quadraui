@@ -279,6 +279,16 @@ pub struct GtkBackend {
     /// (vimcode reads `engine.settings.use_nerd_fonts`); kubeui has
     /// its own toggle. Mirrors the `TuiBackend` field of the same
     /// name (#268).
+    ///
+    /// Defaults to `true` on this backend — unlike TUI,
+    /// where a wrong `true` paints tofu for a terminal with no Nerd
+    /// Font installed (see [`crate::Backend::set_nerd_fonts`]'s own
+    /// doc for that risk calculus), a GTK host always has the bundled
+    /// codicon font available (`GtkBackend::new` self-registers it
+    /// unconditionally), so an app's own [`crate::Icon::glyph`] built
+    /// from a codicon codepoint paints correctly with no app opt-in.
+    /// An app whose own glyph choice assumes a *different*, uninstalled
+    /// icon font can still call `set_nerd_fonts(false)` to opt back out.
     nerd_fonts_enabled: bool,
     /// Pango font description string for UI chrome (sans-serif text
     /// in title/buttons of `Dialog`, etc). Format is
@@ -554,6 +564,18 @@ impl GtkBackend {
     /// `Rc<RefCell<GtkBackend>>` to every widget callback that needs
     /// access.
     pub fn new() -> Self {
+        // Self-register the bundled codicon font unconditionally,
+        // before anything paints — every chrome rasteriser that reaches
+        // for a codicon glyph assumes it is already resolvable via
+        // `crate::gtk::with_nerd_font_fallback`'s family list. Ignoring a
+        // `false` return here is deliberate: a registration failure
+        // leaves the Nerd-Font fallback chain exactly as it would be
+        // without this call, so the worst case is a missing codicon
+        // falling through to tofu rather than this constructor failing
+        // outright (the same "degrade, don't fail" posture every other
+        // optional font registration in this crate takes).
+        super::app_font::ensure_codicon_registered();
+
         let events = Rc::new(std::cell::RefCell::new(VecDeque::new()));
         // #955: share the same queue with `GtkPlatformServices` so a
         // notification-action activation can push
@@ -587,7 +609,7 @@ impl GtkBackend {
             // `list_char_width()`, same posture as `current_char_width`.
             current_chrome_char_width: 8.0,
             pango_ctx: None,
-            nerd_fonts_enabled: false,
+            nerd_fonts_enabled: true,
             ui_font: "Sans 11".to_string(),
             editor_font_family: "Monospace".to_string(),
             editor_font_size_pt: 11.0,
@@ -5358,6 +5380,42 @@ mod tests {
         assert!(
             b.register_font_from_memory(&garbage).is_none(),
             "64 zero bytes are not a parseable font — must report None, not a fabricated family"
+        );
+    }
+
+    // ── bundled codicon font self-registration ───────────────────────────
+
+    /// `GtkBackend::new` self-registers the bundled codicon font before
+    /// any app code runs, so the family is resolvable for painting with
+    /// no app configuration — the GUI half of the contract
+    /// `codicon::FONT_FAMILY` documents.
+    ///
+    /// Deliberately probes with [`crate::gtk::app_font::has_font_family`]
+    /// rather than calling `ensure_codicon_registered()` again:
+    /// `ensure_codicon_registered()` *performs* the registration on
+    /// first call, so asserting its own return value would pass even
+    /// if `GtkBackend::new()` never called it — this test's probe must
+    /// not be able to do the registration itself, or deleting the
+    /// `new()` call site couldn't fail it.
+    #[test]
+    fn gtk_backend_new_self_registers_the_bundled_codicon_font() {
+        let _ = GtkBackend::new();
+        assert!(
+            crate::gtk::app_font::has_font_family(crate::codicon::FONT_FAMILY),
+            "GtkBackend::new() must leave the bundled codicon font registered"
+        );
+    }
+
+    /// `nerd_fonts_enabled` defaults to `true` on this backend — see the
+    /// field's own doc for why that default differs from TUI's. Mirrors
+    /// `WinBackend`'s own `nerd_fonts_enabled_defaults_to_true`.
+    #[test]
+    fn gtk_backend_nerd_fonts_enabled_defaults_to_true() {
+        let b = GtkBackend::new();
+        assert!(
+            b.nerd_fonts_enabled(),
+            "icons are on by default on this GUI backend — the bundled \
+             codicon font is always available here"
         );
     }
 
