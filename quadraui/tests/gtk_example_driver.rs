@@ -487,12 +487,28 @@ fn data_table_body_rows_draw_separators_at_same_x_as_header() {
         "sanity: table should have more than one column"
     );
 
-    let header_y = (layout.header_height / 2.0) as i32;
+    // Header reference scanline: the band between the bottom of the
+    // header's text box (`row_height` tall, painted from the header's
+    // top edge) and the bottom of the header (`header_height`, 1.2x the
+    // line height). No glyph ink — ascender, descender, or a
+    // right-aligned title ending flush at the column edge — reaches it,
+    // so the pixel at `sep_x` there is "separator blended over header
+    // background" for any UI font.
+    let header_y = ((layout.row_height + layout.header_height) / 2.0) as i32;
+    assert!(
+        (header_y as f32) >= layout.row_height && (header_y as f32) < layout.header_height,
+        "sanity: header reference y={header_y} should sit below the header text box \
+         (row_height {}) and inside the header (header_height {})",
+        layout.row_height,
+        layout.header_height
+    );
     // Row 1, not row 0: `DataTableApp` starts with row 0 selected, and
     // the selection highlight tints the row background under the
     // separator's antialiased blend — comparing against a differently
     // -tinted body row would fail even with the fix correctly applied.
-    let body_y = (layout.header_height + layout.row_height * 1.5) as i32;
+    let row_top = layout.header_height + layout.row_height;
+    let body_ys: Vec<i32> =
+        ((row_top.ceil() as i32)..((row_top + layout.row_height).floor() as i32)).collect();
 
     // Antialiasing rasterizes the header's and body's separator rects
     // independently (different heights: `header_height` vs `line_height`),
@@ -511,11 +527,18 @@ fn data_table_body_rows_draw_separators_at_same_x_as_header() {
         let col = layout.columns[col_idx];
         let sep_x = (col.x + col.width) as i32;
         let header_px = driver.pixel(sep_x, header_y);
-        let body_px = driver.pixel(sep_x, body_y);
+        // Body cells have no text padding, so a right-aligned cell's
+        // glyphs end flush against the separator and blend into the
+        // `sep_x` pixel on whichever scanlines the glyph shapes cover —
+        // which scanlines those are depends on the UI font. Scan the
+        // whole row and require the separator signature on at least one
+        // ink-free scanline: a missing body separator leaves plain row
+        // background (or ink) on every scanline and still fails.
+        let body_pxs: Vec<(u8, u8, u8)> = body_ys.iter().map(|&y| driver.pixel(sep_x, y)).collect();
         assert!(
-            close(body_px, header_px, 3),
+            body_pxs.iter().any(|&px| close(px, header_px, 3)),
             "column {col_idx}'s body separator should sit at the same x={sep_x} as the \
-             header's: header pixel {header_px:?}, body pixel {body_px:?}"
+             header's: header pixel {header_px:?}, body pixels down the row {body_pxs:?}"
         );
     }
 }
