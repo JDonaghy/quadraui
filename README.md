@@ -85,7 +85,7 @@ The full version is `quadraui/examples/hello.rs`:
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
   silently doing nothing.
-- **Heavily tested.** Around 5,100 tests, including headless
+- **Heavily tested.** Around 5,200 tests, including headless
   paint-then-click round trips on all four backends, an end-to-end
   `TuiDriver` that drives real example apps through the event loop, and
   benchmarks for 100k-row tables and trees and a 4k-line editor.
