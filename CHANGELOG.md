@@ -83,6 +83,18 @@ only a push to `main` runs this workflow.
   causes) independently of `cell_width`. `Editor::layout_with_options` is
   unchanged and delegates with `None`. Purely additive:
   `EditorPaintOptions` is untouched.
+- `Style` grows five new tokens (issue #1378): `padding`, `corner_radius`,
+  `border_width`, `shadow_elevation` (`0..=3`), `control_height`, each with
+  its own `with_*` builder and a default chosen to match VS Code's own
+  chrome metrics. `PaintSurface` grows `surface_stroke_rounded_rect`
+  (required; implemented on GTK/macOS/Win), `surface_draw_shadow` and
+  `surface_draw_path` (both defaulted, composed out of existing verbs) plus
+  the new `PathVerb` enum. `Toast`, `Tooltip` (its `Full`-border chrome),
+  `ContextMenu`, `Palette` and `Dialog` now paint a rounded, bordered,
+  shadowed box on every GUI backend instead of a square, borderless (for
+  `ContextMenu`) or unshadowed one; `ProgressBar`'s track/fill paint with
+  `corner_radius`. TUI is unchanged. See
+  `quadraui/docs/decisions/DECISIONS.md` D-020 for the full design.
 
 ### Changed
 

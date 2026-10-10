@@ -3096,13 +3096,37 @@ impl Backend for WinBackend {
             // here rather than reaching `WinBackend`'s own
             // [`PaintSurface`] impl.
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            super::palette::draw_palette(
-                &surface.target,
-                dwrite,
-                rect,
+            let line_height = self.current_line_height;
+            if rect.width < 20.0 || rect.height < line_height * 4.0 {
+                return;
+            }
+            let theme = crate::theme::Theme::default();
+            let style = self.style();
+            let (palette_layout, rows_h) = crate::primitives::palette::native_surface_paint::layout(
+                rect.width,
+                rect.height,
                 palette,
-                self.current_line_height,
+                line_height,
+            );
+            // Calls the shared paint directly (rather than
+            // through `super::palette::draw_palette`, whose public
+            // signature stays additive-only and so cannot take a live
+            // `&Style`) so this live backend path honours
+            // `Self::set_style` overrides.
+            let mut surf = super::surface::D2dSurface {
+                target: &surface.target,
+                dwrite: Some(dwrite),
+            };
+            crate::primitives::palette::native_surface_paint::paint(
+                palette,
+                rect,
+                &palette_layout,
+                rows_h,
+                line_height,
                 self.nerd_fonts_enabled,
+                &mut surf,
+                &theme,
+                &style,
             );
             return;
         }
@@ -3806,14 +3830,29 @@ impl Backend for WinBackend {
             // Tooltip text is chrome, not `EditorClassPrimitive`-listed —
             // same `chrome_dwrite`-preferring swap as `Self::draw_palette`.
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            super::tooltip::draw_tooltip_with_chrome(
-                &surface.target,
-                dwrite,
+            // Calls the shared paint directly (rather than through
+            // `super::tooltip::draw_tooltip_with_chrome`, whose public
+            // signature stays additive-only and so cannot take a live
+            // `&Style`) so this live backend path honours
+            // `Self::set_style` overrides — see that free function's own
+            // doc. `Theme::default()` matches what this module's own
+            // doc documents ("`WinBackend` does not yet carry a live
+            // `Theme`").
+            let theme = crate::theme::Theme::default();
+            let style = self.style();
+            let mut surf = super::surface::D2dSurface {
+                target: &surface.target,
+                dwrite: Some(dwrite),
+            };
+            crate::primitives::tooltip::native_surface_paint::paint(
                 tooltip,
                 layout,
                 chrome,
                 self.current_line_height,
                 self.current_char_width,
+                &mut surf,
+                &theme,
+                &style,
             );
             return;
         }
@@ -3842,12 +3881,23 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            return super::context_menu::draw_context_menu(
-                &surface.target,
-                dwrite,
+            let style = self.style();
+            // Calls the shared paint directly (rather than
+            // through `super::context_menu::draw_context_menu`, whose
+            // public signature stays additive-only and so cannot take a
+            // live `&Style`) so this live backend path honours
+            // `Self::set_style` overrides.
+            let mut surf = super::surface::D2dSurface {
+                target: &surface.target,
+                dwrite: Some(dwrite),
+            };
+            return crate::primitives::context_menu::native_surface_paint::paint(
                 menu,
                 layout,
+                crate::accelerator::Platform::Windows,
+                &mut surf,
                 &self.current_theme,
+                &style,
             );
         }
         // `layout` is already fully resolved (see this fn's doc) — the
@@ -3886,12 +3936,14 @@ impl Backend for WinBackend {
         if let Some(surface) = &self.surface {
             let dwrite = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref());
             if let Some(dwrite) = dwrite {
-                return super::dialog::draw_dialog(
+                let style = self.style();
+                return super::dialog::draw_dialog_with_style(
                     &surface.target,
                     dwrite,
                     dialog,
                     layout,
                     self.current_line_height,
+                    &style,
                 );
             }
         }
@@ -4609,11 +4661,13 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
             let theme = self.current_theme;
+            let style = self.style();
             let line_height = self.current_line_height;
             return crate::primitives::toast::native_surface_paint::paint(
                 stack,
                 self,
                 &theme,
+                &style,
                 rect.x,
                 rect.y,
                 rect.width,
@@ -4734,8 +4788,9 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
             let theme = self.current_theme;
+            let style = self.style();
             return crate::primitives::progress::native_surface_paint::paint(
-                bar, self, &theme, rect,
+                bar, self, &theme, rect, &style,
             );
         }
         // No surface/DWrite yet — return the real (pure-geometry) layout
@@ -5815,6 +5870,32 @@ impl PaintSurface for WinBackend {
         let _ = (rect, color, stroke_width);
     }
 
+    /// `super::text::stroke_rounded_rect` is the
+    /// `DrawRoundedRectangle` twin of `stroke_rect` above — same
+    /// no-surface degrade as every other verb here.
+    fn surface_stroke_rounded_rect(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        color: crate::Color,
+        stroke_width: f32,
+    ) {
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            let _ = super::text::stroke_rounded_rect(
+                &surface.target,
+                rect,
+                radius,
+                color,
+                stroke_width,
+            );
+            return;
+        }
+        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // no-op instead of panicking.
+        let _ = (rect, radius, color, stroke_width);
+    }
+
     /// See [`Self::surface_measure_text`]'s doc for why this resolves
     /// `chrome_dwrite` rather than the editor `dwrite` handle
     /// unconditionally.
@@ -6070,6 +6151,17 @@ impl PaintSurface for ChromeSurface<'_> {
         self.backend.surface_stroke_rect(rect, color, stroke_width)
     }
 
+    fn surface_stroke_rounded_rect(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        color: crate::Color,
+        stroke_width: f32,
+    ) {
+        self.backend
+            .surface_stroke_rounded_rect(rect, radius, color, stroke_width)
+    }
+
     fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: crate::Color) {
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.backend.surface {
@@ -6252,6 +6344,17 @@ impl PaintSurface for EditorSurface<'_> {
 
     fn surface_stroke_rect(&mut self, rect: Rect, color: crate::Color, stroke_width: f32) {
         self.backend.surface_stroke_rect(rect, color, stroke_width)
+    }
+
+    fn surface_stroke_rounded_rect(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        color: crate::Color,
+        stroke_width: f32,
+    ) {
+        self.backend
+            .surface_stroke_rounded_rect(rect, radius, color, stroke_width)
     }
 
     /// See [`Self::surface_measure_text`]'s doc for why this forces the
@@ -8858,6 +8961,100 @@ mod tests {
             "a corner pixel well inside a radius-15 fillet on a 40x40 box must stay at \
              the frame's clear colour — otherwise this is just `surface_fill_rect` \
              under a new name"
+        );
+    }
+
+    /// Real `DrawRoundedRectangle` execution, the stroke twin of
+    /// `win_backend_paint_surface_fill_rounded_rect_clips_the_corners` —
+    /// the straight middle of an edge lands the stroke colour, a corner
+    /// well inside the fillet stays at the clear colour, and so does the
+    /// box's own centre (proving this strokes rather than fills).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_paint_surface_stroke_rounded_rect_clips_the_corners() {
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let background = cleared_frame_background(W, H);
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let blue = Color::rgb(60, 120, 220);
+        assert_ne!(
+            background,
+            (blue.r, blue.g, blue.b),
+            "the stroke colour must differ from the frame's clear colour"
+        );
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.surface_stroke_rounded_rect(
+            Rect::new(0.0, 0.0, W as f32, H as f32),
+            15.0,
+            blue,
+            4.0,
+        );
+        backend.end_frame();
+
+        let edge = surface.pixel_at(20, 1);
+        assert_eq!(
+            (edge.r, edge.g, edge.b),
+            (blue.r, blue.g, blue.b),
+            "the straight middle of the top edge must land the stroke colour"
+        );
+        let corner = surface.pixel_at(1, 1);
+        assert_eq!(
+            (corner.r, corner.g, corner.b),
+            background,
+            "a corner pixel well inside a radius-15 fillet on a 40x40 box must stay at \
+             the frame's clear colour"
+        );
+        let centre = surface.pixel_at(20, 20);
+        assert_eq!(
+            (centre.r, centre.g, centre.b),
+            background,
+            "the box's centre, far from any stroke, must stay at the frame's clear \
+             colour — otherwise this is `surface_fill_rounded_rect` under a new name"
+        );
+    }
+
+    /// `surface_draw_shadow` has no `WinBackend` override — it
+    /// inherits `PaintSurface`'s default, composed out of
+    /// `surface_fill_rounded_rect`. Proves that default verb genuinely
+    /// paints on Direct2D's own render target, the Win-GUI twin of
+    /// `gtk_backend_paint_surface_draw_shadow_elevation_three_paints_below_the_box`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_paint_surface_draw_shadow_elevation_three_paints_below_the_box() {
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let white = Color::rgb(255, 255, 255);
+        let shadow = Color::rgba(0, 0, 0, 200);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.surface_fill_rect(Rect::new(0.0, 0.0, W as f32, H as f32), white);
+        backend.surface_draw_shadow(Rect::new(5.0, 5.0, 20.0, 20.0), 6.0, 3, shadow);
+        backend.end_frame();
+
+        let px = surface.pixel_at(15, 29);
+        assert_ne!(
+            (px.r, px.g, px.b),
+            (white.r, white.g, white.b),
+            "a pixel just below the box's bottom edge must pick up shadow ink at \
+             elevation 3"
         );
     }
 

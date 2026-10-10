@@ -2655,3 +2655,115 @@ listed in `CHANGELOG.md`.
 - It does not promise long-term support for any `0.x` line.
 - It does not make `Backend` implementable outside the crate. D-013
   stands.
+
+---
+
+## D-020 — The fixed VS-Code-style `Style` token set: padding/radius/border/shadow/control-height + `surface_stroke_rounded_rect`/`surface_draw_shadow`/`surface_draw_path` (issue #1378)
+
+### Question
+
+D-017 shipped `Style::focus_ring_width` alone and named the rest of the
+catalogue — padding, corner radius, border width, shadow elevation,
+control height — as "unstarted follow-up work, each its own issue,
+each following this entry's shape." D-017 also named the missing verb
+a radius token's *border* side would need:
+`PaintSurface::surface_stroke_rounded_rect`. #1378 is that follow-up:
+the owner decision was a **fixed VS Code-style token set**, not a
+per-widget style sheet — every overlay primitive reads the *same* five
+tokens, the way every one of them already reads the same handful of
+`Theme` colours.
+
+### Decision
+
+**1. Five new `Style` fields, same `#[non_exhaustive]`/`Default`/
+`with_*` shape `focus_ring_width` already established — no new
+construction pattern needed.** `padding` (`8.0`), `corner_radius`
+(`6.0`), `border_width` (`1.0`), `shadow_elevation` (`u8`, `0..=3`,
+default `1`), `control_height` (`26.0`) — each default chosen to match
+VS Code's own chrome metric for the surface it names (hover
+card/quick-pick padding, widget corner radius, widget border, the
+hover/menu/modal elevation tiers, and the standard input/button/list-row
+height, respectively — see each field's own doc comment in `style.rs`
+for the specific VS Code surface it mirrors). `shadow_elevation`'s own
+value is clamped to `3` by every `surface_draw_shadow` implementation,
+not by the setter, so a caller passing a larger value is harmless.
+
+**2. Three new `PaintSurface` verbs, following D-017/D-018's two
+precedents for when a verb needs a real per-backend override versus a
+shared default:**
+
+   - `surface_stroke_rounded_rect` (rect, radius, color, stroke_width):
+     **no default**, same reasoning as `surface_fill_rounded_rect`
+     (D-017's note) — there is no backend-agnostic way to approximate a
+     rounded stroke out of the other verbs. `GtkBackend`/`MacBackend`/
+     `WinBackend` each gained a real implementation (Cairo's
+     `rounded_rect_path` + `stroke()`, CoreGraphics' tangent-arc path +
+     `CGContextStrokePath`, Direct2D's `DrawRoundedRectangle`), plus
+     every `CairoSurface`/`CgSurface`/`D2dSurface`/`ChromeSurface`/
+     `EditorSurface` adapter (11 impls total).
+   - `surface_draw_shadow` (rect, radius, elevation, color): **has a
+     default**, composed entirely out of `surface_fill_rounded_rect` —
+     three concentric translucent layers, widest-and-faintest first,
+     approximating a soft blur with no blur primitive at all.
+     Deliberately uniform across backends rather than each reaching for
+     its own native shadow primitive (CoreGraphics' `CGContextSetShadow`,
+     a Direct2D blur effect) — a fixed token set exists precisely so the
+     same elevation looks the same on every platform; no implementor
+     overrides this default.
+   - `surface_draw_path` (verbs: &[`PathVerb`], color, stroke_width) +
+     the new `PathVerb` enum (`MoveTo`/`LineTo`/`Close`, straight
+     segments only — no arc/curve variant yet, added only when a real
+     caller needs one): **has a default**, decomposed into
+     `surface_draw_line` calls. No implementor overrides this either.
+
+   Both defaulted verbs follow D-017's point 2 exactly: reaching every
+   pixel backend from one call site, with no new plumbing mechanism.
+
+**3. Wired into the one set of overlays the owner decision names —
+`Toast`, `Tooltip` (its `Full`-border chrome only), `ContextMenu`,
+`Palette`, `Dialog` (at a forced-minimum elevation `3`, VS Code's own
+modal tier) — plus `ProgressBar`'s track/fill (`corner_radius` only; no
+border/shadow, matching VS Code's own flat, elevation-less progress
+bar). `Spinner` is explicitly excluded — see its own module doc's "No
+`Style` tokens" section — because it paints a bare glyph, not a
+bordered box, so there is no rectangle for a radius or shadow to apply
+to.**
+
+**4. Every `pub` per-backend free function that paints one of these
+five primitives (`gtk::draw_tooltip_with_chrome`,
+`macos::draw_dialog`, `win::draw_context_menu`, …) keeps its exact
+pre-#1378 signature, painting with `Style::default()` internally.**
+Growing any of them to take a live `&Style` would be the breaking
+change rule 8 exists to avoid, and this crate cannot grep its
+downstream consumers' call sites to know whether one of them calls a
+free function directly instead of going through `Backend`. Each
+corresponding `Backend` trait method (the sanctioned, and in-tree only
+exercised, entry point) was rewired to call the shared
+`primitives::*::native_surface_paint::paint` directly with its own live
+`self.style()` instead of routing through the free function, so the
+one path every app actually exercises honours `Backend::set_style`
+overrides without touching any `pub` signature. `win::dialog` is the
+one case where the free function's own body (toolbar sub-paint) was too
+large to duplicate safely without a Windows host to test against; it
+instead grew a `pub(crate) draw_dialog_with_style` sibling the existing
+`pub fn draw_dialog` now forwards to with `Style::default()`.
+
+### What this does NOT mean
+
+- It does not add a `shadow`/`elevation` color to `Theme`. The shadow
+  tint is a plain `Color` argument at each call site (typically a
+  near-black translucent constant), not a new `Theme` field — `Theme`
+  stays colour-only and still can't grow a field without breaking
+  `coord-tui`'s exhaustive literals (D-017 point 1's reasoning,
+  unchanged).
+- It does not give TUI a shadow, a rounded corner, or a stroked-rounded
+  border. `Style`'s module doc's "Where each token maps on TUI" section
+  already covers this generically: no-op for every pixel-only
+  refinement, which all five new tokens are.
+- It does not add a curve/arc `PathVerb`. Nothing in this issue's six
+  primitives needed one; a real caller gets one added additively later.
+- It does not touch `command_center`, `completions`, `editor`,
+  `minimap` — the primitives `paint_surface.rs`'s own module doc already
+  names as not yet migrated onto a `native_surface_paint` module at
+  all. They are out of scope here the same way they were out of scope
+  for every earlier `PaintSurface` slice.

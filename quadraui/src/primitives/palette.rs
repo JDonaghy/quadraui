@@ -618,8 +618,10 @@ impl Palette {
 pub(crate) mod native_surface_paint {
     use super::{Palette, PaletteItemMeasure, PaletteLayout, PaletteMode};
     use crate::paint_surface::PaintSurface;
+    use crate::style::Style;
     use crate::text_util::safe_prefix;
     use crate::theme::Theme;
+    use crate::types::Color;
     use crate::Rect;
     use std::collections::HashSet;
 
@@ -744,7 +746,9 @@ pub(crate) mod native_surface_paint {
     /// `palette_layout`/`rows_h` must be [`layout`]'s own return value
     /// for this exact `(area.width, area.height, palette, line_height)`
     /// so paint and hit-test can never disagree. `nerd_fonts_enabled`
-    /// selects `Icon::glyph` vs. `Icon::fallback`.
+    /// selects `Icon::glyph` vs. `Icon::fallback`. `style` supplies the
+    /// corner radius/border width/shadow elevation the
+    /// popup box paints with — callers pass `&self.style()`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         palette: &Palette,
@@ -755,14 +759,30 @@ pub(crate) mod native_surface_paint {
         nerd_fonts_enabled: bool,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        style: &Style,
     ) {
         if area.width < 20.0 || area.height < line_height * 4.0 {
             return;
         }
 
+        // The shadow paints outside `area`, so it must land
+        // before `surface_push_clip` below — a clip is still in effect
+        // once this returns, and would otherwise cut the shadow off at
+        // the popup's own edge.
+        surface.surface_draw_shadow(
+            area,
+            style.corner_radius,
+            style.shadow_elevation,
+            Color::rgba(0, 0, 0, 100),
+        );
         surface.surface_push_clip(area);
-        surface.surface_fill_rect(area, theme.surface_bg);
-        surface.surface_stroke_rect(area, theme.border_fg, 1.0);
+        surface.surface_fill_rounded_rect(area, style.corner_radius, theme.surface_bg);
+        surface.surface_stroke_rounded_rect(
+            area,
+            style.corner_radius,
+            theme.border_fg,
+            style.border_width,
+        );
 
         // ── Title row ───────────────────────────────────────────────
         if let Some(tb) = palette_layout.title_bounds {
@@ -1122,6 +1142,29 @@ pub(crate) mod native_surface_paint {
                 self.fills.push((rect, color));
             }
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            /// Deliberately does **not** forward to
+            /// `PaintSurface`'s default (which would recurse into
+            /// `surface_fill_rounded_rect` three times and pollute
+            /// `fills` with shadow layers ahead of the real background
+            /// fill every index-based `fills[..]` assertion here relies
+            /// on) — a no-op recorder, same posture as `surface_draw_line`
+            /// below.
+            fn surface_draw_shadow(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _elevation: u8,
+                _color: Color,
+            ) {
+            }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.texts.push((rect, text.to_string(), color));
             }
@@ -1178,6 +1221,7 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &Theme::default(),
+                &Style::default(),
             );
             (surface, palette_layout)
         }

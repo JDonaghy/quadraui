@@ -602,7 +602,7 @@ pub use frame::{
     check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,
     FrameZone, ScreenLayout, Surface,
 };
-pub use paint_surface::PaintSurface;
+pub use paint_surface::{PaintSurface, PathVerb};
 // #819: `InteractionState` — a single hover/pressed store keyed by
 // `WidgetId`, meant to replace the bespoke per-primitive trackers
 // (`ToolbarHoverTracker`, `StatusBarInteraction`) and the positional

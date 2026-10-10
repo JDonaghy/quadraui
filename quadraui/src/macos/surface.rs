@@ -119,6 +119,27 @@ impl PaintSurface for CgSurface<'_> {
         unsafe { super::backend::ns_stroke_rect(self.ctx, rect, color, stroke_width as f64) };
     }
 
+    /// `ns_stroke_rounded_rect`'s twin of [`Self::surface_stroke_rect`]
+    /// above — same SAFETY contract.
+    fn surface_stroke_rounded_rect(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        color: Color,
+        stroke_width: f32,
+    ) {
+        // SAFETY: see `surface_fill_rect`.
+        unsafe {
+            super::backend::ns_stroke_rounded_rect(
+                self.ctx,
+                rect,
+                radius,
+                color,
+                stroke_width as f64,
+            )
+        };
+    }
+
     fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
         let font = self.font_or_panic();
         // SAFETY: see `surface_fill_rect`.

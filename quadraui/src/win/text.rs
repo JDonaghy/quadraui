@@ -1031,6 +1031,46 @@ pub(crate) fn stroke_rect(
     Ok(())
 }
 
+/// [`stroke_rect`]'s rounded-corner twin —
+/// `ID2D1RenderTarget::DrawRoundedRectangle` with both radii set to
+/// `radius`, clamped the same way [`fill_rounded_rect`]'s is. Same
+/// inside-the-bounds inset as [`stroke_rect`], for the same reason (see
+/// that function's doc).
+pub(crate) fn stroke_rounded_rect(
+    target: &ID2D1RenderTarget,
+    rect: Rect,
+    radius: f32,
+    color: Color,
+    stroke_width: f32,
+) -> WinResult<()> {
+    let brush = get_or_create_brush(target, color)?;
+    let inset = (stroke_width / 2.0)
+        .min(rect.width / 2.0)
+        .min(rect.height / 2.0)
+        .max(0.0);
+    let r = (radius - inset)
+        .min(rect.width / 2.0 - inset)
+        .min(rect.height / 2.0 - inset)
+        .max(0.0);
+    let rounded = D2D1_ROUNDED_RECT {
+        rect: D2D_RECT_F {
+            left: rect.x + inset,
+            top: rect.y + inset,
+            right: rect.x + rect.width - inset,
+            bottom: rect.y + rect.height - inset,
+        },
+        radiusX: r,
+        radiusY: r,
+    };
+    // SAFETY: `target` is still the live render target; `rounded` is a
+    // local built immediately above and `brush` a live interface (just
+    // created or fetched from the cache), both borrowed only for this
+    // call; `None` for stroke style asks for Direct2D's default solid
+    // stroke.
+    unsafe { target.DrawRoundedRectangle(&rounded, &brush, stroke_width, None) };
+    Ok(())
+}
+
 /// Push an axis-aligned clip rect (DIPs, target-relative) onto `target`.
 /// Every push must be balanced by a [`pop_clip`] — content rasterisers
 /// that paint per-row / per-cell text wider than their own bounds (e.g.

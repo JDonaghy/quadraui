@@ -86,7 +86,11 @@ mod tests {
                     dwrite: Some(dwrite),
                 };
                 crate::primitives::progress::native_surface_paint::paint(
-                    bar, &mut raw, theme, rect,
+                    bar,
+                    &mut raw,
+                    theme,
+                    rect,
+                    &crate::style::Style::default(),
                 );
             })
             .map(|_| win_progress_layout(rect, bar))

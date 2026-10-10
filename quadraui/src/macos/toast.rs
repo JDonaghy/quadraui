@@ -13,12 +13,9 @@
 //! [`super::surface::CgSurface`] adapter was removed in issue #1109
 //! (zero uses in coord-tui's `main` and vimcode's `develop`).
 //!
-//! ## Scope omissions (follow-up)
-//!
-//! - **Rounded corners** — boxes are straight rectangles for now. CG
-//!   path API for rounded rects deferred with other corner work
-//!   (search-box border in command_center, close-button hover bg in
-//!   tab_bar).
+//! The shared paint reads [`crate::Style`]'s corner radius/border
+//! width/shadow-elevation tokens, so the box this module's layout
+//! describes paints rounded, bordered, and shadowed on macOS too.
 
 use core_text::font::CTFont;
 

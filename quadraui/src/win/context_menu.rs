@@ -35,7 +35,14 @@ pub fn draw_context_menu(
         target,
         dwrite: Some(dwrite),
     };
-    native_surface_paint::paint(menu, menu_layout, Platform::Windows, &mut surface, theme)
+    native_surface_paint::paint(
+        menu,
+        menu_layout,
+        Platform::Windows,
+        &mut surface,
+        theme,
+        &crate::style::Style::default(),
+    )
 }
 
 #[cfg(test)]

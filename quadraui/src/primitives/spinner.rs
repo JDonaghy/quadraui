@@ -41,6 +41,17 @@
 //! per-backend clock/thread story this module deliberately doesn't have,
 //! and every existing adopter already owns exactly the ticker cadence it
 //! wants.
+//!
+//! # No [`crate::Style`] tokens
+//!
+//! `Toast`/`Tooltip`/`ContextMenu`/`Palette`/`Dialog` each read
+//! [`crate::Style::corner_radius`]/`border_width`/`shadow_elevation`,
+//! and `ProgressBar`'s track reads `corner_radius`. `Spinner` has no
+//! bordered box at all — every backend paints a bare glyph-plus-label,
+//! matching VS Code's own activity spinner (a rotating icon, no card)
+//! — so there is no rectangle for a radius to round or a shadow to sit
+//! behind. Each backend's `draw_spinner` stays untouched by that token
+//! set.
 
 use crate::event::Rect;
 use crate::types::{Color, WidgetId};

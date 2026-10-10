@@ -37,7 +37,14 @@ pub fn draw_context_menu(
         layout: Some(layout),
         translucent_fill: true,
     };
-    let hits = native_surface_paint::paint(menu, menu_layout, Platform::Linux, &mut surface, theme);
+    let hits = native_surface_paint::paint(
+        menu,
+        menu_layout,
+        Platform::Linux,
+        &mut surface,
+        theme,
+        &crate::style::Style::default(),
+    );
     layout.set_attributes(None);
 
     hits.into_iter()
