@@ -161,6 +161,9 @@ struct EditorPaintCtx<'a> {
 /// override otherwise-automatic paint decisions — currently just
 /// `suppress_v_scrollbar` (#968; see the module doc's "Minimap
 /// interaction" section).
+///
+/// Equivalent to [`draw_editor_with_options_and_v_scrollbar_w`] with
+/// `v_scrollbar_w: None` (a `char_width`-wide scrollbar column).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_editor_with_options(
     cr: &Context,
@@ -172,6 +175,36 @@ pub fn draw_editor_with_options(
     line_height: f64,
     options: EditorPaintOptions,
 ) {
+    draw_editor_with_options_and_v_scrollbar_w(
+        cr,
+        layout,
+        font_metrics,
+        editor,
+        theme,
+        char_width,
+        line_height,
+        options,
+        None,
+    )
+}
+
+/// [`draw_editor_with_options`], plus a host-settable vertical scrollbar
+/// width in pixels — see [`Editor::layout_with_options_and_v_scrollbar_w`]
+/// for the geometry. `None` sizes the column at `char_width`.
+/// `GtkBackend::draw_editor` calls this with the width set through
+/// [`crate::Backend::set_editor_v_scrollbar_width`].
+#[allow(clippy::too_many_arguments)]
+pub fn draw_editor_with_options_and_v_scrollbar_w(
+    cr: &Context,
+    layout: &pango::Layout,
+    font_metrics: &pango::FontMetrics,
+    editor: &Editor,
+    theme: &Theme,
+    char_width: f64,
+    line_height: f64,
+    options: EditorPaintOptions,
+    v_scrollbar_w: Option<f32>,
+) {
     let rect = &editor.rect;
     let gutter_width = editor.gutter_char_width as f64 * char_width;
     let h_scroll_offset = editor.scroll_left as f64 * char_width;
@@ -181,8 +214,13 @@ pub fn draw_editor_with_options(
     // can be narrowed by the same reserved scrollbar column the
     // scrollbar paint and `EditorLayout::hit_test` already agree on —
     // see the module doc's "Scrollbars" section.
-    let editor_geom =
-        editor.layout_with_options(*rect, char_width as f32, line_height as f32, options);
+    let editor_geom = editor.layout_with_options_and_v_scrollbar_w(
+        *rect,
+        char_width as f32,
+        line_height as f32,
+        options,
+        v_scrollbar_w,
+    );
 
     let ctx = EditorPaintCtx {
         cr,
@@ -1584,6 +1622,17 @@ mod tests {
         theme: &Theme,
         options: EditorPaintOptions,
     ) -> (Vec<u8>, i32) {
+        scroll_test_paint_with_v_scrollbar_w(editor, theme, options, None)
+    }
+
+    /// [`scroll_test_paint_with_options`], plus a scrollbar-width
+    /// override via [`draw_editor_with_options_and_v_scrollbar_w`].
+    fn scroll_test_paint_with_v_scrollbar_w(
+        editor: &Editor,
+        theme: &Theme,
+        options: EditorPaintOptions,
+        v_scrollbar_w: Option<f32>,
+    ) -> (Vec<u8>, i32) {
         let mut surface = ImageSurface::create(Format::ARgb32, SCROLL_TEST_W, SCROLL_TEST_H)
             .expect("create ImageSurface");
         {
@@ -1597,7 +1646,7 @@ mod tests {
             pango_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 12"));
             let metrics = pango_ctx.metrics(None, None);
 
-            draw_editor_with_options(
+            draw_editor_with_options_and_v_scrollbar_w(
                 &cr,
                 &pango_layout,
                 &metrics,
@@ -1606,6 +1655,7 @@ mod tests {
                 SCROLL_TEST_CHAR_W,
                 SCROLL_TEST_LINE_H,
                 options,
+                v_scrollbar_w,
             );
         }
         surface.flush();
@@ -1718,6 +1768,43 @@ mod tests {
             rgb(theme.background),
             "suppress_v_scrollbar should stop the vertical scrollbar from painting even \
              though total_lines overflows the viewport"
+        );
+    }
+
+    /// The GTK rasteriser's vertical scrollbar column honours a
+    /// `v_scrollbar_w` override end-to-end — a wider override paints
+    /// further out, matching the layout-level assertions in
+    /// `primitives::editor`'s own tests.
+    ///
+    /// Viewport is `SCROLL_TEST_W` = 200px, `SCROLL_TEST_CHAR_W` = 8.0.
+    /// The default column spans `[192, 200)`; a 14px override spans
+    /// `[186, 200)`. `x = 188` falls in the gap between those two spans
+    /// — plain text-area background at baseline, inside the track once
+    /// widened.
+    #[test]
+    fn draw_editor_v_scrollbar_w_widens_painted_column() {
+        let theme = Theme::default();
+        let overflowing = scroll_test_editor(50, 0, 5);
+
+        let (data0, stride0) = scroll_test_paint(&overflowing, &theme);
+        let baseline_px = scroll_test_pixel(&data0, stride0 as usize, 188, 40);
+        assert_eq!(
+            baseline_px,
+            rgb(theme.background),
+            "x=188 sits outside the default 8px-wide column, [192, 200)"
+        );
+
+        let (data, stride) = scroll_test_paint_with_v_scrollbar_w(
+            &overflowing,
+            &theme,
+            EditorPaintOptions::default(),
+            Some(14.0),
+        );
+        let widened_px = scroll_test_pixel(&data, stride as usize, 188, 40);
+        assert_ne!(
+            widened_px,
+            rgb(theme.background),
+            "a Some(14.0) v_scrollbar_w should widen the painted track to cover x=188 ([186, 200))"
         );
     }
 
