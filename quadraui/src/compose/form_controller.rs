@@ -101,6 +101,14 @@ pub struct FormController {
     has_focus: bool,
     scroll_drag: Option<ThumbDrag>,
     cached_lh: Option<f32>,
+    /// Chrome-font average character-advance cached alongside
+    /// `cached_lh`, sourced from [`Backend::list_char_width`] rather
+    /// than a derived `line_height` guess — the right font's average
+    /// on every pixel backend, and exactly `1.0` on TUI (same as
+    /// `cached_lh` there), so the no-backend fallback this enables
+    /// agrees with what [`Backend::form_layout`] actually paints
+    /// instead of mis-sizing proportional-font chrome.
+    cached_char_w: Option<f32>,
     text_edit: Option<TextEditState>,
 }
 
@@ -113,6 +121,7 @@ impl FormController {
             has_focus: false,
             scroll_drag: None,
             cached_lh: None,
+            cached_char_w: None,
             text_edit: None,
         }
     }
@@ -161,13 +170,19 @@ impl FormController {
 
     /// Cache backend metrics so [`Self::handle_cached`] can process
     /// events without a `Backend` reference. Call once at init, or
-    /// again if `line_height` changes (font/DPI change).
+    /// again if `line_height`/`char_width` change (font/DPI change).
+    ///
+    /// `char_width` should be [`Backend::list_char_width`] — the chrome
+    /// font's average glyph advance (`1.0` on TUI) — not a derived
+    /// guess, so the no-backend fallback this enables agrees with what
+    /// [`Backend::form_layout`] actually paints.
     ///
     /// [`Self::render`] caches this automatically, so explicit calls
     /// are only needed when `handle_cached` must work before the first
     /// `render`.
-    pub fn set_backend_info(&mut self, line_height: f32) {
+    pub fn set_backend_info(&mut self, line_height: f32, char_width: f32) {
         self.cached_lh = Some(line_height);
+        self.cached_char_w = Some(char_width);
     }
 
     // ── Render ────────────────────────────────────────────────────────
@@ -200,6 +215,7 @@ impl FormController {
     /// [`Self::render`], but in one step.
     pub fn render_and_cache(&mut self, backend: &mut dyn Backend, rect: Rect) {
         self.cached_lh = Some(backend.line_height());
+        self.cached_char_w = Some(backend.list_char_width());
         self.render(backend, rect);
     }
 
@@ -212,7 +228,8 @@ impl FormController {
         rect: Rect,
     ) -> FormControllerEvent {
         let lh = backend.line_height();
-        self.handle_inner(event, rect, lh, Some(backend))
+        let char_w = backend.list_char_width();
+        self.handle_inner(event, rect, lh, char_w, Some(backend))
     }
 
     // ── Handle (cached, no backend) ──────────────────────────────────
@@ -221,10 +238,10 @@ impl FormController {
     /// or [`Self::render_and_cache`] called first. Returns
     /// [`FormControllerEvent::Ignored`] if metrics aren't cached yet.
     pub fn handle_cached(&mut self, event: &UiEvent, rect: Rect) -> FormControllerEvent {
-        let Some(lh) = self.cached_lh else {
+        let (Some(lh), Some(char_w)) = (self.cached_lh, self.cached_char_w) else {
             return FormControllerEvent::Ignored;
         };
-        self.handle_inner(event, rect, lh, None)
+        self.handle_inner(event, rect, lh, char_w, None)
     }
 
     // ── Scroll primitives (pub for SidebarSystem reuse) ──────────────
@@ -260,6 +277,7 @@ impl FormController {
         event: &UiEvent,
         rect: Rect,
         lh: f32,
+        char_w: f32,
         backend: Option<&mut dyn Backend>,
     ) -> FormControllerEvent {
         match event {
@@ -267,7 +285,7 @@ impl FormController {
                 button: MouseButton::Left,
                 position,
                 ..
-            } => self.click_inner(rect, position.x, position.y, lh, backend),
+            } => self.click_inner(rect, position.x, position.y, lh, char_w, backend),
 
             UiEvent::MouseMoved {
                 position,
@@ -547,6 +565,7 @@ impl FormController {
         x: f32,
         y: f32,
         lh: f32,
+        char_w: f32,
         backend: Option<&mut dyn Backend>,
     ) -> FormControllerEvent {
         if !rect.contains(Point::new(x, y)) {
@@ -565,8 +584,13 @@ impl FormController {
             let layout = if let Some(be) = backend {
                 be.form_layout(form_rect, &form)
             } else {
+                // No live backend — degrade to the character-count
+                // estimate every backend uses before a surface/font is
+                // available (e.g. `win::backend::NominalTextMeasure`),
+                // fed `char_w` cached from `Backend::list_char_width`
+                // (the chrome font's real average advance, `1.0` on
+                // TUI) rather than a `line_height`-derived guess.
                 let row_h = row_height(lh);
-                let char_w = lh * 0.6;
                 form.layout(form_rect.width, form_rect.height, |i| {
                     form_field_measure(&form.fields[i], row_h, char_w)
                 })
@@ -1314,7 +1338,7 @@ mod tests {
     fn handle_cached_scroll_works_after_set_backend_info() {
         let mut fc = test_controller(20);
         // TUI: lh=1.0, row_h=1.0, rect height=5 → 5 viewport rows
-        fc.set_backend_info(1.0);
+        fc.set_backend_info(1.0, 1.0);
         let ev = fc.handle_cached(
             &UiEvent::Scroll {
                 widget: None,
@@ -1330,7 +1354,7 @@ mod tests {
     #[test]
     fn handle_cached_click_uses_fallback_layout() {
         let mut fc = test_controller(3);
-        fc.set_backend_info(1.0);
+        fc.set_backend_info(1.0, 1.0);
         let ev = fc.handle_cached(
             &UiEvent::MouseDown {
                 widget: None,
@@ -1346,6 +1370,62 @@ mod tests {
                 assert!(value);
             }
             other => panic!("expected FormAction(ToggleChanged), got {other:?}"),
+        }
+    }
+
+    /// `handle_cached`'s no-backend fallback must use the cached
+    /// `char_width` passed to `set_backend_info` verbatim, not a
+    /// `line_height`-derived guess — a proportional-font chrome width
+    /// (`8.0`) differs enough from `line_height * 0.6` (`12.0` at
+    /// `line_height = 20.0`) to put this click in a different segment
+    /// under each formula, so a regression to the old guess flips
+    /// this assertion.
+    #[test]
+    fn handle_cached_click_uses_cached_char_width_not_line_height_guess() {
+        let mut fc = FormController::new("fc".into());
+        fc.set_form(Form {
+            id: WidgetId::new("form"),
+            fields: vec![FormField {
+                id: WidgetId::new("scope"),
+                label: StyledText::default(),
+                kind: FieldKind::SegmentedControl {
+                    options: vec!["File".into(), "Project".into()],
+                    selected_idx: 0,
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        });
+        fc.set_backend_info(20.0, 8.0);
+
+        // char_w=8: start_x=8, "File" width=(4+2)*8=48 -> [8, 56),
+        // "Project" width=(7+2)*8=72 -> [56, 128). x=60 lands on
+        // "Project" (selected_idx=1). The old `line_height * 0.6` guess
+        // (char_w=12 at line_height=20) would instead give "File"
+        // width=(4+2)*12=72 -> [12, 84), putting x=60 on "File"
+        // (selected_idx=0) — the two formulas disagree here on purpose.
+        let ev = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 60.0, y: 10.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 100.0),
+        );
+        match ev {
+            FormControllerEvent::FormAction(FormEvent::SegmentedControlChanged {
+                id,
+                selected_idx,
+            }) => {
+                assert_eq!(id.as_str(), "scope");
+                assert_eq!(selected_idx, 1, "must resolve to \"Project\", not \"File\"");
+            }
+            other => panic!("expected FormAction(SegmentedControlChanged), got {other:?}"),
         }
     }
 
@@ -1448,7 +1528,7 @@ mod tests {
         // `ClipboardPaste` (not `Form.has_focus` above, which only
         // affects rendering) — these keyboard-editing tests need it set.
         fc.set_has_focus(true);
-        fc.set_backend_info(1.0);
+        fc.set_backend_info(1.0, 1.0);
         fc
     }
 

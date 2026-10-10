@@ -178,6 +178,14 @@ pub struct SidebarSystem {
     panel_scroll: f32,
     backend_info: Option<BackendInfo>,
     cached_form_layouts: Vec<Option<FormLayout>>,
+    /// Chrome-font average character-advance ([`Backend::list_char_width`]),
+    /// cached by [`Self::cache_form_layouts`] alongside the real
+    /// per-section `FormLayout`s — used by [`Self::click`]'s
+    /// no-backend, no-cached-layout fallback instead of a
+    /// `line_height`-derived guess. `None` until a host calls
+    /// `cache_form_layouts` at least once, in which case that fallback
+    /// degrades further, to `line_height` itself.
+    cached_char_width: Option<f32>,
 }
 
 impl SidebarSystem {
@@ -211,6 +219,7 @@ impl SidebarSystem {
             panel_scroll: 0.0,
             backend_info: None,
             cached_form_layouts: vec![None; n],
+            cached_char_width: None,
         }
     }
 
@@ -432,7 +441,15 @@ impl SidebarSystem {
     /// measurement (Pango for GTK, char cells for TUI). Call after
     /// `render()` or `set_form()` so that [`Self::handle_cached`]
     /// uses pixel-accurate hit regions instead of the generic estimate.
+    ///
+    /// Also caches [`Backend::list_char_width`] — the chrome font's
+    /// real average glyph advance — for the rarer case where
+    /// `handle_cached` hits a Form section this method never saw (e.g.
+    /// a click before the first `cache_form_layouts` call for that
+    /// section): [`Self::click`]'s last-resort estimate uses that
+    /// cached value instead of a `line_height`-derived guess.
     pub fn cache_form_layouts(&mut self, backend: &dyn Backend) {
+        self.cached_char_width = Some(backend.list_char_width());
         let (view, map) = self.build_view();
         let lh = backend.line_height();
         let metrics = backend.msv_metrics();
@@ -1111,8 +1128,20 @@ impl SidebarSystem {
                         {
                             cached
                         } else {
+                            // Neither a live backend nor a cached real
+                            // layout for this section — degrade to the
+                            // character-count estimate every backend
+                            // uses before a surface/font is available,
+                            // fed `char_w` from
+                            // `Backend::list_char_width` cached by
+                            // `cache_form_layouts` (the chrome font's
+                            // real average advance, `1.0` on TUI)
+                            // rather than a `line_height`-derived
+                            // guess — falling further back to
+                            // `line_height` itself when even that was
+                            // never cached.
                             let row_h = (lh * 1.4).round();
-                            let char_w = lh * 0.6;
+                            let char_w = self.cached_char_width.unwrap_or(lh);
                             f.layout(body_b.width, body_b.height, |i| {
                                 form_field_measure(&f.fields[i], row_h, char_w)
                             })
@@ -2880,7 +2909,11 @@ mod tests {
         };
         let lh: f32 = 16.0;
         let row_h = (lh * 1.4).round();
-        let char_w = lh * 0.6;
+        // A plausible chrome-font average advance, independent of
+        // `line_height` — this test only needs *some* fixed char
+        // width to build item bounds and hit-test them, not a
+        // formula tying it to `lh`.
+        let char_w: f32 = 9.0;
         let layout = form.layout(200.0, 100.0, |i| {
             form_field_measure(&form.fields[i], row_h, char_w)
         });
@@ -2893,6 +2926,85 @@ mod tests {
         assert_eq!(first_id, &WidgetId::new("case"));
         let hit = layout.hit_test(first_rect.x + 1.0, first_rect.y + 1.0);
         assert_eq!(hit, FormHit::Field(WidgetId::new("case")));
+    }
+
+    /// End-to-end through `SidebarSystem::handle_cached`'s last-resort
+    /// Form fallback (no live backend, and no `FormLayout` cached by
+    /// `cache_form_layouts` for this section): the `char_width` that
+    /// `cache_form_layouts` would have cached from
+    /// `Backend::list_char_width` must be used verbatim, not a
+    /// `line_height`-derived guess. A proportional-font chrome width
+    /// (`8.0`) differs enough from `line_height * 0.6` (`12.0` at
+    /// `line_height = 20.0`) to put this click in a different segment
+    /// under each formula, so a regression to the old guess flips this
+    /// assertion.
+    #[test]
+    fn sidebar_handle_cached_form_click_uses_cached_char_width_not_line_height_guess() {
+        use crate::primitives::form::FormField;
+        let mut ss = SidebarSystem::new(vec![SidebarSectionDef::form("scope", "Scope")]);
+        ss.set_form(
+            0,
+            Form {
+                id: WidgetId::new("scope-form"),
+                fields: vec![FormField {
+                    id: WidgetId::new("scope"),
+                    label: StyledText::default(),
+                    kind: FieldKind::SegmentedControl {
+                        options: vec!["File".into(), "Project".into()],
+                        selected_idx: 0,
+                    },
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                }],
+                focused_field: None,
+                scroll_offset: 0,
+                has_focus: false,
+            },
+        );
+        let lh = 20.0;
+        let metrics = MsvLayoutMetrics {
+            header_size: lh,
+            divider_size: 0.0,
+            scrollbar_size: 0.0,
+            cell_quantum: 0.0,
+        };
+        ss.set_backend_info(lh, metrics);
+        // Simulate `cache_form_layouts` having recorded a real chrome
+        // char width on some earlier frame, without also caching a
+        // `FormLayout` for *this* section (private-field poke — same
+        // intent `cache_form_layouts` itself would have, just without
+        // needing a live `&dyn Backend` in this unit test).
+        ss.cached_char_width = Some(8.0);
+        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+
+        // Body starts at y=20 (one header row). char_w=8: start_x=8,
+        // "File" width=(4+2)*8=48 -> [8, 56), "Project"
+        // width=(7+2)*8=72 -> [56, 128). x=60 lands on "Project"
+        // (selected_idx=1). The old `line_height * 0.6` guess (char_w=12
+        // at line_height=20) would instead give "File"
+        // width=(4+2)*12=72 -> [12, 84), putting x=60 on "File"
+        // (selected_idx=0) — the two formulas disagree here on purpose.
+        let ev = ss.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(60.0, 30.0),
+                modifiers: Modifiers::default(),
+            },
+            rect,
+        );
+        match ev {
+            SidebarEvent::FormEvent {
+                section,
+                event: FormEvent::SegmentedControlChanged { id, selected_idx },
+            } => {
+                assert_eq!(section, 0);
+                assert_eq!(id.as_str(), "scope");
+                assert_eq!(selected_idx, 1, "must resolve to \"Project\", not \"File\"");
+            }
+            other => panic!("expected FormEvent(SegmentedControlChanged), got {other:?}"),
+        }
     }
 
     #[test]

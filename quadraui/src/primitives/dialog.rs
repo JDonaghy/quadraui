@@ -710,18 +710,19 @@ pub fn native_dialog_options(d: &Dialog) -> Option<MessageDialogOptions> {
 //   down: GTK/macOS centred the display text in the input box; Windows
 //   passed the box's full height uncentred.
 // - **`DialogTable` explicit `column_widths`.** GTK/macOS honour
-//   `table.column_widths` as a per-column *minimum* width (converted
-//   from the char-cell hint via `line_height * 0.6`, an approximate
-//   monospace char width); Windows's table painter never read the
-//   field at all, so an explicit width hint was silently ignored on
-//   that backend alone.
-// - **`DialogTable` header-separator dash count.** GTK/macOS divide the
-//   table's total content width by the same `line_height * 0.6`
-//   approximate char width to size the `───` separator row under the
-//   header; Windows divided by plain `line_height` (i.e. assumed a
-//   character nearly twice as wide), so its separator row undershot the
-//   table's actual content width. `paint` uses the `* 0.6` approximation
-//   everywhere.
+//   `table.column_widths` as a per-column *minimum* width, converted
+//   from the char-cell hint to pixels via a sample-string average
+//   glyph advance measured through `PaintSurface::surface_measure_text`
+//   (the same convention `layout_metrics::pixel_tab_bar_layout` uses
+//   for its own char-cell estimate), not a fixed monospace ratio;
+//   Windows's table painter never read the field at all, so an
+//   explicit width hint was silently ignored on that backend alone.
+// - **`DialogTable` header-separator dash count.** GTK/macOS divide
+//   the table's total content width by the dash glyph's own measured
+//   width to size the `───` separator row under the header; Windows
+//   divided by plain `line_height` (i.e. assumed a character nearly
+//   twice as wide), so its separator row undershot the table's actual
+//   content width. `paint` measures real glyph widths everywhere.
 //
 // `DialogInput::Toolbar` is **not** painted by `paint` at all — the
 // embedded toolbar still renders through each backend's own
@@ -746,13 +747,6 @@ pub(crate) mod native_surface_paint {
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::Rect;
-
-    /// Approximate monospace character width used to convert a
-    /// [`DialogTable::column_widths`] char-cell hint to pixels, and to
-    /// size the header separator's dash count — the one formula GTK and
-    /// macOS already agreed on pre-migration (see this module's doc for
-    /// the Windows drift this fixes).
-    const APPROX_CHAR_WIDTH_RATIO: f32 = 0.6;
 
     /// Paint a [`DialogTable`] at `(bounds.x, bounds.y)`, top-left
     /// anchored. Column widths are auto-computed from content via
@@ -789,9 +783,24 @@ pub(crate) mod native_surface_paint {
         }
 
         if let Some(explicit) = &table.column_widths {
+            // Convert the char-cell hint to pixels via a sample-string
+            // average glyph advance — the same convention
+            // `layout_metrics::pixel_tab_bar_layout` uses for its own
+            // char-cell estimate — rather than a fixed monospace
+            // ratio of `line_height`, which mis-sizes a proportional
+            // chrome font.
+            let sample_w = measure_w(
+                surface,
+                crate::primitives::layout_metrics::pixel::TAB_CELL_WIDTH_SAMPLE,
+            );
+            let avg_char_w = (sample_w
+                / crate::primitives::layout_metrics::pixel::TAB_CELL_WIDTH_SAMPLE
+                    .chars()
+                    .count() as f32)
+                .max(1.0);
             for (j, &w) in explicit.iter().enumerate() {
                 if j < ncols {
-                    let px = w as f32 * (line_height * APPROX_CHAR_WIDTH_RATIO);
+                    let px = w as f32 * avg_char_w;
                     col_w[j] = col_w[j].max(px);
                 }
             }
@@ -822,8 +831,11 @@ pub(crate) mod native_surface_paint {
             row_y += line_height;
 
             let total_w = col_x[ncols - 1] + col_w[ncols - 1] - bounds.x;
-            let char_w = line_height * APPROX_CHAR_WIDTH_RATIO;
-            let dash_count = ((total_w / char_w.max(1.0)).ceil() as usize + 4).max(1);
+            // Measure the dash glyph itself rather than approximating a
+            // generic character width — exact for whatever "─" actually
+            // renders as in this font.
+            let dash_w = measure_w(surface, "─").max(1.0);
+            let dash_count = ((total_w / dash_w).ceil() as usize + 4).max(1);
             let dash_str: String = "─".repeat(dash_count);
             surface.surface_draw_text_run(row_rect(bounds.x, row_y, total_w), &dash_str, border);
             row_y += line_height;
@@ -950,6 +962,138 @@ pub(crate) mod native_surface_paint {
         }
 
         rects
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::{Point, Viewport};
+        use crate::types::Color;
+
+        /// Measures every glyph at a fixed `5.0`px advance, except `─`
+        /// (box-drawing dash) at `10.0`px — deliberately *not* related to
+        /// `line_height` by any fixed ratio, so a regression to the old
+        /// `line_height * 0.6` char-width guess produces a different
+        /// result than this surface's real measurement and the tests
+        /// below catch it.
+        #[derive(Default)]
+        struct FakeSurface {
+            texts: Vec<(Rect, String, Color)>,
+        }
+
+        impl PaintSurface for FakeSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(400.0, 200.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                20.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                5.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                let w: f32 = text
+                    .chars()
+                    .map(|c| if c == '─' { 10.0 } else { 5.0 })
+                    .sum();
+                (w, 14.0)
+            }
+            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.texts.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _sw: f32) {}
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(
+                &mut self,
+                _rect: Rect,
+                _image: &crate::Image,
+            ) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        const FG: Color = Color::rgb(255, 255, 255);
+        const BORDER: Color = Color::rgb(128, 128, 128);
+
+        /// `column_widths` (a char-cell hint) converts to pixels via a
+        /// sample-average glyph advance measured through the surface,
+        /// not `line_height * 0.6`. At `line_height = 20.0` the old
+        /// guess would give `10 * 12.0 = 120.0`; this surface's real
+        /// `5.0`px average gives `10 * 5.0 = 50.0` instead.
+        #[test]
+        fn column_widths_hint_converts_via_measured_char_width_not_line_height_guess() {
+            let table = DialogTable {
+                headers: None,
+                rows: vec![vec!["x".into()]],
+                column_widths: Some(vec![10]),
+            };
+            let mut surface = FakeSurface::default();
+            draw_table(
+                &mut surface,
+                &table,
+                Rect::new(0.0, 0.0, 400.0, 200.0),
+                20.0,
+                FG,
+                BORDER,
+            );
+            let (rect, text, _) = &surface.texts[0];
+            assert_eq!(text, "x");
+            assert_eq!(
+                rect.width, 50.0,
+                "column_widths hint must convert via the measured \
+                 average char width (5.0/char), not line_height * 0.6 \
+                 (which would give 120.0)"
+            );
+        }
+
+        /// The header separator's dash count is sized from the dash
+        /// glyph's own measured width, not a generic `line_height * 0.6`
+        /// char-width guess — the two diverge here (`10.0`px measured
+        /// dash vs. `12.0`px guessed) so a regression produces a
+        /// different dash count.
+        #[test]
+        fn header_separator_dash_count_uses_measured_dash_glyph_width() {
+            let table = DialogTable {
+                headers: Some(vec!["AB".into(), "CD".into()]),
+                rows: vec![vec!["AB".into(), "CD".into()]],
+                column_widths: None,
+            };
+            let mut surface = FakeSurface::default();
+            draw_table(
+                &mut surface,
+                &table,
+                Rect::new(0.0, 0.0, 400.0, 200.0),
+                20.0,
+                FG,
+                BORDER,
+            );
+            // Header row: "AB" (col 0), "CD" (col 1), then the separator
+            // row is the next text run after the header's own two cells
+            // and the " │ " run between them.
+            let dash_run = surface
+                .texts
+                .iter()
+                .find(|(_, text, _)| text.starts_with('─'))
+                .expect("dash separator row must be painted");
+            // col widths: "AB"/"CD" measured at 5.0/char = 10.0 each;
+            // sep " │ " = 3 * 5.0 = 15.0; total_w = 10.0 + 15.0 + 10.0 =
+            // 35.0. dash_w = 10.0 (measured) -> ceil(35/10) + 4 = 8.
+            // The old `line_height * 0.6` guess (char_w = 12.0) would
+            // instead give ceil(35/12) + 4 = 7.
+            assert_eq!(
+                dash_run.1.chars().count(),
+                8,
+                "dash count must come from the measured dash glyph width, \
+                 not a line_height * 0.6 guess"
+            );
+        }
     }
 }
 

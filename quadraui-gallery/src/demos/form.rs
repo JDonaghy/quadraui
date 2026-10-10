@@ -547,7 +547,9 @@ impl Demo for FormDemo {
             },
             _ => {
                 self.scroll.fc.set_form(self.scroll.build_form());
-                self.scroll.fc.set_backend_info(backend.line_height());
+                self.scroll
+                    .fc
+                    .set_backend_info(backend.line_height(), backend.list_char_width());
                 let rect = Self::form_rect(area, backend);
                 match self.scroll.fc.handle_cached(event, rect) {
                     FormControllerEvent::FormAction(FormEvent::ToggleChanged { id, value }) => {

@@ -2266,6 +2266,13 @@ pub trait Backend: sealed::Sealed {
     /// `DWrite::measure_text` against `chrome_dwrite`/`dwrite` (falling
     /// back to a `char_width`-scaled estimate before a surface attaches,
     /// matching every other pre-attach degrade on that backend).
+    ///
+    /// A caller that only has a `&dyn Backend` (no native font/context
+    /// handle of its own) and needs a
+    /// [`crate::primitives::layout_metrics::TextMeasure`] — this
+    /// method's seam, versus that trait's — wraps one in
+    /// [`crate::primitives::layout_metrics::BackendTextMeasure`] instead
+    /// of writing a bespoke adapter struct.
     fn measure_text(&self, text: &str, role: crate::FontRole) -> (f32, f32);
 
     /// Width this backend reserves for its own native scrollbar overlay

@@ -165,7 +165,8 @@ impl AppLogic for FormScrollApp {
         }
 
         self.fc.set_form(self.build_form());
-        self.fc.set_backend_info(backend.line_height());
+        self.fc
+            .set_backend_info(backend.line_height(), backend.list_char_width());
         let rect = Self::form_rect(backend);
         match self.fc.handle_cached(&event, rect) {
             FormControllerEvent::FormAction(fe) => {

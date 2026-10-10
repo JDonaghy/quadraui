@@ -55,6 +55,28 @@ pub trait TextMeasure {
     fn width_of(&self, text: &str) -> f32;
 }
 
+/// Bridges this crate's two text-measurement seams: [`crate::Backend::measure_text`]
+/// needs no native handle at all (every backend already resolves its own
+/// chrome font internally), but call sites written against this module's
+/// pure layout functions want a [`TextMeasure`] — before this existed,
+/// each backend answered that by re-deriving a bespoke adapter over its
+/// *own* native handle (GTK's `PangoTextMeasure` over a `pango::Layout`,
+/// Windows's `NominalTextMeasure` over a cached `char_width`, …) instead
+/// of reusing the measurement `measure_text` already provides. A caller
+/// that only has a `&dyn Backend` — no native font/context object of its
+/// own — wraps it in this adapter instead of writing another one-off
+/// struct.
+pub struct BackendTextMeasure<'a> {
+    pub backend: &'a dyn crate::Backend,
+    pub role: crate::FontRole,
+}
+
+impl TextMeasure for BackendTextMeasure<'_> {
+    fn width_of(&self, text: &str) -> f32 {
+        self.backend.measure_text(text, self.role).0
+    }
+}
+
 /// Pixel/DIP-unit layout constants every pixel backend (`gtk`, `macos`,
 /// `win`) used to redefine independently, at the same value, under a
 /// different name (issue #1079): `GTK_DIVIDER_PX` / `MAC_DIVIDER_PX` /
@@ -946,6 +968,20 @@ mod tests {
     use crate::primitives::message_list::{MessageList, MessageRow};
     use crate::primitives::multi_section_view::SectionBody;
     use crate::types::Color;
+
+    #[test]
+    fn backend_text_measure_forwards_to_measure_text() {
+        let backend = crate::testing::RecordingBackend::with_viewport(
+            crate::Viewport::new(80.0, 24.0, 1.0),
+            1.0,
+            7.0,
+        );
+        let measure = BackendTextMeasure {
+            backend: &backend,
+            role: crate::FontRole::Chrome,
+        };
+        assert_eq!(measure.width_of("abc"), 21.0);
+    }
 
     #[test]
     fn msv_body_measure_message_list_is_not_zero() {
