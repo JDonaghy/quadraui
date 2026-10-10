@@ -26,15 +26,14 @@
 //! which `PaintSurface` Phase 4 slice 5/8 collapsed into
 //! `primitives::<name>::native_surface_paint::paint`, every pixel this
 //! module paints is still Core Graphics-specific and still triplicated
-//! with `gtk::tab_bar` / `win::tab_bar`. Two of the five rows in that
-//! drift table are now closed — active-tab background and
-//! active-tab top accent match GTK exactly (rounded, y-inset chip;
-//! 1 px accent on the chip's own inset top edge) — leaving three rows
-//! where macOS still drifts from GTK: the two "Scope omissions" above
+//! with `gtk::tab_bar` / `win::tab_bar`. Of the five rows in that drift
+//! table, macOS matches GTK on two — active-tab background and active-tab
+//! top accent (rounded, y-inset chip; 1 px accent on the chip's own inset
+//! top edge) — and drifts on three: the two "Scope omissions" above
 //! (close-button hover backdrop, italic preview tabs) plus
 //! [`crate::primitives::tab_bar::TabFrame::Brackets`] framing. Windows
-//! still drifts on all five rows regardless. **This backend is the
-//! blocker** for #1081 closing as complete: `mac_tab_bar_layout_icons` /
+//! drifts on all five rows. **This backend is the blocker**:
+//! `mac_tab_bar_layout_icons` /
 //! `mac_tab_bar_native_layout_icons` below still derive geometry
 //! themselves instead of going through the shared
 //! [`crate::primitives::layout_metrics::pixel_tab_bar_layout`] that
@@ -785,7 +784,7 @@ mod tests {
     /// GTK twin. The very top and bottom scanlines of the row must *not*
     /// be the active fill (a square, edge-to-edge chip would paint them).
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits`
     fn active_chip_is_inset_from_top_and_bottom_of_the_row() {
         let bar = sample_bar();
         let (surface, hits) = paint_via_backend(&bar, None);
@@ -826,7 +825,7 @@ mod tests {
     /// bounding rect instead: a rounded corner leaves them painted the
     /// bar background, not the active fill.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits`
     fn active_chip_corners_are_bar_background_not_active_fill() {
         // No `active_accent` here, unlike `sample_bar()` — the accent
         // strip paints the chip's full inset top edge including its top

@@ -139,6 +139,10 @@ mod tests {
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
+        // macOS resolves `MenuStyle::Auto` to the native menu bar, which
+        // paints nothing in-window; these tests cover the painted strip,
+        // so they opt out explicitly.
+        backend.set_menu_style(crate::backend::MenuStyle::Custom);
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {

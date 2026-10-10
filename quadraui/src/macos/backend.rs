@@ -1209,7 +1209,7 @@ impl MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_menu_bar called outside enter_frame_scope",
         );
-        // Issue #1003: the menu bar is chrome (`ChromePrimitive::MenuBar`)
+        // The menu bar is chrome (`ChromePrimitive::MenuBar`)
         // — see `draw_tree`'s comment for why this reads `chrome_font`
         // instead of `current_font`.
         let font = &self.chrome_font;
@@ -1227,6 +1227,16 @@ impl MacBackend {
                 &theme,
             )
         }
+    }
+}
+
+/// The in-window layout of a menu bar AppKit draws natively: zero
+/// height and no items, since the real menu bar lives outside the window.
+fn native_menu_bar_layout(rect: Rect) -> MenuBarLayout {
+    MenuBarLayout {
+        bounds: Rect::new(rect.x, rect.y, rect.width, 0.0),
+        visible_items: Vec::new(),
+        hit_regions: Vec::new(),
     }
 }
 
@@ -3186,18 +3196,21 @@ impl Backend for MacBackend {
         match self.effective_menu_style() {
             crate::backend::ResolvedMenuStyle::Native => {
                 self.install_menu_bar_if_changed(bar);
-                MenuBarLayout {
-                    bounds: Rect::new(rect.x, rect.y, rect.width, 0.0),
-                    visible_items: Vec::new(),
-                    hit_regions: Vec::new(),
-                }
+                native_menu_bar_layout(rect)
             }
             crate::backend::ResolvedMenuStyle::Custom => self.draw_menu_bar_painted(rect, bar),
         }
     }
+    /// No-paint twin of [`Self::draw_menu_bar`] — must agree with what
+    /// that method returns, including its `MenuStyle` branch. Under the
+    /// native style the in-window strip has no items, so a hit-test
+    /// against this layout (as [`crate::compose::MenuSystem`]'s mouse
+    /// handling does) finds nothing to open instead of a painted
+    /// dropdown over content the strip never covered.
     fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
-        // Issue #1003: no-paint twin of `draw_menu_bar` — must agree
-        // with what that method painted.
+        if self.effective_menu_style() == crate::backend::ResolvedMenuStyle::Native {
+            return native_menu_bar_layout(rect);
+        }
         let font = &self.chrome_font;
         super::menu_bar::mac_menu_bar_layout(
             font,
@@ -8198,6 +8211,9 @@ mod tests {
             let mut b = MacBackend::new();
             Backend::set_editor_font(&mut b, editor.0, editor.1);
             Backend::set_ui_font(&mut b, ui_font);
+            // The painted strip is the `Custom` opt-out on macOS; `Auto`
+            // installs the native menu bar and lays out no in-window items.
+            Backend::set_menu_style(&mut b, crate::backend::MenuStyle::Custom);
             b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
 
             let bar = MenuBar {
@@ -8302,6 +8318,41 @@ mod tests {
             !painted_any,
             "native path must not paint the in-window strip at all"
         );
+    }
+
+    /// `menu_bar_layout` is `draw_menu_bar`'s no-paint twin, so it must
+    /// follow the same `MenuStyle` branch: empty under the native
+    /// default (a `MenuSystem` click on the unpainted strip must not
+    /// hit-test into a painted dropdown), the painted geometry under the
+    /// `Custom` opt-out.
+    #[test]
+    fn menu_bar_layout_agrees_with_draw_menu_bar_under_each_menu_style() {
+        use super::super::headless::BitmapSurface;
+
+        const W: u32 = 300;
+        const H: u32 = 24;
+        let bar = sample_menu_bar_for_native_default_tests();
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        for style in [
+            crate::backend::MenuStyle::Auto,
+            crate::backend::MenuStyle::Custom,
+        ] {
+            let surface = BitmapSurface::new(W, H);
+            let mut backend = MacBackend::new();
+            backend.set_menu_style(style);
+            let no_paint = backend.menu_bar_layout(rect, &bar);
+            let painted =
+                backend.enter_frame_scope(surface.context_ptr(), |b| b.draw_menu_bar(rect, &bar));
+
+            assert_eq!(no_paint, painted, "{style:?}");
+            if style == crate::backend::MenuStyle::Custom {
+                assert!(
+                    !no_paint.visible_items.is_empty(),
+                    "the painted opt-out lays out its items"
+                );
+            }
+        }
     }
 
     /// Companion to the test above: once an app opts out via
