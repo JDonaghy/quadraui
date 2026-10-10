@@ -1,15 +1,9 @@
 //! GTK rasteriser for [`crate::primitives::command_line::CommandLine`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::command_line::native_surface_paint::paint`]
-//! (#1083, `PaintSurface` Phase 4 6/8) — see that fn's doc for the named
-//! divergences (macOS/Windows silently dropping the `selection` argument;
-//! GTK's own cursor-anchor formula ignoring right-align) found while
-//! unifying `gtk::command_line::draw_command_line_selection`,
-//! `macos::command_line::draw_command_line` and
-//! `win::command_line::draw_command_line` into one implementation. This
-//! module now only carries [`gtk_command_line_layout`] (pure measurement,
-//! still used directly by `GtkBackend::command_line_layout`) and thin
+//! Painting is implemented via the shared
+//! [`crate::primitives::command_line::native_surface_paint::paint`].
+//! This module carries [`gtk_command_line_layout`] (pure measurement,
+//! used directly by `GtkBackend::command_line_layout`) and thin
 //! wrappers over the shared paint, using
 //! [`crate::gtk::surface::CairoSurface`] as the `PaintSurface` adapter.
 
@@ -21,7 +15,7 @@ use crate::theme::Theme;
 
 /// Compute [`CommandLineLayout`] for `cmd` painted at
 /// `(x, y, width, line_height)`, using the backend's monospace
-/// `char_width` (issue #705).
+/// `char_width`.
 pub fn gtk_command_line_layout(
     cmd: &CommandLine,
     x: f64,
@@ -37,10 +31,8 @@ pub fn gtk_command_line_layout(
 /// Paint `cmd` into `cr` at `(x, y, width, line_height)` and return the
 /// [`CommandLineLayout`] used to place its glyphs — the same value
 /// `gtk_command_line_layout` would compute for the same arguments, handed
-/// back so callers (and tests) never have to re-derive it and risk it
-/// drifting from what was actually painted (issue #705 review: the
-/// paint/click round-trip test below reads this back instead of
-/// asserting a formula in isolation).
+/// back so callers (and tests) can rely on a consistent layout without
+/// recomputing it.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_command_line(
     cr: &Context,
@@ -68,7 +60,7 @@ pub fn draw_command_line(
 }
 
 /// Paint `cmd` exactly like [`draw_command_line`], additionally painting
-/// a selection highlight behind the text for `selection` (issue #1001).
+/// a selection highlight behind the text for `selection`.
 ///
 /// A sibling function, not a new parameter on `draw_command_line` — that
 /// keeps `draw_command_line`'s signature stable for any existing caller
@@ -111,10 +103,8 @@ mod tests {
     use crate::types::{Color, WidgetId};
     use pangocairo::cairo::{Context, Format, ImageSurface};
 
-    /// Regression for issue #503: typing `:éditer` (or any command
-    /// with a multibyte char left of the cursor) used to panic
-    /// `&cmd.text[..offset.min(cmd.text.len())]` when `cursor_offset`
-    /// landed mid-character.
+    /// Regression test: typing a command with a multibyte character left of
+    /// the cursor used to panic when `cursor_offset` landed mid-character.
     #[test]
     fn draw_command_line_with_multibyte_cursor_does_not_panic() {
         let surface = ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
@@ -169,25 +159,18 @@ mod tests {
         None
     }
 
-    /// Paint/click round-trip (`docs/TESTING.md` coverage-taxonomy row 1):
-    /// paint via the real `draw_command_line` rasteriser into a headless
+    /// Paint/click round-trip: paint via `draw_command_line` into a headless
     /// Cairo surface, find the actual painted (non-background) pixel for
     /// each of two characters, then `hit_test` those exact pixels and
-    /// assert they resolve to the correct byte offsets. Unlike a test
-    /// that calls `gtk_command_line_layout` in isolation and asserts
-    /// formula-predicted x-positions, this catches `draw_command_line`'s
-    /// real Pango glyph placement drifting away from
-    /// `CommandLine::layout`'s fixed-advance column formula (e.g. a
-    /// future prompt gutter added to one but not the other) — see #705
-    /// review.
+    /// assert they resolve to the correct byte offsets. This catches
+    /// `draw_command_line`'s real Pango glyph placement matching
+    /// `CommandLine::layout`'s fixed-advance column formula.
     ///
     /// A monospace font is forced so the fixed-advance grid
     /// `CommandLine::layout` assumes actually matches what Pango paints;
-    /// `char_width` is measured from that same font rather than assumed,
-    /// so the test doesn't encode a magic constant that only happens to
-    /// work.
+    /// `char_width` is measured from that same font rather than assumed.
     ///
-    /// #505: a LOCAL/ABSOLUTE mixup is invisible at `x == 0`, so this is
+    /// A LOCAL/ABSOLUTE mixup is invisible at `x == 0`, so this is
     /// exercised at a nonzero origin too.
     #[test]
     fn gtk_command_line_paint_and_click_round_trip_at_nonzero_origin() {
@@ -276,7 +259,7 @@ mod tests {
     }
 
     /// `draw_command_line_selection` actually paints the highlight rect
-    /// `CommandLineLayout::selection_bounds` computes (issue #1001) — the
+    /// `CommandLineLayout::selection_bounds` computes — the
     /// gap this issue closes: the geometry existed but nothing painted
     /// it. Selects a *space* character deliberately, so the probed pixel
     /// carries no glyph ink and the highlight colour (alpha 1.0, so an

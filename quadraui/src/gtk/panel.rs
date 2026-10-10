@@ -1,24 +1,17 @@
 //! GTK rasteriser for [`crate::Panel`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::panel::native_surface_paint::paint`] (#859,
-//! `PaintSurface` Phase 2d slice 2/9) — see that fn's doc for the named
-//! divergences (unclamped glyph centring vs. win's `.max(0.0)`; GTK's
-//! `set_source` alpha-drop, fixed at the source by #811) found while
-//! unifying `gtk::draw_panel`, `macos::panel::draw_panel` and
-//! `win::panel::draw_panel` into one implementation. This module now
-//! only carries [`gtk_panel_layout`] (pure layout, still needed by
-//! `GtkBackend::panel_layout` for no-paint hit-test queries); the
-//! deprecated `draw_panel` compatibility shim over the shared
-//! [`super::surface::CairoSurface`] adapter was removed in issue #1109
-//! (zero uses in coord-tui's `main` and vimcode's `develop`).
+//! Painting is handled by the shared
+//! [`crate::primitives::panel::native_surface_paint::paint`].
+//! This module provides [`gtk_panel_layout`] for computing pixel-unit
+//! layout without painting, used by `GtkBackend::panel_layout` for
+//! hit-test queries.
 
 use crate::primitives::layout_metrics::pixel_panel_layout;
 use crate::primitives::panel::{Panel, PanelLayout};
 
 /// Compute the GTK pixel-unit layout for a [`Panel`] without painting.
 /// Shares its action-button width with `mac_panel_layout` /
-/// `win_panel_layout` via [`pixel_panel_layout`] (issue #1079).
+/// `win_panel_layout` via [`pixel_panel_layout`].
 pub fn gtk_panel_layout(
     panel: &Panel,
     x: f64,
@@ -43,7 +36,7 @@ mod tests {
     use crate::primitives::panel::{Panel, PanelAction, PanelHit};
     use crate::types::{StyledText, WidgetId};
 
-    /// `panel_layout` is documented **ABSOLUTE** (issue #505):
+    /// `panel_layout` is documented **ABSOLUTE**:
     /// `title_bar_bounds` / `content_bounds` must start at the panel's
     /// own origin, not at (0, 0) — the case that would hide a
     /// LOCAL/ABSOLUTE mixup.
@@ -82,7 +75,7 @@ mod tests {
         round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    /// Non-zero-origin regression guard.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         round_trip_at(7.0, 13.0);

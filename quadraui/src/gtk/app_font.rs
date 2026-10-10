@@ -1,18 +1,15 @@
 //! `Backend::register_font_from_memory` for GTK — process-local
-//! application-font registration via Fontconfig (issue #1013), plus Core
-//! Text directly on macOS (issue #1367).
+//! application-font registration via Fontconfig, plus Core
+//! Text directly on macOS.
 //!
-//! `GtkBackend` used to declare `app_font_registration: true` while
-//! taking the trait's `register_font_from_memory` no-op default — a
-//! lying capability: a consumer that checked the cap and called the
-//! method got a silent no-op, with no signal that it needed to fall
-//! back to something else. macOS (`super::super::macos::text`) and
-//! Win-GUI (`super::super::win::text`) both already honour the real
+//! `GtkBackend` declares `app_font_registration: true` and
+//! implements `register_font_from_memory` via Fontconfig's
+//! `FcConfigAppFontAddFile`. macOS (`super::super::macos::text`)
+//! and Win-GUI (`super::super::win::text`) both honour the real
 //! contract via `CTFontManagerRegisterGraphicsFont`/
-//! `IDWriteInMemoryFontFileLoader`; this module is GTK's counterpart,
-//! built on Fontconfig's `FcConfigAppFontAddFile` instead.
+//! `IDWriteInMemoryFontFileLoader`; this module is GTK's counterpart.
 //!
-//! ## GTK4-on-macOS: Fontconfig alone is not enough (issue #1367)
+//! ## GTK4-on-macOS: Fontconfig alone is not enough
 //!
 //! Fontconfig registration above is necessary but not sufficient on
 //! macOS: a Homebrew GTK4 build's default Pango-Cairo font map is a
@@ -21,7 +18,7 @@
 //! straight through Core Text and never consults Fontconfig at all. A
 //! font registered *only* via `FcConfigAppFontAddFile` is therefore
 //! invisible to Pango on that build — every PUA glyph from it falls back
-//! to tofu, which is exactly what real-screen capture on macOS showed.
+//! to tofu.
 //!
 //! [`register_font_from_memory`] closes that gap by additionally
 //! registering the same temp file with Core Text directly, via
@@ -35,11 +32,10 @@
 //! there is no need for `crate::macos::text`'s cascade-descriptor-pinning
 //! machinery here.
 //!
-//! It also deliberately calls `CTFontManagerRegisterFontsForURL`, not
-//! the `CTFontManagerRegisterGraphicsFont` call
-//! `crate::macos::text::register_font_from_memory` uses — confirmed
-//! against a real Homebrew GTK4 build, the two are not interchangeable
-//! here. `CTFontManagerRegisterGraphicsFont` makes a font available for
+//! It calls `CTFontManagerRegisterFontsForURL`, not the
+//! `CTFontManagerRegisterGraphicsFont` call that
+//! `crate::macos::text::register_font_from_memory` uses.
+//! `CTFontManagerRegisterGraphicsFont` makes a font available for
 //! direct construction by name (`CTFontCreateWithName`/Core Text's own
 //! `make_font_exact`-style lookups), but Apple's own docs say it is
 //! *not* added to the font collection enumeration APIs
@@ -48,14 +44,11 @@
 //! `pango_font_map_load_font` goes through on this build, resolves
 //! through exactly that enumeration. A font registered only via
 //! `CTFontManagerRegisterGraphicsFont` therefore resolves correctly by
-//! name but is invisible to `PangoCoreTextFontMap`'s own family listing —
-//! confirmed directly against a real Homebrew GTK4 build, not just
-//! inferred from Apple's docs. `CTFontManagerRegisterFontsForURL`
-//! genuinely adds the font to that collection, which is why this module
-//! needs a filesystem path
+//! name but is invisible to `PangoCoreTextFontMap`'s own family listing.
+//! `CTFontManagerRegisterFontsForURL` genuinely adds the font to that
+//! collection, which is why this module needs a filesystem path
 //! (reusing the one [`register_with_fontconfig`] already wrote) rather
-//! than registering from an in-memory buffer the way
-//! `crate::macos::text::register_font_from_memory` does.
+//! than registering from an in-memory buffer.
 //!
 //! ## Why a temp file, unlike macOS/Win-GUI
 //!
@@ -64,12 +57,9 @@
 //! itself (via FreeType) to build the `FcPattern`s it registers. This
 //! module writes `bytes` to a fresh, process-private path under
 //! [`std::env::temp_dir`] and hands *that* to Fontconfig (and, on macOS,
-//! to Core Text too) — still nothing like the system-wide
-//! `~/.local/share/fonts` + `fc-cache` installer this issue's own
-//! "Consequence" section describes vimcode shipping: no permanent write,
-//! no font-directory scan, no daemon, and Fontconfig's side registers
-//! against `FcSetApplication` (an in-memory set scoped to this process's
-//! `FcConfig`), never fontconfig's on-disk cache.
+//! to Core Text too). Fontconfig's side registers against `FcSetApplication`
+//! (an in-memory set scoped to this process's `FcConfig`), never
+//! fontconfig's on-disk cache.
 //!
 //! The temp file is deliberately *not* deleted once any backend has
 //! actually registered against it: Fontconfig/FreeType may re-open it
@@ -77,8 +67,7 @@
 //! which can be well after this call returns, and on macOS Core Text
 //! holds a registration against the same path for the rest of the
 //! process's life once `CTFontManagerRegisterFontsForURL` itself
-//! succeeds — even on the rarer path where reading a family name back
-//! out afterwards fails. Deleting it early in either case would surface
+//! succeeds. Deleting it early in either case would surface
 //! as tofu glyphs at paint time instead of a loud error here.
 //! [`register_font_from_memory`] only removes the file when neither
 //! registration ever actually took — nothing holds a reference to it in
@@ -198,7 +187,7 @@ fn fold_in_core_text_name(mut names: Vec<String>, name: String) -> Vec<String> {
     names
 }
 
-/// The Fontconfig half of [`register_font_from_memory`] (issue #1013):
+/// The Fontconfig half of [`register_font_from_memory`]:
 /// hands `path` to `FcConfigAppFontAddFile` — see the module doc for why
 /// a temp file rather than any in-memory Fontconfig API. Returns every
 /// family name Fontconfig's own FreeType scan resolved the file to, read
@@ -248,23 +237,16 @@ fn unique_temp_font_path() -> PathBuf {
 }
 
 /// Write `bytes` to a fresh [`unique_temp_font_path`] and return that
-/// path — but refuse to write through anything already sitting at that
+/// path — refusing to write through anything already sitting at that
 /// path, symlink included.
 ///
 /// `std::fs::write` alone would happily follow a pre-existing symlink at
-/// a predictable `$TMPDIR` path and overwrite whatever it points at —
-/// this font-registration path previously only ran when an app
-/// explicitly opted into `register_font_from_memory`, but every GUI
-/// backend's own `::new()` now calls it unconditionally for the bundled
-/// codicon font, so a local attacker on a shared `/tmp` no longer needs
-/// any app cooperation to plant that symlink first. `OpenOptions::
-/// create_new` is `O_EXCL` under the hood: it fails outright if anything
-/// — file, symlink, or otherwise — already exists at the path, rather
-/// than writing through it. The `pid`+per-process-counter name is
-/// already unique in practice, so a second attempt on collision would
-/// only ever retry against an adversarial pre-plant, not a legitimate
-/// race with another `quadraui` process; this makes exactly one attempt
-/// and reports failure rather than silently falling back to an
+/// a predictable `$TMPDIR` path and overwrite whatever it points at.
+/// `OpenOptions::create_new` is `O_EXCL` under the hood: it fails outright
+/// if anything — file, symlink, or otherwise — already exists at the path,
+/// rather than writing through it. The `pid`+per-process-counter name is
+/// already unique in practice, so on collision this makes exactly one
+/// attempt and reports failure rather than silently falling back to an
 /// overwrite.
 fn create_temp_font_file(bytes: &[u8]) -> Option<PathBuf> {
     use std::fs::OpenOptions;
@@ -356,20 +338,17 @@ fn pattern_family_name(pattern: *mut fontconfig_sys::FcPattern) -> Option<String
 }
 
 /// Answer whether `family` is genuinely installed —
-/// [`crate::Backend::has_font_family`]'s GTK implementation (issue
-/// #1024), consulting Fontconfig via [`fontconfig_has_font_family`] and,
-/// on macOS, also Core Text directly via
-/// [`macos_core_text::has_font_family`] (issue #1367).
+/// [`crate::Backend::has_font_family`]'s GTK implementation, consulting
+/// Fontconfig via [`fontconfig_has_font_family`] and, on macOS, also Core
+/// Text directly via [`macos_core_text::has_font_family`].
 ///
 /// Fontconfig alone is not a complete answer on a Homebrew GTK4 build:
 /// Pango's default font map there resolves names through Core Text, not
 /// Fontconfig (see [`notify_fontmap_config_changed`]'s doc), so a family
-/// Core Text would resolve but Fontconfig wouldn't — or vice versa, e.g.
-/// immediately after [`register_font_from_memory`]'s Fontconfig half
-/// failed but its Core Text half succeeded — must still answer `true`
-/// here. Checking both and returning as soon as either says yes is a
-/// superset, never a subset, of either backend's own answer, so this
-/// cannot turn a real "installed" into a false `false`.
+/// Core Text would resolve but Fontconfig wouldn't — or vice versa —
+/// must still answer `true` here. Checking both and returning as soon as
+/// either says yes is a superset, never a subset, of either backend's own
+/// answer, so this cannot turn a real "installed" into a false `false`.
 pub(crate) fn has_font_family(family: &str) -> bool {
     let requested = family.trim();
     if requested.is_empty() {
@@ -388,7 +367,7 @@ pub(crate) fn has_font_family(family: &str) -> bool {
     false
 }
 
-/// The Fontconfig half of [`has_font_family`] (issue #1024), via
+/// The Fontconfig half of [`has_font_family`], via
 /// Fontconfig's own match/substitution algorithm.
 ///
 /// `FcFontMatch` never fails to produce *a* result: hand it an unknown
@@ -683,7 +662,7 @@ mod macos_core_text {
 
     /// Answer whether `family` is genuinely installed, via Core Text's
     /// own name resolution — the Core Text half of [`super::has_font_family`]
-    /// (issue #1367), mirroring [`crate::macos::text::make_font_exact`]'s
+    ///, mirroring [`crate::macos::text::make_font_exact`]'s
     /// "the resolved font's own name must equal the request" check:
     /// `CTFontCreateWithName` substitutes a default face rather than
     /// failing for an unknown family, so a bare success can't mean
@@ -719,7 +698,7 @@ mod tests {
     /// Bytes that are not a font at all — `register_font_from_memory`
     /// must report that as `None`, not a fabricated family, matching
     /// `MacBackend`/`WinBackend`'s own rejection tests for the same
-    /// input shape (issue #1013).
+    /// input shape.
     #[test]
     fn register_font_from_memory_rejects_bytes_that_are_not_a_font() {
         let garbage = [0u8; 64];
@@ -752,7 +731,7 @@ mod tests {
     /// A family name guaranteed not to exist should never resolve as
     /// "installed" — the whole point of comparing the matched pattern's
     /// own family back against the request, not just trusting that
-    /// `FcFontMatch` returned something (issue #1024).
+    /// `FcFontMatch` returned something.
     #[test]
     fn has_font_family_is_false_for_a_name_nothing_is_installed_under() {
         assert!(!has_font_family(

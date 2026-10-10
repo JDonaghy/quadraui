@@ -242,12 +242,9 @@ pub fn draw_data_table(
             cr.restore().ok();
         }
 
-        // Body column separators (#516 defect 2) — mirrors the header
-        // separator above, at the same x, for every column except the
-        // last. Drawn *after* the cell text (not clipped to a per-column
-        // rect the way the text is) so a cell whose text exactly fills
-        // its column never paints over the divider — the acceptance bar
-        // is "no zero-gap abutment" even in that edge case.
+        // Body column separators — drawn after the cell text (not clipped
+        // to a per-column rect the way the text is) so a cell whose text
+        // exactly fills its column never paints over the divider.
         set_source(cr, theme.separator);
         for (col_idx, rc) in layout.columns.iter().enumerate() {
             if col_idx + 1 >= layout.columns.len() || rc.width <= 0.0 {
@@ -431,7 +428,7 @@ pub fn gtk_data_table_layout(
 // feature so `cargo test --features tui` alone (this repo's coord
 // `test_command`) never runs them — `cargo test --features gtk,tui` does.
 //
-// #516: defect 1 (body clipping) is already correct on this backend —
+// Defect 1 (body clipping) is already correct on this backend —
 // `cr.clip()` around each body cell — so the guard here just pins it
 // against a future refactor dropping the clip. Defect 2 (body
 // separators) was genuinely missing and is fixed alongside these tests.
@@ -530,11 +527,8 @@ mod tests {
         (data, stride, table_layout)
     }
 
-    /// #516 defect 1 (GTK guard): an over-long *middle* column's text
-    /// must stay inside its own column's `cr.clip()` rect — pinning the
-    /// behaviour `src/gtk/data_table.rs:143-153` already had, so a future
-    /// refactor can't quietly drop the clip and reintroduce the TUI-side
-    /// bug on this backend too.
+    /// An over-long *middle* column's text must stay inside its own
+    /// column's `cr.clip()` rect to prevent overflow into neighbours.
     #[test]
     fn body_cell_wider_than_column_does_not_paint_into_neighbour() {
         let long = "this-value-is-far-wider-than-its-resolved-column-share-by-a-lot";
@@ -607,15 +601,11 @@ mod tests {
         );
     }
 
-    /// #516 defect 2: body rows previously drew no separator at all.
+    /// Body rows draw a 1px separator at the same x as the header.
     ///
-    /// The 1px separator rect straddles a half-pixel boundary
-    /// (`sep_x - 0.5 .. sep_x + 0.5`), so with antialiasing on, the pixel
-    /// column at `sep_x` is a 50/50 blend of `theme.separator` over the
-    /// background, not the pure separator colour — true for the header
-    /// separator too. So the meaningful comparison is body-vs-header at
-    /// the identical x (same blend, same rendering), not either against
-    /// a hardcoded `theme.separator` tuple.
+    /// The separator rect straddles a half-pixel boundary (`sep_x - 0.5`
+    /// to `sep_x + 0.5`), so with antialiasing on, the pixel column at
+    /// `sep_x` is a 50/50 blend of `theme.separator` over the background.
     #[test]
     fn body_row_draws_separator_at_same_x_as_header() {
         let table = three_col_table("A", "B", "C");

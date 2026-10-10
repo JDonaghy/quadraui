@@ -29,20 +29,14 @@
 //! // On MenuRedraw:
 //! overlay.sync(menu_system.borrow().is_open());
 //! ```
+//! ## GTK-specific compositing glue
 //!
-//! ## Not a `Backend` trait gap (issue #506 audit)
-//!
-//! `MenuOverlay` is GTK-hosting/compositing glue — it positions an
-//! already-painted `MenuSystem` popup within GTK's native
-//! overlay-widget model (`gtk4::Overlay` + a second `DrawingArea`). It
-//! implements no primitive's `layout()` / paint contract, so there is
-//! no `draw_<name>` for it to pair with, and no `Surface` variant to
-//! add either. TUI, Win, and macOS have no equivalent concept because
-//! none of them have GTK's overlay-widget model to bridge into — the
-//! same category as `AppShell`'s GTK widget-tree bootstrap. Rule 7
-//! ("every primitive gets a `Backend` trait method") doesn't apply
-//! because this isn't a primitive. See `quadraui/docs/decisions/DECISIONS.md`
-//! D-007 for the full write-up.
+//! `MenuOverlay` positions an already-painted `MenuSystem` popup
+//! within GTK's native overlay-widget model (`gtk4::Overlay` +
+//! a second `DrawingArea`). It implements no primitive's
+//! `layout()` / paint contract, so no `draw_<name>` method or
+//! `Surface` variant exists for it. See
+//! `quadraui/docs/decisions/DECISIONS.md` D-007.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -182,7 +176,7 @@ impl MenuOverlay {
             let pango_ctx = pango_layout.context();
             let metrics = pango_ctx.metrics(Some(&font_desc), None);
             let lh = (metrics.ascent() + metrics.descent()) as f64 / pango::SCALE as f64;
-            // Delegates to `backend::measure_char_width_px` (quadraui#910)
+            // Delegates to `backend::measure_char_width_px`
             // so this overlay's char width can't disagree with `gtk/run.rs`'s
             // for the same font — `pixel_size()` rounds to whole pixels,
             // which loses columns once divided into.
@@ -212,7 +206,7 @@ impl MenuOverlay {
         gesture.set_button(1);
         gesture.connect_pressed(move |g, _, x, y| {
             // `EventControllerExt::widget()` returns `Option<Widget>` as of
-            // gtk4 0.11 (#796) — `None` only when the controller has been
+            // gtk4 0.11 — `None` only when the controller has been
             // detached, which can't happen while its own callback is
             // firing, so a realized widget is guaranteed here.
             let widget = g
@@ -248,7 +242,7 @@ impl MenuOverlay {
             if !menu_system.borrow().is_open() {
                 return;
             }
-            // See the `connect_pressed` note above (#796): `widget()` is
+            // See the `connect_pressed` note above: `widget()` is
             // `Option` since gtk4 0.11, but is always `Some` here.
             let widget = m
                 .widget()

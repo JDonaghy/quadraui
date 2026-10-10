@@ -1,29 +1,22 @@
 //! GTK rasteriser for [`crate::Dialog`].
 //!
 //! Content painting (background, border, title, body, table, text-input
-//! slot, buttons) moved to the shared
-//! [`crate::primitives::dialog::native_surface_paint::paint`] (#1077,
-//! `PaintSurface` Phase 4 slice 4/8) — see that fn's module doc for the
-//! substantial drift it resolved (font role, per-button border, button
-//! tint, label/input vertical centring, table `column_widths` +
-//! separator sizing).
+//! slot, buttons) is done by the shared
+//! [`crate::primitives::dialog::native_surface_paint::paint`] — see that fn's
+//! module doc for details (font role, per-button border, button tint,
+//! label/input vertical centring, table `column_widths` + separator sizing).
 //!
-//! **Font role**: the whole dialog now paints in the chrome/UI font —
-//! previously only the title + buttons did, with body/table/input in
-//! the editor's monospace layout font (see the shared `paint`'s doc for
-//! why). This function saves the layout's existing (editor / mono) font
-//! description on entry and swaps in `ui_font_desc` for the entire
-//! paint, restoring it before returning so subsequent paints in the same
-//! frame keep rendering in the editor font (#247) — same save/restore
-//! shape as before, just applied once instead of per-region.
+//! **Font role**: the whole dialog paints in the chrome/UI font. This function
+//! saves the layout's existing font description on entry and swaps in
+//! `ui_font_desc` for the entire paint, restoring it before returning so
+//! subsequent paints in the same frame keep rendering in the editor font.
 //!
 //! `DialogInput::Toolbar` still renders through
 //! [`super::toolbar::draw_toolbar`] after the shared `paint` returns,
-//! now in the chrome font left active by that swap (a welcome side
-//! effect: [`crate::ChromePrimitive::Toolbar`] classifies the toolbar
-//! itself as chrome too, so an embedded dialog toolbar moving off the
-//! editor font is a second drift this same change happens to close, not
-//! a separate deliberate one).
+//! now in the chrome font left active by that swap (a welcome side effect:
+//! [`crate::ChromePrimitive::Toolbar`] classifies the toolbar itself as chrome
+//! too, so an embedded dialog toolbar moving off the editor font is handled
+//! by this same change).
 //!
 //! Returns the per-button hit rectangles `(x, y, w, h)` so the caller's
 //! click handler can resolve a click to a button without re-running the
@@ -59,7 +52,7 @@ pub fn draw_dialog(
     // Save the layout's existing (editor / mono) font description so we
     // can swap to `ui_font_desc` for the whole dialog and restore at the
     // end. Without this, the UI font would leak into subsequent draw
-    // calls in the same frame (#247).
+    // calls in the same frame.
     let saved_font = pango_layout.font_description();
     pango_layout.set_font_description(Some(ui_font_desc));
 
@@ -77,10 +70,8 @@ pub fn draw_dialog(
         &crate::style::Style::default(),
     );
 
-    // DialogInput::Toolbar isn't painted by the shared `paint` — the
-    // toolbar rasteriser hasn't moved onto `PaintSurface` yet (out of
-    // #1077's scope; see the shared `paint`'s module doc) — so render it
-    // here, exactly as before this migration.
+    // DialogInput::Toolbar isn't painted by the shared `paint` — the toolbar
+    // rasteriser hasn't moved onto `PaintSurface` yet — so render it here.
     if let (Some(input_b), Some(DialogInput::Toolbar(toolbar))) =
         (dialog_layout.input_bounds, dialog.input.as_ref())
     {
@@ -100,7 +91,6 @@ pub fn draw_dialog(
 
     // Restore the layout's font_description so subsequent paints in the
     // same frame use the editor font, not the chrome font we left active
-    // (#247).
     pango_layout.set_font_description(saved_font.as_ref());
 
     button_rects
@@ -187,14 +177,10 @@ mod tests {
     }
 
     /// Paint `dialog` via [`draw_dialog`] onto a fresh surface and return
-    /// the raw pixel buffer alongside the stride. `preset_font`, when
-    /// given, is set on the layout as the "ambient" font *before*
-    /// `draw_dialog` is called — simulating whatever font a real caller
-    /// would have had active for the editor content (mirroring `gtk::
-    /// dialog::draw_dialog`'s own doc: the editor's monospace layout
-    /// font). Used to pin the #1077 "Font role" drift: pre-migration,
-    /// only title + buttons used `ui_font_desc` — body/table/input
-    /// stayed in whatever font was already active.
+    /// the raw pixel buffer alongside the stride. `preset_font`, when given,
+    /// is set on the layout as the "ambient" font *before* `draw_dialog` is
+    /// called — simulating whatever font a real caller would have had active
+    /// for the editor content (the editor's monospace layout font).
     fn paint_with_preset(
         dialog: &Dialog,
         layout: &DialogLayout,
@@ -224,7 +210,7 @@ mod tests {
         (data, stride)
     }
 
-    /// #1077: every button now gets a stroked border, not just the
+    /// Every button now gets a stroked border, not just the
     /// default button's selected-bg fill — pre-migration GTK drew no
     /// button border at all (this test would have failed against the
     /// old per-backend rasteriser: the edge pixel equalled the plain
@@ -263,7 +249,7 @@ mod tests {
         );
     }
 
-    /// #1077: `DialogButton::tint` is now honoured on every backend —
+    /// `DialogButton::tint` is now honoured on every backend —
     /// pre-migration GTK always painted every label in
     /// `theme.surface_fg`, silently dropping a caller's tint (same drift
     /// pinned for macOS in `macos::dialog::tests`).
@@ -304,18 +290,11 @@ mod tests {
         );
     }
 
-    /// #1077 "Font role" drift: pre-migration GTK swapped fonts
-    /// mid-paint — title + buttons rendered in `ui_font_desc`, but
-    /// body/table/input rendered in whatever font was already active on
-    /// `pango_layout` (the editor's monospace layout font). The shared
-    /// `native_surface_paint::paint` now paints the *whole* dialog in
-    /// `ui_font_desc`, so the body text pixels must come out identical
-    /// regardless of what font was active before `draw_dialog` was
-    /// called. Pinned by painting the same dialog twice with two wildly
-    /// different "ambient" preset fonts (a huge one and a tiny one) and
-    /// asserting the output is byte-identical — against the
-    /// pre-migration rasteriser this would fail, since the huge/tiny
-    /// preset font is exactly what body text used to render in.
+    /// The whole dialog now paints in `ui_font_desc`. This test verifies that
+    /// the body text output is byte-identical regardless of what font was
+    /// active before `draw_dialog` was called, by painting the same dialog
+    /// twice with two wildly different "ambient" preset fonts (a huge one
+    /// and a tiny one).
     #[test]
     fn body_text_paints_in_the_chrome_font_regardless_of_the_layouts_prior_font() {
         let dialog = sample_dialog();
@@ -339,7 +318,7 @@ mod tests {
 
     /// The font swap must not leak: the layout's font description
     /// before `draw_dialog` is called should be restored afterwards
-    /// (#247), so later paints in the same frame keep rendering in
+    ///, so later paints in the same frame keep rendering in
     /// whatever font (editor) was active.
     #[test]
     fn draw_dialog_restores_the_layouts_original_font_description_afterwards() {

@@ -1,17 +1,9 @@
 //! GTK rasteriser for [`crate::ProgressBar`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::progress::native_surface_paint::paint`] (#1085,
-//! `PaintSurface` Phase 4 slice 8/8) — see that fn's doc for the one
-//! named divergence (Windows previously ignored the host's theme
-//! entirely) found while unifying `gtk::progress::draw_progress`,
-//! `macos::progress::draw_progress` and `win::progress::draw_progress`
-//! into one implementation. This module now only carries
-//! [`gtk_progress_layout`] (still real, backend-specific pure geometry —
-//! no painting involved); the deprecated `draw_progress` compatibility
-//! shim over the shared [`super::surface::CairoSurface`] adapter was
-//! removed in issue #1109 (zero uses in coord-tui's `main` and
-//! vimcode's `develop`).
+//! Painting is implemented in the shared
+//! [`crate::primitives::progress::native_surface_paint::paint`].
+//! This module carries [`gtk_progress_layout`], the backend-specific
+//! pure geometry computation (no painting involved).
 
 use crate::primitives::layout_metrics::pixel_progress_layout;
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
@@ -19,7 +11,7 @@ use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 /// Compute the GTK pixel-unit layout for a [`ProgressBar`] without
 /// painting. Shares its cancel-affordance width with
 /// `mac_progress_layout` / `win_progress_layout` via
-/// [`pixel_progress_layout`] (issue #1079).
+/// [`pixel_progress_layout`].
 pub fn gtk_progress_layout(bar: &ProgressBar, x: f64, y: f64, w: f64, h: f64) -> ProgressBarLayout {
     pixel_progress_layout(bar, x as f32, y as f32, w as f32, h as f32)
 }
@@ -30,7 +22,7 @@ mod tests {
     use crate::primitives::progress::ProgressBarHit;
     use crate::types::WidgetId;
 
-    /// `progress_layout` is documented **ABSOLUTE** (issue #505):
+    /// `progress_layout` is documented **ABSOLUTE**:
     /// `fill_bounds` / `cancel_bounds` must start at the bar's own
     /// origin, not (0, 0) — the case that hides a LOCAL/ABSOLUTE mixup.
     fn round_trip_at(x: f64, y: f64) {
@@ -68,7 +60,7 @@ mod tests {
         round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    /// Regression guard: layout must be correct at non-zero origins.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         round_trip_at(7.0, 13.0);

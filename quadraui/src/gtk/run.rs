@@ -15,7 +15,7 @@
 //!   subsequent frame.
 //! - [`crate::Reaction`] dispatch (Continue / Redraw / Exit).
 //!
-//! ## Single-DA model (decided: #217 Stage 1)
+//! ## Single-DA model
 //!
 //! The runner uses a **single-DrawingArea** model: one DA, one
 //! `set_draw_func`, one `app.render(backend, AreaId::default())` per
@@ -23,8 +23,8 @@
 //! entirely by `AppShell::compute_layout` + `FrameHitMap` hit-testing
 //! — not by multiple GTK DAs.
 //!
-//! This was a deliberate decision (#217). All vimcode paint paths
-//! already go through quadraui primitives (vimcode#446), so per-zone
+//! This was a deliberate decision. All vimcode paint paths
+//! already go through quadraui primitives, so per-zone
 //! DAs add GTK widget-tree complexity without benefit. The
 //! `AppLogic::AreaId` associated type remains in the trait as a
 //! compatibility seam but is always `()` in practice.
@@ -32,25 +32,22 @@
 //! ## Shared with the headless test driver
 //!
 //! [`render_frame`] and [`dispatch_event`] are `pub(crate)` so the
-//! in-process [`crate::gtk::testing::GtkDriver`] (quadraui#446, mirroring
-//! quadraui#300's TUI split) renders + dispatches through the *exact
-//! same* code as the live runner. The driver swaps the `DrawingArea`'s
-//! live `cairo::Context` for one backed by a headless
-//! `cairo::ImageSurface` and supplies scripted events instead of real
-//! GDK signals — but the frame paint and the event pre-processing
-//! (ActivityBar keyboard-focus intercept, Tab/Shift+Tab focus cycling
-//! (#830), accelerator matching, Ctrl-C/
-//! V/A interception, text-selection state) cannot drift, because every
-//! GTK signal closure below routes through these same two functions.
+//! in-process [`crate::gtk::testing::GtkDriver`] renders + dispatches
+//! through the *exact same* code as the live runner. The driver swaps
+//! the `DrawingArea`'s live `cairo::Context` for one backed by a
+//! headless `cairo::ImageSurface` and supplies scripted events instead
+//! of real GDK signals — but the frame paint and the event
+//! pre-processing (ActivityBar keyboard-focus intercept, Tab/Shift+Tab
+//! focus cycling, accelerator matching, Ctrl-C/V/A interception,
+//! text-selection state) cannot drift, because every GTK signal closure
+//! below routes through these same two functions.
 //!
-//! ## Headless smoke mode (quadraui#450, GD-5)
+//! ## Headless smoke mode
 //!
 //! [`GtkDriver`][crate::gtk::testing::GtkDriver] (above) is deliberately
 //! display-free, so it structurally cannot catch bugs that only exist in
-//! a real `Application` + `ApplicationWindow` + `GdkDisplay` — the exact
-//! class that motivated this: quadraui#437 (`gtk_terminal` opening with a
-//! tiny/garbled window, paste not working at all) only reproduced against
-//! a live window.
+//! a real `Application` + `ApplicationWindow` + `GdkDisplay`. This
+//! motivated the headless smoke-test mode:
 //!
 //! [`run`] honours two environment variables, read once at startup, so
 //! any `gtk_*` example is xvfb-run-friendly with zero example-specific
@@ -59,9 +56,9 @@
 //! - `QUADRAUI_GTK_SMOKE_MS=<u64>` — enables smoke mode. `after_ms`
 //!   milliseconds after the window is presented, the runner checks the
 //!   `DrawingArea`'s allocated size against a sane floor
-//!   ([`smoke_size_ok`] — the direct #437 tiny-window regression check),
-//!   then closes the window so an unattended process exits deterministically
-//!   instead of hanging forever waiting for a user who isn't there.
+//!   ([`smoke_size_ok`]), then closes the window so an unattended
+//!   process exits deterministically instead of hanging forever waiting
+//!   for a user who isn't there.
 //! - `QUADRAUI_GTK_SMOKE_PASTE=<text>` — optional. If set, the same timer
 //!   round-trips `<text>` through the **real OS clipboard** (`arboard`,
 //!   the same object the live Ctrl-V handler reads —
@@ -71,7 +68,7 @@
 //!   the paste-interception wiring itself also fails the smoke, not just
 //!   a raw clipboard failure. `arboard` needs a real `DISPLAY` (Xvfb
 //!   provides one; the Broadway backend does not), which is why the
-//!   operator-run wrapper (`quadraui/scripts/gtk_smoke.sh`) uses Xvfb.
+//!   operator-run wrapper uses Xvfb.
 //!
 //! Any assertion failure is printed to stderr and flips [`run`]'s return
 //! value to [`std::process::ExitCode::FAILURE`], overriding GLib's own
@@ -79,31 +76,27 @@
 //! unless `QUADRAUI_GTK_SMOKE_MS` is set, so ordinary interactive
 //! launches are unaffected.
 //!
-//! This mechanism can't be exercised in CI (the `gtk` CI job is
-//! deliberately Xvfb-free — see `ci.yml`); it's the operator-run tier
-//! `quadraui/docs/TESTING.md` documents as "live-app headless smoke".
 //! The size/text assertion *logic* is unit-tested below with no display
 //! required.
 //!
-//! ## Clipboard paste vs. IME/dead-key composition (quadraui#415)
+//! ## Clipboard paste vs. IME/dead-key composition
 //!
-//! quadraui#415 ("route clipboard paste + IME/dead-key composition into
-//! the focused terminal PTY") is two distinct input paths. Only the
-//! clipboard-paste half — Ctrl-V, Ctrl-Shift-V, and middle-click PRIMARY,
-//! all handled below in [`dispatch_event`] — is implemented by this
-//! module. IME/dead-key composed input (e.g. a dead-key `´` followed by
-//! `e` composing to `é`, or any real IME committing multi-keystroke text)
-//! is **not** wired up: `EventControllerKey` here only ever sees raw,
-//! already-resolved keysyms via `gdk_key_to_uievent`, with no
-//! `gtk4::IMMulticontext` attached to intercept `key-press-event` first
-//! and expose its `commit` / `preedit-changed` signals. That's a
-//! deliberate scope split, not an oversight: no quadraui backend runs an
-//! IME composition pipeline yet (see [`crate::UiEvent::CharTyped`]'s doc
-//! comment), and epic quadraui#481 owns adding one across every backend,
-//! not just GTK's terminal example. `examples/common/terminal_app.rs`'s
-//! module doc carries the consumer-facing version of this note.
+//! Two distinct input paths. Only the clipboard-paste half — Ctrl-V,
+//! Ctrl-Shift-V, and middle-click PRIMARY, all handled below in
+//! [`dispatch_event`] — is implemented by this module. IME/dead-key
+//! composed input (e.g. a dead-key `´` followed by `e` composing to `é`,
+//! or any real IME committing multi-keystroke text) is **not** wired up:
+//! `EventControllerKey` here only ever sees raw, already-resolved keysyms
+//! via `gdk_key_to_uievent`, with no `gtk4::IMMulticontext` attached to
+//! intercept `key-press-event` first and expose its `commit` /
+//! `preedit-changed` signals. That's a deliberate scope split, not an
+//! oversight: no quadraui backend runs an IME composition pipeline yet
+//! (see [`crate::UiEvent::CharTyped`]'s doc comment), and IME composition
+//! owns adding one across every backend, not just GTK's terminal example.
+//! `examples/common/terminal_app.rs`'s module doc carries the
+//! consumer-facing version of this note.
 //!
-//! ## Re-entrancy: two independent sources, one invariant (quadraui#902)
+//! ## Re-entrancy: two independent sources, one invariant
 //!
 //! Every signal closure below takes `backend.borrow_mut()` and
 //! `app.borrow_mut()` together across a `dispatch_event` call. Two
@@ -111,22 +104,21 @@
 //! non-unwindable `extern "C"` GLib trampoline frame, which aborts the
 //! whole process rather than unwinding:
 //!
-//! 1. **A nested modal pump** (quadraui#427) — GTK's async
-//!    `FileDialog`'s `MainContext::iteration(true)` wait services every
-//!    other pending source, including this runner's own closures, while
-//!    the code that started the pump still holds `backend`/`app`
-//!    borrowed. Guarded by `pump_depth.is_pumping()`, checked first in
-//!    every closure below.
-//! 2. **A synchronous same-signal re-entry from app code** (quadraui#902)
-//!    — app code, called from inside `dispatch_event`, invokes a GTK
-//!    method that synchronously re-emits the very signal a handler below
-//!    listens for. The reported case: `AppLogic::handle` calls
-//!    `window.close()` from inside its own `WindowClose` handling;
-//!    `gtk_window_close` emits `close-request` synchronously, re-entering
-//!    `connect_close_request` below while the outer call still holds
-//!    `backend`/`app`. `pump_depth` is `0` the entire time this happens —
-//!    it only ever models source 1 — so it waves this straight through
-//!    into a second `borrow_mut()` and the abort.
+//! 1. **A nested modal pump** — GTK's async `FileDialog`'s
+//!    `MainContext::iteration(true)` wait services every other pending
+//!    source, including this runner's own closures, while the code that
+//!    started the pump still holds `backend`/`app` borrowed. Guarded by
+//!    `pump_depth.is_pumping()`, checked first in every closure below.
+//! 2. **A synchronous same-signal re-entry from app code** — app code,
+//!    called from inside `dispatch_event`, invokes a GTK method that
+//!    synchronously re-emits the very signal a handler below listens for.
+//!    The reported case: `AppLogic::handle` calls `window.close()` from
+//!    inside its own `WindowClose` handling; `gtk_window_close` emits
+//!    `close-request` synchronously, re-entering `connect_close_request`
+//!    below while the outer call still holds `backend`/`app`.
+//!    `pump_depth` is `0` the entire time this happens — it only ever
+//!    models source 1 — so it waves this straight through into a second
+//!    `borrow_mut()` and the abort.
 //!
 //! Nothing about source 2 is specific to `close-request`: any handler
 //! below aborts the same way if app code, mid-dispatch, triggers the
@@ -172,7 +164,7 @@ use crate::runtime::{self, ReactionSink, RESIZE_SETTLE};
 // Re-exported (not just imported) so `gtk::testing` — and any other
 // in-crate caller that historically reached `EventOutcome` through this
 // module — keeps working unchanged after the type moved to
-// `crate::runtime` (quadraui#496).
+// `crate::runtime`.
 pub(crate) use crate::runtime::EventOutcome;
 use crate::{ButtonMask, Key, Modifiers, MouseButton, Point, UiEvent};
 
@@ -180,34 +172,30 @@ use crate::{ButtonMask, Key, Modifiers, MouseButton, Point, UiEvent};
 /// builder's `default_width`/`default_height` below. Also used to seed
 /// `GtkBackend`'s viewport *before* `app.setup()` runs, so
 /// `Backend::viewport()` returns a sane, non-zero size to apps that read
-/// it during setup (e.g. to size an embedded PTY — quadraui#437) instead
-/// of `GtkBackend::new()`'s zeroed default. `DrawingArea::connect_resize`
+/// it during setup (e.g. to size an embedded PTY) instead of
+/// `GtkBackend::new()`'s zeroed default. `DrawingArea::connect_resize`
 /// (wired below) corrects this to the widget's *actual* allocated size
 /// as soon as it's realized, so this seed only matters for the brief
 /// window between `setup()` and the first resize signal.
 const DEFAULT_WINDOW_WIDTH: i32 = 800;
 const DEFAULT_WINDOW_HEIGHT: i32 = 600;
 
-/// Minimum sane `DrawingArea` size for headless smoke mode (quadraui#450).
+/// Minimum sane `DrawingArea` size for headless smoke mode.
 /// Comfortably below [`DEFAULT_WINDOW_WIDTH`]/[`DEFAULT_WINDOW_HEIGHT`] so
-/// ordinary window-manager chrome/decoration insets don't false-positive,
-/// but well above the ~8-character-wide wrapped column quadraui#437
-/// actually produced.
+/// ordinary window-manager chrome/decoration insets don't false-positive.
 const SMOKE_MIN_WIDTH: i32 = 200;
 const SMOKE_MIN_HEIGHT: i32 = 150;
 
-/// Env var enabling headless smoke mode (quadraui#450, GD-5) — see the
-/// module doc's "Headless smoke mode" section. Fed to
+/// Env var enabling headless smoke mode — see the module doc's
+/// "Headless smoke mode" section. Fed to
 /// [`crate::desktop::SmokeConfig::from_env`] below.
 const SMOKE_MS_VAR: &str = "QUADRAUI_GTK_SMOKE_MS";
 /// Env var carrying the optional smoke-mode paste round-trip text — see
 /// [`SMOKE_MS_VAR`].
 const SMOKE_PASTE_VAR: &str = "QUADRAUI_GTK_SMOKE_PASTE";
 
-// `SmokeConfig` + the size/clipboard pass-fail predicates used to be
-// defined here; extracted to the backend-neutral `desktop` module (#498)
-// — see that module's doc for why (and `smoke_tests` below, which now
-// covers `SmokeConfig::from_env` itself in addition to the predicates).
+// `SmokeConfig` + the size/clipboard pass-fail predicates are defined
+// in the backend-neutral `desktop` module.
 
 /// Configuration for [`run_with`] — the GTK application id and window
 /// title that [`run`] hardcodes to generic defaults (`"org.quadraui.app"`
@@ -216,7 +204,7 @@ const SMOKE_PASTE_VAR: &str = "QUADRAUI_GTK_SMOKE_PASTE";
 /// Apps that need a stable app id (Wayland/GNOME dock pinning, D-Bus
 /// single-instance activation, Flatpak) or a custom window title build
 /// this and call [`run_with`] instead of [`run`]. `run` itself is just
-/// `run_with(app, RunConfig::default())` — see quadraui#234.
+/// `run_with(app, RunConfig::default())`.
 ///
 /// ```no_run
 /// # struct MyApp;
@@ -231,7 +219,7 @@ const SMOKE_PASTE_VAR: &str = "QUADRAUI_GTK_SMOKE_PASTE";
 /// quadraui::gtk::run_with(MyApp, config);
 /// ```
 ///
-/// ## Downstream impact (CLAUDE.md rule 8): `single_instance` field (#957)
+/// ## Downstream impact (CLAUDE.md rule 8): `single_instance` field
 ///
 /// `RunConfig` is a plain, all-`pub`-field struct with no
 /// `#[non_exhaustive]`, so adding [`Self::single_instance`] is only safe
@@ -260,23 +248,20 @@ pub struct RunConfig {
     /// Themed icon name (`gtk4::Window::set_icon_name`), e.g.
     /// `"io.github.jdonaghy.vimcode"`. `None` (the default) leaves GTK's
     /// own fallback icon in place. Set via [`Self::with_icon_name`] — see
-    /// quadraui#656.
     pub icon_name: Option<String>,
     /// Whether a second launch of this app (same `app_id`) is forwarded
-    /// to the already-running instance instead of starting a new process
-    /// — issue #957. `true` (the default — see [`Self::default`]) is
-    /// GTK/GLib's own out-of-the-box behaviour for any `Application` with
-    /// a stable `app_id` and no `ApplicationFlags::NON_UNIQUE`: dedup and
-    /// D-Bus forwarding come free, no extra wiring needed beyond
-    /// `app_id` itself. `run_with` also always sets
-    /// `ApplicationFlags::HANDLES_OPEN`, so `argv` file/URL arguments
-    /// (at launch, or forwarded from a second launch when this is
+    /// to the already-running instance instead of starting a new process.
+    /// `true` (the default — see [`Self::default`]) is GTK/GLib's own
+    /// out-of-the-box behaviour for any `Application` with a stable `app_id`
+    /// and no `ApplicationFlags::NON_UNIQUE`: dedup and D-Bus forwarding come
+    /// free, no extra wiring needed beyond `app_id` itself. `run_with` also
+    /// always sets `ApplicationFlags::HANDLES_OPEN`, so `argv` file/URL
+    /// arguments (at launch, or forwarded from a second launch when this is
     /// `true`) reach the app as [`crate::UiEvent::OpenRequested`] via
     /// `Application::connect_open` instead of being rejected. Set this
     /// `false` (via [`Self::with_single_instance`]) to opt back into
     /// GTK's `ApplicationFlags::NON_UNIQUE` — every launch gets its own
-    /// window, matching pre-#957 behaviour — useful for running several
-    /// debug instances side by side.
+    /// window, useful for running several debug instances side by side.
     pub single_instance: bool,
 }
 
@@ -294,14 +279,14 @@ impl RunConfig {
     }
 
     /// Opt in/out of single-instance dedup + `argv`/OS-open forwarding
-    /// (issue #957) — see [`Self::single_instance`]'s doc for the full
+    /// — see [`Self::single_instance`]'s doc for the full
     /// contract. Defaults to `true`.
     pub fn with_single_instance(mut self, single_instance: bool) -> Self {
         self.single_instance = single_instance;
         self
     }
 
-    /// Set a themed icon name for the window (quadraui#656). Feeds
+    /// Set a themed icon name for the window. Feeds
     /// `gtk4::Window::set_icon_name` in [`run_with`] so themed-icon lookup
     /// works even on window managers that don't resolve `app_id` to an
     /// installed `.desktop` file.
@@ -312,8 +297,8 @@ impl RunConfig {
 }
 
 impl Default for RunConfig {
-    /// Mirrors [`run`]'s previously-hardcoded defaults, so `run_with(app,
-    /// RunConfig::default())` and `run(app)` behave identically.
+    /// Default configuration: matches [`run`]'s previously-hardcoded defaults,
+    /// so `run_with(app, RunConfig::default())` and `run(app)` behave identically.
     fn default() -> Self {
         Self {
             app_id: "org.quadraui.app".to_string(),
@@ -327,7 +312,7 @@ impl Default for RunConfig {
 /// Drive `app` to completion in a basic single-`DrawingArea` GTK
 /// environment, using the default [`RunConfig`] (generic app id and
 /// window title). See [`run_with`] to set a custom app id / title
-/// (quadraui#234) — needed by any app that isn't quadraui itself, e.g.
+/// — needed by any app that isn't quadraui itself, e.g.
 /// for Wayland/GNOME dock integration.
 ///
 /// Creates an `Application`, a single window, and a single
@@ -347,17 +332,17 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
 }
 
 /// Same as [`run`], but with a caller-supplied [`RunConfig`] (app id +
-/// window title) instead of the generic quadraui defaults (quadraui#234).
+/// window title) instead of the generic quadraui defaults.
 pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::process::ExitCode {
     let app = Rc::new(RefCell::new(app));
     let backend = Rc::new(RefCell::new(GtkBackend::new()));
-    // quadraui#450 (GD-5): `None` unless `QUADRAUI_GTK_SMOKE_MS` is set —
+    // `None` unless `QUADRAUI_GTK_SMOKE_MS` is set —
     // see the module doc's "Headless smoke mode" section.
     let smoke = SmokeConfig::from_env(SMOKE_MS_VAR, SMOKE_PASTE_VAR);
     let smoke_failed = Rc::new(Cell::new(false));
     let title = config.title;
     let icon_name = config.icon_name;
-    // #957: fetched here (before `gapp` even exists) rather than inside
+    // Fetched here (before `gapp` even exists) rather than inside
     // `activate` alone, so `connect_open` below can push
     // `UiEvent::OpenRequested` onto the same queue regardless of whether
     // `activate` has run yet — `GtkBackend::new()` above already set up
@@ -365,7 +350,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     // it starts) drains whatever is already sitting in it.
     let events_handle = backend.borrow().events_handle();
 
-    // #957: `HANDLES_OPEN` is required for `argv` file/URL positional
+    // `HANDLES_OPEN` is required for `argv` file/URL positional
     // arguments to route to `connect_open` below instead of GLib
     // rejecting them outright ("This application can not open files.").
     // `NON_UNIQUE` opts *out* of GTK/GLib's default single-instance
@@ -401,7 +386,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
         });
     }
 
-    // #957: GLib emits `open` *instead of* `activate` whenever the
+    // GLib emits `open` *instead of* `activate` whenever the
     // launch carries file/URL arguments — at first launch (a registered
     // `.myext` file double-clicked in a file manager, a `myapp://` URL
     // activation) or, with `single_instance` on, forwarded here from a
@@ -458,32 +443,19 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     if smoke_failed.get() {
         return std::process::ExitCode::FAILURE;
     }
-    // glib 0.22 (pulled in by the gtk4 0.11 bump, #796) renamed
-    // `ExitCode::value()` to `get()` and added a direct
-    // `From<ExitCode> for std::process::ExitCode`, so the `as u8`
-    // round-trip through `ExitCode::from(u8)` is no longer needed either.
     std::process::ExitCode::from(glib_code)
 }
 
-// `StepOutcome` — what happened during one non-blocking `step`/`pump` call
-// — is defined once in `crate::runner` and shared by every backend's
-// embedding-friendly runner (issue #1100: `GtkRunner` here,
-// `crate::tui::run::TuiRunner` on TUI); re-exported (not just imported) so
-// any in-crate caller that reaches it through this module keeps working.
 pub use crate::runner::StepOutcome;
 
 /// Non-blocking / bounded-wait entry points for a host that owns its own
-/// event loop (issue #1100) — the GTK counterpart of
-/// [`crate::tui::run::TuiRunner`].
+/// event loop — the GTK counterpart of [`crate::tui::run::TuiRunner`].
 ///
 /// [`run`]/[`run_with`] each own the whole process: `Application::run()`
 /// blocks the calling thread inside GLib's main loop until the app quits.
 /// That's the right shape for a process whose only job is running one
 /// quadraui window, but it can't be embedded inside a host that already
-/// owns its own loop and needs to interleave quadraui's work with its own
-/// — the same hosts `TuiRunner`'s doc names (Node's libuv reactor, a .NET
-/// `SynchronizationContext`, Python's `asyncio` loop, a game engine's
-/// per-frame tick).
+/// owns its own loop and needs to interleave quadraui's work with its own.
 ///
 /// [`GtkRunner::new`]/[`GtkRunner::new_with`] build the exact same
 /// `Application` + window + `DrawingArea` + event-controller wiring
@@ -495,15 +467,13 @@ pub use crate::runner::StepOutcome;
 ///
 /// - [`GtkRunner::step`] — one non-blocking pass:
 ///   `glib::MainContext::iteration(false)`, GLib's own primitive for
-///   "process whatever's immediately ready and return, blocking on
-///   nothing".
+///   "process whatever's immediately ready and return, blocking on nothing".
 /// - [`GtkRunner::pump`] — one pass bounded to at most `timeout`: arms a
 ///   one-shot `glib::timeout_add_local_once` for `timeout`, then calls
 ///   `glib::MainContext::iteration(true)` — GLib's own blocking-until-
 ///   something's-ready primitive — so the call returns either once a real
 ///   GTK/GLib source fires (a key press, a redraw, a background
-///   `Backend::waker` wake) or once the bound timer does, whichever is
-///   first.
+///   `Backend::waker` wake) or once the bound timer does, whichever is first.
 ///
 /// Both return a [`StepOutcome`], mirroring `TuiRunner`: `Continue` while
 /// the window is still open, `Exited` once it's gone. Checked via
@@ -523,14 +493,13 @@ pub use crate::runner::StepOutcome;
 /// GTK *can* interrupt a blocking `pump(timeout)` wait early this way,
 /// since `MainContext::invoke` wakes the context's underlying poll
 /// immediately rather than TUI's crossterm read having to wait out a
-/// fixed timeout regardless (see [`Backend::waker`]'s "simplest of the
-/// four" note).
+/// fixed timeout regardless.
 ///
 /// Scope note: unlike `run`/`run_with`, `GtkRunner` doesn't wire
-/// `Application::connect_open` (`argv` file/URL open-with activation,
-/// issue #957) — an embedding host already owns its own process's argv
-/// handling, so that signal has no obvious owner here. Everything else
-/// `activate` wires (keyboard, mouse, scroll, resize, HiDPI, file drop,
+/// `Application::connect_open` (`argv` file/URL open-with activation) —
+/// an embedding host already owns its own process's argv handling, so
+/// that signal has no obvious owner here. Everything else `activate`
+/// wires (keyboard, mouse, scroll, resize, HiDPI, file drop,
 /// window-close veto, headless smoke mode) is unchanged.
 ///
 /// `GtkRunner` has no `Drop`-based teardown the way `TuiRunner` does:
@@ -556,12 +525,11 @@ impl GtkRunner {
         Self::new_with(app, RunConfig::default())
     }
 
-    /// Like [`Self::new`], but with an explicit [`RunConfig`] (app id +
-    /// window title, quadraui#234).
+    /// Like [`Self::new`], but with an explicit [`RunConfig`].
     pub fn new_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> Self {
         let app = Rc::new(RefCell::new(app));
         let backend = Rc::new(RefCell::new(GtkBackend::new()));
-        // quadraui#450 (GD-5): `None` unless `QUADRAUI_GTK_SMOKE_MS` is set —
+        // `None` unless `QUADRAUI_GTK_SMOKE_MS` is set —
         // see the module doc's "Headless smoke mode" section. Honoured here
         // too, so `GtkRunner` gets the same xvfb-run-friendly headless
         // smoke behaviour `run_with` does, with no separate opt-in.
@@ -624,18 +592,16 @@ impl GtkRunner {
     }
 
     /// Whether headless smoke mode (`QUADRAUI_GTK_SMOKE_MS`) detected a
-    /// failure — a tiny-window regression (the #437 class) or a clipboard
-    /// round-trip mismatch, set by `schedule_smoke_check`. Mirrors
-    /// `run_with`'s own post-`gapp.run()` `smoke_failed.get()` check
-    /// (issue #1100 review): [`run`]/[`run_with`] fold this into their
-    /// returned `std::process::ExitCode` automatically, but `step`/`pump`
-    /// return a [`StepOutcome`] with no room for a failure signal, so an
-    /// embedding host must poll this explicitly once the runner reaches
-    /// [`StepOutcome::Exited`] (headless smoke mode always forces the
-    /// window closed after `QUADRAUI_GTK_SMOKE_MS`, so `Exited` is
-    /// guaranteed to arrive) and set its own process exit code from it —
-    /// see `examples/gtk_embedded.rs` for the pairing with
-    /// `scripts/gtk_smoke.sh`.
+    /// failure — a tiny-window regression or a clipboard round-trip
+    /// mismatch, set by `schedule_smoke_check`. Mirrors `run_with`'s own
+    /// post-`gapp.run()` `smoke_failed.get()` check. [`run`]/[`run_with`]
+    /// fold this into their returned `std::process::ExitCode` automatically,
+    /// but `step`/`pump` return a [`StepOutcome`] with no room for a failure
+    /// signal, so an embedding host must poll this explicitly once the runner
+    /// reaches [`StepOutcome::Exited`] (headless smoke mode always forces the
+    /// window closed after `QUADRAUI_GTK_SMOKE_MS`, so `Exited` is guaranteed
+    /// to arrive) and set its own process exit code from it — see
+    /// `examples/gtk_embedded.rs` for the pairing with `scripts/gtk_smoke.sh`.
     pub fn smoke_failed(&self) -> bool {
         self.smoke_failed.get()
     }
@@ -781,7 +747,7 @@ fn activate<A: AppLogic + 'static>(
         .title(title)
         .default_width(DEFAULT_WINDOW_WIDTH)
         .default_height(DEFAULT_WINDOW_HEIGHT);
-    // quadraui#656: themed icon lookup, independent of the app-id ↔
+    // Themed icon lookup, independent of the app-id ↔
     // `.desktop` file match — see `RunConfig::icon_name`'s doc comment.
     if let Some(icon_name) = icon_name {
         window_builder = window_builder.icon_name(icon_name);
@@ -789,13 +755,13 @@ fn activate<A: AppLogic + 'static>(
     let window = window_builder.build();
 
     // Stash the window handle so `Backend::begin_window_drag` /
-    // `Backend::toggle_window_maximize` (#400) have something to drive.
+    // `Backend::toggle_window_maximize` have something to drive.
     // Harmless for apps that never call them (default no-op on every
     // other backend, and GTK apps that don't opt into a CSD titlebar).
     backend.borrow_mut().set_window(window.clone());
 
     // Re-entrancy guard shared with `GtkPlatformServices::pump_until_ready`
-    // (#427): `> 0` while a file dialog's nested-mainloop wait is in
+    //: `> 0` while a file dialog's nested-mainloop wait is in
     // flight. Fetched once here, before any event controller is
     // installed, and cloned (not re-derived via `backend.borrow()`) into
     // every closure below that calls `backend.borrow_mut()` — those
@@ -807,23 +773,23 @@ fn activate<A: AppLogic + 'static>(
     // callback frame and aborting the process.
     let pump_depth = backend.borrow().pump_depth();
 
-    // #902 backstop: shared handle to the backend's event queue, fetched
-    // once here (same reasoning as `pump_depth` above) and cloned into
-    // any closure below that needs to *defer* an event rather than drop
-    // it outright when `try_dispatch`/`try_borrow_both` (below) report the
-    // backend/app are already borrowed. Pushing here never needs
-    // `backend`'s own `RefCell` — `events_handle()` hands back a plain
-    // `Rc<RefCell<VecDeque<UiEvent>>>` with independent borrow state — so
-    // it works precisely in the situation that motivates it: `backend`
-    // mutably borrowed by an outer `dispatch_event` call, still on the
-    // stack. See `try_dispatch`'s doc and the `close-request` handler
-    // below for the concrete re-entrancy this exists to survive.
+    // Shared handle to the backend's event queue, fetched once here
+    // (same reasoning as `pump_depth` above) and cloned into any closure
+    // below that needs to *defer* an event rather than drop it outright when
+    // `try_dispatch`/`try_borrow_both` (below) report the backend/app are
+    // already borrowed. Pushing here never needs `backend`'s own `RefCell` —
+    // `events_handle()` hands back a plain `Rc<RefCell<VecDeque<UiEvent>>>`
+    // with independent borrow state — so it works precisely in the situation
+    // that motivates it: `backend` mutably borrowed by an outer
+    // `dispatch_event` call, still on the stack. See `try_dispatch`'s doc
+    // and the `close-request` handler below for the concrete re-entrancy
+    // this exists to survive.
     let events_handle = backend.borrow().events_handle();
 
     let da = DrawingArea::new();
     da.set_hexpand(true);
     da.set_vexpand(true);
-    // #235: the DA is the widget every keyboard-driven primitive expects
+    // The DA is the widget every keyboard-driven primitive expects
     // to hold GTK's internal focus (even though `setup_key_controller`
     // below attaches `EventControllerKey` to the *window*, not `da` —
     // bubble-phase propagation still starts at whatever widget holds
@@ -845,10 +811,8 @@ fn activate<A: AppLogic + 'static>(
     {
         let pctx = da.pango_context();
         let font_desc = pg::FontDescription::from_string("Sans 11");
-        // pango 0.22 (gtk4 0.11 bump, #796) tightened
-        // `Context::set_font_description` from `Option<&FontDescription>`
-        // to `&FontDescription` — there's no longer a "clear description"
-        // call to represent, so the `Some(...)` wrapper is just dropped.
+        // pango tightened `Context::set_font_description` to no longer accept
+        // `Option`, so the wrapper is just dropped.
         pctx.set_font_description(&font_desc);
         backend.borrow_mut().set_pango_context(pctx);
     }
@@ -860,7 +824,7 @@ fn activate<A: AppLogic + 'static>(
     // allocation yet at this point, so without this `backend.viewport()`
     // would return `GtkBackend::new()`'s zeroed default and any app that
     // sizes something (e.g. a PTY) from the setup-time viewport would
-    // size it to ~zero (quadraui#437).
+    // size it to ~zero.
     {
         let mut backend_mut = backend.borrow_mut();
         backend_mut.begin_frame(crate::Viewport::new(
@@ -872,18 +836,14 @@ fn activate<A: AppLogic + 'static>(
         app_mut.setup(&mut *backend_mut);
     }
 
-    // ── Per-signal controller wiring ──────────────────────────────────
-    //
-    // Each `setup_*` below owns one GTK signal's full closure — cloning
-    // whatever shared `Rc<RefCell<_>>` handles it needs and attaching
-    // itself to `da`/`window` — so `activate` reads as a flat list of
-    // "which signal, wired to what" instead of one signal-per-block
-    // 900-line function (#1113: split the god fn). The re-entrancy
-    // guards (`pump_depth.is_pumping()`, the `#902` `try_dispatch*`
+    // Per-signal controller wiring: each `setup_*` below owns one GTK
+    // signal's full closure — cloning whatever shared `Rc<RefCell<_>>`
+    // handles it needs and attaching itself to `da`/`window` — so the
+    // re-entrancy guards (`pump_depth.is_pumping()`, the `try_dispatch*`
     // backstops) and the shared-state threading (`cursor_pos` between
-    // motion/scroll, `events_handle` for the close-request deferral)
-    // are unchanged — see the module doc's "Re-entrancy" section, which
-    // every `setup_*` function's doc comment below points back to.
+    // motion/scroll, `events_handle` for the close-request deferral) are
+    // unchanged — see the module doc's "Re-entrancy" section, which every
+    // `setup_*` function's doc comment below points back to.
     setup_draw_func(&da, &app, &backend, &pump_depth);
     setup_key_controller(&window, &da, &app, &backend, &pump_depth);
 
@@ -906,7 +866,7 @@ fn activate<A: AppLogic + 'static>(
     // `activate_macos_process`'s doc for why `present()` alone isn't
     // enough and what the two AppKit calls do.
     activate_macos_process();
-    // #235: grab focus only after `present()` realizes/maps the window —
+    // Grab focus only after `present()` realizes/maps the window —
     // calling this any earlier is a well-documented GTK4 foot-gun (the
     // widget isn't part of a mapped surface yet, so the focus request can
     // be silently dropped on some backends instead of just being queued).
@@ -914,7 +874,7 @@ fn activate<A: AppLogic + 'static>(
     // for why this is a no-op without that pairing.
     da.grab_focus();
 
-    // quadraui#450 (GD-5): opt-in, zero-cost unless `QUADRAUI_GTK_SMOKE_MS`
+    // Opt-in, zero-cost unless `QUADRAUI_GTK_SMOKE_MS`
     // is set — see the module doc's "Headless smoke mode" section.
     if let Some(cfg) = smoke {
         schedule_smoke_check(cfg, da, backend, app, window, smoke_failed);
@@ -922,9 +882,9 @@ fn activate<A: AppLogic + 'static>(
 }
 
 /// Wires `da`'s `set_draw_func` — enters `render_frame` every repaint,
-/// skipping the frame entirely under the `#427` re-entrancy guard (a
-/// file dialog's nested pump further up the call stack already holds
-/// `backend`). See `activate`'s "Re-entrancy" module-doc section.
+/// skipping the frame entirely under the re-entrancy guard (a file dialog's
+/// nested pump further up the call stack already holds `backend`). See
+/// `activate`'s "Re-entrancy" module-doc section.
 fn setup_draw_func<A: AppLogic + 'static>(
     da: &DrawingArea,
     app: &Rc<RefCell<A>>,
@@ -935,11 +895,10 @@ fn setup_draw_func<A: AppLogic + 'static>(
     let backend = backend.clone();
     let pump_depth = pump_depth.clone();
     da.set_draw_func(move |_da, cr, w, h| {
-        // #427 re-entrancy guard: skip this repaint entirely rather
-        // than double-borrow `backend` while a file dialog's nested
-        // pump (further up the call stack) already holds it. Worst
-        // case this frame stays stale until the dialog closes and a
-        // normal redraw fires; that beats aborting the process.
+        // Re-entrancy guard: skip this repaint entirely rather than
+        // double-borrow `backend` while a file dialog's nested pump
+        // (further up the call stack) already holds it. Worst case this
+        // frame stays stale until the dialog closes and a normal redraw fires;
         if pump_depth.is_pumping() {
             return;
         }
@@ -970,10 +929,8 @@ fn setup_key_controller<A: AppLogic + 'static>(
         let window_for_close = window.clone();
         let pump_depth = pump_depth.clone();
         key_ctrl.connect_key_pressed(move |_ctrl, key, _code, modifier| {
-            // #427 re-entrancy guard: a dialog pump further up the call
-            // stack already holds `backend` mutably borrowed — don't
-            // re-enter it (and don't dispatch input to the app while a
-            // modal-ish dialog is up).
+            // Re-entrancy guard: a dialog pump further up the call stack
+            // already holds `backend` mutably borrowed — don't re-enter it
             if pump_depth.is_pumping() {
                 return glib::Propagation::Proceed;
             }
@@ -981,11 +938,10 @@ fn setup_key_controller<A: AppLogic + 'static>(
                 return glib::Propagation::Proceed;
             };
 
-            // #902 backstop: `backend`/`app` already borrowed by an outer
-            // `dispatch_event` further up this stack (not a nested pump,
-            // which `pump_depth` above already ruled out) — degrade like
-            // that guard instead of panicking. See the `#902` section
-            // above `dispatch_event`.
+            // If `backend`/`app` already borrowed by an outer `dispatch_event`
+            // further up this stack (not a nested pump, which the guard above
+            // already ruled out) — degrade rather than panicking. See the
+            // module doc's "Re-entrancy" section.
             let Some(outcome) = try_dispatch(&backend, &app, ev) else {
                 return glib::Propagation::Proceed;
             };
@@ -1002,10 +958,10 @@ fn setup_key_controller<A: AppLogic + 'static>(
 }
 
 /// Wires `da`'s left-click gesture. Routes mouse-down through
-/// `route_pointer` (#1088) so registered text regions receive selection
+/// `route_pointer` so registered text regions receive selection
 /// drags and scrollbar clicks begin scrollbar drags, then forwards the
 /// resulting events through the shared `dispatch_event` funnel.
-/// Mouse-up discards any armed window-drag request (#400) that never
+/// Mouse-up discards any armed window-drag request that never
 /// crossed the move threshold, then forwards through the same funnel.
 fn setup_click_controller<A: AppLogic + 'static>(
     da: &DrawingArea,
@@ -1021,14 +977,10 @@ fn setup_click_controller<A: AppLogic + 'static>(
 }
 
 /// `connect_pressed` half of [`setup_click_controller`]. Routes through
-/// `route_pointer` (issue #1088) so text-region clicks begin a
-/// TextSelection drag and scrollbar clicks begin scrollbar drags —
-/// regardless of GDK's own press count. Double-click folding used to be
-/// decided right here from `n_press == 2`, bypassing `dispatch_click`
-/// (and so `TextRegion`/modal routing) for the second press entirely;
-/// #813 moved it into `dispatch_event`'s shared `fold_double_click`
-/// step, applied uniformly to whatever `route_pointer` returns, the
-/// same as macOS/Windows.
+/// `route_pointer` so text-region clicks begin a TextSelection drag and
+/// scrollbar clicks begin scrollbar drags. Double-click folding is decided
+/// in `dispatch_event`'s shared `fold_double_click` step, applied uniformly
+/// to whatever `route_pointer` returns, the same as macOS/Windows.
 fn setup_click_pressed<A: AppLogic + 'static>(
     click: &GestureClick,
     da: &DrawingArea,
@@ -1043,7 +995,7 @@ fn setup_click_pressed<A: AppLogic + 'static>(
     let window_for_close = window.clone();
     let pump_depth = pump_depth.clone();
     click.connect_pressed(move |gesture, _n_press, x, y| {
-        // #427 re-entrancy guard — see `setup_key_controller`.
+        // Re-entrancy guard — see `setup_key_controller`.
         if pump_depth.is_pumping() {
             return;
         }
@@ -1055,27 +1007,21 @@ fn setup_click_pressed<A: AppLogic + 'static>(
 
         // Stash the raw GDK press context (device + button + timestamp)
         // before this press gets translated to a portable `UiEvent`, so
-        // `Backend::begin_window_drag` can later arm a deferred
-        // window-drag request with it (#400; see
-        // `GtkBackend::armed_window_drag` for why it's deferred rather
-        // than calling GDK's native window-drag immediately). Runs for
-        // both single- and double-press events (both fire
-        // `connect_pressed`); harmless if the app never calls
+        // `Backend::begin_window_drag` can later arm a deferred window-drag
+        // request with it. Runs for both single- and double-press events
+        // (both fire `connect_pressed`); harmless if the app never calls
         // `begin_window_drag`.
         if let Some(event) = gesture.current_event() {
             if let Some(device) = event.device() {
-                // #902 backstop: best-effort — if `backend` is already
-                // borrowed (see the `#902` section above
-                // `dispatch_event`), skip the stash. Worst case a
-                // subsequent `begin_window_drag` has nothing armed to
-                // commit; strictly better than aborting the process.
+                // If `backend` is already borrowed, skip the stash. Worst case
+                // a subsequent `begin_window_drag` has nothing armed to commit;
                 if let Ok(mut backend_mut) = backend.try_borrow_mut() {
                     backend_mut.stash_window_press(device, gdk_button as i32, x, y, event.time());
                 }
             }
         }
 
-        // #902 backstop — see the `#902` section above `dispatch_event`.
+        // If `backend`/`app` already borrowed by an outer `dispatch_event` —
         let Ok(mut backend_mut) = backend.try_borrow_mut() else {
             return;
         };
@@ -1100,14 +1046,12 @@ fn setup_click_pressed<A: AppLogic + 'static>(
 
         let mut needs_redraw = false;
         for ev in events {
-            // `dispatch_event` folds the double-click itself (as its
-            // first pre-processing step) — pass the raw `MouseDown`
-            // dispatch_click returned straight through.
+            // `dispatch_event` folds the double-click itself as its first
+            // pre-processing step — pass the raw `MouseDown`
+            // `dispatch_click` returned straight through.
             //
-            // #902 backstop: `app` already borrowed by an outer
-            // `dispatch_event` further up this stack — stop draining
-            // this batch rather than panicking; see the `#902` section
-            // above `dispatch_event`.
+            // If `app` already borrowed by an outer `dispatch_event` further up
+            // this stack — stop draining this batch rather than panicking.
             let Some(outcome) = try_dispatch_borrowed(&mut backend_mut, &app, ev) else {
                 break;
             };
@@ -1116,16 +1060,12 @@ fn setup_click_pressed<A: AppLogic + 'static>(
                 EventOutcome::Redraw => needs_redraw = true,
                 EventOutcome::RedrawAfter(delay) => backend_mut.request_frame_in(delay),
                 EventOutcome::Exit => {
-                    // `destroy()`, not `close()` (quadraui#501
-                    // review — same fix as `GtkSink::request_exit`):
-                    // this `Exit` came from the app's own handling
-                    // of a click/drag event, not from the OS
-                    // close-request signal, so re-routing it through
-                    // `close()` would emit `close-request` and
-                    // re-dispatch a synthetic `WindowClose` the app
-                    // never asked about — vetoing its own exit for
-                    // any app with no `WindowClose` opinion (the
-                    // unhandled catch-all default).
+                    // Use `destroy()`, not `close()`: this `Exit` came from
+                    // the app's own handling of a click/drag event, not from the
+                    // OS close-request signal, so re-routing it through `close()`
+                    // would emit `close-request` and re-dispatch a synthetic
+                    // `WindowClose` the app never asked about — vetoing its own
+                    // exit for any app with no `WindowClose` opinion.
                     window_for_close.destroy();
                     return;
                 }
@@ -1138,7 +1078,7 @@ fn setup_click_pressed<A: AppLogic + 'static>(
 }
 
 /// `connect_released` half of [`setup_click_controller`]. Discards any
-/// armed window-drag request (#400) that never crossed the move
+/// armed window-drag request that never crossed the move
 /// threshold — see `GtkBackend::armed_window_drag` — then forwards
 /// through the shared `dispatch_event` funnel.
 fn setup_click_released<A: AppLogic + 'static>(
@@ -1155,15 +1095,15 @@ fn setup_click_released<A: AppLogic + 'static>(
     let window_for_close = window.clone();
     let pump_depth = pump_depth.clone();
     click.connect_released(move |gesture, _n_press, x, y| {
-        // #427 re-entrancy guard — see `setup_key_controller`.
+        // Re-entrancy guard — see `setup_key_controller`.
         if pump_depth.is_pumping() {
             return;
         }
-        // #902 backstop — see the `#902` section above `dispatch_event`.
+        // If `backend`/`app` already borrowed by an outer `dispatch_event` —
         let Ok(mut backend_mut) = backend.try_borrow_mut() else {
             return;
         };
-        // #400: if the button goes up before the pointer ever moved past
+        // If the button goes up before the pointer ever moved past
         // the drag threshold, this was a plain click (or the first half
         // of a double-click), not a drag. Discard the armed window-drag
         // request rather than leaving it to be accidentally committed by
@@ -1188,8 +1128,8 @@ fn setup_click_released<A: AppLogic + 'static>(
             )
         };
         for ev in events {
-            // #902 backstop — see the `#902` section above
-            // `dispatch_event`.
+            // If `app` already borrowed by an outer `dispatch_event` further up
+            // this stack — stop draining this batch rather than panicking.
             let Some(outcome) = try_dispatch_borrowed(&mut backend_mut, &app, ev) else {
                 break;
             };
@@ -1200,7 +1140,7 @@ fn setup_click_released<A: AppLogic + 'static>(
 
 /// Wires `da`'s motion controller. Routes mouse-move through
 /// `route_pointer` so text-selection drags emit `TextSelectionChanged`
-/// events, and commits any armed window-drag (#400) once the pointer
+/// events, and commits any armed window-drag once the pointer
 /// crosses the move threshold. `cursor_pos` is shared with
 /// `setup_scroll_controller` so scroll events carry the actual pointer
 /// position.
@@ -1223,33 +1163,27 @@ fn setup_motion_controller<A: AppLogic + 'static>(
         motion.connect_motion(move |ctrl, x, y| {
             cursor_pos.set((x, y));
 
-            // #427 re-entrancy guard — see `setup_key_controller`.
+            // Re-entrancy guard — see `setup_key_controller`.
             if pump_depth.is_pumping() {
                 return;
             }
 
-            // #400: commit a deferred window-drag once the pointer has
-            // moved past the drag threshold since the press that armed
-            // it (`Backend::begin_window_drag`). Mirrors native
+            // Commit a deferred window-drag once the pointer has moved past
+            // the drag threshold since the press that armed it. Mirrors native
             // `gtk4::WindowHandle`, which defers its own move-start to
-            // `GestureDrag`'s threshold-gated `drag-begin` signal rather
-            // than the raw button press — this is what keeps a press
-            // that turns into a double-click from starting an
-            // interactive move grab that would swallow the second press.
-            // The threshold check itself lives in the backend-neutral
-            // `desktop::WindowDragArm` (#498) —
-            // `GtkBackend::try_commit_window_drag` is a no-op on every
-            // call until the pointer actually crosses it (whether
-            // because nothing is armed or the request is still under
-            // threshold), so this can call it unconditionally on every
-            // move. Only returns early when a drag is actually committed
-            // (control passes to the compositor's native move at that
-            // point); otherwise falls through to the normal motion
-            // handling below unaffected.
-            // #902 backstop: best-effort — if `backend` is already
-            // borrowed, skip the commit check this move event; the next
-            // motion event retries it. See the `#902` section above
-            // `dispatch_event`.
+            // `GestureDrag`'s threshold-gated `drag-begin` signal rather than
+            // the raw button press — this keeps a press that turns into a
+            // double-click from starting an interactive move grab that would
+            // swallow the second press. The threshold check itself lives in the
+            // backend-neutral `desktop::WindowDragArm` —
+            // `GtkBackend::try_commit_window_drag` is a no-op on every call
+            // until the pointer actually crosses it, so this can call it
+            // unconditionally on every move. Only returns early when a drag is
+            // actually committed (control passes to the compositor's native move
+            // at that point); otherwise falls through to the normal motion
+            // handling below unaffected. If `backend` is already borrowed,
+            // skip the commit check this move event; the next motion event
+            // retries it.
             let Ok(mut probe_backend_mut) = backend.try_borrow_mut() else {
                 return;
             };
@@ -1266,7 +1200,7 @@ fn setup_motion_controller<A: AppLogic + 'static>(
             };
             let position = Point::new(x as f32, y as f32);
 
-            // #902 backstop — see the `#902` section above `dispatch_event`.
+            // If `backend`/`app` already borrowed by an outer `dispatch_event` —
             let Ok(mut backend_mut) = backend.try_borrow_mut() else {
                 return;
             };
@@ -1287,8 +1221,8 @@ fn setup_motion_controller<A: AppLogic + 'static>(
             // fallback `app.handle` both live in the shared `dispatch_event`.
             let mut needs_redraw = false;
             for ev in events {
-                // #902 backstop — see the `#902` section above
-                // `dispatch_event`.
+                // If `app` already borrowed by an outer `dispatch_event`
+                // further up this stack — stop draining this batch rather than
                 let Some(outcome) = try_dispatch_borrowed(&mut backend_mut, &app, ev) else {
                     break;
                 };
@@ -1297,16 +1231,12 @@ fn setup_motion_controller<A: AppLogic + 'static>(
                     EventOutcome::Redraw => needs_redraw = true,
                     EventOutcome::RedrawAfter(delay) => backend_mut.request_frame_in(delay),
                     EventOutcome::Exit => {
-                        // `destroy()`, not `close()` (quadraui#501
-                        // review — same fix as `GtkSink::request_exit`):
-                        // this `Exit` came from the app's own handling
-                        // of a click/drag event, not from the OS
-                        // close-request signal, so re-routing it through
-                        // `close()` would emit `close-request` and
-                        // re-dispatch a synthetic `WindowClose` the app
-                        // never asked about — vetoing its own exit for
-                        // any app with no `WindowClose` opinion (the
-                        // unhandled catch-all default).
+                        // Use `destroy()`, not `close()`: this `Exit` came from
+                        // the app's own handling of a click/drag event, not from the
+                        // OS close-request signal, so re-routing it through `close()`
+                        // would emit `close-request` and re-dispatch a synthetic
+                        // `WindowClose` the app never asked about — vetoing its own
+                        // exit for any app with no `WindowClose` opinion.
                         window_for_close.destroy();
                         return;
                     }
@@ -1340,17 +1270,14 @@ fn setup_scroll_controller<A: AppLogic + 'static>(
         let pump_depth = pump_depth.clone();
         let cursor_pos = cursor_pos.clone();
         scroll.connect_scroll(move |_ctrl, dx, dy| {
-            // #427 re-entrancy guard — see `setup_key_controller`.
+            // Re-entrancy guard — see `setup_key_controller`.
             if pump_depth.is_pumping() {
                 return glib::Propagation::Proceed;
             }
             let (x, y) = cursor_pos.get();
-            // #902 backstop: `app` already mutably borrowed further up
-            // this stack would make even this shared `.borrow()` panic —
-            // fall back to the trait's own default (`false`) rather than
-            // risk it; `try_dispatch` below degrades the same way for the
-            // dispatch itself. See the `#902` section above
-            // `dispatch_event`.
+            // If `app` already mutably borrowed further up this stack,
+            // fall back to the trait's own default (`false`) rather than risk it;
+            // `try_dispatch` below degrades the same way for the dispatch itself.
             let natural_scroll = app
                 .try_borrow()
                 .map(|a| a.natural_scroll())
@@ -1375,7 +1302,7 @@ fn setup_scroll_controller<A: AppLogic + 'static>(
 /// `setup_draw_func`) keeps `backend.viewport()` in sync with the DA's
 /// allocated size on every *render*, but apps with side effects on
 /// resize — not just re-painting — need `UiEvent::WindowResized`
-/// dispatched too (quadraui#437). The dispatch itself is **debounced**
+/// dispatched too. The dispatch itself is **debounced**
 /// via a cancel-and-reschedule `glib::SourceId` (mirroring the TUI
 /// runner's `RESIZE_SETTLE` window) so a live resize drag doesn't spam
 /// PTY/SIGWINCH on every intermediate frame; painting stays perfectly
@@ -1395,12 +1322,12 @@ fn setup_resize_controller<A: AppLogic + 'static>(
     let window_for_close = window.clone();
     let pump_depth = pump_depth.clone();
     da.connect_resize(move |da, _width, _height| {
-        // #427 re-entrancy guard — see `setup_key_controller`.
+        // Re-entrancy guard — see `setup_key_controller`.
         if pump_depth.is_pumping() {
             return;
         }
         // Force a FULL-widget invalidation on every resize edge, not
-        // just at the debounced settle below (quadraui#437). This is the
+        // just at the debounced settle below. This is the
         // render-path half of the "stale ~ / > prompt fragments stuck on
         // rows that should be blank after a shrink→expand" ghosting.
         //
@@ -1432,12 +1359,13 @@ fn setup_resize_controller<A: AppLogic + 'static>(
         let pump_depth = pump_depth.clone();
         let resize_timer_inner = resize_timer.clone();
         let id = glib::source::timeout_add_local_once(RESIZE_SETTLE, move || {
-            // The fired timer is no longer "pending" — clear so a
-            // future resize doesn't try to cancel a dead source.
+            // The fired timer is no longer "pending" — clear so a future
+            // resize doesn't try to cancel a dead source. Re-entrancy guard
+            // checked at fire time — a dialog pump may have started after this
+            // timer was scheduled.
             resize_timer_inner.set(None);
-            // #427 re-entrancy guard, re-checked at fire time —
-            // a dialog pump may have started after this timer was
-            // scheduled.
+            // Re-entrancy guard, re-checked at fire time — a dialog pump may
+            // have started after this timer was scheduled.
             if pump_depth.is_pumping() {
                 return;
             }
@@ -1451,16 +1379,12 @@ fn setup_resize_controller<A: AppLogic + 'static>(
             let height = da_for_redraw.height();
             let scale = da_for_redraw.scale_factor() as f32;
             let ev = gdk_resize_to_uievent(width, height, scale);
-            // #902 backstop — see the `#902` section above
-            // `dispatch_event`. Skipping here means the tracked scale
-            // (`set_dpi_scale`, run as `try_dispatch_with`'s `pre`
-            // step) doesn't update this tick either; the next resize
-            // or `notify::scale-factor` firing corrects it.
+            // A resize and a DPI change can arrive in the same GTK event
             let Some(outcome) = try_dispatch_with(
                 &backend,
                 &app,
                 |backend_mut| {
-                    // #834: keep the tracked scale current on every
+                    // Keep the tracked scale current on every
                     // resize too, not just the dedicated
                     // `notify::scale-factor` handler below — a resize
                     // and a DPI change can arrive in the same GTK
@@ -1484,7 +1408,7 @@ fn setup_resize_controller<A: AppLogic + 'static>(
     });
 }
 
-/// Wires `da`'s `notify::scale-factor` signal (issue #834) — the GObject
+/// Wires `da`'s `notify::scale-factor` signal — the GObject
 /// property-change signal GTK fires for a *pure* DPI change (dragging
 /// the window to a different-DPI monitor, or a live scaling-setting
 /// change) with no accompanying resize, which `setup_resize_controller`
@@ -1503,12 +1427,10 @@ fn setup_hidpi_controller<A: AppLogic + 'static>(
     let window_for_dpi = window.clone();
     let pump_depth = pump_depth.clone();
     da.connect_scale_factor_notify(move |da| {
-        // #427 re-entrancy guard — see `setup_key_controller`.
         if pump_depth.is_pumping() {
             return;
         }
         let scale = da.scale_factor() as f32;
-        // #902 backstop — see the `#902` section above `dispatch_event`.
         let Some(outcome) = try_dispatch_with(
             &backend,
             &app,
@@ -1521,7 +1443,7 @@ fn setup_hidpi_controller<A: AppLogic + 'static>(
     });
 }
 
-/// Wires `da`'s OS file-drop target (issue #834). `gtk::DropTarget` is a
+/// Wires `da`'s OS file-drop target. `gtk::DropTarget` is a
 /// `gtk::EventController` added to `da` the same way the click/motion/
 /// scroll controllers are, not a separate widget — GTK4's DnD model
 /// routes a drop to whichever controller on the target widget declares
@@ -1544,7 +1466,6 @@ fn setup_file_drop_controller<A: AppLogic + 'static>(
         gtk4::gdk::DragAction::COPY,
     );
     drop_target.connect_drop(move |_target, value, x, y| {
-        // #427 re-entrancy guard — see `setup_key_controller`.
         if pump_depth.is_pumping() {
             return false;
         }
@@ -1557,7 +1478,6 @@ fn setup_file_drop_controller<A: AppLogic + 'static>(
             return false;
         }
         let ev = gtk_drop_to_uievent(paths, x, y);
-        // #902 backstop — see the `#902` section above `dispatch_event`.
         let Some(outcome) = try_dispatch(&backend, &app, ev) else {
             return false;
         };
@@ -1567,21 +1487,11 @@ fn setup_file_drop_controller<A: AppLogic + 'static>(
     da.add_controller(drop_target);
 }
 
-/// Wires the window's `close-request` signal (quadraui#501) — the OS "×"
-/// / Alt-F4 / window-manager close, previously never dispatched as a
-/// `UiEvent` at all, so an app had no way to veto an unsaved-changes
-/// close or even know the window was closing.
-///
-/// Dispatches `UiEvent::WindowClose` through the same `dispatch_event`
-/// funnel every other native signal uses, then only lets the close
-/// proceed if the app's own reaction was `Exit` — same rule Win uses. An
-/// app that doesn't return `Exit` implicitly vetoes the close. Never
-/// routes this outcome through `apply_event_outcome`/`request_exit`:
-/// that calls `window.close()`, which would re-enter this same
-/// `close-request` handler — see the module doc's "Re-entrancy: two
-/// independent sources, one invariant (quadraui#902)" section for the
-/// full call chain this guards against, including why the `None` arm
-/// below defers onto `events_handle` instead of dropping the event.
+/// Wires the window's `close-request` signal — the OS "×"
+/// / Alt-F4 / window-manager close — dispatches `UiEvent::WindowClose`
+/// through `dispatch_event`, then only lets the close proceed if the
+/// app's own reaction was `Exit`. An app that doesn't return `Exit`
+/// implicitly vetoes the close.
 fn setup_close_request<A: AppLogic + 'static>(
     window: &ApplicationWindow,
     da: &DrawingArea,
@@ -1596,12 +1506,15 @@ fn setup_close_request<A: AppLogic + 'static>(
     let pump_depth = pump_depth.clone();
     let events_handle = events_handle.clone();
     window.connect_close_request(move |_window| {
-        // #427 re-entrancy guard — see `setup_key_controller`.
+        // This handler runs re-entrantly when app code inside `handle` calls
+        // `window.close()`: GTK turns that into a synchronous `close-request`
+        // re-emission. The `pump_depth` guard covers only nested modal pumps;
+        // `try_dispatch` below degrades instead of panicking on a double borrow.
         if pump_depth.is_pumping() {
             return glib::Propagation::Proceed;
         }
-        // #902: this is the handler the reported abort actually hit —
-        // `pump_depth` only ever sees a *nested modal pump* (#427); it's
+        // This is the handler the reported abort actually hit —
+        // `pump_depth` only ever sees a *nested modal pump*; it's
         // still 0 here when app code, synchronously inside an outer
         // `dispatch_event` call further up this very stack, calls
         // `window.close()`. GTK turns that into a second, synchronous
@@ -1646,17 +1559,8 @@ fn setup_close_request<A: AppLogic + 'static>(
 }
 
 /// Wires the low-rate idle drain of the backend's event queue, plus the
-/// periodic `AppLogic::tick` call. Producer-side controllers above
-/// already dispatch synchronously through `app.handle` and trigger
-/// redraws; the backend's queue exists as a forward-compat seam — any
-/// signal handler that pushes directly to `events_handle()` gets
-/// drained here on each idle tick.
-///
-/// Issue #831: the drain closure is also `GtkBackend::waker`'s wake
-/// target (installed here via `set_wake_callback`), not just the
-/// periodic timer's body — a named `Rc<dyn Fn()>` so a background-thread
-/// wake and the ordinary poll funnel through one dispatch path instead
-/// of two that could drift.
+/// periodic `AppLogic::tick` call. Signal handlers dispatch synchronously
+/// through `app.handle`; the backend's queue is drained here on idle.
 fn setup_event_drain<A: AppLogic + 'static>(
     da: &DrawingArea,
     window: &ApplicationWindow,
@@ -1672,22 +1576,17 @@ fn setup_event_drain<A: AppLogic + 'static>(
     let drain_pump_depth = pump_depth.clone();
     let drain_events_handle = events_handle.clone();
     let drain_and_tick: Rc<dyn Fn()> = Rc::new(move || {
-        // #427 re-entrancy guard: this is the callback that produced the
-        // original crash report. A file dialog's nested `pump_until_ready`
-        // loop (invoked from `app.handle`, while `backend` is still held
-        // mutably borrowed by that call) services *this* source too —
-        // without the guard, `backend.borrow_mut()` below double-borrows
-        // and panics inside a non-unwindable GLib callback frame, aborting
-        // the process. Skip this tick entirely and let the next one
-        // (after the dialog closes, or the next `waker()` call) pick up
-        // any pending events.
+        // This is the callback that produces re-entrancy: a file dialog's
+        // nested `pump_until_ready` loop (invoked from `app.handle`, while
+        // `backend` is still held mutably borrowed) services this source too.
+        // `pump_depth` guards against nested modal pumps; `try_borrow_mut` below
+        // degrades instead of panicking on a double borrow. Skip this tick and
+        // let the next one (after the dialog closes) pick up any pending events.
         if drain_pump_depth.is_pumping() {
             return;
         }
-        // #902 backstop: `poll_events` needs `&mut GtkBackend` same as
-        // every dispatch below — degrade instead of panicking if some
-        // other re-entrant source already holds it. The next tick (or
-        // the next `waker()` call) retries.
+        // Degrade instead of panicking if some other re-entrant source already
+        // holds the backend borrow. The next tick (or the next `waker()` call)
         let Ok(mut drain_backend_mut) = drain_backend.try_borrow_mut() else {
             return;
         };
@@ -1695,11 +1594,8 @@ fn setup_event_drain<A: AppLogic + 'static>(
         drop(drain_backend_mut);
         let mut events_iter = events.into_iter();
         while let Some(ev) = events_iter.next() {
-            // #902 backstop. Stop draining this tick rather than
-            // panicking; `ev` and anything left in `events_iter` were
-            // already drained from the backend's own queue above, so
-            // requeue them onto `events_handle` (a separate `RefCell`,
-            // safe to push to here) rather than losing them outright.
+            // Degrade instead of panicking; requeue the event onto `events_handle`
+            // (a separate `RefCell`) so it isn't lost.
             let Some((mut backend_mut, mut app_mut)) = try_borrow_both(&drain_backend, &drain_app)
             else {
                 let mut q = drain_events_handle.borrow_mut();
@@ -1713,11 +1609,8 @@ fn setup_event_drain<A: AppLogic + 'static>(
             apply_event_outcome(outcome, &drain_backend.borrow(), &drain_da, &drain_window);
         }
 
-        // Periodic tick — called after every queue drain, including
-        // idle ticks where no events arrived. Lets apps drive timer
-        // logic without synthetic event injection.
-        //
-        // #902 backstop: skip the tick, rather than panic, if `backend`/
+        // Periodic tick — called after every queue drain, including idle ticks
+        // where no events arrived. Degrades instead of panicking if `backend`/
         // `app` are already borrowed.
         if let Some((mut backend_mut, mut app_mut)) = try_borrow_both(&drain_backend, &drain_app) {
             let tick_reaction = app_mut.tick(&mut *backend_mut);
@@ -1732,47 +1625,29 @@ fn setup_event_drain<A: AppLogic + 'static>(
         }
     });
 
-    // Issue #831: install this closure as `waker()`'s wake target before
-    // the timer below ever fires, so a background thread that calls the
-    // waker between `run_with` starting and the first idle tick still
-    // reaches it.
+    // Install this closure as `waker()`'s wake target before the timer fires,
+    // so a background thread that calls the waker reaches it.
     backend
         .borrow()
         .set_wake_callback(Rc::clone(&drain_and_tick));
 
-    // quadraui#832: this fallback idle tick used to be the *only* wake
-    // source and ran every 33ms unconditionally, burning CPU on a fully
-    // idle app. It's now a coarse safety net at `IDLE_POLL_CEILING`
-    // (250ms) — see that constant's doc for why a fallback still exists
-    // at all rather than being removed outright (an embedded terminal's
-    // PTY-output poll, in particular, still relies on periodic `tick`
-    // calls with no explicit `RedrawAfter` opt-in). Apps that need a
-    // tighter cadence than this — a spinner frame, a caret blink — should
-    // return `Reaction::RedrawAfter` with the exact interval they need
-    // instead of relying on this fallback's coarseness; that path arms a
-    // real one-shot timer via `GtkBackend::request_frame_in`, independent
-    // of this one.
+    // This fallback idle tick runs at `IDLE_POLL_CEILING` (250ms) as a safety
+    // net — see that constant's doc for why a fallback still exists. Apps that
+    // need a tighter cadence (a spinner frame, a caret blink) should return
+    // `Reaction::RedrawAfter` with the exact interval they need instead.
     glib::timeout_add_local(crate::runtime::IDLE_POLL_CEILING, move || {
         drain_and_tick();
         glib::ControlFlow::Continue
     });
 }
 
-/// Schedules the one-shot headless smoke-mode check (quadraui#450, GD-5;
-/// see the module doc's "Headless smoke mode" section). `cfg.after_ms`
-/// after the window is presented: checks the `DrawingArea`'s allocated
-/// size ([`smoke_size_ok`] — the #437 tiny-window regression check),
-/// optionally round-trips `cfg.paste_text` through the real OS clipboard
-/// and replays it as a synthetic Ctrl-V through [`dispatch_event`], then
-/// always closes the window so an unattended `xvfb-run` invocation exits
-/// deterministically instead of hanging.
-///
-/// #619: exempt from the crate-wide `print_stderr` deny. This is the
-/// headless smoke harness itself — opt-in via `QUADRAUI_GTK_SMOKE_MS`,
-/// invoked directly by `xvfb-run`/CI, never by a host embedding a live
-/// quadraui backend — so its failure output *is* the tool's normal
-/// output, the same way a CLI's own diagnostics aren't routed through
-/// `diagnostics::emit`.
+/// Schedules the one-shot headless smoke-mode check: `cfg.after_ms`
+/// after the window is presented, checks the `DrawingArea`'s allocated
+/// size, optionally round-trips `cfg.paste_text` through the real OS
+/// clipboard and replays it as a synthetic Ctrl-V, then closes the window
+/// so an unattended `xvfb-run` invocation exits deterministically.
+/// Exempt from the crate-wide `print_stderr` deny; its failure output is
+/// the headless smoke harness's normal output.
 #[allow(clippy::print_stderr)]
 fn schedule_smoke_check<A: AppLogic + 'static>(
     cfg: SmokeConfig,
@@ -1794,7 +1669,7 @@ fn schedule_smoke_check<A: AppLogic + 'static>(
             smoke_failed.set(true);
         }
 
-        // #235: `da.is_focus()` asks GTK's own toplevel-focus bookkeeping
+        // `da.is_focus()` asks GTK's own toplevel-focus bookkeeping
         // "is this the widget holding internal focus", independent of
         // whether the X/Wayland compositor also granted the *window*
         // native input focus (`has_focus()` conflates the two, and
@@ -1847,7 +1722,7 @@ fn schedule_smoke_check<A: AppLogic + 'static>(
             }
         }
 
-        // `destroy()`, not `close()` (quadraui#501 review): this forced
+        // `destroy()`, not `close()`: this forced
         // close must happen unconditionally, regardless of what (if
         // anything) the app's `WindowClose` handler returns — that's
         // the whole point of a headless timeout. `close()` would emit
@@ -1865,22 +1740,16 @@ fn schedule_smoke_check<A: AppLogic + 'static>(
 }
 
 /// [`ReactionSink`] over a borrowed `DrawingArea` + `ApplicationWindow`
-/// pair, plus (quadraui#832) the `GtkBackend` a `RedrawAfter` outcome
-/// arms its scheduled wake against — the redraw/exit/frame-request
-/// target every GTK signal closure in this module applies its
-/// [`EventOutcome`] (or raw [`Reaction`]) to, via
-/// [`runtime::apply_outcome`]. Replaces what used to be two near-
-/// identical hand-rolled `match` functions (quadraui#496).
+/// pair, plus the `GtkBackend` a `RedrawAfter` outcome arms its scheduled
+/// wake against — the redraw/exit/frame-request target every GTK signal
+/// closure in this module applies its [`EventOutcome`] (or raw [`Reaction`])
+/// to, via [`runtime::apply_outcome`].
 ///
 /// Takes `backend: &'a GtkBackend` (a shared reference, not the
-/// `Rc<RefCell<GtkBackend>>` every call site already holds) — cheap to
-/// obtain even from a live `RefMut` several call sites already hold
-/// across the `apply_event_outcome` call (e.g. the mouse-release
-/// handler below, which processes a `Vec<UiEvent>` in a loop): a plain
-/// `&*backend_mut` reborrow, not a second `borrow_mut()`/`borrow()` on
-/// the `RefCell` that would panic against an already-live borrow.
-/// `GtkBackend::request_frame_in` only ever needs `&self` (see its doc)
-/// so this never needs more than that.
+/// `Rc<RefCell<GtkBackend>>` every call site holds) — cheap to obtain even
+/// from a live `RefMut` several call sites already hold across the
+/// `apply_event_outcome` call: a plain `&*backend_mut` reborrow, not a
+/// second `borrow_mut()` that would panic against an already-live borrow.
 struct GtkSink<'a> {
     backend: &'a GtkBackend,
     da: &'a DrawingArea,
@@ -1892,7 +1761,7 @@ impl ReactionSink for GtkSink<'_> {
         self.da.queue_draw();
     }
     fn request_exit(&self) {
-        // `destroy()`, not `close()` (quadraui#501 review): the app has
+        // `destroy()`, not `close()`: the app has
         // already decided to exit — via whatever event produced this
         // `Reaction::Exit`/`EventOutcome::Exit`, e.g. a "press q to
         // quit" key handler, not necessarily `WindowClose` at all. If
@@ -1952,12 +1821,8 @@ fn apply_event_outcome(
 /// font metrics), seeds the backend's per-frame font/metric state,
 /// clears the surface to the current theme background, runs
 /// `app.render` inside [`GtkBackend::enter_frame_scope`], and overlays
-/// the active text-selection highlight. This is the exact body the live
-/// `set_draw_func` used to run inline — extracted so it never depends on
-/// a real `DrawingArea` widget, only a `Context` + pixel size. Shared by
-/// the live runner and [`crate::gtk::testing::GtkDriver`] (quadraui#446)
-/// — see the module doc's "Shared with the headless test driver"
-/// section.
+/// the active text-selection highlight. This body is shared by the live
+/// runner and [`crate::gtk::testing::GtkDriver`].
 pub(crate) fn render_frame<A: AppLogic>(
     backend: &mut GtkBackend,
     app: &A,
@@ -1971,7 +1836,7 @@ pub(crate) fn render_frame<A: AppLogic>(
     // app-configurable via `Backend::set_editor_font`
     // (`ShellConfig::with_editor_font` for `ShellApp` consumers). Read
     // fresh every frame so a runtime font change takes effect on the
-    // next repaint (#422). Monospace is required because `draw_editor`'s
+    // next repaint. Monospace is required because `draw_editor`'s
     // scroll formula (`scroll_left * char_width`) assumes uniform glyph
     // width; the untouched default resolves to the fontconfig monospace
     // alias (DejaVu Sans Mono, JetBrains Mono, etc).
@@ -1990,12 +1855,12 @@ pub(crate) fn render_frame<A: AppLogic>(
     // `approximate_char_width()` — the approximate value doesn't
     // account for font hinting and drifts over long lines (e.g. 9 chars
     // short at 500-char scroll). Delegates to
-    // `backend::measure_char_width_px` (quadraui#910) rather than
+    // `backend::measure_char_width_px` rather than
     // `layout.pixel_size()` directly: that rounds to whole pixels, which
     // silently loses columns once a consumer divides pane width by it.
     let char_w = super::backend::measure_char_width_px(&layout);
 
-    // #834: seed from the tracked scale factor (kept current by the
+    // Seed from the tracked scale factor (kept current by the
     // `notify::scale-factor` handler and the debounced resize handler
     // below) rather than a hardcoded `1.0`, so `Backend::viewport().scale`
     // reflects the real backing scale even between `WindowResized`
@@ -2007,19 +1872,10 @@ pub(crate) fn render_frame<A: AppLogic>(
     ));
     backend.set_current_line_height(line_h);
     backend.set_current_char_width(char_w);
-    // Deliberately *not* re-seeding `ui_font` here every frame the way
-    // `current_line_height`/`current_char_width` are: those are metrics
-    // re-derived from the editor font each repaint, but `ui_font` is a
-    // static app-level chrome-font preference (`Backend::set_ui_font`,
-    // #624) that `setup()` sets once. Stomping it back to the struct's
-    // default here would silently undo that call on the very next frame.
-    //
-    // `ui_font`'s *advance*, unlike the string itself, does need
-    // re-deriving every frame the same way `current_char_width` is: it
-    // backs `Backend::list_char_width()` (#912), and a runtime
-    // `set_ui_font` call must take effect on the very next repaint the
-    // same way a runtime `set_editor_font` call already does for
-    // `char_width()`.
+    // `ui_font` is set once per app at setup; don't re-seed it every frame.
+    // However, its *advance* needs re-deriving every frame for
+    // `Backend::list_char_width()`, so `set_ui_font` takes effect on the
+    // next repaint the same way `set_editor_font` does for `char_width()`.
     backend.refresh_chrome_char_width(&layout);
 
     // Clear the whole surface with the backend's current theme bg before
@@ -2035,16 +1891,13 @@ pub(crate) fn render_frame<A: AppLogic>(
     );
     cr.paint().ok();
 
-    // Issue #830: resolve the currently-focused widget's rect (if any)
-    // from this frame's tab stops before entering the frame scope —
-    // mirrors `tui::run::paint_frame`. `focused_stop_rect` (issue #1088)
-    // is the one implementation of this lookup; every runner used to
-    // carry its own copy.
+    // Resolve the currently-focused widget's rect (if any) from this frame's
+    // tab stops before entering the frame scope.
     let focus_ring_rect = runtime::focused_stop_rect(backend, app, A::AreaId::default());
     backend.enter_frame_scope(cr, &layout, |b| {
         // Single-area runner: pass the default `AreaId`.
         app.render(b, A::AreaId::default());
-        // After app.render: paint the focus-ring convention (#830).
+        // After app.render: paint the focus-ring convention.
         if let Some(rect) = focus_ring_rect {
             b.draw_focus_ring(rect);
         }
@@ -2058,16 +1911,9 @@ pub(crate) fn render_frame<A: AppLogic>(
     backend.end_frame();
 }
 
-// `is_paste_keypress` (plain Ctrl-V / Ctrl-Shift-V, quadraui#415) used to
-// be defined here; lifted to the backend-neutral `desktop` module (#728)
-// so `macos::run` and `win::run` share the exact same predicate instead
-// of each reimplementing (or, for `win`, never implementing) it — see
-// that module's doc and `docs/decisions/DECISIONS.md` D-011 for the shift-
-// tolerance contract this settles once for every adopter.
-
 // `EventOutcome` — what the caller should do after [`dispatch_event`]
 // handles one event — is defined once in `crate::runtime` and shared by
-// every backend runner (quadraui#496); imported at the top of this file.
+// every backend runner; imported at the top of this file.
 
 /// Dispatch one already-translated [`UiEvent`] through the app, applying
 /// the shared runner pre-processing pipeline first. This is the single
@@ -2077,11 +1923,11 @@ pub(crate) fn render_frame<A: AppLogic>(
 /// that matters.
 ///
 /// The pre-processing itself — ActivityBar keyboard-focus redirect,
-/// Tab/Shift+Tab focus cycling (#830),
+/// Tab/Shift+Tab focus cycling,
 /// global accelerator rewrite, Ctrl-C copy, Ctrl-V/Ctrl-Shift-V paste,
 /// middle-click PRIMARY-selection paste, Ctrl-A select-all, selection-
 /// display clearing, `TextSelectionChanged` — lives in
-/// [`crate::runtime::preprocess_event`] (quadraui#813), shared with
+/// [`crate::runtime::preprocess_event`], shared with
 /// TUI/macOS/Windows; see that function's doc for the exact priority
 /// order. This wrapper exists only because `preprocess_event` is
 /// generic and GTK's signal closures call a concretely-typed
@@ -2094,37 +1940,28 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     crate::runtime::preprocess_event(event, backend, app)
 }
 
-// ── #902: re-entrancy backstop ──────────────────────────────────────
+// ── Re-entrancy backstop ──────────────────────────────────────
 //
-// A GTK trampoline handler must never panic — see the long comment above
-// `pump_depth`'s definition (`#427`) and the module's `close-request`
-// handler for the full incident this class of helper exists to prevent.
-// `pump_depth.is_pumping()` (checked by every signal closure above,
-// *before* reaching one of these) guards exactly one re-entrancy source:
-// a nested modal pump. It says nothing about a second, independent
-// source — app code that's already inside a `dispatch_event` call
-// synchronously invoking a GTK method that re-emits the very signal a
-// handler below is listening for (`window.close()` → `close-request`
-// being the reported case; nothing about the hazard is specific to
-// that one signal). `pump_depth` is depth 0 the whole time that happens,
-// so it waves the re-entry straight through into a second `borrow_mut()`
-// on an already-mutably-borrowed `RefCell` — a panic that can't unwind
-// across the `extern "C"` GLib trampoline frame above it, aborting the
-// process.
+// A GTK signal handler must never panic — see the module's `close-request`
+// handler. `pump_depth.is_pumping()` (checked by every signal closure above)
+// guards only nested modal pumps. It doesn't guard app code already inside
+// a `dispatch_event` call that synchronously invokes a GTK method re-emitting
+// the same signal (`window.close()` → `close-request`). That second source
+// leaves `pump_depth` at 0, so it passes through into a second `borrow_mut()`
+// on an already-mutably-borrowed `RefCell` — a panic that can't unwind across
+// the GLib trampoline frame, aborting the process.
 //
-// Rather than add a second enumerated counter (which would fix only the
-// source that has already been found), these ask the `RefCell`s
-// themselves — they already know the true answer, including for sources
-// nobody has enumerated yet. Every caller below must treat a `None`
-// return as "degrade, don't dispatch" — most just skip the event, the
-// same trade the `pump_depth` guard next to them already makes; the
-// `close-request` handler additionally *defers* it via `events_handle`
-// (see that handler) because silently dropping a `WindowClose` would
-// make an in-dispatch `close()` call a permanent, silent no-op.
+// Rather than add a second counter (which would fix only one source), these
+// ask the `RefCell`s themselves — they already know the true answer, including
+// for sources nobody has enumerated yet. Every caller below must treat a
+// `None` return as "degrade, don't dispatch" — most skip the event; the
+// `close-request` handler defers it via `events_handle` because silently
+// dropping a `WindowClose` would make an in-dispatch `close()` call a
+// permanent no-op.
 
 /// Attempt to mutably borrow both `backend` and `app`, returning `None`
-/// instead of panicking if either is already borrowed. See the `#902`
-/// section above.
+/// instead of panicking if either is already borrowed. See the re-entrancy
+/// backstop section above.
 fn try_borrow_both<'a, A>(
     backend: &'a Rc<RefCell<GtkBackend>>,
     app: &'a Rc<RefCell<A>>,
@@ -2135,9 +1972,8 @@ fn try_borrow_both<'a, A>(
 }
 
 /// [`try_borrow_both`] + [`dispatch_event`], running `pre` on the
-/// borrowed backend in between (e.g. `set_dpi_scale`) before `app` is
-/// borrowed and the event dispatched. `None` on a double-borrow — see
-/// the `#902` section above.
+/// borrowed backend in between (e.g. `set_dpi_scale`) before the event
+/// is dispatched. `None` on a double-borrow.
 fn try_dispatch_with<A: AppLogic>(
     backend: &Rc<RefCell<GtkBackend>>,
     app: &Rc<RefCell<A>>,
@@ -2159,9 +1995,8 @@ fn try_dispatch<A: AppLogic>(
 }
 
 /// Like [`try_dispatch`] but for callers that already hold `backend`
-/// mutably borrowed across a loop of several events (click press/release,
-/// motion) and only need `app` borrowed per-event. `None` on a
-/// double-borrow of `app` — see the `#902` section above.
+/// mutably borrowed across a loop of several events. `None` on a
+/// double-borrow of `app`.
 fn try_dispatch_borrowed<A: AppLogic>(
     backend_mut: &mut GtkBackend,
     app: &Rc<RefCell<A>>,
@@ -2173,7 +2008,7 @@ fn try_dispatch_borrowed<A: AppLogic>(
 
 #[cfg(test)]
 mod run_config_tests {
-    //! Coverage for [`RunConfig`] (quadraui#234) — display-free, since
+    //! Coverage for [`RunConfig`] — display-free, since
     //! `RunConfig` itself is a plain data struct with no GTK dependency.
     //! `run_with`'s actual wiring (app id → `Application::builder`, title
     //! → `ApplicationWindow::builder`) can't be exercised without a real
@@ -2183,11 +2018,9 @@ mod run_config_tests {
 
     #[test]
     fn default_matches_runs_previous_hardcoded_values() {
-        // `run(app)` used to hardcode these two literals directly into
-        // `Application::builder()` / `ApplicationWindow::builder()`. Now
-        // that `run` is `run_with(app, RunConfig::default())`, this pins
-        // the default so it can't silently drift and change every
-        // existing caller's app id / window title.
+        // `run(app)` used to hardcode the app id and window title directly.
+        // Now that `run` is `run_with(app, RunConfig::default())`, this pins
+        // the defaults so they can't silently drift.
         let config = RunConfig::default();
         assert_eq!(config.app_id, "org.quadraui.app");
         assert_eq!(config.title, "quadraui app");
@@ -2204,7 +2037,7 @@ mod run_config_tests {
         assert!(config.single_instance);
     }
 
-    /// #957: `with_single_instance(false)` is how an app opts out of
+    /// `with_single_instance(false)` is how an app opts out of
     /// GTK's default single-instance dedup — e.g. to run several debug
     /// instances side by side.
     #[test]
@@ -2220,7 +2053,7 @@ mod run_config_tests {
         assert_eq!(owned, borrowed);
     }
 
-    /// #656: `with_icon_name` stores the icon name for `activate` to feed
+    /// `with_icon_name` stores the icon name for `activate` to feed
     /// into `ApplicationWindow::builder().icon_name(..)`.
     #[test]
     fn with_icon_name_sets_the_icon() {
@@ -2260,17 +2093,7 @@ mod activate_macos_process_tests {
 
 #[cfg(test)]
 mod smoke_tests {
-    //! Unit tests for GTK's use of the headless smoke-mode helpers
-    //! (quadraui#450, GD-5). The predicates themselves (`smoke_size_ok`,
-    //! `smoke_clipboard_round_trip_ok`) and `SmokeConfig::from_env`'s
-    //! generic parsing are covered once, backend-neutrally, in
-    //! `crate::desktop`'s own tests (#498) — these pin GTK's specific
-    //! wiring on top: the real `DEFAULT_WINDOW_WIDTH`/`HEIGHT` and
-    //! `SMOKE_MIN_WIDTH`/`HEIGHT` floor values, and the real
-    //! `QUADRAUI_GTK_SMOKE_MS`/`_PASTE` env var names. Pure/display-free
-    //! by design — the live Xvfb/Broadway run itself is an operator-run
-    //! tier documented in `quadraui/docs/TESTING.md`, not something CI
-    //! (no Xvfb — see `ci.yml`) or this in-process test can exercise.
+    //! Unit tests for GTK's use of the headless smoke-mode helpers.
     use super::*;
 
     #[test]
@@ -2295,7 +2118,7 @@ mod smoke_tests {
 
     #[test]
     fn smoke_size_ok_rejects_the_437_tiny_window_class() {
-        // quadraui#437: content wrapped into an ~8px-wide column.
+        // Content wrapped into an ~8px-wide column.
         assert!(!smoke_size_ok(
             8,
             DEFAULT_WINDOW_HEIGHT,
@@ -2347,7 +2170,7 @@ mod smoke_tests {
         ));
     }
 
-    /// #498: GTK's real env-var names still enable smoke mode through
+    /// GTK's real env-var names still enable smoke mode through
     /// the now-shared `SmokeConfig::from_env` — a rename regression here
     /// would silently disable the `xvfb-run`/CI-adjacent smoke wrapper
     /// (`quadraui/scripts/gtk_smoke.sh`) without any test going red.
@@ -2370,26 +2193,12 @@ mod smoke_tests {
 
 #[cfg(test)]
 mod paste_tests {
-    //! Coverage for quadraui#415 — GTK clipboard-paste and PRIMARY-
-    //! selection routing added to [`dispatch_event`].
+    //! Coverage for GTK clipboard-paste and PRIMARY-selection routing.
     //!
-    //! `is_paste_keypress` (shared with `macos::run`/`win::run` since
-    //! #728 — see `crate::desktop`) is a pure predicate, tested directly
-    //! with no display required; its full cross-backend contract
-    //! (Shift/Cmd tolerance, D-011 in `docs/decisions/DECISIONS.md`) has its own
-    //! coverage in `crate::desktop`'s test module, so the pure-predicate
-    //! tests below stick to GTK's own Ctrl-based cases. The
-    //! `GtkDriver`-based tests below exercise the actual
-    //! [`dispatch_event`] wiring end to end.
-    //!
-    //! Each of those installs an in-memory clipboard via
+    //! Each test installs an in-memory clipboard via
     //! [`GtkBackend::install_test_clipboard`] before dispatching, so both
-    //! the "there IS something to paste" and "there is nothing to paste"
-    //! branches are covered on *any* host. Reading the host's real
-    //! clipboard instead would make these assertions environment-
-    //! dependent — green on a headless box where
-    //! `arboard::Clipboard::new()` fails, red on a developer machine or a
-    //! CI runner with a live display and a non-empty clipboard.
+    //! "there IS something to paste" and "there is nothing to paste" branches
+    //! are covered on any host without depending on the live clipboard.
     use super::*;
     use crate::desktop::{is_paste_keypress, PasteModifier};
     use crate::gtk::services::TestClipboardContents;
@@ -2437,7 +2246,7 @@ mod paste_tests {
 
     #[test]
     fn ctrl_shift_v_is_a_paste_keypress() {
-        // quadraui#415: several terminal emulators reserve Ctrl-V for a
+        // Several terminal emulators reserve Ctrl-V for a
         // control byte and use Ctrl-Shift-V for paste instead.
         let mods = Modifiers {
             ctrl: true,
@@ -2481,11 +2290,9 @@ mod paste_tests {
 
     #[test]
     fn plain_super_v_is_not_a_paste_keypress() {
-        // D-011 §4 regression check (#728 fix iteration 1): `modifiers.cmd`
-        // is Super/Meta on GTK (`gdk_modifiers_to_quadraui`), and plain
-        // Super+V must never trigger paste on GTK — that was true before
-        // `is_paste_keypress` was lifted into `desktop`, and passing
-        // `PasteModifier::Ctrl` here is what keeps it true afterward.
+        // Shift-modifier regression check: `modifiers.cmd` is Super/Meta on GTK,
+        // and plain Super+V must never trigger paste on GTK. Passing
+        // `PasteModifier::Ctrl` here ensures that stays true.
         let mods = Modifiers {
             cmd: true,
             ..Modifiers::default()
@@ -2588,7 +2395,7 @@ mod paste_tests {
 
     #[test]
     fn ctrl_shift_v_delivers_the_clipboard_selection_as_a_paste() {
-        // quadraui#415: Ctrl-Shift-V is the paste shortcut in terminal
+        // Ctrl-Shift-V is the paste shortcut in terminal
         // emulators that reserve Ctrl-V for a literal control byte.
         let mut driver = driver_with_clipboard(Some("copied text"), None);
         press_v(
@@ -2669,7 +2476,7 @@ mod paste_tests {
     #[test]
     fn middle_click_reads_primary_selection_not_the_clipboard() {
         // The two selections are distinct on X11/Wayland; middle-click
-        // must never fall back to CLIPBOARD (quadraui#415).
+        // must never fall back to CLIPBOARD.
         let mut driver = driver_with_clipboard(Some("CLIPBOARD"), Some("PRIMARY"));
         middle_click(&mut driver);
         assert!(
@@ -2700,19 +2507,13 @@ mod paste_tests {
         );
     }
 
-    // ── Double-click folding (quadraui#813) ───────────────────────────
+    // ── Double-click folding ──────────────────────────────────────────
 
-    /// Before #813, `GtkDriver::dispatch` (which calls `dispatch_event`
-    /// directly, the same path `GtkDriver::mouse_down`/click helpers use)
-    /// had **no** double-click folding at all — GTK only folded from
-    /// native `GdkEventType`/`GestureClick` press-count inside
-    /// `gtk/run.rs`'s own `connect_pressed` closure, a real GDK signal
-    /// `GtkDriver` never fires. Two scripted `MouseDown`s at the same
-    /// spot were always delivered as two separate `MouseDown`s to the
-    /// app — this is the RED #813's acceptance bar calls for: GTK could
-    /// not be driver-tested for double-click before this function moved
-    /// the fold into the shared `dispatch_event`/`preprocess_event` path
-    /// every backend now uses.
+    /// Before #813, `GtkDriver::dispatch` had no double-click folding at all —
+    /// GTK only folded from native `GdkEventType` inside `gtk/run.rs`'s own
+    /// `connect_pressed` closure, which `GtkDriver` never fires. Two scripted
+    /// `MouseDown`s at the same spot were always delivered as two separate events.
+    /// This test confirms the fold now moves into the shared `dispatch_event` path.
     #[test]
     fn second_mouse_down_at_same_spot_folds_into_double_click() {
         let mut driver = driver_with_clipboard(None, None);
@@ -2780,20 +2581,12 @@ mod paste_tests {
 
 #[cfg(test)]
 mod window_close_tests {
-    //! Coverage for quadraui#501 — `UiEvent::WindowClose` dispatch.
-    //!
-    //! `connect_close_request` itself (the live GDK signal → `dispatch`
-    //! → `glib::Propagation` wiring in `activate`) needs a real
-    //! `ApplicationWindow`/display and can't run through `GtkDriver`
-    //! (deliberately display-free — see its module doc); that half is
-    //! covered by the GTK live-window smoke tier instead. What *is*
-    //! headless-testable, and what actually matters for app authors, is
-    //! that `dispatch_event` doesn't silently intercept or rewrite
-    //! `WindowClose` the way it does `KeyPressed`/`MouseDown` for
-    //! accelerators, paste, etc. — it must reach `app.handle` verbatim
-    //! and round-trip the app's `Reaction` through `EventOutcome`
-    //! unchanged, since that's the veto mechanism: `activate` only lets
-    //! the OS proceed with the close when the app returns `Exit`.
+    //! Coverage for `UiEvent::WindowClose` dispatch. The live `connect_close_request`
+    //! wiring (GDK signal → `dispatch` → `glib::Propagation`) needs a real display and
+    //! can't run through `GtkDriver`. What is headless-testable is that `dispatch_event`
+    //! doesn't intercept `WindowClose` — it must reach `app.handle` verbatim and
+    //! round-trip the app's `Reaction` unchanged, since the app's return value is the
+    //! veto mechanism: `activate` only lets the OS close when the app returns `Exit`.
     use super::*;
     use crate::gtk::testing::GtkDriver;
 
@@ -2864,26 +2657,14 @@ mod window_close_tests {
 
 #[cfg(test)]
 mod reentrancy_backstop_tests {
-    //! Coverage for quadraui#902 — the structural re-entrancy backstop
+    //! Coverage for the structural re-entrancy backstop
     //! (`try_borrow_both` / `try_dispatch` / `try_dispatch_with` /
-    //! `try_dispatch_borrowed`, all defined just above [`dispatch_event`])
-    //! that every guarded signal closure in `activate` now routes
-    //! through, replacing a plain `borrow_mut()` that would panic — and,
-    //! because the panic crosses a non-unwindable GLib trampoline frame,
-    //! abort the whole process — on a double borrow.
-    //!
-    //! The live `close-request` re-entry itself (`window.close()` called
-    //! from inside `AppLogic::handle`, which GTK turns into a synchronous
-    //! `close-request` re-emission) needs a real `ApplicationWindow`/
-    //! display and can't run through `GtkDriver` — see
-    //! `window_close_tests`'s module doc for the identical constraint on
-    //! `WindowClose` dispatch generally. What *is* headlessly testable,
-    //! and what the issue's own Verification section asks for, is the
-    //! degrade path: hold one of `backend`/`app`'s `RefCell`s borrowed —
-    //! exactly the state an outer `dispatch_event` call leaves the stack
-    //! in — and confirm these helpers return `None` (never panic), and
-    //! that a caller can safely defer the event onto `events_handle`
-    //! while that borrow is still held.
+    //! `try_dispatch_borrowed`) that every guarded signal closure now routes through,
+    //! replacing a plain `borrow_mut()` that would panic and abort the process on a
+    //! double borrow. The live `close-request` re-entry itself needs a real display;
+    //! what's headlessly testable is the degrade path: hold one `RefCell` borrowed —
+    //! the state an outer `dispatch_event` call leaves the stack in — and confirm
+    //! these helpers return `None` instead of panicking.
     use super::*;
 
     #[derive(Default)]
@@ -2908,11 +2689,9 @@ mod reentrancy_backstop_tests {
     fn try_borrow_both_degrades_instead_of_panicking_when_backend_is_borrowed() {
         let backend = Rc::new(RefCell::new(GtkBackend::new()));
         let app = Rc::new(RefCell::new(NoopApp));
-        // Mirrors the #902 call chain: an outer `dispatch_event` still
-        // holds `backend` mutably borrowed on the stack when a re-entered
-        // signal handler runs — not a nested modal pump (`pump_depth`
-        // already covers that), just app code synchronously triggering
-        // the same signal again.
+        // An outer `dispatch_event` call holds `backend` mutably borrowed when a
+        // re-entered signal handler runs — app code synchronously triggering the signal
+        // again. Not a nested modal pump (which `pump_depth` covers).
         let _outer_borrow = backend.borrow_mut();
         assert!(
             try_borrow_both(&backend, &app).is_none(),
@@ -2981,16 +2760,11 @@ mod reentrancy_backstop_tests {
         assert!(try_dispatch_borrowed(&mut backend, &app, UiEvent::WindowClose).is_none());
     }
 
-    /// This is `close-request`'s own degrade path (#902), exercised
-    /// directly: when `try_dispatch` reports a double-borrow, the handler
-    /// pushes `WindowClose` onto `events_handle` instead of dropping it —
-    /// the fix for the reported abort. Confirms both halves: pushing
-    /// while `backend` is still held mutably borrowed doesn't panic (the
-    /// whole point of deferring through `events_handle` rather than
-    /// `backend.push_event` — it's an independent `RefCell`), and the
-    /// event actually reaches `poll_events()` once the outer borrow is
-    /// released, so it isn't silently lost the way a plain `skip` would
-    /// lose it.
+    /// When `try_dispatch` reports a double-borrow, the `close-request` handler
+    /// pushes `WindowClose` onto `events_handle` instead of dropping it. Confirms
+    /// both halves: pushing while `backend` is borrowed doesn't panic (the whole point
+    /// of deferring through `events_handle`), and the event reaches `poll_events()`
+    /// once the outer borrow is released, so it isn't lost.
     #[test]
     fn close_request_degrade_path_defers_the_event_instead_of_dropping_it() {
         let backend = Rc::new(RefCell::new(GtkBackend::new()));

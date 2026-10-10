@@ -9,18 +9,14 @@
 //! resolve clicks using their own segment-id conventions) alongside the
 //! [`TabBarLayout`] itself, whose bar-relative `visible_tabs` /
 //! `close_bounds` geometry is what `GtkBackend::draw_tab_bar` caches per
-//! `WidgetId` for `GtkDriver::tab_center`/`tab_close_center` (quadraui#594).
+//! `WidgetId` for `GtkDriver::tab_center`/`tab_close_center`.
 //!
-//! **Still a per-backend paint loop (#1081 did NOT migrate `TabBar`).**
-//! Unlike `gtk::menu_bar` / `gtk::toolbar` / `gtk::activity_bar`, which
-//! `PaintSurface` Phase 4 slice 5/8 collapsed into
-//! `primitives::<name>::native_surface_paint::paint`, every pixel this
-//! module paints is still Cairo-specific and still triplicated with
-//! `macos::tab_bar` / `win::tab_bar`. See
+//! This module paints with Cairo — every pixel is still Cairo-specific
+//! and triplicated with `macos::tab_bar` / `win::tab_bar`. See
 //! [`crate::primitives::tab_bar`]'s "`PaintSurface` migration status"
 //! section for the drift table between the three copies, the macOS
 //! `close_bounds`-convention prerequisite that blocks the move, and why
-//! #1081 stays open rather than closing as complete.
+//! the migration is ongoing.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -28,7 +24,7 @@ use gtk4::pango;
 use super::{cairo_rgb, set_source};
 use crate::backend::tab_bar_hits_from_layout;
 use crate::primitives::layout_metrics::TextMeasure;
-// `TabBarHits` is `#[deprecated]` (issue #823) — this whole module's job is
+// `TabBarHits` is `#[deprecated]` — this whole module's job is
 // still converting a computed `TabBarLayout` into one per paint. See that
 // struct's doc for the replacement plan.
 #[allow(deprecated)]
@@ -44,19 +40,19 @@ const TAB_OUTER_GAP: f64 = 1.0;
 /// Gap between a tab's icon glyph (see [`crate::TabIcon`]) and its label.
 pub(crate) const TAB_ICON_GAP: f64 = 6.0;
 /// Height of the active-tab top-edge accent line — VS Code Dark Modern's
-/// `tab.activeBorderTop` (#620).
+/// `tab.activeBorderTop`.
 const TAB_ACTIVE_BORDER_TOP_PX: f64 = 1.0;
 /// Vertical margin (px) above and below the active-tab chip fill. VS Code
 /// insets its active-tab pill inside the tab strip rather than filling the
-/// full row height edge to edge (#646).
+/// full row height edge to edge.
 const TAB_CHIP_INSET_Y: f64 = 4.0;
-/// Corner radius (px) of the active-tab chip, all four corners (#646).
+/// Corner radius (px) of the active-tab chip, all four corners.
 const TAB_CHIP_RADIUS: f64 = 4.0;
 
 /// Adapts a live `pango::Layout` to the shared
 /// [`crate::primitives::layout_metrics::TextMeasure`] trait so
 /// [`crate::primitives::layout_metrics::pixel_tab_bar_layout`] never has
-/// to name a Pango type (issue #1080). Unlike `gtk::backend`'s
+/// to name a Pango type. Unlike `gtk::backend`'s
 /// `PangoTextMeasure`, this always has a live layout — `draw_tab_bar_*`
 /// paints through a real Cairo context, never headless — so there is no
 /// char-width fallback to carry. Measures in whatever font is currently
@@ -74,7 +70,7 @@ impl TextMeasure for PangoTabMeasure<'_> {
 }
 
 /// The Nerd-Font-swapped variant of the tab bar's label font, used to
-/// measure and paint [`crate::TabIcon`] glyphs (#620). Icon glyphs share
+/// measure and paint [`crate::TabIcon`] glyphs. Icon glyphs share
 /// the label's size/weight/style but swap in an icon family, matching the
 /// activity bar's glyph-sourcing convention — the UI font itself typically
 /// isn't patched with icon codepoints.
@@ -144,7 +140,7 @@ pub(crate) fn tab_icon_extras(
 /// radius `radius` on all four corners. Callers set the source and consume
 /// the path themselves (`cr.fill()` or otherwise) — this only builds it.
 ///
-/// Shared by the active-tab chip fill (#646) and the close-button hover
+/// Shared by the active-tab chip fill and the close-button hover
 /// background so the two rounded-rect shapes can't drift apart.
 fn rounded_rect_path(cr: &Context, x: f64, y: f64, w: f64, h: f64, radius: f64) {
     cr.new_path();
@@ -210,7 +206,7 @@ fn rounded_rect_path(cr: &Context, x: f64, y: f64, w: f64, h: f64, radius: f64) 
 /// `visible_tabs`/`close_bounds` rects are **bar-relative** (origin at
 /// `(0, 0)`, *not* `x_offset`/`y_offset`); `GtkBackend::draw_tab_bar`
 /// caches it per `WidgetId` for `GtkDriver::tab_center`/`tab_close_center`
-/// (quadraui#594), which add the bar's own screen-space origin back in.
+///, which add the bar's own screen-space origin back in.
 ///
 /// # Visual contract
 ///
@@ -224,7 +220,7 @@ fn rounded_rect_path(cr: &Context, x: f64, y: f64, w: f64, h: f64, radius: f64) 
 /// - **Right segments:** painted in `tab_inactive_fg` (or
 ///   `tab_active_fg` when `seg.is_active`), no bold.
 #[allow(clippy::too_many_arguments)]
-#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+#[allow(deprecated)]
 pub fn draw_tab_bar(
     cr: &Context,
     pango_layout: &pango::Layout,
@@ -252,7 +248,7 @@ pub fn draw_tab_bar(
     )
 }
 
-/// [`draw_tab_bar`] plus per-tab icon glyphs (#620).
+/// [`draw_tab_bar`] plus per-tab icon glyphs.
 ///
 /// `icons` is a sidecar slice parallel to `bar.tabs` (see
 /// [`crate::Backend::draw_tab_bar_icons`]) — entry `i` decorates tab
@@ -270,7 +266,7 @@ pub fn draw_tab_bar(
 /// Font family, matching the activity bar's glyph-sourcing convention —
 /// the UI font itself typically isn't patched with icon codepoints.
 #[allow(clippy::too_many_arguments)]
-#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+#[allow(deprecated)]
 pub fn draw_tab_bar_icons(
     cr: &Context,
     pango_layout: &pango::Layout,
@@ -300,12 +296,12 @@ pub fn draw_tab_bar_icons(
     )
 }
 
-/// [`draw_tab_bar`] with an explicit [`TabChrome`] request (#631).
+/// [`draw_tab_bar`] with an explicit [`TabChrome`] request.
 ///
 /// `&[]` icons + [`TabChrome::default`] reproduces [`draw_tab_bar`] pixel
 /// for pixel.
 #[allow(clippy::too_many_arguments)]
-#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+#[allow(deprecated)]
 pub fn draw_tab_bar_with_chrome(
     cr: &Context,
     pango_layout: &pango::Layout,
@@ -335,15 +331,15 @@ pub fn draw_tab_bar_with_chrome(
     )
 }
 
-/// [`draw_tab_bar_icons`] plus an explicit [`TabChrome`] request (#631).
+/// [`draw_tab_bar_icons`] plus an explicit [`TabChrome`] request.
 ///
 /// When `chrome.active_frame` is [`TabFrame::Brackets`], the active tab's
 /// full content — icon, label, and close glyph — is enclosed in literal
 /// `[` / `]` glyphs, measured via Pango like every other glyph this
 /// rasteriser paints. Mirrors `tui::tab_bar::draw_tab_bar_icons_with_chrome`
-/// so the two backends agree on what "enclosing" means (#631).
+/// so the two backends agree on what "enclosing" means.
 #[allow(clippy::too_many_arguments)]
-#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+#[allow(deprecated)]
 pub fn draw_tab_bar_icons_with_chrome(
     cr: &Context,
     pango_layout: &pango::Layout,
@@ -411,7 +407,7 @@ pub fn draw_tab_bar_icons_with_chrome(
 
     let tab_icon_extras = tab_icon_extras(pango_layout, &icon_font, bar.tabs.len(), icons);
 
-    // #631: bracket glyph width, needed below only for the paint loop's
+    // Bracket glyph width, needed below only for the paint loop's
     // `content_pad` (where the label starts once a leading `[` is
     // painted). The shared layout fn below remeasures both bracket
     // glyphs itself via the same `measure` adapter, so paint and layout
@@ -425,7 +421,7 @@ pub fn draw_tab_bar_icons_with_chrome(
         0.0
     };
 
-    // ── Compute layout — single source of truth (issue #1080) ──────
+    // ── Compute layout — single source of truth ────────────────────
     // `PangoTabMeasure` measures in whatever font is currently set on
     // `pango_layout` — reset to the (non-italic, non-icon) label font
     // before handing it to the shared fn, since every glyph it measures
@@ -459,7 +455,7 @@ pub fn draw_tab_bar_icons_with_chrome(
 
         // Tab background. The active tab paints an inset, rounded chip
         // (VS Code's pill, ~24px inside a 35px strip) rather than a square
-        // block filling the full row height edge to edge (#646). Inactive
+        // block filling the full row height edge to edge. Inactive
         // tabs are unchanged: a full-height rectangle (typically the same
         // colour as the bar background, since neither VS Code nor quadraui
         // chips an inactive tab).
@@ -483,8 +479,8 @@ pub fn draw_tab_bar_icons_with_chrome(
         }
 
         // Top accent line for the active tab — VS Code Dark Modern's
-        // `tab.activeBorderTop` (#620), painted on the chip's own inset top
-        // edge rather than the strip's top edge (#646) so it stays attached
+        // `tab.activeBorderTop`, painted on the chip's own inset top
+        // edge rather than the strip's top edge so it stays attached
         // to the pill instead of floating in the strip's top margin.
         // `bar.active_accent` is `None` = no accent, matching the TUI
         // (`tui/tab_bar.rs`) and macOS (`macos/tab_bar.rs`) rasterisers and
@@ -517,7 +513,7 @@ pub fn draw_tab_bar_icons_with_chrome(
             (false, false) => theme.tab_inactive_fg,
         };
 
-        // #631: opening bracket, when this tab is active and chrome
+        // Opening bracket, when this tab is active and chrome
         // requests `TabFrame::Brackets`. `content_pad` shifts every
         // subsequent paint position right by the bracket's width.
         let is_bracket = brackets && tab.is_active;
@@ -552,7 +548,7 @@ pub fn draw_tab_bar_icons_with_chrome(
         cr.move_to(x_offset + tab_x + content_pad + icon_extra, text_y_offset);
         super::painted_text::show_layout(cr, pango_layout);
 
-        // #631: closing bracket, for a bracket-framed tab with no close
+        // Closing bracket, for a bracket-framed tab with no close
         // button — painted right after the label. (When there *is* a
         // close button, the closing bracket paints after the glyph,
         // inside the block below, since its position depends on the
@@ -613,7 +609,7 @@ pub fn draw_tab_bar_icons_with_chrome(
                 super::painted_text::show_layout(cr, pango_layout);
                 pango_layout.set_font_description(Some(&normal_font));
 
-                // #631: closing bracket, right after the glyph — `cb.x`
+                // Closing bracket, right after the glyph — `cb.x`
                 // already stops short of it via
                 // `TabMeasure::trailing_width`, so this lands exactly
                 // where the reservation left room for it.
@@ -652,11 +648,9 @@ pub fn draw_tab_bar_icons_with_chrome(
     // rasteriser and the painted glyphs above, which all add `x_offset`).
     // Shift every hit range so consumers can hit-test against raw click x.
     // Shared with `Backend::tab_bar_layout` so the paint and no-paint
-    // paths cannot drift apart again (issue #552).
+    // paths cannot drift apart again.
     crate::backend::shift_tab_bar_hits(&mut hits, x_offset);
-    // `corrected_scroll_offset`/`available_cols` are the "engine feedback"
-    // half of `pixel_tab_bar_layout`'s tuple return (issue #1080) — same
-    // values this block used to recompute independently.
+    // Shared with `Backend::tab_bar_layout` so the paint and no-paint
     hits.correct_scroll_offset = corrected_scroll_offset;
     hits.available_cols = available_cols;
     (hits, layout)
@@ -799,13 +793,13 @@ mod tests {
         );
     }
 
-    /// #620: a tab with an [`crate::primitives::tab_bar::TabIcon`] must
+    /// A tab with an [`crate::primitives::tab_bar::TabIcon`] must
     /// reserve extra width over an otherwise-identical icon-less tab, and
     /// its close button must still resolve to a `TabClose` hit at the
     /// close bounds the layout reports (the icon reservation must not
     /// disturb close-glyph hit-test geometry).
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn icon_reserves_extra_width_and_close_still_hit_tests() {
         use crate::primitives::tab_bar::{TabBarHit, TabIcon};
 
@@ -884,9 +878,9 @@ mod tests {
         );
     }
 
-    /// #620/#646: when a bar opts in with `active_accent: Some(colour)`,
+    /// When a bar opts in with `active_accent: Some(colour)`,
     /// the accent paints on the chip's inset top edge — `TAB_CHIP_INSET_Y`
-    /// rows below the strip's own top edge (#646), not row 0 of the strip
+    /// rows below the strip's own top edge, not row 0 of the strip
     /// itself. The strip's own inset margin above the chip must not be the
     /// accent colour, and the row a few pixels below the accent must be
     /// the tab body, confirming the accent is a thin strip on the chip,
@@ -945,13 +939,11 @@ mod tests {
         );
     }
 
-    /// #620 review follow-up: `active_accent: None` must paint no accent
-    /// strip at all — the pre-#620 behaviour, and the contract the TUI
-    /// (`tui::tab_bar::draw_tab_bar`) and macOS (`macos::tab_bar`)
-    /// rasterisers already implement. Regressing this would mean every
-    /// vimcode caller that passes `None` on purpose (bottom-panel tab
-    /// strip, terminal toolbar, any unfocused split) starts painting a
-    /// theme-default accent it never asked for.
+    /// `active_accent: None` must paint no accent strip at all —
+    /// the contract the TUI (`tui::tab_bar::draw_tab_bar`) and macOS
+    /// (`macos::tab_bar`) rasterisers implement. When `active_accent` is
+    /// `None`, callers like unfocused splits or bottom-panel tab strips
+    /// expect no accent regardless of theme defaults.
     #[test]
     fn active_tab_top_row_has_no_accent_when_none() {
         let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
@@ -998,12 +990,12 @@ mod tests {
         );
     }
 
-    /// #631: `TabFrame::Brackets` must widen the active tab (room for `[`
+    /// `TabFrame::Brackets` must widen the active tab (room for `[`
     /// and `]`) and shift its close-button hit region right of the
     /// leading bracket — while `close_bounds`' own *width* stays exactly
     /// the glyph's, so a click still resolves to `TabClose`, not `Tab`.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn bracket_frame_widens_active_tab_and_close_bounds_excludes_the_bracket() {
         use crate::primitives::tab_bar::{TabBarHit, TabChrome, TabFrame};
 
@@ -1067,7 +1059,7 @@ mod tests {
         let chrome_close = chrome_layout.visible_tabs[0]
             .close_bounds
             .expect("bracket-framed tab should still report close bounds");
-        // #1080: since the plain close region is now *also* tight (just the
+        // Since the plain close region is now *also* tight (just the
         // glyph + its leading gap, via `TabMeasure::trailing_width` — the
         // same mechanism the bracket path already used), the two close
         // regions are the same width; only their trailing chrome differs
@@ -1109,7 +1101,7 @@ mod tests {
         assert!(chrome_hits.close_bounds[0].is_some());
     }
 
-    /// #646: the active-tab chip's fill height must equal
+    /// The active-tab chip's fill height must equal
     /// `row_height - 2.0 * TAB_CHIP_INSET_Y` — checked for two different
     /// `row_height` values so a hardcoded inset (rather than one computed
     /// from `row_height`) would be caught. Antialiasing is disabled so the
@@ -1165,7 +1157,7 @@ mod tests {
         }
     }
 
-    /// #646: the chip's top edge sits `TAB_CHIP_INSET_Y` below the bar's
+    /// The chip's top edge sits `TAB_CHIP_INSET_Y` below the bar's
     /// own `y_offset`, and its bottom edge the same distance above the
     /// bar's bottom — symmetric, and relative to a non-zero `y_offset` so
     /// the test can't pass by accident on the `y_offset == 0` coincidence.
@@ -1228,7 +1220,7 @@ mod tests {
         );
     }
 
-    /// #646: the four corner pixels of the active chip's bounding rect must
+    /// The four corner pixels of the active chip's bounding rect must
     /// be the bar background, not `tab_active_bg` — the assertion that
     /// actually pins the rounded radius (a square chip would fill those
     /// corners with the active colour).
@@ -1288,12 +1280,11 @@ mod tests {
         }
     }
 
-    /// #646 "not in scope: the hit rect" — `tab_bar_hits_from_layout` (via
-    /// `TabBarLayout::hit_test`) must keep reporting the tab's hit region
-    /// at the full `row_height`, even though the visible chip is now inset.
-    /// A click 1px into the strip's top margin — above the chip's
-    /// `TAB_CHIP_INSET_Y`-px inset — must still resolve to the tab, not
-    /// `Empty`.
+    /// `tab_bar_hits_from_layout` (via `TabBarLayout::hit_test`) reports
+    /// the tab's hit region at the full `row_height`, even though the
+    /// visible chip is inset. A click 1px into the strip's top margin —
+    /// above the chip's `TAB_CHIP_INSET_Y`-px inset — must resolve to the
+    /// tab, not `Empty`.
     #[test]
     fn hit_test_in_top_margin_above_chip_still_resolves_to_tab() {
         use crate::primitives::tab_bar::TabBarHit;
@@ -1336,7 +1327,7 @@ mod tests {
         }
     }
 
-    /// #646: the inactive-tab paint path is untouched — no chip, no radius.
+    /// The inactive-tab paint path is untouched — no chip, no radius.
     /// An inactive tab must never show `tab_active_bg` anywhere in its
     /// column; if the chip logic ever leaked into the inactive branch (or
     /// the `is_active` check were dropped), this would catch it, since
@@ -1413,12 +1404,10 @@ mod tests {
         }
     }
 
-    /// Issue #1080's acceptance test through the real paint path: a click
-    /// in the dead space just inside the tab's right edge — the trailing
-    /// `tab_pad + tab_outer_gap` the old per-backend measure bundled into
-    /// the close region — must resolve to `Tab`, not `TabClose`. RED
-    /// before #1080 (the old `close_bounds` ran flush to the tab's right
-    /// edge, so this exact probe point resolved to `TabClose`).
+    /// A click in the dead space just inside the tab's right edge —
+    /// the trailing `tab_pad + tab_outer_gap` — must resolve to `Tab`,
+    /// not `TabClose`. The `close_bounds` must not extend into the
+    /// trailing padding.
     #[test]
     fn close_region_excludes_trailing_padding_via_draw_tab_bar() {
         use crate::primitives::tab_bar::TabBarHit;

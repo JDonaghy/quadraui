@@ -1,15 +1,13 @@
 //! GTK rasteriser for [`crate::Palette`].
 //!
 //! Content painting (background, border, title/query/item rows,
-//! scrollbar, create row, preview pane) moved to the shared
-//! [`crate::primitives::palette::native_surface_paint::paint`] (#1076,
-//! `PaintSurface` Phase 4 slice 3/8) — see that fn's module doc for
-//! what's shared, including the three-way geometry drift it fixes
-//! (`query_height`, row flooring, scrollbar width) and the per-backend
-//! feature gaps it closes (match-position highlighting, icon rendering,
-//! query cursor, `PaletteMode::Input` suppression, preview per-span
-//! colour — GTK already had all of these; macOS/Windows gained
-//! whichever ones they were missing).
+//! scrollbar, create row, preview pane) uses the shared
+//! [`crate::primitives::palette::native_surface_paint::paint`]
+//! function — see that fn's module doc for what's shared, including
+//! the three-way geometry drift it fixes (`query_height`, row flooring,
+//! scrollbar width) and per-backend feature gaps (match-position
+//! highlighting, icon rendering, query cursor, `PaletteMode::Input`
+//! suppression, preview per-span colour).
 //!
 //! Modal-style fuzzy picker with a title bar, query-input row, and a
 //! scrollable result list. Cairo + Pango equivalent of
@@ -23,9 +21,9 @@ use crate::primitives::palette::{native_surface_paint, Palette, PaletteLayout};
 use crate::theme::Theme;
 
 /// Compute the GTK [`Palette`] layout — the shared geometry
-/// [`draw_palette`] paints from and `Backend::palette_layout` (#818)
+/// [`draw_palette`] paints from and `Backend::palette_layout`
 /// exposes for hit-testing. Thin `f64`-converting wrapper over
-/// [`crate::primitives::palette::native_surface_paint::layout`] (#1076)
+/// [`crate::primitives::palette::native_surface_paint::layout`]
 /// — the canonical geometry formula every backend now shares instead of
 /// once-per-backend copies.
 ///
@@ -73,8 +71,8 @@ pub fn draw_palette(
 
     layout.set_attributes(None);
 
-    // `Palette::layout` keeps the selected item visible internally (see
-    // #711) — no backend-side scroll clamp needed here.
+    // `Palette::layout` keeps the selected item visible internally —
+    // no backend-side scroll clamp needed here.
     let (palette_layout, rows_h) = gtk_palette_layout(w, h, palette, line_height);
 
     let area = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
@@ -123,10 +121,9 @@ mod tests {
         }
     }
 
-    /// Regression for issue #503: `query_cursor` is a host-supplied byte
-    /// offset (per the field doc above) with no guarantee it lands on a
-    /// char boundary — `&palette.query[..query_cursor]` used to panic
-    /// the moment a multibyte character sat left of the cursor.
+    /// `query_cursor` is a host-supplied byte offset (per the field doc
+    /// above) with no guarantee it lands on a char boundary — the slice
+    /// `&palette.query[..query_cursor]` requires a valid UTF-8 boundary.
     #[test]
     fn draw_palette_with_multibyte_cursor_does_not_panic() {
         let surface = ImageSurface::create(Format::ARgb32, 300, 200).expect("create ImageSurface");

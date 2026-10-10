@@ -1,24 +1,9 @@
 //! GTK settings-chrome rasteriser for [`crate::Form`].
 //!
-//! Field-kind *painting* moved to the shared
-//! [`crate::primitives::form::paint`] (#808, PaintSurface Phase 2a) —
-//! this module now only carries `draw_settings_chrome` (unrelated: form
-//! *body* chrome, not field painting) over the shared
-//! [`super::surface::CairoSurface`] adapter (#1072 — consolidated from
-//! this module's own private `RawFormSurface`, which also served call
-//! sites with only a raw `(&Context, &pango::Layout)` pair — not a live
-//! [`super::backend::GtkBackend`] — such as
-//! [`crate::gtk::multi_section_view`]'s embedded-`Form` section body;
-//! those now build a [`super::surface::CairoSurface`] directly). The
-//! deprecated `draw_form` free-function shim was removed in issue
-//! #1109 (zero uses in coord-tui's `main` and vimcode's `develop`).
-//!
-//! Before #808, this module's own `draw_form` painted from an ad-hoc
-//! running cursor independent of the shared [`crate::Form::layout`]
-//! geometry `GtkBackend::form_layout` used for hit-testing, and left
-//! `Slider` / `ColorPicker` / `Dropdown` blank. The shared `paint`
-//! fixes both: it paints from the same `FormLayout` hit-testing uses,
-//! and handles all 14 `FieldKind` variants.
+//! This module carries `draw_settings_chrome` (form *body* chrome, not
+//! field painting) over the shared [`super::surface::CairoSurface`]
+//! adapter. Field-kind *painting* lives in the shared
+//! [`crate::primitives::form::paint`].
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -31,7 +16,7 @@ use crate::theme::Theme;
 /// above a [`crate::Form`] body.
 ///
 /// The header row always paints at `line_height` tall. The search row
-/// paints only when `height >= line_height * 1.5` (issue #1041 review):
+/// paints only when `height >= line_height * 1.5`:
 /// a caller that reserves a single row (e.g.
 /// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`])
 /// gets a header-only strip instead of a second, unrequested row
@@ -186,14 +171,9 @@ mod tests {
         (data[off + 2], data[off + 1], data[off])
     }
 
-    /// Regression for issue #710's secondary finding: `draw_form` used
-    /// to iterate `form.fields.iter().skip(form.scroll_offset)` on the
-    /// **raw** `scroll_offset`, while `Form::layout` (the hit-test path
-    /// `GtkBackend::form_layout` drives) clamps it via
-    /// `clamp_scroll_offset`. At an out-of-range offset the two
-    /// disagreed about which field (if any) occupies row 0: the raw
-    /// `.skip()` walked past every field and painted nothing, while the
-    /// clamped layout still resolved row 0 to the last field.
+    /// Regression test: `Form::layout` (the hit-test path) clamps
+    /// `scroll_offset` via `clamp_scroll_offset`, which affects which
+    /// field occupies row 0.
     #[test]
     fn draw_form_clamps_out_of_range_scroll_offset_like_form_layout() {
         let form = Form {
@@ -274,10 +254,9 @@ mod tests {
         );
     }
 
-    /// Regression for issue #503: `TextInput.cursor`/`selection_anchor`
-    /// are host-supplied byte offsets with no guarantee they land on a
-    /// char boundary — `&shown[lo..hi]` / `&shown[..cur]` used to panic
-    /// the moment a multibyte character sat inside the range.
+    /// `TextInput.cursor`/`selection_anchor` are host-supplied byte offsets
+    /// with no guarantee they land on a char boundary; slicing `&shown[lo..hi]`
+    /// must snap to char boundaries to avoid panicking on multibyte characters.
     #[test]
     fn text_input_with_multibyte_cursor_and_selection_does_not_panic() {
         // "café🎉" — byte 4 sits inside 'é' (starts at byte 3); byte 7
@@ -309,8 +288,8 @@ mod tests {
         paint(&form);
     }
 
-    /// Regression for issue #503: same class of bug in the
-    /// `PasswordInput` byte-cursor-to-mask-char-position conversion.
+    /// `PasswordInput` byte-cursor-to-mask-char-position conversion must snap
+    /// to char boundaries to handle multibyte characters.
     #[test]
     fn password_input_with_multibyte_cursor_does_not_panic() {
         let value = "café🎉";
@@ -339,10 +318,9 @@ mod tests {
         paint(&form);
     }
 
-    /// Regression for issue #503: `TextArea` clamps `cursor` against
-    /// `first_line.len()` but the earlier code sliced `shown` (which may
-    /// be `first_line` or a differently-lengthed placeholder) without a
-    /// char-boundary snap.
+    /// `TextArea` clamps `cursor` against `first_line.len()`, but slicing
+    /// `shown` (which may be `first_line` or a differently-lengthed placeholder)
+    /// must snap to char boundaries.
     #[test]
     fn text_area_with_multibyte_cursor_does_not_panic() {
         let value = "café🎉\nsecond line";
@@ -370,8 +348,6 @@ mod tests {
         // Must not panic.
         paint(&form);
     }
-
-    // ─── issue #1041 review: height-aware `draw_settings_chrome` ────────
 
     const CHROME_W: i32 = 200;
     const CHROME_H: i32 = 60;
@@ -422,10 +398,8 @@ mod tests {
 
     /// A 1-row-tall `height` (the shape
     /// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`]
-    /// reserves) must leave the would-be search row untouched — the
-    /// issue #1041 review finding: GTK used to always paint a second row
-    /// regardless of the rect it was given, overpainting whatever the
-    /// caller placed directly beneath a "header-only" chrome strip.
+    /// reserves) must leave the would-be search row untouched, since
+    /// `draw_settings_chrome` only paints rows that fit within the given rect.
     #[test]
     fn draw_settings_chrome_one_row_height_paints_no_search_row() {
         let (data, stride) = paint_chrome(LINE_HEIGHT);

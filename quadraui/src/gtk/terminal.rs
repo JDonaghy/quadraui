@@ -1,26 +1,14 @@
 //! GTK support for [`crate::Terminal`] cell grids.
 //!
-//! Painting moved to the shared [`crate::primitives::terminal::paint`] /
-//! [`crate::primitives::terminal::paint_divider`] (#810, PaintSurface
-//! Phase 2c) — see that fn's doc for the divergences (per-cell
-//! bold/italic/underline styling, and #492's incidental `painted_text`
-//! tracking fix) resolved while unifying
-//! `gtk::terminal::draw_terminal_cells`,
-//! `macos::terminal::draw_terminal_cells` and
-//! `win::terminal::draw_terminal_cells` into one implementation. GTK's
-//! own [`crate::paint_surface::PaintSurface::surface_draw_text_run_styled`]
-//! override applies all three style flags via Pango's `AttrList`,
-//! matching this module's pre-#810 behaviour exactly.
+//! Painting is implemented in the shared [`crate::primitives::terminal::paint`] and
+//! [`crate::primitives::terminal::paint_divider`] functions — see that code for
+//! details on per-cell bold/italic/underline styling and `painted_text` tracking.
+//! GTK's [`crate::paint_surface::PaintSurface::surface_draw_text_run_styled`]
+//! override applies all three style flags via Pango's `AttrList`.
 //!
-//! This module now carries no rasteriser code of its own — both deleted
-//! free functions had zero call sites in `coord-tui`/`vimcode` (`grep -rn
-//! "draw_terminal_cells\|draw_terminal_divider" ~/src/coord-tui/src
-//! ~/src/vimcode/src` — the only hits there are `Backend::draw_terminal`/
-//! `Backend::draw_terminal_divider` trait calls, whose signatures are
-//! unchanged) or in `kubeui-gtk`, so neither needed a deprecation shim
-//! (CLAUDE.md rule 1).
+//! This module carries no rasteriser code of its own.
 //!
-//! # Wide characters (#439)
+//! # Wide characters
 //!
 //! [`crate::terminal_engine::TerminalSession::to_terminal`] builds its
 //! cell grid straight from vt100's model: a double-width character
@@ -28,20 +16,16 @@
 //! "continuation" column that vt100 reports as an empty cell (`ch =
 //! ' '`). `primitives::terminal::paint` detects wide glyphs via
 //! [`crate::terminal_style::wide_cell_advance`] (shared with
-//! `macos`/`win`, #500), paints their background across two columns,
+//! `macos`/`win`), paints their background across two columns,
 //! skips the continuation column, and scales the glyph horizontally
 //! (via `PaintSurface::surface_draw_text_run_styled`'s `scale_x`, see
 //! [`crate::terminal_style::wide_glyph_x_scale`]) so it spans exactly
-//! `cell_w` — the same #439/#703 fix this module's own rasteriser used
-//! to apply directly.
+//! `cell_w`.
 
-// ── Tests ──────────────────────────────────────────────────────────────────
-//
 // Headless paint tests: verify terminal-cell background-fill and
 // wide-glyph behaviour without a display. Uses a Cairo `ImageSurface`
 // and reads back pixel data directly, driving the real
-// `GtkBackend::draw_terminal` path (mirrors `gtk::backend::tests`'s own
-// `draw_chart`/`draw_text_display` driver tests, #810).
+// `GtkBackend::draw_terminal` path.
 
 #[cfg(test)]
 mod tests {
@@ -101,7 +85,7 @@ mod tests {
         surface
     }
 
-    /// #439 regression: a double-width glyph (CJK) followed by vt100's
+    /// A double-width glyph (CJK) followed by vt100's
     /// blank continuation cell must have its background span both
     /// columns — the continuation cell's own (different) background must
     /// NOT paint over the second half of the wide glyph's cell.
@@ -185,7 +169,7 @@ mod tests {
         );
     }
 
-    // ── Cursor shape accent (quadraui#338) ──────────────────────────────
+    // ── Cursor shape accent ─────────────────────────────────────────────
     //
     // These paint through the same shared `primitives::terminal::paint`
     // both `GtkBackend::draw_terminal` and `win`/`macos` use — see that
@@ -268,7 +252,7 @@ mod tests {
         );
     }
 
-    /// A `Block` cursor (the default/pre-#338 shape) still inverts the
+    /// A `Block` cursor (the default shape) still inverts the
     /// whole cell — no separate accent stripe.
     #[test]
     fn block_cursor_still_inverts_whole_cell() {
@@ -294,12 +278,7 @@ mod tests {
         );
     }
 
-    // #417's dirty-row *decision* (`TermPaintCache`) lives entirely in
-    // `GtkBackend::draw_terminal` and is untouched by #810 — see
-    // `gtk::backend::tests::term_row_417` and its many neighbouring
-    // tests for that integration's own coverage. The paint-level "only
-    // repaint the rows in `dirty_rows`" contract itself is covered by
-    // `primitives::terminal::native_surface_paint::tests::dirty_rows_filter_skips_untouched_rows`,
-    // which runs on every leg (no Cairo needed) rather than duplicated
-    // here as a third real-pixel copy.
+    // The paint-level contract of repainting only the rows in `dirty_rows`
+    // is covered by `primitives::terminal::native_surface_paint::tests::
+    // dirty_rows_filter_skips_untouched_rows`, which runs on every backend.
 }

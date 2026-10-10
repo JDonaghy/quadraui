@@ -1,4 +1,4 @@
-//! GTK rasteriser for [`crate::Image`] (#662): decodes `image.source` via
+//! GTK rasteriser for [`crate::Image`]: decodes `image.source` via
 //! `gdk_pixbuf` and paints it into a [`Context`] through
 //! [`gdk::prelude::GdkCairoContextExt::set_source_pixbuf`], honoring
 //! `image.fit`'s already-resolved target rect ([`Image::layout`]).
@@ -8,26 +8,18 @@
 //! `None`, and neither should bleed into whatever the host paints next
 //! to it.
 //!
-//! # Decode cache (#1014)
+//! # Decode cache
 //!
-//! [`draw_image`] is `pub` (re-exported as `quadraui::gtk::draw_image`) —
-//! `quadraui#1014` cannot change its signature without breaking whatever
-//! external code already calls it directly (see `CLAUDE.md`'s
-//! *Downstream consumers* section: nothing pins a version of this crate,
-//! so a breaking change here is live in a consumer's build the moment it
-//! merges). So `draw_image` itself stays exactly as it always has —
-//! uncached, one decode per call — and the caching lives in a sibling,
-//! crate-internal [`draw_image_cached`] that [`GtkBackend::draw_image`]
-//! (the `Backend` trait method, which downstream never implements itself
-//! — see `CLAUDE.md`) calls instead. Decoding *and* scaling both cost
-//! real time per call — `scale_simple` on top of
-//! `Pixbuf::from_file`/`from_read` — and vimcode's own motivating case (a
-//! 1024² app-icon SVG) measured the combination at +16.5ms/frame when it
-//! wasn't skipped. The cached value is the already-scaled [`Pixbuf`] for
-//! a given `(source, target size, DPI scale)`, not just the raw decode —
-//! a cache hit skips both steps, not just the first. See
-//! [`crate::image_cache`]'s module doc for the shared cache shape every
-//! pixel backend plugs into.
+//! [`draw_image`] is `pub` (re-exported as `quadraui::gtk::draw_image`).
+//! To keep its signature stable, decoding and scaling are cached in the
+//! sibling crate-internal [`draw_image_cached`] that
+//! [`GtkBackend::draw_image`] (the `Backend` trait method) calls
+//! instead. Decoding *and* scaling both cost real time per call —
+//! `scale_simple` on top of `Pixbuf::from_file`/`from_read` — and the
+//! cached value is the already-scaled [`Pixbuf`] for a given
+//! `(source, target size, DPI scale)`, not just the raw decode — a cache
+//! hit skips both steps, not just the first. See [`crate::image_cache`]'s
+//! module doc for the shared cache shape every pixel backend plugs into.
 
 use gtk4::cairo::Context;
 use gtk4::gdk::prelude::GdkCairoContextExt;
@@ -53,9 +45,8 @@ fn load_pixbuf(source: &ImageSource) -> Option<Pixbuf> {
 }
 
 /// Clip to `bounds` and paint `scaled` at `target`'s origin — the shared
-/// tail end of [`draw_image`] and [`draw_image_cached`], factored out so
-/// #1014's cache didn't need to duplicate the save/clip/paint/restore
-/// dance.
+/// tail end of both [`draw_image`] and [`draw_image_cached`], factored out
+/// to avoid duplicating the save/clip/paint/restore dance.
 fn paint_scaled(cr: &Context, bounds: QRect, target: QRect, scaled: &Pixbuf) -> ImagePaintResult {
     if cr.save().is_err() {
         return ImagePaintResult::Unsupported;
@@ -97,9 +88,9 @@ pub fn draw_image(cr: &Context, x: f64, y: f64, w: f64, h: f64, image: &Image) -
     paint_scaled(cr, bounds, target, &scaled)
 }
 
-/// Paint `image` into `bounds`, decoding through `cache` (#1014) — see
+/// Paint `image` into `bounds`, decoding through `cache` — see
 /// the module docs. `dpi_scale` is folded into the cache key so a live
-/// DPI change (issue #834) doesn't paint a stale bitmap rasterised for a
+/// DPI change doesn't paint a stale bitmap rasterised for a
 /// different scale. Crate-internal: [`GtkBackend::draw_image`] is the
 /// only caller, so this can take whatever shape is convenient (a
 /// [`QRect`] instead of four `f64`s, an [`ImageCache`] reference) without
@@ -244,7 +235,7 @@ mod tests {
     }
 
     /// Black-box proof that a cache hit skips re-decoding entirely
-    /// (issue #1014): a `Path` source that decodes fine once, then gets
+    ///: a `Path` source that decodes fine once, then gets
     /// corrupted on disk, must still paint successfully on a second call
     /// with the same size/scale — that's only possible if the second
     /// call never touched the (now-corrupt) file again. Without the
@@ -289,7 +280,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// A different target size is a different cache key (#1014) — the
+    /// A different target size is a different cache key — the
     /// scaled `Pixbuf` cached for one size must not be reused (and
     /// stretched further) for another.
     #[test]

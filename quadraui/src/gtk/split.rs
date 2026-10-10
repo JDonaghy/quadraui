@@ -1,17 +1,9 @@
 //! GTK rasteriser for [`crate::Split`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::split::native_surface_paint::paint`] (#864,
-//! `PaintSurface` Phase 2d slice 7/9, child of #811) — see that fn's
-//! module doc for a **reported divergence**: the old free-function
-//! `draw_split` painted the divider opaque-only (`set_source`), while
-//! the live `Backend::draw_split` path now honours `theme.separator`'s
-//! alpha via `GtkBackend::surface_fill_rect` (`gtk::set_source_rgba`,
-//! inherited from the #811 slice 1 scrollbar fix). This module now
-//! carries [`gtk_split_layout`]; the deprecated `draw_split`
-//! compatibility shim over the shared [`super::surface::CairoSurface`]
-//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
-//! and vimcode's `develop`).
+//! Painting is implemented in the shared [`crate::primitives::split::native_surface_paint::paint`].
+//! This module provides [`gtk_split_layout`] to compute the pixel-unit layout without painting.
+//! Note: the layout computation shares its divider thickness with `mac_split_layout` /
+//! `win_split_layout` via [`pixel_split_layout`].
 
 use crate::event::Rect;
 use crate::primitives::layout_metrics::pixel_split_layout;
@@ -19,7 +11,7 @@ use crate::primitives::split::{Split, SplitLayout};
 
 /// Compute the GTK pixel-unit layout for a [`Split`] without painting.
 /// Shares its divider thickness with `mac_split_layout` /
-/// `win_split_layout` via [`pixel_split_layout`] (issue #1079).
+/// `win_split_layout` via [`pixel_split_layout`].
 pub fn gtk_split_layout(split: &Split, x: f64, y: f64, w: f64, h: f64) -> SplitLayout {
     let bounds = Rect::new(x as f32, y as f32, w as f32, h as f32);
     pixel_split_layout(split, bounds)
@@ -41,7 +33,7 @@ mod tests {
         };
         let layout = gtk_split_layout(&split, x, y, 100.0, 40.0);
 
-        // `split_layout` is documented **ABSOLUTE** (issue #505):
+        // `split_layout` is documented **ABSOLUTE**:
         // `first_bounds` must start exactly at the origin the split was
         // laid out at, not at (0, 0).
         assert_eq!(layout.first_bounds.x as f64, x);
@@ -66,9 +58,7 @@ mod tests {
         round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md
-    /// "Layout helpers must return coords in the same frame across
-    /// backends"): `(x, y) = (0, 0)` is exactly the case where a
+    /// Non-zero-origin regression guard: `(x, y) = (0, 0)` is exactly the case where a
     /// LOCAL/ABSOLUTE mixup in `gtk_split_layout` would be invisible.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {

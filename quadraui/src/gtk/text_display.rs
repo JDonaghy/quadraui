@@ -1,20 +1,14 @@
 //! GTK rasteriser + layout helper for [`crate::TextDisplay`].
 //!
-//! Field-kind *painting* moved to the shared
-//! [`crate::primitives::text_display::paint`] (#810, PaintSurface Phase
-//! 2c) — see that fn's doc for the divergence (Windows's bold-span
-//! support, dropped since `PaintSurface` has no weight parameter)
-//! resolved while unifying `gtk::text_display::draw_text_display`,
-//! `macos::text_display::draw_text_display` and
-//! `win::text_display::draw_text_display` into one implementation. This
-//! module's own [`draw_text_display`] is now a thin wrapper over that
-//! shared `paint`, via [`super::surface::CairoSurface`] — kept (not
-//! deleted, unlike the `macos`/`win` twins) because `kubeui-gtk`'s
-//! `paint()` calls it directly on a raw `(&Context, &pango::Layout)`
-//! pair with no live [`super::backend::GtkBackend`] on hand, the same
-//! shape [`crate::gtk::multi_section_view`]'s embedded-`Chart` section
-//! body uses `super::surface::CairoSurface` for. [`gtk_text_display_layout`] is the
-//! pixel-unit layout query used for both hit-testing
+//! Field-kind painting is implemented in the shared
+//! [`crate::primitives::text_display::paint`] — see that fn's doc for
+//! implementation details. This module's [`draw_text_display`] is a thin
+//! wrapper over that shared `paint`, via [`super::surface::CairoSurface`],
+//! kept because `kubeui-gtk`'s `paint()` calls it directly on a raw
+//! `(&Context, &pango::Layout)` pair with no live [`super::backend::GtkBackend`]
+//! on hand, the same shape [`crate::gtk::multi_section_view`]'s embedded-`Chart`
+//! section body uses `super::surface::CairoSurface` for. [`gtk_text_display_layout`]
+//! is the pixel-unit layout query used for both hit-testing
 //! (`GtkBackend::text_display_layout`) and painting
 //! (`GtkBackend::draw_text_display`, via `Backend::text_display_layout`).
 
@@ -24,13 +18,12 @@ use crate::theme::Theme;
 /// Draw a [`TextDisplay`] into `(x, y, w, h)` on `cr`.
 ///
 /// Thin wrapper over [`crate::primitives::text_display::paint`] via
-/// [`super::surface::CairoSurface`] — see this module's doc for why it's
-/// kept rather than deleted like the `macos`/`win` equivalents. `theme`
-/// is threaded through unchanged from the pre-#810 signature.
+/// [`super::surface::CairoSurface`] — see this module's doc for implementation
+/// details. `theme` is threaded through from the signature.
 ///
 /// `char_width` is the approximate average character width (pixels) —
 /// see [`gtk_text_display_layout`]'s doc for why paint and layout must
-/// use the same value (quadraui#905).
+/// use the same value.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_text_display(
     cr: &gtk4::cairo::Context,
@@ -67,11 +60,11 @@ pub fn draw_text_display(
 /// handles needed).
 ///
 /// `char_width` is the backend's approximate average character width
-/// (`Backend::char_width`) — see quadraui#905: since this pure function
-/// has no live Pango layout to measure real glyph widths with, it
-/// approximates the wrap column budget from pixels the same way
-/// [`draw_text_display`] does, so a click always resolves against the
-/// same row boundaries that were actually painted.
+/// (`Backend::char_width`). Since this pure function has no live Pango
+/// layout to measure real glyph widths with, it approximates the wrap
+/// column budget from pixels the same way [`draw_text_display`] does, so
+/// a click always resolves against the same row boundaries that were
+/// actually painted.
 pub fn gtk_text_display_layout(
     display: &TextDisplay,
     rect: crate::event::Rect,
@@ -131,7 +124,7 @@ mod tests {
         }
     }
 
-    /// `text_display_layout` is documented **LOCAL** (issue #505):
+    /// `text_display_layout` is documented **LOCAL**:
     /// `gtk_text_display_layout` never reads `rect.x`/`rect.y`, so the
     /// returned `scrollbar_bounds` / `hit_test` results must be
     /// identical regardless of where `rect` is positioned — the
@@ -160,13 +153,13 @@ mod tests {
         scrollbar_thumb_round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    /// Non-zero-origin regression guard.
     #[test]
     fn scrollbar_thumb_paint_and_click_round_trip_at_nonzero_origin() {
         scrollbar_thumb_round_trip_at(7.0, 13.0);
     }
 
-    // ── quadraui#905: wrap column budget from pixels ───────────────────
+    // Wrap column budget from pixels.
 
     #[test]
     fn wrap_reports_multi_row_height_for_a_long_line() {
@@ -196,7 +189,7 @@ mod tests {
         // Paint (`draw_text_display`, via the shared `paint`) and the
         // pure hit-testing layout must compute the identical wrapped
         // height for the same inputs — see `gtk_text_display_layout`'s
-        // doc on why (quadraui#494/#905).
+        // doc on why.
         let mut d = display(false);
         d.lines = vec![TextDisplayLine {
             spans: vec![StyledSpan::plain(

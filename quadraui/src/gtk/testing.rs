@@ -21,7 +21,7 @@
 //! so the test path paints and pre-processes events (ActivityBar focus
 //! intercept, accelerators, Ctrl-C/V/A, text selection) identically to
 //! production. [`Self::click`] / [`Self::drag`] route through the same
-//! [`crate::dispatch::route_pointer`] (issue #1088) the live click/motion/
+//! [`crate::dispatch::route_pointer`] the live click/motion/
 //! release handlers use, so text-region and scrollbar drags behave the
 //! same under test.
 //!
@@ -124,7 +124,7 @@ impl<A: AppLogic> GtkDriver<A> {
         // Record every painted text run into `GtkBackend::painted_text`
         // so `find`/`find_bounds`/`screen_contains` can locate text from
         // *any* primitive, not just the three whose trait methods
-        // hand-roll a `record_painted_text` call (quadraui#489). Off in
+        // hand-roll a `record_painted_text` call. Off in
         // production runners — a live app never reads the map.
         backend.set_painted_text_recording(true);
         // Seed the backend's persistent Pango context, exactly as
@@ -136,20 +136,17 @@ impl<A: AppLogic> GtkDriver<A> {
         // fell back to `chars().count() * char_width`. That estimate is
         // only accurate for a monospace font, so the driver's hit
         // regions drifted off the painted labels for any chrome painted
-        // in the proportional `ui_font` (quadraui#416), while the same
+        // in the proportional `ui_font`, while the same
         // click landed correctly in a real window. Seeding it here makes
         // the harness measure clicks the way production does.
         {
             let cr = Context::new(&surface).expect("Context::new on headless ImageSurface");
             let pctx = pangocairo::functions::create_context(&cr);
-            // pango 0.22 (gtk4 0.11 bump, #796) tightened
-            // `Context::set_font_description` from
-            // `Option<&FontDescription>` to `&FontDescription`.
             pctx.set_font_description(&pangocairo::pango::FontDescription::from_string("Sans 11"));
             backend.set_pango_context(pctx);
         }
         // Seed the viewport from the driver's surface size BEFORE setup,
-        // exactly as the live `gtk::run::activate` does (quadraui#437):
+        // exactly as the live `gtk::run::activate` does:
         // without this, `app.setup()` would read `GtkBackend::new()`'s
         // zeroed default viewport instead of the requested
         // `width`×`height`.
@@ -195,7 +192,7 @@ impl<A: AppLogic> GtkDriver<A> {
     /// Toggle whether [`Self::dispatch`] (and every click helper built on
     /// it) folds a `MouseDown` into `DoubleClick` when it lands at the
     /// same spot as the previous one within [`crate::dispatch::DoubleClickDetector`]'s
-    /// window (quadraui#813). Defaults to `true` — real folding, matching
+    /// window. Defaults to `true` — real folding, matching
     /// the live GTK app and `TuiDriver`'s own default. Pass `false` when
     /// a test dispatches two deliberate single clicks at the same
     /// position in immediate succession (no real GDK press-count or
@@ -345,7 +342,7 @@ impl<A: AppLogic> GtkDriver<A> {
 
     /// Mutable access to the app state for tests that need to poke state
     /// directly rather than through a scripted [`UiEvent`] — mirrors
-    /// [`crate::tui::testing::TuiDriver::app_mut`] (quadraui#488).
+    /// [`crate::tui::testing::TuiDriver::app_mut`].
     pub fn app_mut(&mut self) -> &mut A {
         self.core.app_mut()
     }
@@ -396,7 +393,7 @@ impl<A: AppLogic> GtkDriver<A> {
     /// `(text, bounds)` map [`Self::find`] / [`Self::find_bounds`] /
     /// [`Self::screen_contains`] query.
     ///
-    /// Every text-bearing primitive reports in (quadraui#489), recorded at
+    /// Every text-bearing primitive reports in, recorded at
     /// the `show_layout` choke point every GTK rasteriser paints through —
     /// so a run here is one Pango run, which for multi-span content (a
     /// styled tree row, a syntax-highlighted editor line) means one entry
@@ -426,11 +423,9 @@ impl<A: AppLogic> GtkDriver<A> {
     }
 
     /// Pixel bounds (backend coordinates) of the first painted label
-    /// containing `needle`, via the `(text, bounds)` map recorded at
-    /// paint time (quadraui#447, GD-2) — mirrors the `TuiDriver::find`
-    /// rule (*locate targets with `find`, never hardcode coords*), but
-    /// resolved from Pango-measured layout geometry rather than a
-    /// character grid.
+    /// containing `needle`, resolved from Pango-measured layout geometry
+    /// rather than a character grid — mirrors the `TuiDriver::find` rule
+    /// (*locate targets with `find`, never hardcode coords*).
     pub fn find_bounds(&self, needle: &str) -> Option<crate::Rect> {
         self.core
             .backend()
@@ -449,7 +444,7 @@ impl<A: AppLogic> GtkDriver<A> {
     }
 
     /// Pixel coordinates of tab `tab_idx`'s center in the tab bar `bar`,
-    /// for [`Self::click`] to land on that specific tab (quadraui#594).
+    /// for [`Self::click`] to land on that specific tab.
     ///
     /// `find` can't do this job: every tab paints the same chrome (and a
     /// closed/active tab's label may repeat elsewhere on screen), so there
@@ -466,7 +461,7 @@ impl<A: AppLogic> GtkDriver<A> {
 
     /// Pixel coordinates of tab `tab_idx`'s close-button center in the tab
     /// bar `bar` — the `×`/`●` glyph every tab shares, so [`Self::find`]
-    /// can't target one tab's close button over another's (quadraui#594).
+    /// can't target one tab's close button over another's.
     ///
     /// `None` for the same reasons as [`Self::tab_center`], plus: the tab
     /// drew no close button this frame (`is_closable: false` on the tab,
@@ -481,7 +476,7 @@ impl<A: AppLogic> GtkDriver<A> {
 /// The four raw primitives [`DriverInput`]'s default `press`/`type_char`/
 /// `press_named`/`ctrl_char`/`click`/`drag` methods build on — see that
 /// trait's doc for why `dispatch`/`mouse_down`/`mouse_move`/`mouse_up`
-/// stay required (genuinely per-backend) rather than shared (quadraui#708).
+/// stay required (genuinely per-backend) rather than shared.
 impl<A: AppLogic> DriverInput for GtkDriver<A> {
     fn dispatch(&mut self, event: UiEvent) -> Reaction {
         self.dispatch(event)
@@ -501,7 +496,7 @@ impl<A: AppLogic> DriverInput for GtkDriver<A> {
 }
 
 /// Backs [`ConformanceDriver::click_text_at`]/`drag_text`/`scroll_at`'s
-/// shared pixel-unit bodies (quadraui#708).
+/// shared pixel-unit bodies.
 impl<A: AppLogic> PixelClickConformance for GtkDriver<A> {
     const NAME: &'static str = "GtkDriver";
 
@@ -538,7 +533,7 @@ impl<A: AppLogic> ConformanceDriver for GtkDriver<A> {
 
     fn backend_caps(&self) -> crate::BackendCaps {
         // Straight off the real `GtkBackend` this driver wraps — never a
-        // re-statement (quadraui#492).
+        // re-statement.
         crate::Backend::backend_caps(self.core.backend())
     }
 
@@ -582,7 +577,7 @@ impl<A: AppLogic> ConformanceDriver for GtkDriver<A> {
             // currently the shell-chrome zones `AppShell::render` records
             // (activity-bar items, sidebar header/content, status bar,
             // ...). Primitives that don't yet call `register_zone`
-            // contribute no zone (quadraui#490).
+            // contribute no zone.
             zones: self.core.backend().zones.clone(),
         }
     }
@@ -681,10 +676,8 @@ mod tests {
     }
 
     /// `find`/`find_bounds` locate the segment's label via the
-    /// `(text, bounds)` map [`GtkBackend::draw_status_bar`] records — the
-    /// coordinate-free counterpart to
-    /// [`renders_offscreen_and_reads_back_known_pixel`]'s hardcoded
-    /// `pixel(4, H / 2)` (quadraui#447, GD-2).
+    /// `(text, bounds)` map [`GtkBackend::draw_status_bar`] records —
+    /// the coordinate-free alternative to hardcoding a pixel sample.
     #[test]
     fn find_locates_status_bar_segment_by_text() {
         let mut driver = GtkDriver::new(StatusBarApp, W, H);
@@ -729,8 +722,8 @@ mod tests {
     /// Most common `(r, g, b)` pixel within `bounds` — the background
     /// colour, since it covers far more area than a label's thin
     /// anti-aliased glyph strokes. Used to assert on a text-tight
-    /// segment's fill colour without hardcoding a coordinate known (by
-    /// construction) to dodge the text.
+    /// segment's fill colour without hardcoding a coordinate known to
+    /// dodge the text.
     fn dominant_pixel<A: AppLogic>(driver: &mut GtkDriver<A>, bounds: Rect) -> (u8, u8, u8) {
         use std::collections::HashMap;
 
@@ -870,8 +863,7 @@ mod tests {
     }
 
     /// `setup()` must observe the driver's real surface dimensions, not
-    /// a zeroed default — regression guard for the #437-style
-    /// initial-layout bug, mirrored from `TuiDriver`'s equivalent test.
+    /// a zeroed default — regression guard for initial-layout bugs.
     #[test]
     fn setup_sees_real_viewport_not_default() {
         use std::cell::Cell;
@@ -906,8 +898,6 @@ mod tests {
             "setup() must see the driver's real size, not a zeroed default"
         );
     }
-
-    // ─── quadraui#488 ────────────────────────────────────────────────────
 
     const STACKED_ROW_H: f32 = 20.0;
 
@@ -945,11 +935,9 @@ mod tests {
         }
     }
 
-    /// Regression guard for quadraui#488's `GtkBackend::draw_status_bar`
-    /// fix: each row's painted text must record its *own* absolute `y`,
-    /// not the bar-local `y = 0` every row shared before the fix (which
-    /// meant a multi-row caller's `find`/`find_bounds` always reported the
-    /// top row's `y` no matter which row's text actually matched).
+    /// Regression guard: each row's painted text must record its *own*
+    /// absolute `y`, not a shared bar-local `y = 0`, so that
+    /// `find`/`find_bounds` reports the correct row's geometry.
     #[test]
     fn find_bounds_reports_each_stacked_rows_own_absolute_y() {
         let driver = GtkDriver::new(StackedRowsApp, 200, 60);
@@ -968,7 +956,7 @@ mod tests {
         );
     }
 
-    /// `app_mut` mirrors `TuiDriver::app_mut` (quadraui#488): tests can
+    /// `app_mut` mirrors `TuiDriver::app_mut`: tests can
     /// poke app state directly rather than only through a scripted
     /// `UiEvent`.
     #[test]
@@ -1008,8 +996,6 @@ mod tests {
              exactly like the existing find()+click() path does"
         );
     }
-
-    // ─── quadraui#594 ────────────────────────────────────────────────────
 
     use crate::primitives::tab_bar::{TabBar, TabItem};
 
@@ -1139,18 +1125,11 @@ mod tests {
 
     /// The no-paint [`Backend::tab_bar_layout`] twin an app hit-tests
     /// clicks against must report the geometry the bar was *painted*
-    /// with — not an independent estimate.
-    ///
-    /// Headless (`GtkDriver`) there is no Pango handle outside the frame
-    /// scope, so the twin used to fall back to `current_char_width`
-    /// cells while the paint path measured real Pango widths. The two
-    /// only overlapped by luck: with this fixture's tabs the painted
-    /// close-button centre sat 9px inside the estimated close region, so
-    /// any host whose UI font measured ~5% narrower than the nominal
-    /// 8px cell pushed `tab_close_center`'s click into the *body* region
-    /// and `tab_close_center_click_closes_target_tab_not_just_activates`
-    /// below failed there and only there. Pinned as exact equality so
-    /// the two paths can't drift apart again on any font.
+    /// with — not an independent estimate. In headless testing there is
+    /// no Pango handle outside the frame scope, so both the paint path
+    /// and the layout twin must measure the same fonts identically;
+    /// this test pins them as exact equality so the two paths can't
+    /// drift apart on any font.
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout_twin_matches_painted_geometry_headless() {
@@ -1187,12 +1166,10 @@ mod tests {
         }
     }
 
-    /// Issue #919's `TabBarLayout`-returning counterpart to the test
-    /// above: [`Backend::resolve_tab_bar_layout`] must report the exact
-    /// geometry the bar was painted with too, headless and all — no
-    /// `TabBarHits` conversion involved this time, since `TabBarLayout`
-    /// is already the struct both the paint cache and this accessor
-    /// deal in directly.
+    /// [`Backend::resolve_tab_bar_layout`] must report the exact
+    /// geometry the bar was painted with, headless and all.
+    /// Both the paint cache and this accessor deal in [`TabBarLayout`]
+    /// directly.
     #[test]
     fn resolve_tab_bar_layout_matches_painted_geometry_headless() {
         let app = InteractiveTabBarApp::new(0);
@@ -1240,13 +1217,11 @@ mod tests {
         );
     }
 
-    /// The close-button click above must hold at *any* UI font, not just
+    /// The close-button click must hold at *any* UI font, not just
     /// whatever the host's default `Sans` happens to measure. Painting
     /// the same bar at a deliberately narrow and a deliberately wide font
     /// moves every tab boundary, and the driver's click target has to
-    /// move with it — that host-to-host font difference is exactly what
-    /// used to make this scenario pass locally and fail on the test
-    /// machine.
+    /// move with it.
     #[test]
     fn tab_close_center_click_closes_target_tab_at_any_ui_font() {
         for font in ["Sans 6", "Sans 20"] {

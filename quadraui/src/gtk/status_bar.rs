@@ -1,28 +1,15 @@
 //! GTK rasteriser for [`crate::StatusBar`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::status_bar::native_surface_paint::paint`] (#860,
-//! `PaintSurface` Phase 2d slice 3/9) — see that fn's doc for the named
-//! divergences (bold-aware measurement: GTK/Win measured a segment's own
-//! `bold` weight, macOS ignored it; GTK's missing zero-size guard, now
-//! applying the already-fixed quadraui#791 shape uniformly) found while
-//! unifying `gtk::draw_status_bar`, `macos::status_bar::draw_status_bar`
-//! and `win::status_bar::draw_status_bar` into one implementation. This
-//! module now only carries [`draw_status_bar`] over the shared
-//! [`super::surface::CairoSurface`] adapter (#1072 — consolidated from
-//! this module's own private `RawGtkStatusBarSurface`).
+//! Painting is implemented in the shared
+//! [`crate::primitives::status_bar::native_surface_paint::paint`] — see that fn's doc
+//! for implementation details. This module carries [`draw_status_bar`] over the
+//! shared [`super::surface::CairoSurface`] adapter.
 //!
-//! `draw_status_bar` was `#[deprecated]` pending two migrations (#1109,
-//! #1251): `vimcode`'s `src/gtk/mod.rs` test helper, its last direct
-//! external caller, has since moved on. It stays un-deprecated and
-//! public, though — [`super::surface::CairoSurface`] is `pub(crate)`,
-//! so `kubeui-gtk/src/main.rs`'s `draw` closure (a bare `cr`/`layout`
-//! with no `GtkBackend` in scope) has no other way to reach the shared
-//! paint, and that is a real, permanent in-tree caller, not a lagging
-//! migration — see rule 8: nothing to deprecate when there's no
-//! non-breaking alternative to deprecate *toward*. `MIN_GAP_PX` stays
-//! put too — it's still `GtkBackend::status_bar_layout`'s own no-paint
-//! measurer constant, untouched by either migration.
+//! `draw_status_bar` remains public and un-deprecated: [`super::surface::CairoSurface`]
+//! is `pub(crate)`, so `kubeui-gtk/src/main.rs`'s `draw` closure (a bare `cr`/`layout`
+//! with no `GtkBackend` in scope) has no other way to reach the shared paint.
+//! `MIN_GAP_PX` stays put — it is still `GtkBackend::status_bar_layout`'s own
+//! no-paint measurer constant.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -106,7 +93,7 @@ mod tests {
         }
     }
 
-    /// `status_bar_layout` is documented **LOCAL** (issue #505):
+    /// `status_bar_layout` is documented **LOCAL**:
     /// `StatusBar::layout` (called by `paint` internally) only ever
     /// receives `width`/`line_height` — the `x`/`y` this function paints
     /// at are used purely to offset the drawing calls, never folded into
@@ -164,7 +151,7 @@ mod tests {
         round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    /// Non-zero-origin regression guard.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         round_trip_at(7.0, 13.0);

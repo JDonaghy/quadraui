@@ -172,7 +172,7 @@ mod layout_tests {
     use crate::primitives::text_input::TextInputHit;
     use crate::types::WidgetId;
 
-    /// `text_input_layout` is documented **ABSOLUTE** (issue #505):
+    /// `text_input_layout` is documented **ABSOLUTE**:
     /// `content_bounds` / hit regions must be shifted by `rect.x`/
     /// `rect.y`, not left at (0, 0) — the case that hides a
     /// LOCAL/ABSOLUTE mixup.
@@ -204,7 +204,7 @@ mod layout_tests {
         round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    /// Tests that painting and clicking work correctly with non-zero origins.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         round_trip_at(7.0, 13.0);

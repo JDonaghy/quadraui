@@ -79,7 +79,7 @@ mod tests {
         (surface, layout)
     }
 
-    /// `spinner_layout` is documented **ABSOLUTE** (issue #505):
+    /// `spinner_layout` is documented **ABSOLUTE**:
     /// `bounds` must start at the spinner's own origin, not (0, 0) —
     /// the case that hides a LOCAL/ABSOLUTE mixup.
     fn round_trip_at(x: f64, y: f64) {
@@ -108,7 +108,7 @@ mod tests {
         round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    /// This test verifies round-trip behavior with a non-zero origin.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         round_trip_at(7.0, 13.0);

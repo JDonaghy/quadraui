@@ -1,23 +1,10 @@
 //! GTK rasteriser for [`crate::primitives::sidebar_panel::SidebarPanel`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
-//! (#862, `PaintSurface` Phase 2d slice 5/9) — see that fn's module doc
-//! for the four named divergences found while unifying
-//! `gtk::draw_sidebar_panel`, `macos::sidebar_panel::draw_sidebar_panel`
-//! and `win::sidebar_panel::draw_sidebar_panel` into one implementation.
-//! This module now only carries [`gtk_sidebar_panel_layout`] (pure
-//! layout via the Pango-measuring [`PangoMeasure`] adapter, still needed
-//! by `GtkBackend::sidebar_panel_layout` for no-paint hit-test queries —
-//! the shared `paint` recomputes its own layout via
-//! `PaintSurface::surface_measure_text` instead, so it never calls this
-//! fn). The deprecated `draw_sidebar_panel` compatibility shim over the
-//! shared [`super::surface::CairoSurface`] adapter (#1072 — consolidated
-//! from this module's own private `RawSidebarPanelSurface`; opaque fill
-//! preserved via `CairoSurface::translucent_fill: false`, since — like
-//! the old adapter's doc noted — nothing this primitive paints is ever
-//! translucent) was removed in issue #1109 (zero uses in coord-tui's
-//! `main` and vimcode's `develop`).
+//! Painting is implemented in the shared
+//! [`crate::primitives::sidebar_panel::native_surface_paint::paint`].
+//! This module provides [`gtk_sidebar_panel_layout`] for pure layout
+//! via the Pango-measuring [`PangoMeasure`] adapter, used by
+//! `GtkBackend::sidebar_panel_layout` for no-paint hit-test queries.
 
 use gtk4::pango;
 
@@ -60,7 +47,7 @@ mod tests {
     use super::*;
     use crate::primitives::sidebar_panel::SidebarPanelHit;
 
-    /// `sidebar_panel_layout` is documented **ABSOLUTE** (issue #505):
+    /// `sidebar_panel_layout` is documented **ABSOLUTE**:
     /// `content_bounds` must start at the panel's own origin, not
     /// (0, 0) — the case that hides a LOCAL/ABSOLUTE mixup.
     fn round_trip_at(x: f64, y: f64) {
@@ -89,7 +76,7 @@ mod tests {
         round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    /// Regression guard: paint and click must round-trip at nonzero origin.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         round_trip_at(7.0, 13.0);

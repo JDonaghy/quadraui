@@ -1,17 +1,9 @@
 //! GTK rasteriser for [`crate::primitives::pipeline_view::PipelineView`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::pipeline_view::native_surface_paint::paint`]
-//! (#1085, `PaintSurface` Phase 4 slice 8/8) — see that fn's doc for the
-//! seven named divergences found while unifying
-//! `gtk::pipeline_view::draw_pipeline_view`,
-//! `macos::pipeline_view::draw_pipeline_view` and
-//! `win::pipeline_view::draw_pipeline_view` into one implementation. This
-//! module now only carries [`gtk_pipeline_view_layout`] (still real,
-//! backend-specific pure geometry — no painting involved); the
-//! deprecated `draw_pipeline_view` compatibility shim over the shared
-//! [`super::surface::CairoSurface`] adapter was removed in issue #1109
-//! (zero uses in coord-tui's `main` and vimcode's `develop`).
+//! Painting is implemented in the shared
+//! [`crate::primitives::pipeline_view::native_surface_paint::paint`].
+//! This module carries [`gtk_pipeline_view_layout`], the backend-specific
+//! pure geometry computation (no painting involved).
 
 use crate::primitives::layout_metrics::pixel_pipeline_view_layout;
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
@@ -41,19 +33,9 @@ pub fn gtk_pipeline_view_layout(
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 //
-// Headless painted-indicator tests (mirror the TUI tests in
-// `tui/pipeline_view.rs`). Uses a Cairo `ImageSurface` (no display
-// required) and reads back pixels directly, following the established
-// pattern in `gtk/tab_bar.rs`. Routed through `GtkBackend::draw_pipeline_view`
-// (the real `Backend` trait method — which now paints via the shared
-// `native_surface_paint::paint`) — the now-removed `draw_pipeline_view`
-// free-function shim (issue #1109) is not involved.
-//
-// Regression for #1085 divergence 6: the focus indicator is now a
-// two-line chevron (mirrors Windows's pre-existing shape) rather than a
-// filled triangle, so the exact interior centroid a filled triangle
-// would have painted is now the chevron's hollow middle — these tests
-// probe a point on one of the two strokes instead (see `caret_probe`).
+// Headless painted-indicator tests using a Cairo `ImageSurface` (no display
+// required) and reading back pixels directly. The focus indicator is a
+// two-line chevron; these tests probe a point on one of the two strokes.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,7 +211,7 @@ mod tests {
         );
     }
 
-    /// `pipeline_view_layout` is documented **ABSOLUTE** (issue #505):
+    /// `pipeline_view_layout` is documented **ABSOLUTE**:
     /// `box_bounds` / `action_bounds` must be shifted by the widget's
     /// own origin, not left at (0, 0) — the case that hides a
     /// LOCAL/ABSOLUTE mixup.
@@ -258,7 +240,7 @@ mod tests {
         hit_test_round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    /// Non-zero-origin regression guard.
     #[test]
     fn hit_test_round_trip_at_nonzero_origin() {
         hit_test_round_trip_at(7.0, 13.0);

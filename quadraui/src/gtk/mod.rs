@@ -5,19 +5,13 @@
 //! primitives onto a [`gtk4::cairo::Context`] using a
 //! [`pango::Layout`] for text measurement.
 //!
-//! Per D6 (see `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §9): primitives own
-//! layout, backends rasterise. Most GTK rasterisers in this module
-//! compute the primitive's `*Layout` internally because Pango
+//! Primitives own layout, backends rasterise. Most GTK rasterisers in this
+//! module compute the primitive's `*Layout` internally because Pango
 //! measurement requires the live `pango::Layout` — taking the layout
 //! pre-computed would force callers to share that handle through two
 //! separate phases. The result the layout would have produced is
 //! returned alongside any per-frame hit regions so callers can dispatch
 //! clicks.
-//!
-//! This module is the destination of issue #223 — the per-primitive
-//! rasterisers are being lifted out of vimcode (`src/gtk/quadraui_gtk.rs`)
-//! and kubeui (private `draw_status_bar` in `kubeui-gtk/src/main.rs`)
-//! one primitive at a time. StatusBar is the pilot.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -73,7 +67,7 @@ mod toolbar;
 mod tooltip;
 mod tree;
 
-// `TabBarHits` is `#[deprecated]` (issue #823) — this re-export stays (a
+// `TabBarHits` is `#[deprecated]` — this re-export stays (a
 // dropped re-export is its own breaking change) until the six-method/
 // four-backend swap to `TabBarLayout` lands.
 #[allow(deprecated)]
@@ -95,7 +89,7 @@ pub use list::{draw_list, gtk_list_layout};
 pub use menu_bar::{draw_menu_bar, gtk_menu_bar_layout};
 pub use menu_overlay::MenuOverlay;
 pub use message_list::draw_message_list;
-// #738: the legibility/render-mode thresholds (`is_legible`, `render_mode`,
+// The legibility/render-mode thresholds (`is_legible`, `render_mode`,
 // `minimap_font_px`, `MinimapRenderMode`) and the shared `ROW_PITCH_PX` /
 // `COLUMN_CAPACITY` geometry constants moved to `primitives::minimap` so
 // `win::minimap` (and any future macOS rasteriser) consume the exact same
@@ -119,11 +113,8 @@ pub use sidebar_panel::gtk_sidebar_panel_layout;
 pub use spinner::{draw_spinner, gtk_spinner_layout};
 pub use split::gtk_split_layout;
 pub use split_tree::gtk_split_tree_layout;
-// `draw_status_bar` stays public and un-deprecated (issue #1251 dropped
-// the `#[deprecated]` attribute #1109 had put on it, once `vimcode`'s
-// `src/gtk/mod.rs` test helper — its one external caller — migrated
-// off it): `kubeui-gtk/src/main.rs` still calls it directly, and has no
-// alternative — see `status_bar.rs`'s module doc.
+// `draw_status_bar` stays public: `kubeui-gtk/src/main.rs` calls it
+// directly with no alternative — see `status_bar.rs`'s module doc.
 pub use status_bar::{draw_status_bar, MIN_GAP_PX};
 pub use tab_bar::{
     draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome, draw_tab_bar_with_chrome,
@@ -152,22 +143,11 @@ pub fn set_source(cr: &Context, c: Color) {
 /// `set_source_rgba` shortcut that honours `c.a`, unlike [`set_source`]
 /// (see [`cairo_rgb`]'s doc for why that one drops it).
 ///
-/// Used by [`crate::gtk::backend::GtkBackend::surface_fill_rect`]
-/// (issue #811, `PaintSurface` Phase 2d) so a translucent fill —
-/// `primitives::scrollbar::paint`'s overlay track/thumb, most notably —
-/// blends against whatever is already on the target instead of
-/// silently rendering opaque. Before this, `GtkBackend`'s own
-/// `PaintSurface::surface_fill_rect` was the *one* of the three pixel
-/// backends whose fill didn't honour alpha (macOS's `ns_fill_rect` and
-/// Windows's `win::text::fill_rect` both already paint a real
-/// translucent brush/fill — see quadraui#791, which fixed Windows's
-/// side of this same gap for the pre-`PaintSurface`
-/// `win::scrollbar::draw_scrollbar`). Every existing
-/// `surface_fill_rect` caller (`primitives::{chart,form,terminal,
-/// text_display}`) always passes an opaque (`a: 255`) `Color`, so
-/// switching the GTK impl from `set_source_rgb` to this makes no visual
-/// difference to any of them — it only starts honouring alpha for
-/// colours that actually carry it.
+/// Used by pixel backends to paint translucent fills — e.g.,
+/// `primitives::scrollbar::paint`'s overlay track/thumb — that blend
+/// against whatever is already on the target instead of rendering opaque.
+/// Every existing caller passes an opaque (`a: 255`) `Color`, so this
+/// only starts honouring alpha for colours that actually carry it.
 pub fn set_source_rgba(cr: &Context, c: Color) {
     cr.set_source_rgba(
         c.r as f64 / 255.0,
@@ -201,31 +181,25 @@ pub use pango::Layout as PangoLayout;
 ///
 /// Matches the family [`activity_bar::ICON_FONT_DESC`] and
 /// [`tab_bar::tab_icon_font`] already pin for the activity bar and tab
-/// icons (#620) — kept as one named constant so retargeting to a
+/// icons — kept as one named constant so retargeting to a
 /// differently-named Nerd Font patch (or a consumer's fontconfig alias)
 /// is a one-line change instead of hunting every rasteriser that
 /// references the literal.
 pub const NERD_FONT_FALLBACK_FAMILY: &str = "Symbols Nerd Font";
 
-// ── Runtime-settable fallback family (issue #929) ───────────────────────
+// ── Runtime-settable fallback family ────────────────────────────────────
 //
 // `chrome_font_description`/`with_nerd_font_fallback`/`tab_icon_font`
 // used to bake in `NERD_FONT_FALLBACK_FAMILY` directly. GTK's own
-// glyph resolution already worked without any of this — fontconfig
-// cascades to a system-installed Nerd Font on its own — but #929 asks
-// for `Backend::set_nerd_font_fallback` to be the *portable* entry
-// point on every backend, GTK included, so an app that targets the
-// trait method rather than this module's GTK-specific constant gets
-// the same effect everywhere. A `thread_local` (not a `GtkBackend`
-// field) because the constant it replaces was itself free-standing,
-// consulted by plain functions (`tab_icon_font`, and — via
-// `chrome_font_description` — dozens of `GtkBackend` rasterisers) with
-// no `&self` in scope; threading an instance field through every one
-// of those call sites for a value that is, in practice, one process's
-// one fontconfig-visible font family would have been a much larger
-// diff for no behavioural difference. GTK is single-threaded (the glib
-// main loop owns rendering), so a plain `RefCell` is enough — no
-// `Mutex` needed.
+// glyph resolution already worked without this — fontconfig
+// cascades to a system-installed Nerd Font on its own — but apps need
+// `Backend::set_nerd_font_fallback` as the portable entry point on every
+// backend. A `thread_local` (not a `GtkBackend` field) because the
+// constant it replaces was itself free-standing, consulted by plain
+// functions (`tab_icon_font`, and — via `chrome_font_description` —
+// dozens of `GtkBackend` rasterisers) with no `&self` in scope. GTK is
+// single-threaded (the glib main loop owns rendering), so a plain
+// `RefCell` is enough — no `Mutex` needed.
 thread_local! {
     static NERD_FONT_FALLBACK: std::cell::RefCell<String> =
         std::cell::RefCell::new(NERD_FONT_FALLBACK_FAMILY.to_string());
@@ -245,7 +219,7 @@ pub(crate) fn current_nerd_font_fallback_family() -> String {
 /// process-wide, since the backing store is a `thread_local` (see its
 /// doc above); GTK's single-threaded glib main loop is what makes that
 /// equivalent to "process-wide" in practice for a real app. Backs
-/// `GtkBackend::set_nerd_font_fallback` (issue #929).
+/// `GtkBackend::set_nerd_font_fallback`.
 pub(crate) fn set_current_nerd_font_fallback_family(family: &str) {
     NERD_FONT_FALLBACK.with(|f| *f.borrow_mut() = family.to_string());
 }
@@ -267,7 +241,7 @@ pub(crate) fn set_current_nerd_font_fallback_family(family: &str) {
 /// defines *something* there, rather than the intended glyph. Naming
 /// the fallback family explicitly, in family-list order right after the
 /// caller's own family, makes glyph resolution deterministic instead of
-/// dependent on what else is installed (quadraui#416).
+/// dependent on what else is installed.
 ///
 /// Harmless when no glyph is being painted: Pango only consults a later
 /// family in the list for characters the earlier one doesn't cover, so

@@ -23,49 +23,42 @@ use crate::theme::Theme;
 /// native-button `set_height_request: 48` baked into vimcode's GTK CSS.
 pub const ACTIVITY_ROW_PX: f64 = 48.0;
 
-/// Pango font description for activity-bar icon glyphs, at the
-/// pre-#1157 fixed 18pt (≈ 24px at the standard 96 dpi,
-/// `18 * 96 / 72 = 24`) size — matches
+/// Pango font description for activity-bar icon glyphs at 18pt
+/// (≈ 24px at 96 dpi), matching
 /// [`crate::primitives::activity_bar::DEFAULT_ACTIVITY_ICON_SIZE_PX`]'s
-/// 24px default converted through [`activity_bar_icon_font`]'s own
-/// pt/px ratio; the pre-#620 "… 20" size rendered ≈ 26.7px, visibly
-/// oversized against the unchanged 48px row (`ACTIVITY_ROW_PX`).
+/// 24px default converted through [`activity_bar_icon_font`]'s pt/px ratio.
 ///
 /// The family (`"Symbols Nerd Font"`) is the same default
 /// [`super::NERD_FONT_FALLBACK_FAMILY`] names for every other GTK
-/// chrome glyph path (#416) — kept as a literal here rather than built
+/// chrome glyph path — kept as a literal here rather than built
 /// from the constant because `pub const` string concatenation isn't
 /// expressible on stable Rust; if the default fallback family ever
 /// changes, update both. Only a *default*, unlike the family
 /// [`activity_bar_icon_font`] actually paints with: this constant does
-/// not track a `Backend::set_nerd_font_fallback` override
-/// (`GtkBackend::set_nerd_font_fallback`, issue #929) — it exists for
-/// its point size (`draw_activity_bar`'s size-assertion tests read
-/// `ICON_FONT_DESC.ends_with(" 18")`) and as a byte-for-byte pin for
-/// [`activity_bar_icon_font`]'s default-size output (modulo family
-/// substitution).
+/// not track a `Backend::set_nerd_font_fallback` override.
+/// It exists for its point size (`draw_activity_bar`'s size-assertion
+/// tests read `ICON_FONT_DESC.ends_with(" 18")`) and as a byte-for-byte
+/// pin for [`activity_bar_icon_font`]'s default-size output (modulo
+/// family substitution).
 ///
 /// `#[allow(dead_code)]`: `activity_bar_icon_font` builds its own
-/// description at whatever size the caller resolves (#1157) rather than
+/// description at whatever size the caller resolves rather than
 /// parsing this literal, so nothing outside `#[cfg(test)]` reads this
-/// constant any more — it's kept `pub` (and non-`#[cfg(test)]`) purely as
-/// the size the two tests above pin against, matching this module's
-/// private (non-`pub`) enclosing `gtk::activity_bar` — `pub` alone
-/// doesn't make it externally reachable, so `dead_code` still fires
-/// outside test builds.
+/// constant any more — it's kept `pub` purely as the size the two
+/// tests above pin against, matching this module's private enclosing
+/// `gtk::activity_bar`.
 #[allow(dead_code)]
 pub const ICON_FONT_DESC: &str = "Symbols Nerd Font, monospace 18";
 
 /// Build the Pango font description [`draw_activity_bar_with_style`]
 /// paints the icon glyph with, at `size_px` device-independent pixels
-/// (issue #1157 — [`crate::ActivityBarStyle::icon_size_px`]).
+/// ([`crate::ActivityBarStyle::icon_size_px`]).
 ///
 /// Converts `size_px` to Pango's point-size convention via the 96/72 dpi
 /// ratio [`ICON_FONT_DESC`]'s own doc explains, so
 /// `activity_bar_icon_font(24.0)` — the
 /// [`crate::primitives::activity_bar::DEFAULT_ACTIVITY_ICON_SIZE_PX`]
-/// default — reproduces [`ICON_FONT_DESC`]'s `18` byte-for-byte (see
-/// `icon_font_matches_the_pinned_default_description` below). The family
+/// default — reproduces [`ICON_FONT_DESC`]'s `18` byte-for-byte. The family
 /// always comes from [`super::current_nerd_font_fallback_family`] —
 /// [`NERD_FONT_FALLBACK_FAMILY`][super::NERD_FONT_FALLBACK_FAMILY] until a
 /// `Backend::set_nerd_font_fallback` call overrides it — never from
@@ -95,12 +88,10 @@ fn activity_bar_icon_font(size_px: f32) -> FontDescription {
 /// dispatch.
 ///
 /// Equivalent to [`draw_activity_bar_with_style`] with
-/// `ActivityBarStyle::default()`, i.e. no active-row fill — see that
-/// function for the full visual contract and #658's reasoning for why the
-/// fill lives in a separate style value rather than a field here.
+/// `ActivityBarStyle::default()`, i.e. no active-row fill.
 ///
 /// `nerd_fonts_enabled` picks which half of each item's [`crate::Icon`]
-/// paints — `glyph` when `true`, `fallback` when `false` (issue #683).
+/// paints — `glyph` when `true`, `fallback` when `false`.
 /// Pass the backend's own flag (`Backend::set_nerd_fonts`).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_activity_bar(
@@ -126,15 +117,15 @@ pub fn draw_activity_bar(
     )
 }
 
-/// [`draw_activity_bar`] with an explicit [`ActivityBarStyle`] request
-/// (#658). `ActivityBarStyle::default()` reproduces [`draw_activity_bar`]
+/// [`draw_activity_bar`] with an explicit [`ActivityBarStyle`] request.
+/// `ActivityBarStyle::default()` reproduces [`draw_activity_bar`]
 /// pixel for pixel.
 ///
 /// # Visual contract
 ///
 /// - **Background:** filled with `theme.tab_bar_bg`.
 /// - **Right-edge separator:** 1 px column in `theme.separator`.
-/// - **Active row:** two independent, opt-in indicators (#658), each
+/// - **Active row:** two independent, opt-in indicators, each
 ///   producing zero pixels unless requested:
 ///   - `style.active_bg` fills the whole row (VS Code style).
 ///   - `bar.active_accent` paints a 2 px left-edge line (JetBrains style).
@@ -144,11 +135,10 @@ pub fn draw_activity_bar(
 /// - **Hovered row:** subtle background tint
 ///   (`theme.tab_bar_bg.lighten(0.10)`).
 /// - **Icon glyph:** centred in each row at `style.resolved_icon_size_px()`
-///   (issue #1157; defaults to
+///   (defaults to
 ///   [`crate::primitives::activity_bar::DEFAULT_ACTIVITY_ICON_SIZE_PX`] —
 ///   24px, matching VS Code's codicons; see [`activity_bar_icon_font`]'s
-///   own doc for the pt/px conversion and #620's original fixed-18pt
-///   fix this generalises); foreground is `theme.foreground` for
+///   own doc for the pt/px conversion); foreground is `theme.foreground` for
 ///   active/hovered rows, `theme.inactive_fg` otherwise.
 ///   `ACTIVITY_ROW_PX` (the 48px row) is unrelated and independent of
 ///   the icon's own size.
@@ -204,7 +194,7 @@ mod tests {
     use super::*;
     use pangocairo::cairo::{Context, Format, ImageSurface};
 
-    /// #620: the activity-bar icon glyph must render distinctly smaller
+    /// The activity-bar icon glyph must render distinctly smaller
     /// than the pre-fix 20pt size (≈ 26.7px @ 96 dpi) while
     /// `ACTIVITY_ROW_PX` — the 48px row itself — stays untouched. The
     /// glyph used for measurement doesn't need the real Nerd Font
@@ -247,7 +237,7 @@ mod tests {
         );
     }
 
-    /// #1157: [`activity_bar_icon_font`]'s default-size output (24px, the
+    /// [`activity_bar_icon_font`]'s default-size output (24px, the
     /// crate's `DEFAULT_ACTIVITY_ICON_SIZE_PX`) must reproduce
     /// [`ICON_FONT_DESC`]'s pinned `18` point size byte-for-byte (modulo
     /// family, which always comes from
@@ -266,7 +256,7 @@ mod tests {
         );
     }
 
-    /// #1157: the icon glyph's *ink* size follows
+    /// The icon glyph's *ink* size follows
     /// `ActivityBarStyle::icon_size_px`, not whatever font size the
     /// caller's `pango::Layout` happened to carry when `draw_activity_bar_with_style`
     /// was called — the regression this issue reports ("icon size follows
@@ -341,7 +331,7 @@ mod tests {
         );
     }
 
-    // ── #658: active_bg / active_accent independence ────────────────────
+    // Active row fill (`active_bg`) and accent line (`active_accent`) are
 
     use crate::primitives::activity_bar::ActivityItem;
     use crate::types::{Color, WidgetId};
@@ -396,11 +386,9 @@ mod tests {
         surface
     }
 
-    /// #658 acceptance: `style.active_bg: Some(..)` + `active_accent: None`
-    /// paints a filled active row with **zero** accent-line pixels — the
-    /// legacy 2px left-edge column (x ∈ [0, 2)) must show the fill colour,
-    /// not a leftover accent tint (the pre-#658 rasteriser fell back to
-    /// `theme.accent_fg` there regardless of `active_accent`).
+    /// `style.active_bg: Some(..)` with `active_accent: None` paints a filled
+    /// active row with **zero** accent-line pixels — the 2px left-edge column
+    /// (x ∈ [0, 2)) must show the fill colour, not an accent tint.
     #[test]
     fn active_bg_fills_row_with_zero_accent_pixels_when_accent_is_none() {
         let active_bg = Color::rgb(49, 50, 51);
@@ -478,7 +466,7 @@ mod tests {
         }
     }
 
-    /// #683: `nerd_fonts_enabled` selects `Icon::glyph` vs `Icon::fallback`.
+    /// `nerd_fonts_enabled` selects `Icon::glyph` vs `Icon::fallback`.
     /// Uses two ASCII strings of clearly different width (`"WWWW"` vs
     /// `"E"`) rather than a real Nerd Font codepoint, so the assertion
     /// holds headless even without the Symbols Nerd Font installed —

@@ -4,12 +4,11 @@
 //! measurement to size each item. Content painting (background,
 //! per-state colouring, hover/pressed/active highlight, focus ring,
 //! separators, labels) moved to the shared
-//! [`crate::primitives::toolbar::native_surface_paint::paint`] (#1081,
-//! `PaintSurface` Phase 4 slice 5/8) — see that fn's module doc for
-//! the highlight-corner drift it resolved (this backend's rounded pill
-//! is now what every backend paints, closing macOS's and Windows'
-//! square-corner gap instead of flattening this one down to match
-//! them).
+//! [`crate::primitives::toolbar::native_surface_paint::paint`] —
+//! see that fn's module doc for the highlight-corner drift it
+//! resolved (this backend's rounded pill is now what every backend
+//! paints, closing macOS's and Windows' square-corner gap instead of
+//! flattening this one down to match them).
 //!
 //! See that module's own doc for the full per-state colouring table.
 
@@ -29,7 +28,7 @@ use crate::types::WidgetId;
 /// paint frames) to the shared [`TextMeasure`] trait so
 /// [`crate::primitives::toolbar::measure_button`] never has to name a
 /// Pango type — mirrors `macos::toolbar`'s / `win::toolbar`'s twin
-/// adapters (#730).
+/// adapters.
 ///
 /// `pub(crate)` so `gtk::sidebar_panel`'s embedded toolbar header can
 /// build the exact same adapter for its own `measure_button` calls,
@@ -110,7 +109,7 @@ pub fn draw_toolbar(
 }
 
 /// [`draw_toolbar`], plus [`ToolbarPaintOptions`]: `options.valign`
-/// (issue #260) resolves where button/label text paints within a slot
+/// resolves where button/label text paints within a slot
 /// taller than one line.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_toolbar_with_options(
@@ -188,7 +187,7 @@ mod tests {
         }
     }
 
-    /// `toolbar_layout` is documented **ABSOLUTE** (issue #505):
+    /// `toolbar_layout` is documented **ABSOLUTE**:
     /// `gtk_toolbar_layout` forwards `x`/`y` straight through to
     /// `Toolbar::layout` as `origin_x`/`origin_y`, which folds them into
     /// every visible item's `bounds` — so a non-zero origin must shift
@@ -218,21 +217,20 @@ mod tests {
         round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    /// Non-zero-origin regression guard: ensures paint and click work
+    /// correctly when the toolbar is not at the origin.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         round_trip_at(7.0, 13.0);
     }
 
-    // ── #260: `ToolbarVAlign` ────────────────────────────────────────────
-
-    /// Pixel-level multi-row paint test (issue #260's test plan): paint
-    /// the same bar into the same tall slot once per [`ToolbarVAlign`]
-    /// variant and confirm the row of the first painted (non-background)
-    /// pixel moves accordingly — `Top` paints highest, `Bottom` lowest,
-    /// `Center` strictly between the two. Exercises the real
-    /// [`draw_toolbar`] → [`crate::primitives::toolbar::native_surface_paint::paint`]
-    /// path through an in-memory Cairo `ImageSurface`, the same headless
+    /// Pixel-level multi-row paint test: paint the same bar into the
+    /// same tall slot once per [`ToolbarVAlign`] variant and confirm the
+    /// row of the first painted (non-background) pixel moves accordingly
+    /// — `Top` paints highest, `Bottom` lowest, `Center` strictly between
+    /// the two. Exercises the real [`draw_toolbar`] →
+    /// [`crate::primitives::toolbar::native_surface_paint::paint`] path
+    /// through an in-memory Cairo `ImageSurface`, the same headless
     /// pattern `gtk::command_line`'s pixel tests use — no live GTK window
     /// needed.
     #[test]
