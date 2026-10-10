@@ -291,8 +291,10 @@ pub(crate) fn chrome_font_description(ui_font: &str) -> pango::FontDescription {
 /// (tree chevrons, tab dirty/close, the context-menu submenu arrow)
 /// must resolve regardless of whatever the app's own `set_nerd_font_fallback`
 /// call last chose, and `codicon::FONT_FAMILY`'s own doc explains why
-/// that can never shadow an app-supplied icon glyph: the two PUA
-/// ranges are disjoint by construction.
+/// that can never shadow an app-supplied icon glyph: `FONT_FAMILY` is
+/// always appended *last*, after `app_fallback_family`, so an
+/// app-supplied font earlier in the list wins any overlapping
+/// codepoint.
 pub(crate) fn with_nerd_font_fallback(base: &pango::FontDescription) -> pango::FontDescription {
     let mut desc = base.clone();
     let fallback = current_nerd_font_fallback_family();

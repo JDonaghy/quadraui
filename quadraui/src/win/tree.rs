@@ -86,8 +86,12 @@ pub fn win_tree_layout(tree: &TreeView, rect: Rect, line_height: f32) -> TreeVie
 ///   `warning_fg` on the row's own background.
 /// - **Indent:** `(line_height * 0.9).round()` DIPs per depth level.
 /// - **Chevrons:** `tree.style.chevron_expanded` /
-///   `chevron_collapsed` when `tree.style.show_chevrons`; leaves get a
-///   `line_height * 0.8` leading offset for alignment.
+///   `chevron_collapsed` when `tree.style.show_chevrons`, *unless* the
+///   field is still holding `TreeStyle::default()`'s `"▾"`/`"▸"`, in
+///   which case the shared paint path (`primitives::tree::paint`)
+///   substitutes the sharper `codicon::CHEVRON_DOWN`/`CHEVRON_RIGHT`
+///   glyph instead; a non-default override is always painted verbatim.
+///   Leaves get a `line_height * 0.8` leading offset for alignment.
 /// - **Badge** (right-aligned): `badge.fg`/`badge.bg`, falling back to
 ///   `muted_fg` / the row's own background.
 ///

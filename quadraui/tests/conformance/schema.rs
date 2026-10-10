@@ -341,7 +341,7 @@ mod tests {
             "tier": 1,
             "viewport": { "cols": 100, "rows": 30 },
             "steps": [
-                { "click_text_any": ["×", ""] }
+                { "click_text_any": ["×", "\uEA76"] }
             ]
         }"#;
         let s = Scenario::from_json("inline", src).expect("click_text_any must parse");

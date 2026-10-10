@@ -327,14 +327,15 @@ Licensed under either of:
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
 - MIT License ([LICENSE-MIT](LICENSE-MIT))
 
+at your option.
+
 ### Third-party assets
 
 `quadraui/assets/codicon.ttf` bundles Microsoft's [codicon](https://github.com/microsoft/vscode-codicons)
-icon font, used by every GUI backend (GTK, macOS, Windows) to paint built-in
-chrome glyphs — tree chevrons, tab dirty/close marks, the context-menu
-submenu arrow, data-table sort arrows — without requiring the host to have
-a Nerd Font installed. Licensed under Creative Commons Attribution 4.0
-International (CC-BY-4.0); the full license text ships at
+icon font, Copyright (c) Microsoft Corporation, used by every GUI backend
+(GTK, macOS, Windows) to paint built-in chrome glyphs — tree chevrons, tab
+dirty/close marks, the context-menu submenu arrow, data-table sort arrows —
+without requiring the host to have a Nerd Font installed. Licensed
+separately from the dual license above, under Creative Commons Attribution
+4.0 International (CC-BY-4.0); the full license text ships at
 [`quadraui/assets/CODICON_LICENSE`](quadraui/assets/CODICON_LICENSE).
-
-at your option.

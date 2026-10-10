@@ -12,6 +12,10 @@ use crate::primitives::data_table::{ColumnAlign, DataTable, DataTableLayout, Sor
 use crate::primitives::layout_metrics::pixel_data_table_layout;
 use crate::theme::Theme;
 
+/// Horizontal gap between a sorted column's title and its codicon
+/// sort-direction glyph.
+const SORT_GAP: f64 = 4.0;
+
 /// Draw a `DataTable` onto `cr`. Returns the layout used for painting.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_data_table(
@@ -71,7 +75,6 @@ pub fn draw_data_table(
     let mut bold_icon_font = base_font.clone();
     bold_icon_font.set_weight(pango::Weight::Bold);
     let bold_icon_font = super::with_nerd_font_fallback(&bold_icon_font);
-    let sort_gap = 4.0;
 
     for (col_idx, rc) in layout.columns.iter().enumerate() {
         if col_idx >= table.columns.len() || rc.width <= 0.0 {
@@ -102,7 +105,7 @@ pub fn draw_data_table(
         };
         let text_w = title_w as f64
             + if sort_glyph_str.is_some() {
-                sort_gap + sort_w
+                SORT_GAP + sort_w
             } else {
                 0.0
             };
@@ -130,7 +133,7 @@ pub fn draw_data_table(
             pango_layout.set_font_description(Some(&bold_icon_font));
             pango_layout.set_attributes(None);
             pango_layout.set_text(g);
-            cr.move_to(text_x + title_w as f64 + sort_gap, y);
+            cr.move_to(text_x + title_w as f64 + SORT_GAP, y);
             super::painted_text::show_layout(cr, pango_layout);
         }
 

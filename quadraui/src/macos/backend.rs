@@ -4463,11 +4463,19 @@ mod tests {
     /// no app configuration — the macOS half of the contract
     /// `codicon::FONT_FAMILY` documents, and the counterpart of
     /// `gtk::backend::tests::gtk_backend_new_self_registers_the_bundled_codicon_font`.
+    ///
+    /// Deliberately probes with [`crate::macos::text::make_font_exact`]
+    /// rather than `ensure_codicon_registered()`: that function
+    /// *performs* the registration on first call, so asserting its own
+    /// return value would pass even if `MacBackend::new()` never called
+    /// it. `make_font_exact` is a pure Core Text name lookup with no
+    /// registration side effect, so it can only see the family if
+    /// `new()` actually registered it.
     #[test]
     fn mac_backend_new_self_registers_the_bundled_codicon_font() {
         let _ = MacBackend::new();
         assert!(
-            crate::macos::text::ensure_codicon_registered(),
+            crate::macos::text::make_font_exact(crate::codicon::FONT_FAMILY, 12.0).is_some(),
             "MacBackend::new() must leave the bundled codicon font registered"
         );
     }

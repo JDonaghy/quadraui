@@ -212,8 +212,9 @@ pub(crate) fn font_with_fallback(font: &CTFont, fallback_families: &[&str]) -> C
 /// dirty/close) resolves its codicon codepoint whether or not the app has
 /// ever called `set_nerd_font_fallback`. `codicon::FONT_FAMILY`'s own doc
 /// explains why appending it after `app_fallback_family` can never shadow
-/// an app-supplied icon glyph: the two PUA ranges are disjoint by
-/// construction.
+/// an app-supplied icon glyph: it is always the last entry in the
+/// cascade, so an app-supplied font earlier in the list wins any
+/// overlapping codepoint.
 pub(crate) fn font_with_builtin_fallback(
     font: &CTFont,
     app_fallback_family: Option<&str>,
@@ -464,7 +465,8 @@ pub fn register_font_from_memory(bytes: &[u8]) -> Option<String> {
 /// the real registration). `MacBackend::new` calls this once per
 /// instance.
 ///
-/// Returns whether the font is available for painting this process.
+/// Returns whether the font is available for painting in the current
+/// process.
 pub(crate) fn ensure_codicon_registered() -> bool {
     static REGISTERED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *REGISTERED.get_or_init(|| register_font_from_memory(crate::codicon::FONT_BYTES).is_some())

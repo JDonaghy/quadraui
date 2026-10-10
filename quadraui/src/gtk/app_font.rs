@@ -117,12 +117,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// reporting success there would reproduce the exact silent-tofu state
 /// this function exists to prevent.
 pub(crate) fn register_font_from_memory(bytes: &[u8]) -> Option<Vec<String>> {
-    let path = unique_temp_font_path();
-    if std::fs::write(&path, bytes).is_err() {
-        // Neither registration below can proceed without this file on
-        // disk — Core Text's half needs it just as much as Fontconfig's.
-        return None;
-    }
+    let path = create_temp_font_file(bytes)?;
 
     let names = register_with_fontconfig(&path);
 
@@ -177,7 +172,8 @@ pub(crate) fn register_font_from_memory(bytes: &[u8]) -> Option<Vec<String>> {
 /// and one temp file per call — see [`register_font_from_memory`]'s own
 /// doc for why each call writes a fresh temp file.
 ///
-/// Returns whether the font is available for painting this process —
+/// Returns whether the font is available for painting in the current
+/// process —
 /// `false` only if registration itself failed (a corrupt bundled asset,
 /// which `codicon::tests::font_bytes_is_a_real_sfnt_font` already guards
 /// against, or an environment where neither Fontconfig nor Core Text
@@ -249,6 +245,39 @@ fn unique_temp_font_path() -> PathBuf {
         "quadraui-1013-appfont-{}-{n}.font",
         std::process::id()
     ))
+}
+
+/// Write `bytes` to a fresh [`unique_temp_font_path`] and return that
+/// path — but refuse to write through anything already sitting at that
+/// path, symlink included.
+///
+/// `std::fs::write` alone would happily follow a pre-existing symlink at
+/// a predictable `$TMPDIR` path and overwrite whatever it points at —
+/// this font-registration path previously only ran when an app
+/// explicitly opted into `register_font_from_memory`, but every GUI
+/// backend's own `::new()` now calls it unconditionally for the bundled
+/// codicon font, so a local attacker on a shared `/tmp` no longer needs
+/// any app cooperation to plant that symlink first. `OpenOptions::
+/// create_new` is `O_EXCL` under the hood: it fails outright if anything
+/// — file, symlink, or otherwise — already exists at the path, rather
+/// than writing through it. The `pid`+per-process-counter name is
+/// already unique in practice, so a second attempt on collision would
+/// only ever retry against an adversarial pre-plant, not a legitimate
+/// race with another `quadraui` process; this makes exactly one attempt
+/// and reports failure rather than silently falling back to an
+/// overwrite.
+fn create_temp_font_file(bytes: &[u8]) -> Option<PathBuf> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let path = unique_temp_font_path();
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .ok()?;
+    file.write_all(bytes).ok()?;
+    Some(path)
 }
 
 /// `config`'s current `FcSetApplication` font count, or `0` if Fontconfig

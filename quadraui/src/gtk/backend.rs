@@ -5389,11 +5389,19 @@ mod tests {
     /// any app code runs, so the family is resolvable for painting with
     /// no app configuration — the GUI half of the contract
     /// `codicon::FONT_FAMILY` documents.
+    ///
+    /// Deliberately probes with [`crate::gtk::app_font::has_font_family`]
+    /// rather than calling `ensure_codicon_registered()` again:
+    /// `ensure_codicon_registered()` *performs* the registration on
+    /// first call, so asserting its own return value would pass even
+    /// if `GtkBackend::new()` never called it — this test's probe must
+    /// not be able to do the registration itself, or deleting the
+    /// `new()` call site couldn't fail it.
     #[test]
     fn gtk_backend_new_self_registers_the_bundled_codicon_font() {
         let _ = GtkBackend::new();
         assert!(
-            crate::gtk::app_font::ensure_codicon_registered(),
+            crate::gtk::app_font::has_font_family(crate::codicon::FONT_FAMILY),
             "GtkBackend::new() must leave the bundled codicon font registered"
         );
     }

@@ -1384,7 +1384,7 @@ mod tests {
     /// `DWrite` via `fallback: Some(&fallback)`, and paint the glyph.
     /// If registration or the fallback mapping were ever silently
     /// broken (wrong family name, dropped mapping), DirectWrite would
-    /// have nothing to resolve this Private-Use-Area codepoint against
+    /// have nothing to resolve that Private-Use-Area codepoint against
     /// and this would paint zero ink, the same failure mode
     /// `draw_text_paints_a_label_sized_to_its_own_measured_width` above
     /// guards for ordinary text.

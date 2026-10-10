@@ -632,17 +632,27 @@ pub(crate) mod native_surface_paint {
             let item = &menu.items[vis.item_idx];
             let row = vis.bounds;
 
-            // Prefix the label with a check glyph when `checked` is
-            // set. `Some(false)` reserves the slot with spaces so a
-            // column of mixed checked/unchecked items aligns.
-            let prefix = match item.checked {
-                Some(true) => "\u{2713} ",
-                Some(false) => "  ",
-                None => "",
+            // Reserve a fixed-width leading slot for the check glyph so
+            // a column of mixed checked/unchecked items aligns —
+            // `Some(false)`/`None` reserve it with two plain spaces,
+            // `Some(true)` fills it with the codicon check glyph
+            // painted *separately* via `surface_draw_icon_glyph`
+            // (below) rather than embedded in this plain
+            // `surface_draw_text_run` call: a PUA codepoint baked into
+            // an ordinary text run resolves through whatever font that
+            // run's own call site already carries, which is not
+            // guaranteed to be the fallback-wrapped description
+            // `surface_draw_icon_glyph` resolves through — the same
+            // reason the submenu pull-right arrow below gets its own
+            // draw call instead of living in this label string.
+            let has_check_slot = item.checked.is_some();
+            let label_text: String = if has_check_slot {
+                std::iter::once("  ".to_string())
+                    .chain(item.label.spans.iter().map(|s| s.text.clone()))
+                    .collect()
+            } else {
+                item.label.spans.iter().map(|s| s.text.clone()).collect()
             };
-            let label_text: String = std::iter::once(prefix.to_string())
-                .chain(item.label.spans.iter().map(|s| s.text.clone()))
-                .collect();
             let label_fg = if vis.clickable {
                 theme.foreground
             } else {
@@ -655,6 +665,16 @@ pub(crate) mod native_surface_paint {
                 &label_text,
                 label_fg,
             );
+
+            if item.checked == Some(true) {
+                let check = crate::codicon::CHECK.to_string();
+                let (cw, ch) = surface.surface_measure_text(&check);
+                surface.surface_draw_icon_glyph(
+                    Rect::new(row.x + 8.0, text_y, cw.max(1.0), ch.max(1.0)),
+                    &check,
+                    label_fg,
+                );
+            }
 
             if item.submenu.is_some() {
                 // Submenu-parent: show a codicon chevron pull-right

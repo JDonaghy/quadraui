@@ -196,6 +196,24 @@ fn published_crate_ships_license_files() {
              isn't covered by Cargo.toml's `exclude`."
         );
     }
+
+    // The bundled codicon font is third-party, CC-BY-4.0-licensed
+    // (README.md's "Third-party assets" section) — separately from the
+    // MIT/Apache dual license above, so its own attribution has to ship
+    // too, not just the font bytes `include_bytes!` already pulls into
+    // the compiled artifact regardless of what `cargo package` does.
+    // `Cargo.toml` uses `exclude`, not `include`, so an `assets/` entry
+    // added there later could silently drop the license text while
+    // leaving the font (and the build) working.
+    for codicon_asset in ["assets/codicon.ttf", "assets/CODICON_LICENSE"] {
+        assert!(
+            files.contains(codicon_asset),
+            "{codicon_asset} is missing from the published package — the \
+             bundled codicon font's CC-BY-4.0 attribution (and the font \
+             itself) must ship in the `.crate` tarball, not just exist in \
+             this checkout."
+        );
+    }
 }
 
 /// Cheap, always-run companion to [`published_crate_ships_license_files`]
