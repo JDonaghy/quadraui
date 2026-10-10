@@ -3417,6 +3417,21 @@ impl Backend for MacBackend {
         crate::primitives::chart::paint(chart, &layout, self, &theme, hovered_point, crosshair_x);
         layout
     }
+    /// Measured in `chrome_line_height`/`chrome_char_width`, not the
+    /// editor pitch: the geometry this returns reserves room for text —
+    /// the y-axis tick gutter is `char_width * (longest_label + 1)`, and
+    /// the x-tick, x-label and legend rows are each one `line_height`
+    /// tall — and every one of those labels is painted by
+    /// [`crate::primitives::chart::paint`] through plain `self`, whose
+    /// [`PaintSurface`] impl resolves `chrome_font` (see
+    /// [`Self::surface_measure_text`]). Sizing the gutter and rows from
+    /// the editor font while the glyphs that land in them come from the
+    /// chrome font is the metric mismatch the two cached widths exist to
+    /// avoid: axis and legend labels would clip against the plot area or
+    /// spill outside the chart's own bounds whenever the two fonts
+    /// differ in size. [`Self::surface_line_height`] reports the same
+    /// chrome pitch `paint` re-reads for the x-label offset, so layout
+    /// and paint agree on every row.
     fn chart_layout(&self, rect: Rect, chart: &Chart) -> ChartLayout {
         super::chart::mac_chart_layout(
             chart,
@@ -3424,8 +3439,8 @@ impl Backend for MacBackend {
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
-            self.current_line_height,
-            self.current_char_width,
+            self.chrome_line_height,
+            self.chrome_char_width,
         )
     }
 
@@ -7429,6 +7444,170 @@ mod tests {
             (r, g, b),
             (sentinel.r, sentinel.g, sentinel.b),
             "hover marker must not paint outside the chart's own rect",
+        );
+    }
+
+    /// `chart_layout` reserves the y-axis tick gutter and the
+    /// x-tick/legend rows from cached font metrics, but every label that
+    /// lands in those regions is painted by `primitives::chart::paint`
+    /// through plain `self`, whose `PaintSurface` impl resolves
+    /// `chrome_font`. So the reservation has to be measured in the chrome
+    /// font too, or the labels overflow the space set aside for them.
+    ///
+    /// Pins a 24pt chrome font against a 5pt editor font — far enough
+    /// apart that an editor-sized gutter cannot hold a chrome-painted
+    /// label — paints the real chart, and checks the runs
+    /// `MacBackend::text_runs` recorded against the regions
+    /// `ChartLayout` reserved. Recorded bounds are the paint position
+    /// plus the painting font's own measured footprint (see
+    /// `macos::text::draw_text`'s recording hook), so each run's rect is
+    /// exactly the ink the gutter and rows have to contain.
+    #[test]
+    fn mac_backend_chart_axis_label_space_is_reserved_in_chrome_metrics() {
+        const CW: u32 = 320;
+        const CH: u32 = 200;
+
+        let chart = ChartModel {
+            id: WidgetId::new("ch"),
+            kind: ChartKind::Line,
+            series: vec![Series {
+                label: "SER".into(),
+                data: vec![0.0, 20.0, 40.0, 60.0, 80.0],
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            // Tick labels no two of which collide across the two axes
+            // ("0"/"40"/"80" against "1000"/"2000"/"3000"), so a run
+            // lookup by text can only match the axis it belongs to.
+            y_range: Some((0.0, 80.0)),
+            x_range: Some((1000.0, 3000.0)),
+            show_legend: true,
+            y_ticks: Some(2),
+            x_ticks: Some(2),
+            show_grid: false,
+        };
+
+        let surface = BitmapSurface::new(CW, CH);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(super::super::text::make_font("Menlo", 5.0).expect("Menlo"));
+        backend.set_chrome_font(super::super::text::make_font("Menlo", 24.0).expect("Menlo"));
+        assert!(
+            backend.chrome_char_width - backend.current_char_width > 1.0
+                && backend.chrome_line_height - backend.current_line_height > 1.0,
+            "chrome and editor metrics must differ enough that a layout built from the \
+             editor's can't pass by coincidence: chrome=(cw {}, lh {}), editor=(cw {}, lh {})",
+            backend.chrome_char_width,
+            backend.chrome_line_height,
+            backend.current_char_width,
+            backend.current_line_height,
+        );
+
+        backend.set_painted_text_recording(true);
+        backend.begin_frame(Viewport::new(CW as f32, CH as f32, 1.0));
+        let layout_cell = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let l = b.draw_chart(
+                Rect::new(0.0, 0.0, CW as f32, CH as f32),
+                &chart,
+                None,
+                None,
+            );
+            *layout_cell.borrow_mut() = Some(l);
+        });
+        backend.end_frame();
+        let layout = layout_cell.into_inner().expect("draw_chart ran");
+        let runs = backend.text_runs();
+        let run_for = |label: &str| {
+            runs.iter()
+                .find(|r| r.text == label)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "expected a painted run for the axis label {label:?}; painted: {:?}",
+                        runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+                    )
+                })
+                .bounds
+        };
+
+        // The gutter is `char_width * (longest_label + 1)` — three
+        // chrome advances here, since the widest y-tick label ("40",
+        // "80") is two characters.
+        let gutter = layout.plot_area.x - layout.bounds.x;
+        let chrome_gutter = backend.chrome_char_width as f32 * 3.0;
+        let editor_gutter = backend.current_char_width as f32 * 3.0;
+        assert!(
+            (gutter - chrome_gutter).abs() < 0.01,
+            "the y-axis gutter must be sized in chrome_char_width, the advance the \
+             tick labels actually paint in: got {gutter}, expected {chrome_gutter} \
+             (the editor advance would have reserved {editor_gutter})",
+        );
+
+        // Every y-tick label is right-aligned to `plot_area.x - 4`, so
+        // too narrow a gutter pushes its left edge outside the chart.
+        assert!(
+            !layout.y_tick_positions.is_empty(),
+            "y_ticks: Some(2) must produce tick positions to label",
+        );
+        for &(_, val) in &layout.y_tick_positions {
+            let label = crate::primitives::chart::format_tick_value(val);
+            let rb = run_for(&label);
+            assert!(
+                rb.x >= layout.bounds.x - 0.5,
+                "y-tick label {label:?} must fit inside the reserved gutter, not spill \
+                 past the chart's left edge: run x={}, chart x={}",
+                rb.x,
+                layout.bounds.x,
+            );
+            assert!(
+                rb.x + rb.width <= layout.plot_area.x + 0.5,
+                "y-tick label {label:?} must stay left of the plot area it labels: run \
+                 ends at {}, plot area starts at {}",
+                rb.x + rb.width,
+                layout.plot_area.x,
+            );
+        }
+
+        // The x-tick row is one `line_height` tall and sits below the
+        // plot area, so sizing it from the editor's pitch pushes a
+        // chrome-painted tick label past the chart's bottom edge.
+        assert!(
+            !layout.x_tick_positions.is_empty(),
+            "x_ticks: Some(2) must produce tick positions to label",
+        );
+        let chart_bottom = layout.bounds.y + layout.bounds.height;
+        for &(_, val) in &layout.x_tick_positions {
+            let label = crate::primitives::chart::format_tick_value(val);
+            let rb = run_for(&label);
+            assert!(
+                rb.y + rb.height <= chart_bottom + 1.0,
+                "x-tick label {label:?} must fit the reserved tick row inside the chart's \
+                 own bounds: run bottom={}, chart bottom={chart_bottom}",
+                rb.y + rb.height,
+            );
+        }
+
+        // Same story one row up for the legend.
+        let lb = layout
+            .legend_bounds
+            .expect("show_legend: true must reserve a legend row");
+        assert!(
+            (lb.height - backend.chrome_line_height as f32).abs() < 0.01,
+            "the legend row must be one chrome line height tall: got {}, chrome={}, \
+             editor={}",
+            lb.height,
+            backend.chrome_line_height,
+            backend.current_line_height,
+        );
+        let legend_run = run_for("SER");
+        assert!(
+            legend_run.y + legend_run.height <= lb.y + lb.height + 1.0,
+            "the legend label must fit the reserved legend row: run bottom={}, row \
+             bottom={}",
+            legend_run.y + legend_run.height,
+            lb.y + lb.height,
         );
     }
 
