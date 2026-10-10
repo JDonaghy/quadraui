@@ -4456,6 +4456,36 @@ mod tests {
         assert_eq!(v.scale, 1.0);
     }
 
+    // ── bundled codicon font self-registration ───────────────────────────
+
+    /// `MacBackend::new` self-registers the bundled codicon font before
+    /// any app code runs, so the family is resolvable for painting with
+    /// no app configuration — the macOS half of the contract
+    /// `codicon::FONT_FAMILY` documents, and the counterpart of
+    /// `gtk::backend::tests::gtk_backend_new_self_registers_the_bundled_codicon_font`.
+    #[test]
+    fn mac_backend_new_self_registers_the_bundled_codicon_font() {
+        let _ = MacBackend::new();
+        assert!(
+            crate::macos::text::ensure_codicon_registered(),
+            "MacBackend::new() must leave the bundled codicon font registered"
+        );
+    }
+
+    /// `nerd_fonts_enabled` defaults to `true` on this backend — see the
+    /// field's own doc for why that default differs from TUI's. Mirrors
+    /// `WinBackend`'s `nerd_fonts_enabled_defaults_to_true` and
+    /// `GtkBackend`'s `gtk_backend_nerd_fonts_enabled_defaults_to_true`.
+    #[test]
+    fn mac_backend_nerd_fonts_enabled_defaults_to_true() {
+        let b = MacBackend::new();
+        assert!(
+            b.nerd_fonts_enabled(),
+            "icons are on by default on this GUI backend — the bundled \
+             codicon font is always available here"
+        );
+    }
+
     #[test]
     fn begin_frame_updates_viewport() {
         let mut b = MacBackend::new();

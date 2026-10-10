@@ -5383,6 +5383,34 @@ mod tests {
         );
     }
 
+    // ── bundled codicon font self-registration ───────────────────────────
+
+    /// `GtkBackend::new` self-registers the bundled codicon font before
+    /// any app code runs, so the family is resolvable for painting with
+    /// no app configuration — the GUI half of the contract
+    /// `codicon::FONT_FAMILY` documents.
+    #[test]
+    fn gtk_backend_new_self_registers_the_bundled_codicon_font() {
+        let _ = GtkBackend::new();
+        assert!(
+            crate::gtk::app_font::ensure_codicon_registered(),
+            "GtkBackend::new() must leave the bundled codicon font registered"
+        );
+    }
+
+    /// `nerd_fonts_enabled` defaults to `true` on this backend — see the
+    /// field's own doc for why that default differs from TUI's. Mirrors
+    /// `WinBackend`'s own `nerd_fonts_enabled_defaults_to_true`.
+    #[test]
+    fn gtk_backend_nerd_fonts_enabled_defaults_to_true() {
+        let b = GtkBackend::new();
+        assert!(
+            b.nerd_fonts_enabled(),
+            "icons are on by default on this GUI backend — the bundled \
+             codicon font is always available here"
+        );
+    }
+
     // ── issue #1024: has_font_family ──────────────────────────────────────
 
     /// A family name nothing is installed under must report `Some(false)`
