@@ -166,6 +166,14 @@ pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
     let h_scroll_offset = editor.scroll_left as f64 * char_width;
     let text_x_offset = x + gutter_width - h_scroll_offset;
 
+    // Vertical offset that centres a glyph's cell (`draw_text`'s `y`
+    // argument is the cell's top, per that function's doc) within
+    // `line_height` — the row pitch a host like VS Code-style vimcode
+    // sets independently of the font's own natural line height. Shared
+    // by the gutter and body-text paints below (plus the block-cursor
+    // glyph repaint) so both land on the same baseline (issue #1412).
+    let text_v_offset = (line_height - (font.ascent() + font.descent() + font.leading())) / 2.0;
+
     // Computed once up front, before any text paints, so the content
     // clip below can be narrowed by the same reserved scrollbar column
     // the scrollbar paint and `EditorLayout::hit_test` already agree on
@@ -266,7 +274,7 @@ pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
                 font,
                 &line.gutter_text,
                 gx.max(x + 2.0),
-                line_y + (line_height - measure_text(font, &line.gutter_text).1) / 2.0,
+                line_y + text_v_offset,
                 color_to_cg(theme.line_number_fg),
             );
         }
@@ -302,6 +310,7 @@ pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
             raw_x,
             line_y,
             line_height,
+            0.0,
             theme.foreground,
         );
     }
@@ -338,6 +347,10 @@ pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
             let cur_y = y + cursor.pos.view_line as f64 * line_height;
             match cursor.shape {
                 CursorShape::Block => {
+                    // The cursor rect itself stays full-row (unchanged);
+                    // only the glyph repainted on top of it is
+                    // text-relative, so it gets the same `text_v_offset`
+                    // the body-text paint above uses, to stay aligned.
                     fill_rect(ctx, cur_x, cur_y, char_width, line_height, theme.cursor);
                     // Re-paint the glyph under the cursor in background
                     // colour so it reads against the cursor fill.
@@ -347,7 +360,14 @@ pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
                         .map(|c| c.to_string())
                         .unwrap_or_default();
                     if !ch.is_empty() {
-                        draw_text(ctx, font, &ch, cur_x, cur_y, color_to_cg(theme.background));
+                        draw_text(
+                            ctx,
+                            font,
+                            &ch,
+                            cur_x,
+                            cur_y + text_v_offset,
+                            color_to_cg(theme.background),
+                        );
                     }
                 }
                 CursorShape::Bar => {
@@ -393,6 +413,11 @@ pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
 /// assumption). An out-of-order or overlapping span is tolerated
 /// defensively: any portion already covered by an earlier run is
 /// skipped rather than re-painted.
+///
+/// `text_v_offset` (see the caller's doc comment on the identically
+/// named local) nudges only the glyph draw down from `line_y` so it
+/// sits centred in `line_height`; the span-background fill stays
+/// anchored at `line_y`/`line_height` so it still covers the full row.
 unsafe fn paint_line_text(
     ctx: CGContextRef,
     font: &CTFont,
@@ -400,6 +425,7 @@ unsafe fn paint_line_text(
     raw_x: f64,
     line_y: f64,
     line_height: f64,
+    text_v_offset: f64,
     default_fg: Color,
 ) {
     let text = &line.raw_text;
@@ -433,7 +459,14 @@ unsafe fn paint_line_text(
             let (run_w, _) = measure_text(font, slice);
             fill_rect(ctx, run_x, line_y, run_w, line_height, bg);
         }
-        draw_text(ctx, font, slice, run_x, line_y, color_to_cg(fg));
+        draw_text(
+            ctx,
+            font,
+            slice,
+            run_x,
+            line_y + text_v_offset,
+            color_to_cg(fg),
+        );
     };
 
     let mut cursor = 0usize;
@@ -1037,6 +1070,121 @@ mod tests {
                 theme.diff_added_bg.b
             ),
             "diff-added row should paint theme.diff_added_bg, not cursorline_bg"
+        );
+    }
+
+    /// Scan `surface` for the vertical extent of non-background ink
+    /// inside `[x_start, x_end) × [y_start, y_end)` — the smallest `top`
+    /// and largest `bottom` row (inclusive) where any pixel in the
+    /// column range differs from `bg` by more than a small
+    /// anti-aliasing tolerance. `None` if the window contains no ink.
+    fn ink_vertical_extent(
+        surface: &BitmapSurface,
+        x_start: u32,
+        x_end: u32,
+        y_start: u32,
+        y_end: u32,
+        bg: Color,
+    ) -> Option<(u32, u32)> {
+        const TOL: i32 = 8;
+        let mut extent: Option<(u32, u32)> = None;
+        for y in y_start..y_end {
+            let has_ink = (x_start..x_end).any(|x| {
+                let (r, g, b, _) = surface.pixel(x, y);
+                (r as i32 - bg.r as i32).abs() > TOL
+                    || (g as i32 - bg.g as i32).abs() > TOL
+                    || (b as i32 - bg.b as i32).abs() > TOL
+            });
+            if has_ink {
+                extent = Some(match extent {
+                    Some((top, _)) => (top, y),
+                    None => (y, y),
+                });
+            }
+        }
+        extent
+    }
+
+    /// Issue #1412: body text used to paint at the row's top edge
+    /// instead of being vertically centred in `line_height` — visible
+    /// once a host sets a row pitch (e.g. vimcode's VS Code-style 18px)
+    /// taller than the font's own natural line height. Pins two things
+    /// at `line_height = 18`, Menlo 12: the glyph ink's vertical
+    /// midpoint lands within 1px of the row's own midpoint, and the
+    /// gutter number and body text — painted from the identical glyph,
+    /// `"7"`, through the same `text_v_offset` formula — land at the
+    /// exact same `y`, i.e. share a baseline.
+    #[test]
+    fn body_text_centred_in_row_and_shares_baseline_with_gutter() {
+        const ROW_PITCH: f64 = 18.0;
+        let f = make_font("Menlo", 12.0).expect("Menlo installed");
+        let metrics = font_metrics(&f);
+        assert!(
+            metrics.line_height < ROW_PITCH,
+            "fixture needs a font natural line height ({}) shorter than \
+             the row pitch ({ROW_PITCH}) to actually exercise centering",
+            metrics.line_height,
+        );
+
+        let mut line = one_line("7");
+        line.gutter_text = "7".into();
+        let mut editor = editor_with_cursor("7", CursorShape::Bar, 99);
+        editor.cursor = None; // isolate the glyph ink from any cursor paint
+        editor.lines = vec![line];
+        editor.gutter_char_width = 2;
+
+        let theme = Theme::default();
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(
+            theme.background.r as f64 / 255.0,
+            theme.background.g as f64 / 255.0,
+            theme.background.b as f64 / 255.0,
+            1.0,
+        );
+        let mut backend = MacBackend::new();
+        backend.set_current_font(f);
+        backend.set_current_line_height(ROW_PITCH);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_editor(editor.rect, &editor);
+        });
+        backend.end_frame();
+
+        let char_w = metrics.char_width;
+        let gutter_w = editor.gutter_char_width as f64 * char_w;
+
+        let gutter_extent = ink_vertical_extent(
+            &surface,
+            0,
+            gutter_w.round() as u32,
+            0,
+            ROW_PITCH as u32,
+            theme.background,
+        )
+        .expect("gutter glyph should paint some ink");
+
+        let body_extent = ink_vertical_extent(
+            &surface,
+            gutter_w.round() as u32,
+            (gutter_w + char_w).round() as u32,
+            0,
+            ROW_PITCH as u32,
+            theme.background,
+        )
+        .expect("body glyph should paint some ink");
+
+        let body_mid = (body_extent.0 + body_extent.1) as f64 / 2.0;
+        let row_mid = ROW_PITCH / 2.0;
+        assert!(
+            (body_mid - row_mid).abs() <= 1.0,
+            "body text ink midpoint {body_mid} should land within 1px of \
+             the row midpoint {row_mid}, got ink extent {body_extent:?}"
+        );
+
+        assert_eq!(
+            gutter_extent, body_extent,
+            "gutter number and body text (same glyph, \"7\") should share \
+             a baseline, got gutter={gutter_extent:?}, body={body_extent:?}"
         );
     }
 
