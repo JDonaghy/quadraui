@@ -211,9 +211,9 @@ mod tests {
     /// the item's *layout* bounds (which the real paint call already
     /// resolved) for a horizontal run of contiguous `tab_active_fg`
     /// pixels in the lower half of the item — individual glyph strokes
-    /// (same colour) don't produce a long run; "F"'s vertical stem is
-    /// only 2-3px wide, and its horizontal bars sit in the upper half of
-    /// the glyph, above the baseline an underline would sit under.
+    /// (same colour) are far too narrow to produce a run that long, and
+    /// the threshold below sits above the widest one a label like "File"
+    /// can draw, yet below one mnemonic character's advance.
     #[test]
     fn open_item_paints_no_alt_underline_beneath_activation_char() {
         let bar = sample_bar();
@@ -229,8 +229,14 @@ mod tests {
 
         // What an underline bar would look like, if one were painted —
         // a run at least this long, of exactly this colour, is not
-        // explainable by glyph strokes alone.
-        const UNDERLINE_RUN: u32 = 3;
+        // explainable by glyph ink alone. `native_surface_paint` sizes
+        // the bar to the mnemonic character's own advance, so on a
+        // monospaced 14pt face that is ~8px; the threshold sits below
+        // that but comfortably above the widest contiguous horizontal
+        // stroke "File"'s glyphs can lay down at full coverage (the
+        // bowl of "e", 3-4px), so neither a false alarm nor a real
+        // regression lands between the two.
+        const UNDERLINE_RUN: u32 = 6;
         let target = (
             theme.tab_active_fg.r,
             theme.tab_active_fg.g,
