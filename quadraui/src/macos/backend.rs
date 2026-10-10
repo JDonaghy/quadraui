@@ -6866,8 +6866,15 @@ mod tests {
         backend.set_current_font(font());
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
 
-        let flayout =
-            crate::macos::form::mac_form_layout(&form, rect, backend.line_height() as f64, &font());
+        // From `Backend::form_layout`, the no-paint twin `draw_form` is
+        // contractually required to agree with, rather than a local
+        // `mac_form_layout` call with a font of this test's own
+        // choosing: a `Form` is chrome, so the paint measures its
+        // per-field rows in `chrome_font`, and re-deriving them here
+        // against the editor face installed above would drift every
+        // row-relative probe below by the two advances' difference.
+        // Same reasoning as `macos::form::tests::paint_via_backend`.
+        let flayout = backend.form_layout(rect, &form);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
             b.draw_form(rect, &form);
         });
@@ -6950,6 +6957,17 @@ mod tests {
     /// impl really reaches Core Graphics, not just that the shared
     /// painter emits the right verb (the primitive-level
     /// `RecordingSurface` test already covers that half, portably).
+    ///
+    /// Both fonts are pinned to the same face and size, so the popup
+    /// rect this test re-derives is a fixed, host-independent
+    /// geometry. `primitives::find_replace::paint` sizes the panel on
+    /// the `PaintSurface` grid, which this backend reports in the
+    /// chrome font (see [`MacBackend::surface_line_height`]'s doc);
+    /// leaving chrome on the CoreText system-UI default would make the
+    /// probe coordinates below depend on whatever that face happens to
+    /// measure on the host. Which font the panel paints in is
+    /// `tests/macos_font_role.rs`'s subject, not this test's — here the
+    /// only claim is that the fill lands real Core Graphics pixels.
     #[test]
     fn mac_backend_draw_find_replace_paints_popup_background() {
         use super::super::headless::BitmapSurface;
@@ -6961,6 +6979,7 @@ mod tests {
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
+        backend.set_chrome_font(font());
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let panel = find_replace_sample_panel(W as f32, H as f32);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
@@ -6987,15 +7006,25 @@ mod tests {
         // A few px inside the popup's bottom-right corner: past the
         // border stroke and below the single (`row == 0`) content row,
         // so nothing but the background fill can have painted here.
-        let (r, g, b, _a) = surface.pixel(
-            (popup_x + popup_w - 4.0) as u32,
-            (popup_y + popup_h - 4.0) as u32,
+        let probe_x = (popup_x + popup_w - 4.0) as u32;
+        let probe_y = (popup_y + popup_h - 4.0) as u32;
+        assert!(
+            probe_x < W
+                && probe_y < H
+                && (probe_x as f32) >= popup_x
+                && (probe_y as f32) >= popup_y,
+            "test setup: the probe ({probe_x}, {probe_y}) must sit inside both the \
+             {W}×{H} surface and the popup ({popup_w}×{popup_h} at ({popup_x}, \
+             {popup_y}), chrome advance {cw}, line height {lh})",
         );
+        let (r, g, b, _a) = surface.pixel(probe_x, probe_y);
         assert_eq!(
             (r, g, b),
             (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b),
             "find/replace popup background must be painted through MacBackend's \
-             real PaintSurface impl",
+             real PaintSurface impl — probed ({probe_x}, {probe_y}) inside the \
+             popup ({popup_w}×{popup_h} at ({popup_x}, {popup_y}), chrome advance \
+             {cw}, line height {lh})",
         );
     }
 
