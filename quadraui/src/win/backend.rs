@@ -2993,6 +2993,26 @@ impl Backend for WinBackend {
             let origin = Point::new(rect.x, rect.y);
             crate::primitives::form::paint(form, &flayout, self, &theme, origin);
 
+            // A toolbar button's label is chrome too — read through
+            // `chrome_dwrite` (falling back to `dwrite`) directly rather
+            // than the inherent `Self::measure_text`/`Self::draw_text`
+            // helpers, which always resolve the editor handle. Hoisted
+            // above the loop (rather than re-derived per `vf`): the `if`
+            // guard above already proved both `self.surface` and
+            // `self.dwrite` are `Some` for the whole method body, so
+            // re-checking per-iteration can never actually fail.
+            let surface = self
+                .surface
+                .as_ref()
+                .expect("checked Some by the `if` guard above");
+            let dwrite = self
+                .chrome_dwrite
+                .as_ref()
+                .or(self.dwrite.as_ref())
+                .expect("checked Some by the `if` guard above");
+            let line_height = self.current_line_height;
+            let char_width = self.current_char_width;
+
             for vf in &flayout.visible_fields {
                 let Some(field) = form.fields.get(vf.field_idx) else {
                     continue;
@@ -3004,17 +3024,6 @@ impl Backend for WinBackend {
                     theme.muted_fg
                 } else {
                     theme.foreground
-                };
-                // A toolbar button's label is chrome too — read through
-                // `chrome_dwrite` (falling back to `dwrite`) directly
-                // rather than the inherent `Self::measure_text`/
-                // `Self::draw_text` helpers, which always resolve the
-                // editor handle.
-                let Some(surface) = &self.surface else {
-                    continue;
-                };
-                let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) else {
-                    continue;
                 };
                 for (item_id, item_rect) in &vf.item_bounds {
                     let btn = toolbar.buttons.iter().find_map(|b| {
@@ -3028,10 +3037,18 @@ impl Backend for WinBackend {
                         item_rect.width,
                         item_rect.height,
                     );
+                    // Degrade to the same nominal char-width estimate
+                    // every other font-role call site in this impl falls
+                    // back to on a measurement failure (see
+                    // `Self::surface_measure_text`'s doc) rather than a
+                    // zero size, which would collapse the label to a
+                    // zero-width paint instead of a plausible guess.
                     match btn {
                         Some(ToolbarButton::Action { label, enabled, .. }) => {
                             let fg = if *enabled { field_fg } else { theme.muted_fg };
-                            let (tw, th) = dwrite.measure_text(label).unwrap_or((0.0, 0.0));
+                            let (tw, th) = dwrite.measure_text(label).unwrap_or_else(|_| {
+                                (nominal_text_width(label, char_width), line_height)
+                            });
                             let ty = r.y + (r.height - th) / 2.0;
                             let _ = dwrite.draw_text(
                                 &surface.target,
@@ -3042,7 +3059,9 @@ impl Backend for WinBackend {
                         }
                         Some(ToolbarButton::Label { text, fg }) => {
                             let color = fg.unwrap_or(field_fg);
-                            let (tw, th) = dwrite.measure_text(text).unwrap_or((0.0, 0.0));
+                            let (tw, th) = dwrite.measure_text(text).unwrap_or_else(|_| {
+                                (nominal_text_width(text, char_width), line_height)
+                            });
                             let ty = r.y + (r.height - th) / 2.0;
                             let _ = dwrite.draw_text(
                                 &surface.target,
@@ -9663,6 +9682,589 @@ mod tests {
             "draw_text_display is editor-class — it must keep painting through \
              EditorSurface (the editor dwrite handle) regardless of the chrome \
              font's size"
+        );
+    }
+
+    /// `Terminal`'s other call site through `EditorSurface` — see
+    /// [`win_backend_draw_text_display_does_not_vary_with_chrome_font_size`]'s
+    /// doc for why this must stay pixel-identical across chrome font
+    /// sizes.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_terminal_does_not_vary_with_chrome_font_size() {
+        let term = Terminal {
+            id: WidgetId::new("terminal"),
+            cells: vec![vec![crate::primitives::terminal::TerminalCell {
+                text: "Z".to_string(),
+                fg: crate::Color::rgb(220, 220, 220),
+                bg: crate::Color::rgb(30, 30, 30),
+                bold: false,
+                italic: false,
+                underline: false,
+                dim: false,
+                selected: false,
+                is_cursor: false,
+                cursor_shape: crate::primitives::terminal::TerminalCursorShape::Block,
+                cursor_blinking: false,
+                is_find_match: false,
+                is_find_active: false,
+            }]],
+            scrollbar: None,
+        };
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            40,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                backend.draw_terminal(Rect::new(0.0, 0.0, 200.0, 40.0), &term);
+            },
+        );
+        assert_eq!(
+            diff, 0,
+            "draw_terminal is editor-class — it must keep painting cell glyphs \
+             through EditorSurface (the editor dwrite handle) regardless of the \
+             chrome font's size"
+        );
+    }
+
+    /// `DiffView`'s call site through `EditorSurface` — same contract as
+    /// [`win_backend_draw_terminal_does_not_vary_with_chrome_font_size`]
+    /// above.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_diff_view_does_not_vary_with_chrome_font_size() {
+        let view = crate::primitives::diff_view::DiffView {
+            id: WidgetId::new("diff"),
+            left: "hello world".to_string(),
+            right: "other".to_string(),
+            left_label: None,
+            right_label: None,
+            hunks: vec![crate::primitives::diff_view::DiffHunk {
+                left_start: 1,
+                right_start: 1,
+                rows: vec![crate::primitives::diff_view::DiffRow {
+                    left: Some("hello world".to_string()),
+                    right: Some("other".to_string()),
+                    kind: crate::primitives::diff_view::DiffRowKind::Changed,
+                }],
+            }],
+            mode: crate::primitives::diff_view::DiffMode::SideBySide,
+            editability: crate::primitives::diff_view::DiffEditability::ReadOnly,
+            scroll_offset: 0,
+            focused_pane: crate::primitives::diff_view::DiffPane::Left,
+            has_focus: false,
+        };
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            80,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                let _ = backend.draw_diff_view(Rect::new(0.0, 0.0, 200.0, 80.0), &view);
+            },
+        );
+        assert_eq!(
+            diff, 0,
+            "draw_diff_view is editor-class — it must keep painting through \
+             EditorSurface (the editor dwrite handle) regardless of the chrome \
+             font's size"
+        );
+    }
+
+    /// `DataTable` builds its own `super::surface::D2dSurface` adapter
+    /// from whichever `dwrite` handle `WinBackend::draw_data_table` passes
+    /// in, so this call site isn't fixed by `impl PaintSurface for
+    /// WinBackend`'s own default — it needs the direct
+    /// `chrome_dwrite`-preferring swap this test pins.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_data_table_paints_cell_text_in_the_chrome_fonts_size() {
+        let table = crate::DataTable {
+            id: WidgetId::new("table"),
+            columns: vec![crate::Column {
+                title: "col".to_string(),
+                width: crate::ColumnWidth::Flex(1.0),
+                align: crate::ColumnAlign::Left,
+            }],
+            rows: vec![crate::DataRow {
+                cells: vec![crate::types::StyledText::plain("alpha")],
+                decoration: crate::types::Decoration::Normal,
+            }],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+        };
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            120,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                let _ = backend.draw_data_table(Rect::new(0.0, 0.0, 200.0, 120.0), &table, None);
+            },
+        );
+        assert!(
+            diff > 0,
+            "varying only the chrome font size must repaint different pixels — \
+             draw_data_table must paint cell text through chrome_dwrite, not the \
+             (unchanged) editor dwrite handle"
+        );
+    }
+
+    /// `Form`'s `FieldKind::Toolbar` branch reads `chrome_dwrite`
+    /// directly (bypassing the inherent `Self::measure_text`/
+    /// `Self::draw_text` helpers, which always resolve the editor
+    /// handle) rather than through `impl PaintSurface for WinBackend`'s
+    /// own (now chrome-resolving) default — see `Self::draw_form`'s doc.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_form_paints_toolbar_button_label_in_the_chrome_fonts_size() {
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![crate::FormField {
+                id: WidgetId::new("settings:toolbar"),
+                label: crate::types::StyledText::default(),
+                kind: FieldKind::Toolbar(crate::Toolbar {
+                    id: WidgetId::new("settings:toolbar:bar"),
+                    buttons: vec![ToolbarButton::Action {
+                        id: WidgetId::new("settings:toolbar:refine"),
+                        label: "Refine".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    }],
+                    bg: None,
+                    focused_index: None,
+                }),
+                hint: crate::types::StyledText::default(),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            80,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                backend.draw_form(Rect::new(0.0, 0.0, 200.0, 80.0), &form);
+            },
+        );
+        assert!(
+            diff > 0,
+            "varying only the chrome font size must repaint different pixels — \
+             draw_form must paint the toolbar button's label through \
+             chrome_dwrite, not the (unchanged) editor dwrite handle"
+        );
+    }
+
+    /// Same "builds its own adapter from the passed `dwrite`" shape as
+    /// `draw_data_table` above.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_toast_overlay_paints_title_in_the_chrome_fonts_size() {
+        let stack = ToastOverlay {
+            id: WidgetId::new("toast-stack"),
+            corner: crate::ToastCorner::BottomRight,
+            toasts: vec![crate::Toast {
+                id: WidgetId::new("toast"),
+                title: "Saved".to_string(),
+                body: String::new(),
+                severity: crate::ToastSeverity::Info,
+                actions: vec![],
+                accent: None,
+            }],
+            focus: None,
+        };
+        let diff = chrome_font_diff_pixel_count(
+            360,
+            120,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                let _ = backend.draw_toast_overlay(Rect::new(0.0, 0.0, 360.0, 120.0), &stack);
+            },
+        );
+        assert!(
+            diff > 0,
+            "varying only the chrome font size must repaint different pixels — \
+             draw_toast_overlay must paint the toast's title through \
+             chrome_dwrite (WinBackend's own PaintSurface default), not the \
+             editor dwrite handle"
+        );
+    }
+
+    /// Same "builds its own adapter from the passed `dwrite`" shape as
+    /// `draw_data_table` above.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_text_input_paints_text_in_the_chrome_fonts_size() {
+        let mut ti = crate::TextInput::new(WidgetId::new("ti"));
+        ti.lines = vec!["hello world".to_string()];
+        ti.has_focus = true;
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            40,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                let _ = backend.draw_text_input(Rect::new(0.0, 0.0, 200.0, 40.0), &ti);
+            },
+        );
+        assert!(
+            diff > 0,
+            "varying only the chrome font size must repaint different pixels — \
+             draw_text_input must paint its text through chrome_dwrite, not the \
+             (unchanged) editor dwrite handle"
+        );
+    }
+
+    /// Same "builds its own adapter from the passed `dwrite`" shape as
+    /// `draw_data_table` above. `Backend::draw_tooltip`'s default body
+    /// delegates to `Self::draw_tooltip_with_chrome` (see that method's
+    /// doc), so this exercises the same `chrome_dwrite`-preferring swap.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_tooltip_paints_text_in_the_chrome_fonts_size() {
+        let mut tooltip = Tooltip::new(WidgetId::new("tip"), "Explain this control");
+        tooltip.placement = crate::TooltipPlacement::Bottom;
+        let anchor = Rect::new(10.0, 4.0, 60.0, 20.0);
+        let viewport = Rect::new(0.0, 0.0, 200.0, 120.0);
+        let measure = crate::TooltipMeasure::new(160.0, 60.0);
+        let layout = tooltip.layout(anchor, viewport, measure, 4.0);
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            120,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                backend.draw_tooltip(&tooltip, &layout);
+            },
+        );
+        assert!(
+            diff > 0,
+            "varying only the chrome font size must repaint different pixels — \
+             draw_tooltip (via draw_tooltip_with_chrome) must paint its text \
+             through chrome_dwrite, not the (unchanged) editor dwrite handle"
+        );
+    }
+
+    /// Same "builds its own adapter from the passed `dwrite`" shape as
+    /// `draw_data_table` above.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_completions_paints_item_labels_in_the_chrome_fonts_size() {
+        let item = |label: &str| crate::CompletionItem {
+            label: crate::types::StyledText::plain(label),
+            detail: None,
+            documentation: None,
+            kind: Default::default(),
+            icon: None,
+        };
+        let completions = Completions {
+            id: WidgetId::new("comp"),
+            items: vec![item("alpha"), item("beta")],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        let viewport = Rect::new(0.0, 0.0, 200.0, 120.0);
+        let layout = completions.layout(10.0, 10.0, 16.0, viewport, 120.0, 60.0, |_| {
+            crate::CompletionItemMeasure::new(16.0)
+        });
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            120,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                backend.draw_completions(&completions, &layout);
+            },
+        );
+        assert!(
+            diff > 0,
+            "varying only the chrome font size must repaint different pixels — \
+             draw_completions must paint item labels through chrome_dwrite, not \
+             the (unchanged) editor dwrite handle"
+        );
+    }
+
+    /// Same "builds its own adapter from the passed `dwrite`" shape as
+    /// `draw_data_table` above.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_message_list_paints_row_text_in_the_chrome_fonts_size() {
+        let list = MessageList {
+            id: WidgetId::new("messages"),
+            rows: vec![crate::MessageRow::new(
+                "hello world",
+                crate::Color::rgb(255, 255, 255),
+                0.0,
+            )],
+            scroll_top: 0,
+        };
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            80,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                backend.draw_message_list(Rect::new(0.0, 0.0, 200.0, 80.0), &list);
+            },
+        );
+        assert!(
+            diff > 0,
+            "varying only the chrome font size must repaint different pixels — \
+             draw_message_list must paint row text through chrome_dwrite, not \
+             the (unchanged) editor dwrite handle"
+        );
+    }
+
+    /// Same "builds its own adapter from the passed `dwrite`" shape as
+    /// `draw_data_table` above.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_settings_chrome_paints_header_in_the_chrome_fonts_size() {
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            60,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                backend.draw_settings_chrome(
+                    Rect::new(0.0, 0.0, 200.0, 60.0),
+                    "Settings",
+                    "",
+                    "Search",
+                    false,
+                );
+            },
+        );
+        assert!(
+            diff > 0,
+            "varying only the chrome font size must repaint different pixels — \
+             draw_settings_chrome must paint the header text through \
+             chrome_dwrite, not the (unchanged) editor dwrite handle"
+        );
+    }
+
+    // ── no-paint `*_layout` twins: pure measurement, proven via a
+    // measured value rather than painted pixels ─────────────────────
+    //
+    // Each of the four methods below has its own `chrome_dwrite`-
+    // preferring swap, independent of the paint-side swap its
+    // `draw_*` twin above carries (see each method's own doc for why
+    // both must resolve the same handle). `chrome_font_diff_layout`
+    // attaches a live chrome/editor `DWrite` pair the same way
+    // `chrome_font_diff_pixel_count` does, but returns a measured
+    // value from each run instead of a rendered frame — the right
+    // oracle for a method that computes geometry without painting
+    // anything.
+
+    /// Measurement-twin of `chrome_font_diff_pixel_count` (see that fn's
+    /// doc): attaches a live chrome/editor `DWrite` pair — same
+    /// discipline, editor font held fixed, only the chrome `ui_font`
+    /// varies — and returns whatever `measure` computes from each, for a
+    /// `*_layout` twin that measures geometry without painting.
+    #[cfg(target_os = "windows")]
+    fn chrome_font_diff_layout<T>(
+        ui_font_a: &str,
+        ui_font_b: &str,
+        measure: impl Fn(&WinBackend) -> T,
+    ) -> (T, T) {
+        use crate::win::testing::HeadlessSurface;
+
+        fn make<T>(ui_font: &str, measure: &dyn Fn(&WinBackend) -> T) -> T {
+            let w = 64u32;
+            let h = 64u32;
+            let surface = HeadlessSurface::new(w, h).expect("create headless surface");
+            let mut backend = WinBackend::new();
+            backend.set_editor_font(DEFAULT_UI_FONT_FAMILY, 10.0);
+            backend.set_ui_font(ui_font);
+            backend
+                .attach_headless(surface.target().clone(), w, h)
+                .expect("attach headless surface");
+            measure(&backend)
+        }
+        (make(ui_font_a, &measure), make(ui_font_b, &measure))
+    }
+
+    /// `data_table_layout` must measure a `ColumnWidth::Content` column
+    /// against the same `chrome_dwrite`-preferring handle
+    /// `Self::draw_data_table` paints with — see that method's doc.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_data_table_layout_measures_a_content_column_in_the_chrome_fonts_size() {
+        let table = crate::DataTable {
+            id: WidgetId::new("table"),
+            columns: vec![crate::Column {
+                title: "a rather long column title".to_string(),
+                width: crate::ColumnWidth::Content {
+                    min: 0.0,
+                    max: 4000.0,
+                },
+                align: crate::ColumnAlign::Left,
+            }],
+            rows: vec![],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+        };
+        let (small, big) = chrome_font_diff_layout(
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                // `remaining` (here `viewport_width`, since there's only
+                // one column and no scrollbar) clamps a `Content`
+                // column's measured width — wide enough that even the
+                // 40pt run's real measured width never saturates that
+                // clamp, or both runs would read back the same
+                // clamped-to-`remaining` value regardless of font.
+                backend
+                    .data_table_layout(Rect::new(0.0, 0.0, 4000.0, 200.0), &table)
+                    .columns[0]
+                    .width
+            },
+        );
+        assert!(
+            big > small * 2.0,
+            "data_table_layout must measure the Content column through \
+             chrome_dwrite, not the (unchanged) editor dwrite handle: \
+             small={small}, big={big}"
+        );
+    }
+
+    /// `form_layout` must measure a `FieldKind::Toolbar` item against the
+    /// same `chrome_dwrite`-preferring handle `Self::draw_form` paints
+    /// with — see that method's doc.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_form_layout_measures_a_toolbar_item_in_the_chrome_fonts_size() {
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![crate::FormField {
+                id: WidgetId::new("settings:toolbar"),
+                label: crate::types::StyledText::default(),
+                kind: FieldKind::Toolbar(crate::Toolbar {
+                    id: WidgetId::new("settings:toolbar:bar"),
+                    buttons: vec![ToolbarButton::Action {
+                        id: WidgetId::new("settings:toolbar:refine"),
+                        label: "Refine".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    }],
+                    bg: None,
+                    focused_index: None,
+                }),
+                hint: crate::types::StyledText::default(),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        let (small, big) = chrome_font_diff_layout(
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                let flayout = backend.form_layout(Rect::new(0.0, 0.0, 300.0, 80.0), &form);
+                flayout.visible_fields[0].item_bounds[0].1.width
+            },
+        );
+        assert!(
+            big > small * 2.0,
+            "form_layout must measure the toolbar button through \
+             chrome_dwrite, not the (unchanged) editor dwrite handle: \
+             small={small}, big={big}"
+        );
+    }
+
+    /// `toast_stack_layout` must wrap the toast's body against the same
+    /// `chrome_dwrite`-preferring handle `Self::draw_toast_overlay`
+    /// paints with — see that method's doc.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_toast_stack_layout_wraps_body_in_the_chrome_fonts_size() {
+        let stack = ToastOverlay {
+            id: WidgetId::new("toast-stack"),
+            corner: crate::ToastCorner::BottomRight,
+            toasts: vec![crate::Toast {
+                id: WidgetId::new("toast"),
+                title: "Saved".to_string(),
+                body: "one two three four five six seven eight nine ten eleven twelve".to_string(),
+                severity: crate::ToastSeverity::Info,
+                actions: vec![],
+                accent: None,
+            }],
+            focus: None,
+        };
+        let (small_h, big_h) = chrome_font_diff_layout(
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                backend
+                    .toast_stack_layout(Rect::new(0.0, 0.0, 400.0, 400.0), &stack)
+                    .visible_toasts[0]
+                    .bounds
+                    .height
+            },
+        );
+        assert!(
+            big_h > small_h,
+            "toast_stack_layout must wrap the toast body through chrome_dwrite, \
+             not the (unchanged) editor dwrite handle: small_h={small_h}, \
+             big_h={big_h}"
+        );
+    }
+
+    /// `spinner_layout` must measure the spinner's label against the
+    /// same `chrome_dwrite`-preferring handle `Self::draw_spinner` paints
+    /// with — see that method's doc.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_spinner_layout_measures_label_in_the_chrome_fonts_size() {
+        let spinner = Spinner {
+            id: WidgetId::new("spinner"),
+            label: "Indexing…".to_string(),
+            frame_idx: 0,
+            accent: None,
+        };
+        let (small, big) = chrome_font_diff_layout(
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                backend
+                    .spinner_layout(Rect::new(0.0, 0.0, 200.0, 40.0), &spinner)
+                    .bounds
+                    .width
+            },
+        );
+        assert!(
+            big > small * 2.0,
+            "spinner_layout must measure the label through chrome_dwrite, not \
+             the (unchanged) editor dwrite handle: small={small}, big={big}"
         );
     }
 
