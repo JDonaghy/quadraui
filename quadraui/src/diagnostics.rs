@@ -1,4 +1,4 @@
-//! Library-internal diagnostics sink (#619).
+//! Library-internal diagnostics sink.
 //!
 //! quadraui must never write to stdout/stderr on its own: a host embedding
 //! one of quadraui's backends (vimcode's TUI, in raw mode on the alternate
@@ -6,9 +6,7 @@
 //! `eprintln!` from library code lands as raw bytes in the host's live
 //! cell grid — bypassing ratatui entirely, so the framework never learns
 //! those cells were overwritten and the text persists until something
-//! forces a full redraw. See #619 for the incident this module exists to
-//! prevent (the #455 unpainted-modal warning smearing over vimcode's
-//! editor on every frame the popup was open).
+//! forces a full redraw.
 //!
 //! Instead, library code that wants to surface a diagnostic calls a
 //! crate-internal `emit` function, which forwards the message to whatever
@@ -93,10 +91,9 @@ pub fn clear_sink() {
 /// the message on the floor.
 ///
 /// Library-internal call sites only (not `pub`): the small, named set of
-/// places listed in #619 — modal-paint tracking, vt100 panic recovery,
-/// the GTK/macOS siblings of the same modal-paint check — plus, since
-/// issue #805, `win/backend.rs`'s `end_frame` reporting a dropped render
-/// target, plus, since issue #922, `desktop.rs`'s
+/// places in modal-paint tracking, vt100 panic recovery, the GTK/macOS
+/// siblings of the same modal-paint check, `win/backend.rs`'s `end_frame`
+/// reporting a dropped render target, and `desktop.rs`'s
 /// `report_caught_panic_once` (the dedup wrapper `macos::run`/`win::run`
 /// call after a `catch_unwind` guard catches a panic at their C-ABI
 /// entry points). Genuinely CLI-shaped tools (examples, the GTK
@@ -118,24 +115,23 @@ pub fn clear_sink() {
 /// `terminal_engine.rs`. This module is not gated, so a configuration
 /// that enables none of them — a plain `cargo check -p quadraui` with no
 /// features, or `--features macos` on a non-macOS host — compiles `emit`
-/// with zero callers and trips `dead_code` under the workflow's `-D
-/// warnings`. The allow is scoped by `cfg_attr` to precisely that case
-/// rather than applied unconditionally, so dead-code detection stays
-/// live in every configuration where a call site actually compiles.
+/// with zero callers and trips `dead_code`. The allow is scoped by
+/// `cfg_attr` to precisely that case rather than applied unconditionally,
+/// so dead-code detection stays live in every configuration where a call
+/// site actually compiles.
 ///
-/// **The gate is per-profile as well as per-feature (#1118).** The three
+/// **The gate is per-profile as well as per-feature.** The three
 /// modal-paint call sites (`tui`/`gtk`/`macos` `end_frame`) are each
-/// additionally `#[cfg(debug_assertions)]` — the #455 check is a
+/// additionally `#[cfg(debug_assertions)]` — the modal-paint check is a
 /// debug-build-only diagnostic — so `--features tui` alone (or
 /// `--features gtk,tui`) compiles *zero* `emit` callers in any profile
-/// with assertions off. That is not hypothetical: it is exactly what
-/// `cargo bench` does, and CI's "Benches build + run, verify-only" steps
-/// hit it in both the `tui` and `gtk` jobs. Hence
-/// `all(debug_assertions, any(feature = "tui", feature = "gtk"))` rather
-/// than a bare `any(…)` for those two. `terminal`, `win` and
-/// macOS-on-macOS stay profile-independent because
-/// `terminal_engine.rs`'s vt100-panic reporting and `desktop.rs`'s
-/// `report_caught_panic_once` are live in release builds too.
+/// with assertions off. That is exactly what `cargo bench` does, and
+/// CI's benchmark steps hit it in both the `tui` and `gtk` jobs. Hence
+/// `all(debug_assertions, any(feature = "tui", feature = "gtk"))`
+/// rather than a bare `any(…)` for those two. `terminal`, `win` and
+/// macOS-on-macOS stay profile-independent because `terminal_engine.rs`'s
+/// vt100-panic reporting and `desktop.rs`'s `report_caught_panic_once`
+/// are live in release builds too.
 #[cfg_attr(
     not(any(
         all(debug_assertions, any(feature = "tui", feature = "gtk")),
@@ -162,7 +158,7 @@ pub(crate) fn emit(message: impl AsRef<str>) {
 /// own.
 ///
 /// `pub(crate)`, not module-private: `desktop.rs`'s panic-report-dedup
-/// tests (#922) also call `set_sink`/`clear_sink` (to observe
+/// tests also call `set_sink`/`clear_sink` (to observe
 /// `report_caught_panic_once`'s output), and need to serialise against
 /// *this* module's tests too, not just against each other — a single
 /// shared lock is what makes that true, rather than each module quietly

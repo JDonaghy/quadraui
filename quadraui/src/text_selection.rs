@@ -1,17 +1,11 @@
-//! Shared text-selection state machine (#741, macOS adopted in #803).
+//! Shared text-selection state machine.
 //!
 //! `GtkTextSelection`/`TuiTextSelection` were byte-identical structs, and
-//! the region registry plus `active_text_selection`/`set_active_text_selection`/
-//! `clear_text_selection`/`clear_selection_display`/`cancel_text_selection_drag`/
-//! `select_all_text_region` were ~190 lines duplicated verbatim between
-//! `gtk/backend.rs` and `tui/backend.rs`. `PRIMITIVE_RULES.md`'s
-//! primitive-first rule (#713) forbids a third copy for Win-GUI — this
-//! module is the one implementation every pixel- and cell-based backend
-//! embeds as a field, mirrors `desktop.rs`'s extraction of
-//! `WindowDragArm`/`ModalPumpDepth` (#498): backend-neutral state plus
-//! pure helpers, not a trait, so each backend still owns its own storage
-//! location and decides when to call in (from its `Backend` trait
-//! overrides and its runner's mouse/keyboard pre-processing).
+//! the region registry plus selection management functions were duplicated
+//! between `gtk/backend.rs` and `tui/backend.rs`. This module is the one
+//! implementation every pixel- and cell-based backend embeds as a field:
+//! backend-neutral state plus pure helpers, not a trait, so each backend
+//! still owns its own storage location and decides when to call in.
 //!
 //! ## What stays backend-specific
 //!
@@ -21,7 +15,7 @@
 //! - **TUI** reads the live `ratatui::buffer::Buffer` cell-by-cell —
 //!   only available inside `terminal.draw`'s closure, so `TuiBackend`
 //!   keeps its own `apply_selection_highlight`/`extract_selection_text`.
-//! - **GTK, Win-GUI, and macOS** (#803) are pixel-based and store
+//! - **GTK, Win-GUI, and macOS** are pixel-based and store
 //!   selectable source text on the `TextRegion` itself (`TextRegion::lines`
 //!   — see that field's doc). [`pixel_selection_ranges`] and
 //!   [`extract_lines_pixel`] are the row/column math and text-slicing
@@ -52,11 +46,11 @@ use crate::types::WidgetId;
 /// copies the text or a new mouse-down clears it.
 ///
 /// Lifted from the byte-identical `GtkTextSelection`/`TuiTextSelection`
-/// (#741) — every field and its meaning is unchanged from those two.
+/// — every field and its meaning is unchanged from those two.
 ///
 /// Named `ActiveTextSelection` (not just `TextSelection`) to avoid a
 /// same-crate name clash with the unrelated, differently-shaped
-/// [`crate::primitives::rich_text_popup::TextSelection`] (#822) — this one
+/// [`crate::primitives::rich_text_popup::TextSelection`] — this one
 /// is `pub(crate)` (no downstream reaches it directly), so the rename
 /// needed no deprecated alias.
 #[derive(Debug, Clone)]
@@ -70,7 +64,7 @@ pub(crate) struct ActiveTextSelection {
 /// `Backend::register_text_region`/`cancel_text_selection_drag` override
 /// needs. Embedded as a field (not a blanket trait impl) by every backend
 /// that declares `BackendCaps::text_selection = true` — `GtkBackend`,
-/// `TuiBackend`, (#741) `WinBackend`, and (#803) `MacBackend`.
+/// `TuiBackend`, `WinBackend`, and `MacBackend`.
 #[derive(Default)]
 pub(crate) struct TextSelectionState {
     /// Selectable text regions registered during the current frame via
@@ -316,11 +310,8 @@ pub(crate) fn extract_lines_pixel(
 
 #[cfg(test)]
 mod tests {
-    //! Coverage for the state machine + pixel math lifted from
-    //! `gtk/backend.rs`'s pre-#741 tests — see that file's (now removed)
-    //! `gtk_*_text_selection*`/`gtk_extract_selection_text_*` suite for the
-    //! scenarios these generalise. `TuiBackend`/`GtkBackend`/`WinBackend`
-    //! each keep their own thinner tests proving they delegate here
+    //! Coverage for the state machine and pixel math. `TuiBackend`/`GtkBackend`/
+    //! `WinBackend` each keep their own thinner tests proving they delegate here
     //! correctly; this module owns the actual behaviour under test.
     use super::*;
     use crate::event::Rect;

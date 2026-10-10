@@ -1,5 +1,5 @@
 //! Shared plumbing for the per-backend runners (`tui::run`, `gtk::run`,
-//! `macos::run`, `win::run`) — quadraui#496, finished by #813.
+//! `macos::run`, `win::run`).
 //!
 //! Each backend's `run.rs` drives a live event source (crossterm poll
 //! loop, GTK signal closures, AppKit responder methods, a Win32
@@ -16,18 +16,16 @@
 //!   for `EventOutcome`); macOS had a third, inherent to `QuadraView`.
 //!   [`ReactionSink`] + [`apply_outcome`] replace all three with one
 //!   definition, generic over anything convertible to [`EventOutcome`].
-//! - The 120ms trailing-edge resize-settle debounce (quadraui#437): TUI
+//! - The 120ms trailing-edge resize-settle debounce: TUI
 //!   and GTK each reinvented it with a twin ~20-line rationale comment.
 //!   [`RESIZE_SETTLE`] centralises the constant + the doc; TUI also
 //!   adopts [`ResizeDebouncer`] for the pending-viewport coalescing
 //!   itself (GTK's mechanism is GLib-timer-native — cancel + reschedule
 //!   a `glib::SourceId` — and doesn't need a separate pending-value
 //!   store, so it only picks up the shared constant/doc). macOS and
-//!   Windows dispatched `WindowResized` undebounced until quadraui#780
-//!   — that issue's audit found the shared machinery already existed
-//!   here but only two of the four backends had adopted it. Both now
-//!   adopt [`ResizeDebouncer`] too: macOS's `NSTimer`
-//!   cancel-and-reschedule and Windows' `SetTimer`
+//!   Windows dispatched `WindowResized` undebounced until they adopted
+//!   the shared machinery. Both now adopt [`ResizeDebouncer`] too: macOS's
+//!   `NSTimer` cancel-and-reschedule and Windows' `SetTimer`
 //!   replace-if-already-armed both give "fire once, `RESIZE_SETTLE`
 //!   after the last resize" for free, same as GTK's `glib::SourceId`,
 //!   but — unlike GTK — neither can cheaply re-read a "live" size at
@@ -37,13 +35,10 @@
 //!   store, decoupled from any particular platform timer so its
 //!   coalescing behavior stays unit-testable here even though the
 //!   `NSTimer`/`SetTimer` plumbing that drives it isn't.
-//! - [`preprocess_event`] (quadraui#813, finishing what #496 scoped but
-//!   never wrote) — the copy/paste/selection/double-click/accelerator
+//! - [`preprocess_event`] — the copy/paste/selection/double-click/accelerator
 //!   pipeline every `dispatch_event` ran ahead of `AppLogic::handle`.
-//!   #496 shipped only the three pieces above and left four independent
-//!   `dispatch_event` ladders in place; #813's audit measured their
-//!   pairwise similarity at 0.21–0.77 — each a different *subset* of one
-//!   ladder, not a stylistic rewrite of the same one. Concretely, before
+//!   This unified the four independent `dispatch_event` ladders that each
+//!   implemented a different subset of this pipeline. Concretely, before
 //!   this function existed: Windows folded double-clicks inline while
 //!   GTK did it from native `GdkEventType` press-count in two different
 //!   places; only GTK read the PRIMARY selection on middle-click; TUI
@@ -56,10 +51,9 @@
 //!   routes through — see [`preprocess_event`]'s own doc for the unified
 //!   priority order.
 //!
-//!   Two of the divergences #496's original audit found really were
-//!   load-bearing, not accidental, and stay preserved as documented
-//!   per-backend overrides on [`PreprocessBackend`] rather than being
-//!   normalised away:
+//!   Two of the divergences discovered really were load-bearing, not
+//!   accidental, and stay preserved as documented per-backend overrides
+//!   on [`PreprocessBackend`] rather than being normalised away:
 //!
 //!   - [`PreprocessBackend::is_copy_keypress`] — TUI's Ctrl-C guard
 //!     tolerates a stray Shift and matches `'C'` (CapsLock) as well as
@@ -76,8 +70,8 @@
 //!   routing every backend through this one function instead of
 //!   preserved as a quirk. That is a deliberate, reviewable behavior
 //!   change on TUI (Ctrl-C's outcome-fold) and on TUI/macOS/Windows
-//!   (middle-click paste, and Ctrl-V on TUI) — see #813's PR body for
-//!   the full list and the driver-tier tests that pin each one down.
+//!   (middle-click paste, and Ctrl-V on TUI) — unified behavior brought
+//!   by routing all backends through this one function.
 
 use crate::desktop::{is_paste_keypress, PasteModifier};
 use crate::focus::FocusManager;
@@ -88,7 +82,7 @@ use crate::{
     WidgetId,
 };
 
-// `EventOutcome::RedrawAfter` (quadraui#832) needs `Duration` unconditionally
+// `EventOutcome::RedrawAfter` needs `Duration` unconditionally
 // wherever `EventOutcome` itself compiles — matching `mod runtime`'s own gate
 // in `lib.rs` (`any(tui, gtk, macos&&target_os=macos, win)`), *not* the
 // narrower `all(win, target_os = "windows")` the resize-debounce items below
@@ -115,8 +109,8 @@ use crate::runner::Reaction;
 /// What the frame/event loop should do after one event — or the
 /// periodic `tick` — has been handled by the app.
 ///
-/// One definition shared by every backend runner (quadraui#496); each
-/// used to declare this verbatim. `Copy`/`Clone`/`Eq` (quadraui#832) so
+/// One definition shared by every backend runner; each
+/// used to declare this verbatim. `Copy`/`Clone`/`Eq` so
 /// [`EventOutcome::merge`]'s tests can reuse a value across multiple
 /// assertions instead of constructing it fresh each time, mirroring
 /// [`Reaction`]'s identical derive list.
@@ -127,7 +121,7 @@ pub(crate) enum EventOutcome {
     /// State changed; schedule a redraw before the next event drain.
     Redraw,
     /// No redraw needed now; schedule a wake (and another `tick`/dispatch
-    /// pass) after `Duration` — see [`Reaction::RedrawAfter`] (quadraui#832).
+    /// pass) after `Duration` — see [`Reaction::RedrawAfter`].
     RedrawAfter(Duration),
     /// The app requested exit.
     Exit,
@@ -213,7 +207,7 @@ pub(crate) trait ReactionSink {
     /// Tear down / close.
     fn request_exit(&self);
     /// Arm a scheduled wake — see [`Backend::request_frame_in`]
-    /// (quadraui#832). `&self`, matching the other two methods and
+    ///. `&self`, matching the other two methods and
     /// [`Backend::request_frame_in`]/[`Backend::waker`] themselves:
     /// macOS's implementor (`QuadraView`) is an `objc2` `NSObject`
     /// subclass, which is only ever handed out as `&self` (Objective-C
@@ -244,8 +238,6 @@ pub(crate) fn apply_outcome(outcome: impl Into<EventOutcome>, sink: &impl Reacti
     }
 }
 
-// ── preprocess_event (quadraui#813, finishing #496) ─────────────────────────
-
 /// The capability surface [`preprocess_event`] needs from a concrete
 /// backend to run the shared copy/paste/selection/double-click/
 /// accelerator pipeline. One `impl` per concrete backend (`TuiBackend`,
@@ -255,13 +247,10 @@ pub(crate) fn apply_outcome(outcome: impl Into<EventOutcome>, sink: &impl Reacti
 /// crate-visible surface.
 ///
 /// Every method has a concrete counterpart that already existed on at
-/// least one backend before #813 — this trait doesn't invent new
-/// behavior, it names the shared shape four different `dispatch_event`s
-/// converged on independently. The two methods with default bodies
+/// least one backend. The two methods with default bodies
 /// ([`Self::paste_modifier`], [`Self::is_copy_keypress`]) are the two
-/// spots #496's original audit found a *platform* reason for one backend
-/// to answer differently — see this module's doc for which backend
-/// overrides which and why.
+/// spots where a *platform* reason makes one backend answer differently
+/// — see this module's doc for which backend overrides which and why.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -302,7 +291,7 @@ pub(crate) trait PreprocessBackend {
     /// `Backend::draw_activity_bar` call, if any.
     fn focused_activity_bar_id(&self) -> Option<&WidgetId>;
 
-    /// Mutable access to this backend's [`FocusManager`] (issue #830) —
+    /// Mutable access to this backend's [`FocusManager`] —
     /// the counterpart to the read-only `Backend::focus_manager`. Only
     /// [`preprocess_event`]'s Tab/Shift+Tab intercept calls this; see
     /// `crate::focus`'s module doc for why that's the single writer.
@@ -348,11 +337,10 @@ pub(crate) trait PreprocessBackend {
 }
 
 /// Dispatch one already-translated [`UiEvent`] through the app, applying
-/// the shared runner pre-processing pipeline first (quadraui#813,
-/// finishing #496). This is the single function every backend's
-/// `dispatch_event` now funnels through for the steps below — see this
-/// module's doc for the full history and the two documented per-backend
-/// exceptions.
+/// the shared runner pre-processing pipeline first. This is the single
+/// function every backend's `dispatch_event` now funnels through for the
+/// steps below — see this module's doc for the full history and the two
+/// documented per-backend exceptions.
 ///
 /// Pre-processing handled here, in priority order (anything not matched
 /// falls through to `app.handle` unchanged):
@@ -365,7 +353,7 @@ pub(crate) trait PreprocessBackend {
 ///    `UiEvent::ActivityBar(id, KeyPressed { .. })` instead of the app's
 ///    normal `handle` — `ShellAdapter`'s built-in activity-bar keyboard
 ///    cursor depends on this.
-/// 3. Tab / Shift+Tab focus cycling (issue #830), only when
+/// 3. Tab / Shift+Tab focus cycling, only when
 ///    [`AppLogic::tab_stops`] returns non-empty for the current frame:
 ///    sync [`FocusManager`]'s tab order, cycle it
 ///    ([`FocusManager::focus_next`]/[`FocusManager::focus_prev`] —
@@ -375,7 +363,7 @@ pub(crate) trait PreprocessBackend {
 ///    held is left alone (reserved for app-level chords like
 ///    `TabGroupController`'s Ctrl-Tab pane switching). While an app's
 ///    `tab_stops` stays empty — the default — this step never fires and
-///    Tab/Shift+Tab pass through unchanged, exactly as before #830.
+///    Tab/Shift+Tab pass through unchanged, exactly as before.
 /// 4. `KeyPressed` matching a registered `Global`-scope accelerator:
 ///    rewrite to `UiEvent::Accelerator`.
 /// 5. Ctrl-C ([`PreprocessBackend::is_copy_keypress`]) with an active
@@ -389,7 +377,7 @@ pub(crate) trait PreprocessBackend {
 ///    `write_text` returns `()`. It means "the copy was attempted", not
 ///    "the system clipboard now holds this text" — on the TUI backend
 ///    every clipboard leg is best-effort and silent on failure, and a
-///    misconfigured tmux swallows the copy entirely (#331). Apps should
+///    misconfigured tmux swallows the copy entirely. Apps should
 ///    word their copy confirmation accordingly; see
 ///    `quadraui/docs/CLIPBOARD.md`.
 /// 6. Ctrl-V / Ctrl-Shift-V ([`is_paste_keypress`], keyed off
@@ -445,7 +433,7 @@ where
         }
     }
 
-    // ── 3. Tab / Shift+Tab focus cycling (issue #830) ───────────────────
+    // ── 3. Tab / Shift+Tab focus cycling ────────────────────────────────
     if let UiEvent::KeyPressed {
         key: Key::Named(named @ (NamedKey::Tab | NamedKey::BackTab)),
         modifiers,
@@ -565,7 +553,7 @@ where
     }
 
     // ── 11. DpiChanged: always repaint, regardless of the app's own
-    // Reaction (issue #834). A DPI change means every pixel-based
+    // Reaction. A DPI change means every pixel-based
     // measurement quadraui/the app has cached is now stale — an app that
     // has no opinion on this event (the unhandled-catch-all default,
     // true of most existing examples) would otherwise leave the old,
@@ -596,11 +584,9 @@ where
 
 /// The screen [`Rect`] of whichever tab stop currently has focus, or
 /// `None` — the per-frame lookup every runner (`gtk::run`, `macos::run`,
-/// `win::run`, `tui::run`) ran just before painting the focus-ring
-/// convention (issue #830), copied identically four times before issue
-/// #1088 consolidated it here: `backend.focus_manager().focused()` for
-/// the focused id, then a linear scan of `app.tab_stops(area)` for the
-/// matching rect.
+/// `win::run`, `tui::run`) performs just before painting the focus-ring
+/// convention: `backend.focus_manager().focused()` for the focused id,
+/// then a linear scan of `app.tab_stops(area)` for the matching rect.
 ///
 /// Returns `None` both when nothing is focused and when the focused id
 /// isn't among this frame's tab stops (e.g. it scrolled out of view) —
@@ -629,8 +615,7 @@ where
     })
 }
 
-/// Trailing-edge debounce settle window for `WindowResized` dispatch
-/// (quadraui#437).
+/// Trailing-edge debounce settle window for `WindowResized` dispatch.
 ///
 /// A live terminal/window edge-drag delivers a burst of resize
 /// notifications (tens per second). Apps with PTY-backed side effects
@@ -640,18 +625,13 @@ where
 /// SIGWINCH'd with; if the grid is reflowed to a *different* width
 /// before that redraw is parsed, the cursor-relative bytes land in the
 /// wrong columns and scatter duplicated prompt fragments that stick
-/// until the next resize — the exact TUI corruption reported in round
-/// #209, and the GTK counterpart the DrawingArea resize handler guards
-/// against too.
+/// until the next resize.
 ///
 /// All four runners coalesce the burst and dispatch a single
 /// `WindowResized` at the final settled size once no new resize has
 /// arrived for this interval. Painting stays live throughout in all —
 /// each runner's frame/draw callback re-reads the real surface size
 /// every frame regardless of whether the debounced event has fired yet.
-/// macOS and Windows adopted this alongside TUI/GTK in quadraui#780;
-/// before that they dispatched `WindowResized` on every intermediate
-/// size, undebounced.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -663,19 +643,17 @@ pub(crate) const RESIZE_SETTLE: Duration = Duration::from_millis(120);
 /// Fallback idle-poll bound for backends that keep a coarse "call `tick`
 /// even with nothing scheduled" cadence — TUI, GTK, macOS, and Windows.
 ///
-/// Before #832 TUI and GTK both polled unconditionally, TUI every 16ms
-/// (`tui::run::POLL_TIMEOUT`) and GTK every 33ms (`gtk::run::run_with`'s
-/// idle timer) — burning CPU waking a fully idle app 60-30 times a
-/// second. [`crate::runner::Reaction::RedrawAfter`] +
+/// TUI and GTK used to poll unconditionally (TUI every 16ms and GTK every
+/// 33ms) — burning CPU waking a fully idle app 60–30 times a second.
+/// [`crate::runner::Reaction::RedrawAfter`] +
 /// [`crate::backend::Backend::request_frame_in`] replace that for any app
 /// that opts in with a *precise* scheduled wake, but this constant stays
 /// as the ceiling for apps that don't: an idle-poll fallback is still
 /// needed because at least one existing behavior relies on `tick` being
 /// called periodically with no explicit request — `examples/common/
 /// terminal_app.rs`'s embedded terminal notices new PTY output by
-/// polling from `tick`, and that background reader thread predates #831
-/// and has no `Backend::waker` wired to it (a natural follow-up, not
-/// this issue's scope). 250ms is a deliberate, order-of-magnitude
+/// polling from `tick`, and that background reader thread has no
+/// `Backend::waker` wired to it. 250ms is a deliberate, order-of-magnitude
 /// reduction from both old constants (6x fewer wakes than TUI's 16ms, 7x
 /// fewer than GTK's 33ms) while keeping that fallback path — and
 /// `Backend::waker`'s own latency on TUI specifically, which has no
@@ -687,9 +665,8 @@ pub(crate) const RESIZE_SETTLE: Duration = Duration::from_millis(120);
 /// [`crate::backend::Backend::request_frame_in`] deadline or a native
 /// event, so a host that queues deferred work (a file dialog request, a
 /// dirty-frame flag) with no further input would have it stranded
-/// forever without this fallback. See `macos::run::run_with`'s repeating
-/// `idlePollTick:` timer and `win::run::run_inner`'s repeating
-/// `IDLE_POLL_TIMER_ID` `SetTimer`, both installed at this same ceiling.
+/// forever without this fallback. Both platforms install a repeating
+/// timer at this same ceiling to ensure periodic `tick` calls.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -698,25 +675,21 @@ pub(crate) const RESIZE_SETTLE: Duration = Duration::from_millis(120);
 ))]
 pub(crate) const IDLE_POLL_CEILING: Duration = Duration::from_millis(250);
 
-/// Trailing-edge resize-event coalescing (quadraui#437, extracted for
-/// #496; adopted by macOS/Windows in #780): stores the most recent
+/// Trailing-edge resize-event coalescing: stores the most recent
 /// viewport from a burst of resize events, superseding any earlier one,
 /// until the caller decides the burst has settled and takes it.
 ///
 /// Mechanism-agnostic by design — this struct only coalesces the
 /// *value*, not the *timing*. Each backend owns how it decides "has this
-/// settled": TUI polls an `Instant` deadline once per loop iteration
-/// (see `tui::run::run_inner`); macOS cancels and reschedules a one-shot
-/// `NSTimer` targeting the view itself per `viewFrameDidChange:` (see
-/// `macos::run::QuadraView::view_frame_did_change`); Windows relies on
-/// `SetTimer` replacing an already-armed timer of the same id rather
-/// than stacking a new one, so a live drag keeps rescheduling the same
-/// `WM_TIMER` (see `win::run`'s `WM_SIZE`/`WM_TIMER` arms). GTK cancels
-/// and reschedules a `glib::SourceId` timer per resize (see
-/// `gtk::run::run_with`) and doesn't need this struct at all, since
-/// GLib's timer already gives it exactly-once-after-settle semantics
-/// and it re-reads the DA's live size at fire time rather than storing
-/// a pending value.
+/// settled": TUI polls an `Instant` deadline once per loop iteration;
+/// macOS cancels and reschedules a one-shot `NSTimer` targeting the view
+/// itself per resize; Windows relies on `SetTimer` replacing an
+/// already-armed timer of the same id rather than stacking a new one, so
+/// a live drag keeps rescheduling the same `WM_TIMER`. GTK cancels and
+/// reschedules a `glib::SourceId` timer per resize and doesn't need this
+/// struct at all, since GLib's timer already gives it exactly-once-after-
+/// settle semantics and it re-reads the DA's live size at fire time
+/// rather than storing a pending value.
 #[cfg(any(
     feature = "tui",
     all(feature = "win", target_os = "windows"),
@@ -749,7 +722,7 @@ impl ResizeDebouncer {
     }
 }
 
-/// TUI's [`Backend::request_frame_in`] bookkeeping (quadraui#832).
+/// TUI's [`Backend::request_frame_in`] bookkeeping.
 ///
 /// TUI has no native run loop of its own to arm a timer against — its
 /// "event loop" is [`tui::run::run_inner`]'s own `loop {}` blocking on
@@ -775,7 +748,7 @@ impl ResizeDebouncer {
 /// [`Backend::waker`]: crate::backend::Backend::waker
 /// [`tui::run::run_inner`]: crate::tui::run
 ///
-/// Also used by [`crate::win::backend::WinBackend`] (quadraui#1264) —
+/// Also used by [`crate::win::backend::WinBackend`] —
 /// not because Windows lacks a native timer (it has one, `SetTimer`/
 /// `WM_TIMER`, armed directly from `WinBackend::request_frame_in`, same
 /// as GTK/macOS), but because that real timer is a no-op before
@@ -877,19 +850,18 @@ impl FrameScheduler {
     }
 }
 
-/// Thread-safe inbox for [`UiEvent::User`] payloads (issue #831).
+/// Thread-safe inbox for [`UiEvent::User`] payloads.
 ///
 /// Every backend's own event queue — `GtkBackend::events` /
 /// `MacBackend::events` / `WinBackend::events`, all
 /// `Rc<RefCell<VecDeque<UiEvent>>>` — is deliberately `!Send`: nothing
-/// outside the owning thread can touch it, which is exactly the
-/// architectural gap #831 tracks ("zero mpsc/Waker/channel in any
-/// runner"). `UserEventQueue` is the `Send + Sync` staging area a
-/// background thread *can* touch. Each backend owns one `Arc<Self>`,
-/// clones it into the closure [`crate::Backend::waker`] hands out, and
-/// drains it back into `UiEvent::User` on the owning thread — the same
-/// place it already drains its native event source (TUI's
-/// `poll_events`/`wait_events`; GTK/macOS/Windows' live dispatch path).
+/// outside the owning thread can touch it. `UserEventQueue` is the
+/// `Send + Sync` staging area a background thread *can* touch. Each
+/// backend owns one `Arc<Self>`, clones it into the closure
+/// [`crate::Backend::waker`] hands out, and drains it back into
+/// `UiEvent::User` on the owning thread — the same place it already
+/// drains its native event source (TUI's `poll_events`/`wait_events`;
+/// GTK/macOS/Windows' live dispatch path).
 ///
 /// TUI is the only backend that can drain this purely by polling more
 /// often — see `Backend::waker`'s doc for why GTK/macOS/Windows also need
@@ -913,14 +885,14 @@ impl FrameScheduler {
 ///   app/backend state when the posted `WM_QUADRAUI_USER_EVENT` is
 ///   dispatched.
 ///
-/// An earlier revision of #831 did have a `MainThreadBound` here — a bare
+/// An earlier approach did have `MainThreadBound` here — a bare
 /// `unsafe impl Send/Sync` over an `Rc`. It was removed rather than
 /// repaired: with the derived `Drop` it raced `Rc`'s non-atomic refcount
 /// whenever the last handle died on a background thread, and forwarding
-/// that drop back through `MainContext::invoke` (as `dispatch2` does
-/// through `run_on_main`) traded the race for a hang any time the GTK main
-/// loop wasn't running to dispatch the forwarded drop. Don't reintroduce
-/// it; keep `!Send` state on the thread that owns it.
+/// that drop back through `MainContext::invoke` traded the race for a
+/// hang any time the GTK main loop wasn't running to dispatch the
+/// forwarded drop. Don't reintroduce it; keep `!Send` state on the thread
+/// that owns it.
 pub(crate) struct UserEventQueue {
     inbox: std::sync::Mutex<
         std::collections::VecDeque<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
@@ -994,9 +966,9 @@ mod user_event_queue_tests {
         assert!(out2.is_empty());
     }
 
-    /// The whole point of #831: a payload pushed from a background thread
-    /// must be observable on another thread via `drain_into` — this is
-    /// the plumbing every backend's `waker()` closure relies on.
+    /// A payload pushed from a background thread must be observable on
+    /// another thread via `drain_into` — this is the plumbing every
+    /// backend's `waker()` closure relies on.
     #[test]
     fn push_from_background_thread_is_observed_after_join() {
         let q = UserEventQueue::new();
@@ -1094,7 +1066,7 @@ mod reaction_sink_tests {
         assert_eq!(sink.redraws.get(), 1);
     }
 
-    /// quadraui#832: `RedrawAfter` must reach `request_frame_in`, not
+    /// `RedrawAfter` must reach `request_frame_in`, not
     /// `request_redraw` — the whole point is *not* forcing a repaint now.
     #[test]
     fn apply_outcome_redraw_after_calls_request_frame_in_not_redraw() {
@@ -1158,17 +1130,15 @@ mod resize_debouncer_tests {
         assert_eq!(d.take(), Some(Viewport::new(200.0, 80.0, 1.0)));
     }
 
-    /// quadraui#780 acceptance: "a test that drives a burst of resize
-    /// events and asserts the dispatched count collapses". Simulates
-    /// exactly what every native-timer-driven caller (macOS's
-    /// `viewFrameDidChange:`, Windows' `WM_SIZE`) does per event —
-    /// `note()`, never `take()` — for a burst of intermediate sizes a
-    /// live drag would deliver, then fires the settle timer once, the
-    /// way `resizeDebounceFired:`/`WM_TIMER` do. However large the
-    /// burst, exactly one `WindowResized` worth of dispatch data (the
-    /// final size) survives to be taken — the rest never reach
-    /// `AppLogic::handle` at all, which is the collapse this debouncer
-    /// exists to guarantee.
+    /// A test that drives a burst of resize events and asserts the
+    /// dispatched count collapses. Simulates exactly what every native-timer-
+    /// driven caller (macOS's `viewFrameDidChange:`, Windows' `WM_SIZE`) does
+    /// per event — `note()`, never `take()` — for a burst of intermediate
+    /// sizes a live drag would deliver, then fires the settle timer once, the
+    /// way `resizeDebounceFired:`/`WM_TIMER` do. However large the burst,
+    /// exactly one `WindowResized` worth of dispatch data (the final size)
+    /// survives to be taken — the rest never reach `AppLogic::handle` at all,
+    /// which is the collapse this debouncer exists to guarantee.
     #[test]
     fn burst_of_resize_events_collapses_to_one_dispatch() {
         let mut d = ResizeDebouncer::new();
@@ -1297,11 +1267,10 @@ mod frame_scheduler_tests {
         );
     }
 
-    /// This is quadraui#832's core acceptance criterion made concrete:
-    /// with nothing scheduled, the number of wake-ups over a fixed
-    /// interval is bounded by the (much coarser) idle ceiling, not the
-    /// pre-#832 unconditional 16ms poll — RED against the old constant,
-    /// GREEN against `IDLE_POLL_CEILING`.
+    /// With nothing scheduled, the number of wake-ups over a fixed interval
+    /// is bounded by the (much coarser) idle ceiling, not the unconditional
+    /// 16ms poll: this verifies the tighter wake bound against the idle
+    /// polling ceiling.
     #[test]
     fn idle_wakeups_over_one_second_are_bounded_by_the_ceiling_not_the_old_16ms_poll() {
         let s = FrameScheduler::new();
@@ -1322,16 +1291,15 @@ mod frame_scheduler_tests {
     }
 }
 
-/// [`EventOutcome::merge`] — the fix for a review finding on quadraui#832:
-/// every batch-dispatch loop across `macos::run`, `win::run`,
-/// `gtk::testing`, `tui::testing` and `tui::vt_testing` used to keep the
-/// *first* non-`Continue` outcome seen in a batch rather than the
-/// *earliest* `RedrawAfter` deadline, which could silently drop a shorter,
-/// more urgent wake requested by a later event in the same batch. These
-/// tests pin the corrected, order-independent semantics directly, since
-/// the batches that would exercise this in a live runner (multiple
-/// synthetic events from one drag gesture, each separately requesting a
-/// different `RedrawAfter`) are awkward to synthesize end-to-end.
+/// [`EventOutcome::merge`] — the fix for a review finding: every
+/// batch-dispatch loop across all backends used to keep the *first*
+/// non-`Continue` outcome seen in a batch rather than the *earliest*
+/// `RedrawAfter` deadline, which could silently drop a shorter, more
+/// urgent wake requested by a later event in the same batch. These tests
+/// pin the corrected, order-independent semantics directly, since the
+/// batches that would exercise this in a live runner (multiple synthetic
+/// events from one drag gesture, each separately requesting a different
+/// `RedrawAfter`) are awkward to synthesize end-to-end.
 #[cfg(test)]
 mod event_outcome_merge_tests {
     use super::*;

@@ -1,5 +1,5 @@
 //! `BackendCore` — the accelerator registry + text-selection bookkeeping
-//! every pixel/cell backend embeds (#1090).
+//! every pixel/cell backend embeds.
 //!
 //! # What this consolidates
 //!
@@ -89,7 +89,7 @@ pub(crate) struct BackendCore {
     /// the same statement.
     pub(crate) text_selection: TextSelectionState,
     /// The [`crate::backend::MenuStyle`] set via [`Backend::set_menu_style`]
-    /// (issue #1187). `#[derive(Default)]` above gives this
+    ///. `#[derive(Default)]` above gives this
     /// `MenuStyle::default()` (`Auto`) with no explicit initialisation,
     /// matching the framework-wide default the issue asks for.
     ///
@@ -184,7 +184,7 @@ impl BackendCore {
         }
     }
 
-    // ─── MenuStyle (#1187) ────────────────────────────────────────────────
+    // ─── MenuStyle ────────────────────────────────────────────────────────
 
     /// Current [`crate::backend::MenuStyle`] — see
     /// [`Backend::menu_style`][crate::backend::Backend::menu_style].
@@ -265,13 +265,9 @@ impl BackendCore {
     /// registered this frame, metrics aren't known yet, or every
     /// resolved range has zero-or-negative width).
     ///
-    /// This is [`crate::text_selection::pixel_selection_ranges`] (cell
-    /// math) plus [`crate::paint_geometry::text_selection_highlight_rects`]
-    /// (range → pixel rect) chained together — the exact two-step
-    /// pipeline `GtkBackend::apply_selection_highlight`,
-    /// `MacBackend::apply_selection_highlight`, and
-    /// `WinBackend::apply_selection_highlight` each ran inline before
-    /// #1090, byte-identical modulo local variable names.
+    /// This combines [`crate::text_selection::pixel_selection_ranges`]
+    /// (cell math) and [`crate::paint_geometry::text_selection_highlight_rects`]
+    /// (range → pixel rect).
     #[cfg(any(
         feature = "gtk",
         feature = "win",

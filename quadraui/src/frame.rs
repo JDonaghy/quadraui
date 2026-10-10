@@ -4,29 +4,22 @@
 //! back-to-front z-order, then call [`ScreenLayout::draw`] to render
 //! everything and get back a [`FrameHitMap`] for click dispatch.
 //!
-//! This moves draw orchestration out of per-app backend code and into
-//! quadraui — apps describe the frame, quadraui executes it.
-//!
 //! Apps that already paint each surface at its natural call site
-//! (rather than in one batch immediately followed by `.draw()`) can
-//! instead push the same [`Surface`] entries into a `ScreenLayout`
+//! can instead push the same [`Surface`] entries into a `ScreenLayout`
 //! purely for hit-testing and call [`ScreenLayout::hit_map`], which
 //! registers every zone without invoking any `backend.draw_*()` call.
 //!
-//! ## `Surface` vs. calling `Backend::draw_*` directly (issue #456)
+//! ## `Surface` vs. calling `Backend::draw_*` directly
 //!
 //! `ScreenLayout` + [`Surface`] is the **canonical path for a consumer
 //! assembling a top-level screen out of multiple primitives**: pushing
 //! `Surface` entries and calling [`ScreenLayout::draw`] routes both
 //! backends through the same call site, so they cannot each paint the
-//! identical primitive a different way — the drift #456 found in
-//! vimcode, where the TUI palette painted via `backend.draw_palette(..)`
-//! and GTK's identical call site instead pushed a `Surface::Palette`,
-//! for no reason but that both APIs existed. `Backend::draw_<name>`
-//! remains public, low-level API — `ScreenLayout::draw` calls it
-//! internally, and rasteriser tests / compose helpers call it directly
-//! by design. See `quadraui/docs/decisions/DECISIONS.md` D-006 for the
-//! full decision and `quadraui/docs/PRIMITIVE_RULES.md` "One primitive,
+//! identical primitive a different way. `Backend::draw_<name>` remains
+//! public, low-level API — `ScreenLayout::draw` calls it internally,
+//! and rasteriser tests / compose helpers call it directly by design.
+//! See `quadraui/docs/decisions/DECISIONS.md` D-006 for the full
+//! decision and `quadraui/docs/PRIMITIVE_RULES.md` "One primitive,
 //! one canonical paint path" for the authoring rule this implies for
 //! new primitives.
 //!
@@ -68,12 +61,9 @@
 //! `idx: 3` even referred to unless it reproduces the exact same push
 //! order independently. `Surface<'a>`/`ScreenLayout<'a>` still borrow.
 //! Building an owned `Frame` tree that carries real content and roles
-//! remains tracked work, out of scope here; see
-//! `quadraui/docs/audits/FRAMEWORK_AUDIT_2026-09-26.md`'s "Owned
-//! `Frame`/`Surface` for bindings" row, which stays **Open** on exactly
-//! this evidence.
+//! remains tracked work, out of scope here.
 
-//! ## Presence gating + the paint/hit-test order invariant (issue #774)
+//! ## Presence gating + the paint/hit-test order invariant
 //!
 //! `Surface`/`ScreenLayout` above answer "what does a frame look
 //! like" for the primitives quadraui already knows about. They don't
@@ -87,7 +77,7 @@
 //! backend, as two independently-maintained lists that are supposed
 //! to agree: vimcode's `FRAME_Z_ORDER` (paint) and
 //! `MOUSE_ARBITRATION_ORDER` (hit-test) drifted exactly once —
-//! vimcode#587/#592 — and the fix was a `debug_assert!` comparing the
+//! And the fix was a `debug_assert!` comparing the
 //! two lists after the fact, not a structural guarantee.
 //!
 //! [`FrameRung`] + [`FramePresence`] + [`check_frame_order`] make that
@@ -593,7 +583,7 @@ impl<'a> ScreenLayout<'a> {
                     hovered,
                     pressed,
                 } => {
-                    // #819: the trait's `WidgetId`-keyed hover/pressed
+                    // The trait's `WidgetId`-keyed hover/pressed
                     // store. `Surface::StatusBar` still carries the two
                     // borrowed ids because a `Surface` is a per-frame
                     // *description*, not owned state — rebuild the
@@ -774,7 +764,7 @@ impl<'a> ScreenLayout<'a> {
     /// Tab order for this frame, as `(WidgetId, Rect)` pairs in reading
     /// order (top-to-bottom, then left-to-right by rect origin) — the
     /// shared source of truth [`crate::focus::FocusManager::sync_tab_order`]
-    /// cycles through (issue #830). An app that builds its screen via
+    /// cycles through. An app that builds its screen via
     /// `ScreenLayout` hands this straight to
     /// [`crate::runner::AppLogic::tab_stops`]; see that method's doc for
     /// the opt-in contract.
@@ -915,12 +905,11 @@ impl<'a> Default for ScreenLayout<'a> {
     }
 }
 
-/// A typed, app-defined z-order rung (issue #774). Implement this once
+/// A typed, app-defined z-order rung. Implement this once
 /// per app-specific "what can appear in a frame" enum (an editor pane,
 /// a bottom panel, an overlay stack, ...) to get a single declared
 /// back-to-front order that both painting ([`compose_frame`]) and
-/// hit-testing can consult — see the module docs above for the
-/// vimcode#587/#592 drift this exists to make structurally impossible.
+/// hit-testing can consult.
 pub trait FrameRung: Copy + Eq + std::fmt::Debug + 'static {
     /// Every variant, back-to-front (bottom of the stack first, i.e.
     /// painted first / hit-tested last). The single source of truth —
@@ -1012,7 +1001,7 @@ pub struct FrameOrderViolation<R> {
 /// whatever was visited.
 ///
 /// This is the guard that turns a `FRAME_Z_ORDER` vs.
-/// `MOUSE_ARBITRATION_ORDER`-style drift (vimcode#587/#592) into a
+/// `MOUSE_ARBITRATION_ORDER`-style drift into a
 /// failing assertion instead of a silent, months-later bug.
 pub fn check_frame_order<R: FrameRung>(visited: &[R]) -> Result<(), FrameOrderViolation<R>> {
     let mut last: Option<(R, usize)> = None;
@@ -1156,8 +1145,8 @@ mod tests {
         assert_eq!(hit_map.hit_test(150.0, 150.0), FrameZone::Empty);
     }
 
-    /// Issue #830: `tab_stops` derives Tab order from geometry (reading
-    /// order), not push order — the whole point of deriving it from
+    /// `tab_stops` derives Tab order from geometry (reading order),
+    /// not push order — the whole point of deriving it from
     /// `ScreenLayout` rather than an app hand-maintaining a list.
     #[test]
     fn tab_stops_sorts_by_reading_order_not_push_order() {
@@ -1241,11 +1230,9 @@ mod tests {
     }
 
     /// Every primitive with a `Backend::draw_*` method has a matching
-    /// `Surface` variant. Builds one of each of the 14 that previously
-    /// lacked one, pushes them all, and checks
-    /// `hit_map()` (no `&mut dyn Backend` needed — see
-    /// `hit_map_registers_zones_without_a_backend` above for why that's
-    /// safe) registers every one under the right `FrameZone` tag.
+    /// `Surface` variant. Builds one of each variant, pushes them all,
+    /// and checks `hit_map()` registers every one under the right
+    /// `FrameZone` tag.
     #[test]
     fn surface_gap_closed_for_all_fourteen_primitives() {
         let board = crate::primitives::board::BoardModel {

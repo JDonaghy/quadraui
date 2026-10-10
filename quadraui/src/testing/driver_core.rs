@@ -1,33 +1,13 @@
 //! Shared `app`/`backend`/`exited` core for headless [`AppLogic`] test
-//! drivers (quadraui#814, finishing quadraui#708's "Problem 2" —
-//! `testing.rs`'s own doc called `TuiDriver`/`GtkDriver`/`MacDriver` "a
-//! 3-way copy" before #708 gave them the shared [`super::DriverInput`] /
-//! [`super::PixelClickConformance`] trait defaults; #814 is the second
-//! half, for the state those trait defaults are methods *on*).
+//! drivers. [`DriverCore<B, A>`] holds the `app`/`backend`/`exited` trio
+//! and its accessors, plus [`EventOutcome`] bookkeeping every backend's
+//! `dispatch_event` return value goes through ([`Self::apply_outcome`]).
+//! [`TextRunSource`] plus the [`DriverCore`]-impl-block gated on it is
+//! the shared `painted_texts`/`screen_contains`/`find_bounds`/`find`
+//! bodies for the two backends (`MacBackend`, `WinBackend`) that record
+//! paint-time text runs in the same `&[TextRun]` shape.
 //!
-//! Before this, `TuiDriver`, `GtkDriver`, `MacDriver`, and `WinDriver`
-//! each declared their own `app: A`, `backend: B`, `exited: bool` fields
-//! and their own one-line `app`/`app_mut`/`backend`/`exited` accessor
-//! methods — four copies of the same three fields and the same four
-//! methods. `MacDriver` and `WinDriver` additionally duplicated the
-//! `EventOutcome -> Reaction` match inside `dispatch` byte-for-byte, and
-//! (once #721 gave both backends an identically-shaped `text_runs()`
-//! accessor) `painted_texts`/`screen_contains`/`find_bounds`/`find` too —
-//! the 2026-09-04 duplication audit that opened #708 measured the
-//! gtk↔macos overlap at 26 lines and the mac↔win `text_runs()`-backed
-//! query methods plus the `dispatch` match at roughly 80 lines combined.
-//!
-//! [`DriverCore<B, A>`] is the one implementation every backend driver
-//! now wraps instead of duplicating: the `app`/`backend`/`exited` trio,
-//! its accessors, and the [`EventOutcome`] bookkeeping every backend's
-//! production `dispatch_event` return value goes through
-//! ([`Self::apply_outcome`]). [`TextRunSource`] plus the
-//! [`DriverCore`]-impl-block gated on it is the second half: the shared
-//! `painted_texts`/`screen_contains`/`find_bounds`/`find` bodies for the
-//! two backends (`MacBackend`, `WinBackend`) that record paint-time text
-//! runs in the same `&[TextRun]` shape.
-//!
-//! Each concrete driver still owns its own render surface: a `TestBackend`
+//! Each concrete driver owns its own render surface: a `TestBackend`
 //! paired with a `Terminal` for TUI, an `ImageSurface` for GTK, a
 //! `BitmapSurface` for macOS, a `HeadlessSurface` for Win-GUI. `DriverCore`
 //! has no opinion on how a frame gets painted, which is why
@@ -143,9 +123,9 @@ impl<B, A> DriverCore<B, A> {
     }
 }
 
-// `apply_outcome` only has a caller on the three backends whose own
-// `dispatch` is a single `EventOutcome` in, one `Reaction` out shape
-// (`GtkDriver`, `MacDriver`, `WinDriver`) — `TuiDriver`'s hand-written
+// `apply_outcome` is only used by the three backends whose own
+// `dispatch` takes a single `EventOutcome` and returns one `Reaction`
+// (`GtkDriver`, `MacDriver`, `WinDriver`). `TuiDriver`'s hand-written
 // multi-event loop uses `mark_exited` directly instead (see the module
 // doc), so under a `tui`-only build (no `gtk`/`macos`/`win`) this method
 // would have zero callers and trip `dead_code` under this crate's
@@ -179,7 +159,7 @@ impl<B, A> DriverCore<B, A> {
                 render(&mut self.backend, &self.app);
                 Reaction::Redraw
             }
-            // quadraui#832: no render (the whole point of `RedrawAfter`
+            // No render (the whole point of `RedrawAfter`
             // is deferring one), and no driver-side timer to arm either
             // — a headless driver has no event loop for a scheduled
             // wake to interrupt. Pass the deadline through so a test
@@ -193,13 +173,13 @@ impl<B, A> DriverCore<B, A> {
     }
 }
 
-// This whole section — the trait, both impls, and the generic
-// `DriverCore` methods gated on it — only has a consumer when at least
-// one of `MacBackend`/`WinBackend` is actually in the build: with
-// neither feature on (e.g. this crate's `tui`/`gtk` CI legs), nothing
-// implements `TextRunSource` and nothing calls the methods below, which
-// trips `dead_code` under this crate's workflow-wide `-D warnings`.
-// `win` needs no `target_os` qualifier here (unlike `macos`, and unlike
+// This section — the trait, both impls, and the generic `DriverCore`
+// methods gated on it — only has a consumer when at least one of
+// `MacBackend`/`WinBackend` is in the build: with neither feature on
+// (e.g. this crate's `tui`/`gtk` CI legs), nothing implements
+// `TextRunSource` and nothing calls the methods below, which trips
+// `dead_code` under this crate's workflow-wide `-D warnings`. `win`
+// needs no `target_os` qualifier here (unlike `macos`, and unlike
 // `record_text_run`/`text_run_sink_active`'s predicate at the top of
 // `testing/mod.rs`): `WinBackend::text_runs()` — the method
 // `TextRunSource for WinBackend` wraps — has been unconditional since
@@ -212,16 +192,14 @@ mod text_run_query {
 
     /// A backend that records paint-time text runs as a flat `&[TextRun]`
     /// — implemented for [`crate::macos::backend::MacBackend`] and
-    /// [`crate::win::backend::WinBackend`] below (quadraui#721 gave both
-    /// an identically-shaped `text_runs()` accessor). `GtkBackend` is
-    /// deliberately not a `TextRunSource`: its `painted_text` field is a
-    /// private `Vec<PaintedText>`, a different shape recorded at a
-    /// different choke point (`gtk::painted_text::show_layout`), so
-    /// `GtkDriver` keeps its own
-    /// `painted_texts`/`screen_contains`/`find_bounds`/`find` bodies
-    /// rather than adopting this trait. TUI has no backend-side
-    /// text-run sink at all — `TuiDriver::inventory` scans the cell grid
-    /// directly.
+    /// [`crate::win::backend::WinBackend`] (both have an identically-shaped
+    /// `text_runs()` accessor). `GtkBackend` is deliberately not a
+    /// `TextRunSource`: its `painted_text` field is a private `Vec<PaintedText>`,
+    /// a different shape recorded at a different choke point
+    /// (`gtk::painted_text::show_layout`), so `GtkDriver` keeps its own
+    /// `painted_texts`/`screen_contains`/`find_bounds`/`find` bodies rather
+    /// than adopting this trait. TUI has no backend-side text-run sink at all
+    /// — `TuiDriver::inventory` scans the cell grid directly.
     pub(crate) trait TextRunSource {
         fn text_runs(&self) -> &[TextRun];
     }

@@ -1,84 +1,5 @@
 //! `FocusManager` — the single owner of "what widget currently has
-//! keyboard focus" (issue #830).
-//!
-//! # The problem this replaces
-//!
-//! Before this module, "what has focus" was six independent, partially
-//! overlapping representations with no single owner:
-//!
-//! 1. [`crate::compose::focus_group::FocusGroup`] /
-//!    [`crate::compose::focus_ring::FocusRing`] — Tab/Shift+Tab cycling
-//!    through *some* app-chosen list, reinvented per compose controller
-//!    (`workspace`, `sidebar_system`, `dual_mode_palette`, `examples/common/form_groups.rs`).
-//!    These stay — see "Relationship to `FocusRing`" below — but they're
-//!    no longer the only game in town, and nothing forced two different
-//!    controllers on the same screen to agree with each other.
-//! 2. `KeyContext.focus_chain` — already removed as dead code in #825's
-//!    adopt-or-demote pass before this issue started (zero constructors
-//!    anywhere; see `crate::compose`'s module doc). Nothing to collapse.
-//! 3. `ShellContext::request_activity_keyboard_focus` /
-//!    [`crate::compose::app_shell::AppShell::set_activity_keyboard_focused`]
-//!    — a bespoke bool that means "the `ActivityBar` owns the keyboard
-//!    cursor right now", entirely independent of any other widget's
-//!    focus state.
-//! 4. `TuiBackend`/`GtkBackend`/`MacBackend`/`WinBackend`'s
-//!    `focused_activity_bar` field (read via the crate-private
-//!    `PreprocessBackend::focused_activity_bar_id`) — the backend-side
-//!    twin of #3, set by `Backend::draw_activity_bar` each time an
-//!    `ActivityBar` declares `is_keyboard_focused = true`.
-//! 5. `TextInput.has_focus` — a per-widget bool primitives set on
-//!    themselves. The *same* pattern (a plain `has_focus: bool` field
-//!    the app sets before handing the primitive to `render`) also
-//!    appears on `List`, `Tree`, `Form`, `DataTable`, `Palette`,
-//!    `Completions`, `RichTextPopup`, `TextDisplay`, and
-//!    `MultiSectionView` — this is not a `TextInput`-only quirk but a
-//!    crate-wide primitive convention.
-//! 6. [`crate::text_selection::TextSelectionState::track_focused_text_region`]
-//!    — the text-selection subsystem's own idea of "focus", scoped to
-//!    `TextRegion`s only (used to resolve the Ctrl-A target).
-//!
-//! Representations 3/4 (`ActivityBar`'s own keyboard-cursor flag), 5
-//! (per-primitive `has_focus` bools) and 6 (text-region focus for
-//! Ctrl-A) are **left as-is** by this issue: all three are
-//! narrowly-scoped, already-shipped interaction modes with their own
-//! tests and driver coverage, and collapsing them into `FocusManager`
-//! is a distinct, separately-reviewable migration (each is a candidate
-//! for a future `crate::focus`-backed rewrite, not a batch of unrelated
-//! removals in one PR — see the repo's "one breaking change per PR"
-//! rule). Representation 5 in particular spans nine-plus primitives
-//! whose rasterisers read the bool directly for cursor/border/highlight
-//! styling (`tui`/`gtk`/`macos`/`win`, each), so collapsing it is a
-//! wider, per-primitive migration that belongs in its own follow-up
-//! issue, not a `TextInput`-only carve-out inside #830 — the read path
-//! such a migration would converge on already exists today as
-//! [`FocusManager::is_focused`]; a primitive's `has_focus` field would
-//! become a value the app copies from
-//! `backend.focus_manager().is_focused(&widget.id)` each frame, once
-//! every primitive with the field is migrated together so no screen is
-//! left with some widgets honoring `FocusManager` and others not. What
-//! #830 actually delivers: the missing *owner* — a single
-//! `focused: Option<WidgetId>` plus geometry-derived tab order — so a
-//! new, opt-in Tab/Shift+Tab path exists that every future primitive
-//! (and, over time, #3/#4/#5/#6 themselves) can converge onto, instead
-//! of a seventh ad-hoc representation being invented for the next
-//! widget that needs Tab support.
-//!
-//! # Relationship to [`crate::compose::focus_ring::FocusRing`]
-//!
-//! `FocusRing` already existed as "the prerequisite shape for #788's
-//! focus manager" (its own module doc, written during #825's
-//! adopt-or-demote pass). `FocusManager` is not a rename of `FocusRing`
-//! — it answers a different question. `FocusRing` cycles a fixed,
-//! app-supplied `Vec<WidgetId>` with no notion of geometry; a compose
-//! controller that already knows its own widget list (e.g.
-//! `examples/common/form_groups.rs`) can keep using it unchanged.
-//! `FocusManager` additionally derives *that list* from a frame's real
-//! layout via [`crate::frame::ScreenLayout::tab_stops`] — the piece
-//! #830's brief calls out as missing ("no tab order derived from
-//! `ScreenLayout`") — and is the type the shared runner pipeline
-//! ([`crate::runtime::preprocess_event`]) owns and mutates on every
-//! backend, which `FocusRing` (an app-owned, not runner-owned, type)
-//! was never meant to be.
+//! keyboard focus".
 //!
 //! # Ownership: one per backend, one writer
 //!
@@ -89,10 +10,9 @@
 //! [`crate::runtime::preprocess_event`] (via the crate-private
 //! `PreprocessBackend::focus_manager_mut`) — every backend's `run.rs`
 //! routes through that one function, so "what's focused" can't drift
-//! between backends the way the six old representations could. Apps
-//! never construct or mutate a `FocusManager` directly; they read it
-//! off the backend, and drive it indirectly by returning tab stops from
-//! [`crate::runner::AppLogic::tab_stops`].
+//! between backends. Apps never construct or mutate a `FocusManager`
+//! directly; they read it off the backend, and drive it indirectly by
+//! returning tab stops from [`crate::runner::AppLogic::tab_stops`].
 //!
 //! # Opt-in, not forced
 //!
@@ -100,15 +20,14 @@
 //! [`crate::runner::AppLogic::tab_stops`] (default: empty). While it
 //! returns `[]`, Tab/Shift+Tab pass through to `AppLogic::handle`
 //! completely unclaimed — **zero behavior change** for every app
-//! written before #830, including every existing quadraui example and
-//! both downstream consumers. Once an app returns a non-empty list from
-//! `tab_stops`, the runner claims Tab/Shift+Tab globally: they stop
-//! reaching `AppLogic::handle` as a raw `KeyPressed` and arrive instead
-//! as [`crate::UiEvent::FocusChanged`]. An app with a widget that
-//! treats a literal Tab keystroke as input (a code editor's indent
-//! command, say) should leave that widget out of `tab_stops` entirely,
-//! or keep `tab_stops` empty while that widget holds focus — see that
-//! method's doc for the full contract.
+//! written before this feature. Once an app returns a non-empty list
+//! from `tab_stops`, the runner claims Tab/Shift+Tab globally: they
+//! stop reaching `AppLogic::handle` as a raw `KeyPressed` and arrive
+//! instead as [`crate::UiEvent::FocusChanged`]. An app with a widget
+//! that treats a literal Tab keystroke as input (a code editor's
+//! indent command, say) should leave that widget out of `tab_stops`
+//! entirely, or keep `tab_stops` empty while that widget holds
+//! focus — see that method's doc for the full contract.
 //!
 //! # Focus-ring paint convention
 //!
@@ -134,7 +53,7 @@ use crate::types::WidgetId;
 // TUI story (`crate::tui::draw_focus_ring` paints a 1-cell border and
 // consumes no `Style` token).
 
-/// Single owner of keyboard focus (issue #830). See the module doc for
+/// Single owner of keyboard focus. See the module doc for
 /// the full rationale and the six representations this replaces (or, in
 /// three documented cases, deliberately leaves for a later migration).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -157,10 +76,7 @@ impl FocusManager {
     /// new order, focus is preserved (matched **by id**, not position —
     /// a widget that moved on screen keeps focus; one that vanished
     /// doesn't hand focus to whatever now sits at its old index).
-    /// Otherwise focus is cleared. Mirrors
-    /// [`crate::compose::focus_ring::FocusRing::set`]'s "unknown id is a
-    /// no-op" posture rather than silently snapping to a different
-    /// widget the caller never asked for.
+    /// Otherwise focus is cleared.
     pub fn sync_tab_order(&mut self, stops: &[(WidgetId, Rect)]) {
         self.tab_order = stops.iter().map(|(id, _)| id.clone()).collect();
         if let Some(cur) = &self.focused {

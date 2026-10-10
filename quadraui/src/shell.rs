@@ -29,14 +29,14 @@ pub struct ShellConfig {
     /// matching [`AppShell`]'s own default) — same unit as
     /// `default_sidebar_width`. Set via [`Self::with_activity_bar_width`].
     /// See [`Self::activity_bar_width_px`] for a fixed-pixel alternative
-    /// that doesn't move with the app's editor font (#657).
+    /// that doesn't move with the app's editor font.
     pub activity_bar_width: f32,
     /// Fixed-pixel activity bar width override. `None` (the default)
     /// leaves `activity_bar_width` (a line-height multiple) in charge.
     /// Set via [`Self::with_activity_bar_width_px`] to pin the bar to an
     /// exact width — e.g. `48.0` to match VS Code's activity bar and the
     /// `ACTIVITY_ROW_PX` row height GTK/macOS already paint each item at
-    /// — regardless of `line_height` (#657).
+    /// — regardless of `line_height`.
     pub activity_bar_width_px: Option<f32>,
     pub position: ShellPosition,
     pub has_title_bar: bool,
@@ -45,10 +45,10 @@ pub struct ShellConfig {
     /// (the default) leaves the line-height multiple in sole charge — see
     /// [`AppShell::with_title_bar_min_px`] for the full rationale and why
     /// this is a floor rather than [`Self::activity_bar_width_px`]'s hard
-    /// override. Set via [`Self::with_title_bar_min_px`] (quadraui#1045).
+    /// override. Set via [`Self::with_title_bar_min_px`].
     pub title_bar_min_px: Option<f32>,
     /// Ask the backend not to also draw its own native titlebar band on
-    /// top of an app-painted one (#947). `false` (the default) leaves
+    /// top of an app-painted one. `false` (the default) leaves
     /// every backend's previous window-creation behavior unchanged.
     ///
     /// This is **not** GTK's `set_decorated(false)` "undecorated" model —
@@ -91,7 +91,7 @@ pub struct ShellConfig {
     pub bottom_panel: Option<BottomPanelConfig>,
     /// Independently-gated bottom bands stacked below the editor content
     /// area, generalizing the single `bottom_panel`/`bottom_panel`-drawer
-    /// model to **N** rungs (issue #997) — e.g. a terminal toolbar, a
+    /// model to **N** rungs — e.g. a terminal toolbar, a
     /// debug toolbar, a quickfix list, a wildmenu, a separated status row,
     /// each present/sized independently of the others. Empty by default,
     /// so nothing that predates this field changes behavior. See
@@ -109,7 +109,7 @@ pub struct ShellConfig {
     /// applies it once via [`crate::Backend::set_editor_font`] during
     /// [`crate::shell_adapter::ShellAdapter`]'s one-time `setup()`, before
     /// the app's own `setup()` runs, so painted glyphs and click-column
-    /// math derive from the same font from the very first frame (#422).
+    /// math derive from the same font from the very first frame.
     pub editor_font: Option<(String, f32)>,
     /// GTK application id, e.g. `"io.github.jdonaghy.VimCode"`. Feeds
     /// `gtk4::Application::builder().application_id(..)` in the GTK shell
@@ -118,7 +118,7 @@ pub struct ShellConfig {
     /// `xdg_toplevel.set_app_id`, X11 `WM_CLASS`. The window manager uses
     /// that id to match a live window to an installed `.desktop` file —
     /// with the default generic id, every downstream app's taskbar/dock/
-    /// alt-tab entry shows a generic icon instead of the app's own (#656).
+    /// alt-tab entry shows a generic icon instead of the app's own.
     /// Defaults to `"org.quadraui.app"` so existing callers are
     /// unaffected. Set via [`Self::with_app_id`]. Backends with no
     /// window-manager concept (TUI) ignore this field.
@@ -127,7 +127,7 @@ pub struct ShellConfig {
     /// icon installed under an XDG icon theme directory. Feeds
     /// `gtk4::Window::set_icon_name` in the GTK shell runner so themed-icon
     /// lookup works even on window managers that don't resolve the app id
-    /// to a `.desktop` file (#656). `None` (the default) leaves GTK's own
+    /// to a `.desktop` file. `None` (the default) leaves GTK's own
     /// fallback icon in place. Set via [`Self::with_icon_name`]. Backends
     /// with no icon-theme concept (TUI) ignore this field.
     pub icon_name: Option<String>,
@@ -145,11 +145,11 @@ pub struct ShellConfig {
     /// `ShellConfig`-based consumer had no way to reach
     /// [`AppShell::with_panel_icon`] at all — `build_shell_adapter` builds
     /// the `AppShell` directly from `panels/bottom_items` and never
-    /// exposed a hook for it (#914).
+    /// exposed a hook for it.
     pub panel_icons: Vec<(WidgetId, Icon)>,
     /// App icon (Dock/app-switcher on macOS, big+small taskbar/titlebar
-    /// icon on Win-GUI) — issue #1142. `None` (the default) leaves each
-    /// backend's previous behaviour unchanged: macOS shows the generic
+    /// icon on Win-GUI). `None` (the default) leaves each backend's
+    /// previous behaviour unchanged: macOS shows the generic
     /// unbundled-executable icon, Win-GUI shows no titlebar/taskbar icon.
     ///
     /// This is a **window-manager identity concern**, not a paint-time
@@ -211,7 +211,6 @@ impl ShellConfig {
     /// Override the activity bar width in line-height multiples (`3.0` by
     /// default). Same unit as `default_sidebar_width`. See
     /// [`Self::with_activity_bar_width_px`] for a fixed-pixel alternative
-    /// (#657).
     pub fn with_activity_bar_width(mut self, width_lh: f32) -> Self {
         self.activity_bar_width = width_lh;
         self
@@ -220,7 +219,7 @@ impl ShellConfig {
     /// Pin the activity bar to a fixed pixel width, overriding
     /// `activity_bar_width`. Independent of `line_height` — e.g. `48.0`
     /// keeps the bar square against `ACTIVITY_ROW_PX` regardless of the
-    /// app's editor font size (#657).
+    /// app's editor font size.
     pub fn with_activity_bar_width_px(mut self, width_px: f32) -> Self {
         self.activity_bar_width_px = Some(width_px);
         self
@@ -234,14 +233,14 @@ impl ShellConfig {
 
     /// Pin a fixed-pixel floor under the title bar's line-height-derived
     /// height — see [`AppShell::with_title_bar_min_px`] for the full
-    /// rationale (quadraui#1045). `None` (the default) leaves
+    /// rationale. `None` (the default) leaves
     /// `title_bar_height_lh * line_height` in sole charge.
     pub fn with_title_bar_min_px(mut self, min_px: f32) -> Self {
         self.title_bar_min_px = Some(min_px);
         self
     }
 
-    /// Opt into a client-side titlebar (#947): ask the backend not to
+    /// Opt into a client-side titlebar: ask the backend not to
     /// also paint its own native titlebar band on top of an app-drawn
     /// [`Self::with_title_bar`] region. See [`Self::client_side_titlebar`]
     /// for the per-backend mechanism and why it is not GTK's
@@ -292,7 +291,7 @@ impl ShellConfig {
     }
 
     /// Register the ordered list of independently-gated bottom bands
-    /// (issue #997) — see [`Self::bottom_bands`] / [`BottomBand`].
+    /// — see [`Self::bottom_bands`] / [`BottomBand`].
     ///
     /// Replaces any previously-registered list. Combine freely with
     /// [`Self::with_bottom_panel`] / [`Self::with_bottom_panel_config`]:
@@ -323,14 +322,14 @@ impl ShellConfig {
     /// [GNOME application ID guidelines](https://developer.gnome.org/documentation/tutorials/application-id.html).
     /// GTK warns and ignores a malformed id rather than rejecting it
     /// outright, so this method does not validate the string itself.
-    /// See [`Self::app_id`] for why this matters (#656).
+    /// See [`Self::app_id`] for why this matters.
     pub fn with_app_id(mut self, app_id: impl Into<String>) -> Self {
         self.app_id = app_id.into();
         self
     }
 
     /// Set a themed icon name for the window (unset — GTK's own fallback —
-    /// by default). See [`Self::icon_name`] for why this matters (#656).
+    /// by default). See [`Self::icon_name`] for why this matters.
     pub fn with_icon_name(mut self, icon_name: impl Into<String>) -> Self {
         self.icon_name = Some(icon_name.into());
         self
@@ -339,7 +338,7 @@ impl ShellConfig {
     /// Attach a distinct Nerd-Font glyph + ASCII fallback pair to one
     /// activity-bar row, mirroring [`AppShell::with_panel_icon`] — the
     /// consuming-builder method [`crate::shell_adapter::build_shell_adapter`]
-    /// replays every registered pair onto during construction (#914).
+    /// replays every registered pair onto during construction.
     ///
     /// `id` may name a top panel (`panels`) or a [`Self::bottom_items`]
     /// entry; unknown ids are stored but never consulted, so call order
@@ -347,13 +346,6 @@ impl ShellConfig {
     /// matter. Calling this twice for the same id keeps the last pair —
     /// same last-write-wins semantics as `AppShell::with_panel_icon`, since
     /// both are ultimately backed by the same `HashMap`.
-    ///
-    /// Without this, a `ShellApp` consumer had no way to reach
-    /// [`AppShell::with_panel_icon`] at all: `build_shell_adapter` builds
-    /// its `AppShell` directly from `ShellConfig` and never called it, so
-    /// the `Icon` glyph/fallback pair #683 plumbed through was reachable
-    /// only from a direct `AppShell::new(...).with_panel_icon(...)` chain —
-    /// i.e. quadraui's own tests and examples, not any real consumer.
     pub fn with_panel_icon(mut self, id: WidgetId, icon: Icon) -> Self {
         self.panel_icons.push((id, icon));
         self
@@ -361,7 +353,6 @@ impl ShellConfig {
 
     /// Set the app icon (Dock/app-switcher on macOS, taskbar/titlebar on
     /// Win-GUI) — see [`Self::app_icon`] for the per-backend contract
-    /// (#1142).
     pub fn with_app_icon(mut self, icon: ImageSource) -> Self {
         self.app_icon = Some(icon);
         self
@@ -385,7 +376,7 @@ pub struct ShellContext<'a> {
     activity_focus_requested: Cell<bool>,
     /// A scoped mutable borrow of the [`AppShell`] instance
     /// [`crate::shell_adapter::ShellAdapter`] actually renders, lent out for
-    /// the duration of one `ShellApp::handle` dispatch (#454).
+    /// the duration of one `ShellApp::handle` dispatch.
     ///
     /// Before this existed, a `ShellApp` consumer had no way to reach the
     /// rendered shell at all — `ShellAdapter::shell` is `pub(crate)` — so
@@ -409,19 +400,12 @@ impl<'a> ShellContext<'a> {
     /// Only called by [`crate::shell_adapter::ShellAdapter`]; downstream
     /// consumers receive an already-built context, they don't build one.
     ///
-    /// `cfg`-gated with `ShellAdapter` itself (#540): under a feature set
+    /// `cfg`-gated with `ShellAdapter` itself: under a feature set
     /// with no shell runner there is no caller, so this and
     /// `take_activity_focus_requested` below go dead-code under
-    /// `-D warnings`. `macos` joined the gate in #465 alongside
-    /// `crate::macos::shell_runner`; `win` joined in #707 alongside
-    /// `crate::win::shell_runner`.
-    ///
-    /// `test` is in the gate too (#484): this module's own tests build a
-    /// `ShellContext` through it, and without `test` here
-    /// `cargo test -p quadraui --features macos` failed to compile — the
-    /// first feature set to exercise that combination. In a non-test
-    /// build the gate is unchanged, so the dead-code guard #540 added
-    /// still holds.
+    /// `-D warnings`. `macos` and `win` are included in the gate to match
+    /// their respective shell runners. `test` is included so tests in
+    /// this module can build a `ShellContext` directly.
     #[cfg(any(
         feature = "tui",
         feature = "gtk",
@@ -461,12 +445,12 @@ impl<'a> ShellContext<'a> {
 
     /// Borrow the real, rendered [`AppShell`] mutably.
     ///
-    /// This is the fix for #454: call any `AppShell` mutator directly on
-    /// the instance [`crate::shell_adapter::ShellAdapter`] actually
-    /// renders — `ctx.shell_mut().toggle_sidebar()`,
+    /// Call any `AppShell` mutator directly on the instance
+    /// [`crate::shell_adapter::ShellAdapter`] actually renders —
+    /// `ctx.shell_mut().toggle_sidebar()`,
     /// `ctx.shell_mut().show_bottom_panel()`,
-    /// `ctx.shell_mut().set_sidebar_width(w)`, etc. — instead of tracking a
-    /// shadow copy that can silently drift from what's on screen.
+    /// `ctx.shell_mut().set_sidebar_width(w)`, etc. — to keep shell state
+    /// in sync with the rendered display.
     ///
     /// # Panics
     /// Panics if [`Self::shell`] / [`Self::shell_mut`] is borrowed at the
@@ -500,7 +484,7 @@ impl<'a> ShellContext<'a> {
     /// [`crate::shell_adapter::ShellAdapter::handle`] calls this, after
     /// `ShellApp::handle` returns.
     ///
-    /// `cfg`-gated with `ShellAdapter` itself (#540); see [`Self::new`].
+    /// `cfg`-gated with `ShellAdapter` itself; see [`Self::new`].
     #[cfg(any(
         feature = "tui",
         feature = "gtk",
@@ -567,7 +551,7 @@ impl<'a> ShellContext<'a> {
     }
 
     /// Resolved bounds for one currently-visible [`BottomBand`]
-    /// (issue #997), or `None` if `id` names no registered band or the
+    ///, or `None` if `id` names no registered band or the
     /// band is not visible in the last computed layout.
     ///
     /// Reads [`AppShell::bottom_band_bounds`] rather than a field on
@@ -582,7 +566,7 @@ impl<'a> ShellContext<'a> {
     }
 
     /// Check if a mouse position lands inside one currently-visible
-    /// [`BottomBand`] (issue #997).
+    /// [`BottomBand`].
     pub fn in_bottom_band(&self, id: &WidgetId, x: f32, y: f32) -> bool {
         self.bottom_band_bounds(id)
             .is_some_and(|r| r.contains(Point::new(x, y)))
@@ -599,7 +583,7 @@ impl<'a> ShellContext<'a> {
     }
 
     /// Which edge or corner of the window `(x, y)` is within `margin` of,
-    /// or `None` if the position isn't near any outer border (#406).
+    /// or `None` if the position isn't near any outer border.
     ///
     /// Mirrors [`Self::in_title_bar`]'s pattern: the app hit-tests the
     /// pointer against a stored bounds field every frame rather than the
@@ -686,7 +670,7 @@ pub trait ShellApp {
     fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout);
 
     /// Render one currently-visible [`crate::compose::app_shell::BottomBand`]
-    /// (issue #997). Called once per visible band, after `render_content`,
+    ///. Called once per visible band, after `render_content`,
     /// in the same bottom-up stacking order the band list was given.
     ///
     /// This is a separate hook rather than a field on [`AppShellLayout`]
@@ -715,25 +699,12 @@ pub trait ShellApp {
     /// programmatic). Optional.
     ///
     /// The [`ShellContext`] lends the same scoped `&mut AppShell` borrow
-    /// [`Self::handle`] receives (#617) — call `ctx.shell_mut()` mutators
+    /// [`Self::handle`] receives — call `ctx.shell_mut()` mutators
     /// here (e.g. `set_title_bar_visible`, `set_sidebar_width`,
     /// `show_panel`, `toggle_sidebar`) to push state back into the shell
     /// on the *same frame* this event fires.
     ///
-    /// Before this method existed, [`crate::shell_adapter::ShellAdapter::handle`]
-    /// returned immediately after calling the (then one-argument,
-    /// ctx-less) pre-#617 hook — it never fell through to [`Self::handle`]
-    /// — so any shell-state mutation an app wanted to make in response to
-    /// a shell event had no way to land before the very next
-    /// `Reaction::Redraw` painted the frame. An app that flipped its own
-    /// view state here (e.g. "show the menu bar") and needed the shell to
-    /// reserve a row for it (`set_title_bar_visible`) simply couldn't, and
-    /// the chrome silently disagreed with the app's state until some
-    /// unrelated later event happened to reach `handle`.
-    ///
-    /// Default implementation is a no-op (issue #1251 removed the
-    /// ctx-less `on_shell_event` this used to forward to — both known
-    /// consumers had migrated off it).
+    /// Default implementation is a no-op.
     fn on_shell_event_ctx(&mut self, _event: &AppShellEvent, _ctx: &ShellContext) {}
 
     /// Poll for a pending **app-initiated** panel switch — e.g. an action
@@ -752,15 +723,9 @@ pub trait ShellApp {
     /// syncs its own view state from `on_shell_event_ctx` doesn't need a
     /// second code path.
     ///
-    /// Before this hook existed, consumers had no way to keep the chrome in
-    /// sync with a raw internal view-state write: the ActivityBar highlight
-    /// and panel header would silently keep pointing at the
-    /// previously-active panel until the user clicked the ActivityBar
-    /// themselves (a bug class seen in consumer apps).
-    ///
-    /// Default: never requests a switch — existing consumers are
-    /// unaffected. `&mut self` (not `&self`) so implementors can `.take()`
-    /// a stored `Option` field rather than needing interior mutability.
+    /// Default: never requests a switch. `&mut self` (not `&self`) so
+    /// implementors can `.take()` a stored `Option` field rather than
+    /// needing interior mutability.
     fn take_requested_panel(&mut self) -> Option<WidgetId> {
         None
     }
@@ -800,7 +765,7 @@ mod tests {
         ShellContext::new(None, false, layout, shell)
     }
 
-    /// #422: a fresh `ShellConfig` has no editor-font override — backends
+    /// A fresh `ShellConfig` has no editor-font override — backends
     /// keep their own default (GTK: "Monospace 11").
     #[test]
     fn shell_config_editor_font_defaults_to_none() {
@@ -808,7 +773,7 @@ mod tests {
         assert_eq!(config.editor_font, None);
     }
 
-    /// #422: `with_editor_font` stores the family/size pair verbatim for
+    /// `with_editor_font` stores the family/size pair verbatim for
     /// the shell runner to apply via `Backend::set_editor_font`.
     #[test]
     fn shell_config_with_editor_font_sets_family_and_size() {
@@ -816,7 +781,7 @@ mod tests {
         assert_eq!(config.editor_font, Some(("Fira Code".to_string(), 14.0)));
     }
 
-    /// #656: a fresh `ShellConfig` keeps the generic app id and no icon
+    /// A fresh `ShellConfig` keeps the generic app id and no icon
     /// override, so nothing that predates this field changes behavior.
     #[test]
     fn shell_config_app_id_defaults_to_generic() {
@@ -825,7 +790,7 @@ mod tests {
         assert_eq!(config.icon_name, None);
     }
 
-    /// #656: `with_app_id` stores the caller's id verbatim, replacing the
+    /// `with_app_id` stores the caller's id verbatim, replacing the
     /// generic default the GTK shell runner would otherwise announce to
     /// the window manager (Wayland `app_id` / X11 `WM_CLASS`).
     #[test]
@@ -834,7 +799,7 @@ mod tests {
         assert_eq!(config.app_id, "io.github.jdonaghy.VimCode");
     }
 
-    /// #947: a fresh `ShellConfig` keeps `client_side_titlebar` off, so
+    /// A fresh `ShellConfig` keeps `client_side_titlebar` off, so
     /// every existing consumer's window-creation call keeps getting
     /// today's native chrome unchanged.
     #[test]
@@ -843,7 +808,7 @@ mod tests {
         assert!(!config.client_side_titlebar);
     }
 
-    /// #947: `with_client_side_titlebar` opts in, mirroring the no-arg
+    /// `with_client_side_titlebar` opts in, mirroring the no-arg
     /// `with_command_line`/`with_status_bar` builders above since there's
     /// no accompanying data (unlike `with_title_bar`'s height).
     #[test]
@@ -852,7 +817,7 @@ mod tests {
         assert!(config.client_side_titlebar);
     }
 
-    /// #656: `with_icon_name` stores the themed icon name for the GTK
+    /// `with_icon_name` stores the themed icon name for the GTK
     /// shell runner to apply via `gtk4::Window::set_icon_name`.
     #[test]
     fn shell_config_with_icon_name_sets_the_icon() {
@@ -864,7 +829,7 @@ mod tests {
         );
     }
 
-    /// #657: a fresh `ShellConfig` keeps `AppShell`'s own default (3.0
+    /// A fresh `ShellConfig` keeps `AppShell`'s own default (3.0
     /// line-heights) and no fixed-pixel override, so nothing that predates
     /// this field changes behavior.
     #[test]
@@ -874,7 +839,7 @@ mod tests {
         assert_eq!(config.activity_bar_width_px, None);
     }
 
-    /// #657: `with_activity_bar_width` stores the line-height multiple
+    /// `with_activity_bar_width` stores the line-height multiple
     /// verbatim for `build_shell_adapter` to pass through to `AppShell`.
     #[test]
     fn shell_config_with_activity_bar_width_overrides_the_multiple() {
@@ -882,7 +847,7 @@ mod tests {
         assert_eq!(config.activity_bar_width, 2.4);
     }
 
-    /// #657: `with_activity_bar_width_px` stores a fixed-pixel override,
+    /// `with_activity_bar_width_px` stores a fixed-pixel override,
     /// letting a consumer pin the bar to VS Code's 48px regardless of the
     /// app's editor font / line height.
     #[test]
@@ -891,7 +856,7 @@ mod tests {
         assert_eq!(config.activity_bar_width_px, Some(48.0));
     }
 
-    /// #1045: a fresh `ShellConfig` has no title-bar-min-px floor —
+    /// A fresh `ShellConfig` has no title-bar-min-px floor —
     /// nothing that predates this field changes behavior.
     #[test]
     fn shell_config_title_bar_min_px_defaults_to_none() {
@@ -899,7 +864,7 @@ mod tests {
         assert_eq!(config.title_bar_min_px, None);
     }
 
-    /// #1045: `with_title_bar_min_px` stores the floor for
+    /// `with_title_bar_min_px` stores the floor for
     /// `build_shell_adapter` to pass through to `AppShell`.
     #[test]
     fn shell_config_with_title_bar_min_px_sets_the_floor() {
@@ -907,7 +872,7 @@ mod tests {
         assert_eq!(config.title_bar_min_px, Some(34.0));
     }
 
-    /// #914: a fresh `ShellConfig` has no panel-icon overrides — nothing
+    /// A fresh `ShellConfig` has no panel-icon overrides — nothing
     /// that predates this field changes behavior.
     #[test]
     fn shell_config_panel_icons_defaults_to_empty() {
@@ -915,7 +880,7 @@ mod tests {
         assert!(config.panel_icons.is_empty());
     }
 
-    /// #914: `with_panel_icon` appends `(id, icon)` pairs verbatim, in call
+    /// `with_panel_icon` appends `(id, icon)` pairs verbatim, in call
     /// order, for `build_shell_adapter` to replay onto the `AppShell`.
     #[test]
     fn shell_config_with_panel_icon_appends_overrides_in_order() {
@@ -931,7 +896,7 @@ mod tests {
         );
     }
 
-    /// #1142: a fresh `ShellConfig` has no app-icon override — every
+    /// A fresh `ShellConfig` has no app-icon override — every
     /// existing consumer keeps whatever generic icon its backend showed
     /// before this field existed (macOS: the unbundled-executable icon;
     /// Win-GUI: no titlebar/taskbar icon).
@@ -941,7 +906,7 @@ mod tests {
         assert_eq!(config.app_icon, None);
     }
 
-    /// #1142: `with_app_icon` stores the source verbatim for each
+    /// `with_app_icon` stores the source verbatim for each
     /// backend's shell runner to thread onto its own `RunConfig`.
     #[test]
     fn shell_config_with_app_icon_sets_the_source() {
@@ -950,7 +915,7 @@ mod tests {
         assert_eq!(config.app_icon, Some(ImageSource::Bytes(vec![1, 2, 3])));
     }
 
-    /// #997: a fresh `ShellConfig` registers no bottom bands — nothing
+    /// A fresh `ShellConfig` registers no bottom bands — nothing
     /// that predates this field changes behavior.
     #[test]
     fn shell_config_bottom_bands_defaults_to_empty() {
@@ -958,7 +923,7 @@ mod tests {
         assert!(config.bottom_bands.is_empty());
     }
 
-    /// #997: `with_bottom_bands` stores the ordered list verbatim for
+    /// `with_bottom_bands` stores the ordered list verbatim for
     /// `build_shell_adapter` to replay onto the `AppShell`.
     #[test]
     fn shell_config_with_bottom_bands_stores_the_list() {
@@ -970,7 +935,7 @@ mod tests {
         assert_eq!(config.bottom_bands, bands);
     }
 
-    /// #997: `ShellContext::bottom_band_bounds`/`in_bottom_band` resolve
+    /// `ShellContext::bottom_band_bounds`/`in_bottom_band` resolve
     /// against a band registered on the underlying `AppShell`, mirroring
     /// the existing `bottom_panel_bounds`/`in_bottom_panel` accessors.
     #[test]
@@ -1046,7 +1011,7 @@ mod tests {
         assert_eq!(c.window_edge(1.5, 1.5, 4.0), Some(ResizeEdge::NorthWest));
     }
 
-    /// #454: `ctx.shell_mut()` reaches the real `AppShell` — a `ShellApp`
+    /// `ctx.shell_mut()` reaches the real `AppShell` — a `ShellApp`
     /// can drive shell state (e.g. a `Ctrl+B` toggle-sidebar binding)
     /// directly on the instance that's actually rendered, with no shadow
     /// copy required.
@@ -1062,7 +1027,7 @@ mod tests {
         assert!(!shell.sidebar_visible());
     }
 
-    /// #454: `ctx.shell()` gives read access without requiring a mutable
+    /// `ctx.shell()` gives read access without requiring a mutable
     /// borrow, mirroring the read-only convenience accessors above.
     #[test]
     fn shell_read_reflects_current_state() {

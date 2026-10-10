@@ -1,14 +1,8 @@
 //! [`UndoStack`] — a generic, snapshot-based undo/redo history.
 //!
-//! See issue #833: `TextInput` had insert/delete/cursor/selection state
-//! but no undo — the accelerator *names* (`KeyBinding::Undo`,
-//! `KeyBinding::Redo`, see [`crate::accelerator`]) existed with nothing
-//! behind them. This module gives any primitive (not just `TextInput`) a
-//! reusable history type instead of a bespoke one per primitive.
-//!
-//! `UndoStack<T>` is deliberately snapshot-based rather than op-based: `T`
-//! is whatever the caller considers "the state to restore" — a full
-//! clone of the editable fields is simplest and is what
+//! `UndoStack<T>` is snapshot-based rather than op-based: `T` is whatever
+//! the caller considers "the state to restore" — a full clone of the
+//! editable fields is simplest and is what
 //! [`crate::primitives::text_input::TextInput::apply`] uses internally.
 //! Callers that want operation-based (diff) undo instead can still use
 //! this stack — just make `T` an inverse-op type — the stack itself only

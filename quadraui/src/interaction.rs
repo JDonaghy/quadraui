@@ -1,8 +1,5 @@
 //! `InteractionState` — a single hover/pressed store keyed by
-//! [`WidgetId`], replacing the positional `hovered_id: Option<&
-//! WidgetId>` / `pressed_id: Option<&WidgetId>` pairs that the
-//! `WidgetId`-keyed primitives' rasterisers used to take (issue #819,
-//! child of #786's "one convention" series).
+//! [`WidgetId`].
 //!
 //! ## Why this exists
 //!
@@ -10,12 +7,11 @@
 //! highlighting grew its own bespoke tracker:
 //! [`crate::compose::ToolbarHoverTracker`] for [`crate::Toolbar`],
 //! [`crate::compose::StatusBarInteraction`] for [`crate::StatusBar`],
-//! and a handful of examples (`examples/common/toolbar_app.rs`) that
-//! just inlined two `Option<WidgetId>` fields by hand. Each one
-//! reimplements the same three lines of "did the hovered/pressed id
-//! change since last time" bookkeeping, and each one is scoped to a
-//! single primitive even though hover/pressed state is a generic,
-//! per-frame concept that applies to any widget with an id.
+//! and a handful of examples that inlined two `Option<WidgetId>`
+//! fields by hand. Each reimplements the same bookkeeping, and each
+//! is scoped to a single primitive even though hover/pressed state
+//! is a generic, per-frame concept that applies to any widget with
+//! an id.
 //!
 //! `InteractionState` is the one generic store: a single instance can
 //! track the hovered/pressed widget across an entire frame's worth of
@@ -23,76 +19,41 @@
 //! it's keyed by [`WidgetId`], not tied to one primitive's layout
 //! type.
 //!
-//! ## What this PR changed on the `Backend` trait
+//! ## The `Backend` trait
 //!
 //! Every `Backend` method that took a `WidgetId`-keyed hover/pressed
-//! *pair* now has an `*_interactive` twin that takes one
+//! pair now has an `*_interactive` twin that takes one
 //! `&InteractionState` instead, and **the twin is the method each
-//! backend actually implements**:
+//! backend implements**:
 //!
-//! | positional (now deprecated) | implemented today |
+//! | positional (deprecated) | implemented |
 //! |---|---|
 //! | `draw_toolbar(rect, bar, hovered_id, pressed_id)` | [`crate::Backend::draw_toolbar_interactive`] |
 //! | `draw_status_bar(rect, bar, hovered_id, pressed_id)` | [`crate::Backend::draw_status_bar_interactive`] |
 //! | `draw_sidebar_panel(rect, panel, hovered_toolbar_id, pressed_toolbar_id)` | [`crate::Backend::draw_sidebar_panel_interactive`] |
 //!
-//! The three positional names survive only as `#[deprecated]` trait
-//! *defaults* that rebuild an `InteractionState` via
-//! [`InteractionState::from_parts`] and forward — the deprecate-first
-//! half of `CLAUDE.md` rule 3, because `coord-tui` and `vimcode` both
-//! call them today. Every in-repo call site is already migrated, so
-//! the shims exist purely for those two consumers.
+//! The positional names survive as `#[deprecated]` trait defaults that
+//! rebuild an `InteractionState` via [`InteractionState::from_parts`]
+//! and forward.
 //!
-//! ## What is deliberately *not* migrated
+//! ## Methods that remain positional
 //!
-//! Four `Backend` methods still take a positional hover argument, and
-//! none of them can move into an `InteractionState` as it stands,
-//! because this type is keyed by [`WidgetId`] and their hover state is
-//! keyed by *position within a collection*:
+//! Four `Backend` methods still take a positional hover argument, keyed
+//! by position within a collection rather than [`WidgetId`]:
 //!
 //! - `draw_activity_bar(.., hovered_idx: Option<usize>)`
 //! - `draw_tab_bar(.., hovered_close_tab: Option<usize>)`
 //! - `draw_data_table(.., hovered_idx: Option<usize>)`
 //! - `draw_chart(.., hovered_point: Option<(usize, usize)>)`
 //!
-//! Giving those a `WidgetId`-keyed shape means first giving tabs,
-//! activity items, table rows and chart points stable ids — a
-//! primitive-model change, not a signature change, and out of scope
-//! here. **Follow-up work item:** "#819 part 2 — give ActivityBar /
-//! TabBar / DataTable / Chart rows stable `WidgetId`s so their hover
-//! state can move into `InteractionState`". Until that lands, those
-//! four keep their index arguments, unchanged and undeprecated.
+//! These would need stable ids for their items before moving into
+//! `InteractionState`.
 //!
-//! [`crate::compose::ToolbarHoverTracker`] and
-//! [`crate::compose::StatusBarInteraction`] are likewise **untouched**
-//! by this change. `InteractionState` is designed to eventually
-//! subsume both (it does strictly more: pressed as well as hover, and
-//! across primitives rather than one), but neither is deprecated or
-//! rewired here — they remain the live implementation for their
-//! existing call sites in `examples/common/sidebar_panel_app.rs`,
-//! `examples/common/multi_tree.rs`, `examples/common/full_chrome_demo.rs`,
-//! and in both downstream consumers. Retiring them is its own
-//! rule-3 sequence.
+//! ## Ownership
 //!
-//! ## What is deliberately not owned by the runner (yet)
-//!
-//! Issue #819's fix description asks for `InteractionState` to be "owned
-//! and updated by the runner from `MouseMoved`/`MouseDown`, read by
-//! rasterisers" — i.e. `quadraui::{tui,gtk,macos,win}::run` would hold
-//! the single instance and every `AppLogic` would just read it. This PR
-//! does not do that: `run.rs` in any backend holds no `InteractionState`
-//! today. Every consumer that uses this type
-//! (`examples/common/toolbar_app.rs`, `full_chrome_demo.rs`,
-//! `multi_tree.rs`, `sidebar_panel_app.rs`) owns and feeds its own
-//! instance by hand inside its own `AppLogic::handle`, the same shape of
-//! boilerplate the bespoke trackers it replaces required — just against
-//! one shared type instead of several bespoke ones. Moving ownership
-//! into the runner is a real architectural change (it means threading
-//! `&InteractionState` through `AppLogic::render`'s signature, which is
-//! `pub` surface every backend and both downstream consumers implement),
-//! not just a refactor of this module, and is left as follow-up work:
-//! give the runner ownership of one `InteractionState` per frame and
-//! drop the per-app copies above.
+//! Every consumer owns and feeds its own `InteractionState` instance
+//! by hand inside its own `AppLogic::handle`. The runner does not hold
+//! a centralized instance.
 //!
 //! ## Usage
 //!
@@ -153,7 +114,7 @@ impl InteractionState {
     ///
     /// This is the adapter the deprecated positional `Backend::draw_*`
     /// shims use to forward `(hovered_id, pressed_id)` into their
-    /// `*_interactive` twins (issue #819), and it is equally useful for
+    /// `*_interactive` twins, and it is equally useful for
     /// a host mid-migration that still keeps the two ids in separate
     /// fields.
     pub fn from_parts(hovered: Option<WidgetId>, pressed: Option<WidgetId>) -> Self {

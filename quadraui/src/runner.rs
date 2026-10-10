@@ -3,9 +3,7 @@
 //! `quadraui::gtk::run`, future `quadraui::win::run` /
 //! `quadraui::macos::run`).
 //!
-//! See `docs/BACKEND_SETUP_AUDIT.md` (B.5d / #260) for the design
-//! notes that drove the trait shape, and `examples/tui_app.rs` for a
-//! minimal end-to-end usage.
+//! See `examples/tui_app.rs` for a minimal end-to-end usage.
 //!
 //! # Trait shape
 //!
@@ -31,10 +29,10 @@
 //!
 //! The trait carries an [`AppLogic::AreaId`] associated type. In
 //! practice all runners (GTK single-DA, TUI) use `type AreaId = ()`
-//! and pass `Default::default()`. The single-DA model was locked in
-//! by #217: zone routing is handled by `AppShell::compute_layout` +
-//! `FrameHitMap` hit-testing, not by multiple GTK DrawingAreas. The
-//! associated type is retained as a compatibility seam.
+//! and pass `Default::default()`. The single-DA model uses zone routing
+//! via `AppShell::compute_layout` + `FrameHitMap` hit-testing, not
+//! multiple GTK DrawingAreas. The associated type is retained as a
+//! compatibility seam.
 
 use std::time::Duration;
 
@@ -44,16 +42,9 @@ use crate::types::WidgetId;
 
 /// Tells the runner what to do after `handle` returns.
 ///
-/// `#[non_exhaustive]` (quadraui#832): this PR adds [`Reaction::RedrawAfter`]
-/// — verified non-breaking for both downstream consumers today (neither
-/// `coord-tui` nor `vimcode` exhaustively matches a `Reaction` value; see
-/// this PR's "Downstream impact" note for the grep), but the *next*
-/// variant might not be so lucky. Marking this `#[non_exhaustive]` now
-/// costs neither consumer anything — they only ever construct
-/// `Reaction::Redraw`/`Continue`/`Exit`/`RedrawAfter` values or compare
-/// them (`assert_eq!`/`matches!`), never exhaustively match one — and
-/// forecloses this exact "is a new variant breaking" question for future
-/// additions, per `CLAUDE.md`'s public-API rule 8.
+/// `#[non_exhaustive]`: this enum may gain new variants in the future.
+/// Existing code that only constructs or matches individual variants
+/// (rather than exhaustively matching) is unaffected by new additions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Reaction {
@@ -67,7 +58,7 @@ pub enum Reaction {
     Redraw,
     /// Don't redraw now, but wake the runner and call [`AppLogic::tick`]
     /// again after `Duration` — sooner if some other event wakes it
-    /// first (quadraui#832).
+    /// first.
     ///
     /// This is the replacement for the pre-#832 pattern of relying on a
     /// backend's fixed-cadence idle poll to eventually notice
@@ -157,9 +148,7 @@ impl Reaction {
 }
 
 /// What happened during one non-blocking `step`/`pump` call — the
-/// single-iteration, host-owns-the-loop entry points issue #1100 adds
-/// alongside each backend's all-owning `run`/`run_with` (`crate::tui::run`'s
-/// [`crate::tui::TuiRunner`], `crate::gtk::run`'s `GtkRunner`). Defined once
+/// single-iteration, host-owns-the-loop entry points. Defined once
 /// here, shared by every backend, the same way [`Reaction`] already is —
 /// see either runner type's doc for the full step/pump contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,7 +174,7 @@ pub trait AppLogic {
     /// Identifier for distinct render targets. All current runners
     /// use `type AreaId = ()` — zone routing is handled by
     /// `AppShell::compute_layout` + `FrameHitMap`, not multiple DAs
-    /// (#217). Retained as a compatibility seam.
+    ///. Retained as a compatibility seam.
     type AreaId: Copy + Eq + std::fmt::Debug + Default;
 
     /// One-time setup hook. Called by the runner after backend
@@ -218,41 +207,26 @@ pub trait AppLogic {
     /// background-task polling, etc., without needing synthetic event
     /// injection.
     ///
-    /// **Since quadraui#832, this is no longer called on a fixed
-    /// cadence.** Before #832, TUI and GTK polled unconditionally (16ms /
-    /// 33ms respectively) and called `tick` on every timeout regardless
-    /// of whether anything was scheduled — cheap to rely on, but it
-    /// burned CPU on a fully idle app; macOS and Windows didn't call
-    /// `tick` at all. `tick` now runs:
-    /// - after every batch of native events (as before), and
-    /// - after a backend's bounded idle-poll ceiling elapses, on the
-    ///   backends that keep one (see the per-backend table below), and
-    /// - promptly after a [`Reaction::RedrawAfter`] deadline it
-    ///   previously returned, via [`crate::Backend::request_frame_in`].
+    /// Called in these situations:
+    /// - after every batch of native events, and
+    /// - after a backend's bounded idle-poll ceiling elapses (see table
+    ///   below), and
+    /// - promptly after a [`Reaction::RedrawAfter`] deadline via
+    ///   [`crate::Backend::request_frame_in`].
     ///
-    /// **The cadence guarantee differs by backend — read this before
-    /// relying on `tick` running again "soon" with no explicit ask**
-    /// (quadraui#940 shipped without this table, which is exactly what
-    /// let a host silently rely on a guarantee two of four backends
-    /// don't make):
+    /// **Idle-poll fallback cadence by backend** (with no explicit ask via
+    /// `RedrawAfter`):
     ///
-    /// | Backend | Idle-poll fallback (no explicit ask) | Native-event batches | `RedrawAfter` |
-    /// |---|---|---|---|
-    /// | TUI | `crate::runtime::IDLE_POLL_CEILING` (250ms) | yes | yes |
-    /// | GTK | `crate::runtime::IDLE_POLL_CEILING` (250ms) | yes | yes |
-    /// | macOS | `crate::runtime::IDLE_POLL_CEILING` (250ms), since quadraui#940 (`macos::run`'s repeating `idlePollTick:` timer) | yes | yes |
-    /// | Windows | `crate::runtime::IDLE_POLL_CEILING` (250ms), since quadraui#1265 (`win::run`'s repeating `IDLE_POLL_TIMER_ID` `SetTimer`) | yes | yes |
+    /// | Backend | Idle-poll ceiling |
+    /// |---|---|
+    /// | TUI | `crate::runtime::IDLE_POLL_CEILING` (250ms) |
+    /// | GTK | `crate::runtime::IDLE_POLL_CEILING` (250ms) |
+    /// | macOS | `crate::runtime::IDLE_POLL_CEILING` (250ms) |
+    /// | Windows | `crate::runtime::IDLE_POLL_CEILING` (250ms) |
     ///
-    /// All four backends now carry the same coarse safety net (quadraui#1265
-    /// closed the Windows gap this table used to document — see that
-    /// issue for the history of Windows being the one backend with no
-    /// fallback at all). An app with time-driven state (spinner frame,
-    /// caret blink, countdown) should still return [`Reaction::RedrawAfter`]
-    /// with the exact interval it needs instead of assuming `tick` will be
-    /// called again "soon" on its own — the fallback ceiling is
-    /// deliberately coarser than before #832, so relying on it for
-    /// anything tighter than a quarter second is still wrong even though
-    /// every backend now has one.
+    /// Apps with time-driven state (spinner frame, caret blink, countdown)
+    /// should return [`Reaction::RedrawAfter`] with the exact interval
+    /// needed rather than rely on the idle-poll fallback.
     ///
     /// Default impl is a no-op so apps that don't need periodic
     /// callbacks don't have to write boilerplate.
@@ -269,7 +243,7 @@ pub trait AppLogic {
     /// Defaults to `false` (traditional direction), so apps that don't
     /// override this method keep quadraui's existing behavior unchanged.
     ///
-    /// Only [`crate::gtk::run`] consults this today (quadraui#418) — TUI
+    /// Only [`crate::gtk::run`] consults this today — TUI
     /// and Win32 wheel events already arrive in a single fixed direction
     /// with no natural-scroll concept, and macOS's translator
     /// (`crate::macos::events::ns_scroll`) doesn't yet expose the option.
@@ -286,41 +260,34 @@ pub trait AppLogic {
         false
     }
 
-    /// Opt into the shared runner-owned [`crate::focus::FocusManager`]
-    /// (issue #830): the current frame's Tab/Shift+Tab order, as
+    /// Opt into the shared runner-owned [`crate::focus::FocusManager`]:
+    /// returns the current frame's Tab/Shift+Tab order as
     /// `(WidgetId, Rect)` pairs in cycle order — typically
-    /// [`crate::frame::ScreenLayout::tab_stops`]'s output, for an app
-    /// that builds its screen that way.
+    /// [`crate::frame::ScreenLayout::tab_stops`]'s output.
     ///
     /// Defaults to empty, meaning **Tab/Shift+Tab pass through to
-    /// [`Self::handle`] completely unclaimed**, exactly as before #830 —
-    /// zero behavior change for every app that doesn't override this.
+    /// [`Self::handle`] completely unclaimed** — zero behavior change for
+    /// every app that doesn't override this.
     ///
     /// Once this returns a non-empty list, the runner claims
-    /// Tab/Shift+Tab globally: the shared pipeline
-    /// ([`crate::runtime::preprocess_event`]) intercepts them, cycles
-    /// [`crate::Backend::focus_manager`], and delivers
+    /// Tab/Shift+Tab globally: the shared pipeline intercepts them,
+    /// cycles [`crate::Backend::focus_manager`], and delivers
     /// [`crate::UiEvent::FocusChanged`] to [`Self::handle`] instead of
     /// the raw key press — see that event's doc for the exact contract,
     /// including why a widget that treats literal Tab as input (a code
-    /// editor's indent command, say) should stay out of this list, or
-    /// this method should return `[]` while that widget holds focus.
+    /// editor's indent command, say) should stay out of this list.
     ///
     /// Called on `&self` (no interior mutability required) both when a
     /// Tab/Shift+Tab keystroke arrives and once per frame after
     /// `render`, to resolve the focused widget's rect for
-    /// [`crate::Backend::draw_focus_ring`] — cheap for an app that
-    /// already has this data on hand from building its `ScreenLayout`.
+    /// [`crate::Backend::draw_focus_ring`].
     fn tab_stops(&self, _area: Self::AreaId) -> Vec<(WidgetId, Rect)> {
         Vec::new()
     }
 }
 
-/// [`Reaction::merge`] — the `Reaction`-side twin of the fix covered by
-/// `runtime::event_outcome_merge_tests`; see that module's doc for the
-/// review finding this closes (quadraui#832: batch-dispatch loops used to
-/// keep the *first* `RedrawAfter` seen rather than the *earliest*
-/// deadline).
+/// Tests for [`Reaction::merge`]: ensures batch-dispatch loops keep the
+/// *earliest* `RedrawAfter` deadline rather than the first one seen.
 #[cfg(test)]
 mod reaction_merge_tests {
     use super::*;

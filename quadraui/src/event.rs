@@ -19,7 +19,7 @@
 //!   can be logged, replayed, serialised for a plugin boundary, or sent
 //!   across threads with no ceremony. [`Self::User`] is the one exception
 //!   to "serialised for a plugin boundary" — it's an in-process-only
-//!   handoff by design (issue #831).
+//!   handoff by design.
 //! - Mouse events carry `Option<WidgetId>` — the backend does hit-testing
 //!   **before** emitting so apps dispatch on widget identity.
 //!
@@ -43,7 +43,7 @@
 //! widget under the cursor, regardless of which widget has keyboard focus.**
 //! Native convention on Win32, Cocoa, and GTK.
 //!
-//! ## Emission conformance — required vs. optional (issue #501)
+//! ## Emission conformance — required vs. optional
 //!
 //! Not every backend emits every variant, and not every variant needs
 //! to be emitted by every backend to be conformant. `docs/BACKEND.md`'s
@@ -58,7 +58,7 @@
 //! legitimate non-applicability tracked as a separate, non-gap
 //! disposition).
 //!
-//! ## Unit contract — `Point`, `Rect`, `Viewport` (issue #1098)
+//! ## Unit contract — `Point`, `Rect`, `Viewport`
 //!
 //! `Point`/`Rect`'s fields are bare `f32` — no `Px`/`Cell` newtype, no
 //! marker generic. That is a deliberate, audited choice, not an
@@ -308,7 +308,7 @@ pub struct BackendNativeEvent {
     pub payload: String,
 }
 
-// ─── Background-thread wake payload (issue #831) ───────────────────────────
+// ─── Background-thread wake payload ────────────────────────────────────────
 
 /// Opaque payload carried by [`UiEvent::User`].
 ///
@@ -455,31 +455,19 @@ pub enum UiEvent {
     /// An IME **committed** the composed text for one character. Routes
     /// to the focused text-input widget, same as [`Self::KeyPressed`].
     ///
-    /// **This is not "a character was typed" in general — that's
-    /// `KeyPressed { key: Key::Char(c), .. }`, which every backend
-    /// already emits and which every text-input consumer in this crate
-    /// (`compose::folder_picker`, and the plain-typing path inside
-    /// `compose::{tree_controller,sidebar_system,chat_controller}`)
-    /// treats as the canonical, always-present text-input event.**
-    /// `CharTyped` is reserved exclusively for the *output* of an IME
+    /// This is reserved exclusively for the *output* of an IME
     /// composition sequence (dead-key accents, Japanese/Chinese/Korean
     /// input, emoji picker commit) — text a user produced through
     /// multiple keystrokes/UI interactions that resolve to one commit,
     /// which has no sensible `KeyPressed` translation of its own.
     ///
-    /// No backend implements IME today (tracked under epic #481, IME
-    /// design story #502) and consequently **no backend emits this
-    /// variant** — every `KeyPressed{Key::Char}` a user types already
-    /// reaches apps through the always-on path above. A future IME
-    /// backend must not emit both for the same keystroke: real IME
+    /// A future IME backend must not emit both `CharTyped` and
+    /// `KeyPressed{Key::Char}` for the same keystroke: real IME
     /// composition consumes the raw keydown while a composition is in
     /// progress (nothing reaches `KeyPressed` for it), and only the
     /// final commit produces `CharTyped`. Emitting both would double-
     /// insert on any consumer that (correctly, per its own doc) listens
-    /// to both — `sidebar_system::SidebarSystem::handle_inner` and
-    /// `tree_controller::TreeController::handle` both call
-    /// `edit_insert_char` from *either* event today, on the assumption
-    /// they're mutually exclusive per keystroke.
+    /// to both.
     CharTyped(char),
 
     // ── Mouse ──────────────────────────────────────────────────────────
@@ -498,14 +486,10 @@ pub enum UiEvent {
         position: Point,
         buttons: ButtonMask,
     },
-    /// **Optional capability** (D-010, issue #501) — no backend emits
-    /// this today, and no in-tree or downstream consumer matches on it.
-    /// Kept (not removed) because hover state is a real, likely-future
+    /// Optional capability — hover state is a real, likely-future
     /// desktop need (tooltip auto-show, hover highlighting) that has no
-    /// substitute mechanism the way the D-008 dead `*Event` enums did
-    /// (those had a working `*Hit`/`*Layout` replacement already
-    /// shipping; this doesn't). A backend that never emits it is fully
-    /// conformant — declare the gap, don't fake it.
+    /// substitute mechanism. A backend that never emits this is fully
+    /// conformant.
     MouseEntered {
         widget: WidgetId,
     },
@@ -531,54 +515,37 @@ pub enum UiEvent {
     WindowResized {
         viewport: Viewport,
     },
-    /// **Required capability on every windowed (non-TUI) backend**
-    /// (D-010, issue #501) — the app's only hook to observe or veto an
-    /// OS-level window close (the "×" button, Alt-F4, window-manager
-    /// close). Not applicable to TUI: a terminal has no OS window to
-    /// close independently of the process exiting, so TUI legitimately
-    /// never emits this. GTK's `close-request` signal (`gtk::run`),
-    /// Win's `WM_CLOSE` (`win::run`), and — since issue #951 — macOS's
-    /// `windowShouldClose:`/`applicationShouldTerminate:` (`macos::run`,
-    /// covering the traffic-light button and Cmd-Q/menu-Quit
-    /// respectively) all dispatch this event and only let the close/quit
-    /// proceed when the app's `Reaction` is `Exit` — anything else
-    /// vetoes it.
+    /// Required capability on every windowed (non-TUI) backend —
+    /// the app's only hook to observe or veto an OS-level window close
+    /// (the "×" button, Alt-F4, window-manager close). Not applicable
+    /// to TUI: a terminal has no OS window to close independently of
+    /// the process exiting. The app's `Reaction` gates whether the close
+    /// proceeds: `Exit` allows it, anything else vetoes it.
     WindowClose,
     WindowFocused(bool),
-    /// **Optional capability** (D-010, issue #501; wired for GTK/macOS by
-    /// issue #834) — Win emits this from `WM_DPICHANGED` (`win::run`);
+    /// Optional capability — Win emits this from `WM_DPICHANGED`;
     /// GTK observes the `DrawingArea`'s `notify::scale-factor` signal
-    /// (`gtk::run`) and macOS observes
-    /// `NSWindowDidChangeBackingPropertiesNotification` (`macos::run`),
+    /// and macOS observes `NSWindowDidChangeBackingPropertiesNotification`,
     /// both firing on a live runtime DPI change (monitor move, external
     /// monitor plug/unplug) as well as at startup; TUI is always
     /// `scale == 1.0`, so it never applies there. `crate::runtime::preprocess_event`
     /// forces `EventOutcome::Redraw` for this variant regardless of what
     /// `AppLogic::handle` itself returns, so a repaint (and therefore a
-    /// re-measure of any DPI-dependent layout) always follows receipt —
-    /// see that function's doc for why an app-optional redraw isn't
-    /// enough here.
+    /// re-measure of any DPI-dependent layout) always follows receipt.
     DpiChanged(f32),
 
-    /// **Optional capability** (D-010, issue #501; added by issue #950) —
-    /// the OS toggled one of the window's tri-state chrome flags
-    /// (maximize/restore, fullscreen enter/exit, minimize/restore) other
-    /// than through [`Backend::toggle_window_maximize`] or
-    /// [`WindowControl::set_fullscreen`][crate::backend::WindowControl::set_fullscreen]
+    /// Optional capability — the OS toggled one of the window's tri-state
+    /// chrome flags (maximize/restore, fullscreen enter/exit,
+    /// minimize/restore) other than through [`Backend::toggle_window_maximize`]
+    /// or [`WindowControl::set_fullscreen`][crate::backend::WindowControl::set_fullscreen]
     /// themselves — a window-manager keyboard shortcut, a title-bar
     /// double-click GTK/macOS handle natively, `Cmd+Ctrl+F`, etc. Backends
     /// that wire this connect to their native "state changed" signal
-    /// (`gtk4::Window`'s `notify::maximized`/`notify::fullscreened`,
-    /// AppKit's `NSWindowDidMiniaturize`/`NSWindowDidEnterFullScreen`
-    /// notifications, Win's `WM_SIZE` with `SIZE_MINIMIZED`/
-    /// `SIZE_MAXIMIZED`) and push this with the window's fresh tri-state
-    /// snapshot; apps use it to keep their own "is maximized" UI (a
-    /// CSD-titlebar restore icon, say) in sync with state the user
+    /// and push this with the window's fresh tri-state snapshot; apps use
+    /// it to keep their own "is maximized" UI in sync with state the user
     /// changed outside the app's own controls. Not applicable to TUI: a
     /// terminal has no OS-level maximize/fullscreen/minimize state
-    /// distinct from the alt-screen it already occupies. A backend that
-    /// never emits this is fully conformant — declare the gap, don't
-    /// fake it (same posture as [`Self::MouseEntered`]).
+    /// distinct from the alt-screen it already occupies.
     WindowStateChanged {
         maximized: bool,
         fullscreen: bool,
@@ -586,13 +553,12 @@ pub enum UiEvent {
     },
 
     // ── Drops + paste ──────────────────────────────────────────────────
-    /// **Optional capability** (D-010, issue #501; wired by issue #834) —
-    /// emitted by GTK (`gtk::DropTarget` on the `DrawingArea`), macOS
-    /// (`NSDraggingDestination` on `QuadraView`), and Windows
-    /// (`WM_DROPFILES`) when the user drops OS files onto the window.
-    /// Not applicable to TUI: a terminal has no native drag-and-drop
-    /// surface. `position` is in the same native units as every other
-    /// pointer event (DIPs for GTK/macOS/Win).
+    /// Optional capability — emitted by GTK (`gtk::DropTarget` on the
+    /// `DrawingArea`), macOS (`NSDraggingDestination` on `QuadraView`),
+    /// and Windows (`WM_DROPFILES`) when the user drops OS files onto
+    /// the window. Not applicable to TUI: a terminal has no native
+    /// drag-and-drop surface. `position` is in the same native units as
+    /// every other pointer event (DIPs for GTK/macOS/Win).
     FilesDropped {
         paths: Vec<PathBuf>,
         position: Point,
@@ -600,76 +566,29 @@ pub enum UiEvent {
     ClipboardPaste(String),
 
     // ── Deep links / file associations / single-instance forwarding ────
-    /// The OS asked this app to open one or more URLs and/or files —
-    /// issue #957. Emitted in two situations that apps handle identically:
+    /// The OS asked this app to open one or more URLs and/or files.
+    /// Emitted in two situations that apps handle identically:
     ///
     /// 1. **At startup**, decoded from `argv` (a `myapp://...` URL or a
     ///    document path the OS launched the process with — "open with",
     ///    a registered URL scheme handler, an OAuth callback redirect).
     /// 2. **At runtime**, when [`RunConfig::single_instance`] is enabled
-    ///    (GTK: `gtk::RunConfig`; Win: `win::RunConfig` — see each
-    ///    backend's doc for its forwarding mechanism) and a second launch
-    ///    of the same app hands its request to the already-running
-    ///    instance instead of starting a new process.
+    ///    and a second launch of the same app hands its request to the
+    ///    already-running instance instead of starting a new process.
     ///
     /// `urls` and `files` are populated independently — a single launch
     /// can carry either, both, or (rarely) neither. Deliberately `String`
     /// rather than a parsed URL type: every value here is copied verbatim
-    /// from whatever the OS handed the process (`argv`, a `gio::File`
-    /// URI, an `NSURL` string, or a `WM_COPYDATA` payload) with no
-    /// validation, and quadraui takes no dependency on a URL-parsing
-    /// crate just to pass this value through unmodified — an app that
-    /// wants real scheme/host/query parsing pulls in `url` (or similar)
-    /// itself. `files` uses `PathBuf` — same convention as
-    /// [`Self::FilesDropped`].
+    /// from whatever the OS handed the process with no validation.
+    /// `files` uses `PathBuf` — same convention as [`Self::FilesDropped`].
     ///
-    /// **Registering as the OS handler for a scheme or extension is a
-    /// packaging concern** (`Info.plist`'s `CFBundleURLTypes`, a
-    /// `.desktop` file's `MimeType=`, an `HKCU\Software\Classes` registry
-    /// key) — quadraui does not do this for you. This variant only
-    /// covers the runtime half: receiving the event once the OS has
-    /// already routed it here.
+    /// Registering as the OS handler for a scheme or extension is a
+    /// packaging concern — quadraui does not do this for you. This
+    /// variant only covers the runtime half: receiving the event once
+    /// the OS has already routed it here.
     ///
-    /// Routing: broadcast, like [`Self::TextCopied`] — there is no
-    /// widget to hit-test or focus to route through.
-    ///
-    /// ## Backend coverage
-    ///
-    /// - **GTK** (`gtk::run`) — `ApplicationFlags::HANDLES_OPEN` +
-    ///   `Application::connect_open`, covering both argv-at-launch and
-    ///   runtime single-instance forwarding (free once `HANDLES_OPEN` +
-    ///   a stable `app_id` are set — GLib does the D-Bus forwarding).
-    /// - **Win** (`win::run`) — argv is classified and dispatched once at
-    ///   startup unconditionally; `RunConfig::single_instance` additionally
-    ///   arms a `CreateMutexW` guard + `WM_COPYDATA` forwarding to the
-    ///   primary window's `HWND`.
-    /// - **macOS** (`macos::run`) — `application:openURLs:` /
-    ///   `application:openFiles:` delegate methods. No single-instance
-    ///   forwarding: Launch Services already reactivates the running
-    ///   instance for a bundled `.app` and redelivers through the same
-    ///   delegate methods, so there is no separate mechanism for
-    ///   quadraui to opt into here. **Not yet wired**: a raw
-    ///   `NSAppleEventManager`/`kAEGetURL` handler for the narrow race
-    ///   where a URL arrives before AppKit has finished enough of launch
-    ///   to deliver the delegate callback — needs the `objc2-core-services`
-    ///   crate (for `AEEventClass`/`AEEventID`), which wasn't added in
-    ///   the issue #957 pass that landed the two delegate methods above
-    ///   (no macOS host was available to build/verify it against — see
-    ///   `application_open_urls`'s doc comment in `macos/run.rs`).
-    ///   Tracked as a follow-up.
-    /// - **TUI** — not wired by issue #957 (`quadraui/src/tui/run.rs`
-    ///   wasn't in that issue's file scope). A terminal process has no
-    ///   OS window to forward a second launch's request to, so only the
-    ///   argv-at-launch half would ever apply there; left for a follow-up
-    ///   issue rather than bundled in here.
-    ///
-    /// ## Downstream impact (CLAUDE.md rule 8)
-    ///
-    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
-    /// exhaustively `match`es every variant with no wildcard arm would
-    /// fail to compile the moment this variant landed. Blast-radius grep,
-    /// per CLAUDE.md's mandatory rule 1:
-    ///
+    /// Routing: broadcast — there is no widget to hit-test or focus to
+    /// route through.
     /// ```text
     /// $ grep -rn 'OpenRequested' ~/src/coord-tui/src ~/src/vimcode/src
     /// (no output — zero hits in both)
@@ -712,7 +631,7 @@ pub enum UiEvent {
     TextCopied(String),
 
     // ── Focus ────────────────────────────────────────────────────────
-    /// Keyboard focus moved (or was cleared) — issue #830.
+    /// Keyboard focus moved (or was cleared).
     ///
     /// Emitted by the shared runner pipeline
     /// ([`crate::runtime::preprocess_event`]) whenever
@@ -723,17 +642,14 @@ pub enum UiEvent {
     /// was cleared — no widget focused. A no-op cycle (e.g. Tab in a
     /// single-widget tab order) does not re-fire this event.
     ///
-    /// Routing: broadcast, like [`Self::TextCopied`] — apps read the new
-    /// value directly off the payload (or off
-    /// [`crate::Backend::focus_manager`] at any later point) rather than
-    /// this being routed to a specific widget's handler. Only fires for
-    /// apps that opt in by returning a non-empty
-    /// [`crate::runner::AppLogic::tab_stops`] — see that method's doc
-    /// for the full opt-in contract, including why Tab/Shift+Tab stop
-    /// reaching [`Self::KeyPressed`] once an app opts in.
+    /// Routing: broadcast — apps read the new value directly off the
+    /// payload (or off [`crate::Backend::focus_manager`] at any later
+    /// point) rather than this being routed to a specific widget's
+    /// handler. Only fires for apps that opt in by returning a
+    /// non-empty [`crate::runner::AppLogic::tab_stops`].
     FocusChanged(Option<WidgetId>),
 
-    // ── System theme change (issue #952) ────────────────────────────────
+    // ── System theme change ─────────────────────────────────────────────
     /// The OS-level light/dark/accent/high-contrast preference changed
     /// while the app was running — the live counterpart to
     /// [`PlatformServices::system_theme`][crate::PlatformServices::system_theme]'s
@@ -784,7 +700,7 @@ pub enum UiEvent {
     /// checkouts with no consumer changes required.
     SystemThemeChanged(SystemTheme),
 
-    // ── Display topology change (issue #959) ────────────────────────────
+    // ── Display topology change ─────────────────────────────────────────
     /// The set of connected displays changed — a monitor was plugged in,
     /// unplugged, or its resolution/DPI/work-area changed — while the app
     /// was running. No payload: apps that care call
@@ -825,18 +741,13 @@ pub enum UiEvent {
     ///     ~/src/coord-tui/src ~/src/vimcode/src
     /// (no output — zero hits in both)
     /// ```
-    ///
-    /// Zero hits means neither consumer references any of these yet, but
+    /// Zero hits means neither consumer references this variant yet, but
     /// the real question for a *new enum variant* is whether either
-    /// consumer's existing `match`es over `UiEvent` are exhaustive (no
-    /// wildcard arm) — both top-level `UiEvent` dispatches
-    /// (`vimcode`'s `tui_main/shell_app.rs:2403,2689`, `coord-tui`'s
-    /// `app/events.rs:1390`) are large multi-hundred-line matches that
-    /// already end in a wildcard `_ =>` arm, the same finding issue #952's
-    /// `SystemThemeChanged`, #957's `OpenRequested`, and #955's
-    /// `NotificationActivated` recorded for the same call sites. Adding
-    /// `DisplaysChanged` compiles clean against both `develop`-tip
-    /// checkouts with no consumer changes required.
+    /// consumer's existing `match`es over `UiEvent` are exhaustive
+    /// (no wildcard arm). Both top-level `UiEvent` dispatches are large
+    /// multi-hundred-line matches that already end in a wildcard `_ =>`
+    /// arm. Adding `DisplaysChanged` compiles clean with no consumer
+    /// changes required.
     DisplaysChanged,
 
     // ── Cross-primitive scroll event ──────────────────────────────────
@@ -925,7 +836,7 @@ pub enum UiEvent {
     /// open-menu state can ignore this variant.
     ContextMenuDismissed,
 
-    // ── Tray / status-bar icon (issue #953) ─────────────────────────────
+    // ── Tray / status-bar icon ──────────────────────────────────────────
     /// The user clicked the app's tray/status-bar icon
     /// ([`crate::backend::TrayService::set_icon`]) with no menu currently
     /// intercepting the click. Carries which mouse button was pressed —
@@ -955,7 +866,7 @@ pub enum UiEvent {
         button: MouseButton,
     },
 
-    // ── System notification activation (issue #955) ─────────────────────
+    // ── System notification activation ──────────────────────────────────
     /// The user activated a system notification sent through
     /// [`crate::backend::PlatformServices::send_notification`] — either
     /// the notification body itself (`action: None`) or one of the
@@ -1005,18 +916,13 @@ pub enum UiEvent {
     /// (no output — zero hits in both; neither consumer calls
     /// PlatformServices::send_notification or constructs Notification today)
     /// ```
-    ///
-    /// Zero hits means neither consumer references any of these yet, but
+    /// Zero hits means neither consumer references this variant yet, but
     /// the real question for a *new enum variant* is whether either
-    /// consumer's existing `match`es over `UiEvent` are exhaustive (no
-    /// wildcard arm) — both top-level `UiEvent` dispatches
-    /// (`vimcode`'s `tui_main/shell_app.rs`, `coord-tui`'s
-    /// `app/events.rs`) are large multi-hundred-line matches that already
-    /// end in a wildcard `_ =>` arm, the same finding issue #952's
-    /// `SystemThemeChanged` and #957's `OpenRequested` recorded for the
-    /// same two call sites. Adding `NotificationActivated` compiles clean
-    /// against both `develop`-tip checkouts with no consumer changes
-    /// required.
+    /// consumer's existing `match`es over `UiEvent` are exhaustive
+    /// (no wildcard arm). Both top-level `UiEvent` dispatches are large
+    /// multi-hundred-line matches that already end in a wildcard `_ =>`
+    /// arm. Adding `NotificationActivated` compiles clean with no
+    /// consumer changes required.
     NotificationActivated {
         tag: Option<String>,
         action: Option<WidgetId>,
@@ -1040,46 +946,33 @@ pub enum UiEvent {
     /// unless they want to special-case a platform.
     BackendNative(BackendNativeEvent),
 
-    // ── Background-thread wake (issue #831) ─────────────────────────────
+    // ── Background-thread wake ──────────────────────────────────────────
     /// An app-defined value delivered from a background thread through
     /// [`crate::Backend::waker`].
     ///
-    /// Before #831, every runner was poll-only: an app doing I/O had no
-    /// way to be told a background task finished short of checking its own
-    /// channel/flag from [`crate::runner::AppLogic::tick`] on whatever
-    /// cadence the backend happens to poll at (TUI: every 16ms; GTK: every
-    /// 33ms; macOS/Windows: never, absent a live redraw or native event —
-    /// see `Backend::waker`'s doc for why that made this the more
-    /// consequential gap on those two). `waker()` returns a `Send + Sync`
-    /// closure any thread can call with a [`UserPayload`]; the backend
-    /// wakes its event loop and delivers the payload as `UiEvent::User` to
-    /// [`crate::runner::AppLogic::handle`], the same way any other event
-    /// reaches the app — no polling required on the app's part.
+    /// `waker()` returns a `Send + Sync` closure any thread can call
+    /// with a [`UserPayload`]; the backend wakes its event loop and
+    /// delivers the payload as `UiEvent::User` to
+    /// [`crate::runner::AppLogic::handle`], the same way any other
+    /// event reaches the app.
     ///
-    /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`]
-    /// — there is no widget to hit-test or focus to route through, since
-    /// the value didn't originate from input. Apps downcast the payload
-    /// via [`UserPayload::downcast_ref`] against whatever concrete type
-    /// they handed to [`UserPayload::new`] on the producing thread.
+    /// Routing: broadcast — there is no widget to hit-test or focus to
+    /// route through. Apps downcast the payload via
+    /// [`UserPayload::downcast_ref`] against whatever concrete type they
+    /// handed to [`UserPayload::new`] on the producing thread.
     User(UserPayload),
 }
 
-// ─── Shared constructors (issue #495) ───────────────────────────────────────
+// ─── Shared constructors ────────────────────────────────────────────────────
 //
-// Every backend's `events.rs` (`gtk::events`, `macos::events`, `tui::events`)
-// translates native input into `UiEvent`. Only three things are genuinely
-// backend-native: the keysym/keycode → `Key` table, the button-number →
-// `MouseButton` map, and the modifier-mask → `Modifiers` map. The event
-// *shape* — which fields `MouseDown` carries, that `widget` starts `None`
-// pending hit-test, the scroll sign-flip convention — was previously
-// re-typed identically in each translator. These free functions are the
+// Every backend's `events.rs` translates native input into `UiEvent`.
+// Only three things are genuinely backend-native: the keysym/keycode → `Key`
+// table, the button-number → `MouseButton` map, and the modifier-mask →
+// `Modifiers` map. The event *shape* — which fields `MouseDown` carries,
+// that `widget` starts `None` pending hit-test, the scroll sign-flip
+// convention — is shared across all backends. These free functions are the
 // single place that shape lives; backends call them instead of writing the
 // `UiEvent::MouseDown { .. }` struct literal themselves.
-//
-// A new backend's event translation (see `BACKEND.md`'s worked estimate)
-// only needs to supply the three native-mapping tables and call these —
-// roughly 40 lines, not the 150+ each of `gtk::events` / `macos::events`
-// carried before this module existed.
 
 /// Build a [`UiEvent::MouseDown`]. `widget` always starts `None` — hit-test
 /// resolution happens downstream in [`crate::dispatch`], not in the
@@ -1143,7 +1036,7 @@ pub fn window_resized(width: f32, height: f32, scale: f32) -> UiEvent {
     }
 }
 
-/// Build a [`UiEvent::FilesDropped`] (issue #834). `x`/`y` are the drop
+/// Build a [`UiEvent::FilesDropped`]. `x`/`y` are the drop
 /// position in the backend's native units — already-scaled DIPs for
 /// GTK/macOS/Win, matching every other pointer event's convention.
 pub fn files_dropped(paths: Vec<PathBuf>, x: f32, y: f32) -> UiEvent {
@@ -1153,7 +1046,7 @@ pub fn files_dropped(paths: Vec<PathBuf>, x: f32, y: f32) -> UiEvent {
     }
 }
 
-/// Build a [`UiEvent::OpenRequested`] (issue #957) by classifying a flat
+/// Build a [`UiEvent::OpenRequested`] by classifying a flat
 /// list of raw OS-provided strings — `argv`, or a decoded
 /// `WM_COPYDATA`/single-instance-forwarding payload — into the variant's
 /// `urls`/`files` buckets.
@@ -1244,11 +1137,8 @@ mod user_payload_tests {
         assert!(err.to_string().contains("cannot be deserialised"));
     }
 
-    /// The whole point of #831: a `UserPayload` must round-trip through a
-    /// `UiEvent::User` and back out through the crate's own `Clone`/
-    /// `PartialEq`/`Debug` derive on the enum — i.e. adding this variant
-    /// didn't require weakening any of `UiEvent`'s other documented
-    /// invariants for every *other* variant.
+    /// A `UserPayload` must round-trip through a `UiEvent::User` and back
+    /// out through the crate's own `Clone`/`PartialEq`/`Debug` derives.
     #[test]
     fn user_event_clones_and_compares_via_the_wrapped_payload() {
         let ev = UiEvent::User(UserPayload::new(7_i32));

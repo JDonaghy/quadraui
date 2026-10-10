@@ -10,7 +10,7 @@
 //! `quadraui::tui` / `quadraui::gtk`.
 //!
 //! This is the **first** field set — driven by the StatusBar pilot
-//! (#223). Future migrations (TabBar, ListView, TreeView, …) will
+//!. Future migrations (TabBar, ListView, TreeView, …) will
 //! extend the struct.
 
 use crate::types::Color;
@@ -33,26 +33,17 @@ use std::path::Path;
 /// fields they care about. Building a *light* theme the same way?
 /// Spread `..Theme::light_default()` instead — `Default::default()`
 /// is dark, so every field a light theme leaves unmapped would
-/// otherwise arrive dark (quadraui#1184).
+/// otherwise arrive dark.
 ///
 /// # Adding a field here is a BREAKING change — prefer a method
 ///
 /// The paragraph above describes how in-tree callers *should* build a
-/// `Theme`; it is not what the downstream consumers actually do.
-/// `Theme` is a plain struct (not `#[non_exhaustive]`, and it must stay
-/// that way — `#[non_exhaustive]` would forbid struct-literal syntax
-/// downstream outright, breaking both consumers harder than any field
-/// ever could), and `coord-tui` builds three of its four palettes —
-/// `light_palette`, `high_contrast_palette`, `solarized_palette` in
-/// `tui/src/settings.rs` — with **exhaustive literals and no
-/// `..Default::default()` spread**. A new field therefore lands as
-/// `error[E0063]: missing field` in their next build, and unlike a
-/// rename there is no `#[deprecated]` shim that can soften a field
-/// *addition* (CLAUDE.md's *Downstream consumers* section,
-/// `docs/PRIMITIVE_RULES.md` rule 8). #620 learned this the expensive
-/// way: `tab_active_border_top` shipped as a field, reddened the
-/// `downstream consumers (compile truth)` gate, and came back as
-/// [`Theme::tab_active_border_top`] — a method.
+/// `Theme`. `Theme` is a plain struct (not `#[non_exhaustive]`, and it
+/// must stay that way — `#[non_exhaustive]` would forbid
+/// struct-literal syntax downstream, breaking both consumers harder
+/// than any field ever could). A new field lands as `error[E0063]:
+/// missing field` in downstream builds, and unlike a rename there is
+/// no `#[deprecated]` shim that can soften a field *addition*.
 ///
 /// So, before adding a `pub` field here:
 ///
@@ -62,11 +53,10 @@ use std::path::Path;
 ///    derives from is one the app already sets.
 /// 2. If it genuinely needs independent storage, it is a real breaking
 ///    change: one field per PR, with a `## Downstream impact` section
-///    naming each consumer literal that must gain the field, and the
-///    consumer migration issues opened in the same session.
+///    naming each consumer literal that must gain the field.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Theme {
-    // ── StatusBar pilot (#223 slice 1) ─────────────────────────────────
+    // ── StatusBar pilot ─────────────────────────────────────────
     /// Default surface background. Used as a fallback fill when the
     /// primitive has no opinion (e.g. an empty `StatusBar`).
     pub background: Color,
@@ -75,7 +65,7 @@ pub struct Theme {
     /// `●` glyph.
     pub foreground: Color,
 
-    // ── TabBar pilot (#223 slice 2) ────────────────────────────────────
+    // ── TabBar pilot ────────────────────────────────────────────
     /// Tab bar row background — also reused by inactive tab rows.
     pub tab_bar_bg: Color,
     /// Active tab background.
@@ -93,7 +83,7 @@ pub struct Theme {
     /// close-button `×` on inactive tabs.
     pub separator: Color,
 
-    // ── ListView pilot (#223 slice 3) ──────────────────────────────────
+    // ── ListView pilot ──────────────────────────────────────────
     /// Background fill for surfaces drawn with a border (e.g. a
     /// bordered `ListView` modal). Distinct from `background` because
     /// modal-style panels typically tint slightly off the editor bg.
@@ -118,9 +108,8 @@ pub struct Theme {
     /// paired with `selected_bg` for a focused row, in any primitive
     /// (`Tree`, `Form`, …). There is no separate `selected_fg` field —
     /// `theme.foreground` has no guaranteed contrast against
-    /// `selected_bg` (quadraui#1180: both are near-black on `selected_bg`
-    /// mid-blue under `vscode-light`), so every primitive's focused-row
-    /// paint should pair `(header_fg, selected_bg)` the same way, not
+    /// `selected_bg`, so every primitive's focused-row paint should
+    /// pair `(header_fg, selected_bg)` the same way, not
     /// `(foreground, selected_bg)`.
     pub header_fg: Color,
     /// Dim / muted foreground for less-important text (line numbers,
@@ -131,7 +120,7 @@ pub struct Theme {
     /// Warning / `Decoration::Warning` foreground.
     pub warning_fg: Color,
 
-    // ── Palette pilot (#223 slice 5) ───────────────────────────────────
+    // ── Palette pilot ───────────────────────────────────────────
     /// Query-input text colour and cursor block fg in a `Palette`
     /// modal. Distinct from `surface_fg` — the query line is
     /// emphasised, item rows are not.
@@ -140,13 +129,13 @@ pub struct Theme {
     /// `Palette` items.
     pub match_fg: Color,
 
-    // ── Form pilot (#223 slice 6) ──────────────────────────────────────
+    // ── Form pilot ──────────────────────────────────────────────
     /// Accent foreground used by `Form` for active-state visual cues
     /// (toggle "[x]" when on, slider filled track, button frame when
     /// focused). Typically the editor cursor / caret colour.
     pub accent_fg: Color,
 
-    // ── Tooltip pilot (#223 slice 7) ───────────────────────────────────
+    // ── Tooltip pilot ───────────────────────────────────────────
     /// Background fill for `Tooltip` popups (LSP hover, signature help,
     /// diff peek). Distinct from `surface_bg` so apps can tint hover
     /// popups differently from modal lists.
@@ -156,7 +145,7 @@ pub struct Theme {
     /// Border-glyph / stroke colour for `Tooltip` popups.
     pub hover_border: Color,
 
-    // ── Dialog pilot (#223 slice 8) ────────────────────────────────────
+    // ── Dialog pilot ────────────────────────────────────────────
     /// Background of the input field in a `Dialog` (e.g. the rename
     /// prompt's text entry). Distinct from `surface_bg` so the input
     /// reads as a separate sub-region.
@@ -173,7 +162,7 @@ pub struct Theme {
     /// is the listview row highlight).
     pub selection_bg: Color,
 
-    // ── RichTextPopup / Completions lift (#266) ────────────────────────
+    // ── RichTextPopup / Completions lift ───────────────────────────────
     /// Link / focus accent foreground. Used by `RichTextPopup` for the
     /// focused-popup border colour and the scrollbar thumb when the
     /// popup has keyboard focus. Typically the editor's markdown link
@@ -190,7 +179,7 @@ pub struct Theme {
     /// Background of the selected row in a completion popup.
     pub completion_selected_bg: Color,
 
-    // ── FindReplace lift (#271) ────────────────────────────────────────
+    // ── FindReplace lift ───────────────────────────────────────────────
     /// Accent background used for "this toggle button is on" states
     /// (e.g. case-sensitive / regex / preserve-case toggles in the
     /// find-replace overlay). Typically the editor's tab-active-accent
@@ -198,7 +187,7 @@ pub struct Theme {
     /// `accent_fg` (text-cursor accent).
     pub accent_bg: Color,
 
-    // ── Scrollbar lift (#277) ──────────────────────────────────────────
+    // ── Scrollbar lift ─────────────────────────────────────────────────
     /// Track colour for `Scrollbar`. The TUI rasteriser draws this on
     /// the entire track (typically a dim shade visible against the
     /// editor background); the GTK rasteriser uses it with a low alpha
@@ -209,8 +198,7 @@ pub struct Theme {
     /// modulation when the scrollbar is hovered or being dragged.
     pub scrollbar_thumb: Color,
 
-    // ── Editor lift (#276 Phase C Stage 1) ─────────────────────────────
-    // Backgrounds.
+    // ── Editor lift ─────────────────────────────────────────────
     /// Slightly tinted background of the focused editor window when
     /// multiple windows are visible. Distinct from `background` so the
     /// active pane is visually distinguishable. Vimcode's
@@ -298,7 +286,7 @@ pub struct Theme {
     /// Text colour of the command line bar.
     pub command_line_fg: Color,
 
-    // ── Board / kanban (#362) ──────────────────────────────────────────
+    // ── Board / kanban ─────────────────────────────────────────────────
     /// Background of the selected card in a `Board`.
     pub board_selected_card_bg: Color,
     /// Background of the focused column header in a `Board`.
@@ -318,9 +306,8 @@ pub struct Theme {
 }
 
 /// The six-colour categorical palette returned by
-/// [`Theme::chart_series`] — the single in-crate definition of the
-/// table that `tui::chart` and `primitives::chart` each used to spell
-/// out for themselves (#815).
+/// [`Theme::chart_series`] — the single in-crate definition used by
+/// the chart backends.
 ///
 /// `pub(crate)` so the backend rasteriser tests can name it as a
 /// constant (a `const` can't call the accessor method); everything
@@ -343,7 +330,7 @@ impl Theme {
     /// palette rather than a partially-black one. Returns `None` if the
     /// file cannot be read or does not parse as JSON.
     ///
-    /// Lifted from vimcode's `render::Theme::from_vscode_json` (#775).
+    /// Lifted from vimcode's `render::Theme::from_vscode_json`.
     /// vimcode's own theme carries dozens of syntax/LSP/semantic-token
     /// fields (`keyword`, `string_lit`, `semantic_namespace`, …) that
     /// this crate's [`Theme`] has no equivalent for — those stay
@@ -362,7 +349,7 @@ impl Theme {
     }
 
     /// The parsing half of [`Self::from_vscode_json`], split out so it
-    /// can be driven directly by property tests (quadraui#1130) without
+    /// can be driven directly by property tests without
     /// touching the filesystem for every case. No I/O, no `pub`
     /// surface added — same fallibility contract as the path-taking
     /// wrapper: `None` on anything that isn't valid JSONC or doesn't
@@ -613,7 +600,7 @@ impl Theme {
     }
 
     /// Colour of the 1 px accent line along the top edge of the active
-    /// tab — VS Code Dark Modern's `tab.activeBorderTop` (#620).
+    /// tab — VS Code Dark Modern's `tab.activeBorderTop`.
     ///
     /// Never applied automatically. A caller opts in per bar by passing
     /// `active_accent: Some(theme.tab_active_border_top())`, mirroring VS
@@ -623,35 +610,29 @@ impl Theme {
     /// on every backend (TUI, GTK, macOS) — e.g. for a bottom-panel tab
     /// strip, a terminal toolbar, or an unfocused split's tab bar.
     ///
-    /// **This is a method, not a `Theme` field, on purpose** — see the
-    /// "adding a field here is a breaking change" note on [`Theme`]
-    /// itself. Deriving it from [`Self::accent_fg`] loses nothing: a
-    /// palette that already sets its accent colour gets a matching tab
-    /// accent for free, and the built-in dark default is unchanged
-    /// (`accent_fg` defaults to the same `rgb(140, 200, 240)` this
-    /// originally shipped as a field).
+    /// **This is a method, not a `Theme` field, on purpose** — deriving
+    /// it from [`Self::accent_fg`] loses nothing: a palette that already
+    /// sets its accent colour gets a matching tab accent for free, and
+    /// the built-in dark default is unchanged (`accent_fg` defaults to
+    /// `rgb(140, 200, 240)`). A method with a hardcoded literal or
+    /// derived value is purely additive: it adds no new field for
+    /// downstream consumers' exhaustive palette literals to miss.
     pub fn tab_active_border_top(&self) -> Color {
         self.accent_fg
     }
 
-    // ── Terminal find-highlight lift (#500) ─────────────────────────────
+    // ── Terminal find-highlight lift ────────────────────────────
     //
-    // `tui/terminal.rs`, `gtk/terminal.rs`, and `macos/terminal.rs` each
-    // hardcoded the same two RGB literals for the find-match overlay
-    // (`rgb(255, 165, 0)` active, `rgb(100, 80, 20)` dim) — see #500. The
-    // shared ladder in `crate::terminal_style::resolve_cell_style` reads
-    // them from here instead.
+    // `tui/terminal.rs`, `gtk/terminal.rs`, and `macos/terminal.rs`
+    // each hardcoded the same two RGB literals for the find-match
+    // overlay. The shared ladder in
+    // `crate::terminal_style::resolve_cell_style` reads them from here
+    // instead.
     //
-    // **These are methods, not `Theme` fields, on purpose** — same
-    // reasoning as [`Self::tab_active_border_top`] above. Unlike that
-    // method, these don't derive from an existing field (there's no
-    // "find highlight" colour anywhere else in `Theme` to reuse), but a
-    // method with a hardcoded literal is still purely additive: it adds
-    // no new field for `coord-tui`'s exhaustive palette literals
-    // (`tui/src/settings.rs`) to miss, so it costs nothing downstream.
-    // Promote to a real field only if a consumer asks to theme these
-    // independently — that's rule 8's "if it must break" path, one field
-    // per PR with a `## Downstream impact` section.
+    // **These are methods, not `Theme` fields, on purpose** — purely
+    // additive, so they cost nothing in downstream exhaustive palette
+    // literals. Promote to real fields only if a consumer asks to theme
+    // these independently.
 
     /// Background painted over the currently-active find match —
     /// terminal find-highlight convention (bright orange).
@@ -670,105 +651,66 @@ impl Theme {
         Color::rgb(100, 80, 20)
     }
 
-    // ── Chart series lift (#815) ────────────────────────────────────────
+    // ── Chart series lift ───────────────────────────────────────────────
 
     /// Default per-series palette for `Chart`, used when a `Series`
     /// doesn't set its own `color`. Callers cycle by index:
     /// `theme.chart_series()[idx % 6]`.
     ///
-    /// Before #815 this six-colour table was spelled out twice — once
-    /// in `tui::chart` and once in `primitives::chart` (the copy
-    /// `gtk`/`macos`/`win` share since #810) — with identical values
-    /// and length in both. It now has exactly one definition, and every
-    /// rasteriser resolves through this accessor, so the backends can't
-    /// drift apart again.
+    /// This six-colour table has one definition here, and every
+    /// rasteriser resolves through this accessor, so the backends stay
+    /// consistent.
     ///
-    /// **This is a method, not a `Theme` field, on purpose** — same
-    /// reasoning as [`Self::find_active_bg`] above, and #815 learned it
-    /// the same expensive way #620 did. It first shipped as
-    /// `pub chart_series: [Color; 6]` and reddened the `downstream
-    /// consumers (compile truth)` gate: `coord-tui` builds three of its
-    /// four palettes (`light_palette`, `high_contrast_palette`,
-    /// `solarized_palette` in `src/settings.rs`) with exhaustive
-    /// `quadraui::Theme { … }` literals and no `..Default::default()`
-    /// spread, so the new field landed there as `error[E0063]: missing
-    /// field chart_series`. Only `dark_palette` has the spread.
-    ///
-    /// Unlike [`Self::tab_active_border_top`] this can't derive from an
+    /// **This is a method, not a `Theme` field, on purpose** — purely
+    /// additive, so it costs nothing in downstream exhaustive palette
+    /// literals. Unlike some other methods, this can't derive from an
     /// existing field: a chart legend needs six *mutually distinct*
     /// categorical colours, and `Theme` has no six semantically-unrelated
-    /// hues to borrow (the closest candidates — `accent_fg` and
-    /// `diagnostic_hint` — are the same `rgb(140, 200, 240)` by default,
-    /// and nothing in the struct is purple or pink). A method returning
-    /// the shared literal is still purely additive: it adds no field for
-    /// `coord-tui`'s exhaustive literals to miss, so it costs nothing
-    /// downstream, and per-`Series` `color: Some(..)` remains the
-    /// supported way for an app to choose its own chart colours today.
-    /// Promote to a real field only if a consumer asks to theme the
-    /// *default* palette independently — that's rule 8's "if it must
-    /// break" path, one field per PR with a `## Downstream impact`
-    /// section and the consumer migration PRs landed first.
+    /// hues to borrow. Per-`Series` `color: Some(..)` remains the
+    /// supported way for an app to choose its own chart colours.
     pub fn chart_series(&self) -> [Color; 6] {
         CHART_SERIES
     }
 
-    // ── Text-selection highlight lift (quadraui#1090) ───────────────────
+    // ── Text-selection highlight lift ───────────────────────────────────
 
     /// Translucent-blue fill painted over the active drag-selected range
     /// of a [`crate::dispatch::TextRegion`] — the generic, cross-widget
     /// text-selection mechanism every `text_selection: true` backend
-    /// embeds via `crate::text_selection::TextSelectionState` (#741,
-    /// #803). **Not** the same concept as [`Self::selection`]/
+    /// embeds via `crate::text_selection::TextSelectionState`. **Not**
+    /// the same concept as [`Self::selection`]/
     /// [`Self::selection_alpha`], which tint the *editor primitive's own*
     /// in-buffer selection — the two were already visually distinct
     /// before this method existed and stay that way here.
     ///
-    /// Before #1090, `GtkBackend::apply_selection_highlight`,
-    /// `MacBackend`'s `draw_selection_highlight`, and
-    /// `WinBackend::apply_selection_highlight` each hard-coded this exact
-    /// colour independently (`rgba(0.39, 0.58, 1.0, 0.30)` on GTK/macOS;
-    /// `Color::rgba(100, 148, 255, 77)` — a one-off-rounded approximation
-    /// — on Win-GUI). This method reproduces the more precise float
-    /// conversion (`round(0.39*255)=99`, `round(0.58*255)=148`,
-    /// `round(0.30*255)=77`) as the one shared value; the ~1/255 shift
-    /// from Win-GUI's old literal is visually immaterial (its own
-    /// pixel-readback tests assert a blend-direction threshold, not an
-    /// exact channel value — see `win_backend_paint_surface_fill_rect_*`
-    /// and the mirrored macOS test).
+    /// This method reproduces the exact shared value; GTK/macOS paint
+    /// `rgba(0.39, 0.58, 1.0, 0.30)` (float, `round(x*255)` per channel),
+    /// and all backends now read it from here instead of hard-coding it.
     ///
-    /// **A method, not a `Theme` field, on purpose** — same reasoning as
-    /// [`Self::find_active_bg`] above: purely additive, so it costs
-    /// nothing in `coord-tui`'s exhaustive palette literals. Promote to a
-    /// real field only if a consumer asks to theme this independently —
-    /// rule 8's "if it must break" path.
+    /// **A method, not a `Theme` field, on purpose** — purely additive,
+    /// so it costs nothing in downstream exhaustive palette literals.
     pub fn text_selection_highlight(&self) -> Color {
         Color::rgba(99, 148, 255, 77)
     }
 
-    // ── Light default palette (quadraui#1184) ───────────────────────────
+    // ── Light default palette ───────────────────────────────────────────
 
     /// A coherent **light** palette, structured field-for-field like
     /// [`Theme::default`]'s dark one.
     ///
-    /// [`Theme::default`] is dark (#727), so an app that spreads
+    /// [`Theme::default`] is dark, so an app that spreads
     /// `..Theme::default()` after picking its own light `background` /
     /// `foreground` gets every *unmapped* field — including any field
-    /// this crate adds later — at its dark value. That is exactly what
-    /// happened in vimcode: `inactive_selected_bg` was never mapped in
-    /// its `vscode-light` palette, so the Explorer's unfocused selected
-    /// row rendered as dark navy under light text.
+    /// this crate adds later — at its dark value.
     ///
     /// `light_default()` is a **separate associated function, not a
     /// change to `Default`** — flipping `Default` itself would be just
-    /// as one-sided a trap in the other direction (every app that
-    /// forgets to map a field in a *dark* theme would silently get
-    /// light leaks instead), and `Default::default()` can't take a
-    /// caller-supplied background anyway. An app building a light theme
-    /// spreads `..Theme::light_default()` instead of
+    /// as one-sided a trap in the other direction, and `Default::default()`
+    /// can't take a caller-supplied background anyway. An app building a
+    /// light theme spreads `..Theme::light_default()` instead of
     /// `..Theme::default()`; an app building a dark theme keeps
-    /// `..Theme::default()` unchanged. Being a plain function (not a
-    /// field, not a trait impl change) it is purely additive — nothing
-    /// downstream can miss it the way #620 missed a new field.
+    /// `..Theme::default()` unchanged. Being a plain function it is
+    /// purely additive — nothing downstream can miss it.
     pub fn light_default() -> Self {
         let bg = Color::rgb(250, 250, 248);
         let fg = Color::rgb(30, 30, 35);
@@ -812,7 +754,7 @@ impl Theme {
             scrollbar_track: Color::rgb(235, 235, 232),
             scrollbar_thumb: Color::rgb(180, 180, 190),
 
-            // Editor lift (#276 Phase C Stage 1) — light-theme defaults.
+            // Light-theme defaults for editor backgrounds.
             editor_active_background: Color::rgb(255, 255, 255),
             cursorline_bg: Color::rgb(240, 240, 222),
             dap_stopped_bg: Color::rgb(255, 235, 190),
@@ -845,7 +787,7 @@ impl Theme {
             command_line_bg: bg,
             command_line_fg: fg,
 
-            // Board / kanban (#362)
+            // Board / kanban
             board_selected_card_bg: Color::rgb(200, 220, 250),
             board_col_header_bg: Color::rgb(235, 235, 232),
             badge_running: Color::rgb(170, 110, 10),
@@ -866,7 +808,7 @@ impl Default for Theme {
     /// **This is a dark palette.** An app building a *light* theme that
     /// spreads `..Theme::default()` after setting its own `background`
     /// / `foreground` will get every other, unmapped field at its dark
-    /// value — see [`Theme::light_default`] (quadraui#1184) for a base
+    /// value — see [`Theme::light_default`] for a base
     /// that doesn't have that failure mode.
     fn default() -> Self {
         let bg = Color::rgb(20, 22, 30);
@@ -911,7 +853,7 @@ impl Default for Theme {
             scrollbar_track: Color::rgb(40, 44, 56),
             scrollbar_thumb: Color::rgb(110, 115, 130),
 
-            // Editor lift (#276 Phase C Stage 1) — neutral defaults.
+            // Neutral defaults for editor backgrounds.
             editor_active_background: bg,
             cursorline_bg: Color::rgb(30, 33, 45),
             dap_stopped_bg: Color::rgb(80, 70, 30),
@@ -944,7 +886,7 @@ impl Default for Theme {
             command_line_bg: bg,
             command_line_fg: fg,
 
-            // Board / kanban (#362)
+            // Board / kanban
             board_selected_card_bg: Color::rgb(50, 60, 90),
             board_col_header_bg: Color::rgb(40, 44, 56),
             badge_running: Color::rgb(220, 180, 80),
@@ -967,7 +909,7 @@ mod tests {
         path
     }
 
-    // `strip_json_comments` moved to `crate::text_util` (issue #1094); its
+    // `strip_json_comments` moved to `crate::text_util`; its
     // unit tests moved with it.
 
     #[test]
@@ -1070,7 +1012,7 @@ mod tests {
         assert_eq!(Theme::from_vscode_json(&path), None);
     }
 
-    /// #620: the active-tab top accent is exposed as a *method* derived
+    /// The active-tab top accent is exposed as a *method* derived
     /// from `accent_fg`, not as its own `Theme` field — a field addition
     /// is `error[E0063]` in coord-tui's three exhaustive palette literals
     /// (`tui/src/settings.rs`), which is exactly what reddened the
@@ -1091,16 +1033,15 @@ mod tests {
         );
     }
 
-    /// #500: the terminal find-highlight colours are exposed as
+    /// The terminal find-highlight colours are exposed as
     /// *methods*, not `Theme` fields, for the same reason as
     /// `tab_active_border_top` above — see
     /// `exhaustive_theme_literal_still_compiles` below.
     #[test]
     fn terminal_find_highlight_colours_match_the_pre_shared_literals() {
         let theme = Theme::default();
-        // Same RGB literals `tui`/`gtk`/`macos::terminal` each hardcoded
-        // independently before #500 — the shared ladder must not change
-        // the shipped colours, only where they're defined.
+        // Same RGB literals all backends hardcoded independently
+        // before being moved here — the shared ladder must not change
         assert_eq!(theme.find_active_bg(), Color::rgb(255, 165, 0));
         assert_eq!(theme.find_active_fg(), Color::rgb(0, 0, 0));
         assert_eq!(theme.find_match_bg(), Color::rgb(100, 80, 20));
@@ -1221,7 +1162,7 @@ mod tests {
         assert_eq!(exhaustive, d);
     }
 
-    /// #815: the chart series palette must be reachable off any `Theme`,
+    /// The chart series palette must be reachable off any `Theme`,
     /// including one an app built field-by-field rather than by
     /// spreading `..Default::default()`. It is an accessor, not a
     /// field, precisely so that call shape keeps compiling —
@@ -1242,7 +1183,7 @@ mod tests {
         assert_eq!(themed.chart_series().len(), 6);
     }
 
-    /// #815: the six series colours must be mutually distinct — they are
+    /// The six series colours must be mutually distinct — they are
     /// a *categorical* palette, so two equal entries would render two
     /// different chart series indistinguishable in the legend.
     #[test]
@@ -1260,12 +1201,12 @@ mod tests {
         }
     }
 
-    // ── Text-selection highlight lift (quadraui#1090) ───────────────────
+    // ── Text-selection highlight lift ───────────────────────────────────
 
-    /// Reproduces the exact pre-#1090 literal — GTK/macOS painted
-    /// `rgba(0.39, 0.58, 1.0, 0.30)` (float, `round(x*255)` per channel);
-    /// this is the one value every backend now reads instead of three
-    /// independently hard-coded copies.
+    /// Reproduces the exact pre-shared literal — GTK/macOS painted
+    /// `rgba(0.39, 0.58, 1.0, 0.30)` (float), and this is the one value
+    /// every backend now reads instead of three independently hard-coded
+    /// copies.
     #[test]
     fn text_selection_highlight_matches_the_pre_shared_literal() {
         assert_eq!(
@@ -1298,7 +1239,7 @@ mod tests {
         );
     }
 
-    // ── Light default palette (quadraui#1184) ───────────────────────────
+    // ── Light default palette ───────────────────────────────────────────
 
     /// Perceptual luminance (ITU-R BT.601), `0.0` (black) .. `255.0`
     /// (white). Test-only — good enough to distinguish "reads as light"
@@ -1309,7 +1250,7 @@ mod tests {
 
     /// Every background-type field on [`Theme::light_default`] must read
     /// as light. This is the failure mode a dark `Theme::default()` leak
-    /// produces (#1184): an app spreads `..Theme::default()` over a
+    /// produces: an app spreads `..Theme::default()` over a
     /// light `background`/`foreground` pair and every *other*
     /// background-type key stays dark. Asserting this on
     /// `light_default()` is what makes it a safe base for that spread.
@@ -1379,14 +1320,9 @@ mod tests {
         }
     }
 
-    /// Reproduces the vimcode regression from #1184: an app builds a
-    /// light theme by setting only the two base keys and spreading the
-    /// rest from a "default". With `..Theme::default()` that used to
-    /// leave `inactive_selected_bg` dark navy (`rgb(35, 40, 58)`) under
-    /// light text — vimcode's Explorer never mapped that key in its
-    /// `vscode-light` palette. With `..Theme::light_default()` the same
-    /// minimal spread must produce a light `inactive_selected_bg`
-    /// instead, and every other selection/background-type key with it.
+    /// Verifies that a light theme built from `light_default()` produces
+    /// light colours for all selection and background-type keys, not dark
+    /// leaks from spreading `..Theme::default()`.
     #[test]
     fn light_theme_built_from_light_default_does_not_leak_dark_keys() {
         let light = Theme {
@@ -1441,7 +1377,7 @@ mod tests {
 /// Property tests: `from_vscode_json_str` parses arbitrary (foreign,
 /// untrusted) file content — a VS Code theme is just a JSON file someone
 /// downloaded — so it must degrade to `None` rather than panic on any
-/// input whatsoever, not just the hand-picked fixtures above (#1130).
+/// input whatsoever, not just the hand-picked fixtures above.
 #[cfg(test)]
 mod proptests {
     use super::*;

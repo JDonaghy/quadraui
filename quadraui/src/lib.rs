@@ -60,7 +60,7 @@
 //!
 //! [`Backend`] is `pub` but **sealed** — TUI, GTK, Win-GUI, and macOS are
 //! the only implementations that will ever exist, and the trait enforces
-//! that rather than just documenting it (quadraui#800). See [`Backend`]'s
+//! that rather than just documenting it. See [`Backend`]'s
 //! own rustdoc for the mechanism (a private supertrait, plus a
 //! `compile_fail` doctest proving an out-of-crate `impl Backend` doesn't
 //! compile) and the reasoning: a required method can be added to
@@ -72,14 +72,12 @@
 //!
 //! ## Documentation
 //!
-//! Every file named below ships in the published `.crate` (see
-//! `Cargo.toml`'s `exclude` list for what doesn't, and why) — this list
+//! Every file named below ships in the published `.crate` — this list
 //! deliberately names only files a consumer of the published crate can
 //! actually open.
 //!
-//! - **`README.md`** (repository root — this crate is a workspace member,
-//!   not a standalone `cargo package` with its own README) — quick start,
-//!   full primitive list, per-backend status.
+//! - **`README.md`** (repository root) — quick start, full primitive list,
+//!   per-backend status.
 //! - **`docs/GUIDE.md`** — build a small two-pane app end to end, from
 //!   `cargo new` to something you can run and click on.
 //! - **`docs/APP_ARCHITECTURE.md`** — where app state lives vs. what
@@ -118,8 +116,7 @@
 //!
 //! ## Plugin invariants (briefly)
 //!
-//! Originally specified in this repo's internal pre-implementation design
-//! record (§10) — applies to every primitive:
+//! Applies to every primitive:
 //! 1. [`WidgetId`] is owned (`String`) — not `&'static str`.
 //! 2. Events are plain data — no Rust closures.
 //! 3. Primitives implement `Serialize + Deserialize` — Lua tables map via JSON.
@@ -129,7 +126,7 @@
 //!
 //! Verify all six when adding a new primitive or extending an existing one.
 
-// #619: library code must never write to stdout/stderr — a host embedding
+// Library code must never write to stdout/stderr — a host embedding
 // a quadraui backend (vimcode's TUI, in raw mode on the alternate screen)
 // owns the terminal, and a stray `eprintln!`/`println!` lands as raw bytes
 // in its live cell grid, bypassing ratatui entirely. Denied here, not just
@@ -146,21 +143,16 @@
 // compiled as separate crates and are unaffected by this inner attribute;
 // they're expected to print freely.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
-// docs.rs builds every crate with `--cfg docsrs` (nightly rustdoc) so that
-// feature-gated items can be annotated with their requirement. `doc(cfg(..))`
-// itself is a nightly-only rustdoc attribute, so it's spelled behind
-// `cfg_attr(docsrs, ...)` everywhere it's used below — a plain build (this
-// repo's own `cargo doc`, on stable, with no `--cfg docsrs`) never sees the
-// attribute at all, so this compiles unchanged on stable. See issue #797 and
-// `[package.metadata.docs.rs]` in `Cargo.toml`, which is what sets
-// `--cfg docsrs` (via `rustdoc-args`) for the published build.
+// `doc(cfg(..))` is a nightly-only rustdoc attribute; docs.rs builds with
+// `--cfg docsrs` so feature-gated items can be annotated. A plain build on
+// stable never sees this attribute and compiles unchanged.
 #![cfg_attr(docsrs, feature(doc_cfg))]
-// #797: `cargo doc --no-deps -D warnings` is a CI gate (see `ci.yml`'s `doc`
+// `cargo doc --no-deps -D warnings` is a CI gate (see `ci.yml`'s `doc`
 // job). Two rustdoc lints below are pre-existing debt across ~38 files
 // (measured 2026-09-06: ~185 warnings, mostly stale intra-doc links to
 // renamed/removed methods, plus doc comments on public re-exports that link
 // to private helpers by relative path) that predates this gate and is out of
-// scope for the release-metadata work that added it (issue #797) — fixing it
+// scope for the release-metadata work that added it — fixing it
 // crate-wide is its own follow-up. Allowed here, narrowly, rather than
 // disabling `-D warnings` for the whole doc build: every other rustdoc lint
 // (`rustdoc::bare_urls`, `rustdoc::invalid_html_tags`, `missing_docs`-style
@@ -168,7 +160,7 @@
 // updating this comment.
 #![allow(rustdoc::broken_intra_doc_links, rustdoc::private_intra_doc_links)]
 
-// Not `pub mod`, and not under `primitives/`: `A11yInfo` (#835) is shared
+// Not `pub mod`, and not under `primitives/`: `A11yInfo` is shared
 // accessibility groundwork, not a widget primitive — no `Layout`, no
 // `hit_test`, no `Backend::draw_*` method — so it doesn't belong in the
 // primitive count `readme_truth.rs`'s `lib_doc_states_the_real_primitive_count`
@@ -181,7 +173,7 @@ pub mod diff;
 pub mod focus;
 // Not under `primitives/`, for the same reason `a11y` isn't (see the
 // comment above `mod a11y`): `font_role` classifies *which font* each
-// primitive paints in (issue #1003). It has no `Layout`, no `hit_test`
+// primitive paints in. It has no `Layout`, no `hit_test`
 // and no `Backend::draw_*` method of its own, so it is not a widget
 // primitive and must not inflate the primitive count
 // `readme_truth.rs`'s `lib_doc_states_the_real_primitive_count` /
@@ -191,7 +183,7 @@ pub mod focus;
 // pixel backend's `draw_*` methods are written against.
 pub mod font_role;
 // Not under `primitives/`, same reasoning as `font_role` above:
-// `GenericFamily` (issue #1023) classifies a font *request*, not a
+// `GenericFamily` classifies a font *request*, not a
 // widget — no `Layout`, no `hit_test`, no `Backend::draw_*` method of
 // its own — so it must not inflate the primitive count `readme_truth.rs`
 // derives from `primitives/mod.rs`'s `pub mod` list.
@@ -227,13 +219,13 @@ pub mod terminal_engine;
 pub mod flex;
 
 // Small LRU cache for decoded image rasterisations, shared by every pixel
-// backend's `Backend::draw_image` that actually uses it (#1014).
+// backend's `Backend::draw_image` that actually uses it.
 // Crate-internal — only backend modules need it. `gtk` needs no
 // `target_os` gate (gdk_pixbuf runs anywhere); `macos` mirrors `mod
 // macos`'s own `all(feature = "macos", target_os = "macos")` gate below,
 // since `macos::image` (the only user) is itself gated the same way.
 // `win` deliberately does NOT wire this cache in yet — see
-// `win::image`'s "No decode cache here yet (#1014)" module doc for why
+// `win::image`'s "No decode cache here yet" module doc for why
 // (an `ID2D1Bitmap` is bound to the render target that created it, so
 // caching one across `WinBackend::ensure_surface`'s device-lost recovery
 // needs its own invalidation logic this change doesn't add) — so `win`
@@ -264,7 +256,7 @@ pub(crate) mod image_cache;
 ))]
 pub(crate) mod codicon;
 
-// ── Per-backend rasterisers (#223) ──────────────────────────────────────────
+// ── Per-backend rasterisers ─────────────────────────────────────────────────
 // Public `draw_*` rasterisers, gated behind feature flags so apps that only
 // consume the data layer don't pull in ratatui / gtk4. Lifted out of vimcode
 // (`src/tui_main/quadraui_tui.rs`, `src/gtk/quadraui_gtk.rs`) one primitive
@@ -313,7 +305,7 @@ pub mod event;
 // way it did back when this was `pub(crate)`.
 pub mod paint_surface;
 
-// Host-independent paint-geometry helpers (#857) — pure rect/inset
+// Host-independent paint-geometry helpers — pure rect/inset
 // arithmetic pulled out from behind `src/macos/`'s whole-module
 // `target_os = "macos"` gate (mirrors `src/win/msg.rs`'s equivalent split
 // for Windows), so `cargo test -p quadraui` exercises it with no
@@ -332,16 +324,11 @@ pub mod modal_stack;
 // ── Phase B.5e: runner-crate API ────────────────────────────────────────────
 // AppLogic trait + Reaction enum that per-backend `run<A: AppLogic>(app)`
 // runners (in `quadraui::tui::run`, `quadraui::gtk::run`) drive against.
-// See `docs/BACKEND_SETUP_AUDIT.md` (#260) for design rationale.
+// See `docs/BACKEND_SETUP_AUDIT.md` for design rationale.
 pub mod runner;
 // `ShellAdapter` is constructed only by the TUI/GTK/macOS/Win-GUI shell
-// runners (`crate::tui::shell_runner`, `crate::gtk::shell_runner`,
-// `crate::macos::shell_runner`, `crate::win::shell_runner`, #465 + #707);
-// under a feature set with none of those runners nothing builds one, so
-// the whole module — struct, impls, and its private helpers — goes
-// dead-code under `-D warnings` (#540). Gate the module on the features
-// that actually consume it rather than `#[allow(dead_code)]`-ing the
-// individual items.
+// runners. Gate the module on the features that actually consume it rather
+// than allowing dead code under `-D warnings`.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -351,15 +338,8 @@ pub mod runner;
 pub mod shell_adapter;
 
 // Shared runner plumbing (`EventOutcome`, `ReactionSink` + `apply_outcome`,
-// `ResizeDebouncer`) used by `tui::run`, `gtk::run`, `macos::run`
-// (quadraui#496), and `win::run` (#707 — originally `EventOutcome` only;
-// `win` has no `ReactionSink`/GTK-or-macOS-style window handle to apply an
-// outcome to, so `ReactionSink`/`apply_outcome` stay cfg'd to their
-// original three). `win` joins this gate (unlike `shell_adapter` above,
-// whose consumer set this comment used to claim was identical) so a
-// `win`-only build doesn't trip `-D warnings`' dead-code lint on
-// `EventOutcome`. `macos` and `win` both adopt `ResizeDebouncer` too as of
-// #780 — see that struct's doc for why they need it and GTK doesn't.
+// `ResizeDebouncer`) used by the shell runners. Gated to prevent dead-code
+// warnings on feature combinations that don't use them.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -368,27 +348,16 @@ pub mod shell_adapter;
 ))]
 mod runtime;
 
-// Shared, backend-neutral desktop-interaction plumbing (#498): window-drag
+// Shared, backend-neutral desktop-interaction plumbing: window-drag
 // arm/threshold/commit, modal-pump re-entrancy guard, headless smoke-mode
 // predicates, PointerShape enum-walk scaffold. Compiled unconditionally —
 // no toolkit dependency of its own — so a brand-new backend gets it for
 // free. See `desktop`'s module doc and `BACKEND.md` §10.
 mod desktop;
 
-// Shared text-selection state machine (#741, macOS adopted in #803): the
-// region registry plus active-selection tracking every
-// `text_selection: true` backend embeds. No toolkit dependency of its
-// own, but — unlike `desktop` above — it is gated on the backends that
-// actually embed it (`TuiBackend`, `GtkBackend`, `WinBackend`,
-// `MacBackend`) rather than compiled unconditionally. Before #803, macOS
-// was the one backend that did *not* declare `BackendCaps::text_selection`,
-// so a `--features macos` build had no consumer for any of it, and with
-// `RUSTFLAGS: -D warnings` the whole module landed as a hard `dead_code`
-// error rather than a warning — which is exactly how the `macos (build,
-// test)` job failed the first time a PR touched `quadraui/src/macos/**`
-// after #741 (that job is `paths`-filtered, so nothing ran it in
-// between). If a future backend doesn't adopt this module, mirror that
-// same fix rather than compiling it unconditionally.
+// Shared text-selection state machine: the region registry plus active-selection
+// tracking every `text_selection: true` backend embeds. Gated on the backends
+// (TUI, GTK, Win, macOS) that actually use it.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -397,7 +366,7 @@ mod desktop;
 ))]
 mod text_selection;
 
-// `BackendCore` (#1090): the accelerator registry + `text_selection`
+// `BackendCore`: the accelerator registry + `text_selection`
 // embedding every one of the four backends above needs, consolidated
 // into one place. Gated identically to `text_selection` just above —
 // same rationale (no consumer, hard `dead_code` error under `-D
@@ -525,17 +494,10 @@ pub use primitives::status_bar::{
     StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout, StatusBarSegment,
     StatusSegmentMeasure, StatusSegmentSide, VisibleStatusSegment,
 };
-// `TabBarHits` is `#[deprecated]` (issue #823 — f64-tuple pre-D6 hit
-// struct; `TabBarLayout` is the eventual `Rect`/`TabBarHit` replacement).
-// `#[allow(deprecated)]` because a `pub use` of a deprecated item is
-// itself a `deprecated`-lint use site, and this crate denies that lint
-// in-repo (`RUSTFLAGS: -D warnings`) — see CLAUDE.md's "the `deprecated`
-// lint is denied in-repo and allowed downstream" section for why that
-// split is deliberate. Unlike every other item issue #1251 removed, this
-// one's removal is still blocked on real, separate follow-up work (the
-// six-method/four-backend signature swap to `TabBarLayout` — see
-// `TabBarHits`'s own doc), not a lagging consumer migration, so this
-// re-export stays.
+// `TabBarHits` is deprecated (D-6 pre-refactor hit struct; `TabBarLayout` with
+// `Rect` is the replacement). Allow it here since `pub use` of a deprecated
+// item is itself a use site. Removal is blocked on the six-method/four-backend
+// signature swap to `TabBarLayout` — see `TabBarHits`'s own doc.
 #[allow(deprecated)]
 pub use primitives::tab_bar::{
     tab_icon_at, tab_icon_cols, SegmentMeasure, TabBar, TabBarEvent, TabBarHit, TabBarHits,
@@ -603,23 +565,19 @@ pub use frame::{
     FrameZone, ScreenLayout, Surface,
 };
 pub use paint_surface::{PaintSurface, PathVerb};
-// #819: `InteractionState` — a single hover/pressed store keyed by
-// `WidgetId`, meant to replace the bespoke per-primitive trackers
-// (`ToolbarHoverTracker`, `StatusBarInteraction`) and the positional
-// `hovered_id`/`pressed_id`/`hovered_toolbar_id` arguments the
-// `WidgetId`-keyed `Backend` methods (`draw_toolbar`, `draw_status_bar`,
-// `draw_sidebar_panel`) used to take. Those three now have
-// `*_interactive` twins that take `&InteractionState`, and the old
-// positional names survive only as `#[deprecated]` shims per `CLAUDE.md`
-// rule 3 (both are `pub` surface with real downstream call sites in
-// `coord-tui`/`vimcode`) — see `interaction.rs`'s module doc for the
-// full before/after table and for the four index-keyed methods
-// (`draw_activity_bar`, `draw_tab_bar`, `draw_data_table`, `draw_chart`)
-// deliberately left unmigrated. `examples/common/toolbar_app.rs`
-// demonstrates the pattern as an app-owned drop-in replacement for its
-// old ad hoc fields.
+// `InteractionState` — a single hover/pressed store keyed by `WidgetId`,
+// meant to replace the bespoke per-primitive trackers and positional arguments
+// (`hovered_id`, `pressed_id`, `hovered_toolbar_id`) the old `Backend` methods
+// used to take. New `*_interactive` variants take `&InteractionState`; old
+// names survive only as `#[deprecated]` shims per rule 3 in `CLAUDE.md` (both
+// are `pub` surface with real downstream call sites). See `interaction.rs`'s
+// module doc for the full before/after table and the four index-keyed methods
+// deliberately left unmigrated. `examples/common/toolbar_app.rs` demonstrates
+// the pattern as an app-owned drop-in replacement.
+// Shared layout/hit-test foundation (`Anchor` for overlay positioning,
+// `visible_range_walk` replacing per-primitive `Visible*{idx, bounds}` structs).
 pub use interaction::InteractionState;
-// #816: shared layout/hit-test foundation (`Anchor` for overlay
+// Shared layout/hit-test foundation (`Anchor` for overlay
 // positioning, `visible_range_walk` replacing the per-primitive
 // `Visible*{idx, bounds}` structs). Nothing in `primitives/` consumes
 // these yet — each primitive converges onto them in its own PR behind a

@@ -1,45 +1,42 @@
-//! Shared, backend-neutral desktop-interaction plumbing (#498).
+//! Shared, backend-neutral desktop-interaction plumbing.
 //!
 //! Everything in this module is genuinely windowing-generic: it has no
 //! dependency on `gtk4`, `objc2`, `windows`, or any other toolkit crate,
 //! and none of the *code* here needs a toolkit feature to compile — the
-//! whole point of extracting it (see `BACKEND.md` §10) is that a
-//! brand-new backend gets it for free. Each piece used to be implemented
-//! once inside `gtk/` only; a macOS or Windows backend would otherwise
-//! have had to reinvent it from scratch:
+//! whole point of extracting it is that a brand-new backend gets it for
+//! free. Each piece used to be implemented once inside `gtk/` only; a
+//! macOS or Windows backend would otherwise have had to reinvent it from
+//! scratch:
 //!
 //! - [`WindowDragArm`] — the arm/threshold/commit state machine behind
 //!   a CSD titlebar drag-to-move (or edge-resize) gesture. Extracted
 //!   from `gtk/backend.rs`'s `armed_window_drag` field +
-//!   `gtk/run.rs`'s motion-controller threshold check (#400). **Not**
-//!   adopted by `win::run`/`win::backend` (#702 audit): `win::run`
-//!   creates its window with `WS_OVERLAPPEDWINDOW` — the standard native
-//!   title bar and non-client resize border, not a client-side-decorated
-//!   one — so title-bar drag-to-move and edge-resize are already handled
+//!   `gtk/run.rs`'s motion-controller threshold check. **Not**
+//!   adopted by `win::run`/`win::backend`: `win::run` creates its
+//!   window with `WS_OVERLAPPEDWINDOW` — the standard native title bar
+//!   and non-client resize border, not a client-side-decorated one —
+//!   so title-bar drag-to-move and edge-resize are already handled
 //!   entirely inside Windows' own non-client (`WM_NC*`) message
 //!   handling; there is no quadraui-drawn titlebar/border for an app to
 //!   press-and-drag on, so there is nothing for this arm/threshold/commit
-//!   sequencing to gate. Revisit only if a future issue gives `win::run`
-//!   a custom (CSD-style) frame — don't invent one just to have a use
-//!   for this type.
+//!   sequencing to gate.
 //! - [`ModalPumpDepth`] / [`ModalPumpGuard`] — the re-entrancy guard
 //!   around a nested native modal loop (a GTK async-dialog
 //!   `MainContext::iteration` pump, an AppKit `runModal` /
 //!   `performWindowDragWithEvent:`, a Win32 `IFileOpenDialog::Show`).
-//!   Extracted from `gtk/services.rs`'s `pumping` field + `PumpGuard`
-//!   (#427). Adopted by `win::run`'s `wndproc` → `app.handle`/
-//!   `app.render` dispatch (#702) via `win::run`'s own
-//!   `guarded_call` — the actual `RefCell` double-borrow guard lives
-//!   there since it has no toolkit dependency of its own either; see
-//!   that function's docs.
+//!   Extracted from `gtk/services.rs`'s `pumping` field + `PumpGuard`.
+//!   Adopted by `win::run`'s `wndproc` → `app.handle`/`app.render`
+//!   dispatch via `win::run`'s own `guarded_call` — the actual
+//!   `RefCell` double-borrow guard lives there since it has no toolkit
+//!   dependency of its own either; see that function's docs.
 //! - [`SmokeConfig`] + [`smoke_size_ok`] / [`smoke_clipboard_round_trip_ok`]
 //!   — the headless smoke-mode predicates behind `QUADRAUI_*_SMOKE_MS` /
-//!   `_SMOKE_PASTE`. Extracted from `gtk/run.rs` (#450, GD-5), renamed
-//!   backend-neutral (no more `Gtk` in the name) and parameterised over
-//!   the env-var names and size floor so a future backend can reuse the
-//!   mechanism under its own env vars and default window size. Adopted by
+//!   `_SMOKE_PASTE`. Extracted from `gtk/run.rs`, renamed backend-neutral
+//!   (no more `Gtk` in the name) and parameterised over the env-var
+//!   names and size floor so a future backend can reuse the mechanism
+//!   under its own env vars and default window size. Adopted by
 //!   `win::run`'s `QUADRAUI_WIN_SMOKE_MS`/`_SMOKE_PASTE` one-shot
-//!   `WM_TIMER` check (#702) alongside GTK's `QUADRAUI_GTK_SMOKE_MS`/
+//!   `WM_TIMER` check alongside GTK's `QUADRAUI_GTK_SMOKE_MS`/
 //!   `_SMOKE_PASTE`.
 //! - [`ALL_RESIZE_EDGES`] / [`all_pointer_shapes`] — an enum-walk
 //!   scaffold for a [`PointerShape`] → native-cursor lookup table.
@@ -47,20 +44,20 @@
 //!   inherently native), but this gives it a canonical, exhaustively-
 //!   maintained list of inputs to build and test that table against
 //!   instead of hand-duplicating the variant list per backend. Adopted by
-//!   `win::backend`'s `PointerShape` → `IDC_*` cursor-resource mapping
-//!   (#702), driving `SetCursor`/`WM_SETCURSOR`.
-//! - [`is_paste_keypress`] — the clipboard-paste keypress predicate
-//!   (#728). Extracted from `gtk::run`'s private `is_paste_keypress`
-//!   (quadraui#415) and generalised to also cover macOS's Cmd-V, which
-//!   used to be an inline `match` guard in `macos::run::dispatch_event`
-//!   instead of a named, independently-testable predicate. See
-//!   `docs/decisions/DECISIONS.md` D-011 for the shift-tolerance contract this
-//!   settles once for every adopter instead of each backend picking its
-//!   own, and D-011 §4 specifically for why the predicate takes a
-//!   [`PasteModifier`] parameter naming *which* platform modifier is
-//!   native to the calling backend, rather than accepting either
-//!   `ctrl` or `cmd` interchangeably. Adopted by `win::run::dispatch_event`
-//!   (#728) to give Win-GUI its first `UiEvent::ClipboardPaste` at all.
+//!   `win::backend`'s `PointerShape` → `IDC_*` cursor-resource mapping,
+//!   driving `SetCursor`/`WM_SETCURSOR`.
+//! - [`is_paste_keypress`] — the clipboard-paste keypress predicate.
+//!   Extracted from `gtk::run`'s private `is_paste_keypress` and
+//!   generalised to also cover macOS's Cmd-V, which used to be an inline
+//!   `match` guard in `macos::run::dispatch_event` instead of a named,
+//!   independently-testable predicate. See `docs/decisions/DECISIONS.md`
+//!   D-011 for the shift-tolerance contract this settles once for every
+//!   adopter instead of each backend picking its own, and D-011 §4
+//!   specifically for why the predicate takes a [`PasteModifier`]
+//!   parameter naming *which* platform modifier is native to the calling
+//!   backend, rather than accepting either `ctrl` or `cmd`
+//!   interchangeably. Adopted by `win::run::dispatch_event` to give
+//!   Win-GUI its first `UiEvent::ClipboardPaste` at all.
 //!
 //! ## What stays backend-specific
 //!
@@ -78,15 +75,14 @@
 //! dependency
 //!
 //! Mirrors `crate::runtime`'s precedent exactly (see its module doc):
-//! the workspace-wide `RUSTFLAGS: "-D warnings"` (`ci.yml`) turns an
-//! unused-`pub(crate)`-item warning into a hard build failure the
-//! moment a feature combination compiles this module without any
-//! backend around to call into it (e.g. `--features tui`, which has no
-//! window chrome at all). Each item is gated on the feature(s) of the
-//! backend(s) that actually call it today, not left permanently
-//! `#[allow(dead_code)]] — adding a new adopter (e.g. a `win` backend
-//! wiring up `WindowDragArm`) is a one-line `cfg` addition, not a
-//! license to leave the guard off.
+//! the workspace-wide `RUSTFLAGS: "-D warnings"` turns an
+//! unused-`pub(crate)`-item warning into a hard build failure the moment
+//! a feature combination compiles this module without any backend around
+//! to call into it (e.g. `--features tui`, which has no window chrome
+//! at all). Each item is gated on the feature(s) of the backend(s) that
+//! actually call it today, not left permanently `#[allow(dead_code)]` —
+//! adding a new adopter (e.g. a `win` backend wiring up `WindowDragArm`)
+//! is a one-line `cfg` addition, not a license to leave the guard off.
 
 // ─────────────────────────────────────────────────────────────────────
 // WindowDragArm
@@ -112,7 +108,7 @@
 /// deferring its own move-start to `GestureDrag`'s threshold-gated
 /// `drag-begin` signal rather than the raw press (see
 /// `gtk::backend::GtkBackend::armed_window_drag`'s doc for the full
-/// #400 rationale this generalises).
+/// rationale this generalises).
 ///
 /// Not every backend needs the threshold gating (AppKit's
 /// `performWindowDragWithEvent:` already disambiguates a drag from a
@@ -235,8 +231,8 @@ impl<P> Default for WindowDragArm<P> {
 /// flight (possibly several deep, if one nested loop somehow triggers
 /// another) — see [`ModalPumpGuard`].
 ///
-/// Extracted from `gtk::services::GtkPlatformServices`'s `pumping` field
-/// (#427). The hazard it guards against: a nested pump lets *any* other
+/// Extracted from `gtk::services::GtkPlatformServices`'s `pumping` field.
+/// The hazard it guards against: a nested pump lets *any* other
 /// pending event-loop source run too — including the runner's own idle
 /// timer and every input event controller, all of which may also
 /// mutably borrow the shared `Rc<RefCell<Backend>>` that the code
@@ -250,14 +246,13 @@ impl<P> Default for WindowDragArm<P> {
 /// `#[cfg(any(feature = "gtk", all(feature = "win", any(target_os =
 /// "windows", test))))]`, not `any(gtk, macos)`: GTK's async
 /// `FileDialog` pump and `win::run`'s `wndproc` → `dispatch`/`WM_PAINT`
-/// borrows (#702, via `win::run::guarded_call`) are the adopters today.
-/// Unlike `win/backend.rs`'s WinAPI-calling methods, `guarded_call` is
-/// pure `RefCell`/`Rc<Cell<>>` logic with no toolkit dependency of its
-/// own, so it (and its unit test reproducing the double-borrow hazard)
-/// compile and run under plain `--features win` on *any* host —
-/// matching this module's own "no toolkit feature needed" design — but
-/// only in a `cfg(test)` build: `win::run::guarded_call` has no
-/// *production* caller unless `win32::wndproc` (its Windows-only
+/// borrows are the adopters today. Unlike `win/backend.rs`'s WinAPI-calling
+/// methods, `guarded_call` is pure `RefCell`/`Rc<Cell<>>` logic with no
+/// toolkit dependency of its own, so it (and its unit test reproducing
+/// the double-borrow hazard) compile and run under plain `--features win`
+/// on *any* host — matching this module's own "no toolkit feature needed"
+/// design — but only in a `cfg(test)` build: `win::run::guarded_call` has
+/// no *production* caller unless `win32::wndproc` (its Windows-only
 /// adopter) also compiles, so the `test` alternative exists purely to
 /// keep a genuine consumer around for a plain, non-test
 /// `cargo check --features win` on a non-Windows host — see
@@ -335,11 +330,11 @@ impl Drop for ModalPumpGuard<'_> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// move_to_trash (issue #956)
+// move_to_trash
 // ─────────────────────────────────────────────────────────────────────
 
 /// Move `path` to the platform trash/recycle bin via the cross-platform
-/// `trash` crate (issue #956) — the one implementation shared by every
+/// `trash` crate — the one implementation shared by every
 /// `PlatformServices::move_to_trash` override
 /// (`tui`/`gtk`/`macos`/`win::services`), TUI included. Unlike this
 /// module's other genuinely backend-neutral helpers, this one *does*
@@ -354,7 +349,7 @@ impl Drop for ModalPumpGuard<'_> {
 /// that means TUI gets this exact function too, instead of the
 /// `Err(BackendError::Unsupported)` degrade TUI's remaining
 /// desktop-shell-flavoured methods (native dialogs, notably) still fall
-/// back to — [`reveal_in_file_manager`] below (issue #1092) is the other
+/// back to — [`reveal_in_file_manager`] below is the other
 /// one that has since earned a real, best-effort implementation instead
 /// of that placeholder.
 ///
@@ -449,7 +444,7 @@ mod move_to_trash_tests {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// wide_nul_terminated (issue #1087)
+// wide_nul_terminated
 // ─────────────────────────────────────────────────────────────────────
 
 /// UTF-16, NUL-terminated — the framing every wide (`W`-suffixed) Win32
@@ -457,19 +452,15 @@ mod move_to_trash_tests {
 /// clipboard payload, `NOTIFYICONDATAW`'s fixed-size fields, a context
 /// menu item's label). The single implementation shared by
 /// `win::services`, `win::tray`, `win::backend`, and this module's own
-/// [`windows_shell_execute_open`] (issue #1087) — before this, each of
-/// the first three modules carried its own private copy of this exact
-/// two-line conversion (`win::services::wide_nul_terminated`,
-/// `win::tray::win_wide_nul_terminated`,
-/// `win::backend::win_wide_nul_terminated`), and [`windows_shell_execute_open`]
-/// needed a fourth.
+/// [`windows_shell_execute_open`] — before this, each of the first three
+/// modules carried its own private copy of this exact two-line
+/// conversion, and [`windows_shell_execute_open`] needed a fourth.
 ///
 /// `#[cfg_attr(not(target_os = "windows"), allow(dead_code))]`: every
 /// real caller only exists under `target_os = "windows"` (the WinAPI
 /// call sites this feeds, and this module's own Windows-only opener), so
 /// on any other host this is unreachable dead code the moment it
-/// compiles at all under `--features win` alone — the same posture
-/// `win::services`'s pre-#1087 copy of this function already carried.
+/// compiles at all under `--features win` alone.
 #[cfg(any(feature = "tui", feature = "win"))]
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn wide_nul_terminated(text: &str) -> Vec<u16> {
@@ -491,29 +482,13 @@ mod wide_nul_terminated_tests {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// open_with_default (issue #1087)
+// open_with_default
 // ─────────────────────────────────────────────────────────────────────
 
 /// Open `target` (a URL string or a filesystem path, carried as `&OsStr`
 /// so a non-UTF-8 path need not be lossily converted before the call) —
-/// the single opener implementation shared by `tui::services`
-/// (`TuiPlatformServices::open_path` directly, and
-/// `TuiPlatformServices::open_url_result`'s opener step via
-/// [`try_open_with_default`] — that one can't call this function itself
-/// since it needs the raw bool to chain its own OSC 8 fallback),
-/// `macos::services` (`open_url`/`open_path`/`open_url_result`), and
-/// `win::services` (`open_url`/`open_path`/`open_url_result`).
-///
-/// Before this issue, each backend wrote its own copy: `tui` via
-/// `build_url_opener_command`/`try_platform_opener`/a hand-written
-/// `ShellExecuteW` FFI declaration, `macos` via an inline
-/// `Command::new("open").arg(url).spawn()` whose result was discarded,
-/// `win` via a `windows`-crate `ShellExecuteW` call whose result
-/// `open_url` also discarded — the "capability lie" this issue's own
-/// title names: `open_url_result`'s default (`Backend::open_url_result`)
-/// calls `open_url` and always answers `Ok(())`, so a GUI backend could
-/// never actually report "the browser didn't open" even though the
-/// underlying spawn/`ShellExecuteW` call already knew.
+/// the single opener implementation shared by `tui::services`, `macos::services`,
+/// and `win::services`.
 ///
 /// Unix: spawns `open` (macOS) / `xdg-open` (other Unix), detached
 /// (stdout/stderr nulled so a slow or chatty opener can't wedge the
@@ -523,13 +498,12 @@ mod wide_nul_terminated_tests {
 /// `ShellExecuteW(NULL, "open", target, NULL, NULL, SW_SHOWNORMAL)`
 /// through a **minimal, hand-written FFI declaration**, not the
 /// `windows` crate — `windows` is `optional`, pulled in only by the
-/// `win` feature's `dep:windows` (see `Cargo.toml`), so it is not a
-/// dependency of a bare `--features tui` build, and this must compile
-/// there too. Never goes through `cmd.exe`: the original vimcode-derived
-/// `cmd /c start "" <url>` approach this crate briefly carried (issue
-/// #969 review) is a CWE-78 command-injection hole, since `cmd.exe`
-/// re-parses its own command-line text for `&`/`|`/`^`/`%` regardless of
-/// how the argument was quoted for `CreateProcess`.
+/// `win` feature's `dep:windows`, so it is not a dependency of a bare
+/// `--features tui` build, and this must compile there too. Never goes
+/// through `cmd.exe`: the `cmd /c start` approach is a CWE-78
+/// command-injection hole, since `cmd.exe` re-parses its own command-line
+/// text for `&`/`|`/`^`/`%` regardless of how the argument was quoted for
+/// `CreateProcess`.
 #[cfg(any(
     feature = "tui",
     all(feature = "macos", target_os = "macos"),
@@ -571,8 +545,7 @@ pub(crate) fn try_open_with_default(target: &std::ffi::OsStr) -> bool {
 /// macOS opener command, not yet spawned — factored out so a test can
 /// assert on the program name and arguments a real call would spawn
 /// without actually launching anything. See the Linux/BSD overload of
-/// this same function (below) for the shared shape and doc; lifted from
-/// `tui::services`'s pre-#1087 `build_url_opener_command`.
+/// this same function (below) for the shared shape and doc.
 #[cfg(all(target_os = "macos", any(feature = "tui", feature = "macos")))]
 pub(crate) fn unix_open_with_default_command(target: &std::ffi::OsStr) -> std::process::Command {
     let mut cmd = std::process::Command::new("open");
@@ -700,15 +673,12 @@ fn windows_shell_execute_open_code(target: &std::ffi::OsStr) -> isize {
 }
 
 /// Process-wide `$PATH` is shared, mutable global state — every test
-/// below (and `macos::services`'s `open_url_result` failure test, issue
-/// #1087) that temporarily redirects it to prove a real "opener missing"
-/// failure must serialize against every *other* such test in the same
-/// process, or a concurrently-running test can observe (or clobber) the
-/// override. One crate-wide lock rather than a per-module copy so
-/// `cargo test --features tui` (this module's own tests) and
-/// `cargo test --features macos` (which never run in the same process,
-/// per `CLAUDE.md`'s per-backend CI legs, but might in a future combined
-/// local run) can't race each other either.
+/// below (and `macos::services`'s `open_url_result` failure test) that
+/// temporarily redirects it to prove a real "opener missing" failure must
+/// serialize against every *other* such test in the same process, or a
+/// concurrently-running test can observe (or clobber) the override. One
+/// crate-wide lock rather than a per-module copy so tests under different
+/// feature combinations can't race each other.
 ///
 /// **`unix`-gated, deliberately** — every test that takes this lock is a
 /// `$PATH`-override test, and the `$PATH`-stub technique only applies to
@@ -720,10 +690,7 @@ fn windows_shell_execute_open_code(target: &std::ffi::OsStr) -> isize {
 /// zero call sites — `dead_code`, which `ci.yml`'s workflow-wide
 /// `RUSTFLAGS: -D warnings` promotes to a hard error on the
 /// `windows-latest` leg of the `tui` job alone, while every Linux and
-/// macOS build of the identical source stays green (the same
-/// cfg-asymmetry trap `emit_osc8_hyperlink_to_tty`'s `unused_mut`
-/// already cost this crate once — see `tui::services`'s
-/// `emit_osc8_hyperlink_to_tty_reports_false_without_a_dev_tty`).
+/// macOS build of the identical source stays green.
 #[cfg(all(
     test,
     unix,
@@ -789,7 +756,7 @@ mod open_with_default_tests {
 
     /// The real FFI call's real verdict on a target that cannot open:
     /// `SE_ERR_FNF`, which [`shell_execute_reports_success`] then reports
-    /// as `false`. This is the Windows half of #1087's "stop lying about
+    /// as `false`. This is the Windows half of the "stop lying about
     /// the launch" bar — the `$PATH`-stub tests below cover the Unix arm,
     /// which has a spawned binary to intercept and Windows does not.
     #[cfg(windows)]
@@ -822,7 +789,7 @@ mod open_with_default_tests {
     /// so there is no command to assert on beyond invoking `ShellExecuteW`
     /// for real. What this pins down: the exact metacharacters (`&`, `|`,
     /// `^`, `%`) that made the original `cmd /c start` approach
-    /// exploitable (issue #969 review) are carried through inertly — a
+    /// exploitable are carried through inertly — a
     /// bare FFI call has no command-line text for those bytes to land in,
     /// so they stay part of the *filename* and the call fails with
     /// `SE_ERR_FNF` rather than executing `calc.exe`.
@@ -844,10 +811,9 @@ mod open_with_default_tests {
         assert_eq!(windows_shell_execute_open_code(&target), SE_ERR_FNF);
     }
 
-    /// #1087 acceptance bar: `try_open_with_default`/`open_with_default`
+    /// Acceptance bar: `try_open_with_default`/`open_with_default`
     /// through a real delegation — the same `$PATH`-override stub
-    /// technique issue #969's own `tui`-only test used, generalised here
-    /// since the opener itself is now shared. Safe to do without
+    /// technique generalised from a previous test. Safe to do without
     /// launching a real browser only because `$PATH` is temporarily
     /// redirected (guarded by [`PATH_OVERRIDE_TEST_LOCK`], and always
     /// restored via a drop guard even on panic) to a directory containing
@@ -891,12 +857,10 @@ mod open_with_default_tests {
         )));
     }
 
-    /// The other half of #1087's acceptance bar: with `$PATH` redirected
+    /// The other half of the acceptance bar: with `$PATH` redirected
     /// to a directory containing *no* opener binary at all, the real
     /// spawn genuinely fails (`ENOENT`) and `try_open_with_default`
-    /// honestly reports `false`. RED before this issue (`open_url_result`'s
-    /// default just called the infallible `open_url` and always answered
-    /// `Ok(())`). See `open_with_default_reports_err_when_the_opener_is_missing`
+    /// honestly reports `false`. See `open_with_default_reports_err_when_the_opener_is_missing`
     /// below for the `ServiceResult`-level half of this — `open_with_default`
     /// itself is also compiled for a bare `--features tui` build (it backs
     /// `TuiPlatformServices::open_path`), even though `open_url_result`
@@ -920,13 +884,10 @@ mod open_with_default_tests {
     /// `open_with_default`'s own `ServiceResult` wrapping, via the `$PATH`
     /// stub technique — Unix only: this technique needs a `$PATH`-resolved
     /// binary to intercept, which only applies to `open_with_default`'s
-    /// Unix arm. Runs under either `macos` or bare `tui` (the latter is
-    /// `TuiPlatformServices::open_path`'s own coverage — issue #1087
-    /// review, "TUI `open_path` left as a fourth un-consolidated copy").
-    /// `win::services`'s own `ServiceResult`-level coverage
-    /// (`open_url_result_reports_failure_for_an_unregistered_scheme`) uses
-    /// a real `ShellExecuteW` call instead, since Windows' opener has no
-    /// `$PATH`-resolved binary to intercept this way at all.
+    /// Unix arm. Runs under either `macos` or bare `tui`. `win::services`'s
+    /// own `ServiceResult`-level coverage uses a real `ShellExecuteW` call
+    /// instead, since Windows' opener has no `$PATH`-resolved binary to
+    /// intercept this way at all.
     #[cfg(any(
         all(feature = "macos", target_os = "macos"),
         all(feature = "tui", unix)
@@ -976,18 +937,13 @@ mod open_with_default_tests {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// reveal_in_file_manager (issue #1092)
+// reveal_in_file_manager
 // ─────────────────────────────────────────────────────────────────────
 
-/// The TUI degrade for `PlatformServices::reveal_in_file_manager` (issue
-/// #1092). Before this, `TuiPlatformServices::reveal_in_file_manager` was
-/// an unconditional `Err(BackendError::Unsupported)` — per this crate's
-/// *Cross-backend portability commitment*, that was never earned: a
+/// The TUI degrade for `PlatformServices::reveal_in_file_manager`. A
 /// terminal session on a desktop can reveal a file in its file manager
-/// exactly as readily as it can launch a browser
-/// ([`open_with_default`]/[`try_open_with_default`], issue #969's
-/// `open_url_result`), so `Unsupported` there was a placeholder, not a
-/// structural fact.
+/// exactly as readily as it can launch a browser, so `Unsupported` was a
+/// placeholder, not a structural fact.
 ///
 /// Tries, per platform:
 /// - **Windows**: [`windows_explorer_select`] —
@@ -1011,19 +967,18 @@ mod open_with_default_tests {
 ///   well-known method through the `dbus-send` CLI tool instead — the
 ///   same "reach for the CLI door onto a native facility instead of
 ///   linking a client library" trade [`write_clipboard_via_native_tool`]
-///   (`tui::services`, issue #398) already makes for the system
-///   clipboard. Falls back to [`try_open_with_default`] on `path`'s
-///   *parent directory* when that call fails (no `FileManager1` listener
-///   — a headless container, a minimal window manager with no file
-///   manager running): not a perfect "reveal, selected" experience, but
-///   a real file-manager window opened at the right place, on a desktop
-///   session that plainly has one, instead of a blanket `Unsupported`.
+///   already makes for the system clipboard. Falls back to
+///   [`try_open_with_default`] on `path`'s *parent directory* when that
+///   call fails (no `FileManager1` listener — a headless container, a
+///   minimal window manager with no file manager running): not a perfect
+///   "reveal, selected" experience, but a real file-manager window opened
+///   at the right place, on a desktop session that plainly has one,
+///   instead of a blanket `Unsupported`.
 ///
 /// Best-effort throughout, matching every other `ServiceResult`-returning
-/// TUI degrade in this crate (`open_url_result`, `open_path`): a
-/// successful spawn/D-Bus call reports `Ok(())` even though the launched
-/// file manager may itself fail to open a window with no way for this
-/// call to observe it.
+/// TUI degrade in this crate: a successful spawn/D-Bus call reports
+/// `Ok(())` even though the launched file manager may itself fail to open
+/// a window with no way for this call to observe it.
 #[cfg(feature = "tui")]
 pub(crate) fn reveal_in_file_manager(path: &std::path::Path) -> crate::backend::ServiceResult<()> {
     if try_reveal_in_file_manager(path) {
@@ -1164,7 +1119,7 @@ fn windows_explorer_select_parameters(path: &std::path::Path) -> String {
 }
 
 /// Build the `dbus-send` invocation for
-/// `org.freedesktop.FileManager1.ShowItems` (issue #1092) — not yet
+/// `org.freedesktop.FileManager1.ShowItems` — not yet
 /// spawned, so a test can assert on the constructed command without a
 /// live D-Bus session. Drives the same standard method
 /// `gtk::services::GtkPlatformServices::reveal_in_file_manager` reaches
@@ -1305,16 +1260,14 @@ mod reveal_in_file_manager_tests {
         );
     }
 
-    /// #1092 acceptance bar: when neither the D-Bus leg nor the
+    /// Acceptance bar: when neither the D-Bus leg nor the
     /// `xdg-open`-the-parent fallback can reach anything (`$PATH`
-    /// redirected to an empty directory, same technique
-    /// `try_open_with_default_returns_false_when_the_opener_is_missing`
-    /// uses), `reveal_in_file_manager` honestly reports `Unsupported`
-    /// rather than a false `Ok(())`. Doesn't exercise the D-Bus leg for
-    /// real (that needs a live session bus this test environment may not
-    /// have) — only pins the "both legs failed" outcome via the `$PATH`
-    /// stub, which is the fallback this crate can actually control in a
-    /// test.
+    /// redirected to an empty directory), `reveal_in_file_manager` honestly
+    /// reports `Unsupported` rather than a false `Ok(())`. Doesn't exercise
+    /// the D-Bus leg for real (that needs a live session bus this test
+    /// environment may not have) — only pins the "both legs failed" outcome
+    /// via the `$PATH` stub, which is the fallback this crate can actually
+    /// control in a test.
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn reveal_in_file_manager_reports_unsupported_when_every_leg_fails() {
@@ -1346,10 +1299,6 @@ mod reveal_in_file_manager_tests {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// display_notification_script (issues #955, #1092)
-// ─────────────────────────────────────────────────────────────────────
-
 /// Escape `"` and `\` so a string can be embedded inside an AppleScript
 /// double-quoted string literal. Shared by [`display_notification_script`]
 /// below — `macos::services::MacPlatformServices::send_notification`'s
@@ -1362,10 +1311,8 @@ pub(crate) fn applescript_escape(s: &str) -> String {
 }
 
 /// Build the `osascript -e` argument an AppleScript `display
-/// notification` call spawns (issue #955, shared with `tui::services` by
-/// issue #1092). `display notification` needs an explicit `sound name`
-/// clause to make *any* sound — omitting it entirely (this function's
-/// pre-#955 behaviour, and what `silent: true` still produces) is
+/// notification` call spawns. `display notification` needs an explicit
+/// `sound name` clause to make *any* sound — omitting it entirely is
 /// silent, not the system default. So `silent: false` (the default — a
 /// caller that never calls `Notification::with_silent` gets a
 /// notification that actually makes a sound, matching ordinary
@@ -1386,7 +1333,7 @@ pub(crate) fn display_notification_script(title: &str, body: &str, silent: bool)
 
 /// Build the `osascript -e <script>` command
 /// `tui::services::TuiPlatformServices::send_notification`'s macOS
-/// fallback leg spawns (issue #1092) — not yet spawned, so a test can
+/// fallback leg spawns — not yet spawned, so a test can
 /// assert on the constructed argv (in particular, that `title`/`body`
 /// reach `osascript` via [`display_notification_script`] unmodified)
 /// without a live display session. Split out for the same reason
@@ -1408,7 +1355,7 @@ pub(crate) fn tui_macos_notify_command(
 
 /// Build the `notify-send <title> <body>` command
 /// `tui::services::TuiPlatformServices::send_notification`'s Linux/BSD
-/// fallback leg spawns (issue #1092) — not yet spawned, so a test can
+/// fallback leg spawns — not yet spawned, so a test can
 /// assert `title` and `body` arrive as two separate argv entries (not
 /// shell-concatenated, so a body containing spaces can't be mistaken for
 /// extra `notify-send` flags) without a live notification-daemon
@@ -1425,7 +1372,7 @@ pub(crate) fn tui_notify_send_command(title: &str, body: &str) -> std::process::
 /// [`tui_notify_send_command`]) are themselves `cfg(unix)` — Windows has
 /// no native command-line notifier leg at all (OSC 9 is natively
 /// supported by Windows Terminal, so `tui::services`'s escape leg covers
-/// it alone; see that module's "Notifications (issue #1092)" doc). A
+/// it alone; see that module's "Notifications" doc). A
 /// `#[cfg(all(test, feature = "tui"))]` module with only `cfg(unix)` and
 /// `cfg(target_os = "macos")` tests inside compiles to an *empty* module
 /// on Windows, whose `use super::*` is then an `unused_imports` warning —
@@ -1526,13 +1473,11 @@ mod display_notification_script_tests {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// map_arboard_error (issue #1087)
+// map_arboard_error
 // ─────────────────────────────────────────────────────────────────────
 
 /// Map an `arboard::Error` from a named native call into a
-/// [`crate::backend::BackendError::PlatformFailure`] (issue #954,
-/// consolidated to one implementation by #1087 — `gtk::services` and
-/// `macos::services` each carried an identical copy). `arboard::Error`
+/// [`crate::backend::BackendError::PlatformFailure`]. `arboard::Error`
 /// has no "unsupported" variant of its own — every arm this maps
 /// (including `ContentNotAvailable`, e.g. "clipboard has no image right
 /// now") is a real outcome of a call the calling backend *does*
@@ -1571,20 +1516,19 @@ mod map_arboard_error_tests {
 // Headless smoke-mode config + predicates
 // ─────────────────────────────────────────────────────────────────────
 
-/// Headless smoke-mode config (originally quadraui#450, GD-5, GTK-only;
-/// generalised here for #498). `None` unless the `ms`-suffixed env var
-/// [`Self::from_env`] is asked to read is set — see
-/// `gtk::run`'s module doc's "Headless smoke mode" section for the full
-/// motivating rationale (quadraui#437: a live-window class of bug a
-/// display-free driver test structurally can't catch).
+/// Headless smoke-mode config. `None` unless the `ms`-suffixed env var
+/// [`Self::from_env`] is asked to read is set — see `gtk::run`'s module
+/// doc's "Headless smoke mode" section for the full motivating rationale
+/// (a live-window class of bug a display-free driver test structurally
+/// can't catch).
 ///
 /// `#[cfg(any(feature = "gtk", all(feature = "win", any(target_os =
 /// "windows", test))))]` — same reasoning as [`ModalPumpDepth`]'s gate
-/// note: `win::run`'s real smoke lane (#702) only exists once
+/// note: `win::run`'s real smoke lane only exists once
 /// `target_os = "windows"` also compiles `mod win32`, but the `test`
 /// alternative keeps this type (and its pure predicates below) a real,
 /// unit-testable consumer under a plain `cargo test --features win` on
-/// any host — see `smoke_config_tests` below.
+/// any host.
 #[cfg(any(
     feature = "gtk",
     all(feature = "win", any(target_os = "windows", test))
@@ -1623,11 +1567,10 @@ impl SmokeConfig {
 }
 
 /// Is `width`x`height` a plausible, non-broken window/surface
-/// allocation? The direct regression check for the quadraui#437
-/// tiny/wrapped-window bug class. Pure and display-free. Each backend
-/// supplies its own floor (`min_width`/`min_height`) — its own default
-/// window size and how far below it is still "plausible" — this
-/// function only owns the comparison.
+/// allocation? The direct regression check for a tiny/wrapped-window bug
+/// class. Pure and display-free. Each backend supplies its own floor
+/// (`min_width`/`min_height`) — its own default window size and how far
+/// below it is still "plausible" — this function only owns the comparison.
 #[cfg(any(
     feature = "gtk",
     all(feature = "win", any(target_os = "windows", test))
@@ -1654,18 +1597,15 @@ pub(crate) fn smoke_clipboard_round_trip_ok(written: &str, read_back: Option<&st
 /// Which single platform modifier a backend's clipboard-paste chord
 /// treats as native — Ctrl on Linux/GTK and Windows, Cmd (⌘) on macOS.
 /// [`crate::Modifiers::cmd`] is the crate-wide abstraction for "this
-/// platform's OS-level modifier key" (`win::events::win_modifiers` maps
-/// the Windows key to `cmd` the same way `macos::events` maps ⌘; GTK's
-/// `gdk_modifiers_to_quadraui` maps `SUPER_MASK`/`META_MASK` to `cmd` the
-/// same way) — but that shared abstraction means `modifiers.cmd` can be
-/// held on *any* backend (Super on Linux, the Windows key on Win32), not
-/// only on macOS. [`is_paste_keypress`] takes this enum so each backend
-/// tells the predicate which one of `ctrl`/`cmd` is *its* paste modifier,
-/// instead of the predicate accepting either interchangeably — see
-/// D-011 §4 (`docs/decisions/DECISIONS.md`) for the regression this fixes (plain
-/// Super+V used to trigger paste on GTK, and plain Ctrl+V used to
-/// trigger paste on macOS, neither of which is that platform's actual
-/// convention).
+/// platform's OS-level modifier key" — but that shared abstraction means
+/// `modifiers.cmd` can be held on *any* backend (Super on Linux, the
+/// Windows key on Win32), not only on macOS. [`is_paste_keypress`] takes
+/// this enum so each backend tells the predicate which one of `ctrl`/`cmd`
+/// is *its* paste modifier, instead of the predicate accepting either
+/// interchangeably — see D-011 in `docs/decisions/DECISIONS.md` for the
+/// regression this fixes (plain Super+V used to trigger paste on GTK, and
+/// plain Ctrl+V used to trigger paste on macOS, neither of which is that
+/// platform's actual convention).
 ///
 /// `#[allow(dead_code)]`: each variant is constructed in production code
 /// by exactly one backend (`Ctrl` by TUI/GTK/Windows via
@@ -1699,7 +1639,7 @@ pub(crate) enum PasteModifier {
 
 /// Is `key`+`modifiers` this platform's clipboard-paste shortcut?
 ///
-/// One predicate for every desktop backend (#728); `native` names which
+/// One predicate for every desktop backend; `native` names which
 /// platform modifier the *calling* backend treats as "paste" — GTK and
 /// `win` both pass [`PasteModifier::Ctrl`], macOS passes
 /// [`PasteModifier::Cmd`]. Only that modifier is accepted: the *other*
@@ -1707,23 +1647,18 @@ pub(crate) enum PasteModifier {
 /// Super+V (GTK, where `modifiers.cmd` is Super) and plain Ctrl+V
 /// (macOS) are both rejected exactly as they were before this predicate
 /// was lifted out of `gtk::run`/inlined in `macos::run` — see D-011 §4
-/// (`docs/decisions/DECISIONS.md`) for why "either modifier alone" was wrong.
+/// in `docs/decisions/DECISIONS.md` for why "either modifier alone" was wrong.
 /// `alt` is never a valid paste chord on any backend.
 ///
 /// `shift` is deliberately **not** checked either way — Ctrl-Shift-V and
 /// (by the same reasoning, extended here) Cmd-Shift-V both trigger paste
-/// too. This was already GTK's behavior (quadraui#415: some terminal
-/// emulators reserve plain Ctrl-V for a literal control byte and use
-/// Ctrl-Shift-V as the paste shortcut instead), and D-011
-/// (`docs/decisions/DECISIONS.md`) extends the same shift-tolerant contract to
-/// every adopter — including macOS, which used to require `shift: false`
-/// in its inline Cmd-V match guard before this predicate replaced it.
-/// See D-011 for why this settles the contract once instead of letting
-/// each new adopter (this issue's `win` included) silently pick its own.
+/// too. This extends the shift-tolerant contract to every adopter —
+/// including macOS, which used to require `shift: false` in its inline
+/// Cmd-V match guard before this predicate replaced it. See D-011 in
+/// `docs/decisions/DECISIONS.md` for why this settles the contract once
+/// instead of letting each new adopter silently pick its own.
 ///
-/// Case-insensitive on the letter (`'v'` or `'V'`) on every backend —
-/// this was already true everywhere a paste chord existed, so unifying
-/// the predicate doesn't change it.
+/// Case-insensitive on the letter (`'v'` or `'V'`) on every backend.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -1812,22 +1747,19 @@ pub(crate) fn all_pointer_shapes() -> [crate::backend::PointerShape; 9] {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Caught-panic reporting dedup (#922)
+// Caught-panic reporting dedup
 // ─────────────────────────────────────────────────────────────────────
 //
 // `macos::run`'s `drawRect:`/responder-method bodies and `win::run`'s
 // `wndproc` both hand a Rust callback directly to a C ABI that cannot
-// unwind (objc2's `define_class!`-generated dispatch trampoline, Win32's
-// `WNDPROC` contract) — an uncaught panic there escalates straight to
-// `abort()` instead of staying a recoverable panic (vimcode#896: a
-// reachable `todo!()` in a rasteriser took down the whole host). Both
-// bracket every such body — or, for `win::run`, the shared
-// `dispatch_event`/`render_frame` helpers every message ultimately
-// funnels through — in `std::panic::catch_unwind(AssertUnwindSafe(..))`
-// and report a caught panic through [`report_caught_panic_once`] rather
-// than calling `crate::diagnostics::emit` directly, so a rasteriser gap
-// re-entered on every redraw is reported once per process, not once per
-// frame.
+// unwind — an uncaught panic there escalates straight to `abort()`
+// instead of staying a recoverable panic. Both bracket every such body —
+// or, for `win::run`, the shared `dispatch_event`/`render_frame` helpers
+// every message ultimately funnels through — in
+// `std::panic::catch_unwind(AssertUnwindSafe(..))` and report a caught
+// panic through [`report_caught_panic_once`] rather than calling
+// `crate::diagnostics::emit` directly, so a rasteriser gap re-entered on
+// every redraw is reported once per process, not once per frame.
 #[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
 pub(crate) fn report_caught_panic_once(site: &str, payload: &(dyn std::any::Any + Send)) {
     static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
@@ -2119,7 +2051,7 @@ mod smoke_config_tests {
     // module's tests against each other so they don't race (matches the
     // pattern `gtk::run`'s own smoke tests didn't need, since those only
     // tested the pure predicates — `from_env` itself is new coverage
-    // here). Shared by both the GTK and `win` (#702) adopters — the env
+    // here). Shared by both the GTK and `win` adopters — the env
     // var names below are test-local sentinels, not either backend's real
     // `QUADRAUI_*_SMOKE_MS` names, so there's no cross-backend collision
     // risk running both features' tests in the same process.
@@ -2192,7 +2124,7 @@ mod smoke_config_tests {
     fn smoke_size_ok_rejects_below_the_floor() {
         assert!(!smoke_size_ok(199, 150, 200, 150));
         assert!(!smoke_size_ok(200, 149, 200, 150));
-        // quadraui#437: content wrapped into an ~8px-wide column.
+        // Content wrapped into an ~8px-wide column.
         assert!(!smoke_size_ok(8, 600, 200, 150));
     }
 
@@ -2224,7 +2156,7 @@ mod smoke_config_tests {
     )
 ))]
 mod is_paste_keypress_tests {
-    //! Coverage for [`is_paste_keypress`] (#728) — the single predicate
+    //! Coverage for [`is_paste_keypress`] — the single predicate
     //! `tui::run`, `gtk::run`, `macos::run`, and `win::run`'s
     //! `dispatch_event`s all now call (via
     //! `crate::runtime::preprocess_event`), each backend supplying its
@@ -2298,7 +2230,7 @@ mod is_paste_keypress_tests {
 
     #[test]
     fn ctrl_shift_v_is_a_paste_keypress_for_ctrl_native_backends() {
-        // quadraui#415: some terminal emulators reserve plain Ctrl-V for
+        // Some terminal emulators reserve plain Ctrl-V for
         // a control byte and use Ctrl-Shift-V for paste instead.
         assert!(is_paste_keypress(
             &Key::Char('v'),
@@ -2309,9 +2241,7 @@ mod is_paste_keypress_tests {
 
     #[test]
     fn cmd_shift_v_is_a_paste_keypress_for_cmd_native_backends() {
-        // D-011: the same shift-tolerant contract extends to macOS's
-        // Cmd-V, which used to require `shift: false` before this
-        // predicate replaced `macos::run`'s inline match guard.
+        // D-011: shift tolerance: Cmd-Shift-V also triggers paste on macOS.
         assert!(is_paste_keypress(
             &Key::Char('v'),
             &mods(false, true, false, true),
