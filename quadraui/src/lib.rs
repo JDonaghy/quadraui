@@ -207,6 +207,7 @@ pub mod terminal_style;
 pub mod testing;
 pub mod text_util;
 pub mod theme;
+pub mod transition;
 pub mod types;
 pub mod undo;
 
@@ -556,7 +557,7 @@ pub use primitives::text_input::{
 };
 pub use primitives::toast::{
     Toast, ToastButton, ToastCorner, ToastFocus, ToastFocusTarget, ToastHit, ToastMeasure,
-    ToastOverlay, ToastSeverity, ToastStackLayout, VisibleToast,
+    ToastMotion, ToastOverlay, ToastSeverity, ToastStackLayout, VisibleToast,
 };
 pub use primitives::toolbar::{
     Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, ToolbarItemKind, ToolbarItemMeasure,
@@ -589,9 +590,10 @@ pub use accelerator::{
 };
 pub use backend::{
     Backend, BackendCaps, BackendError, Clipboard, ClipboardFormat, ColorDepth, Display,
-    FileDialogOptions, MenuStyle, MessageDialogButton, MessageDialogChoice, MessageDialogOptions,
-    Metrics, Notification, PlatformFontDefaults, PlatformServices, PointerShape, ResizeEdge,
-    ResolvedMenuStyle, RgbaImage, SecretStore, ServiceResult, SystemTheme, WindowControl,
+    FileDialogOptions, InvalidationKind, InvalidationLog, MenuStyle, MessageDialogButton,
+    MessageDialogChoice, MessageDialogOptions, Metrics, Notification, PlatformFontDefaults,
+    PlatformServices, PointerShape, ResizeEdge, ResolvedMenuStyle, RgbaImage, SecretStore,
+    ServiceResult, SystemTheme, WindowControl,
 };
 pub use event::{
     mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,
@@ -619,6 +621,13 @@ pub use paint_surface::{PaintSurface, PathVerb};
 // demonstrates the pattern as an app-owned drop-in replacement for its
 // old ad hoc fields.
 pub use interaction::InteractionState;
+// `Transition` — a small, generic value interpolator that drives
+// chrome motion (hover/press fades, toast slide-in/slide-out) without a
+// general animation framework. See `transition`'s module doc for the
+// "sampled, not ticked" design and the TUI-snaps-instead-of-animates
+// convention; `InteractionState::hover_fade_alpha`/`press_fade_alpha`
+// and `primitives::toast::ToastMotion` are its two consumers today.
+pub use transition::{Easing, Transition, CHROME_FRAME_INTERVAL, CHROME_TRANSITION_DURATION};
 // #816: shared layout/hit-test foundation (`Anchor` for overlay
 // positioning, `visible_range_walk` replacing the per-primitive
 // `Visible*{idx, bounds}` structs). Nothing in `primitives/` consumes

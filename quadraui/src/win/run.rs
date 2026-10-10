@@ -13,6 +13,17 @@
 //! (the window title) — see `win::shell_runner::run_with_shell` (#707),
 //! mirroring `gtk::run::RunConfig`.
 //!
+//! ## Chrome transitions need no runner changes here either
+//!
+//! Same posture as `gtk::run`'s own note: a hover/press fade or toast
+//! slide re-arms itself through the existing `Reaction::RedrawAfter` →
+//! [`WinBackend::request_frame_in`] chained-rearm path, with
+//! `crate::runner::chrome_transition_reaction` as the glue. Unlike GTK,
+//! Win32's `InvalidateRect(hwnd, Some(&rect), …)` *can* flush a narrower
+//! region than the whole client area — real wiring through
+//! [`crate::Backend::invalidate_rect`] is tracked follow-up (see that
+//! method's per-backend table), not implemented here yet.
+//!
 //! # Window chrome: standard frame, not CSD — `desktop::WindowDragArm` N/A
 //!
 //! `run_inner` creates its window with `WS_OVERLAPPEDWINDOW` (below) —

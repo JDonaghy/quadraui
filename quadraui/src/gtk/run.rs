@@ -15,6 +15,21 @@
 //!   subsequent frame.
 //! - [`crate::Reaction`] dispatch (Continue / Redraw / Exit).
 //!
+//! ## Chrome transitions need no runner changes here
+//!
+//! A hover/press fade (`crate::InteractionState::hover_fade_alpha`) or
+//! a toast slide (`crate::primitives::toast::ToastMotion`) re-arms
+//! itself purely through the existing `Reaction::RedrawAfter` →
+//! [`GtkBackend::request_frame_in`] chained-rearm path above — the same
+//! mechanism `crate::runner::AppLogic::tick`'s doc already documents
+//! for a spinner. `crate::runner::chrome_transition_reaction` is the
+//! glue an app calls from `tick`/`handle`. [`crate::Backend::invalidate_rect`]
+//! is a separate, narrower hook apps may call directly mid-transition;
+//! GTK's single-`DrawingArea` model has no native call narrower than a
+//! full `queue_draw()` to make that hook actually do less work (see
+//! that method's doc for the per-backend table), so `GtkBackend` keeps
+//! the trait's default no-op rather than pretending otherwise.
+//!
 //! ## Single-DA model (decided: #217 Stage 1)
 //!
 //! The runner uses a **single-DrawingArea** model: one DA, one

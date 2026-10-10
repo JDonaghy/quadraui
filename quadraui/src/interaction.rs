@@ -128,7 +128,10 @@
 //! `toolbar_hover_paints_hover_background_at_the_cursor` asserts the
 //! *painted* consequence.
 
+use std::time::Instant;
+
 use crate::event::{MouseButton, UiEvent};
+use crate::transition::{Easing, Transition, CHROME_TRANSITION_DURATION};
 use crate::types::WidgetId;
 
 /// Tracks which widget is hovered and which is pressed, keyed by
@@ -136,11 +139,45 @@ use crate::types::WidgetId;
 ///
 /// Cheap to keep one per frame (or one per app, reused every frame) —
 /// two `Option<WidgetId>` slots plus whatever hit-test the caller
-/// supplies to [`Self::handle_mouse`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// supplies to [`Self::handle_mouse`], plus at most two
+/// [`Transition`]s driving the hover/press fade — see
+/// [`Self::hover_fade_alpha`]/[`Self::press_fade_alpha`].
+///
+/// # Hover/press fades
+///
+/// Every `set_hovered`/`set_pressed` call also starts (or retargets) a
+/// [`Transition`] for whichever single widget's alpha just changed —
+/// the one that gained or lost hover/press, not both at once. Moving
+/// the pointer directly from widget `a` to widget `b` therefore snaps
+/// `a`'s highlight off and fades `b`'s highlight in, rather than
+/// cross-fading both; that simplification is what keeps this "a small
+/// Transition helper" rather than a per-widget animation table. The
+/// case this *does* handle smoothly is leaving a widget for empty
+/// space: `b` fades `1.0 → 0.0` instead of snapping off, because
+/// [`Self::hovered`] still names `b` right up until the fade would
+/// otherwise need to look it up.
+///
+/// [`Self::hover_fade_alpha`]/[`Self::press_fade_alpha`] return a
+/// continuous `0.0..=1.0` value a backend or app can blend a highlight
+/// color against; [`Self::is_animating`] reports whether a caller
+/// should keep re-arming frames (the
+/// [`crate::runner::Reaction::RedrawAfter`] chained-rearm pattern —
+/// see `crate::runner::chrome_transition_reaction`) to finish the fade.
+/// TUI code paths skip fades entirely and read
+/// [`Self::is_hovered`]/[`Self::is_pressed`] directly instead, which is
+/// what makes them render the end state immediately with no transition
+/// in flight to begin with.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct InteractionState {
     hovered: Option<WidgetId>,
     pressed: Option<WidgetId>,
+    /// The widget (if any) whose hover alpha is currently mid-fade,
+    /// alongside the [`Transition`] driving it. Not necessarily
+    /// `hovered` — see this type's doc for the hover-out case, where
+    /// the fading widget is the one that was *just* un-hovered.
+    hover_fade: Option<(WidgetId, Transition)>,
+    /// [`Self::hover_fade`]'s twin for `pressed`.
+    press_fade: Option<(WidgetId, Transition)>,
 }
 
 impl InteractionState {
@@ -157,7 +194,12 @@ impl InteractionState {
     /// a host mid-migration that still keeps the two ids in separate
     /// fields.
     pub fn from_parts(hovered: Option<WidgetId>, pressed: Option<WidgetId>) -> Self {
-        Self { hovered, pressed }
+        Self {
+            hovered,
+            pressed,
+            hover_fade: None,
+            press_fade: None,
+        }
     }
 
     /// The currently hovered widget, if any.
@@ -180,35 +222,140 @@ impl InteractionState {
         self.pressed.as_ref() == Some(id)
     }
 
-    /// Set the hovered widget directly. Returns `true` if it changed
-    /// (caller should redraw).
+    /// Set the hovered widget directly, starting/retargeting the hover
+    /// fade against the real clock (`Instant::now()`). Returns
+    /// `true` if it changed (caller should redraw). See
+    /// [`Self::set_hovered_at`] for the deterministic, test-friendly
+    /// twin, and this type's doc for the fade semantics.
     pub fn set_hovered(&mut self, id: Option<WidgetId>) -> bool {
-        if self.hovered != id {
-            self.hovered = id;
-            true
-        } else {
-            false
+        self.set_hovered_at(id, Instant::now())
+    }
+
+    /// [`Self::set_hovered`], anchored at `now` rather than the real
+    /// clock.
+    pub fn set_hovered_at(&mut self, id: Option<WidgetId>, now: Instant) -> bool {
+        if self.hovered == id {
+            return false;
+        }
+        Self::start_fade_at(&mut self.hover_fade, self.hovered.as_ref(), id.as_ref(), now);
+        self.hovered = id;
+        true
+    }
+
+    /// Set the pressed widget directly, starting/retargeting the press
+    /// fade against the real clock. Returns `true` if it
+    /// changed (caller should redraw). See [`Self::set_pressed_at`] for
+    /// the deterministic twin.
+    pub fn set_pressed(&mut self, id: Option<WidgetId>) -> bool {
+        self.set_pressed_at(id, Instant::now())
+    }
+
+    /// [`Self::set_pressed`], anchored at `now` rather than the real
+    /// clock.
+    pub fn set_pressed_at(&mut self, id: Option<WidgetId>, now: Instant) -> bool {
+        if self.pressed == id {
+            return false;
+        }
+        Self::start_fade_at(&mut self.press_fade, self.pressed.as_ref(), id.as_ref(), now);
+        self.pressed = id;
+        true
+    }
+
+    /// Start or retarget a fade in `fade_slot` for whichever single
+    /// widget's alpha just changed between `old` and `new` — shared by
+    /// [`Self::set_hovered_at`] and [`Self::set_pressed_at`]. See this
+    /// type's doc for why only one side of an `old → new` move
+    /// animates (the entering widget) while the other snaps off.
+    fn start_fade_at(
+        fade_slot: &mut Option<(WidgetId, Transition)>,
+        old: Option<&WidgetId>,
+        new: Option<&WidgetId>,
+        now: Instant,
+    ) {
+        match (old, new) {
+            (_, Some(entering)) => {
+                let current = match fade_slot {
+                    Some((id, t)) if id == entering => t.value_at(now),
+                    _ => 0.0,
+                };
+                *fade_slot = Some((
+                    entering.clone(),
+                    Transition::start_at(now, current, 1.0, CHROME_TRANSITION_DURATION, Easing::EaseOut),
+                ));
+            }
+            (Some(leaving), None) => {
+                let current = match fade_slot {
+                    Some((id, t)) if id == leaving => t.value_at(now),
+                    _ => 1.0,
+                };
+                *fade_slot = Some((
+                    leaving.clone(),
+                    Transition::start_at(now, current, 0.0, CHROME_TRANSITION_DURATION, Easing::EaseOut),
+                ));
+            }
+            (None, None) => {}
         }
     }
 
-    /// Set the pressed widget directly. Returns `true` if it changed
-    /// (caller should redraw).
-    pub fn set_pressed(&mut self, id: Option<WidgetId>) -> bool {
-        if self.pressed != id {
-            self.pressed = id;
-            true
-        } else {
-            false
+    /// Continuous hover-fade alpha for `id` at `now` — `0.0` fully
+    /// unhovered, `1.0` fully hovered, interpolated while a fade is in
+    /// flight. A backend/app blends its hover highlight color against
+    /// this instead of a binary [`Self::is_hovered`] check to get the
+    /// fade visually. TUI code paths should keep using
+    /// [`Self::is_hovered`] directly instead — see this type's doc.
+    pub fn hover_fade_alpha(&self, id: &WidgetId, now: Instant) -> f32 {
+        Self::fade_alpha_for(&self.hover_fade, &self.hovered, id, now)
+    }
+
+    /// [`Self::hover_fade_alpha`]'s twin for the press highlight.
+    pub fn press_fade_alpha(&self, id: &WidgetId, now: Instant) -> f32 {
+        Self::fade_alpha_for(&self.press_fade, &self.pressed, id, now)
+    }
+
+    fn fade_alpha_for(
+        fade: &Option<(WidgetId, Transition)>,
+        settled: &Option<WidgetId>,
+        id: &WidgetId,
+        now: Instant,
+    ) -> f32 {
+        if let Some((fading_id, transition)) = fade {
+            if fading_id == id {
+                return transition.value_at(now);
+            }
         }
+        if settled.as_ref() == Some(id) {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Whether either the hover or press fade is still mid-transition
+    /// at `now` — the signal a caller uses to decide whether to keep
+    /// re-arming frames (`crate::runner::Reaction::RedrawAfter`'s
+    /// chained-rearm pattern; see `crate::runner::chrome_transition_reaction`)
+    /// or let the loop go idle because every fade has settled.
+    pub fn is_animating(&self, now: Instant) -> bool {
+        let fading = |fade: &Option<(WidgetId, Transition)>| {
+            fade.as_ref().is_some_and(|(_, t)| !t.is_done_at(now))
+        };
+        fading(&self.hover_fade) || fading(&self.press_fade)
     }
 
     /// Clear both hovered and pressed state — e.g. on `MouseLeft`, on
     /// window blur, or when the widget tree they refer to is torn
     /// down. Returns `true` if anything changed.
+    ///
+    /// Clears the hover/press fades outright rather than animating
+    /// them out — this is a teardown/reset path (the widget tree they
+    /// refer to may no longer exist), not a hover-leaves-to-empty-space
+    /// motion.
     pub fn clear(&mut self) -> bool {
         let changed = self.hovered.is_some() || self.pressed.is_some();
         self.hovered = None;
         self.pressed = None;
+        self.hover_fade = None;
+        self.press_fade = None;
         changed
     }
 
@@ -257,9 +404,21 @@ impl InteractionState {
         event: &UiEvent,
         hit_test: impl FnOnce(f32, f32) -> Option<WidgetId>,
     ) -> bool {
+        self.handle_mouse_at(event, Instant::now(), hit_test)
+    }
+
+    /// [`Self::handle_mouse`], anchored at `now` rather than the real
+    /// clock — what drives the hover/press fade's start time
+    /// deterministically in tests.
+    pub fn handle_mouse_at(
+        &mut self,
+        event: &UiEvent,
+        now: Instant,
+        hit_test: impl FnOnce(f32, f32) -> Option<WidgetId>,
+    ) -> bool {
         match event {
             UiEvent::MouseMoved { position, .. } => {
-                self.set_hovered(hit_test(position.x, position.y))
+                self.set_hovered_at(hit_test(position.x, position.y), now)
             }
             UiEvent::MouseDown {
                 widget,
@@ -268,12 +427,12 @@ impl InteractionState {
                 ..
             } => {
                 let id = widget.clone().or_else(|| hit_test(position.x, position.y));
-                self.set_pressed(id)
+                self.set_pressed_at(id, now)
             }
             UiEvent::MouseUp {
                 button: MouseButton::Left,
                 ..
-            } => self.set_pressed(None),
+            } => self.set_pressed_at(None, now),
             _ => false,
         }
     }
@@ -473,5 +632,123 @@ mod tests {
         );
         assert!(!changed);
         assert_eq!(state.hovered(), None);
+    }
+
+    // ── Hover/press fade ─────────────────────────────────────────────
+
+    #[test]
+    fn hover_fade_alpha_is_zero_before_any_hover() {
+        let state = InteractionState::new();
+        assert_eq!(state.hover_fade_alpha(&WidgetId::new("a"), Instant::now()), 0.0);
+    }
+
+    #[test]
+    fn hover_fade_interpolates_in_over_the_chrome_duration() {
+        let mut state = InteractionState::new();
+        let t0 = Instant::now();
+        let id = WidgetId::new("btn");
+        assert!(state.set_hovered_at(Some(id.clone()), t0));
+
+        assert_eq!(state.hover_fade_alpha(&id, t0), 0.0);
+        let mid = state.hover_fade_alpha(&id, t0 + CHROME_TRANSITION_DURATION / 2);
+        assert!(
+            mid > 0.0 && mid < 1.0,
+            "midpoint alpha should be strictly between 0 and 1, got {mid}"
+        );
+        assert_eq!(state.hover_fade_alpha(&id, t0 + CHROME_TRANSITION_DURATION), 1.0);
+        // Settled well past the end stays at 1.0, matching `is_hovered`.
+        assert_eq!(
+            state.hover_fade_alpha(&id, t0 + CHROME_TRANSITION_DURATION * 10),
+            1.0
+        );
+    }
+
+    #[test]
+    fn hover_fade_interpolates_out_when_leaving_to_empty_space() {
+        let mut state = InteractionState::new();
+        let t0 = Instant::now();
+        let id = WidgetId::new("btn");
+        state.set_hovered_at(Some(id.clone()), t0);
+        let fully_in = t0 + CHROME_TRANSITION_DURATION;
+        assert_eq!(state.hover_fade_alpha(&id, fully_in), 1.0);
+
+        // Leave to empty space at `fully_in`.
+        assert!(state.set_hovered_at(None, fully_in));
+        assert_eq!(state.hover_fade_alpha(&id, fully_in), 1.0);
+        let mid_out = state.hover_fade_alpha(&id, fully_in + CHROME_TRANSITION_DURATION / 2);
+        assert!(
+            mid_out > 0.0 && mid_out < 1.0,
+            "fade-out midpoint should be strictly between 0 and 1, got {mid_out}"
+        );
+        assert_eq!(
+            state.hover_fade_alpha(&id, fully_in + CHROME_TRANSITION_DURATION),
+            0.0
+        );
+    }
+
+    /// Moving directly from one widget to another snaps the old one off
+    /// instead of cross-fading both — the documented simplification
+    /// that keeps this a "small" helper. See the type's doc.
+    #[test]
+    fn hover_fade_snaps_off_the_old_widget_when_moving_directly_to_a_new_one() {
+        let mut state = InteractionState::new();
+        let t0 = Instant::now();
+        let a = WidgetId::new("a");
+        let b = WidgetId::new("b");
+        state.set_hovered_at(Some(a.clone()), t0);
+        let fully_in = t0 + CHROME_TRANSITION_DURATION;
+        assert_eq!(state.hover_fade_alpha(&a, fully_in), 1.0);
+
+        state.set_hovered_at(Some(b.clone()), fully_in);
+        // `a` is no longer hovered and has no tracked fade of its own —
+        // its alpha is immediately 0.0.
+        assert_eq!(state.hover_fade_alpha(&a, fully_in), 0.0);
+        // `b` fades in from 0.0.
+        assert_eq!(state.hover_fade_alpha(&b, fully_in), 0.0);
+        assert_eq!(
+            state.hover_fade_alpha(&b, fully_in + CHROME_TRANSITION_DURATION),
+            1.0
+        );
+    }
+
+    #[test]
+    fn is_animating_tracks_both_hover_and_press_fades() {
+        let mut state = InteractionState::new();
+        let t0 = Instant::now();
+        assert!(!state.is_animating(t0), "nothing hovered/pressed yet");
+
+        let id = WidgetId::new("btn");
+        state.set_hovered_at(Some(id.clone()), t0);
+        assert!(state.is_animating(t0));
+        assert!(!state.is_animating(t0 + CHROME_TRANSITION_DURATION * 2));
+
+        state.set_pressed_at(Some(id), t0 + CHROME_TRANSITION_DURATION * 2);
+        assert!(state.is_animating(t0 + CHROME_TRANSITION_DURATION * 2));
+    }
+
+    #[test]
+    fn clear_drops_in_flight_fades_without_animating_them_out() {
+        let mut state = InteractionState::new();
+        let t0 = Instant::now();
+        let id = WidgetId::new("btn");
+        state.set_hovered_at(Some(id.clone()), t0);
+        assert!(state.is_animating(t0));
+
+        state.clear();
+        assert!(!state.is_animating(t0));
+        assert_eq!(state.hover_fade_alpha(&id, t0), 0.0);
+    }
+
+    #[test]
+    fn press_fade_alpha_mirrors_hover_fade_alpha() {
+        let mut state = InteractionState::new();
+        let t0 = Instant::now();
+        let id = WidgetId::new("btn");
+        state.set_pressed_at(Some(id.clone()), t0);
+        assert_eq!(state.press_fade_alpha(&id, t0), 0.0);
+        assert_eq!(
+            state.press_fade_alpha(&id, t0 + CHROME_TRANSITION_DURATION),
+            1.0
+        );
     }
 }

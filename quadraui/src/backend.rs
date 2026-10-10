@@ -421,6 +421,127 @@ impl Default for ColorDepth {
     }
 }
 
+/// One entry in a backend's invalidation bookkeeping — see
+/// [`Backend::invalidate_rect`]'s doc for the full contract this exists
+/// to make testable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InvalidationKind {
+    /// The whole frame may have changed — a normal state mutation, a
+    /// resize, [`Backend::request_full_repaint`]'s diff-cache bust.
+    Full,
+    /// Only `Rect` changed — a [`Backend::invalidate_rect`] call.
+    Partial(Rect),
+}
+
+/// Records why each frame asked to be flushed, so a test can assert a
+/// chrome transition (hover/press fade, toast slide) only ever recorded
+/// [`InvalidationKind::Partial`] entries rather than escalating to a
+/// full-window redraw.
+///
+/// Not part of the [`Backend`] trait itself — [`Backend::invalidate_rect`]'s
+/// per-backend table already names which backends keep one of these
+/// (today: `TuiBackend::invalidation_log`); a backend with no native
+/// partial-flush path to make honest (GTK, Windows for now) has nothing
+/// meaningful to log and simply doesn't expose one.
+#[derive(Debug, Clone, Default)]
+pub struct InvalidationLog {
+    events: Vec<InvalidationKind>,
+}
+
+impl InvalidationLog {
+    /// An empty log — nothing recorded yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a full-frame invalidation.
+    pub fn record_full(&mut self) {
+        self.events.push(InvalidationKind::Full);
+    }
+
+    /// Record that only `rect` was invalidated.
+    pub fn record_rect(&mut self, rect: Rect) {
+        self.events.push(InvalidationKind::Partial(rect));
+    }
+
+    /// Every entry recorded since the log was created or last [`Self::clear`]ed,
+    /// oldest first.
+    pub fn events(&self) -> &[InvalidationKind] {
+        &self.events
+    }
+
+    /// Drop every recorded entry — call between frames (or between test
+    /// assertions) so the next batch of entries doesn't include stale
+    /// ones from before.
+    pub fn clear(&mut self) {
+        self.events.clear();
+    }
+
+    /// Whether any [`InvalidationKind::Full`] entry has been recorded.
+    pub fn has_full(&self) -> bool {
+        self.events
+            .iter()
+            .any(|e| matches!(e, InvalidationKind::Full))
+    }
+
+    /// Whether at least one entry was recorded and every one of them is
+    /// [`InvalidationKind::Partial`] — exactly the shape a hover fade
+    /// (or any other chrome transition) should produce.
+    pub fn only_partial(&self) -> bool {
+        !self.events.is_empty() && !self.has_full()
+    }
+}
+
+#[cfg(test)]
+mod invalidation_log_tests {
+    use super::*;
+
+    #[test]
+    fn new_log_is_empty() {
+        let log = InvalidationLog::new();
+        assert_eq!(log.events(), &[]);
+        assert!(!log.has_full());
+        assert!(!log.only_partial(), "an empty log is not 'only partial'");
+    }
+
+    #[test]
+    fn a_hover_fade_records_only_partial_entries() {
+        let mut log = InvalidationLog::new();
+        let r1 = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let r2 = Rect::new(5.0, 5.0, 10.0, 10.0);
+        log.record_rect(r1);
+        log.record_rect(r2);
+
+        assert!(!log.has_full());
+        assert!(log.only_partial());
+        assert_eq!(
+            log.events(),
+            &[InvalidationKind::Partial(r1), InvalidationKind::Partial(r2)]
+        );
+    }
+
+    #[test]
+    fn a_full_repaint_is_not_only_partial_even_mixed_with_a_rect() {
+        let mut log = InvalidationLog::new();
+        log.record_rect(Rect::new(0.0, 0.0, 1.0, 1.0));
+        log.record_full();
+
+        assert!(log.has_full());
+        assert!(!log.only_partial());
+    }
+
+    #[test]
+    fn clear_drops_every_recorded_entry() {
+        let mut log = InvalidationLog::new();
+        log.record_full();
+        log.record_rect(Rect::new(0.0, 0.0, 1.0, 1.0));
+        log.clear();
+        assert_eq!(log.events(), &[]);
+        assert!(!log.has_full());
+        assert!(!log.only_partial());
+    }
+}
+
 /// What a backend actually implements, beyond the required trait surface.
 ///
 /// quadraui#492: several `Backend` methods take a no-op (or `false`)
@@ -1656,6 +1777,37 @@ pub trait Backend: sealed::Sealed {
     /// same "may act as if called once" contract
     /// [`Self::request_frame_in`] documents for overlapping requests.
     fn request_full_repaint(&mut self) {}
+
+    /// Hint that only `rect` changed since the last frame — a chrome
+    /// transition tick (hover/press fade, toast slide), not a state
+    /// change that could have moved content anywhere in the
+    /// frame. [`AppLogic::render`][crate::runner::AppLogic::render]
+    /// still repaints every primitive on the Rust side regardless —
+    /// this is a hint about how much of the *native display surface*
+    /// needs flushing, not a skip of the render pass itself. See
+    /// [`InvalidationKind`]'s doc for the full contract, and why it's
+    /// worth calling even though every backend's default below treats
+    /// it as a full repaint.
+    ///
+    /// Call this directly from app code mid-transition instead of (or
+    /// alongside) returning [`Reaction::Redraw`][crate::runner::Reaction::Redraw]
+    /// — the same "nothing stops a direct call" posture
+    /// [`Self::request_frame_in`]'s doc already describes for arming a
+    /// wake. [`crate::runner::chrome_transition_reaction`] is the
+    /// companion helper for the `Reaction` half of that pairing.
+    ///
+    /// # Per-backend support
+    ///
+    /// | Backend | Behaviour |
+    /// |---|---|
+    /// | TUI | Bookkeeping only (`TuiBackend::invalidation_log`) — ratatui's own `Buffer` diff already limits terminal writes to changed cells regardless of this hint. |
+    /// | GTK | Default (full) — a single `DrawingArea`'s Cairo draw callback always repaints the whole widget; there is no narrower native call to make (see [`Self::request_full_repaint`]'s doc for the same architectural fact). |
+    /// | macOS | Overridden: `view.setNeedsDisplayInRect(ns_rect)` instead of `setNeedsDisplay(true)` — a real, narrower native flush. |
+    /// | Windows | Default (full) for now — `InvalidateRect(hwnd, Some(&rect), …)` is the real analogous call; wiring it is tracked follow-up. |
+    ///
+    /// Default: no-op (equivalent to treating the whole frame as
+    /// changed — the long-standing status quo).
+    fn invalidate_rect(&mut self, _rect: Rect) {}
 
     /// Register an accelerator. The backend stores it and emits
     /// [`UiEvent::Accelerator`] when the native key event matches.

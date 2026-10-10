@@ -40,6 +40,7 @@ use std::time::Duration;
 
 use crate::backend::Backend;
 use crate::event::{Rect, UiEvent};
+use crate::transition::CHROME_FRAME_INTERVAL;
 use crate::types::WidgetId;
 
 /// Tells the runner what to do after `handle` returns.
@@ -154,6 +155,40 @@ impl Reaction {
             (Reaction::Continue, Reaction::Continue) => Reaction::Continue,
         }
     }
+}
+
+/// Wires a chrome transition (hover/press fade via
+/// [`crate::InteractionState::is_animating`], a toast slide via
+/// [`crate::primitives::toast::ToastMotion::is_animating`]) into the
+/// existing [`Reaction::RedrawAfter`] chained-rearm pattern.
+///
+/// Call this from [`AppLogic::handle`]/[`AppLogic::tick`] once the app
+/// has computed whether anything is still mid-fade/slide at the current
+/// instant:
+///
+/// ```ignore
+/// fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
+///     let now = Instant::now();
+///     let animating = self.interaction.is_animating(now);
+///     quadraui::runner::chrome_transition_reaction(backend, animating)
+/// }
+/// ```
+///
+/// Paints the next frame unconditionally (every chrome transition tick
+/// has *something* new to show, even the settling one) and, while
+/// `still_animating` is `true`, also arms another wake at
+/// [`crate::transition::CHROME_FRAME_INTERVAL`] via
+/// [`Backend::request_frame_in`] — the same "paint *and* schedule"
+/// shape [`Reaction::RedrawAfter`]'s own doc spells out for the
+/// thinking-spinner case. Once `still_animating` is `false`, this still
+/// returns [`Reaction::Redraw`] for the settling frame but arms no
+/// further wake, so the loop goes idle again rather than re-arming
+/// forever.
+pub fn chrome_transition_reaction(backend: &mut dyn Backend, still_animating: bool) -> Reaction {
+    if still_animating {
+        backend.request_frame_in(CHROME_FRAME_INTERVAL);
+    }
+    Reaction::Redraw
 }
 
 /// What happened during one non-blocking `step`/`pump` call — the
@@ -313,6 +348,52 @@ pub trait AppLogic {
     /// already has this data on hand from building its `ScreenLayout`.
     fn tab_stops(&self, _area: Self::AreaId) -> Vec<(WidgetId, Rect)> {
         Vec::new()
+    }
+}
+
+/// [`chrome_transition_reaction`] always paints, and re-arms a wake only
+/// while still animating — exercised against a real [`crate::tui::TuiBackend`]
+/// (not a hand-rolled stub) because [`Backend`] is a sealed trait; see
+/// `TuiBackend::pending_frame_delay`/`frame_requests`'s own docs for why
+/// they exist precisely to make this kind of chained-rearm assertion
+/// possible without a live terminal.
+#[cfg(all(test, feature = "tui"))]
+mod chrome_transition_reaction_tests {
+    use super::*;
+    use crate::tui::TuiBackend;
+
+    #[test]
+    fn redraws_and_arms_another_wake_while_animating() {
+        let mut backend = TuiBackend::new();
+        assert_eq!(backend.pending_frame_delay(), None);
+
+        let reaction = chrome_transition_reaction(&mut backend, true);
+        assert_eq!(reaction, Reaction::Redraw);
+        // `pending_frame_delay` reports time-*remaining* as of the call,
+        // so it drifts slightly below the originally requested interval
+        // — assert it's close rather than byte-for-byte equal.
+        let remaining = backend
+            .pending_frame_delay()
+            .expect("a wake should be armed while still animating");
+        assert!(
+            remaining <= CHROME_FRAME_INTERVAL && remaining > Duration::from_millis(10),
+            "expected ~{CHROME_FRAME_INTERVAL:?} remaining, got {remaining:?}"
+        );
+        assert_eq!(backend.frame_requests(), 1);
+    }
+
+    #[test]
+    fn redraws_once_more_but_arms_nothing_once_settled() {
+        let mut backend = TuiBackend::new();
+
+        let reaction = chrome_transition_reaction(&mut backend, false);
+        assert_eq!(reaction, Reaction::Redraw);
+        assert_eq!(
+            backend.pending_frame_delay(),
+            None,
+            "a settled transition must not re-arm a future wake"
+        );
+        assert_eq!(backend.frame_requests(), 0);
     }
 }
 

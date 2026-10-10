@@ -335,6 +335,19 @@ pub struct MacBackend {
     /// looks this up when the scheduled delay elapses. `None` until then,
     /// same "no-op, not a panic" posture as `wake_callback`.
     tick_callback: WakeCallback,
+    /// Set once by `macos::run::run` via
+    /// [`Self::set_invalidate_rect_callback`], right after
+    /// the `QuadraView` exists — same shape as `wake_callback`/
+    /// `tick_callback`, but wired to `view.invalidate_rect(rect)`
+    /// (`setNeedsDisplayInRect:`) instead of a bare repaint request or a
+    /// tick. [`Backend::invalidate_rect`] looks this up; `None` until
+    /// installed (e.g. a `MacBackend` constructed directly by a test) is
+    /// a documented no-op there too — the call still records into
+    /// [`Self::invalidation_log`] either way.
+    invalidate_callback: InvalidateCallback,
+    /// [`Backend::invalidate_rect`] bookkeeping — see
+    /// [`Self::invalidation_log`]'s doc.
+    invalidation_log: crate::backend::InvalidationLog,
 }
 
 /// The wake-target [`MacBackend::waker`] invokes (issue #831) — see
@@ -348,6 +361,11 @@ pub struct MacBackend {
 /// never lets the `Rc` cross a thread boundary at all, parking it in a
 /// thread-local keyed by an integer id.
 type WakeCallback = Arc<std::sync::OnceLock<MainThreadBound<Rc<dyn Fn()>>>>;
+
+/// [`MacBackend::invalidate_rect`]'s equivalent of [`WakeCallback`] — see
+/// that field's doc. Takes the invalidated [`crate::event::Rect`] rather
+/// than no arguments, so it can't reuse `WakeCallback`'s type alias.
+type InvalidateCallback = Arc<std::sync::OnceLock<MainThreadBound<Rc<dyn Fn(crate::event::Rect)>>>>;
 
 /// Position tolerance, in points, for [`MacBackend::fold_double_click`]'s
 /// [`DoubleClickDetector`].
@@ -657,6 +675,8 @@ impl MacBackend {
             user_events: crate::runtime::UserEventQueue::new(),
             wake_callback: Arc::new(std::sync::OnceLock::new()),
             tick_callback: Arc::new(std::sync::OnceLock::new()),
+            invalidate_callback: Arc::new(std::sync::OnceLock::new()),
+            invalidation_log: crate::backend::InvalidationLog::new(),
         }
     }
 
@@ -695,6 +715,35 @@ impl MacBackend {
     /// ignores it) — `run` only ever calls this once per backend instance.
     pub(crate) fn set_tick_callback(&self, callback: Rc<dyn Fn()>, mtm: MainThreadMarker) {
         let _ = self.tick_callback.set(MainThreadBound::new(callback, mtm));
+    }
+
+    /// Install the closure [`Backend::invalidate_rect`] invokes on the
+    /// AppKit main thread. `macos::run::run` calls this
+    /// once, right after constructing the `QuadraView`, with a closure
+    /// that calls `view.invalidate_rect(rect)` (`setNeedsDisplayInRect:`)
+    /// — the narrower, region-scoped sibling of
+    /// [`Self::set_wake_callback`]'s `setNeedsDisplay(true)`.
+    ///
+    /// A second call is a no-op ([`std::sync::OnceLock::set`] silently
+    /// ignores it) — `run` only ever calls this once per backend instance.
+    pub(crate) fn set_invalidate_rect_callback(
+        &self,
+        callback: Rc<dyn Fn(crate::event::Rect)>,
+        mtm: MainThreadMarker,
+    ) {
+        let _ = self.invalidate_callback.set(MainThreadBound::new(callback, mtm));
+    }
+
+    /// Bookkeeping for [`Backend::invalidate_rect`] — every call since
+    /// the log was last [`crate::backend::InvalidationLog::clear`]ed,
+    /// oldest first. Recorded regardless of whether
+    /// [`Self::set_invalidate_rect_callback`] has been installed yet, so
+    /// a `MacBackend` built directly by a test (no live `QuadraView`,
+    /// same display-free posture as [`crate::macos::testing::MacDriver`])
+    /// can still assert the chrome-transition contract — see
+    /// [`Backend::invalidate_rect`]'s per-backend table.
+    pub fn invalidation_log(&self) -> &crate::backend::InvalidationLog {
+        &self.invalidation_log
     }
 
     /// Stash the raw press `NSEvent`. Called by `macos::run`'s
@@ -1549,6 +1598,26 @@ impl Backend for MacBackend {
                 (bound.get(mtm))();
             }
         });
+    }
+
+    /// See [`Backend::invalidate_rect`]'s per-backend table — macOS is
+    /// the backend with a real native partial-flush path
+    /// (`setNeedsDisplayInRect:`, wired through
+    /// [`Self::set_invalidate_rect_callback`]), unlike GTK/Windows'
+    /// current full-repaint fallback. Always records into
+    /// [`Self::invalidation_log`] first, regardless of whether the
+    /// native callback has been installed yet — see that method's doc.
+    fn invalidate_rect(&mut self, rect: Rect) {
+        self.invalidation_log.record_rect(rect);
+        if let Some(bound) = self.invalidate_callback.get() {
+            // SAFETY: `Backend::invalidate_rect` is called synchronously
+            // on the main thread (never from a background thread — the
+            // same posture [`Self::request_frame_in`]'s doc already
+            // documents for this backend), so recovering the
+            // `MainThreadMarker` here is sound.
+            let mtm = unsafe { MainThreadMarker::new_unchecked() };
+            (bound.get(mtm))(rect);
+        }
     }
 
     /// Unlike every other backend, macOS's universal bindings (`Save`,
@@ -4881,6 +4950,29 @@ mod tests {
         assert_eq!(v.width, 0.0);
         assert_eq!(v.height, 0.0);
         assert_eq!(v.scale, 1.0);
+    }
+
+    /// `invalidate_rect` records into `MacBackend::invalidation_log`
+    /// regardless of whether a live
+    /// `QuadraView` has installed `set_invalidate_rect_callback` — a
+    /// `MacBackend` built directly here (no window, same display-free
+    /// posture `MacDriver` already relies on) must not panic, and the
+    /// contract `InvalidationLog::only_partial` checks must hold.
+    #[test]
+    fn invalidate_rect_records_only_partial_entries_with_no_view_installed() {
+        let mut b = MacBackend::new();
+        assert_eq!(b.invalidation_log().events(), &[]);
+
+        let rect = Rect::new(1.0, 2.0, 3.0, 4.0);
+        Backend::invalidate_rect(&mut b, rect);
+
+        let log = b.invalidation_log();
+        assert!(log.only_partial());
+        assert!(!log.has_full());
+        assert_eq!(
+            log.events(),
+            &[crate::backend::InvalidationKind::Partial(rect)]
+        );
     }
 
     // ── bundled codicon font self-registration ───────────────────────────

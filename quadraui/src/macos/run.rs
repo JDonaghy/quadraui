@@ -1218,6 +1218,27 @@ impl QuadraView {
     fn apply_reaction(&self, reaction: Reaction) {
         runtime::apply_outcome(reaction, self);
     }
+
+    /// The real native half of [`Backend::invalidate_rect`] on macOS:
+    /// `setNeedsDisplayInRect:` instead of
+    /// [`Self::request_redraw`]'s `setNeedsDisplay(true)`, so AppKit
+    /// only re-flushes `rect` of the view rather than the whole window
+    /// — exactly the "doesn't trigger a full-window redraw" contract
+    /// [`crate::backend::InvalidationLog`] exists to make assertable.
+    /// `rect` is already top-left-origin in `QuadraView`'s own units
+    /// (`isFlipped == YES`, same convention `draw_rect`'s `CGRect`
+    /// conversion above relies on), so no y-flip is needed here.
+    ///
+    /// SAFETY: `setNeedsDisplayInRect:` on the main thread is the
+    /// documented way to schedule a scoped repaint, same posture as
+    /// [`Self::request_redraw`]'s `setNeedsDisplay:`.
+    fn invalidate_rect(&self, rect: crate::event::Rect) {
+        let ns_rect = NSRect::new(
+            NSPoint::new(rect.x as f64, rect.y as f64),
+            NSSize::new(rect.width as f64, rect.height as f64),
+        );
+        self.setNeedsDisplayInRect(ns_rect);
+    }
 }
 
 impl ReactionSink for QuadraView {
@@ -2012,6 +2033,16 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     backend
         .borrow()
         .set_tick_callback(Rc::new(move || view_for_tick.dispatch_tick()), mtm);
+
+    // Install the region-invalidate target `Backend::invalidate_rect`
+    // invokes — mirrors `set_wake_callback` immediately above, but reaches
+    // `QuadraView::invalidate_rect` (`setNeedsDisplayInRect:`) instead of a
+    // full-window `setNeedsDisplay(true)`.
+    let view_for_invalidate = view.clone();
+    backend.borrow().set_invalidate_rect_callback(
+        Rc::new(move |rect| view_for_invalidate.invalidate_rect(rect)),
+        mtm,
+    );
 
     // WindowResized wiring (#486): opt the view into frame-change
     // notifications and observe them on itself via `viewFrameDidChange:`.

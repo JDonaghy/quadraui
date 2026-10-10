@@ -39,7 +39,11 @@
 //! consumers had migrated (zero remaining uses); see `CHANGELOG.md`'s
 //! `Removed` entry.
 
+use std::collections::HashMap;
+use std::time::Instant;
+
 use crate::event::Rect;
+use crate::transition::{Easing, Transition, CHROME_TRANSITION_DURATION};
 use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -520,7 +524,191 @@ impl ToastStackLayout {
     }
 }
 
+/// Drives toast slide-in/slide-out via one [`Transition`] per toast,
+/// keyed by [`WidgetId`].
+///
+/// Toast/[`ToastOverlay`] stay declarative (`PartialEq`, `Eq`,
+/// `Serialize`) on purpose — see this module's top doc — so the
+/// slide progress for each toast lives here instead, owned by
+/// whatever controller owns the overlay's lifecycle
+/// (`crate::compose::ToastStackController` today). Call [`Self::show_at`]
+/// when a toast first appears and [`Self::dismiss_at`] when it starts
+/// leaving (before actually removing it from
+/// [`ToastOverlay::toasts`] — the toast needs to still be in the
+/// declarative list for its slide-out to paint at all), then pass
+/// `self` to [`ToastOverlay::layout_with_motion`] instead of
+/// [`ToastOverlay::layout`].
+///
+/// A toast with no tracked transition reports [`Self::progress`] as
+/// `1.0` (fully shown) — the TUI convention: never call
+/// `show_at`/`dismiss_at` at all, and every toast paints at its
+/// settled position immediately, with [`Self::is_animating`] always
+/// `false`. GTK/macOS/Win call `show_at`/`dismiss_at` to get the
+/// slide.
+#[derive(Debug, Clone, Default)]
+pub struct ToastMotion {
+    transitions: HashMap<WidgetId, Transition>,
+}
+
+impl ToastMotion {
+    /// An empty tracker — every toast reports `progress == 1.0` (fully
+    /// shown, no animation) until [`Self::show_at`]/[`Self::dismiss_at`]
+    /// is called for its id.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Start (or retarget, if already mid-transition) `id`'s slide
+    /// toward fully shown (`1.0`), anchored at `now`.
+    pub fn show_at(&mut self, id: WidgetId, now: Instant) {
+        self.retarget_at(id, 1.0, now);
+    }
+
+    /// Start (or retarget) `id`'s slide toward fully hidden (`0.0`),
+    /// anchored at `now`. The caller is responsible for actually
+    /// removing the toast from [`ToastOverlay::toasts`] once
+    /// [`Self::progress`] reaches `0.0` (or [`Self::is_animating`]
+    /// settles) — this type only drives the number, not the
+    /// overlay's declarative contents.
+    pub fn dismiss_at(&mut self, id: WidgetId, now: Instant) {
+        self.retarget_at(id, 0.0, now);
+    }
+
+    fn retarget_at(&mut self, id: WidgetId, to: f32, now: Instant) {
+        match self.transitions.get_mut(&id) {
+            Some(existing) => existing.retarget_at(now, to),
+            None => {
+                let from = 1.0 - to;
+                self.transitions.insert(
+                    id,
+                    Transition::start_at(now, from, to, CHROME_TRANSITION_DURATION, Easing::EaseOut),
+                );
+            }
+        }
+    }
+
+    /// Slide progress for `id` at `now` — `0.0` fully hidden (off the
+    /// nearest viewport edge), `1.0` fully shown. `1.0` for any id with
+    /// no tracked transition (see this type's doc for why that's the
+    /// TUI-friendly default).
+    pub fn progress(&self, id: &WidgetId, now: Instant) -> f32 {
+        self.transitions
+            .get(id)
+            .map(|t| t.value_at(now))
+            .unwrap_or(1.0)
+    }
+
+    /// Whether any tracked toast is still mid-slide at `now` — the
+    /// signal for the `Reaction::RedrawAfter` chained-rearm pattern
+    /// (`crate::runner::chrome_transition_reaction`), same shape as
+    /// [`crate::InteractionState::is_animating`].
+    pub fn is_animating(&self, now: Instant) -> bool {
+        self.transitions.values().any(|t| !t.is_done_at(now))
+    }
+
+    /// Drop every settled transition — bounds memory growth for an app
+    /// that shows many short-lived toasts over a long session. Safe to
+    /// call every frame; a toast mid-slide is left untouched.
+    pub fn prune(&mut self, now: Instant) {
+        self.transitions.retain(|_, t| !t.is_done_at(now));
+    }
+
+    /// Whether no toast has a tracked transition at all. Mostly useful
+    /// for tests asserting [`Self::prune`] actually dropped something,
+    /// since a settled and an untracked toast otherwise look identical
+    /// through [`Self::progress`] (both report `1.0`/`0.0` at rest).
+    pub fn is_empty(&self) -> bool {
+        self.transitions.is_empty()
+    }
+}
+
 impl ToastOverlay {
+    /// [`Self::layout`] plus per-toast slide-in/slide-out from `motion`.
+    /// Every box ([`VisibleToast::bounds`],
+    /// `dismiss_bounds`, `action_rects`) and every
+    /// [`ToastStackLayout::hit_regions`] entry is shifted vertically by
+    /// `(1.0 - motion.progress(id, now)) * box_height`, toward the
+    /// viewport edge nearest the stack's corner (bottom corners rise up
+    /// from below; top corners drop down from above) — the direction a
+    /// VS Code-style toast actually slides.
+    ///
+    /// At `progress == 1.0` for every visible toast (nothing currently
+    /// animating, or a caller that never calls
+    /// [`ToastMotion::show_at`]/[`ToastMotion::dismiss_at`] at all — the
+    /// TUI convention) this returns exactly what [`Self::layout`] would
+    /// have, box for box; see `tui_snaps_to_the_final_layout_with_no_motion_calls`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn layout_with_motion<F>(
+        &self,
+        origin_x: f32,
+        origin_y: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+        margin: f32,
+        gap: f32,
+        motion: &ToastMotion,
+        now: Instant,
+        measure_toast: F,
+    ) -> ToastStackLayout
+    where
+        F: Fn(usize) -> ToastMeasure,
+    {
+        let mut layout = self.layout(
+            origin_x,
+            origin_y,
+            viewport_width,
+            viewport_height,
+            margin,
+            gap,
+            measure_toast,
+        );
+
+        let is_bottom = matches!(
+            self.corner,
+            ToastCorner::BottomRight | ToastCorner::BottomLeft
+        );
+
+        for vt in &mut layout.visible_toasts {
+            let progress = motion.progress(&vt.id, now);
+            let hidden_offset = (1.0 - progress) * vt.bounds.height;
+            let dy = if is_bottom {
+                hidden_offset
+            } else {
+                -hidden_offset
+            };
+            if dy == 0.0 {
+                continue;
+            }
+            vt.bounds = shift_rect(vt.bounds, 0.0, dy);
+            vt.dismiss_bounds = vt.dismiss_bounds.map(|r| shift_rect(r, 0.0, dy));
+            vt.action_rects = vt
+                .action_rects
+                .iter()
+                .map(|r| shift_rect(*r, 0.0, dy))
+                .collect();
+        }
+
+        // Hit regions are rebuilt from the now-shifted `visible_toasts`
+        // rather than shifted in place, mirroring `Self::layout`'s own
+        // dismiss/action/body ordering exactly (specificity order:
+        // dismiss, then actions, then body).
+        let mut hit_regions: Vec<(Rect, ToastHit)> = Vec::new();
+        for vt in &layout.visible_toasts {
+            if let Some(db) = vt.dismiss_bounds {
+                hit_regions.push((db, ToastHit::Dismiss(vt.id.clone())));
+            }
+            if let Some(toast) = self.toasts.get(vt.toast_idx) {
+                for (ab, act) in vt.action_rects.iter().zip(toast.actions.iter()) {
+                    hit_regions.push((*ab, ToastHit::Action(act.id.clone())));
+                }
+            }
+            hit_regions.push((vt.bounds, ToastHit::Body(vt.id.clone())));
+        }
+        layout.hit_regions = hit_regions;
+
+        layout
+    }
+
     /// Compute the rendering + hit-test layout for the stack.
     ///
     /// # Arguments
@@ -1873,5 +2061,137 @@ mod tests {
             shifted.hit_test(db.x + 5.0, db.y + 10.0),
             ToastHit::Dismiss(WidgetId::new("t1")),
         );
+    }
+
+    // ── ToastMotion / layout_with_motion ──────────────────────────────
+
+    #[test]
+    fn tui_snaps_to_the_final_layout_with_no_motion_calls() {
+        let stack = make_toast_stack(
+            ToastCorner::BottomRight,
+            vec![make_toast("a", "A"), make_toast("b", "B")],
+        );
+        let motion = ToastMotion::new();
+        let now = Instant::now();
+        let plain = stack.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, |_| {
+            ToastMeasure::new(300.0, 64.0)
+        });
+        let animated = stack.layout_with_motion(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, &motion, now, |_| {
+            ToastMeasure::new(300.0, 64.0)
+        });
+        assert_eq!(plain, animated);
+        assert!(!motion.is_animating(now));
+    }
+
+    #[test]
+    fn show_at_slides_a_bottom_corner_toast_up_from_below() {
+        let stack = make_toast_stack(ToastCorner::BottomRight, vec![make_toast("a", "A")]);
+        let mut motion = ToastMotion::new();
+        let t0 = Instant::now();
+        motion.show_at(WidgetId::new("a"), t0);
+
+        let settled = stack.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, |_| {
+            ToastMeasure::new(300.0, 64.0)
+        });
+        let at_start =
+            stack.layout_with_motion(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, &motion, t0, |_| {
+                ToastMeasure::new(300.0, 64.0)
+            });
+        let settled_y = settled.visible_toasts[0].bounds.y;
+        let start_y = at_start.visible_toasts[0].bounds.y;
+        assert!(
+            start_y > settled_y,
+            "a bottom-corner toast should start *below* its resting position \
+             (larger y), got start_y={start_y} settled_y={settled_y}"
+        );
+        assert_eq!(start_y - settled_y, settled.visible_toasts[0].bounds.height);
+
+        let at_end = stack.layout_with_motion(
+            0.0,
+            0.0,
+            800.0,
+            600.0,
+            16.0,
+            8.0,
+            &motion,
+            t0 + CHROME_TRANSITION_DURATION,
+            |_| ToastMeasure::new(300.0, 64.0),
+        );
+        assert_eq!(at_end, settled, "fully shown should match the plain layout");
+    }
+
+    #[test]
+    fn show_at_slides_a_top_corner_toast_down_from_above() {
+        let stack = make_toast_stack(ToastCorner::TopLeft, vec![make_toast("a", "A")]);
+        let mut motion = ToastMotion::new();
+        let t0 = Instant::now();
+        motion.show_at(WidgetId::new("a"), t0);
+
+        let settled = stack.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, |_| {
+            ToastMeasure::new(300.0, 64.0)
+        });
+        let at_start =
+            stack.layout_with_motion(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, &motion, t0, |_| {
+                ToastMeasure::new(300.0, 64.0)
+            });
+        let settled_y = settled.visible_toasts[0].bounds.y;
+        let start_y = at_start.visible_toasts[0].bounds.y;
+        assert!(
+            start_y < settled_y,
+            "a top-corner toast should start *above* its resting position \
+             (smaller y), got start_y={start_y} settled_y={settled_y}"
+        );
+    }
+
+    #[test]
+    fn dismiss_at_slides_back_out_and_hit_regions_follow_the_shifted_bounds() {
+        let stack = make_toast_stack(ToastCorner::BottomRight, vec![make_toast("a", "A")]);
+        let mut motion = ToastMotion::new();
+        let t0 = Instant::now();
+        // Already shown, then start dismissing.
+        motion.show_at(WidgetId::new("a"), t0);
+        let fully_in = t0 + CHROME_TRANSITION_DURATION;
+        motion.dismiss_at(WidgetId::new("a"), fully_in);
+        assert!(motion.is_animating(fully_in));
+
+        let mid = fully_in + CHROME_TRANSITION_DURATION / 2;
+        let layout = stack.layout_with_motion(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, &motion, mid, |_| {
+            ToastMeasure::new(300.0, 64.0)
+        });
+        let vt = &layout.visible_toasts[0];
+        // Hit-testing the body at its *current* (shifted) bounds must
+        // resolve, proving `hit_regions` tracked the slide rather than
+        // staying pinned to the settled position.
+        let cx = vt.bounds.x + vt.bounds.width / 2.0;
+        let cy = vt.bounds.y + vt.bounds.height / 2.0;
+        assert_eq!(layout.hit_test(cx, cy), ToastHit::Body(WidgetId::new("a")));
+
+        let fully_out = fully_in + CHROME_TRANSITION_DURATION;
+        assert!(!motion.is_animating(fully_out));
+        assert_eq!(motion.progress(&WidgetId::new("a"), fully_out), 0.0);
+    }
+
+    #[test]
+    fn prune_drops_settled_transitions_but_keeps_in_flight_ones() {
+        let mut motion = ToastMotion::new();
+        let t0 = Instant::now();
+        motion.show_at(WidgetId::new("settled"), t0);
+
+        let settled_at = t0 + CHROME_TRANSITION_DURATION;
+        assert!(!motion.is_animating(settled_at));
+        motion.prune(settled_at);
+        assert!(
+            motion.is_empty(),
+            "a fully-settled transition should be pruned away"
+        );
+
+        motion.show_at(WidgetId::new("mid-flight"), settled_at);
+        let mid = settled_at + CHROME_TRANSITION_DURATION / 2;
+        motion.prune(mid);
+        assert!(
+            !motion.is_empty(),
+            "a still-animating transition must survive pruning"
+        );
+        assert!(motion.is_animating(mid));
     }
 }

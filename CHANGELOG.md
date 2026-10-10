@@ -61,6 +61,26 @@ only a push to `main` runs this workflow.
 
 ### Added
 
+- `quadraui::transition::{Transition, Easing}` (issue #1380) — a small,
+  sampled (not ticked) value interpolator for chrome motion, with
+  `Linear`/`EaseOut`/`EaseInOut` curves. `InteractionState` grows
+  `hover_fade_alpha`/`press_fade_alpha`/`is_animating` (continuous
+  hover/press fade progress, built on `Transition`) and
+  `primitives::toast::ToastMotion` + `ToastOverlay::layout_with_motion`
+  drive a toast's slide-in/slide-out the same way. `runner::chrome_transition_reaction`
+  wires either into the existing `Reaction::RedrawAfter` chained-rearm
+  pattern. `Backend::invalidate_rect(Rect)` (default: no-op, equivalent to
+  a full repaint) is the companion region-invalidation hook; macOS
+  overrides it with a real `setNeedsDisplayInRect:` partial flush, and
+  `backend::{InvalidationLog, InvalidationKind}` is the shared bookkeeping
+  type a test uses to assert a chrome transition stayed partial instead
+  of escalating to a full-window redraw (`TuiBackend::invalidation_log`,
+  `MacBackend::invalidation_log`). TUI and GTK keep the full-repaint
+  default — ratatui's own buffer diff and GTK's single-`DrawingArea`
+  model respectively make a narrower native flush either redundant or
+  architecturally unavailable; real `InvalidateRect`-based partial flush
+  on Windows is tracked follow-up.
+
 - Bundled Microsoft's codicon icon font (CC-BY-4.0; license text ships at
   `quadraui/assets/CODICON_LICENSE`) and self-register it on every GUI
   backend with no app configuration required (issue #1377). Tree

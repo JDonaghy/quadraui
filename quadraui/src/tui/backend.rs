@@ -319,6 +319,9 @@ pub struct TuiBackend {
     /// [`Self::input_gone`]'s doc and the `stdin_hung_up` guard (below in
     /// this file) for the full rationale.
     input_gone: bool,
+    /// [`Backend::invalidate_rect`] bookkeeping — see
+    /// [`Self::invalidation_log`]'s doc for why TUI keeps one at all.
+    invalidation_log: crate::backend::InvalidationLog,
 }
 
 impl TuiBackend {
@@ -356,7 +359,27 @@ impl TuiBackend {
             frame_scheduler: crate::runtime::FrameScheduler::new(),
             full_repaint_requested: false,
             input_gone: false,
+            invalidation_log: crate::backend::InvalidationLog::new(),
         }
+    }
+
+    /// Bookkeeping for [`Backend::invalidate_rect`] — every
+    /// `invalidate_rect` call since the log was last
+    /// [`crate::backend::InvalidationLog::clear`]ed, oldest first.
+    ///
+    /// TUI has no native display-surface concept narrower than "the
+    /// whole terminal" to actually flush less of — ratatui's own
+    /// `Buffer` diff already limits real terminal writes to changed
+    /// cells regardless of this hint (see [`Backend::invalidate_rect`]'s
+    /// per-backend table). This log exists anyway because `TuiBackend`
+    /// is the one backend with headless, deterministic test
+    /// infrastructure: it's what a test uses to assert a hover fade (or
+    /// any other chrome transition) recorded only
+    /// [`crate::backend::InvalidationKind::Partial`] entries and never
+    /// escalated to [`crate::backend::InvalidationKind::Full`] — issue
+    /// chrome-transition acceptance contract.
+    pub fn invalidation_log(&self) -> &crate::backend::InvalidationLog {
+        &self.invalidation_log
     }
 
     /// The colour depth [`Backend::backend_caps`] currently reports —
@@ -2063,6 +2086,14 @@ impl Backend for TuiBackend {
     /// (issue #1037).
     fn request_full_repaint(&mut self) {
         self.full_repaint_requested = true;
+        self.invalidation_log.record_full();
+    }
+
+    /// Records into [`Self::invalidation_log`] — see that method's doc
+    /// for why TUI keeps this bookkeeping despite having no narrower
+    /// native flush to make.
+    fn invalidate_rect(&mut self, rect: crate::event::Rect) {
+        self.invalidation_log.record_rect(rect);
     }
 
     fn register_accelerator(&mut self, acc: &Accelerator) {
@@ -7123,6 +7154,40 @@ mod tests {
             !backend.take_full_repaint_requested(),
             "the request must be cleared after the first consumption"
         );
+    }
+
+    /// A chrome transition (hover/press fade) calls
+    /// `Backend::invalidate_rect` instead of `request_full_repaint`, so
+    /// its log stays "only partial" — the contract
+    /// `InvalidationLog::only_partial` exists to assert.
+    #[test]
+    fn invalidate_rect_records_only_partial_entries() {
+        let mut backend = TuiBackend::new();
+        assert_eq!(backend.invalidation_log().events(), &[]);
+
+        let rect = crate::event::Rect::new(1.0, 2.0, 3.0, 4.0);
+        Backend::invalidate_rect(&mut backend, rect);
+
+        let log = backend.invalidation_log();
+        assert!(log.only_partial());
+        assert!(!log.has_full());
+        assert_eq!(
+            log.events(),
+            &[crate::backend::InvalidationKind::Partial(rect)]
+        );
+    }
+
+    /// `request_full_repaint` is the one path that *should* escalate the
+    /// log to `Full` — distinguishing the two is the whole point of
+    /// keeping this bookkeeping at all.
+    #[test]
+    fn request_full_repaint_records_a_full_entry() {
+        let mut backend = TuiBackend::new();
+        Backend::request_full_repaint(&mut backend);
+
+        let log = backend.invalidation_log();
+        assert!(log.has_full());
+        assert!(!log.only_partial());
     }
 
     // ─── Issue #1117: setup-order panics degrade instead of aborting ────
