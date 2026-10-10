@@ -10109,14 +10109,25 @@ mod tests {
     fn win_backend_data_table_layout_measures_a_content_column_in_the_chrome_fonts_size() {
         let table = crate::DataTable {
             id: WidgetId::new("table"),
-            columns: vec![crate::Column {
-                title: "a rather long column title".to_string(),
-                width: crate::ColumnWidth::Content {
-                    min: 0.0,
-                    max: 4000.0,
+            columns: vec![
+                crate::Column {
+                    title: "a rather long column title".to_string(),
+                    width: crate::ColumnWidth::Content {
+                        min: 0.0,
+                        max: 4000.0,
+                    },
+                    align: crate::ColumnAlign::Left,
                 },
-                align: crate::ColumnAlign::Left,
-            }],
+                // The layout's last column absorbs any slack up to
+                // `viewport_width`, so the measured column must not be last
+                // or both runs read back the full viewport width
+                // regardless of font.
+                crate::Column {
+                    title: String::new(),
+                    width: crate::ColumnWidth::Fixed(0.0),
+                    align: crate::ColumnAlign::Left,
+                },
+            ],
             rows: vec![],
             selected_idx: None,
             scroll_offset: 0,
@@ -10132,12 +10143,12 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                // `remaining` (here `viewport_width`, since there's only
-                // one column and no scrollbar) clamps a `Content`
-                // column's measured width — wide enough that even the
-                // 40pt run's real measured width never saturates that
-                // clamp, or both runs would read back the same
-                // clamped-to-`remaining` value regardless of font.
+                // `remaining` (here `viewport_width`, since there's no
+                // scrollbar) clamps a `Content` column's measured width
+                // — wide enough that even the 40pt run's real measured
+                // width never saturates that clamp, or both runs would
+                // read back the same clamped-to-`remaining` value
+                // regardless of font.
                 backend
                     .data_table_layout(Rect::new(0.0, 0.0, 4000.0, 200.0), &table)
                     .columns[0]
