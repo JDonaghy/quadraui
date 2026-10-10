@@ -2839,6 +2839,16 @@ impl Backend for WinBackend {
 
     /// #26: see [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
+    /// `DataTable` is not `ChromePrimitive`/`EditorClassPrimitive`-listed
+    /// — it's chrome by the `crate::font_role` module's default (see that
+    /// module's doc) — so this passes `chrome_dwrite`, falling back to
+    /// the editor `dwrite` handle if no live chrome one exists yet, same
+    /// "degrade, don't panic" convention as
+    /// `Self::surface_draw_text_run_with_role`. [`super::data_table::draw_data_table`]
+    /// builds its own [`super::surface::D2dSurface`] adapter from
+    /// whichever `dwrite` is passed in here rather than reaching
+    /// `WinBackend`'s own [`PaintSurface`] impl, so inverting that impl's
+    /// default alone would not have fixed this call site.
     fn draw_data_table(
         &mut self,
         rect: Rect,
@@ -2847,6 +2857,7 @@ impl Backend for WinBackend {
     ) -> crate::DataTableLayout {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             return super::data_table::draw_data_table(
                 &surface.target,
                 dwrite,
@@ -2872,10 +2883,13 @@ impl Backend for WinBackend {
     }
 
     /// #26: pure measurement — only needs `self.dwrite`, not a live
-    /// render target. See [`Self::status_bar_layout`]'s doc.
+    /// render target. See [`Self::status_bar_layout`]'s doc. Prefers
+    /// `chrome_dwrite`, matching [`Self::draw_data_table`]'s paint font
+    /// — both must resolve the same handle or column widths measured
+    /// here would disagree with what the paint actually fits.
     fn data_table_layout(&self, rect: Rect, table: &crate::DataTable) -> crate::DataTableLayout {
         #[cfg(target_os = "windows")]
-        if let Some(dwrite) = &self.dwrite {
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
             return super::data_table::win_data_table_layout(
                 dwrite,
                 rect,
@@ -2958,9 +2972,20 @@ impl Backend for WinBackend {
     fn draw_form(&mut self, rect: Rect, form: &Form) {
         #[cfg(target_os = "windows")]
         if self.dwrite.is_some() && self.surface.is_some() {
+            // `Form` is chrome, not editor content (it's not in
+            // `crate::font_role::EditorClassPrimitive::ALL`) — prefer
+            // `chrome_dwrite`, falling back to the editor `dwrite` handle
+            // if no live chrome one exists yet, same "degrade, don't
+            // panic" convention as `Self::surface_draw_text_run_with_role`.
+            // `crate::primitives::form::paint` below paints through
+            // `self` (now chrome-resolving by default — see
+            // `impl PaintSurface for WinBackend`'s doc), so this layout
+            // must measure against the same handle or field widths would
+            // disagree with what the paint actually fits.
             let dwrite = self
-                .dwrite
+                .chrome_dwrite
                 .as_ref()
+                .or(self.dwrite.as_ref())
                 .expect("checked Some by the `if` guard above");
             let flayout =
                 super::form::win_form_layout(dwrite, rect, form, self.current_line_height);
@@ -2980,6 +3005,17 @@ impl Backend for WinBackend {
                 } else {
                     theme.foreground
                 };
+                // A toolbar button's label is chrome too — read through
+                // `chrome_dwrite` (falling back to `dwrite`) directly
+                // rather than the inherent `Self::measure_text`/
+                // `Self::draw_text` helpers, which always resolve the
+                // editor handle.
+                let Some(surface) = &self.surface else {
+                    continue;
+                };
+                let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) else {
+                    continue;
+                };
                 for (item_id, item_rect) in &vf.item_bounds {
                     let btn = toolbar.buttons.iter().find_map(|b| {
                         super::form::toolbar_item(&field.id, b)
@@ -2995,15 +3031,25 @@ impl Backend for WinBackend {
                     match btn {
                         Some(ToolbarButton::Action { label, enabled, .. }) => {
                             let fg = if *enabled { field_fg } else { theme.muted_fg };
-                            let (tw, th) = self.measure_text(label);
+                            let (tw, th) = dwrite.measure_text(label).unwrap_or((0.0, 0.0));
                             let ty = r.y + (r.height - th) / 2.0;
-                            self.draw_text(label, Rect::new(r.x, ty, tw, th), fg);
+                            let _ = dwrite.draw_text(
+                                &surface.target,
+                                label,
+                                Rect::new(r.x, ty, tw, th),
+                                fg,
+                            );
                         }
                         Some(ToolbarButton::Label { text, fg }) => {
                             let color = fg.unwrap_or(field_fg);
-                            let (tw, th) = self.measure_text(text);
+                            let (tw, th) = dwrite.measure_text(text).unwrap_or((0.0, 0.0));
                             let ty = r.y + (r.height - th) / 2.0;
-                            self.draw_text(text, Rect::new(r.x, ty, tw, th), color);
+                            let _ = dwrite.draw_text(
+                                &surface.target,
+                                text,
+                                Rect::new(r.x, ty, tw, th),
+                                color,
+                            );
                         }
                         _ => {}
                     }
@@ -3022,6 +3068,15 @@ impl Backend for WinBackend {
     fn draw_palette(&mut self, rect: Rect, palette: &Palette) {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            // `Palette` is chrome by the `crate::font_role` module's
+            // default (not `EditorClassPrimitive`-listed) — prefer
+            // `chrome_dwrite`, falling back to the editor `dwrite`
+            // handle, same "degrade, don't panic" convention as
+            // `Self::surface_draw_text_run_with_role`. `win::palette`
+            // builds its own adapter from whichever handle is passed in
+            // here rather than reaching `WinBackend`'s own
+            // [`PaintSurface`] impl.
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             super::palette::draw_palette(
                 &surface.target,
                 dwrite,
@@ -3068,6 +3123,9 @@ impl Backend for WinBackend {
     ) {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            // The settings header/search box is chrome — same
+            // `chrome_dwrite`-preferring swap as `Self::draw_palette`.
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             super::form::draw_settings_chrome(
                 &surface.target,
                 dwrite,
@@ -3439,9 +3497,15 @@ impl Backend for WinBackend {
             };
             let cell_area_w = (rect.width - sb_width).max(0.0);
 
+            // The terminal is editor-class — paint through
+            // `EditorSurface` so its cell glyphs keep painting in the
+            // editor font even though `WinBackend`'s own `PaintSurface`
+            // impl now defaults to `chrome_dwrite` (see that impl's
+            // doc).
+            let mut surface = EditorSurface { backend: self };
             crate::primitives::terminal::paint(
                 term,
-                self,
+                &mut surface,
                 &theme,
                 rect.x,
                 rect.y,
@@ -3513,7 +3577,18 @@ impl Backend for WinBackend {
             let theme = self.current_theme;
             let line_height = self.current_line_height;
             let char_width = self.current_char_width;
-            crate::primitives::text_display::paint(td, rect, self, &theme, line_height, char_width);
+            // The text display is editor-class — see the matching
+            // comment on `Self::draw_terminal` / `EditorSurface`'s own
+            // doc.
+            let mut surface = EditorSurface { backend: self };
+            crate::primitives::text_display::paint(
+                td,
+                rect,
+                &mut surface,
+                &theme,
+                line_height,
+                char_width,
+            );
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
@@ -3642,6 +3717,9 @@ impl Backend for WinBackend {
     ) -> crate::primitives::text_input::TextInputLayout {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            // `TextInput` is chrome, not `EditorClassPrimitive`-listed —
+            // same `chrome_dwrite`-preferring swap as `Self::draw_palette`.
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             return super::text_input::draw_text_input(
                 &surface.target,
                 dwrite,
@@ -3706,6 +3784,9 @@ impl Backend for WinBackend {
     ) {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            // Tooltip text is chrome, not `EditorClassPrimitive`-listed —
+            // same `chrome_dwrite`-preferring swap as `Self::draw_palette`.
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             super::tooltip::draw_tooltip_with_chrome(
                 &surface.target,
                 dwrite,
@@ -3928,10 +4009,13 @@ impl Backend for WinBackend {
     }
 
     /// #26: pure measurement — only needs `self.dwrite`, not a live
-    /// render target. See [`Self::status_bar_layout`]'s doc.
+    /// render target. See [`Self::status_bar_layout`]'s doc. Prefers
+    /// `chrome_dwrite`, matching [`Self::draw_form`]'s paint font — both
+    /// must resolve the same handle or field widths measured here would
+    /// disagree with what the paint actually fits.
     fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout {
         #[cfg(target_os = "windows")]
-        if let Some(dwrite) = &self.dwrite {
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
             return super::form::win_form_layout(dwrite, rect, form, self.current_line_height);
         }
         // No live DWrite handle — nominal char-width estimate instead
@@ -4016,6 +4100,10 @@ impl Backend for WinBackend {
     fn draw_message_list(&mut self, rect: Rect, list: &MessageList) {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            // `MessageList` rows are chrome, not `EditorClassPrimitive`-
+            // listed — same `chrome_dwrite`-preferring swap as
+            // `Self::draw_palette`.
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             super::message_list::draw_message_list(
                 &surface.target,
                 dwrite,
@@ -4122,6 +4210,10 @@ impl Backend for WinBackend {
     fn draw_completions(&mut self, completions: &Completions, layout: &CompletionsLayout) {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            // The completions popup is chrome, not
+            // `EditorClassPrimitive`-listed — same `chrome_dwrite`-
+            // preferring swap as `Self::draw_palette`.
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             super::completions::draw_completions(
                 &surface.target,
                 dwrite,
@@ -4525,10 +4617,14 @@ impl Backend for WinBackend {
 
     /// #29: pure measurement — only needs `self.dwrite`, not a live
     /// render target, so this works as soon as a surface has ever been
-    /// attached — same posture as [`Self::status_bar_layout`].
+    /// attached — same posture as [`Self::status_bar_layout`]. Prefers
+    /// `chrome_dwrite`, matching `Self::draw_toast_overlay`'s paint font
+    /// (chrome by `WinBackend`'s own [`PaintSurface`] default — see that
+    /// impl's doc) — both must resolve the same handle or the toast's
+    /// measured width would disagree with what the paint actually fits.
     fn toast_stack_layout(&self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
         #[cfg(target_os = "windows")]
-        if let Some(dwrite) = &self.dwrite {
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
             return super::toast::win_toast_stack_layout(
                 dwrite,
                 rect,
@@ -4653,6 +4749,10 @@ impl Backend for WinBackend {
     fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            // The spinner's label (e.g. "Indexing…") is chrome, not
+            // `EditorClassPrimitive`-listed — same `chrome_dwrite`-
+            // preferring swap as `Self::draw_palette`.
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             return super::spinner::draw_spinner(&surface.target, dwrite, rect, spinner);
         }
         // No surface/DWrite yet — compute the real layout via the same
@@ -4670,10 +4770,11 @@ impl Backend for WinBackend {
 
     /// #29: pure measurement — only needs `self.dwrite`, not a live
     /// render target, so this works as soon as a surface has ever been
-    /// attached — same posture as [`Self::status_bar_layout`].
+    /// attached — same posture as [`Self::status_bar_layout`]. Prefers
+    /// `chrome_dwrite`, matching [`Self::draw_spinner`]'s paint font.
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
         #[cfg(target_os = "windows")]
-        if let Some(dwrite) = &self.dwrite {
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
             return super::spinner::win_spinner_layout(dwrite, rect, spinner);
         }
         super::spinner::win_spinner_layout(
@@ -4906,9 +5007,12 @@ impl Backend for WinBackend {
         if self.surface.is_some() && self.dwrite.is_some() {
             let theme = self.current_theme;
             let line_height = self.current_line_height;
+            // The diff view is editor-class — see the matching comment
+            // on `Self::draw_terminal` / `EditorSurface`'s own doc.
+            let mut surface = EditorSurface { backend: self };
             return crate::primitives::diff_view::native_surface_paint::paint(
                 view,
-                self,
+                &mut surface,
                 &theme,
                 rect,
                 line_height,
@@ -5559,18 +5663,28 @@ fn win_monitor_rect(hwnd: HWND) -> ServiceResult<RECT> {
 // helpers this backend already had privately: `super::text::fill_rect`/
 // `stroke_rect`/`push_clip`/`pop_clip`/`draw_line` and the inherent
 // `Self::measure_text`/`Self::draw_text` (both already `Rect`-taking, #21).
-// Phase 1 is a pure extraction — every verb below either forwards to the
+// Phase 1 was a pure extraction — every verb below either forwards to the
 // identically-named `Backend` method (frame lifecycle, measurement,
 // viewport, image) or to the same free function/inherent method a real
-// `draw_*` rasteriser would call, so no existing call site's behaviour
-// changes. Same `#[cfg(target_os = "windows")]` split — and, since issue
-// #924, the same no-op/nominal-estimate fallback instead of a `todo!()` —
-// as every other method on this backend. See the module doc's
-// "Implementation notes" for why that keeps `cargo check --features win`
-// meaningful on
-// Linux. See `paint_surface`'s module doc for the full scope note and why
-// these methods are `surface_`-prefixed instead of colliding with
-// `Backend`'s.
+// `draw_*` rasteriser would call. Same `#[cfg(target_os = "windows")]`
+// split — and, since issue #924, the same no-op/nominal-estimate fallback
+// instead of a `todo!()` — as every other method on this backend. See the
+// module doc's "Implementation notes" for why that keeps
+// `cargo check --features win` meaningful on Linux. See `paint_surface`'s
+// module doc for the full scope note and why these methods are
+// `surface_`-prefixed instead of colliding with `Backend`'s.
+//
+// The default is chrome: the four text-shaped verbs below resolve
+// `chrome_dwrite`, falling back to the editor `dwrite` handle only when no
+// live chrome handle exists yet, rather than resolving `dwrite`
+// unconditionally — the same default `MacBackend`'s and `GtkBackend`'s own
+// `PaintSurface` impls carry. [`EditorSurface`] (below) is the opt-out
+// adapter the three editor-class call sites that reach this trait
+// (`WinBackend::draw_terminal`, `draw_text_display`, `draw_diff_view`) wrap
+// `self` in instead, mirroring `MacBackend::EditorSurface`/
+// `GtkBackend::EditorSurface`. [`ChromeSurface`] (also below) still exists
+// for call sites that already wrap `self` in it — harmless, since it
+// resolves the same default plain `self` does.
 impl PaintSurface for WinBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
@@ -5592,10 +5706,24 @@ impl PaintSurface for WinBackend {
         Backend::char_width(self)
     }
 
+    /// `self` is the surface every non-editor-class primitive
+    /// measures/paints through unwrapped (`draw_data_table`'s shared
+    /// paint helper, `draw_panel`, `draw_toast_overlay`, …), so this
+    /// resolves `chrome_dwrite` — falling back to the editor `dwrite`
+    /// handle only when no live chrome handle exists yet, the same
+    /// "degrade, don't panic" convention
+    /// [`Self::surface_draw_text_run_with_role`] already documents —
+    /// rather than `dwrite` unconditionally. See [`EditorSurface`]'s doc
+    /// for the three editor-class primitives that opt back into the
+    /// editor font via a dedicated adapter instead, and
+    /// `crate::font_role`'s module doc for why a non-editor-class
+    /// primitive must never resolve the editor font.
     fn surface_measure_text(&self, text: &str) -> (f32, f32) {
         #[cfg(target_os = "windows")]
-        if self.dwrite.is_some() {
-            return self.measure_text(text);
+        if let Some(d) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
+            if let Ok(m) = d.measure_text(text) {
+                return m;
+            }
         }
         // No live DWrite handle (fresh backend, device lost, or a
         // non-Windows host where this never compiles) — a measurement
@@ -5612,11 +5740,14 @@ impl PaintSurface for WinBackend {
     /// `DWrite::measure_text_styled` already exists on this backend
     /// (#25), matching what `win::status_bar::draw_status_bar` measured
     /// before its paint moved to
-    /// `primitives::status_bar::native_surface_paint::paint`.
+    /// `primitives::status_bar::native_surface_paint::paint`. Also
+    /// resolves `chrome_dwrite` now, matching
+    /// [`Self::surface_measure_text`]'s doc above.
     fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
+        #[cfg(not(target_os = "windows"))]
         let _ = bold;
         #[cfg(target_os = "windows")]
-        if let Some(d) = self.dwrite.as_ref() {
+        if let Some(d) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
             if let Ok(m) = d.measure_text_styled(text, bold) {
                 return m;
             }
@@ -5665,17 +5796,21 @@ impl PaintSurface for WinBackend {
         let _ = (rect, color, stroke_width);
     }
 
+    /// See [`Self::surface_measure_text`]'s doc for why this resolves
+    /// `chrome_dwrite` rather than the editor `dwrite` handle
+    /// unconditionally.
     fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: crate::Color) {
         #[cfg(target_os = "windows")]
-        {
-            // Already a no-op when no surface/DWrite handle exists — see
-            // `Self::draw_text`'s doc.
-            self.draw_text(text, rect, color);
+        if let (Some(surface), Some(dwrite)) = (
+            &self.surface,
+            self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
+        ) {
+            let _ = dwrite.draw_text(&surface.target, text, rect, color);
+            return;
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, text, color);
-        }
+        // No live surface/DWrite handle — degrades to a no-op rather
+        // than panicking, matching every other verb on this impl.
+        let _ = (rect, text, color);
     }
 
     /// #810: overrides the default (which drops styling) for `bold`
@@ -5683,7 +5818,9 @@ impl PaintSurface for WinBackend {
     /// backend (#25); `italic`/`underline` are silently dropped,
     /// matching `win::terminal::draw_terminal_cells`'s pre-#810
     /// documented limitation ("DWrite has no italic text format or
-    /// underline attribute wired up today").
+    /// underline attribute wired up today"). Also resolves
+    /// `chrome_dwrite` now, matching [`Self::surface_measure_text`]'s
+    /// doc.
     #[allow(clippy::too_many_arguments)]
     fn surface_draw_text_run_styled(
         &mut self,
@@ -5697,7 +5834,10 @@ impl PaintSurface for WinBackend {
     ) {
         let _ = (italic, underline);
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+        if let (Some(surface), Some(dwrite)) = (
+            &self.surface,
+            self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
+        ) {
             if (scale_x - 1.0).abs() > f32::EPSILON {
                 super::text::with_horizontal_scale(&surface.target, scale_x, rect.x, || {
                     let _ = dwrite.draw_text_styled(&surface.target, text, rect, color, bold);
@@ -5965,6 +6105,181 @@ impl PaintSurface for ChromeSurface<'_> {
         }
         // See `WinBackend::draw_tree`'s doc for why this degrades to a
         // no-op instead of panicking.
+        let _ = (rect, text, color, bold, scale_x);
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        from: Point,
+        to: Point,
+        color: crate::Color,
+        stroke_width: f32,
+    ) {
+        self.backend
+            .surface_draw_line(from, to, color, stroke_width)
+    }
+
+    fn surface_push_clip(&mut self, rect: Rect) {
+        self.backend.surface_push_clip(rect)
+    }
+
+    fn surface_pop_clip(&mut self) {
+        self.backend.surface_pop_clip()
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        rect: Rect,
+        image: &crate::primitives::image::Image,
+    ) -> crate::backend::ImagePaintResult {
+        self.backend.surface_draw_image(rect, image)
+    }
+}
+
+/// The editor-class twin of [`ChromeSurface`] just above — the Win-GUI
+/// twin of `MacBackend::EditorSurface`/`GtkBackend::EditorSurface` (see
+/// those types' own docs). That adapter exists to reach `chrome_dwrite`
+/// from a primitive-generic call site; this one exists to reach the
+/// editor `dwrite` handle from one, since `WinBackend`'s own
+/// [`PaintSurface`] impl (above) now defaults to `chrome_dwrite` and a
+/// handful of primitives still need the editor font. The terminal and
+/// the plain text display paint through this trait and need
+/// `EditorSurface`; the diff view also paints through this trait and
+/// needs it too. The full-screen editor paints through its own dedicated
+/// DirectWrite calls instead of this trait at all (see
+/// [`WinBackend::draw_editor`]), so it needs neither adapter. The
+/// minimap and the command line are `crate::font_role::EditorClassPrimitive`
+/// too, but both reach their own dedicated `win::minimap`/
+/// `win::command_line` module functions directly with the editor
+/// `dwrite` handle (see [`WinBackend::draw_minimap`]/
+/// [`WinBackend::draw_command_line_selection`]) rather than through this
+/// trait, so they need no adapter here either.
+///
+/// Every font-agnostic method (fills, strokes, clip, lines, images, frame
+/// lifecycle) forwards straight through to [`WinBackend`]'s own impl,
+/// which doesn't read the font either way. Line height / char width are
+/// **not** overridden, the same posture [`ChromeSurface`]'s own doc
+/// documents for the opposite direction — row geometry stays seeded from
+/// the editor font's own metrics regardless of which adapter wraps
+/// `self`, since `WinBackend` has no separate `chrome_line_height`/
+/// `chrome_char_width` fields to diverge from it (out of this issue's
+/// scope — see [`ChromeSurface`]'s doc).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+struct EditorSurface<'a> {
+    backend: &'a mut WinBackend,
+}
+
+impl PaintSurface for EditorSurface<'_> {
+    fn surface_begin_frame(&mut self, viewport: Viewport) {
+        self.backend.surface_begin_frame(viewport)
+    }
+
+    fn surface_end_frame(&mut self) {
+        self.backend.surface_end_frame()
+    }
+
+    fn surface_viewport(&self) -> Viewport {
+        self.backend.surface_viewport()
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        self.backend.surface_line_height()
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        self.backend.surface_char_width()
+    }
+
+    /// Forces the editor `dwrite` handle explicitly rather than
+    /// `WinBackend`'s own (now chrome-resolving) default — see this
+    /// type's own doc.
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        #[cfg(target_os = "windows")]
+        if let Some(d) = self.backend.dwrite.as_ref() {
+            if let Ok(m) = d.measure_text(text) {
+                return m;
+            }
+        }
+        (
+            nominal_text_width(text, self.backend.current_char_width),
+            self.backend.current_line_height,
+        )
+    }
+
+    /// See [`Self::surface_measure_text`]'s doc for why this forces the
+    /// editor `dwrite` handle explicitly.
+    fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
+        #[cfg(not(target_os = "windows"))]
+        let _ = bold;
+        #[cfg(target_os = "windows")]
+        if let Some(d) = self.backend.dwrite.as_ref() {
+            if let Ok(m) = d.measure_text_styled(text, bold) {
+                return m;
+            }
+        }
+        (
+            nominal_text_width(text, self.backend.current_char_width),
+            self.backend.current_line_height,
+        )
+    }
+
+    fn surface_fill_rect(&mut self, rect: Rect, color: crate::Color) {
+        self.backend.surface_fill_rect(rect, color)
+    }
+
+    fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: crate::Color) {
+        self.backend.surface_fill_rounded_rect(rect, radius, color)
+    }
+
+    fn surface_stroke_rect(&mut self, rect: Rect, color: crate::Color, stroke_width: f32) {
+        self.backend.surface_stroke_rect(rect, color, stroke_width)
+    }
+
+    /// See [`Self::surface_measure_text`]'s doc for why this forces the
+    /// editor `dwrite` handle explicitly.
+    fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: crate::Color) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.backend.surface, self.backend.dwrite.as_ref())
+        {
+            let _ = dwrite.draw_text(&surface.target, text, rect, color);
+            return;
+        }
+        // No live editor `dwrite` handle — degrades to a no-op rather
+        // than panicking, matching every other verb on this adapter.
+        let _ = (rect, text, color);
+    }
+
+    /// The editor-`dwrite` twin of `WinBackend`'s own (now
+    /// chrome-resolving) override — same `italic`/`underline`-
+    /// unsupported posture, same `scale_x` support via
+    /// `super::text::with_horizontal_scale`, just forced onto the editor
+    /// `dwrite` handle instead of `chrome_dwrite`.
+    #[allow(clippy::too_many_arguments)]
+    fn surface_draw_text_run_styled(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        color: crate::Color,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        scale_x: f32,
+    ) {
+        let _ = (italic, underline);
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.backend.surface, self.backend.dwrite.as_ref())
+        {
+            if (scale_x - 1.0).abs() > f32::EPSILON {
+                super::text::with_horizontal_scale(&surface.target, scale_x, rect.x, || {
+                    let _ = dwrite.draw_text_styled(&surface.target, text, rect, color, bold);
+                });
+            } else {
+                let _ = dwrite.draw_text_styled(&surface.target, text, rect, color, bold);
+            }
+            return;
+        }
+        // No live editor `dwrite` handle — degrades to a no-op rather
+        // than panicking, matching every other verb on this adapter.
         let _ = (rect, text, color, bold, scale_x);
     }
 
@@ -9202,6 +9517,152 @@ mod tests {
             "#1266: draw_sidebar_panel_interactive must paint the embedded toolbar's \
              label through ChromeSurface (chrome_dwrite), not WinBackend's own \
              PaintSurface impl (the editor dwrite handle)"
+        );
+    }
+
+    /// `Palette` builds its own `win::palette` adapter from whichever
+    /// `dwrite` handle `WinBackend::draw_palette` passes in, so this call
+    /// site isn't fixed by `impl PaintSurface for WinBackend`'s own
+    /// default — it needs the direct `chrome_dwrite`-preferring swap
+    /// this test pins.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_palette_paints_entries_in_the_chrome_fonts_size() {
+        let palette = Palette {
+            id: WidgetId::new("palette:commands"),
+            title: "Commands".to_string(),
+            query: String::new(),
+            query_cursor: 0,
+            items: vec![crate::primitives::palette::PaletteItem {
+                text: crate::types::StyledText::plain("Save File"),
+                detail: None,
+                icon: None,
+                match_positions: Vec::new(),
+                depth: 0,
+                expandable: false,
+                expanded: false,
+            }],
+            selected_idx: 0,
+            scroll_offset: 0,
+            total_count: 1,
+            has_focus: true,
+            show_query: true,
+            create_label: None,
+            preview: None,
+            mode: Default::default(),
+        };
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            120,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                backend.draw_palette(Rect::new(0.0, 0.0, 200.0, 120.0), &palette);
+            },
+        );
+        assert!(
+            diff > 0,
+            "varying only the chrome font size must repaint different pixels — \
+             draw_palette must paint item text through chrome_dwrite, not the \
+             (unchanged) editor dwrite handle"
+        );
+    }
+
+    /// `Panel`'s title paints through `surface_draw_text_run` (plain
+    /// `self`, not a per-call adapter), so this is fixed purely by
+    /// `impl PaintSurface for WinBackend`'s inverted default — no
+    /// per-call-site change needed, unlike `draw_palette` above.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_panel_paints_title_in_the_chrome_fonts_size() {
+        let panel = Panel {
+            id: WidgetId::new("panel"),
+            title: Some(crate::types::StyledText::plain("Explorer")),
+            actions: Vec::new(),
+            accent: None,
+            collapsed: false,
+        };
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            80,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                let _ = backend.draw_panel(Rect::new(0.0, 0.0, 200.0, 80.0), &panel);
+            },
+        );
+        assert!(
+            diff > 0,
+            "varying only the chrome font size must repaint different pixels — \
+             draw_panel must paint the title through chrome_dwrite (WinBackend's \
+             own PaintSurface default), not the editor dwrite handle"
+        );
+    }
+
+    /// Same "builds its own adapter from the passed `dwrite`" shape as
+    /// `draw_palette` above.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_spinner_paints_label_in_the_chrome_fonts_size() {
+        let spinner = Spinner {
+            id: WidgetId::new("spinner"),
+            label: "Indexing…".to_string(),
+            frame_idx: 0,
+            accent: None,
+        };
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            40,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                let _ = backend.draw_spinner(Rect::new(0.0, 0.0, 200.0, 40.0), &spinner);
+            },
+        );
+        assert!(
+            diff > 0,
+            "varying only the chrome font size must repaint different pixels — \
+             draw_spinner must paint its label through chrome_dwrite, not the \
+             (unchanged) editor dwrite handle"
+        );
+    }
+
+    /// The editor-class twin of the three tests above: `TextDisplay`
+    /// paints through `EditorSurface`, so unlike `Panel`/`Palette`/
+    /// `Spinner` its rendered pixels must stay identical regardless of
+    /// the chrome font size — only the editor font (held fixed by
+    /// `chrome_font_diff_pixel_count`) should affect it.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_text_display_does_not_vary_with_chrome_font_size() {
+        let td = TextDisplay {
+            id: WidgetId::new("log"),
+            lines: vec![crate::primitives::text_display::TextDisplayLine {
+                spans: vec![crate::types::StyledSpan::plain("hello world")],
+                decoration: crate::types::Decoration::Normal,
+                timestamp: None,
+            }],
+            scroll_offset: 0,
+            auto_scroll: true,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            40,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                backend.draw_text_display(Rect::new(0.0, 0.0, 200.0, 40.0), &td);
+            },
+        );
+        assert_eq!(
+            diff, 0,
+            "draw_text_display is editor-class — it must keep painting through \
+             EditorSurface (the editor dwrite handle) regardless of the chrome \
+             font's size"
         );
     }
 
