@@ -2,7 +2,7 @@
 
 Agent-facing rules for the **quadraui** repo. Re-read on every turn, so it holds
 only what a diff can violate. Rationale, history and long playbooks live in
-[`quadraui/docs/AGENT_REFERENCE.md`](quadraui/docs/AGENT_REFERENCE.md) — read a
+[`docs/AGENT_REFERENCE.md`](docs/AGENT_REFERENCE.md) — read a
 section of it only when your task touches that area.
 
 quadraui is **self-contained at design time** (no primitive encodes a consumer's
