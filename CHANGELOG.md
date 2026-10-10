@@ -59,6 +59,8 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-10
+
 ### Added
 
 - Bundled Microsoft's codicon icon font (CC-BY-4.0; license text ships at
