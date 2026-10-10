@@ -205,7 +205,7 @@ pub mod shell;
 pub mod style;
 pub mod terminal_style;
 pub mod testing;
-pub mod text_util;
+mod text_util;
 pub mod theme;
 pub mod types;
 pub mod undo;
