@@ -1275,8 +1275,9 @@ jobs:
       # error, so that case fails here with a pointed message instead.
       #
       # The patch only applies while this checkout's version still satisfies
-      # vimcode's requirement; past that cargo warns "patch was not used" and
-      # quietly falls back to crates.io. The assertion step below turns that
+      # vimcode's requirement (the lock entry is re-resolved to it below);
+      # past that cargo warns "patch was not used" and quietly falls back to
+      # crates.io. The assertion step below turns that
       # into a hard failure, which is the signal to bump vimcode's dependency.
       - name: Point vimcode at this PR's quadraui, not crates.io
         run: |
@@ -1290,6 +1291,10 @@ jobs:
           fi
           printf '\n[patch.crates-io]\nquadraui = { path = "%s" }\n' "$Q" >> "$D/.cargo/config.toml"
           cat "$D/.cargo/config.toml"
+          # vimcode's Cargo.lock pins the published quadraui version; a patch
+          # with a different (still semver-compatible) version is ignored
+          # until the lock entry is re-resolved against it.
+          (cd "$D" && cargo update -p quadraui)
 
       # Placed after the consumer clone (and the coord-tui .cargo override
       # above) so the action's Cargo.lock hashing can actually see the
