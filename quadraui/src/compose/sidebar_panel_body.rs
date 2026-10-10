@@ -3,22 +3,6 @@
 //! chrome, the panel's own body widget, and an optional scrollbar
 //! gutter.
 //!
-//! # The gap this closes (issue #1041)
-//!
-//! quadraui already has the *fragments*: [`crate::Backend::draw_solid_fill`]
-//! (background), [`crate::Backend::draw_settings_chrome`] (header +
-//! search rows), and per-content rasterisers (`draw_tree`, `draw_form`,
-//! [`crate::SidebarSystem::render`], …) for the body. Nothing composed
-//! them into one ordered paint sequence — every host that wanted
-//! "fill, then optional header/search, then body, then optional
-//! scrollbar" re-derived the row-slicing arithmetic itself. A 2026-09-20
-//! fleet audit of `vimcode` (`vimcode/docs/TUI_AUDIT_R2.md` §2.9) found
-//! six of its sidebar-panel renderers doing exactly that — 616
-//! production lines whose *decision* was already shared but whose
-//! *chrome composition* was written twice, once per backend, and had
-//! already drifted (chrome present on one backend and absent on the
-//! other for the same panel).
-//!
 //! # Shape
 //!
 //! [`SidebarPanelBody`] is a stateless per-frame value, the same shape
@@ -43,21 +27,16 @@
 //!   visuals don't get a second implementation here.
 //!
 //!   Two more shapes cover chrome `draw_settings_chrome` can't express
-//!   (issue #1061):
 //!   - [`SidebarPanelChrome::Search`] — a filter row with **no** header
-//!     above it (vimcode's Extensions sidebar: the title comes from
-//!     `AppShell`'s own sidebar-header row since vimcode#1343, so a
-//!     second header here would be the double-header bug #1256).
-//!     `draw_settings_chrome`'s row 0 is unconditionally header-styled,
-//!     so this can't reuse it — it paints a single synthetic
-//!     [`crate::StatusBar`] segment via
+//!     above it. `draw_settings_chrome`'s row 0 is unconditionally
+//!     header-styled, so this can't reuse it — it paints a single
+//!     synthetic [`crate::StatusBar`] segment via
 //!     [`crate::Backend::draw_status_bar_interactive`] instead, the
 //!     same rasteriser every backend already implements.
 //!   - [`SidebarPanelChrome::StatusBars`] — one row per
-//!     [`crate::StatusBar`] (vimcode's Debug sidebar: a title bar +
-//!     a Run/Stop action bar), each painted via
-//!     [`crate::Backend::draw_status_bar_interactive`] with its hit
-//!     regions translated into panel-space and surfaced on
+//!     [`crate::StatusBar`] (e.g. a title bar + an action bar), each
+//!     painted via [`crate::Backend::draw_status_bar_interactive`] with
+//!     its hit regions translated into panel-space and surfaced on
 //!     [`SidebarPanelBodyLayout::status_bar_hit_regions`], so the host
 //!     routes clicks against the same geometry that was painted.
 //! - **Body** — any [`crate::BackendWidget`] via [`SidebarPanelBody::render`],
@@ -69,7 +48,7 @@
 //!   host's app state for one frame (a `TreeController`/`FormController`
 //!   behind `Rc<RefCell<_>>`, anything tied to a `!Send` engine) can't
 //!   implement it — [`SidebarPanelBody::render_with`] takes the body as
-//!   an unbounded closure instead, for exactly that case (issue #1059).
+//!   an unbounded closure instead, for exactly that case.
 //! - **Scrollbar** — [`SidebarPanelBody::scrollbar_gutter`] reserves a
 //!   fixed-width column on the right of the body rect (mirroring
 //!   [`crate::compose::tree_controller::TreeController`]'s own
@@ -135,20 +114,13 @@ use crate::Backend;
 /// the exact row layout, `" / "`-prefixed prompt construction, and
 /// placeholder logic. [`Self::Header`] reserves (and passes) a 1-row
 /// `chrome_rect`; [`Self::HeaderAndSearch`] reserves 2 rows.
-/// `draw_settings_chrome` is height-aware on every backend (issue #1041
-/// review) — it only paints the search row when the rect it's given
-/// covers a second row — so a 1-row `Header` rect reliably paints
-/// header-only everywhere, not just on backends where that happened to
-/// fall out of paint ordering.
+/// `draw_settings_chrome` is height-aware on every backend — it only
+/// paints the search row when the rect it's given covers a second row —
+/// so a 1-row `Header` rect reliably paints header-only everywhere, not
+/// just on backends where that happened to fall out of paint ordering.
 ///
-/// `#[non_exhaustive]` as of issue #1061: this PR adds [`Self::Search`]
-/// and [`Self::StatusBars`], which breaks any downstream exhaustive
-/// `match` on this enum with no wildcard arm regardless of whether the
-/// attribute is added (vimcode's `render::paint_sidebar_panel_chrome`
-/// has exactly such a match — see this PR's `## Downstream impact`).
-/// Marking it `#[non_exhaustive]` now, in the same breaking PR, is
-/// `CLAUDE.md` rule 2's preferred shape so the *next* variant addition
-/// is additive instead of breaking again.
+/// `#[non_exhaustive]` guards against downstream exhaustive matches
+/// breaking when new variants are added.
 #[derive(Debug, Clone, PartialEq, Default)]
 #[non_exhaustive]
 pub enum SidebarPanelChrome {
@@ -170,20 +142,17 @@ pub enum SidebarPanelChrome {
         /// row-background tint — see `draw_settings_chrome`).
         active: bool,
     },
-    /// A single search/filter row with **no** header row above it —
-    /// e.g. vimcode's Extensions sidebar, whose title now comes from
-    /// `AppShell`'s own sidebar-header row (issue #1061). Reserves one
-    /// row, the same as [`Self::Header`].
+    /// A single search/filter row with **no** header row above it.
+    /// Reserves one row, the same as [`Self::Header`].
     ///
     /// Painted via a single synthetic [`crate::StatusBar`] segment
     /// through [`crate::Backend::draw_status_bar_interactive`] rather
     /// than `draw_settings_chrome` — that method's row 0 is
     /// unconditionally header-styled, so reusing it here would repaint
-    /// exactly the phantom header strip issue #1256 already fixed.
-    /// [`crate::StatusBar`]/[`crate::StatusBarSegment`] always take
-    /// caller-resolved colours (this composer has no theme of its own
-    /// to consult — `Backend` exposes `set_theme`, not a getter), so
-    /// `fg`/`bg` are resolved by the caller the same way
+    /// a phantom header strip. [`crate::StatusBar`]/[`crate::StatusBarSegment`]
+    /// always take caller-resolved colours (this composer has no theme of
+    /// its own to consult — `Backend` exposes `set_theme`, not a getter),
+    /// so `fg`/`bg` are resolved by the caller the same way
     /// [`SidebarPanelBody::background`] already is.
     Search {
         query: String,
@@ -328,7 +297,7 @@ impl SidebarPanelBody {
     /// tied to a `!Send` engine — can never satisfy it. Use
     /// [`Self::render_with`] instead; it paints the identical
     /// background/chrome/body/gutter sequence but takes the body as a
-    /// plain closure with no `Send`/`'static` bound (issue #1059).
+    /// plain closure with no `Send`/`'static` bound.
     pub fn render(
         &self,
         backend: &mut dyn Backend,
@@ -343,8 +312,8 @@ impl SidebarPanelBody {
     /// instead of a `&dyn BackendWidget`, so it can close over
     /// non-`'static`, non-`Send` state (a `&TreeController`, an
     /// `Rc<RefCell<Engine>>` borrow, …) that [`BackendWidget`]'s
-    /// `Send + 'static` supertrait would otherwise shut out (issue
-    /// #1059). `body` is called exactly once, with `layout.body_rect`.
+    /// `Send + 'static` supertrait would otherwise shut out. `body` is
+    /// called exactly once, with `layout.body_rect`.
     ///
     /// Prefer [`Self::render`] when the body is already a
     /// [`BackendWidget`] (e.g. it's shared with a `BottomPanelConfig`
@@ -666,7 +635,7 @@ mod tests {
         assert_eq!(rendered, computed);
     }
 
-    // ── render_with (issue #1059: borrowed, non-Send, non-'static body) ─
+    // render_with: borrowed, non-Send, non-'static body
 
     #[test]
     fn render_with_paints_borrowed_rc_refcell_state() {
@@ -718,7 +687,7 @@ mod tests {
         assert_ne!(seen_rect, Some(rect()));
     }
 
-    // ── Search chrome (issue #1061: search-only row, no header) ──────
+    // Search chrome: search-only row without header
 
     fn search_chrome(query: &str, placeholder: &str, active: bool) -> SidebarPanelChrome {
         SidebarPanelChrome::Search {
@@ -754,7 +723,7 @@ mod tests {
 
         // `draw_settings_chrome` must never fire for `Search` — its row 0
         // is unconditionally header-styled, which is exactly the
-        // phantom-header bug (#1256) this variant exists to avoid.
+        // phantom-header bug this variant exists to avoid.
         assert_eq!(
             backend.calls,
             vec!["draw_solid_fill", "draw_status_bar", "draw_solid_fill"]
@@ -772,7 +741,7 @@ mod tests {
         assert!(!backend.calls.contains(&"draw_settings_chrome"));
     }
 
-    // ── StatusBars chrome (issue #1061: Debug sidebar title + action bars) ─
+    // StatusBars chrome: title bar + action bars
 
     fn status_bar_with_segment(id: &str, seg_text: &str, action_id: Option<&str>) -> StatusBar {
         StatusBar {

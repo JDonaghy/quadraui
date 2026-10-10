@@ -142,10 +142,7 @@ pub enum SidebarEvent {
 }
 
 /// A row-scroll thumb drag in progress on one tree section. Wraps the
-/// shared [`ThumbDrag`] math with the section index it applies to
-/// (quadraui#1089 — was a standalone `ScrollDrag` struct duplicating
-/// `FormController`/`TreeController`/`ChatController`'s identical drag
-/// state).
+/// shared [`ThumbDrag`] math with the section index it applies to.
 struct SectionScrollDrag {
     section: usize,
     drag: ThumbDrag,
@@ -1196,12 +1193,9 @@ impl SidebarSystem {
                     let dividers_total: f32 = layout.dividers.iter().map(|d| d.bounds.height).sum();
                     let total = sections_total + dividers_total;
                     let max_scroll = (total - rect.height).max(0.0);
-                    // Thumb height comes straight from the layout
-                    // (`panel_scrollbar_thumb`, computed once via
-                    // `fit_thumb`) instead of re-deriving the
-                    // min-thumb formula here — pre-quadraui#820 this was
-                    // a third hand-rolled copy of the same math, which
-                    // is exactly the drift this issue exists to close.
+                    // Thumb height comes straight from the layout (`panel_scrollbar_thumb`,
+                    // computed once via `fit_thumb`) instead of re-deriving the min-thumb
+                    // formula here.
                     let travel = (rect.height - thumb.height).max(0.0);
                     let _ = lh;
                     self.panel_drag =
@@ -2051,8 +2045,8 @@ mod tests {
 
     #[test]
     fn focus_form_renders_form_focused_while_tree_section_active() {
-        // Reproduces issue #270: the FILTER form (section 0) should
-        // render with a cursor while a tree section (1) drives nav.
+        // The FILTER form (section 0) should render with a cursor while a tree
+        // section (1) drives nav.
         let mut ss = SidebarSystem::new(mixed_defs());
         ss.set_form(0, sample_form());
         ss.set_rows(1, fake_rows("r", 3));
@@ -2315,7 +2309,7 @@ mod tests {
         );
     }
 
-    // ── TUI scrollbar thumb drag (#241) ─────────────────────────────────
+    // ── TUI scrollbar thumb drag ────────────────────────────────────────
     //
     // TUI mode passes mouse coordinates in cell units (1 cell per row)
     // and `MsvLayoutMetrics::scrollbar_size = 1.0`. The drag-travel math in
@@ -2458,10 +2452,10 @@ mod tests {
         );
     }
 
-    /// Regression for #241: when the painted thumb fills nearly the whole
-    /// gutter (small overflow), the drag-`travel` value approaches zero
-    /// and the consumer's mouse cell coordinates can no longer move
-    /// `scroll_offset`. Repro: 22 rows in a body that fits 20 rows.
+    /// When the painted thumb fills nearly the whole gutter (small overflow),
+    /// the drag-`travel` value approaches zero and the consumer's mouse cell
+    /// coordinates can no longer move `scroll_offset`. Repro: 22 rows in a
+    /// body that fits 20 rows.
     #[test]
     fn tui_per_section_drag_works_with_small_overflow() {
         let mut ss = SidebarSystem::new(vec![SidebarSectionDef::new("t", "T")]);
@@ -2514,15 +2508,12 @@ mod tests {
         );
     }
 
-    /// Regression for #241: in TUI the panel scrollbar's layout used a
-    /// pixel-shaped `min_thumb = 8.0`, painting a 2-cell thumb while
-    /// the layout reserved an 8-cell hit region. A click at a row
-    /// *below* the painted thumb (in cells 2..8) was treated as a
-    /// thumb-drag start instead of a `TrackAfter` page-scroll, so the
-    /// user "dragged" what looked like empty track and `panel_scroll`
-    /// jumped unexpectedly. Post-fix `panel_thumb_min` honours
-    /// `cell_quantum` (1 cell in TUI), so the layout's thumb hit
-    /// region matches the painted thumb's cells.
+    /// In TUI the panel scrollbar's layout uses `min_thumb = 8.0` pixels,
+    /// painting a 2-cell thumb while the layout reserves an 8-cell hit region.
+    /// A click at a row *below* the painted thumb (in cells 2..8) is treated
+    /// as a thumb-drag start instead of a `TrackAfter` page-scroll.
+    /// `panel_thumb_min` honours `cell_quantum` (1 cell in TUI), so the
+    /// layout's thumb hit region matches the painted thumb's cells.
     #[test]
     fn tui_panel_thumb_hit_region_matches_painted_thumb_cells() {
         let mut ss = SidebarSystem::new(vec![SidebarSectionDef::new("t", "T")]);
@@ -2567,15 +2558,11 @@ mod tests {
         );
     }
 
-    /// Regression for #241: when the natural thumb height is smaller
-    /// than the layout's `min_thumb` (8.0 cells in TUI), the painted
-    /// thumb travels a *short* distance per row of scroll. Pre-fix the
-    /// drag init used a different `min` (`lh = 1.0`), so the drag
-    /// produced ~8× too much scroll for each cell of mouse motion —
-    /// quickly clamping to `max_scroll` and visually appearing as
-    /// "thumb jumps to the end" instead of "thumb follows the cursor".
-    /// Post-fix, dragging 1 cell at a time produces a monotonically
-    /// increasing thumb position rather than instant clamp.
+    /// When the natural thumb height is smaller than the layout's `min_thumb`
+    /// (8.0 cells in TUI), the painted thumb travels a *short* distance per
+    /// row of scroll. The drag init uses the layout's `min_thumb`, so the drag
+    /// produces proportional scroll for each cell of mouse motion. Dragging
+    /// 1 cell at a time produces a monotonically increasing thumb position.
     #[test]
     fn tui_panel_drag_matches_painted_thumb_under_large_overflow() {
         let mut ss = SidebarSystem::new(vec![SidebarSectionDef::new("t", "T")]);
@@ -2714,7 +2701,7 @@ mod tests {
         );
     }
 
-    // ── Header row click precision (#110) ──────────────────────────────
+    // ── Header row click precision ─────────────────────────────────────
 
     #[test]
     fn header_row_bottom_pixel_hits_header_not_child() {
@@ -2783,7 +2770,7 @@ mod tests {
         }
     }
 
-    // ── Form item-level click dispatch (#112) ──────────────────────────
+    // ── Form item-level click dispatch ─────────────────────────────────
 
     #[test]
     fn form_field_measure_populates_toggle_group_items() {
@@ -3009,7 +2996,7 @@ mod tests {
         );
     }
 
-    // ── Scroll-wheel position routing (#240) ───────────────────────────────
+    // ── Scroll-wheel position routing ──────────────────────────────────────
     //
     // Helpers shared by the scroll routing tests below.
 
@@ -3302,10 +3289,8 @@ mod tests {
     // text: that `reveal` reuses `TreeController::scroll_to_visible`
     // rather than re-deriving its own scroll math.
 
-    /// `reveal` selects `path` in the target section — the bug #595 was
-    /// filed against was that the old scroll-only version left selection
-    /// untouched, so every caller had to remember to also call
-    /// `set_selected_path` themselves.
+    /// `reveal` selects `path` in the target section and scrolls it into view.
+    /// This ensures both selection and visibility are updated together.
     #[test]
     fn reveal_selects_the_target_row() {
         let mut ss = SidebarSystem::new(sample_defs());

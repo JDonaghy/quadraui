@@ -1,6 +1,5 @@
 //! `WorkspaceController` — an **open-N-view-one** set of opaque document
-//! ids with exactly one active, rendered through the [`TabBar`] primitive
-//! (quadraui#596, the controller half of #469).
+//! ids with exactly one active, rendered through the [`TabBar`] primitive.
 //!
 //! # What it is
 //!
@@ -93,7 +92,7 @@
 //! one frame later. See [`WorkspaceController::render`] for the two-pass
 //! detail.
 //!
-//! # Preview tabs (quadraui#597)
+//! # Preview tabs
 //!
 //! Ported from vimcode's working implementation (`preview_buffer_id`,
 //! `promote_preview`, the find-existing-else-replace `open_file_preview`)
@@ -143,7 +142,7 @@
 //! (`quadraui/src/tui/tab_bar.rs`).
 
 use crate::event::{Key, MouseButton, NamedKey, Rect};
-// `TabBarHits` is `#[deprecated]` (issue #823) — this compose helper caches
+// `TabBarHits` is `#[deprecated]` — this compose helper caches
 // exactly what `Backend::draw_tab_bar` returns for click dispatch. See
 // that struct's doc for the replacement plan.
 #[allow(deprecated)]
@@ -296,7 +295,7 @@ pub struct WorkspaceController {
     preview: Option<String>,
     scroll_offset: usize,
     last_strip: Option<Rect>,
-    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
     last_hits: Option<TabBarHits>,
 }
 
@@ -1299,7 +1298,7 @@ mod tests {
         assert_eq!(CLOSE_COLS_ESTIMATE, crate::tui::TAB_CLOSE_COLS as usize);
     }
 
-    // ── Preview tabs (quadraui#597) ─────────────────────────────────
+    // ── Preview tabs ────────────────────────────────────────────────
 
     #[test]
     fn is_preview_is_false_for_unknown_and_permanent_docs() {

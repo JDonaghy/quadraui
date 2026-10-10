@@ -1,5 +1,5 @@
 //! Reusable context-sensitive help layer for [`ShellApp`](crate::ShellApp)
-//! consumers (#431).
+//! consumers.
 //!
 //! Three pieces, composed from existing primitives rather than a new one:
 //!
@@ -10,33 +10,20 @@
 //! 2. **[`HelpOverlayController`]** — a `?`-triggered cheatsheet overlay
 //!    rendering the active view's [`ViewHelp`]. Composed from
 //!    [`crate::Panel`] (chrome: title bar + border — `Backend::draw_panel`
-//!    is implemented on every backend today) framing a
-//!    [`crate::TextDisplay`] (content: the note/action list). Views with
-//!    no registered help still get a visible (if minimal) cheatsheet
-//!    rather than a silent no-op — see [`HelpOverlayController::render`].
+//!    is implemented on every backend) framing a [`crate::TextDisplay`]
+//!    (content: the note/action list). Views with no registered help still
+//!    get a visible (if minimal) cheatsheet rather than a silent no-op — see
+//!    [`HelpOverlayController::render`].
 //! 3. **[`help_actions_to_palette_items`] / [`filter_help_actions`]** — feed
 //!    registered actions into the existing [`crate::Palette`] /
 //!    [`crate::DualModePaletteController`] so they're searchable by label
 //!    *and* description.
 //!
-//! # Why not the old `Modal` primitive?
-//!
-//! quadraui used to also ship a `Modal` primitive describing backdrop +
-//! centered-content geometry — but it had no `Backend::draw_modal`
-//! method and no backend ever painted one, so this overlay was built on
-//! [`crate::Panel`] instead, which already ships a working chrome
-//! rasteriser on every backend: same "bordered popup framing app-drawn
-//! content" shape, backed by a primitive that actually renders. `Modal`
-//! itself was deleted as dead API in #509 (zero consumers in-repo or in
-//! either downstream consumer, and no rasteriser ever arrived to give
-//! it one) — see `docs/decisions/DECISIONS.md`.
-//!
 //! # Cross-backend portability
 //!
 //! [`HelpOverlayController::render`] sizes the popup from
 //! `backend.line_height()` / `backend.char_width()` — never hardcoded
-//! cells/pixels — so the same code paints correctly on TUI and GTK (see
-//! `quadraui/docs/LESSONS.md`).
+//! cells/pixels — so the same code paints correctly on TUI and GTK.
 
 use std::collections::BTreeMap;
 
@@ -365,7 +352,7 @@ impl Default for HelpOverlayController {
 /// equal-character-count strings can render to different pixel widths.
 /// The accelerator/description columns are therefore ragged on GTK
 /// today. Accepted for now — it's visual-only and GTK example coverage
-/// waits on `GtkDriver` (#301) — but a real fix would render each column
+/// waits on `GtkDriver` — but a real fix would render each column
 /// as its own `StyledSpan` sized from a backend-measured text width
 /// instead of character count.
 fn build_cheatsheet_lines(help: &ViewHelp) -> Vec<TextDisplayLine> {
@@ -513,17 +500,12 @@ fn match_byte_positions(haystack: &str, needle_lower: &str) -> Vec<usize> {
 }
 
 /// Case-insensitive subsequence fuzzy match against **both** `label` and
-/// `description` — the "searchable with descriptions" half of #431's
-/// acceptance bar. An empty `query` matches everything (preserving
-/// order), matching [`Palette`]'s "empty query shows everything"
-/// convention.
+/// `description`. An empty `query` matches everything (preserving order),
+/// matching [`Palette`]'s "empty query shows everything" convention.
 ///
-/// Uses [`crate::text_util::fuzzy_score`] (#474) rather than a plain
-/// substring check — a query like `"sv"` now matches a label like
-/// `"Save"` (s...v as a subsequence) even though `"sv"` never appears
-/// contiguously. Matching order among non-empty-query results is
-/// unchanged (original registration order, not re-ranked by score) —
-/// only *which* actions pass the filter changes.
+/// Uses [`crate::text_util::fuzzy_score`] rather than a plain substring
+/// check — a query like `"sv"` matches a label like `"Save"` (s...v as a
+/// subsequence) even though `"sv"` never appears contiguously.
 pub fn filter_help_actions<'a>(actions: &'a [HelpAction], query: &str) -> Vec<&'a HelpAction> {
     if query.is_empty() {
         return actions.iter().collect();
@@ -826,7 +808,7 @@ mod tests {
 
     #[test]
     fn filter_matches_non_contiguous_subsequence() {
-        // #474: filter_help_actions moved from substring to subsequence
+        // Filter_help_actions moved from substring to subsequence
         // matching. "sv" never appears contiguously in "Save", but s...v
         // is a subsequence of it.
         let actions = vec![

@@ -13,7 +13,7 @@
 //! vimcode removes the TUI-local code and rewires both TUI and GTK
 //! `OpenFolderDialog` through this controller.
 //!
-//! # Adoption status (#825)
+//! # Adoption status
 //!
 //! The vimcode migration above hasn't landed as of #825's audit — no
 //! confirmed external adopter yet. Kept public rather than demoted:
@@ -674,7 +674,7 @@ fn filter_dir_entries(all: &[PathBuf], query: &str) -> Vec<PathBuf> {
 /// slashes count so that Windows paths get the same boundary bonus as
 /// POSIX paths.
 ///
-/// Thin wrapper over [`crate::text_util::fuzzy_score`] (#474) — the match
+/// Thin wrapper over [`crate::text_util::fuzzy_score`] — the match
 /// positions it also returns aren't needed here (the folder picker doesn't
 /// highlight per-character matches), so this drops them and keeps the
 /// score-only signature the rest of this module already expects.
@@ -1045,20 +1045,11 @@ mod tests {
         assert!(has_marker, "marker file should appear in palette items");
     }
 
-    // ── Regression tests for previously-discovered bugs ───────────────
-
     #[test]
     fn build_palette_handles_non_ascii_root_path() {
-        // Regression: `build_palette` previously sliced a byte range of the
-        // root path without checking UTF-8 char boundaries, panicking on
-        // non-ASCII paths (e.g. Japanese, accented Latin) once the path
-        // exceeded `viewport.width − 30` chars.
-        //
-        // Concrete trigger: a path of 153 bytes whose byte at index
-        // `len - max == 103` is a continuation byte (the middle byte of a
-        // 3-byte UTF-8 char). The original `&r[r.len() - max..]` slice would
-        // panic with "is not a char boundary"; the new implementation walks
-        // `char_indices()` to find the nearest valid split point.
+        // `build_palette` must handle non-ASCII paths correctly: it must
+        // validate UTF-8 char boundaries when slicing the root path to fit
+        // the viewport width, rather than panicking on multi-byte characters.
         let long_japanese = PathBuf::from(format!("/a/{}", "ト".repeat(50)));
         let picker = FolderPickerController::new(long_japanese, vec![], false);
         // Narrow rect forces truncation: max = max(80-30, 10) = 50 bytes.
@@ -1117,7 +1108,7 @@ mod tests {
         // Create `target` and `keep_me`; default list skips `target`.
         std::fs::create_dir_all(root.path().join("target")).unwrap();
         std::fs::create_dir_all(root.path().join("keep_me")).unwrap();
-        // With an empty override, `target` should no longer be skipped.
+        // With an empty override list, `target` is no longer skipped.
         let picker = FolderPickerController::new(root.path().to_path_buf(), vec![], false)
             .with_ignore_dirs(vec![]);
         let has_target = picker

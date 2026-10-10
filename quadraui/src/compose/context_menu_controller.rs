@@ -1,11 +1,10 @@
-//! `ContextMenuController` — the "one call" context-menu entry point
-//! issue #1187 asks for, composed on top of the existing
-//! [`ContextMenu`] primitive, [`Backend::draw_context_menu`] rasteriser,
-//! [`Backend::show_context_menu`] native path, and [`ModalStack`].
+//! `ContextMenuController` — the "one call" context-menu entry point,
+//! composed on top of the existing [`ContextMenu`] primitive,
+//! [`Backend::draw_context_menu`] rasteriser, [`Backend::show_context_menu`]
+//! native path, and [`ModalStack`].
 //!
 //! An app that wants a right-click menu writes exactly one code path,
 //! regardless of platform or [`MenuStyle`]:
-//!
 //! ```ignore
 //! // Setup: one field on the app.
 //! struct MyApp {
@@ -454,10 +453,9 @@ mod tests {
     #[test]
     fn set_menu_style_custom_stays_painted_even_with_native_caps() {
         // `TuiBackend` never declares `native_menu`, so this mainly
-        // guards the `set_menu_style` plumbing (issue #1187's "Custom
-        // always paints in-window" rule) rather than exercising a real
-        // native fallback — that combination is covered on the macOS
-        // side (`src/macos/backend.rs`).
+        // guards the `set_menu_style` plumbing (Custom always paints
+        // in-window) rather than exercising a real native fallback —
+        // that combination is covered on the macOS side.
         let mut backend = TuiBackend::new();
         backend.set_menu_style(crate::backend::MenuStyle::Custom);
         assert_eq!(backend.menu_style(), crate::backend::MenuStyle::Custom);
