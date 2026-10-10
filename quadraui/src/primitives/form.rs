@@ -598,7 +598,28 @@ mod native_surface_paint {
                 continue;
             };
             let row_rect = translate(&vf.bounds, origin);
-            let row_h = row_rect.height;
+            let row_h_full = row_rect.height;
+
+            // When the field carries a non-empty validation message,
+            // split the row into a content strip (label + input,
+            // centred the same way every other field is) and a message
+            // strip below it, instead of painting the message on top of
+            // the label at the same vertical centre.
+            let validation_info = field.validation.as_ref().and_then(|vs| {
+                let (color, msg) = match vs {
+                    ValidationState::Error(m) => (theme.error_fg, m.as_str()),
+                    ValidationState::Warning(m) => (theme.warning_fg, m.as_str()),
+                };
+                if msg.is_empty() {
+                    None
+                } else {
+                    Some((color, msg))
+                }
+            });
+            let message_h = validation_info
+                .map(|(_, msg)| surface.surface_measure_text(msg).1)
+                .unwrap_or(0.0);
+            let row_h = (row_h_full - message_h).max(row_h_full * 0.5);
 
             let is_focused = form.has_focus
                 && form
@@ -645,17 +666,52 @@ mod native_surface_paint {
             match &field.kind {
                 FieldKind::Label => {}
                 FieldKind::Toggle { value } => {
-                    let glyph = if *value { "[x]" } else { "[ ]" };
+                    // Drawn checkbox rather than a `[x]` / `[ ]` text
+                    // glyph — the TUI painter keeps the glyph.
                     let fg = if *value && !field.disabled {
                         theme.accent_fg
                     } else {
                         field_fg
                     };
-                    let (w, h) = surface.surface_measure_text(glyph);
-                    let ix = if no_label { label_x } else { input_right - w };
+                    let box_size = (row_h - 8.0).clamp(10.0, 16.0);
+                    let ix = if no_label {
+                        label_x
+                    } else {
+                        input_right - box_size
+                    };
                     if no_label || ix > label_right + 8.0 {
-                        let iy = row_rect.y + (row_h - h) / 2.0;
-                        surface.surface_draw_text_run(Rect::new(ix, iy, w, h), glyph, fg);
+                        let iy = row_rect.y + (row_h - box_size) / 2.0;
+                        let box_rect = Rect::new(ix, iy, box_size, box_size);
+                        if *value {
+                            surface.surface_fill_rounded_rect(box_rect, 2.0, fg);
+                            let check_fg = theme.background;
+                            surface.surface_draw_line(
+                                crate::Point::new(
+                                    box_rect.x + box_size * 0.22,
+                                    box_rect.y + box_size * 0.52,
+                                ),
+                                crate::Point::new(
+                                    box_rect.x + box_size * 0.42,
+                                    box_rect.y + box_size * 0.75,
+                                ),
+                                check_fg,
+                                1.5,
+                            );
+                            surface.surface_draw_line(
+                                crate::Point::new(
+                                    box_rect.x + box_size * 0.42,
+                                    box_rect.y + box_size * 0.75,
+                                ),
+                                crate::Point::new(
+                                    box_rect.x + box_size * 0.8,
+                                    box_rect.y + box_size * 0.25,
+                                ),
+                                check_fg,
+                                1.5,
+                            );
+                        } else {
+                            surface.surface_stroke_rect(box_rect, fg, 1.0);
+                        }
                     }
                 }
                 FieldKind::TextInput {
@@ -664,7 +720,7 @@ mod native_surface_paint {
                     cursor,
                     selection_anchor,
                 } => {
-                    paint_bracketed_text(
+                    paint_text_input_box(
                         surface,
                         row_rect,
                         label_right,
@@ -688,7 +744,7 @@ mod native_surface_paint {
                     cursor,
                     mask_char,
                 } => {
-                    paint_bracketed_text(
+                    paint_text_input_box(
                         surface,
                         row_rect,
                         label_right,
@@ -713,7 +769,7 @@ mod native_surface_paint {
                     ..
                 } => {
                     let first_line = value.lines().next().unwrap_or("");
-                    paint_bracketed_text(
+                    paint_text_input_box(
                         surface,
                         row_rect,
                         label_right,
@@ -914,36 +970,38 @@ mod native_surface_paint {
                 }
             }
 
-            if let Some(ref vs) = field.validation {
-                let (color, msg) = match vs {
-                    ValidationState::Error(m) => (theme.error_fg, m.as_str()),
-                    ValidationState::Warning(m) => (theme.warning_fg, m.as_str()),
-                };
+            if let Some((color, msg)) = validation_info {
+                // Message strip: below the content strip computed
+                // above, not overlapping the label.
+                let strip_y = row_rect.y + row_h;
+                let strip_h = (row_h_full - row_h).max(0.0);
                 surface.surface_fill_rect(
-                    Rect::new(row_rect.x + 2.0, row_rect.y + (row_h - 3.0) / 2.0, 3.0, 3.0),
+                    Rect::new(
+                        row_rect.x + 2.0,
+                        strip_y + (strip_h - 3.0).max(0.0) / 2.0,
+                        3.0,
+                        3.0,
+                    ),
                     color,
                 );
-                if !msg.is_empty() {
-                    let (mw, mh) = surface.surface_measure_text(msg);
-                    let my = row_rect.y + (row_h - mh) / 2.0;
-                    surface.surface_draw_text_run(
-                        Rect::new(row_rect.x + 8.0, my, mw, mh),
-                        msg,
-                        color,
-                    );
-                }
+                let (mw, mh) = surface.surface_measure_text(msg);
+                let my = strip_y + (strip_h - mh).max(0.0) / 2.0;
+                surface.surface_draw_text_run(Rect::new(row_rect.x + 8.0, my, mw, mh), msg, color);
             }
         }
     }
 
-    /// Shared bracketed `[value]` painter for `TextInput` / `PasswordInput`
-    /// / the single-line `TextArea` preview. `mask` replaces every
-    /// character with `mask_char` when `masked` is true. Port of
+    /// Shared text-input box painter for `TextInput` / `PasswordInput` /
+    /// the single-line `TextArea` preview: a stroked box with px padding
+    /// around the value, rather than literal `[value]` bracket glyphs —
+    /// the TUI painter keeps the brackets, which read as a terminal
+    /// affordance on a pixel canvas. `mask` replaces every character
+    /// with `mask_char` when `masked` is true. Descends from
     /// `win::form::draw_bracketed_text` (the most complete of the three
     /// deleted copies — it already carried the selection highlight GTK's
     /// copy had and macOS's never gained).
     #[allow(clippy::too_many_arguments)]
-    fn paint_bracketed_text(
+    fn paint_text_input_box(
         surface: &mut dyn PaintSurface,
         row_rect: Rect,
         label_right: f32,
@@ -973,11 +1031,11 @@ mod native_surface_paint {
         let row_h = row_rect.height;
         let (shown_w, shown_h) = surface.surface_measure_text(shown);
 
-        let (ix, _dw, bracket_right) = if no_label {
+        let (ix, _dw, box_right) = if no_label {
             let ix = row_rect.x + 6.0;
-            let bracket_r = input_right - 4.0;
-            let avail = (bracket_r - ix - 8.0).max(0.0);
-            (ix, shown_w.min(avail), bracket_r)
+            let box_r = input_right - 4.0;
+            let avail = (box_r - ix - 8.0).max(0.0);
+            (ix, shown_w.min(avail), box_r)
         } else {
             let max_width = (row_rect.width * 0.6).max(80.0);
             let dw = shown_w.min(max_width);
@@ -988,8 +1046,13 @@ mod native_surface_paint {
             return;
         }
 
+        surface.surface_stroke_rect(
+            Rect::new(ix, row_rect.y + 2.0, (box_right - ix).max(1.0), row_h - 4.0),
+            dim_fg,
+            1.0,
+        );
+
         let y = row_rect.y + (row_h - shown_h) / 2.0;
-        surface.surface_draw_text_run(Rect::new(ix, y, 8.0, shown_h), "[", dim_fg);
 
         let has_sel = !masked
             && matches!((cursor, selection_anchor), (Some(c), Some(a)) if c != a && !value.is_empty());
@@ -1025,8 +1088,6 @@ mod native_surface_paint {
                 input_fg,
             );
         }
-
-        surface.surface_draw_text_run(Rect::new(bracket_right, y, 8.0, shown_h), "]", dim_fg);
 
         if !masked {
             if let Some(cur) = cursor {
@@ -1082,6 +1143,10 @@ mod native_surface_paint {
             /// `theme.muted_fg` on `selected_bg`) is invisible to a
             /// fills-only recorder.
             text_runs: Vec<(Rect, String, Color)>,
+            /// `(rect, color, stroke_width)` for every
+            /// `surface_stroke_rect` call, so tests can assert the drawn
+            /// checkbox / text-input-box borders.
+            strokes: Vec<(Rect, Color, f32)>,
         }
 
         /// 6 units per character — same fixed-width stand-in the
@@ -1112,16 +1177,15 @@ mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// #1073: test-only recorder — `paint` never calls this verb
-            /// (see this module's own doc for why no primitive here has been
-            /// migrated onto it yet); this exists only so `RecordingSurface`
-            /// satisfies the trait. Records into the same `fills` list as
-            /// `surface_fill_rect` (radius dropped) — no test asserts on it
-            /// today.
+            /// A checked `Toggle` fills its checkbox with
+            /// `surface_fill_rounded_rect`. Records into the same
+            /// `fills` list as `surface_fill_rect` (radius dropped).
             fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
                 self.fills.push((rect, color));
             }
-            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
             fn surface_stroke_rounded_rect(
                 &mut self,
                 _rect: Rect,
@@ -1339,6 +1403,134 @@ mod native_surface_paint {
                  on-selection foreground, not an unconditional \
                  theme.muted_fg; text runs were {:?}",
                 surface.text_runs,
+            );
+        }
+
+        /// A `Toggle` paints as a drawn checkbox (a stroked box when
+        /// off, a filled rounded box when on) — never the `[x]` /
+        /// `[ ]` text glyph the TUI painter still uses.
+        #[test]
+        fn toggle_paints_drawn_checkbox_not_bracket_glyph() {
+            let off = one_field_form("flag", FieldKind::Toggle { value: false });
+            let (surface, _) = paint_recorded(&off);
+            assert!(
+                !surface.text_runs.iter().any(|(_, t, _)| t.contains('[')),
+                "an unchecked toggle must not paint a bracket glyph; \
+                 text runs were {:?}",
+                surface.text_runs,
+            );
+            assert_eq!(
+                surface.strokes.len(),
+                1,
+                "an unchecked toggle strokes exactly one box; strokes \
+                 were {:?}",
+                surface.strokes,
+            );
+
+            let on = one_field_form("flag", FieldKind::Toggle { value: true });
+            let (surface, _) = paint_recorded(&on);
+            assert!(
+                !surface.text_runs.iter().any(|(_, t, _)| t.contains('[')),
+                "a checked toggle must not paint a bracket glyph either; \
+                 text runs were {:?}",
+                surface.text_runs,
+            );
+            let theme = Theme::default();
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == theme.accent_fg),
+                "a checked toggle fills its box with accent_fg; fills \
+                 were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// `TextInput` paints a stroked box around the value, not
+        /// literal `[`/`]` text glyphs.
+        #[test]
+        fn text_input_paints_stroked_box_not_bracket_glyphs() {
+            let form = one_field_form(
+                "name",
+                FieldKind::TextInput {
+                    value: "hello".into(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+            );
+            let (surface, _) = paint_recorded(&form);
+            assert!(
+                !surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, t, _)| t == "[" || t == "]"),
+                "no bracket glyph should be painted around the value; \
+                 text runs were {:?}",
+                surface.text_runs,
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "hello"),
+                "the value itself must still be painted; text runs \
+                 were {:?}",
+                surface.text_runs,
+            );
+            assert_eq!(
+                surface.strokes.len(),
+                1,
+                "exactly one stroked box should bound the input; strokes \
+                 were {:?}",
+                surface.strokes,
+            );
+        }
+
+        /// A field's validation message must not overlap its label —
+        /// regression for the bug where both were painted vertically
+        /// centred in the same row.
+        #[test]
+        fn validation_message_does_not_overlap_label() {
+            let mut form = one_field_form(
+                "name",
+                FieldKind::TextInput {
+                    value: String::new(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+            );
+            form.fields[0].label = StyledText::plain("Name");
+            form.fields[0].validation = Some(ValidationState::Error("Required".to_string()));
+
+            let row_h = form_row_height(14.0);
+            let measure = form_field_measure(&form.fields[0], row_h, &FixedMeasure);
+            let flayout = form.layout(320.0, 160.0, |_| measure.clone());
+            let mut surface = RecordingSurface::default();
+            paint(
+                &form,
+                &flayout,
+                &mut surface,
+                &Theme::default(),
+                crate::Point::new(0.0, 0.0),
+            );
+
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Name")
+                .expect("label text run recorded");
+            let (msg_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Required")
+                .expect("validation message text run recorded");
+
+            let label_bottom = label_rect.y + label_rect.height;
+            assert!(
+                label_bottom <= msg_rect.y + 0.01,
+                "validation message (y={}) must start at or below the \
+                 label's bottom edge (y={}); label was {:?}, message was {:?}",
+                msg_rect.y,
+                label_bottom,
+                label_rect,
+                msg_rect,
             );
         }
 

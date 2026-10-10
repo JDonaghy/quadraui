@@ -571,17 +571,19 @@ pub(crate) mod native_surface_paint {
             }
 
             // ── Action button (bottom strip — divergences 4/5) ────────────
+            // A tinted, bordered button — not a `[label]` glyph, which
+            // reads as a terminal affordance on a pixel canvas (the TUI
+            // painter still brackets its own action label).
             if let (Some(ab), Some(action_text)) = (sb.action_bounds, &stage.action) {
-                let btn_label = format!("[{}]", action_text);
-
                 surface.surface_fill_rect_alpha(ab, theme.accent_bg, ACTION_TINT_ALPHA);
+                surface.surface_stroke_rect(ab, theme.accent_bg, 1.0);
 
-                let (bw2, bh2) = surface.surface_measure_text(&btn_label);
+                let (bw2, bh2) = surface.surface_measure_text(action_text);
                 let btn_cx = ab.x + ab.width / 2.0 - bw2 / 2.0;
                 let btn_cy = ab.y + ab.height / 2.0 - bh2 / 2.0;
                 surface.surface_draw_text_run(
                     Rect::new(btn_cx, btn_cy, bw2.max(1.0), bh2.max(1.0)),
-                    &btn_label,
+                    action_text,
                     theme.accent_bg,
                 );
             }
@@ -817,6 +819,43 @@ pub(crate) mod native_surface_paint {
                 "tint alpha ({}) must be lower than accent_bg's own opaque alpha ({})",
                 tint.a,
                 theme.accent_bg.a,
+            );
+        }
+
+        /// The action button's label paints as plain text inside a
+        /// stroked border, not a `[label]` bracket glyph — the TUI
+        /// painter keeps the brackets.
+        #[test]
+        fn action_button_paints_a_border_not_bracket_text() {
+            let view = make_view();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &view,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 300.0, 80.0),
+            );
+            let ab = layout.stages[1]
+                .action_bounds
+                .expect("stage 1 has an action button");
+
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "Retry"),
+                "the action label itself must still be painted; text_runs \
+                 were {:?}",
+                surface.text_runs,
+            );
+            assert!(
+                !surface.text_runs.iter().any(|(_, t, _)| t.contains('[')),
+                "no bracket glyph should be painted for the action label; \
+                 text_runs were {:?}",
+                surface.text_runs,
+            );
+            assert!(
+                surface.strokes.iter().any(|(r, _)| *r == ab),
+                "the action button must stroke a border around its full \
+                 bounds; strokes were {:?}",
+                surface.strokes,
             );
         }
 

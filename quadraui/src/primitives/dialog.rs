@@ -747,22 +747,27 @@ pub(crate) mod native_surface_paint {
     use crate::style::Style;
     use crate::theme::Theme;
     use crate::types::Color;
-    use crate::Rect;
+    use crate::{Point, Rect};
 
     /// Approximate monospace character width used to convert a
-    /// [`DialogTable::column_widths`] char-cell hint to pixels, and to
-    /// size the header separator's dash count — the one formula GTK and
-    /// macOS already agreed on pre-migration (see this module's doc for
-    /// the Windows drift this fixes).
+    /// [`DialogTable::column_widths`] char-cell hint to pixels.
     const APPROX_CHAR_WIDTH_RATIO: f32 = 0.6;
+
+    /// Horizontal gap reserved between two columns for the 1px separator
+    /// line drawn through its middle — replaces the ` │ ` text-run
+    /// separator with a drawn rule on GUI backends; the TUI painter is
+    /// untouched and keeps drawing the glyph.
+    const COLUMN_SEP_GAP: f32 = 16.0;
 
     /// Paint a [`DialogTable`] at `(bounds.x, bounds.y)`, top-left
     /// anchored. Column widths are auto-computed from content via
     /// [`PaintSurface::surface_measure_text`], honouring
     /// `table.column_widths` as a per-column minimum. A header row
-    /// (when present) is followed by a plain dash separator row — no
-    /// `┼` junction, matching every backend's pre-migration
-    /// simplification.
+    /// (when present) is followed by a drawn 1px rule — no `┼`
+    /// junction, matching every backend's pre-migration simplification.
+    /// Column separators and the header rule are drawn as 1px lines
+    /// rather than the ` │ ` / `─` glyphs the TUI painter still emits —
+    /// those glyphs read as terminal affordances on a pixel canvas.
     fn draw_table(
         surface: &mut dyn PaintSurface,
         table: &DialogTable,
@@ -799,35 +804,45 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        let sep_w = measure_w(surface, " │ ");
         let mut col_x = vec![0.0f32; ncols];
         let mut cursor_x = bounds.x;
         for j in 0..ncols {
             col_x[j] = cursor_x;
             cursor_x += col_w[j];
             if j + 1 < ncols {
-                cursor_x += sep_w;
+                cursor_x += COLUMN_SEP_GAP;
             }
         }
 
         let mut row_y = bounds.y;
         let row_rect = |x: f32, y: f32, w: f32| Rect::new(x, y, w.max(1.0), line_height);
+        let draw_col_separators = |surface: &mut dyn PaintSurface, row_y: f32| {
+            for j in 0..ncols.saturating_sub(1) {
+                let sep_x = col_x[j] + col_w[j] + COLUMN_SEP_GAP / 2.0;
+                surface.surface_draw_line(
+                    Point::new(sep_x, row_y + 1.0),
+                    Point::new(sep_x, row_y + line_height - 1.0),
+                    border,
+                    1.0,
+                );
+            }
+        };
 
         if let Some(headers) = &table.headers {
             for (j, h) in headers.iter().enumerate().take(ncols) {
                 surface.surface_draw_text_run(row_rect(col_x[j], row_y, col_w[j]), h, fg);
             }
-            for j in 0..ncols.saturating_sub(1) {
-                let sep_x = col_x[j] + col_w[j];
-                surface.surface_draw_text_run(row_rect(sep_x, row_y, sep_w), " │ ", border);
-            }
+            draw_col_separators(surface, row_y);
             row_y += line_height;
 
             let total_w = col_x[ncols - 1] + col_w[ncols - 1] - bounds.x;
-            let char_w = line_height * APPROX_CHAR_WIDTH_RATIO;
-            let dash_count = ((total_w / char_w.max(1.0)).ceil() as usize + 4).max(1);
-            let dash_str: String = "─".repeat(dash_count);
-            surface.surface_draw_text_run(row_rect(bounds.x, row_y, total_w), &dash_str, border);
+            let rule_y = row_y + line_height / 2.0;
+            surface.surface_draw_line(
+                Point::new(bounds.x, rule_y),
+                Point::new(bounds.x + total_w, rule_y),
+                border,
+                1.0,
+            );
             row_y += line_height;
         }
 
@@ -835,10 +850,7 @@ pub(crate) mod native_surface_paint {
             for (j, cell) in row.iter().enumerate().take(ncols) {
                 surface.surface_draw_text_run(row_rect(col_x[j], row_y, col_w[j]), cell, fg);
             }
-            for j in 0..ncols.saturating_sub(1) {
-                let sep_x = col_x[j] + col_w[j];
-                surface.surface_draw_text_run(row_rect(sep_x, row_y, sep_w), " │ ", border);
-            }
+            draw_col_separators(surface, row_y);
             row_y += line_height;
         }
     }
@@ -947,16 +959,15 @@ pub(crate) mod native_surface_paint {
             }
             surface.surface_stroke_rect(vis.bounds, theme.border_fg, 1.0);
 
-            let label = if dialog.vertical_buttons {
-                let prefix = if btn.is_default { "▸ " } else { "  " };
-                format!("{prefix}{}", btn.label)
-            } else {
-                format!("  {}  ", btn.label)
-            };
+            // The default button's style (selected_bg fill + border) is
+            // the marker on GUI — no leading glyph needed (the TUI
+            // painter still prefixes "▸ " since it has no fill
+            // affordance to lean on).
+            let label = btn.label.clone();
             let label_fg = btn.tint.unwrap_or(theme.surface_fg);
             let (lw, lh) = surface.surface_measure_text(&label);
             let label_x = if dialog.vertical_buttons {
-                vis.bounds.x + 4.0
+                vis.bounds.x + 8.0
             } else {
                 vis.bounds.x + (vis.bounds.width - lw) / 2.0
             };
@@ -969,6 +980,166 @@ pub(crate) mod native_surface_paint {
         }
 
         rects
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::dialog::{DialogButton, VisibleDialogButton};
+        use crate::types::{Color, StyledText, WidgetId};
+        use crate::Image;
+
+        /// Records every drawing verb issued by `draw_table` / `paint` —
+        /// mirrors every other primitive's `RecordingSurface` test
+        /// double (e.g. `primitives::form`, `primitives::pipeline_view`).
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color, f32)>,
+            text_runs: Vec<(Rect, String, Color)>,
+            lines: Vec<(Point, Point, Color, f32)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(300.0, 200.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                14.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                7.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 7.0, 12.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                from: crate::Point,
+                to: crate::Point,
+                color: Color,
+                stroke_width: f32,
+            ) {
+                self.lines.push((from, to, color, stroke_width));
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        /// Column separators and the header rule paint as 1px lines,
+        /// never the ` │ ` / `─` glyphs the TUI painter still emits.
+        #[test]
+        fn draw_table_paints_lines_not_separator_glyphs() {
+            let table = DialogTable {
+                headers: Some(vec!["Key".to_string(), "Action".to_string()]),
+                rows: vec![vec!["Ctrl+S".to_string(), "Save".to_string()]],
+                column_widths: None,
+            };
+            let mut surface = RecordingSurface::default();
+            draw_table(
+                &mut surface,
+                &table,
+                Rect::new(0.0, 0.0, 200.0, 42.0),
+                14.0,
+                Color::rgb(255, 255, 255),
+                Color::rgb(128, 128, 128),
+            );
+
+            assert!(
+                !surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, t, _)| t.contains('│') || t.contains('─')),
+                "no ` │ ` / `─` glyph should be painted; text runs were {:?}",
+                surface.text_runs,
+            );
+            // One column separator per row (header + data row) plus the
+            // header rule below it = 3 lines.
+            assert_eq!(
+                surface.lines.len(),
+                3,
+                "expected 2 column separators + 1 header rule; lines were {:?}",
+                surface.lines,
+            );
+        }
+
+        /// The default button's marker is the selected-bg fill +
+        /// border, not a leading `▸ ` glyph.
+        #[test]
+        fn default_button_has_no_leading_glyph() {
+            let dialog = Dialog {
+                id: WidgetId::new("dialog:confirm"),
+                title: StyledText::plain("Confirm"),
+                body: vec![],
+                buttons: vec![DialogButton {
+                    id: WidgetId::new("dialog:ok"),
+                    label: "OK".to_string(),
+                    is_default: true,
+                    is_cancel: false,
+                    tint: None,
+                }],
+                severity: None,
+                vertical_buttons: true,
+                table: None,
+                input: None,
+            };
+            let dlayout = DialogLayout {
+                bounds: Rect::new(0.0, 0.0, 100.0, 60.0),
+                title_bounds: None,
+                body_bounds: Rect::new(0.0, 0.0, 0.0, 0.0),
+                table_bounds: None,
+                input_bounds: None,
+                body_toolbar_layout: None,
+                button_row_bounds: Rect::new(0.0, 40.0, 100.0, 20.0),
+                visible_buttons: vec![VisibleDialogButton {
+                    button_idx: 0,
+                    id: dialog.buttons[0].id.clone(),
+                    bounds: Rect::new(10.0, 40.0, 40.0, 16.0),
+                }],
+                hit_regions: vec![],
+            };
+            let mut surface = RecordingSurface::default();
+            paint(&dialog, &dlayout, 14.0, &mut surface, &Theme::default());
+
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "OK"),
+                "the button label itself must still be painted; text runs \
+                 were {:?}",
+                surface.text_runs,
+            );
+            assert!(
+                !surface.text_runs.iter().any(|(_, t, _)| t.contains('▸')),
+                "no leading glyph should be painted on the default button; \
+                 text runs were {:?}",
+                surface.text_runs,
+            );
+            let theme = Theme::default();
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == theme.selected_bg),
+                "the default button must still fill selected_bg as its \
+                 marker; fills were {:?}",
+                surface.fills,
+            );
+        }
     }
 }
 
