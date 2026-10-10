@@ -232,6 +232,16 @@ pub struct MacBackend {
     /// call. Holds it alive so action selectors on installed `NSMenuItem`s
     /// don't dangle. Replaced wholesale on each re-install.
     menu_target: Option<objc2::rc::Retained<super::menu_bar_install::QuadraMenuTarget>>,
+    /// Last [`MenuBar`] installed via the native-default
+    /// [`Backend::draw_menu_bar`] path. Compared against
+    /// the incoming `bar` on every call so a generic caller (`frame.rs`,
+    /// `MenuSystem::render`) can call `draw_menu_bar` unconditionally
+    /// every frame without reinstalling an unchanged `NSMenu` tree each
+    /// tick — see [`Self::install_menu_bar_if_changed`]. `None` until
+    /// the native path installs for the first time; also `None` on a
+    /// backend that never takes the native path (e.g. `Custom` style),
+    /// which never reads this field.
+    last_native_menu_bar: Option<MenuBar>,
     /// Tray/status-bar icon state (issue #953) — see [`super::tray`]'s
     /// module doc and `impl TrayService for MacBackend` below.
     tray: super::tray::MacTrayState,
@@ -640,6 +650,7 @@ impl MacBackend {
             chrome_char_width: chrome_metrics.char_width,
             nerd_font_fallback_family: None,
             menu_target: None,
+            last_native_menu_bar: None,
             tray: super::tray::MacTrayState::default(),
             caret_visible: std::rc::Rc::new(std::cell::Cell::new(true)),
             caret_blink_pause_until: std::rc::Rc::new(std::cell::Cell::new(
@@ -1175,6 +1186,64 @@ impl MacBackend {
             self.chrome_char_width = saved_cw;
         }
         layout
+    }
+
+    /// Install `bar` as the real system `NSMenu` via
+    /// [`Self::install_menu_bar`] unless it's unchanged from the last
+    /// native-path install — see the `Backend::draw_menu_bar` impl's
+    /// "Per-frame idempotence" doc section below for why a per-frame
+    /// caller needs this to be idempotent rather than rebuilding the
+    /// whole `NSMenu` tree on every call.
+    ///
+    /// Returns `true` when the `NSMenu` tree was (re)built, `false` when
+    /// the call was a no-op because `bar` matched the last install.
+    fn install_menu_bar_if_changed(&mut self, bar: &MenuBar) -> bool {
+        if self.last_native_menu_bar.as_ref() == Some(bar) {
+            return false;
+        }
+        self.install_menu_bar(bar);
+        self.last_native_menu_bar = Some(bar.clone());
+        true
+    }
+
+    /// The in-window painted menu-bar strip. Reachable as the
+    /// `Custom`-style fallback from the `Backend::draw_menu_bar` trait
+    /// method below, and directly by tests that want the painted pixels
+    /// regardless of `menu_style`.
+    fn draw_menu_bar_painted(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_menu_bar called outside enter_frame_scope",
+        );
+        // The menu bar is chrome (`ChromePrimitive::MenuBar`)
+        // — see `draw_tree`'s comment for why this reads `chrome_font`
+        // instead of `current_font`.
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        // SAFETY: ctx non-null inside frame scope.
+        unsafe {
+            super::menu_bar::draw_menu_bar(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+            )
+        }
+    }
+}
+
+/// The in-window layout of a menu bar AppKit draws natively: zero
+/// height and no items, since the real menu bar lives outside the window.
+fn native_menu_bar_layout(rect: Rect) -> MenuBarLayout {
+    MenuBarLayout {
+        bounds: Rect::new(rect.x, rect.y, rect.width, 0.0),
+        visible_items: Vec::new(),
+        hit_regions: Vec::new(),
     }
 }
 
@@ -3218,34 +3287,59 @@ impl Backend for MacBackend {
         let theme = self.current_theme;
         crate::primitives::drop_zone::native_surface_paint::paint(overlay, self, &theme);
     }
+    /// macOS's own idiomatic default for a top-level menu bar:
+    /// presents `bar` as the real system `NSMenu` whenever
+    /// [`Backend::effective_menu_style`] resolves to
+    /// [`crate::backend::ResolvedMenuStyle::Native`] — the default on
+    /// macOS, since [`Backend::backend_caps`] declares `native_menu:
+    /// true` here — falling back to [`Self::draw_menu_bar_painted`]'s
+    /// in-window strip once the app opts out via
+    /// [`Backend::set_menu_style`]`(`[`crate::backend::MenuStyle::Custom`]`)`.
+    ///
+    /// Every generic caller of this trait method — [`crate::frame`]'s
+    /// `Surface::MenuBar` dispatch, [`crate::compose::MenuSystem::render`]
+    /// — gets this for free through `&mut dyn Backend`, with no
+    /// macOS-specific call site required: macOS has no Alt-mnemonic
+    /// convention and VS Code itself defers to the system menu bar
+    /// there, so a painted `File Edit View` strip is the one that needs
+    /// opting into, not the other way round.
+    ///
+    /// # Layout contract
+    ///
+    /// The native path paints nothing and returns a layout whose
+    /// `bounds.height` is `0.0` — a caller computing "content starts
+    /// below the menu bar" from that height reserves no blank strip,
+    /// since AppKit's own menu bar lives outside the window entirely.
+    /// The painted (`Custom`) path returns exactly what
+    /// [`Self::draw_menu_bar_painted`] always has.
+    ///
+    /// # Per-frame idempotence
+    ///
+    /// Called every frame by the generic callers above, but
+    /// [`Self::install_menu_bar_if_changed`] only actually reinstalls
+    /// the `NSMenu` tree when `bar` differs from the last install — so
+    /// this does not churn `NSApp.setMainMenu:` on every tick, only on
+    /// an actual menu-state change (a new accelerator, a toggled
+    /// checkmark, …).
     fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_menu_bar called outside enter_frame_scope",
-        );
-        // Issue #1003: the menu bar is chrome (`ChromePrimitive::MenuBar`)
-        // — see `draw_tree`'s comment for why this reads `chrome_font`
-        // instead of `current_font`.
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        // SAFETY: ctx non-null inside frame scope.
-        unsafe {
-            super::menu_bar::draw_menu_bar(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                bar,
-                &theme,
-            )
+        match self.effective_menu_style() {
+            crate::backend::ResolvedMenuStyle::Native => {
+                self.install_menu_bar_if_changed(bar);
+                native_menu_bar_layout(rect)
+            }
+            crate::backend::ResolvedMenuStyle::Custom => self.draw_menu_bar_painted(rect, bar),
         }
     }
+    /// No-paint twin of [`Self::draw_menu_bar`] — must agree with what
+    /// that method returns, including its `MenuStyle` branch. Under the
+    /// native style the in-window strip has no items, so a hit-test
+    /// against this layout (as [`crate::compose::MenuSystem`]'s mouse
+    /// handling does) finds nothing to open instead of a painted
+    /// dropdown over content the strip never covered.
     fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
-        // Issue #1003: no-paint twin of `draw_menu_bar` — must agree
-        // with what that method painted.
+        if self.effective_menu_style() == crate::backend::ResolvedMenuStyle::Native {
+            return native_menu_bar_layout(rect);
+        }
         let font = &self.chrome_font;
         super::menu_bar::mac_menu_bar_layout(
             font,
@@ -4691,9 +4785,18 @@ pub(crate) unsafe fn ns_fill_rect(ctx: CGContextRef, rect: Rect, c: Color) {
 /// [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]'s
 /// doc for why every implementation of that verb does this.
 ///
+/// A degenerate (zero or negative width/height) `rect` is a no-op,
+/// same guard as [`super::cg::fill_rect_alpha`] — unlike a plain
+/// `CGContextFillRect`, which CoreGraphics itself no-ops harmlessly on
+/// such a rect, the `AddArcToPoint` path below would otherwise build a
+/// malformed path from a negative `r`.
+///
 /// # Safety
 /// Same contract as [`ns_fill_rect`].
 pub(crate) unsafe fn ns_fill_rounded_rect(ctx: CGContextRef, rect: Rect, radius: f32, c: Color) {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return;
+    }
     let r = (radius as f64)
         .min(rect.width as f64 / 2.0)
         .min(rect.height as f64 / 2.0)
@@ -8801,6 +8904,9 @@ mod tests {
             let mut b = MacBackend::new();
             Backend::set_editor_font(&mut b, editor.0, editor.1);
             Backend::set_ui_font(&mut b, ui_font);
+            // The painted strip is the `Custom` opt-out on macOS; `Auto`
+            // installs the native menu bar and lays out no in-window items.
+            Backend::set_menu_style(&mut b, crate::backend::MenuStyle::Custom);
             b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
 
             let bar = MenuBar {
@@ -8837,6 +8943,202 @@ mod tests {
             w_huge_chrome > w_small_chrome * 2.0,
             "menu bar item width must grow with set_ui_font: {w_small_chrome} vs {w_huge_chrome}"
         );
+    }
+
+    fn sample_menu_bar_for_native_default_tests() -> MenuBar {
+        MenuBar {
+            id: WidgetId::new("test:menu-bar"),
+            items: vec![crate::MenuBarItem {
+                id: WidgetId::new("test:menu-bar:file"),
+                label: "&File".to_string(),
+                disabled: false,
+                submenu: None,
+            }],
+            open_item: None,
+            focused_item: None,
+        }
+    }
+
+    /// `Backend::draw_menu_bar`'s default (`Auto`, unresolved by any
+    /// `set_menu_style` call) must take the native path — paint nothing
+    /// in-window and report a zero-height layout, so a caller sizing
+    /// content from `layout.bounds.height` reserves no blank strip
+    /// (AppKit's own menu bar lives outside the window entirely).
+    /// `install_menu_bar` itself silently no-ops off the main thread —
+    /// every `#[test]` fn runs on one; see
+    /// `install_menu_bar_off_main_thread_does_not_panic` above — so this
+    /// test only proves the layout/no-paint half of the contract. Going
+    /// through the trait method (`b.draw_menu_bar`, not a sidecar) is
+    /// itself part of what this pins: every generic caller gets the
+    /// native default for free.
+    #[test]
+    fn draw_menu_bar_defaults_to_native_and_zeroes_height_on_auto() {
+        use super::super::headless::BitmapSurface;
+
+        const W: u32 = 300;
+        const H: u32 = 24;
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+
+        let bar = sample_menu_bar_for_native_default_tests();
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let mut backend = MacBackend::new();
+        assert_eq!(backend.menu_style(), crate::backend::MenuStyle::Auto);
+
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            *layout.borrow_mut() = Some(b.draw_menu_bar(rect, &bar));
+        });
+        let layout = layout
+            .into_inner()
+            .expect("draw_menu_bar ran inside the frame scope");
+
+        assert_eq!(
+            layout.bounds.height, 0.0,
+            "native path must reserve no vertical space for an in-window strip"
+        );
+        assert_eq!(layout.bounds.width, rect.width);
+        assert!(layout.visible_items.is_empty());
+        assert!(layout.hit_regions.is_empty());
+
+        let painted_any = (0..W).any(|x| {
+            (0..H).any(|y| {
+                let (r, g, b, _) = surface.pixel(x, y);
+                (r, g, b) != (255, 255, 255)
+            })
+        });
+        assert!(
+            !painted_any,
+            "native path must not paint the in-window strip at all"
+        );
+    }
+
+    /// `menu_bar_layout` is `draw_menu_bar`'s no-paint twin, so it must
+    /// follow the same `MenuStyle` branch: empty under the native
+    /// default (a `MenuSystem` click on the unpainted strip must not
+    /// hit-test into a painted dropdown), the painted geometry under the
+    /// `Custom` opt-out.
+    #[test]
+    fn menu_bar_layout_agrees_with_draw_menu_bar_under_each_menu_style() {
+        use super::super::headless::BitmapSurface;
+
+        const W: u32 = 300;
+        const H: u32 = 24;
+        let bar = sample_menu_bar_for_native_default_tests();
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        for style in [
+            crate::backend::MenuStyle::Auto,
+            crate::backend::MenuStyle::Custom,
+        ] {
+            let surface = BitmapSurface::new(W, H);
+            let mut backend = MacBackend::new();
+            backend.set_menu_style(style);
+            let no_paint = backend.menu_bar_layout(rect, &bar);
+            let painted =
+                backend.enter_frame_scope(surface.context_ptr(), |b| b.draw_menu_bar(rect, &bar));
+
+            assert_eq!(no_paint, painted, "{style:?}");
+            if style == crate::backend::MenuStyle::Custom {
+                assert!(
+                    !no_paint.visible_items.is_empty(),
+                    "the painted opt-out lays out its items"
+                );
+            }
+        }
+    }
+
+    /// Companion to the test above: once an app opts out via
+    /// `set_menu_style(MenuStyle::Custom)`, `Backend::draw_menu_bar`
+    /// must fall back to exactly what the painted strip
+    /// (`draw_menu_bar_painted`) always has — same non-zero-height
+    /// layout, same pixels — so the opt-out really is a
+    /// no-behaviour-change escape hatch, not a degraded one.
+    #[test]
+    fn draw_menu_bar_falls_back_to_painted_strip_on_custom() {
+        use super::super::headless::BitmapSurface;
+
+        const W: u32 = 300;
+        const H: u32 = 24;
+        let bar = sample_menu_bar_for_native_default_tests();
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        // Reference: the painted strip directly, bypassing style
+        // resolution — what the `Custom` path must match exactly.
+        let direct_surface = BitmapSurface::new(W, H);
+        direct_surface.fill(1.0, 1.0, 1.0, 1.0);
+        let mut direct_backend = MacBackend::new();
+        let direct_layout = std::cell::RefCell::new(None);
+        direct_backend.enter_frame_scope(direct_surface.context_ptr(), |b| {
+            *direct_layout.borrow_mut() = Some(b.draw_menu_bar_painted(rect, &bar));
+        });
+        let direct_layout = direct_layout.into_inner().unwrap();
+
+        // Under test: the same bar, via the trait method with the
+        // `Custom` opt-out set.
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+        let mut backend = MacBackend::new();
+        backend.set_menu_style(crate::backend::MenuStyle::Custom);
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            *layout.borrow_mut() = Some(b.draw_menu_bar(rect, &bar));
+        });
+        let layout = layout.into_inner().unwrap();
+
+        assert_eq!(layout, direct_layout);
+        assert!(
+            layout.bounds.height > 0.0,
+            "the painted strip must reserve real vertical space"
+        );
+
+        for y in 0..H {
+            for x in 0..W {
+                assert_eq!(
+                    surface.pixel(x, y),
+                    direct_surface.pixel(x, y),
+                    "pixel ({x}, {y}) must match a direct draw_menu_bar_painted call once opted out",
+                );
+            }
+        }
+    }
+
+    /// The "call once per frame" contract for the native
+    /// path: calling `Backend::draw_menu_bar` twice in a row with an
+    /// unchanged `bar` must not reinstall the `NSMenu` tree the second
+    /// time — `install_menu_bar_if_changed` must see `last_native_menu_bar`
+    /// already matching and skip straight past `install_menu_bar`.
+    /// `install_menu_bar`'s own AppKit half no-ops off the main thread
+    /// (every `#[test]` fn runs off it), so `menu_target` can't be used
+    /// as the signal here; the helper's return value reports whether the
+    /// `NSMenu` rebuild was entered at all, which is exactly the
+    /// per-frame property under test.
+    #[test]
+    fn install_menu_bar_if_changed_skips_reinstall_for_an_unchanged_bar() {
+        let bar = sample_menu_bar_for_native_default_tests();
+        let mut backend = MacBackend::new();
+
+        assert!(backend.last_native_menu_bar.is_none());
+        assert!(
+            backend.install_menu_bar_if_changed(&bar),
+            "the first install of a bar must build the NSMenu tree",
+        );
+        assert_eq!(backend.last_native_menu_bar.as_ref(), Some(&bar));
+
+        assert!(
+            !backend.install_menu_bar_if_changed(&bar),
+            "an unchanged bar must not rebuild the NSMenu tree",
+        );
+        assert_eq!(backend.last_native_menu_bar.as_ref(), Some(&bar));
+
+        // A genuinely different bar must install again, and update the record.
+        let mut other = bar.clone();
+        other.items[0].label = "&Edit".to_string();
+        assert!(
+            backend.install_menu_bar_if_changed(&other),
+            "a changed bar must rebuild the NSMenu tree",
+        );
+        assert_eq!(backend.last_native_menu_bar.as_ref(), Some(&other));
     }
 
     /// Issue #1003 regression test for `draw_activity_bar` — the

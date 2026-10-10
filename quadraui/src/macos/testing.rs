@@ -138,6 +138,14 @@ impl<A: AppLogic> MacDriver<A> {
         if let Some(font) = make_font("Menlo", 14.0) {
             backend.set_current_font(font);
         }
+        // The driver observes and clicks only what paints into its own
+        // surface. `MenuStyle::Auto` resolves to AppKit's native menu bar
+        // on macOS, which lives outside the window and paints nothing
+        // here, so the driver selects the painted in-window strip — the
+        // presentation every other backend's driver exercises. Set before
+        // `setup`, so an app that picks its own `MenuStyle` there still
+        // wins.
+        crate::Backend::set_menu_style(&mut backend, crate::backend::MenuStyle::Custom);
         // Seed the viewport from the driver's surface size BEFORE
         // setup, exactly as the live `macos::run` does before its first
         // `drawRect:` — without this, `app.setup()` would read

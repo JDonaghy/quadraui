@@ -15,7 +15,7 @@
 //! }
 //! ```
 
-use crate::backend::Backend;
+use crate::backend::{Backend, ResolvedMenuStyle};
 use crate::event::{Rect, UiEvent};
 use crate::primitives::context_menu::{
     ContextMenu, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure, ContextMenuLayout,
@@ -187,6 +187,23 @@ impl MenuSystem {
         bar_rect: Rect,
     ) -> MenuEvent {
         match event {
+            // ── Native menu-bar activation ────────────────────────────
+            // `Backend::draw_menu_bar` installs a real `NSMenu` instead
+            // of painting whenever `effective_menu_style()` resolves
+            // `Native` (macOS, by default) — see that method's doc.
+            // AppKit then reports a click as a top-level
+            // `UiEvent::MenuActivated`, not a hit on this struct's own
+            // `bar_rect`-relative dropdown state (there is none; the
+            // dropdown is AppKit's own). Translating it to the same
+            // `MenuEvent::Activated` the painted path produces means
+            // every consumer's existing `match self.menu_system.handle(...)
+            // { MenuEvent::Activated(id) => ... }` arm already covers
+            // the native path with no separate call site — the same
+            // "one call either way" shape
+            // [`crate::compose::ContextMenuController::handle`] uses for
+            // `ContextMenuItemActivated`.
+            UiEvent::MenuActivated(id) => MenuEvent::Activated(id.clone()),
+
             // ── Keyboard ──────────────────────────────────────────
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Escape),
@@ -282,7 +299,18 @@ impl MenuSystem {
 
     /// Alt+`c`: open/close/switch to the top-level menu whose label's
     /// underlined access key matches `c`.
+    ///
+    /// Inert whenever [`Backend::effective_menu_style`] resolves
+    /// [`ResolvedMenuStyle::Native`]: the menu bar is then the
+    /// platform's own (AppKit's `NSMenu`, on macOS), living outside the
+    /// window with no mnemonic underlines painted and its own keyboard
+    /// activation handled by the OS. There is no in-window strip for a
+    /// dropdown to anchor under, so this reports `Ignored` and leaves
+    /// the Alt chord to the app.
     fn handle_alt_char(&mut self, c: char, backend: &mut dyn Backend, bar_rect: Rect) -> MenuEvent {
+        if backend.effective_menu_style() == ResolvedMenuStyle::Native {
+            return MenuEvent::Ignored;
+        }
         let bar = self.build_menu_bar();
         if let Some(idx) = bar.find_alt_target(c) {
             if self.open_item == Some(idx) {
@@ -623,7 +651,11 @@ impl MenuSystem {
         let lh = backend.line_height();
         let bar = self.build_menu_bar();
         let bar_layout = backend.menu_bar_layout(bar_rect, &bar);
-        let raw_anchor = bar_layout.visible_items[open_idx].bounds;
+        // A backend that resolves `ResolvedMenuStyle::Native` reports a
+        // zero-height layout with no visible items, because its menu bar
+        // is the platform's own and lives outside the window. There is
+        // then nothing to anchor a dropdown under, so no dropdown.
+        let raw_anchor = bar_layout.visible_items.get(open_idx)?.bounds;
         let pad = (lh * 0.15).max(1.0);
         let anchor = Rect::new(
             raw_anchor.x + pad,
@@ -836,6 +868,11 @@ mod tests {
         modal_stack: std::rc::Rc<std::cell::RefCell<crate::ModalStack>>,
         drag_state: std::rc::Rc<std::cell::RefCell<crate::DragState>>,
         focus: crate::focus::FocusManager,
+        /// Declares `BackendCaps::native_menu`, so the trait's default
+        /// `MenuStyle::Auto` resolves `ResolvedMenuStyle::Native` and
+        /// the menu-bar layout reports the zero-height, item-less shape
+        /// a platform-owned menu bar has in-window (macOS, by default).
+        native_menu_bar: bool,
     }
 
     impl MockBackend {
@@ -844,7 +881,28 @@ mod tests {
                 modal_stack: std::rc::Rc::new(std::cell::RefCell::new(crate::ModalStack::new())),
                 drag_state: std::rc::Rc::new(std::cell::RefCell::new(crate::DragState::new())),
                 focus: crate::focus::FocusManager::new(),
+                native_menu_bar: false,
             }
+        }
+
+        /// A backend whose menu bar is the platform's own: `native_menu`
+        /// capability, and an in-window layout with nothing in it.
+        fn with_native_menu_bar() -> Self {
+            Self {
+                native_menu_bar: true,
+                ..Self::new()
+            }
+        }
+
+        fn mock_menu_bar_layout(&self, rect: Rect, bar: &crate::MenuBar) -> crate::MenuBarLayout {
+            if self.native_menu_bar {
+                return crate::MenuBarLayout {
+                    bounds: Rect::new(rect.x, rect.y, rect.width, 0.0),
+                    visible_items: Vec::new(),
+                    hit_regions: Vec::new(),
+                };
+            }
+            bar.layout(rect, |_| crate::MenuBarItemMeasure::new(10.0))
         }
     }
 
@@ -886,7 +944,10 @@ mod tests {
             unimplemented!()
         }
         fn backend_caps(&self) -> crate::backend::BackendCaps {
-            crate::backend::BackendCaps::empty()
+            crate::backend::BackendCaps {
+                native_menu: self.native_menu_bar,
+                ..crate::backend::BackendCaps::empty()
+            }
         }
         fn line_height(&self) -> f32 {
             1.0
@@ -909,10 +970,10 @@ mod tests {
             }
         }
         fn menu_bar_layout(&self, rect: Rect, bar: &crate::MenuBar) -> crate::MenuBarLayout {
-            bar.layout(rect, |_| crate::MenuBarItemMeasure::new(10.0))
+            self.mock_menu_bar_layout(rect, bar)
         }
         fn draw_menu_bar(&mut self, rect: Rect, bar: &crate::MenuBar) -> crate::MenuBarLayout {
-            bar.layout(rect, |_| crate::MenuBarItemMeasure::new(10.0))
+            self.mock_menu_bar_layout(rect, bar)
         }
         fn draw_tree(&mut self, _r: Rect, _t: &crate::TreeView) {}
         fn draw_list(&mut self, _r: Rect, _l: &crate::ListView) {}
@@ -1464,6 +1525,105 @@ mod tests {
                 items: vec![],
             },
         ]
+    }
+
+    /// A native `NSMenu` activation (`UiEvent::MenuActivated`,
+    /// what AppKit reports once `Backend::draw_menu_bar` installs rather
+    /// than paints) must translate to the same `MenuEvent::Activated` the
+    /// painted dropdown path produces — same shape as
+    /// `ContextMenuController` already uses for its own native event —
+    /// so consumer code written against `MenuEvent::Activated` works
+    /// unchanged under either `MenuStyle`. The menu need not be "open"
+    /// in this struct's own sense at all; the native path has no
+    /// in-struct open/dropdown state, only AppKit's own.
+    #[test]
+    fn handle_routes_native_menu_activated_to_menu_event_activated() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let mut backend = MockBackend::new();
+        assert!(
+            !ms.is_open(),
+            "native path never opens the struct's own dropdown state"
+        );
+
+        let ev = UiEvent::MenuActivated(WidgetId::new("save"));
+        let result = ms.handle(&ev, &mut backend, bar_rect());
+
+        assert_eq!(result, MenuEvent::Activated(WidgetId::new("save")));
+    }
+
+    fn alt_key_ev(c: char) -> UiEvent {
+        UiEvent::KeyPressed {
+            key: Key::Char(c),
+            modifiers: Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            },
+            repeat: false,
+        }
+    }
+
+    /// On a backend that paints its own menu bar, the mnemonic
+    /// underlines are real, so Alt+the access key opens that menu's
+    /// in-window dropdown.
+    #[test]
+    fn alt_char_opens_the_painted_menu_bars_dropdown() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let mut backend = MockBackend::new();
+
+        let result = ms.handle(&alt_key_ev('f'), &mut backend, bar_rect());
+
+        assert_eq!(result, MenuEvent::StateChanged);
+        assert_eq!(ms.open_item, Some(0));
+        assert!(
+            ms.dropdown_layout(&backend, bar_rect()).is_some(),
+            "an opened menu must have a dropdown to paint"
+        );
+    }
+
+    /// With a platform-owned menu bar there are no painted mnemonic
+    /// underlines and no in-window strip to anchor a dropdown under, so
+    /// Alt+char is reported `Ignored` and leaves the system closed —
+    /// rather than opening an invisible dropdown whose anchor item does
+    /// not exist in the layout.
+    #[test]
+    fn alt_char_is_ignored_when_the_menu_bar_is_native() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let mut backend = MockBackend::with_native_menu_bar();
+        assert_eq!(
+            crate::backend::Backend::effective_menu_style(&backend),
+            ResolvedMenuStyle::Native,
+            "mock must resolve the native style for this to cover anything"
+        );
+
+        let result = ms.handle(&alt_key_ev('f'), &mut backend, bar_rect());
+
+        assert_eq!(result, MenuEvent::Ignored);
+        assert!(!ms.is_open());
+        assert_eq!(ms.open_item, None);
+    }
+
+    /// A host may switch menu style at runtime (`Backend::set_menu_style`)
+    /// while a painted dropdown is open. The next frame's layout then has
+    /// no visible items at all, and both rendering and layout must
+    /// degrade to "no dropdown" instead of indexing past that empty list.
+    #[test]
+    fn menu_bar_turning_native_while_open_paints_no_dropdown() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let mut backend = MockBackend::new();
+        ms.handle(&alt_key_ev('f'), &mut backend, bar_rect());
+        assert!(ms.is_open());
+
+        backend.native_menu_bar = true;
+
+        ms.render(&mut backend, bar_rect());
+        assert!(
+            ms.dropdown_layout(&backend, bar_rect()).is_none(),
+            "no visible bar item to anchor under means no dropdown"
+        );
+        assert!(
+            ms.dropdown_stack(&backend, bar_rect()).is_empty(),
+            "an empty root dropdown must not leave submenu levels behind"
+        );
     }
 
     #[test]

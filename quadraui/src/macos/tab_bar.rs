@@ -26,9 +26,14 @@
 //! which `PaintSurface` Phase 4 slice 5/8 collapsed into
 //! `primitives::<name>::native_surface_paint::paint`, every pixel this
 //! module paints is still Core Graphics-specific and still triplicated
-//! with `gtk::tab_bar` / `win::tab_bar` — the two "Scope omissions"
-//! above are two of the five live drifts between those copies. **This
-//! backend is the blocker**: `mac_tab_bar_layout_icons` /
+//! with `gtk::tab_bar` / `win::tab_bar`. Of the five rows in that drift
+//! table, macOS matches GTK on two — active-tab background and active-tab
+//! top accent (rounded, y-inset chip; 1 px accent on the chip's own inset
+//! top edge) — and drifts on three: the two "Scope omissions" above
+//! (close-button hover backdrop, italic preview tabs) plus
+//! [`crate::primitives::tab_bar::TabFrame::Brackets`] framing. Windows
+//! drifts on all five rows. **This backend is the blocker**:
+//! `mac_tab_bar_layout_icons` /
 //! `mac_tab_bar_native_layout_icons` below still derive geometry
 //! themselves instead of going through the shared
 //! [`crate::primitives::layout_metrics::pixel_tab_bar_layout`] that
@@ -44,6 +49,7 @@ use core_text::font::CTFont;
 
 use super::cg::*;
 
+use super::backend::ns_fill_rounded_rect;
 use super::text::{draw_text, measure_text};
 // `TabBarHits` is `#[deprecated]` (issue #823) — this whole module's job is
 // still converting a computed `TabBarLayout` into one per paint/no-paint
@@ -66,8 +72,10 @@ const TAB_INNER_GAP: f64 = 10.0;
 /// Gap between adjacent tabs.
 const TAB_OUTER_GAP: f64 = 1.0;
 /// Top-edge accent strip height for the active tab (when `active_accent`
-/// is set).
-const ACCENT_HEIGHT: f64 = 2.0;
+/// is set) — same value as [`crate::gtk::tab_bar`]'s
+/// `TAB_ACTIVE_BORDER_TOP_PX`, so the accent is the same thickness on
+/// both pixel backends, not just the same position on the chip.
+const ACCENT_HEIGHT: f64 = 1.0;
 /// 15-char sample used to estimate cell width for `available_cols`.
 /// Same string the GTK rasteriser uses, so app-level cell budgets
 /// remain comparable between backends.
@@ -78,6 +86,14 @@ const CLOSE_PAD: f64 = 2.0;
 /// Same value as [`crate::gtk::tab_bar`]'s `TAB_ICON_GAP`, so a decorated
 /// tab is the same shape on both pixel backends.
 const TAB_ICON_GAP: f64 = 6.0;
+/// Vertical margin (px) above and below the active-tab chip fill — same
+/// value as [`crate::gtk::tab_bar`]'s `TAB_CHIP_INSET_Y`. VS Code insets
+/// its active-tab pill inside the tab strip rather than filling the full
+/// row height edge to edge, and this backend matches that shape.
+const TAB_CHIP_INSET_Y: f64 = 4.0;
+/// Corner radius (px) of the active-tab chip, all four corners — same
+/// value as [`crate::gtk::tab_bar`]'s `TAB_CHIP_RADIUS`.
+const TAB_CHIP_RADIUS: f64 = 4.0;
 
 /// Per-tab extra width (points) reserved for an icon glyph plus
 /// [`TAB_ICON_GAP`], indexed like `bar.tabs`. `0.0` for every tab without
@@ -516,18 +532,47 @@ pub unsafe fn draw_tab_bar_icons(
         let (slot_x, slot_end) = hits.slot_positions[tab_idx];
         let tab_content_w = slot_end - slot_x - tab_outer_gap;
 
-        // Tab background.
-        let bg_col = if tab.is_active {
-            theme.tab_active_bg
+        // Tab background. The active tab paints an inset, rounded chip
+        // (VS Code's pill, matching `gtk::tab_bar`'s `TAB_CHIP_INSET_Y` /
+        // `TAB_CHIP_RADIUS` — the same active-tab shape on both pixel
+        // backends) rather than a square block filling the full row
+        // height edge to edge. Inactive tabs are unchanged: a
+        // full-height rectangle in the bar's own background colour.
+        let chip_y = y_offset + TAB_CHIP_INSET_Y;
+        let chip_h = (row_height - 2.0 * TAB_CHIP_INSET_Y).max(0.0);
+        if tab.is_active {
+            // SAFETY: `ctx` is a valid `CGContextRef` for the duration of
+            // this paint call — see this fn's own `# Safety` doc.
+            unsafe {
+                ns_fill_rounded_rect(
+                    ctx,
+                    Rect::new(
+                        slot_x as f32,
+                        chip_y as f32,
+                        tab_content_w as f32,
+                        chip_h as f32,
+                    ),
+                    TAB_CHIP_RADIUS as f32,
+                    theme.tab_active_bg,
+                );
+            }
         } else {
-            theme.tab_bar_bg
-        };
-        fill_rect(ctx, slot_x, y_offset, tab_content_w, row_height, bg_col);
+            fill_rect(
+                ctx,
+                slot_x,
+                y_offset,
+                tab_content_w,
+                row_height,
+                theme.tab_bar_bg,
+            );
+        }
 
-        // Top accent line for the active tab.
+        // Top accent line for the active tab, painted on the chip's own
+        // inset top edge rather than the strip's top edge, so it stays
+        // attached to the pill instead of floating above it.
         if tab.is_active {
             if let Some(accent) = bar.active_accent {
-                fill_rect(ctx, slot_x, y_offset, tab_content_w, ACCENT_HEIGHT, accent);
+                fill_rect(ctx, slot_x, chip_y, tab_content_w, ACCENT_HEIGHT, accent);
             }
         }
 
@@ -709,9 +754,10 @@ mod tests {
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn active_tab_paints_active_bg() {
-        // The active tab's bg differs from `tab_bar_bg`. Probe just
-        // above the bottom edge near the left of the active tab's
-        // slot (past the leading padding, before the label glyphs).
+        // The active tab's bg differs from `tab_bar_bg`. Probe the
+        // vertical middle of the row, past the leading padding — safely
+        // inside the inset chip regardless of `TAB_CHIP_INSET_Y`'s exact
+        // value, unlike a bottom-edge probe, which the inset excludes.
         let bar = sample_bar();
         let (surface, hits) = paint_via_backend(&bar, None);
         let theme = Theme::default();
@@ -719,11 +765,8 @@ mod tests {
         let (start, end) = hits.slot_positions[0];
         assert!(end > start, "active tab slot must have non-zero width");
 
-        // Probe near the bottom-left of the slot — past the 14px
-        // padding, below the accent strip, but well outside any glyph
-        // pixels. y = row_height - 2 stays inside the painted row.
         let probe_x = (start + 2.0) as u32;
-        let probe_y = H - 2;
+        let probe_y = H / 2;
         let (r, g, b, _) = surface.pixel(probe_x, probe_y);
         let expected = theme.tab_active_bg;
         assert_eq!(
@@ -735,23 +778,119 @@ mod tests {
         );
     }
 
+    /// The active tab's chip is inset by `TAB_CHIP_INSET_Y` from
+    /// both the top and bottom of the row — matching
+    /// `gtk::tab_bar::active_chip_inset_is_symmetric_around_a_nonzero_y_offset`'s
+    /// GTK twin. The very top and bottom scanlines of the row must *not*
+    /// be the active fill (a square, edge-to-edge chip would paint them).
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits`
+    fn active_chip_is_inset_from_top_and_bottom_of_the_row() {
+        let bar = sample_bar();
+        let (surface, hits) = paint_via_backend(&bar, None);
+        let theme = Theme::default();
+        let active_bg = theme.tab_active_bg;
+
+        let (start, _) = hits.slot_positions[0];
+        // Past the left padding and inset radius, so corner rounding
+        // doesn't also explain a non-active-bg top/bottom pixel.
+        let probe_x = (start + TAB_CHIP_RADIUS + 4.0) as u32;
+
+        let is_active = |y: u32| {
+            let (r, g, b, _) = surface.pixel(probe_x, y);
+            (r, g, b) == (active_bg.r, active_bg.g, active_bg.b)
+        };
+        assert!(
+            !is_active(0),
+            "top scanline of the row must be outside the inset chip"
+        );
+        assert!(
+            !is_active(H - 1),
+            "bottom scanline of the row must be outside the inset chip"
+        );
+        // But somewhere in the middle, the chip must actually paint.
+        assert!(
+            is_active(H / 2),
+            "chip must paint the active fill in the middle of the row"
+        );
+    }
+
+    /// The active-tab chip is *rounded*, not just inset — mirrors
+    /// `gtk::tab_bar::active_chip_corners_are_bar_background_not_active_fill`.
+    /// `active_chip_is_inset_from_top_and_bottom_of_the_row` above only
+    /// probes a point well clear of the corners (`TAB_CHIP_RADIUS + 4.0`
+    /// in from the left edge), so a regression that swapped
+    /// `ns_fill_rounded_rect` for a plain rectangular fill at the same
+    /// inset would still pass it. Probe all four corners of the chip's
+    /// bounding rect instead: a rounded corner leaves them painted the
+    /// bar background, not the active fill.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits`
+    fn active_chip_corners_are_bar_background_not_active_fill() {
+        // No `active_accent` here, unlike `sample_bar()` — the accent
+        // strip paints the chip's full inset top edge including its top
+        // corners (square "ears" over the rounded chip, same as
+        // `gtk::tab_bar`), which would otherwise overwrite exactly the
+        // pixels this test probes with the accent colour instead of the
+        // bar background it's checking for.
+        let mut bar = sample_bar();
+        bar.active_accent = None;
+        let (surface, hits) = paint_via_backend(&bar, None);
+        let theme = Theme::default();
+        let bar_bg = theme.tab_bar_bg;
+
+        let (slot_x, slot_end) = hits.slot_positions[0];
+        let tab_content_w = slot_end - slot_x - TAB_OUTER_GAP;
+        let chip_x0 = slot_x as u32;
+        let chip_x1 = (slot_x + tab_content_w) as u32 - 1;
+        let chip_y0 = TAB_CHIP_INSET_Y as u32;
+        let chip_y1 = H - TAB_CHIP_INSET_Y as u32 - 1;
+
+        for (x, y) in [
+            (chip_x0, chip_y0),
+            (chip_x1, chip_y0),
+            (chip_x0, chip_y1),
+            (chip_x1, chip_y1),
+        ] {
+            let (r, g, b, _) = surface.pixel(x, y);
+            assert_eq!(
+                (r, g, b),
+                (bar_bg.r, bar_bg.g, bar_bg.b),
+                "chip bounding-rect corner ({x},{y}) should be bar background \
+                 (rounded off by TAB_CHIP_RADIUS), not the active fill",
+            );
+        }
+    }
+
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
-    fn active_accent_paints_at_top_of_active_tab() {
-        // 2-px accent strip at y_offset for the active tab.
+    fn active_accent_paints_at_top_of_active_tab_chip() {
+        // The accent strip paints on the chip's own inset top edge,
+        // mirroring `gtk::tab_bar`'s treatment, rather than the strip's
+        // top edge — so it stays attached to the pill.
         let bar = sample_bar();
         let (surface, hits) = paint_via_backend(&bar, None);
 
         let (start, _) = hits.slot_positions[0];
-        // Top scanline (y=0) inside the active slot — past leading
-        // padding so we don't overlap the second tab.
+        // Past leading padding so we don't overlap the second tab.
         let probe_x = (start + 4.0) as u32;
-        let (r, g, b, _) = surface.pixel(probe_x, 0);
+        let probe_y = TAB_CHIP_INSET_Y as u32;
+        let (r, g, b, _) = surface.pixel(probe_x, probe_y);
         let accent = bar.active_accent.unwrap();
         assert_eq!(
             (r, g, b),
             (accent.r, accent.g, accent.b),
-            "accent strip at top edge should match TabBar.active_accent",
+            "accent strip at the chip's inset top edge should match TabBar.active_accent",
+        );
+
+        // The strip's own top edge (y=0, above the inset) must not be
+        // the accent colour — otherwise this would pass even if the
+        // accent painted at the old, non-inset position.
+        let (r0, g0, b0, _) = surface.pixel(probe_x, 0);
+        assert_ne!(
+            (r0, g0, b0),
+            (accent.r, accent.g, accent.b),
+            "accent strip must not paint at the strip's own top edge once inset"
         );
     }
 
@@ -803,12 +942,11 @@ mod tests {
         let active_close = hits.close_bounds[0].unwrap();
         let dirty_close = hits.close_bounds[1].unwrap();
 
-        // Count non-bg pixels in a 1-column strip across the line
-        // height for each close glyph. The dirty (filled circle)
-        // column should have more inked pixels than the close-mark
-        // column.
-        fn ink_density(surface: &BitmapSurface, x: u32, bg: Color) -> u32 {
-            (0..H)
+        // Count non-bg pixels in a 1-column `[y0, y1)` strip for each
+        // close glyph. The dirty (filled circle) column should have more
+        // inked pixels than the close-mark column.
+        fn ink_density(surface: &BitmapSurface, x: u32, y0: u32, y1: u32, bg: Color) -> u32 {
+            (y0..y1)
                 .filter(|&y| {
                     let (r, g, b, _) = surface.pixel(x, y);
                     !(r == bg.r && g == bg.g && b == bg.b)
@@ -816,14 +954,28 @@ mod tests {
                 .count() as u32
         }
         let theme = Theme::default();
+        // The active tab's close glyph sits over the inset chip, so only
+        // its `[chip_y, chip_y + chip_h)` band is actually painted
+        // `tab_active_bg` — the inset margin above/below it is
+        // `tab_bar_bg` and would otherwise be miscounted as glyph ink.
+        let chip_y0 = TAB_CHIP_INSET_Y as u32;
+        let chip_y1 = H - TAB_CHIP_INSET_Y as u32;
         let active_ink = ink_density(
             &surface,
             ((active_close.0 + active_close.1) / 2.0) as u32,
+            chip_y0,
+            chip_y1,
             theme.tab_active_bg,
         );
+        // Same `[chip_y0, chip_y1)` band as `active_ink` — scanning both
+        // columns over the same window keeps the comparison about glyph
+        // shape, not about one column getting a taller scan range than
+        // the other.
         let dirty_ink = ink_density(
             &surface,
             ((dirty_close.0 + dirty_close.1) / 2.0) as u32,
+            chip_y0,
+            chip_y1,
             theme.tab_bar_bg,
         );
         assert!(
@@ -986,11 +1138,19 @@ mod tests {
         let theme = Theme::default();
         let (lo, hi) = hits.close_bounds[0].expect("tab 0 is closable");
         let bg = theme.tab_active_bg;
+        // Tab 0 is active, so its close glyph sits over the inset chip
+        // — restrict the scan to the chip's own vertical band. Outside
+        // it the row is `tab_bar_bg` by design, which would
+        // otherwise register as "inked" against `tab_active_bg` even
+        // with no glyph drawn there, making this assertion pass
+        // vacuously instead of actually proving the glyph painted.
+        let chip_y0 = TAB_CHIP_INSET_Y as u32;
+        let chip_y1 = H - TAB_CHIP_INSET_Y as u32;
 
         // Somewhere in the close box's x-span, some row differs from the
         // tab background: that is the glyph.
         let inked = (lo.ceil() as u32..hi.floor() as u32).any(|x| {
-            (0..H).any(|y| {
+            (chip_y0..chip_y1).any(|y| {
                 let (r, g, b, _) = surface.pixel(x.min(W - 1), y);
                 (r, g, b) != (bg.r, bg.g, bg.b)
             })
@@ -1180,10 +1340,16 @@ mod tests {
             "close box [{lo}, {hi}) must stay inside tab slot [{slot_lo}, {slot_hi})",
         );
 
-        // …and there must be ink in it: the `×` the user clicks.
+        // …and there must be ink in it: the `×` the user clicks. Tab 0 is
+        // active, so restrict the scan to the inset chip's own vertical
+        // band — outside it the row is `tab_bar_bg` by design, which
+        // would otherwise register as "inked" against `tab_active_bg`
+        // with no glyph drawn there at all.
         let bg = theme.tab_active_bg;
+        let chip_y0 = TAB_CHIP_INSET_Y as u32;
+        let chip_y1 = H - TAB_CHIP_INSET_Y as u32;
         let inked = (lo.ceil() as u32..hi.floor() as u32).any(|x| {
-            (0..H).any(|y| {
+            (chip_y0..chip_y1).any(|y| {
                 let (r, g, b, _) = surface.pixel(x.min(W - 1), y);
                 (r, g, b) != (bg.r, bg.g, bg.b)
             })
@@ -1225,8 +1391,15 @@ mod tests {
             let d = |x: u8, y: u8| (x as i32 - y as i32).pow(2);
             d(a.0, c.r) + d(a.1, c.g) + d(a.2, c.b)
         };
+        // Tab 0 is active, so restrict the scan to the inset chip's own
+        // vertical band — outside it the row is `tab_bar_bg`, not
+        // `bg` (`tab_active_bg`), and comparing against the wrong
+        // background there could pass or fail for reasons unrelated to
+        // the icon glyph.
+        let chip_y0 = TAB_CHIP_INSET_Y as u32;
+        let chip_y1 = H - TAB_CHIP_INSET_Y as u32;
         let found = (glyph_lo.floor() as u32..glyph_hi.ceil() as u32).any(|x| {
-            (0..H).any(|y| {
+            (chip_y0..chip_y1).any(|y| {
                 let (r, g, b, _) = surface.pixel(x.min(W - 1), y);
                 dist((r, g, b), icon_color) < dist((r, g, b), bg)
             })
