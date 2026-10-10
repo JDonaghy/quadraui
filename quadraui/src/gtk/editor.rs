@@ -1005,7 +1005,7 @@ fn paint_ai_ghost_text(ctx: &EditorPaintCtx) {
         .unwrap_or(rl.raw_text.len());
     let pos = layout.index_to_pos(byte_offset as i32);
     let ghost_x = text_x_offset + pos.x() as f64 / pango::SCALE as f64;
-    let ghost_y = rect.y as f64 + cursor.pos.view_line as f64 * line_height;
+    let ghost_y = rect.y as f64 + cursor.pos.view_line as f64 * line_height + ctx.text_v_offset;
     let (gr, gg, gb) = cairo_rgb(theme.ghost_text_fg);
     cr.set_source_rgb(gr, gg, gb);
     cr.move_to(ghost_x, ghost_y);
@@ -2059,6 +2059,89 @@ mod tests {
             }
         }
         extent
+    }
+
+    /// The AI ghost suggestion painted after the cursor sits on the same
+    /// centred baseline as the typed text before it on that row.
+    #[test]
+    fn ai_ghost_text_after_cursor_shares_body_text_baseline() {
+        use crate::primitives::editor::{CursorPos, CursorShape, EditorCursor};
+
+        let mut theme = Theme::default();
+        theme.ghost_text_fg = theme.foreground;
+        let pitch = CENTRE_TEST_ROW_PITCH;
+        let mut surface = ImageSurface::create(Format::ARgb32, CENTRE_TEST_W, pitch.ceil() as i32)
+            .expect("create ImageSurface");
+        let char_w;
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let (br, bg, bb) = cairo_rgb(theme.background);
+            cr.set_source_rgb(br, bg, bb);
+            cr.paint().ok();
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let pango_ctx = pango_layout.context();
+            pango_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 12"));
+            let metrics = pango_ctx.metrics(None, None);
+            pango_layout.set_text("7");
+            char_w = pango_layout.pixel_size().0 as f64;
+
+            let mut line = blank_line(0);
+            line.raw_text = "7".into();
+            line.ghost_suffix = Some("7".into());
+            let mut editor = scroll_test_editor(1, 1, 1);
+            editor.lines = vec![line];
+            editor.gutter_char_width = 0;
+            editor.cursor = Some(EditorCursor {
+                pos: CursorPos {
+                    view_line: 0,
+                    col: 1,
+                },
+                shape: CursorShape::Bar,
+            });
+            editor.rect = Rect::new(0.0, 0.0, CENTRE_TEST_W as f32, pitch as f32);
+
+            draw_editor_with_options_and_v_scrollbar_w(
+                &cr,
+                &pango_layout,
+                &metrics,
+                &editor,
+                &theme,
+                char_w,
+                pitch,
+                EditorPaintOptions::default(),
+                None,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride();
+        let data = surface.data().expect("surface data").to_vec();
+
+        let body = centre_test_ink_extent(
+            &data,
+            stride,
+            0,
+            char_w.round() as i32 - 1,
+            0,
+            pitch as i32,
+            theme.background,
+        )
+        .expect("typed glyph should paint ink");
+        // Skip the 2px bar cursor at the start of the ghost cell.
+        let ghost = centre_test_ink_extent(
+            &data,
+            stride,
+            char_w.round() as i32 + 3,
+            (2.0 * char_w).round() as i32,
+            0,
+            pitch as i32,
+            theme.background,
+        )
+        .expect("ghost glyph should paint ink");
+        assert!(
+            (ghost.0 - body.0).abs() <= 1 && (ghost.1 - body.1).abs() <= 1,
+            "ghost suggestion ink {ghost:?} should share the typed glyph's vertical extent {body:?}"
+        );
     }
 
     #[test]
