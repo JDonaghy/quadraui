@@ -257,6 +257,24 @@ pub trait PaintSurface {
 
     /// Paint `text` at `rect`'s top-left corner in `color`, using this
     /// surface's current font.
+    ///
+    /// "This surface's current font" is an implementor's choice, not a
+    /// fixed rule, for every primitive-generic adapter that paints more
+    /// than one kind of primitive through the same `&mut dyn
+    /// PaintSurface` (every pixel backend implementing this trait
+    /// directly on itself, rather than on a role-dedicated wrapper): the
+    /// convention such an adapter should follow is to default to
+    /// [`crate::FontRole::Chrome`], since most primitives reaching this
+    /// method are chrome, and give the few genuinely editor-class callers
+    /// (see `crate::font_role::EditorClassPrimitive`) their own
+    /// role-dedicated adapter instead, mirroring
+    /// [`crate::macos::backend::MacBackend`]'s `ChromeSurface`/
+    /// `EditorSurface` pair — see `crate::font_role`'s module doc for the
+    /// fuller account of why a primitive-generic adapter defaulting to
+    /// the *editor* font instead is the wrong shape.
+    /// [`Self::surface_draw_text_run_with_role`] is for the rarer case of
+    /// a single call site needing to choose per-call rather than
+    /// per-adapter.
     fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color);
 
     /// [`Self::surface_draw_text_run`] with optional bold/italic/underline
