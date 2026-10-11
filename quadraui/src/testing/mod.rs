@@ -1114,7 +1114,7 @@ impl crate::Backend for RecordingBackend {
         // `TreeController::split_rect`), i.e. only when a test is
         // simulating a pixel backend — so the track width matches the
         // real pixel backends' fixed column, not `line_height`.
-        tree.vscrollbar(
+        tree.vscrollbar_with_track_width(
             rect,
             self.line_height(),
             crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,

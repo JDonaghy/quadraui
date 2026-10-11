@@ -517,7 +517,7 @@ mod tests {
             let item_height =
                 crate::primitives::layout_metrics::tree_row_pitch(&tree, b.line_height() as f64)
                     as f32;
-            *expected.borrow_mut() = tree.vscrollbar(
+            *expected.borrow_mut() = tree.vscrollbar_with_track_width(
                 area,
                 item_height,
                 crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
