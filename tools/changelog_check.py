@@ -17,12 +17,19 @@ A changed `quadraui/src/**` file is exempt from needing an entry when:
 
   - its diff is comment-only, per `tools/comment_only_check.py`'s own
     strip-and-compare logic (reused here, not reimplemented);
-  - every hunk in its diff falls entirely inside a trailing
-    `#[cfg(test)] mod tests { ... }` block, in both the base and head
-    revisions where that revision has one -- CLAUDE.md's own convention
-    ("Tests in `#[cfg(test)]` mod tests at file bottom") is what makes "the
-    first `#[cfg(test)]` line to EOF" a safe proxy for "test code" without
-    a full Rust parse;
+  - every hunk in its diff falls entirely inside the file's trailing,
+    EOF-spanning `#[cfg(test)] mod NAME { ... }` block, in both the base
+    and head revisions where that revision has one. The boundary is the
+    *last* top-level (column-0) `#[cfg(test)]` immediately followed by a
+    top-level `mod NAME {` whose balanced brace block runs all the way to
+    EOF -- not the first `#[cfg(test)]` occurrence anywhere in the file.
+    A lone `#[cfg(test)] use ...;` import, or a `#[cfg(test)]` test
+    submodule nested inside another `mod` (and so closing well before
+    EOF), is never a boundary: using "first occurrence" instead silently
+    exempted ~99% of `gtk/backend.rs` and `tui/backend.rs` (#1500 review).
+    CLAUDE.md's own convention ("Tests in `#[cfg(test)]` mod tests at
+    file bottom") is what makes "the trailing, EOF-spanning block" a safe
+    proxy for "test code" without a full Rust parse;
   - its path falls under `quadraui/examples/`, `quadraui/fuzz/`, `.github/`,
     `tools/`, `scripts/`, or any `docs/` directory (listed for completeness
     -- none of these live under `quadraui/src/` today, so this is a defensive
@@ -68,7 +75,13 @@ EXEMPT_PATH_GLOBS = (
 )
 
 SRC_FILE_RE = re.compile(r"^quadraui/src/.*\.rs$")
-CFG_TEST_RE = re.compile(r"#\[cfg\(test\)\]")
+# Top-level (column-0, no leading whitespace) `#[cfg(test)]` immediately
+# followed by a top-level `mod NAME {` -- the shape CLAUDE.md's "tests at
+# file bottom" convention guarantees for a *trailing* test module. Anything
+# indented (e.g. a test submodule nested inside another `mod`) or not a
+# `mod` declaration (e.g. a lone `#[cfg(test)] use ...;`) never matches.
+TOP_LEVEL_CFG_TEST_RE = re.compile(r"^#\[cfg\(test\)\]\s*$")
+TOP_LEVEL_MOD_OPEN_RE = re.compile(r"^mod\s+\w+\s*\{\s*$")
 HUNK_HEADER_RE = re.compile(
     r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@"
 )
@@ -101,10 +114,51 @@ def is_exempt_path(path: str) -> bool:
 
 
 def test_module_boundary(source: str) -> int | None:
-    """1-indexed line of the first `#[cfg(test)]` in `source`, or None."""
-    for i, line in enumerate(source.splitlines(), start=1):
-        if CFG_TEST_RE.search(line):
-            return i
+    """1-indexed line of the start of `source`'s trailing, EOF-spanning
+    `#[cfg(test)] mod NAME { ... }` block, or None if there isn't one.
+
+    A candidate is a top-level (column-0) `#[cfg(test)]` line immediately
+    followed (ignoring blank lines) by a top-level `mod NAME {` line. It
+    only qualifies as *the* boundary if that `mod` block's matching
+    closing brace -- found by a simple running count of `{`/`}` across the
+    following lines, which is sufficient for this repo's convention of one
+    plain trailing test module and doesn't need a full Rust parse -- is
+    the file's last non-blank line, i.e. every byte from the attribute
+    line onward belongs to that single balanced block. This deliberately
+    rejects a lone `#[cfg(test)] use ...;` import and a `#[cfg(test)]`
+    test submodule nested inside another `mod` (indented, and/or closing
+    well before EOF): treating either as the boundary is what let a
+    "first #[cfg(test)] occurrence" heuristic silently exempt ~99% of
+    `gtk/backend.rs` and `tui/backend.rs` from the changelog gate
+    (#1500 review).
+    """
+    lines = source.splitlines()
+    n = len(lines)
+    last_nonblank = n - 1
+    while last_nonblank >= 0 and lines[last_nonblank].strip() == "":
+        last_nonblank -= 1
+    if last_nonblank < 0:
+        return None
+
+    for i in range(n):
+        if not TOP_LEVEL_CFG_TEST_RE.match(lines[i]):
+            continue
+        j = i + 1
+        while j < n and lines[j].strip() == "":
+            j += 1
+        if j >= n or not TOP_LEVEL_MOD_OPEN_RE.match(lines[j]):
+            continue
+
+        depth = lines[j].count("{") - lines[j].count("}")
+        closed_at = j if depth <= 0 else None
+        k = j
+        while closed_at is None and k + 1 < n:
+            k += 1
+            depth += lines[k].count("{") - lines[k].count("}")
+            if depth <= 0:
+                closed_at = k
+        if closed_at == last_nonblank:
+            return i + 1
     return None
 
 
