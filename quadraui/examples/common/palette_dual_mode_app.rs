@@ -151,8 +151,7 @@ impl AppLogic for PaletteDualModeApp {
             };
             let visible_rows = popup_h_rows.saturating_sub(PALETTE_CHROME_ROWS);
 
-            // Mouse events route through `handle_mouse` (#818 — clicking a
-            // palette entry now reaches the controller); everything else
+            // Mouse events route through `handle_mouse`; everything else
             // (keyboard, paste) keeps going through `handle`.
             let ev = match &event {
                 UiEvent::MouseDown { .. } => {

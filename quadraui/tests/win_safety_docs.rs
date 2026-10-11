@@ -1,5 +1,5 @@
 //! Ratchets the presence of a `// SAFETY:` comment on every `unsafe {}`
-//! block in `src/win/` (issue #1115).
+//! block in `src/win/`.
 //!
 //! ## Why this test exists
 //!

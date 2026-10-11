@@ -1,4 +1,4 @@
-//! `SidebarPanelBody` (#1041) `AppLogic` + `quadraui::tui::run` example.
+//! `SidebarPanelBody` `AppLogic` + `quadraui::tui::run` example.
 //! See `examples/common/sidebar_panel_body_demo.rs` for the consumer
 //! pattern.
 //!

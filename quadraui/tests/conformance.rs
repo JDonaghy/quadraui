@@ -1,49 +1,38 @@
-//! **Conformance suite runner** (quadraui#491, epic #480; audit §6.4–§6.6).
+//! **Conformance suite runner**.
 //!
 //! Crosses every scenario file under
 //! `tests/conformance/scenarios/**/*.scn.json` with every registered
 //! backend driver and prints a scenario × backend matrix of
 //! pass / skip / FAIL.
-//!
 //! ```sh
 //! cargo test --features tui  --test conformance -- --nocapture
 //! cargo test --features gtk  --test conformance -- --nocapture
 //! cargo test --features tui,gtk --test conformance -- --nocapture
 //! cargo test --features tui,terminal --test conformance -- --nocapture
 //! ```
-//!
-//! The Tier-1 matrix (`conformance_matrix`) is also written to
+//! The Tier-1 matrix (`conformance_matrix`) is written to
 //! `target/conformance-matrix.txt`, and the Tier-0 grid (`c0_paint_smoke`)
-//! to `target/conformance-matrix-c0.txt` (quadraui#722), so CI can upload
-//! each as an artifact. For a backend that doesn't exist yet (Windows,
-//! macOS) that artifact **is** the implementation checklist.
+//! to `target/conformance-matrix-c0.txt` for CI artifacts. For a backend
+//! not yet implemented, that artifact serves as the implementation checklist.
 //!
-//! ## Gating vs. reporting (quadraui#708)
+//! ## Gating vs. reporting
 //!
-//! Those two sentences pull against each other for a backend that is
-//! *half* built: its column has to exist for the checklist to exist, and
-//! its `FAIL` rows would red that platform's CI leg for every unrelated
-//! PR. [`runner::Gating`] splits the decision — `BackendReg::register` is
-//! blocking, `BackendReg::register_burn_down` reports without gating, and
-//! [`runner::verdict`] fails the suite if a burn-down column stops failing
-//! (i.e. has earned promotion). `docs/TESTING.md` → *Burn-down columns*
-//! has the writeup.
+//! [`runner::Gating`] distinguishes backends under construction: `BackendReg::register`
+//! is blocking, `BackendReg::register_burn_down` reports without gating, and
+//! [`runner::verdict`] fails the suite if a burn-down column stops failing.
+//! See `docs/TESTING.md` → *Burn-down columns* for details.
 //!
-//! ## Two TUI observers, one row each (quadraui#555)
+//! ## Two TUI observers, one row each
 //!
 //! `--features tui,terminal` additionally registers `"tui-vt100"`
-//! alongside `"tui"`: the same `AppLogic` fixtures and the same scenario
-//! files, but painted through `ratatui::backend::CrosstermBackend` into a
-//! real ANSI byte stream and read back with `vt100` — see
-//! `quadraui::tui::vt_testing` — instead of `TestBackend`'s in-memory
-//! buffer. A draw-time paint inventory (what `"tui"` reads) can only
-//! answer "what did the rasteriser ask for"; it cannot answer "what would
-//! a real terminal actually show", and those can diverge (double-width
-//! glyphs, malformed buffers, ANSI-encoding bugs). Not every scenario pays
-//! for the extra observer: it only runs a scenario that opts in via
-//! `Scenario::text_fidelity` (`schema.rs`) — see
-//! `runner::backend_applies_to`. `docs/TESTING.md` → *TUI: two observers*
-//! has the full writeup.
+//! alongside `"tui"`: the same `AppLogic` fixtures and scenario files,
+//! but painted through `ratatui::backend::CrosstermBackend` into a real ANSI
+//! byte stream and read back with `vt100` — see `quadraui::tui::vt_testing` —
+//! instead of `TestBackend`'s in-memory buffer. A draw-time paint inventory
+//! can only answer "what did the rasteriser ask for"; it cannot answer
+//! "what would a real terminal show", and those can diverge. Only scenarios
+//! that opt in via `Scenario::text_fidelity` run this observer.
+//! See `docs/TESTING.md` → *TUI: two observers* for details.
 //!
 //! ## The two costs this file fixes
 //!
@@ -59,17 +48,11 @@
 //!
 //! Each backend declares a capability list. A scenario whose `requires`
 //! names a capability the backend hasn't declared is **skipped, with the
-//! missing capability printed** — the audit's "silence is impossible"
-//! rule. A skip is never a silent pass, and a backend cannot skip a
-//! scenario without having declared the gap up front.
+//! missing capability printed**. A skip is never a silent pass.
 //!
-//! That list is not written here. It is
-//! [`quadraui::Backend::backend_caps`] on the real backend instance,
-//! reached through [`runner::DriverFactory::caps`] (quadraui#492): there
-//! used to be a hand-maintained `TUI_CAPS`/`GTK_CAPS` array beside each
-//! registration, and nothing tied it to what the backend actually
-//! implements, so the two vocabularies could drift in both directions.
-//! Three tests hold the single vocabulary together now:
+//! That list is [`quadraui::Backend::backend_caps`] on the real backend
+//! instance, reached through [`runner::DriverFactory::caps`]. Three tests
+//! hold the single vocabulary together:
 //!
 //! - [`every_requires_names_a_known_capability`] — a scenario cannot
 //!   `require` a name [`quadraui::BackendCaps`] has no field for.
@@ -77,26 +60,14 @@
 //!   — the reverse direction: a `BackendCaps` field no scenario can
 //!   reference is either a gap to fill or a fact to write down.
 //! - [`caps::backends_declare_only_what_they_override`] — the honesty
-//!   check: a declared capability whose `Backend` methods are still the
-//!   trait's no-op default is a lie, and so is an undeclared one whose
-//!   methods are overridden.
+//!   check: a declared capability whose `Backend` methods are the
+//!   trait's no-op default is a lie, and so is an undeclared one that
+//!   is overridden.
 
 // Under a feature set with no C0 driver backend — e.g. `--features macos`
-// alone (`quadraui::macos` itself needs `target_os = "macos"` too, so the
-// feature is a no-op on other hosts), which is what
-// `.github/workflows/macos.yml`'s legs see, and it sets
-// `RUSTFLAGS: -D warnings` — the whole C0 harness (`Case`, `DriverFactory`,
-// `c0::run`, `fixtures::build`, …) has no caller and every item in it reads
-// as dead. It is not dead; it is unreachable *from this feature set*, which
-// is the same reason `backends()` is empty here. Scoped to exactly that
-// case so a genuinely-unused item still surfaces on the tui / gtk builds
-// that own this suite. `MacFactory` (quadraui#493) registers for the
-// Tier-1 scenario suite only — it never touches the Tier-0 harness in
-// `c0.rs` (see `c0_paint_smoke`'s doc below: `MacBackend` is deliberately
-// not in that tier's columns yet) — so a real `--features macos` build on
-// `target_os = "macos"` still has no Tier-0 caller and stays on the
-// dead-code-allowed side until the Tier-0 macOS follow-up lands.
-// (quadraui#484.)
+// alone — the whole C0 harness has no caller and reads as dead, but is
+// unreachable *from this feature set*. Scoped to exactly that case so a
+// genuinely-unused item still surfaces on builds that own this suite.
 #![cfg_attr(not(any(feature = "tui", feature = "gtk")), allow(dead_code))]
 
 #[path = "../examples/common/mod.rs"]
@@ -108,7 +79,7 @@ mod c0;
 mod c2;
 #[path = "conformance/caps.rs"]
 mod caps;
-// Selection column-range conformance (quadraui#1082) — pure
+// Selection column-range conformance — pure
 // `EditorSelection::cols_on` matrix, no backend feature required (see
 // this module's doc for why it isn't gated behind `tui`/`gtk` like the
 // rest of this file).
@@ -151,7 +122,7 @@ impl runner::DriverFactory for TuiFactory {
     }
 }
 
-/// The vt100/ANSI-byte-stream TUI observer (quadraui#555) — same
+/// The vt100/ANSI-byte-stream TUI observer — same
 /// `AppLogic` fixtures and scenario files as `TuiFactory`, but painted
 /// through `CrosstermBackend` into a real ANSI byte stream and read back
 /// with `vt100` instead of `TestBackend`'s in-memory buffer. Needs `vt100`
@@ -215,27 +186,17 @@ impl runner::DriverFactory for MacFactory {
     }
 }
 
-// Win-GUI: `feature = "win"` alone compiles `quadraui::win`, `win::testing`
-// included (issue #1038) — every real WinAPI/Direct2D call inside
-// individually `cfg(target_os = "windows")`-gates to a non-functional
-// fallback elsewhere, so `WinDriver::new_fixture` type-checks here on
-// Linux too. This registration is still gated to
-// `target_os = "windows"` (not just `feature = "win"`) because it is
-// this *test* — not the type-check — that needs a real Direct2D surface
-// to produce anything but an immediate panic (`HeadlessSurface::new`
-// always errs off Windows — see that type's doc), so it stays inert on
-// every leg but `ci.yml`'s `windows-latest` one, where `Test (win
-// feature, real Windows)` runs `cargo test -p quadraui --features win`
-// on a real host.
+// Win-GUI: `feature = "win"` compiles `quadraui::win` with fallbacks for
+// real WinAPI/Direct2D calls elsewhere, so `WinDriver::new_fixture` type-checks
+// on Linux too. This registration is gated to `target_os = "windows"` because
+// the test needs a real Direct2D surface (`HeadlessSurface::new` always errs
+// off Windows), so it stays inert except on `windows-latest`.
 //
-// It registers **blocking, not burn-down** (see `runner::Gating`): the
-// windows-latest leg itself has been blocking since #674 (see `ci.yml`'s
-// `Test (win feature, real Windows)` step), and `WinBackend` has no
-// rasterisers left to build for this Tier-1 scenario suite — a
-// regression here now reds the Windows column of every unrelated PR,
-// which is the point: this column has nothing left to burn down.
-// `c0_paint_smoke`'s own column list is separate and still keeps a `win`
-// burn-down entry.
+// Registered **blocking, not burn-down**: the windows-latest leg has been
+// blocking since #674, and `WinBackend` has no rasterisers left to build
+// for this Tier-1 scenario suite. A regression now reds the Windows column
+// of every unrelated PR. `c0_paint_smoke`'s column list is separate and
+// still keeps a `win` burn-down entry.
 #[cfg(all(feature = "win", target_os = "windows"))]
 struct WinFactory;
 
@@ -256,7 +217,7 @@ impl runner::DriverFactory for WinFactory {
 /// point** — a new backend adds exactly one `push` here.
 ///
 /// Note what is *not* here: a capability list. `BackendReg::register`
-/// reads it off the backend itself (quadraui#492), so a registration
+/// reads it off the backend itself, so a registration
 /// cannot claim a capability the backend doesn't declare, and a backend
 /// cannot declare one the runner ignores.
 // `vec_init_then_push`: each push is behind its own `#[cfg]`, so the
@@ -360,7 +321,7 @@ fn load_scenarios() -> Vec<Scenario> {
 /// Run every scenario against every registered backend, print the matrix,
 /// and fail if any *gating* cell failed.
 ///
-/// "Gating" is not "all" (quadraui#708): a [`Gating::BurnDown`] column —
+/// "Gating" is not "all": a [`Gating::BurnDown`] column —
 /// today only `win` — has its failures printed in the matrix, in the detail
 /// block, and in the CI artifact, but doesn't fail the run. See
 /// [`runner::Gating`] for why registering a half-built backend and gating
@@ -380,7 +341,7 @@ fn conformance_matrix() {
             cells: backends
                 .iter()
                 // A scenario that hasn't opted into the vt100 observer
-                // (quadraui#555) has no cell for it at all — renders as
+                // has no cell for it at all — renders as
                 // `-`, not `skip` — rather than paying to build and replay
                 // a driver it was never asked to run against.
                 .filter(|b| backend_applies_to(b.name, s))
@@ -423,7 +384,7 @@ fn conformance_matrix() {
 /// to push into whichever gap list `c0_paint_smoke`'s `Gating` split
 /// selects.
 ///
-/// Pulled out of `c0_paint_smoke`'s loop body (quadraui#722 review) so this
+/// Pulled out of `c0_paint_smoke`'s loop body so this
 /// tier's primitive-axis gating split has a unit test of its own,
 /// mirroring `runner::verdict`'s scenario-axis equivalent — which
 /// `runner.rs`'s own test module already covers (e.g.
@@ -474,49 +435,25 @@ fn classify_c0_case(
     }
 }
 
-/// Tier 0 — C0 paint smoke (quadraui#492, epic #480). Runs ahead of every
-/// scenario-based tier: `c0::CASES` is a canned, minimal descriptor per
-/// primitive, and this asserts `begin_frame` → draw → `end_frame` neither
-/// panics nor produces a frame the inventory can't see at all (contract
-/// §5b — "compiles must stop implying renders").
+/// Tier 0 — C0 paint smoke. Runs ahead of every scenario-based tier:
+/// `c0::CASES` is a canned, minimal descriptor per primitive, and this
+/// asserts `begin_frame` → draw → `end_frame` neither panics nor produces
+/// a frame the inventory can't see at all.
 ///
 /// A registered backend with nothing to say for a given primitive prints
-/// as a row here, same as a tier-1 `FAIL` — never silence (#492's second
-/// acceptance bullet). A backend this build doesn't compile in simply has
-/// no column, matching how `conformance_matrix` already treats an
-/// unregistered backend: the *absence* of a column in this artifact **is**
-/// the gap enumerated, not a hidden pass. `win` is the one exception
-/// (quadraui#722): it *is* registered here, but as
-/// [`runner::Gating::BurnDown`] rather than blocking — see the `columns.push`
-/// for `"win"` below and `docs/TESTING.md` → *Burn-down columns* for why a
-/// half-built backend gets a column before it can pass one.
+/// as a row here, same as a tier-1 `FAIL` — never silence. A backend this
+/// build doesn't compile in simply has no column. `win` is registered as
+/// [`runner::Gating::BurnDown`] rather than blocking; see `docs/TESTING.md`
+/// → *Burn-down columns* for why a half-built backend gets a column.
 ///
-/// ## What this tier does *not* yet catch, stated plainly
+/// ## What this tier does *not* yet catch
 ///
-/// quadraui#492's Problem section names the macOS `draw_diff_view` fake
-/// (`macos/backend.rs`) as the motivating bug. **This test would not have
-/// caught it.** `MacBackend` gained a `ConformanceDriver` (`MacDriver`,
-/// quadraui#493) and a `backends()` row for the Tier-1 scenario suite
-/// above, but is deliberately *not* added to this tier's `columns` below:
-/// `draw_diff_view`'s known fake would turn straight into a hard
-/// `c0_paint_smoke` failure the moment a real macOS host ran it, which is
-/// its own follow-up rather than something to paper over here by, say,
-/// special-casing that one row. The `draw_diff_view` row below is proven
-/// on TUI and GTK only — `win`'s column has no needle-text coverage at all
-/// yet (see this doc's own `win`-is-the-one-exception paragraph above,
-/// *not* the unrelated Tier-1 `backends()` registration note hundreds of
-/// lines above that — this tier gates `win` as `BurnDown` independently
-/// of what Tier-1 does), so it says nothing about that row either, just
-/// more loudly.
-///
-/// That is a pre-existing limitation inherited from #491's tier-1 suite
-/// rather than something this tier introduced, and it is why the
-/// capability half of #492 was deliberately built to read *source*
-/// instead (`caps.rs`): `MacBackend` is checked there on every run, on
-/// every platform. Closing the paint half needs a macOS `ConformanceDriver`
-/// wired into this tier, which is the follow-up — until it lands, C0's
-/// coverage claim is "every primitive, on every backend that has a
-/// driver and is wired into this tier", not "on every backend".
+/// `MacBackend` is deliberately *not* added to this tier's `columns`:
+/// it lacks a real `ConformanceDriver` and its known fakes would turn
+/// straight into failures on macOS, which is its own follow-up.
+/// The `draw_diff_view` row is proven on TUI and GTK only. Until the macOS
+/// `ConformanceDriver` lands, C0's coverage claim is "every primitive, on
+/// every backend wired into this tier", not "on every backend".
 // `vec_init_then_push`: each push is behind its own `#[cfg]`, so the
 // `vec![…]` form clippy suggests would need the cfg attributes on macro
 // arguments — same trade-off `backends()` above already makes.
@@ -528,7 +465,7 @@ fn c0_paint_smoke() {
         outcomes: Vec<c0::CaseOutcome>,
         /// See [`runner::Gating`] — a `BurnDown` column's `PANIC`/`FAIL`
         /// rows are printed and named exactly like a blocking column's,
-        /// but do not fail this test (quadraui#722).
+        /// but do not fail this test.
         gating: Gating,
     }
 
@@ -548,17 +485,11 @@ fn c0_paint_smoke() {
         outcomes: c0::run::<GtkFactory>(),
         gating: Gating::Blocking,
     });
-    // Win-GUI (quadraui#722): registered burn-down, not blocking — same
-    // posture #708 gave the Tier-1 matrix above, applied to this tier's
-    // per-primitive grid. `WinFactory`/`WinDriver` exist (quadraui#674), so
-    // there is a real driver to smoke, but `WinBackend`'s painted-text-run
-    // recording and `register_zone` are both still a stub/no-op and several
-    // `draw_*` methods are still `todo!()` — an estimated 13 of 45 cases
-    // panic mid-paint today and the rest fail `text_ok`/`observable`
-    // outright. Gating on that would red the windows-latest leg for every
-    // unrelated PR while adding no new information; the row-by-row detail
-    // below *is* the burn-down checklist (#480/#580) this registration
-    // exists to produce.
+    // Win-GUI: registered burn-down, not blocking. `WinFactory`/`WinDriver`
+    // exist, but `WinBackend`'s painted-text-run recording and `register_zone`
+    // are stubs and several `draw_*` methods are still `todo!()`. Gating on
+    // that would red windows-latest for every unrelated PR; the row detail
+    // below is the burn-down checklist this registration produces.
     #[cfg(all(feature = "win", target_os = "windows"))]
     columns.push(Column {
         name: "win",
@@ -580,14 +511,11 @@ fn c0_paint_smoke() {
          win on a windows-latest host)"
     );
 
-    // Without one, there is no driver to smoke and nothing to prove
-    // vacuously. `--features macos` alone is that feature set:
-    // `MacBackend` has no `ConformanceDriver` (see `caps::ACCEPTED_DEFAULTS`
-    // → `macos/register_zone` for why), and `macos.yml` runs
-    // `cargo test -p quadraui --features macos`, where a hard failure here
-    // would be this tier reporting on a backend it does not cover.
-    // The gap itself is not silent: `caps::backends_declare_only_what_they
-    // _override` prints the macOS column on every run. (quadraui#484.)
+    // Without a C0 driver compiled in, there is no driver to smoke. `--features
+    // macos` alone has no `MacBackend` `ConformanceDriver`, so a hard failure
+    // would mean reporting on a backend this tier does not cover. The gap
+    // itself is not silent: `caps::backends_declare_only_what_they_override`
+    // prints the macOS column on every run.
     if columns.is_empty() {
         println!(
             "c0_paint_smoke: SKIPPED — no C0 driver backend in this feature set. \
@@ -609,7 +537,7 @@ fn c0_paint_smoke() {
     table.push('\n');
 
     // Split by gating exactly as `verdict` does for the Tier-1 matrix
-    // (quadraui#708): a `BurnDown` column's gaps are printed, named, and
+    //: a `BurnDown` column's gaps are printed, named, and
     // folded into the promotable check below, but never fail this test.
     let mut blocking_gaps: Vec<String> = Vec::new();
     let mut burn_down_gaps: Vec<String> = Vec::new();
@@ -646,15 +574,13 @@ fn c0_paint_smoke() {
         .collect();
     // Same legend `conformance_matrix` prints under its own table — a
     // reader must never mistake a non-gating `FAIL`/`PANIC` row here for a
-    // regression (quadraui#708/#722).
+    // regression.
     table.push_str(&burn_down_legend(&burn_down));
     println!("{table}");
-    // Same artifact mechanism `conformance_matrix` uses (quadraui#722
-    // review), own filename: a passing `cargo test` captures and discards
-    // stdout, so without this the `win` burn-down grid above is invisible
-    // on a routine green CI run no matter what `--nocapture` does for the
-    // *log* — the artifact is what survives past the job. See
-    // `.github/workflows/ci.yml`'s "Conformance matrix (win)" step.
+    // Same artifact mechanism `conformance_matrix` uses; the `win` burn-down
+    // grid is invisible on a routine green CI run otherwise, but survives in
+    // the artifact for CI to upload. See `.github/workflows/ci.yml`'s
+    // "Conformance matrix (win)" step.
     write_artifact(&table, "conformance-matrix-c0.txt");
 
     if !burn_down_gaps.is_empty() {
@@ -676,7 +602,7 @@ fn c0_paint_smoke() {
         blocking_gaps.join("\n")
     );
 
-    // Self-expiring, same as `verdict`'s `promotable` check (quadraui#708):
+    // Self-expiring, same as `verdict`'s `promotable` check:
     // a burn-down column that stops failing is a column nobody has any
     // reason not to gate on, so leaving it non-gating forever would let a
     // green column silently stop protecting anything.
@@ -689,26 +615,19 @@ fn c0_paint_smoke() {
     );
 }
 
-/// Tier C2 — event-emission conformance (quadraui#501, epic #480; Win
-/// column quadraui#742). See `c2.rs`'s module doc for what this proves
-/// and why it's a distinct axis from C0 (paint) and C1 (behaviour).
-/// Covers the mouse/key/scroll/resize core plus `WindowClose` on the
-/// windowed backends (GTK, Win) — the acceptance bar issue #501 named,
-/// extended to Win by #742. `win_case` needs no `target_os = "windows"`
-/// host (see `c2.rs`'s module doc), so the `win` column here runs on the
-/// plain `ubuntu-latest --features win` compile-check leg, unlike the C0/
-/// C1 `WinFactory` registration above (which stays `target_os =
-/// "windows"`-gated because it drives a live `Backend`).
+/// Tier C2 — event-emission conformance. See `c2.rs`'s module doc for what
+/// this proves and why it's distinct from C0 (paint) and C1 (behaviour).
+/// Covers mouse/key/scroll/resize core plus `WindowClose` on windowed
+/// backends (GTK, Win). The `win` column here runs on `ubuntu-latest
+/// --features win`, unlike the C0/C1 `WinFactory` which stays `target_os =
+/// "windows"`-gated because it drives a live `Backend`.
 ///
-/// `DoubleClick`/`Accelerator`/`ClipboardPaste` are required too, and
-/// #742 gives them declared `c2::DISPATCH_ROWS` entries on every column
-/// instead of leaving them out — they print `pass*` with a footnote
-/// naming the `dispatch_event` hook that produces them, since promoting
-/// them to real assertions needs a dispatch-level fixture rather than a
-/// translation-function call (D-010 follow-up). TUI's `clipboard_paste`
-/// is the exception and asserts for real. `TextCopied` isn't in the
-/// required set, so it has no row here; `docs/BACKEND.md`'s emission
-/// matrix stays the source of truth for production-wiring status.
+/// `DoubleClick`/`Accelerator`/`ClipboardPaste` have declared `c2::DISPATCH_ROWS`
+/// entries on every column, printing `pass*` with a footnote naming the
+/// `dispatch_event` hook that produces them. Promoting them to real assertions
+/// needs a dispatch-level fixture. TUI's `clipboard_paste` asserts for real.
+/// `TextCopied` is not required and has no row; `docs/BACKEND.md` is the
+/// source of truth for production emission status.
 #[test]
 // See the `columns` builder below for why this can't be a `vec![…]`.
 #[allow(clippy::vec_init_then_push)]
@@ -796,10 +715,9 @@ fn c2_event_parity() {
     table.push('\n');
 
     let mut gaps: Vec<String> = Vec::new();
-    // Placeholder rows (quadraui#501 review — `c2::CaseOutcome::placeholder`)
-    // always report `pass`, but aren't backed by a real assertion at this
-    // tier; collected here so the table can foot-note them instead of
-    // letting them read identically to a verified `pass`.
+    // Placeholder rows always report `pass` but aren't backed by real assertions;
+    // collected here so the table can foot-note them rather than read as
+    // identical to verified passes.
     let mut placeholders: Vec<String> = Vec::new();
     for row in &all_rows {
         table.push_str(&format!("{row:<row_w$}"));
@@ -849,7 +767,7 @@ fn c2_event_parity() {
 /// still gets the file; otherwise falls back to the workspace's own
 /// `target/` (which `.gitignore` already covers).
 ///
-/// Takes an explicit `filename` (quadraui#722 review) rather than a single
+/// Takes an explicit `filename` rather than a single
 /// hardcoded `conformance-matrix.txt`: `conformance_matrix` (Tier-1,
 /// scenario × backend) and `c0_paint_smoke` (Tier-0, primitive × backend)
 /// both call this, and `cargo test` runs test functions concurrently by
@@ -905,26 +823,15 @@ fn every_advertised_fixture_builds() {
 /// registered by every backend that runs that scenario.
 ///
 /// `FrameInventory::inside` answers `false` for an unregistered zone
-/// exactly as it does for a needle that landed outside one, so without
-/// this guard a step naming a zone **no backend ever registers** — a typo,
-/// or an assertion written ahead of the `Backend::register_zone` call it
-/// depends on — is an *unsatisfiable* step that reads in the matrix like
-/// an ordinary layout failure. This test names the cause directly:
-/// "nothing registers this id", separately from "the geometry doesn't
-/// hold". Zone registration is per paint site (today: the shell chrome
-/// regions and activity-bar items `AppShell::render` records — see
-/// `docs/TESTING.md` → *Zone-backed assertions*), so a scenario reaching
-/// for a not-yet-wired primitive fails here, at the step that reached,
-/// rather than silently.
+/// exactly as it does for a needle outside one, so a step naming a zone
+/// no backend ever registers — a typo or premature assertion — reads as
+/// an ordinary layout failure. This test names the cause directly.
+/// Zone registration is per paint site (shell chrome regions and activity-bar
+/// items), so a scenario reaching for an unregistered primitive fails here.
 ///
-/// Burn-down columns (`runner::Gating::BurnDown`, quadraui#708) are exempt
-/// for the same reason their `FAIL` cells don't gate `conformance_matrix`:
-/// a backend whose shell chrome hasn't been written yet registers *no*
-/// zones, so every `assert_inside` step would report here as
-/// "unsatisfiable" — which is true of the backend, not of the scenario,
-/// and this test exists to catch the latter (a typo'd or premature zone id
-/// in a `.scn.json`). Their gap stays visible as the corresponding `FAIL`
-/// row in the matrix.
+/// Burn-down columns are exempt: a backend with no shell chrome registers
+/// *no* zones, so every `assert_inside` step would fail here — true of the
+/// backend, not the scenario. Their gap stays visible as the `FAIL` row.
 #[test]
 fn every_asserted_zone_is_registered_by_every_backend() {
     let backends = backends();
@@ -946,7 +853,7 @@ fn every_asserted_zone_is_registered_by_every_backend() {
         for backend in &backends {
             // Same opt-in filter `conformance_matrix` applies — a scenario
             // that never runs against `tui-vt100` has nothing to check
-            // there either (quadraui#555).
+            // there either.
             if !backend_applies_to(backend.name, &scenario) {
                 continue;
             }
@@ -1023,17 +930,12 @@ fn source_parsed_caps_match_the_running_backend() {
 /// Every `requires` entry names a capability [`quadraui::BackendCaps`]
 /// actually has a field for.
 ///
-/// quadraui#492 review: `requires` used to be matched against a
-/// hand-maintained `&[&str]` per backend, so a name outside *that* list
-/// was an unsatisfiable gate that silently skipped forever — and a
-/// `BackendCaps` field outside it was unreachable from any scenario. Now
-/// there is one vocabulary, and this is the direction that catches a
-/// typo: `BackendCaps::has` deliberately answers `false` for an unknown
-/// name rather than panicking (so a real capability gap reads as a skip),
-/// which means the typo has to be caught here, by name, or not at all.
+/// There is one vocabulary now. `BackendCaps::has` answers `false` for an
+/// unknown name so a real capability gap reads as a skip, which means a
+/// typo must be caught here or not at all.
 ///
-/// Runs with no backend feature enabled too — the vocabulary is a
-/// property of the library, not of whichever backends this build links.
+/// Runs with no backend feature enabled — the vocabulary is a property
+/// of the library, not of whichever backends this build links.
 #[test]
 fn every_requires_names_a_known_capability() {
     let vocabulary = quadraui::BackendCaps::vocabulary();
@@ -1197,7 +1099,7 @@ fn ships_at_least_ten_tier_one_scenarios() {
     );
 }
 
-/// Unit coverage for `classify_c0_case` (quadraui#722 review) — the
+/// Unit coverage for `classify_c0_case` — the
 /// primitive-axis gating split `c0_paint_smoke` applies to `c0::CaseOutcome`.
 /// Direct calls rather than a full `c0_paint_smoke` run: no backend driver
 /// needed, and each case below pins one branch of the split so a future

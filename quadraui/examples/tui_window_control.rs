@@ -1,4 +1,4 @@
-//! TUI runner for the window-control demo (issue #950).
+//! TUI runner for the window-control demo.
 //!
 //! `t`/`f`/`a`/`m`/`r`/`c` exercise `Backend::window()` /
 //! `WindowControl`; the status bar shows each call's `ServiceResult`.

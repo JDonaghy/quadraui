@@ -1,19 +1,16 @@
-//! GTK-only demo for `Backend::set_editor_font` / `ShellConfig::with_editor_font`
-//! (#422): proves an app can override the editor's painted font (family +
-//! size) instead of being stuck with the runner's hardcoded `"Monospace 11"`.
+//! GTK-only demo for `Backend::set_editor_font` / `ShellConfig::with_editor_font`:
+//! an app can override the editor's painted font (family + size) instead of using
+//! the runner's default. `config()` calls `.with_editor_font("DejaVu Sans Mono", 24.0)`
+//! — a large size chosen so the difference from the 11pt default is obvious when the
+//! window opens. `ShellAdapter::setup()` applies it via `Backend::set_editor_font`
+//! before the first frame; `gtk/run.rs`'s draw closure reads it back every frame to
+//! build the shared Pango layout, so the painted glyphs and the `line_height()`/
+//! `char_width()` metrics used for click-column math both derive from the configured
+//! font.
 //!
-//! `config()` calls `.with_editor_font("DejaVu Sans Mono", 24.0)` — a large
-//! size chosen so the difference from the historical 11pt default is
-//! obvious when the window opens. `ShellAdapter::setup()` applies it via
-//! `Backend::set_editor_font` before the first frame; `gtk/run.rs`'s draw
-//! closure reads it back every frame to build the shared Pango layout, so
-//! the painted glyphs and the `line_height()`/`char_width()` metrics used
-//! for click-column math both derive from the configured font.
-//!
-//! No TUI pair: TUI is a fixed-cell backend with no font concept —
-//! `Backend::set_editor_font` no-ops there, so there is nothing new to see.
-//! This mirrors existing GTK-only runner capabilities (e.g. CSD
-//! window-drag/resize, #400/#406) that also shipped without a TUI demo.
+//! No TUI pair: TUI is a fixed-cell backend with no font concept — `Backend::
+//! set_editor_font` no-ops there. This mirrors existing GTK-only runner capabilities
+//! (e.g. CSD window-drag/resize) that also shipped without a TUI demo.
 
 use quadraui::compose::app_shell::AppShellLayout;
 use quadraui::{

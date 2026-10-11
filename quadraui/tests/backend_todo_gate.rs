@@ -2,10 +2,9 @@
 //! the four real per-platform `Backend` implementations (`TuiBackend`,
 //! `GtkBackend`, `MacBackend`, `WinBackend`) is a latent host abort in every
 //! consuming app the instant a generic `AppLogic` calls it through
-//! `&mut dyn Backend` — see quadraui#923. That already happened once:
-//! `MacBackend::draw_minimap`/`minimap_layout`/`draw_image` were bare,
-//! un-gated `todo!()`s that took down vimcode's macOS GUI on first paint
-//! (vimcode#896, fixed in `dbb3023`).
+//! `&mut dyn Backend`. That already happened once: `MacBackend::draw_minimap`
+//! and related methods were bare, un-gated `todo!()`s that took down the
+//! macOS GUI on first paint.
 //!
 //! A raw `todo!()` count cannot tell that dangerous case apart from
 //! Win-GUI's dozens of *legitimate* stubs, each shaped like:
@@ -16,21 +15,13 @@
 //! #[cfg(not(target_os = "windows"))]
 //! todo!("Direct2D scrollbar rasteriser (no surface attached yet)")
 //! ```
-//!
 //! On a real Windows target the `todo!()` above is compiled out entirely —
 //! these exist purely so `cargo check --features win` can type-check
 //! `WinBackend`'s trait completeness on Linux (the "ubuntu win compile
 //! gate"). A checker that just counts `todo!()`/`unimplemented!()` would be
 //! red on that legitimate scaffolding from day one, get muted, and then
 //! miss the next macOS-shaped case exactly as today's absence of any test
-//! did — which is the whole finding of #923.
-//!
-//! ## The wrong predicate this test does NOT use
-//!
-//! #923 was originally filed on the (wrong) predicate "is there a
-//! `#[cfg(not(target_os = …))]` *somewhere nearby*". `#[cfg(...)]` binds to
-//! exactly one following statement or item, not to a neighbourhood, so a
-//! proximity check is fooled by this extremely common shape:
+//! did.
 //!
 //! ```ignore
 //! #[cfg(target_os = "windows")]
@@ -77,83 +68,12 @@
 //!     todo!("ID2D1RenderTarget::BeginDraw()")   // <-- cfg binds directly: SAFE
 //! }
 //! ```
+//! ## The wrong predicate this test does NOT use
 //!
-//! ## Recognised `cfg` spellings (anything else fails loudly)
-//!
-//! - `cfg(test)` — exempt (never compiled outside a test build).
-//! - `cfg(not(test))` — not exempt (this *is* the shipped arm).
-//! - `cfg(target_os = "X")` — exempt iff `X` differs from this file's own
-//!   native `target_os` (macOS backend ⇒ `"macos"`, Win-GUI ⇒ `"windows"`).
-//! - `cfg(not(target_os = "X"))` — exempt iff `X` *matches* this file's
-//!   native `target_os`.
-//!
-//! Refused (`Unclassifiable`, a hard test failure naming the exact
-//! attribute rather than a silent pass in either direction — see #923's
-//! "make anything unrecognised fail loudly" requirement): `cfg_attr(...)`
-//! in any form, `cfg(any(...))`, `cfg(all(...))`, `cfg(not(any(...)))`
-//! /`cfg(not(all(...)))`, bare `cfg(unix)`/`cfg(windows)`, a `target_os`
-//! comparison inside a backend this test has no native `target_os` for
-//! (gtk/tui — see [`BACKENDS`]), or a `cfg(...)` whose inner tokens don't
-//! parse as a `syn::Meta` at all.
-//!
-//! ## Statement-position macro calls
-//!
-//! `syn` represents a macro invocation used as a mid-block statement
-//! differently depending on how it ends: a bare tail expression parses as
-//! `Stmt::Expr(Expr::Macro(...), None)` (handled by `visit_expr` above),
-//! but a semicolon-terminated or brace-delimited macro *statement* —
-//! `todo!("x");` sitting above other code in the same block, e.g.
-//! `fn f(&mut self) { todo!("x"); more_code(); }` — parses as the
-//! completely separate `Stmt::Macro(StmtMacro)` variant instead. An
-//! earlier version of this checker only overrode `visit_expr` and had no
-//! `visit_stmt_macro`, so that shape was invisible to it: not `Dangerous`,
-//! not `Exempt`, not `Unclassifiable` — simply never visited as a macro
-//! call at all. `Walker::visit_stmt_macro` below runs the identical
-//! gate-lookup/classification logic for this shape so it can't recur; see
-//! `self_test::semicolon_terminated_todo_statement_is_dangerous`.
-//!
-//! ## Match-arm `#[cfg(...)]` (not applicable today)
-//!
-//! `syn::Arm` also carries its own `attrs`, so a per-arm `#[cfg(...)]` on a
-//! `match` arm is a theoretically distinct gating shape this walker does
-//! not special-case (no `visit_arm` override — a `todo!()` inside an arm is
-//! only checked against the enclosing fn/block's gate, not the arm's own).
-//! No backend uses this pattern today (confirmed by grep across
-//! `src/{tui,gtk,macos,win}/`), so it has zero live impact; flagged here so
-//! it isn't rediscovered as a silent gap the way statement-position macros
-//! were.
-//!
-//! ## Scope
-//!
-//! Only `src/tui/`, `src/gtk/`, `src/macos/`, `src/win/` — "each backend's
-//! source", the actual `impl Backend for {Tui,Gtk,Mac,Win}Backend` blocks
-//! reachable from `quadraui::{tui,gtk,macos,win}::run`. This deliberately
-//! excludes `src/testing/mod.rs`'s `RecordingBackend` (a `pub`, always-
-//! compiled `Backend` mock for unit tests — its own docs already name the
-//! handful of methods it `unimplemented!()`s and tell a caller to use a
-//! real backend instead; it never ships as the backend an `AppLogic` is
-//! actually run against) and `compose/menu_system.rs`'s private test-only
-//! mocks (already behind `#[cfg(test)] mod tests`, which this test's own
-//! `cfg(test)` handling would exempt anyway if it were ever asked to look).
-//!
-//! ## Known debt vs. new regressions
-//!
-//! Re-measuring with the corrected predicate above finds Win-GUI is not
-//! the "83 legitimate stubs" the original #923 body assumed: of the real
-//! (non-doc-comment) `todo!()`/`unimplemented!()` call sites in
-//! `src/win/{backend,run}.rs`, only 22 are actually excluded from a native
-//! Windows build (2 via a direct macro-level `cfg`, 20 via an enclosing
-//! `{ }` block's `cfg` — the `minimap_layout`/`list_layout`/… shape) and
-//! **59 are unconditional and reachable on Windows itself**, tracked as
-//! quadraui#924. Fixing those 59 is explicitly out of scope for #923 ("this
-//! issue adds the detector, not the fixes") — [`KNOWN_DANGEROUS_TODOS`] is
-//! the frozen baseline of exactly those 59, so this test can both (a) pass
-//! today without #924 having to land first, and (b) still fail the instant
-//! a *60th* un-gated `todo!()`/`unimplemented!()` shows up anywhere in one
-//! of the four backends, whether that's issue #924 regressing further or
-//! an unrelated new one. Shrinking [`KNOWN_DANGEROUS_TODOS`] as #924 fixes
-//! land is encouraged but not required by this test (a baseline entry with
-//! no matching call site left is simply inert).
+//! The original approach checked for a `#[cfg(not(target_os = …))]`
+//! *somewhere nearby*. But `#[cfg(...)]` binds to exactly one following
+//! statement or item, not to a neighbourhood, so a proximity check is fooled
+//! by this extremely common shape:
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -183,8 +103,7 @@ const BACKENDS: &[(&str, Option<&str>)] = &[
 
 /// Frozen baseline of `(file, enclosing fn, macro argument text)` for every
 /// un-gated `todo!()`/`unimplemented!()` this test finds in a real backend
-/// today — see the module doc's "Known debt vs. new regressions" section.
-/// All 59 are in `src/win/backend.rs`, all tracked as quadraui#924.
+/// today. All such cases are tracked for remediation.
 const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ("src/win/backend.rs", "fn draw_tree", "\"Direct2D tree rasteriser (no surface attached yet)\""),
     ("src/win/backend.rs", "fn draw_list", "\"Direct2D list rasteriser (no surface attached yet)\""),
@@ -724,11 +643,8 @@ fn no_new_ungated_todo_beyond_known_win_gui_debt() {
 #[cfg(test)]
 mod self_test {
     //! Tests for the checker itself, run against inline fixture source
-    //! rather than the real backends — quadraui#923 asks for "the minimum
-    //! fixture set": one call site the checker must call safe, one it must
-    //! call dangerous, plus (since #923's own predicate correction was
-    //! *caused* by trusting an under-tested heuristic) coverage of the
-    //! enclosing-block and enclosing-item cfg shapes, `cfg(test)`, and the
+    //! rather than the real backends. Coverage includes safe cases, dangerous
+    //! cases, enclosing-block and enclosing-item cfg shapes, `cfg(test)`, and
     //! refused spellings.
     use super::*;
 
@@ -754,7 +670,7 @@ mod self_test {
 
     #[test]
     fn direct_cfg_on_the_macro_is_safe() {
-        // quadraui#923's own minimum fixture: WinBackend::begin_frame's shape.
+        // WinBackend::begin_frame's shape: cfg on the macro protects it.
         let src = r#"
             impl Backend for WinBackend {
                 fn begin_frame(&mut self) {
@@ -774,9 +690,8 @@ mod self_test {
 
     #[test]
     fn sibling_statement_cfg_does_not_gate_the_next_statement() {
-        // quadraui#923's own minimum fixture: WinBackend::draw_minimap's
-        // shape — the exact case the original proximity-based predicate
-        // got wrong.
+        // WinBackend::draw_minimap's shape: a sibling `#[cfg(...)]` on one
+        // statement does not gate the next statement.
         let src = r#"
             impl Backend for WinBackend {
                 fn draw_minimap(&mut self, rect: Rect, minimap: &Minimap) {
@@ -907,8 +822,7 @@ mod self_test {
 
     #[test]
     fn bare_todo_with_no_cfg_anywhere_is_dangerous() {
-        // The vimcode#896 shape: MacBackend::draw_minimap before dbb3023,
-        // no cfg at all.
+        // A bare `todo!()` with no cfg at all is dangerous.
         let src = r#"
             impl Backend for MacBackend {
                 fn draw_minimap(&mut self, rect: Rect, minimap: &Minimap) {

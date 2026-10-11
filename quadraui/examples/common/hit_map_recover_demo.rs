@@ -1,19 +1,17 @@
-//! Demo for `ScreenLayout::hit_map()` (#425).
+//! Demo for [`ScreenLayout::hit_map()`].
 //!
 //! `render()` paints the TabBar, ListView, and StatusBar with direct
 //! `backend.draw_*()` calls — three independent call sites, standing in
 //! for an app whose real paint pass interleaves `Surface` painting with
-//! other non-`Surface` rendering (the vimcode GTK `render_content` shape
-//! that motivated #425). Only *after* all three are on screen does the
+//! other non-`Surface` rendering. Only *after* all three are on screen does the
 //! demo build a `ScreenLayout`, push the same objects it just painted,
-//! and call [`quadraui::ScreenLayout::hit_map`] — never `.draw()` — to
+//! and call [`ScreenLayout::hit_map`] — never `.draw()` — to
 //! recover a `FrameHitMap` for click dispatch.
 //!
 //! `hit_map()` makes no `backend.draw_*()` calls, so pushing surfaces
 //! into it can never reorder or repeat the real painting above. Compare
 //! with `FrameDemo` (`frame_demo.rs`), which paints *and* hit-maps in a
-//! single `ScreenLayout::draw()` batch — the pattern #425 exists to make
-//! optional.
+//! single `ScreenLayout::draw()` batch.
 
 use std::cell::RefCell;
 

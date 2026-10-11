@@ -1,5 +1,4 @@
 //! criterion benches for [`quadraui::DataTable`] at a 100k-row scale
-//! (issue #1118).
 //!
 //! Three stages, matching how a real host drives a `DataTable` each
 //! frame:

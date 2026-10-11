@@ -1,5 +1,5 @@
 //! Clipboard demo — manual smoke test for the native-clipboard-tool
-//! fallback leg added to `TuiClipboard::write_text` (#398).
+//! fallback leg added to `TuiClipboard::write_text`.
 //!
 //! `TuiClipboard::write_text` now writes via three independent legs:
 //! arboard, OSC 52, and (new) a native command-line tool (`wl-copy` /

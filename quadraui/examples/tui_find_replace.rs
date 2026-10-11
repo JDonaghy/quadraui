@@ -1,5 +1,4 @@
 //! `FindReplacePanel` `AppLogic` + `quadraui::tui::run` example
-//! (quadraui#818).
 //!
 //! Click a toggle/nav/close button to see it reported in the status bar
 //! — `FindReplacePanel::hit_test`'s first driver-tested consumer.

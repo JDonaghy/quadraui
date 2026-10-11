@@ -1,5 +1,5 @@
 //! Deterministic regression test for quadraui#1301 — the in-flight race
-//! `tests/crossterm_dead_pty_busy_loop.rs` (quadraui#1295) deliberately
+//! `tests/crossterm_dead_pty_busy_loop.rs` deliberately
 //! does **not** exercise: a pty master closing *while* a
 //! `TuiBackend::wait_events`/`TuiRunner::pump` call is already blocked
 //! waiting for input, rather than strictly before that call begins.
@@ -27,7 +27,7 @@
 //!
 //! ## The fix under test
 //!
-//! `TuiBackend::wait_events`'s `wait_for_stdin_ready` (quadraui#1301)
+//! `TuiBackend::wait_events`'s `wait_for_stdin_ready`
 //! never delegates a blocking call to crossterm at all. It blocks on
 //! this crate's own `poll(2)` syscall against the exact same fd, for
 //! the caller's real timeout, and only ever delegates to crossterm with
@@ -150,10 +150,8 @@ fn wait_events_returns_once_master_closes_mid_wait() {
     }
 }
 
-/// Same race, one layer up: [`TuiRunner::pump`] must turn a mid-wait
-/// hangup into a clean [`StepOutcome::Exited`] within bounded time, the
-/// same acceptance bar quadraui#1301 states for "the runner" (vimcode's
-/// `vcd` drives this exact layer, not `TuiBackend` directly).
+/// Same race condition, one layer up: [`TuiRunner::pump`] must turn a
+/// mid-wait hangup into a clean [`StepOutcome::Exited`] within bounded time.
 #[test]
 #[ignore = "mutates this process's fd 0 and fd 1 — see module doc"]
 fn tui_runner_exits_once_its_pty_master_closes_mid_wait() {

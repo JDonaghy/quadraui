@@ -1,14 +1,12 @@
 //! Minimal `AppLogic` painting a `TabBar` whose active tab is enclosed in
-//! bracket framing via [`TabChrome::active_frame`] (quadraui#631) —
+//! bracket framing via [`TabChrome::active_frame`] —
 //! `[main.rs ×]` rather than the close glyph floating unframed after the
 //! label.
 //!
 //! The point of the demo is the **sidecar + declarative click routing**:
 //! the bracket framing is requested via [`Backend::draw_tab_bar_with_chrome`]
-//! (never baked into [`TabItem::label`] as a string, which is exactly the
-//! workaround #631 exists to make unnecessary — see coord-tui's
-//! `doc_tab_label`), and a click still resolves through
-//! [`Backend::tab_bar_layout_with_chrome`]'s `close_bounds` /
+//! (never baked into [`TabItem::label`] as a string), and a click still
+//! resolves through [`Backend::tab_bar_layout_with_chrome`]'s `close_bounds` /
 //! `slot_positions`, never a hand-rolled character scan for `×`.
 //!
 //! Only the active tab is closable (`is_closable` tracks `is_active`), so
@@ -117,7 +115,7 @@ impl AppLogic for TabChromeDemo {
         );
     }
 
-    #[allow(deprecated)] // `Backend::tab_bar_layout_with_chrome` returns `TabBarHits` — issue #823
+    #[allow(deprecated)] // `Backend::tab_bar_layout_with_chrome` returns `TabBarHits`.
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
             // Close buttons take precedence over tab-body activation —

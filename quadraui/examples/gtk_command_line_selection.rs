@@ -1,4 +1,4 @@
-//! `CommandLine` selection-highlight demo, GTK backend (issue #1001).
+//! `CommandLine` selection-highlight demo, GTK backend.
 //!
 //! Same shape as `examples/tui_command_line_selection.rs` but rendered in
 //! a GTK window. The `CommandLineSelectionDemo` state and `AppLogic` impl

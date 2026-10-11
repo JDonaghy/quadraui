@@ -1,5 +1,4 @@
 //! `TextDisplayWrapDemo` `AppLogic` + `quadraui::tui::run` example
-//! (quadraui#905).
 //!
 //! A single `TextDisplay` with one line far wider than the viewport,
 //! demonstrating that it word-wraps onto continuation rows (each prefixed

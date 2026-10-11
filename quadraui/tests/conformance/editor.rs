@@ -1,4 +1,4 @@
-//! Editor selection column-range conformance (quadraui#1082).
+//! Editor selection column-range conformance.
 //!
 //! `EditorSelection::cols_on` is the single shared column-range
 //! calculation every backend rasteriser (`tui::editor`, `gtk::editor`,
@@ -9,31 +9,26 @@
 //! matrix) and `c2.rs` cross scenarios/cases against *per-backend*
 //! driver implementations, because each backend genuinely re-implements
 //! paint/event translation. Selection column math is not
-//! re-implemented per backend any more (that duplication — and the
-//! Win-only bugs it hid — is exactly what #1082 fixed), so proving the
-//! matrix once against `EditorSelection::cols_on` proves it for every
-//! caller. The four backends' own `#[cfg(test)]` modules additionally
-//! exercise `cols_on` through a real paint (see
-//! `gtk::editor::tests::*_selection*`, `macos::editor::tests::*_selection*`,
+//! re-implemented per backend any more, so proving the matrix once
+//! against `EditorSelection::cols_on` proves it for every caller. The
+//! four backends' own `#[cfg(test)]` modules additionally exercise
+//! `cols_on` through a real paint (see `gtk::editor::tests::*_selection*`,
+//! `macos::editor::tests::*_selection*`,
 //! `win::editor::tests::line_selection_spans_full_row`), so the "does
 //! the backend actually call this" half is covered there, not repeated
 //! here.
 //!
 //! ## Matrix
 //!
-//! Rows are the four line kinds the issue names — `Plain` (an ordinary
-//! unwrapped line), `WrappedSegment` (a non-zero `segment_col_offset`
-//! visual segment), `GhostContinuation` (`is_ghost_continuation`, no
-//! real buffer columns), `DiffPadding` (`diff_status ==
-//! Some(DiffLine::Padding)`, no buffer content). Columns are the three
-//! `SelectionKind`s. Each cell asserts the exact `cols_on` result
-//! (`None`, or `Some((start, end))`) a selection spanning every row
-//! produces on that line — the Win backend's pre-#1082
-//! `paint_selection` got every `GhostContinuation` and `DiffPadding`
-//! cell wrong (painted anyway) and every `WrappedSegment` cell wrong
-//! (ignored `segment_col_offset` entirely), which is what "the Win
-//! cases RED before" in the issue refers to: these are exactly the
-//! cases a naive re-derivation (rather than a shared call) gets wrong.
+//! Rows are the four line kinds — `Plain` (an ordinary unwrapped line),
+//! `WrappedSegment` (a non-zero `segment_col_offset` visual segment),
+//! `GhostContinuation` (`is_ghost_continuation`, no real buffer columns),
+//! `DiffPadding` (`diff_status == Some(DiffLine::Padding)`, no buffer
+//! content). Columns are the three `SelectionKind`s. Each cell asserts
+//! the exact `cols_on` result (`None`, or `Some((start, end))`) a
+//! selection spanning every row produces on that line. `None` cells are
+//! ghost/padding rows, which must never be selected regardless of
+//! selection kind. `Some` cells give buffer columns for the selection.
 
 use quadraui::primitives::editor::{DiffLine, EditorLine, EditorSelection, SelectionKind};
 
@@ -147,17 +142,11 @@ fn selection_cases() -> Vec<(&'static str, EditorSelection)> {
 }
 
 /// Expected `cols_on` result for one (line kind, selection kind) cell.
-/// `None` cells are the ghost/padding rows, which must never be
-/// selected regardless of selection kind. `Some` cells give the exact
-/// `(start, end)` this multi-line, interior-row (`line_idx == 1`, so
-/// neither the selection's own `start_line` nor `end_line`) selection
-/// produces:
-///
 /// - `Plain`/`WrappedSegment` + `Char`: an interior line of a multi-line
 ///   Char selection is fully covered, `[0, char_count)` — for
 ///   `WrappedSegment` that's segment-local columns `[0, 10)`, not
-///   shifted by its `segment_col_offset` of 5 (quadraui#1082's core
-///   fix: the caller never re-adds the offset).
+///   shifted by its `segment_col_offset` of 5 (the caller never
+///   re-adds the offset).
 /// - `Plain`/`WrappedSegment` + `Line`: always the full row.
 /// - `Plain` + `Block`: the same buffer columns `[start_col, end_col] =
 ///   [2, 7]` on every row, exclusive-end `[2, 8)`.

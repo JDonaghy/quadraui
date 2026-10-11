@@ -1,5 +1,4 @@
 //! criterion benches for [`quadraui::TreeView`] at a 100k-row scale
-//! (issue #1118).
 //!
 //! Same three-stage shape as `data_table_bench.rs` — see that file's
 //! module doc for the full rationale. In short: `TreeView::rows` is the

@@ -16,7 +16,7 @@ use quadraui::{Backend, ButtonMask, Key, Modifiers, NamedKey, Point, Reaction, U
 mod shell_app_ex;
 use shell_app_ex::ShellApp as ShellAppEx;
 
-// `hello.rs` (quadraui#799) has no `examples/common/` module by design —
+// `hello.rs` has no `examples/common/` module by design —
 // it's the single-file "hello world" onboarding is supposed to have. Its
 // own `fn main()` comes along for the ride under this `#[path]` include
 // (the same trick used everywhere else in this file) and is never called
@@ -322,7 +322,7 @@ fn mini_q_exits() {
     assert!(driver.exited());
 }
 
-/// #307: `tui_app`'s bare-bones AppLogic renders cleanly (title segment +
+/// `tui_app`'s bare-bones AppLogic renders cleanly (title segment +
 /// quit hint painted, no panic) and exits on Ctrl-Q. `MiniApp::handle`
 /// matches `Key::Char('q')` alone — it destructures only the `key` field
 /// out of `UiEvent::KeyPressed { key, .. }`, so the `..` silently drops
@@ -480,9 +480,7 @@ fn text_input_backspace_deletes_a_char() {
     );
 }
 
-/// #818 acceptance: clicking a `TextInput` line moves the cursor there —
-/// `TextInputLayout::hit_test` reaching a real click, not just a unit
-/// test against the primitive in isolation.
+/// Clicking a `TextInput` line moves the cursor there.
 #[test]
 fn text_input_click_moves_cursor_to_the_clicked_line() {
     let mut driver = TuiDriver::new(TextInputDemo::new(), 100, 30);
@@ -509,14 +507,13 @@ fn text_input_click_moves_cursor_to_the_clicked_line() {
     );
 }
 
-// ─── TextInputDemo: selection, delete-over-selection, undo/redo (#833) ──────
+// ─── TextInputDemo: selection, delete-over-selection, undo/redo ─────────────
 //
-// #833 acceptance: `TextInput` gets real insert/delete/cursor/selection
-// behaviour through `apply(EditOp)`, plus undo/redo bound to the
-// long-declared-but-unused `KeyBinding::Undo`/`Redo` accelerator names.
-// These assert against **rendered** screen content each time (never the
-// primitive's fields directly) so they catch a wiring break between the
-// demo's key handling and what actually reaches the screen.
+// `TextInput` gets real insert/delete/cursor/selection behaviour through
+// `apply(EditOp)`, plus undo/redo. These assert against **rendered** screen
+// content each time (never the primitive's fields directly) so they catch a
+// wiring break between the demo's key handling and what actually reaches
+// the screen.
 
 #[test]
 fn text_input_shift_left_selects_and_backspace_deletes_the_selection() {
@@ -614,14 +611,11 @@ fn text_input_ctrl_shift_z_redoes_after_undo() {
     );
 }
 
-/// Regression test: the demo's `handle()` used to reject *every*
-/// `KeyPressed` with `ctrl`/`cmd` held before ever calling
-/// `EditOp::from_key`, which made `EditOp::from_key`'s documented
-/// Ctrl+Home/Ctrl+End -> MoveDocStart/MoveDocEnd mapping unreachable
-/// through the shipped demo. The guard now only rejects Ctrl/Cmd held on
-/// a `Key::Char` (so Ctrl+<letter> combos don't get typed as literal
-/// characters), letting named keys like Home/End reach `from_key` with
-/// their modifiers intact.
+/// The demo's `handle()` only rejects Ctrl/Cmd held on a `Key::Char` (so
+/// Ctrl+<letter> combos don't get typed as literal characters), letting
+/// named keys like Home/End reach `EditOp::from_key` with their modifiers
+/// intact, making `EditOp::from_key`'s documented Ctrl+Home/Ctrl+End ->
+/// MoveDocStart/MoveDocEnd mapping reachable through the demo.
 #[test]
 fn text_input_ctrl_home_end_move_to_doc_start_and_end() {
     let mut driver = TuiDriver::new(TextInputDemo::new(), 100, 30);
@@ -664,12 +658,10 @@ fn text_input_ctrl_home_end_move_to_doc_start_and_end() {
     );
 }
 
-// ─── DiffViewApp: click routes through DiffViewGeometry::hit_test (#818) ────
+// ─── DiffViewApp: click routes through DiffViewGeometry::hit_test ───────────
 
-/// #818 acceptance: clicking a diff row resolves through
-/// `DiffView::layout` + `DiffViewGeometry::hit_test` and is reported in
-/// the status bar — a real click, not just a unit test against the
-/// primitive in isolation.
+/// Clicking a diff row resolves through `DiffView::layout` +
+/// `DiffViewGeometry::hit_test` and is reported in the status bar.
 #[test]
 fn diff_view_click_on_a_row_reports_it_in_the_status_bar() {
     let mut driver = TuiDriver::new(DiffViewApp::new(), 100, 30);
@@ -708,7 +700,7 @@ fn diff_view_click_below_content_is_empty() {
     );
 }
 
-// ─── ClipboardDemo: native-tool fallback leg (#398) ─────────────────────────
+// ─── ClipboardDemo: native-tool fallback leg ────────────────────────────────
 
 #[test]
 fn clipboard_demo_shows_starting_text_and_hint() {
@@ -764,7 +756,7 @@ fn clipboard_demo_escape_exits() {
     assert!(driver.exited(), "Escape should exit the demo");
 }
 
-// ─── WindowControlDemo: `Backend::window()` / `WindowControl` (#950) ───────
+// ─── WindowControlDemo: `Backend::window()` / `WindowControl` ──────────────
 //
 // TUI's `WindowControl` surface has exactly one real capability
 // (`set_title`, via OSC 0/2 — see `TuiBackend`'s `impl WindowControl` doc)
@@ -822,7 +814,7 @@ fn window_control_demo_escape_exits() {
     assert!(driver.exited(), "Escape should exit the demo");
 }
 
-// ─── CaretShapeDemo: `Backend::set_caret_shape` (#1015) ────────────────────
+// ─── CaretShapeDemo: `Backend::set_caret_shape` ────────────────────────────
 //
 // The DECSCUSR write itself lands on real `std::io::stdout()`, so there is
 // nothing in `TestBackend`'s frame buffer to assert the escape sequence
@@ -897,22 +889,17 @@ fn caret_shape_demo_escape_exits() {
     assert!(driver.exited(), "Escape should exit the demo");
 }
 
-// ─── FileDialogDemo: TUI open/save now return a real path (#965) ───────────
+// ─── FileDialogDemo: TUI open/save now return a real path ──────────────────
 //
-// #427 implements real file dialogs for GTK only (extended to folder
-// dialogs by #935); before #965, `PlatformServices`'s TUI impl returned
-// `None` unconditionally for all three. Since #965, `show_file_open_dialog`
-// / `show_file_save_dialog` drive a real `compose::FilePickerController`
-// through a nested draw-and-read loop (`tui::services`'s module doc) and
+// `show_file_open_dialog` / `show_file_save_dialog` drive a real
+// `compose::FilePickerController` through a nested draw-and-read loop and
 // resolve to whichever path the (scripted, via
-// `TuiDriver::queue_dialog_events`) input actually picked — these tests
-// pin that positive contract. `show_folder_open_dialog` is the one method
-// #965 deliberately left untouched (see that issue's own scope note) and
-// keeps the pre-#965 unconditional-`None` contract, pinned separately
-// below. The GTK path (a real, modal, nested-mainloop-pumped
-// `gtk4::FileDialog`) can't be driven by `TuiDriver` — it's covered by the
-// `gtk_file_dialog` example's manual smoke test instead (see SMOKE_TESTS
-// in the #427 PR, and this repo's #935 PR for the folder-dialog leg).
+// `TuiDriver::queue_dialog_events`) input actually picked. These tests
+// pin that positive contract. `show_folder_open_dialog` keeps the
+// unconditional-`None` contract. The GTK path (a real, modal,
+// nested-mainloop-pumped `gtk4::FileDialog`) can't be driven by
+// `TuiDriver` — it's covered by the `gtk_file_dialog` example's manual
+// smoke test instead.
 
 #[test]
 fn file_dialog_demo_shows_starting_hint() {
@@ -979,12 +966,10 @@ fn file_dialog_demo_open_confirms_a_real_path_on_tui() {
     );
 }
 
-/// With no scripted input, the nested loop's very first event
-/// (`TuiPlatformServices::next_dialog_events`'s Escape synthesis) cancels
-/// the picker — proves cancellation still reaches the app as `None`,
-/// distinct from the "unsupported" framing this test used to carry
-/// before #965 (TUI genuinely has a working picker now; `None` here
-/// means "the user backed out", not "not implemented").
+/// With no scripted input, the nested loop's very first event synthesizes
+/// Escape to cancel the picker — proves cancellation still reaches the app
+/// as `None`, distinct from unsupported (TUI genuinely has a working picker
+/// now; `None` here means "the user backed out").
 #[test]
 fn file_dialog_demo_open_cancelled_returns_none_on_tui() {
     let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
@@ -996,13 +981,10 @@ fn file_dialog_demo_open_cancelled_returns_none_on_tui() {
     );
 }
 
-/// `FileDialogDemo`'s `s` handler seeds `initial_filename: "untitled.txt"`
-/// — `FilePickerController`'s save-mode query field, so confirming with
-/// an *immediate* Enter (no typing, no navigation) must save under that
-/// seeded name verbatim. This is also the regression this issue's fix
-/// pinned in `compose::file_picker`'s own unit tests: the picker's ".."
-/// row defaults to selected, and Enter used to act on it instead of the
-/// seeded filename.
+/// `FileDialogDemo`'s `s` handler seeds `initial_filename: "untitled.txt"` —
+/// confirming with an immediate Enter (no typing, no navigation) must save
+/// under that seeded name verbatim. The picker's ".." row defaults to
+/// selected, so Enter used to act on it instead of the seeded filename.
 #[test]
 fn file_dialog_demo_save_confirms_the_seeded_filename_on_tui() {
     let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
@@ -1019,26 +1001,15 @@ fn file_dialog_demo_save_confirms_the_seeded_filename_on_tui() {
     );
 }
 
-/// Regression test for the smoke failure on issue #1099's branch: both
-/// tests above confirm a path rooted at `std::env::current_dir()`, i.e.
-/// **the checkout's own absolute path**, and `FileDialogDemo` used to
-/// paint that whole path as a right-hand `StatusBarSegment`. The right
-/// group is right-aligned and painted after the left segments, so once
-/// the path grew past the 100-column test terminal its *tail* — the
-/// `build.rs` / `untitled.txt` those tests assert on — was clipped off
-/// the screen, and a wider-still path blanked the message entirely at
-/// column 0. The two tests therefore passed in a short checkout and
-/// failed in a deep one (a worktree directory named after a long branch
-/// is enough), for a reason with nothing to do with the behaviour under
-/// test.
-///
-/// `FolderPickerApp` had the identical bug and
-/// `folder_picker_confirmed_status_survives_a_path_longer_than_the_screen`
-/// below pins the identical fix: the long message lives in a left
+/// Both tests above confirm a path rooted at `std::env::current_dir()`, and
+/// `FileDialogDemo` used to paint the whole absolute path as a right-hand
+/// `StatusBarSegment`. The right group is right-aligned and painted after
+/// the left segments, so once the path grew past the 100-column test
+/// terminal its tail — the `build.rs` / `untitled.txt` those tests assert
+/// on — was clipped off the screen. The long message lives in a left
 /// segment (clipping harmlessly from its tail) and only the path's leaf
-/// goes in the short right segment. This test pins it for
-/// `FileDialogDemo` against a root it controls, so the regression can't
-/// hide again on a short path.
+/// goes in the short right segment, so the regression can't hide again on
+/// a short path.
 #[test]
 fn file_dialog_demo_confirmed_status_survives_a_path_longer_than_the_screen() {
     // 140-char directory name ⇒ an absolute path comfortably wider than
@@ -1101,12 +1072,10 @@ fn file_dialog_demo_confirmed_status_survives_a_path_longer_than_the_screen() {
     );
 }
 
-// quadraui#935 / #965: `show_folder_open_dialog` is deliberately outside
-// #965's scope (see that issue's own scope note and `tui::services`'s
-// module doc) and keeps the original unconditional-`None` TUI contract —
-// same reasoning, same test shape as before, so a future change can't
-// silently make the TUI folder path block waiting on something that will
-// never resolve headlessly either.
+// `show_folder_open_dialog` is deliberately outside scope and keeps the
+// original unconditional-`None` TUI contract — same reasoning, same test
+// shape as before, so a future change can't silently make the TUI folder
+// path block waiting on something that will never resolve headlessly.
 #[test]
 fn file_dialog_demo_folder_reports_unsupported_on_tui() {
     let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
@@ -1126,22 +1095,16 @@ fn file_dialog_demo_escape_exits() {
     assert!(driver.exited(), "Escape should exit the demo");
 }
 
-// ─── MessageDialogDemo: TUI now returns a real button choice (#965) ────────
+// ─── MessageDialogDemo: TUI now returns a real button choice ───────────────
 //
-// #666 implements a real native `gtk4::AlertDialog` for GTK; before #965,
-// `PlatformServices`'s TUI impl returned `None` unconditionally (the
-// in-canvas `Dialog` primitive / `Backend::draw_dialog` was the only TUI
-// path, with no controller driving its show/block/resolve contract). Since
-// #965, `show_message_dialog` drives a real `compose::MessageDialogController`
-// through a nested draw-and-read loop (`tui::services`'s module doc) and
-// resolves to whichever button the (scripted, via `TuiDriver::queue_dialog_events`)
-// input actually chose. These tests pin that positive contract — a real
-// button id reaches the app, not `None` — so a future change can't
-// silently regress TUI back to the pre-#965 degrade. The GTK path (a real,
-// modal, nested-mainloop-pumped `gtk4::AlertDialog`) still can't be driven
-// by `TuiDriver` — it's covered by the `gtk_message_dialog` example's
-// manual smoke test instead (see `docs/TESTING.md`'s "What unit tests
-// don't cover" and the SMOKE_TESTS in the #666 PR).
+// `show_message_dialog` drives a real `compose::MessageDialogController`
+// through a nested draw-and-read loop and resolves to whichever button the
+// (scripted, via `TuiDriver::queue_dialog_events`) input actually chose.
+// These tests pin that positive contract — a real button id reaches the
+// app, not `None` — so a future change can't silently regress TUI. The GTK
+// path (a real, modal, nested-mainloop-pumped `gtk4::AlertDialog`) still
+// can't be driven by `TuiDriver` — it's covered by the `gtk_message_dialog`
+// example's manual smoke test instead.
 
 #[test]
 fn message_dialog_demo_shows_starting_hint() {
@@ -1180,12 +1143,10 @@ fn message_dialog_demo_resolves_a_real_non_default_button_on_tui() {
     );
 }
 
-/// With no scripted input queued, the nested loop's own dialog-open call
-/// still resolves — via the same Escape-synthesis
-/// `TuiPlatformServices::next_dialog_events` documents — to the
-/// cancel/default button ("Keep Editing" is both here), not `None`. Pins
-/// the "always something to degrade to" principle #965 exists for: even
-/// an un-driven TUI dialog call returns a real choice.
+/// The nested loop's own dialog-open call still resolves — via the same
+/// Escape-synthesis — to the cancel/default button ("Keep Editing" is
+/// both here), not `None`. Even an un-driven TUI dialog call returns a real
+/// choice.
 #[test]
 fn message_dialog_demo_resolves_default_button_with_no_scripted_input() {
     let mut driver = TuiDriver::new(MessageDialogDemo::new(), 100, 20);
@@ -1205,11 +1166,10 @@ fn message_dialog_demo_escape_exits() {
     assert!(driver.exited(), "Escape should exit the demo");
 }
 
-// ─── MessageListApp: click routes through MessageList::hit_test (#818) ──────
+// ─── MessageListApp: click routes through MessageList::hit_test ─────────────
 
-/// #818 acceptance: clicking a message row resolves through
-/// `MessageList::hit_test` and is reported in the status bar — a real
-/// click, not just a unit test against the primitive in isolation.
+/// Clicking a message row resolves through `MessageList::hit_test` and is
+/// reported in the status bar.
 #[test]
 fn message_list_click_on_a_row_reports_it_in_the_status_bar() {
     let mut driver = TuiDriver::new(MessageListApp::new(), 100, 30);
@@ -1259,11 +1219,10 @@ fn message_list_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the message list demo");
 }
 
-// ─── FindReplaceApp: click routes through FindReplacePanel::hit_test (#818) ─
+// ─── FindReplaceApp: click routes through FindReplacePanel::hit_test ─
 
-/// #818 acceptance: clicking a toggle button resolves through
-/// `FindReplacePanel::hit_test` and is reported in the status bar — a
-/// real click, not just a unit test against the primitive in isolation.
+/// Clicking a toggle button resolves through `FindReplacePanel::hit_test`
+/// and is reported in the status bar.
 #[test]
 fn find_replace_click_on_toggle_case_reports_it() {
     let mut driver = TuiDriver::new(FindReplaceApp::new(), 100, 20);
@@ -1462,7 +1421,7 @@ fn panel_drag_selects_text_and_ctrl_c_copies_it() {
     );
 }
 
-/// #305: pressing `c` toggles `PanelApp`'s collapsed state. Collapsing sets
+/// Pressing `c` toggles `PanelApp`'s collapsed state. Collapsing sets
 /// `layout.content_bounds` to a zero-size rect (see
 /// `src/tui/panel.rs::collapsed_panel_has_no_content_hit`), so
 /// `fill_content` — which bails out early when `bounds.width < 1.0` —
@@ -1534,10 +1493,7 @@ fn panel_maximize_button_click_toggles_collapsed() {
 // to construct the same `ShellAdapter` wrapper that `run_with_shell` builds,
 // then script events through it — exercising the full
 // `ShellApp → ShellAdapter::render() → register_text_region()` call chain
-// that the `AppLogic`-only tests in `run.rs` cannot reach.
-//
-// This satisfies the third acceptance criterion of issue #283:
-// "add a shell-runner-path test."
+// that the `AppLogic`-only tests cannot reach.
 
 /// Full `run_with_shell` path: drag to select, then Ctrl-C copies the text
 /// and `SelectionDemo` echoes it in the status bar as `Copied: "..."`.
@@ -1583,23 +1539,20 @@ fn shell_runner_path_drag_and_ctrl_c_copies_text() {
     );
 }
 
-// ─── AppShellDemo (issue #409): ShellApp activity-bar keyboard focus hook ───
+// ─── AppShellDemo: ShellApp activity-bar keyboard focus hook ────────────────
 //
 // `AppShellDemo` implements `ShellApp` and binds `Tab` to
-// `ShellContext::request_activity_keyboard_focus()`. Everything after that
-// — j/k navigation, Enter activation, Escape cancellation — is driven by
-// `ShellAdapter::handle` itself, intercepting the synthesized
-// `UiEvent::ActivityBar` before it would reach `AppShellDemo::handle` (which
-// has no match arm for that event at all). These tests prove the full
-// `Tab → focus → j/k → Enter` round trip works for a `ShellApp` consumer,
-// which was impossible before #409 (only the raw `AppLogic` pattern in
-// `examples/common/shell_app.rs` could reach `AppShell`'s keyboard API).
+// `ShellContext::request_activity_keyboard_focus()`. j/k navigation, Enter
+// activation, Escape cancellation are driven by `ShellAdapter::handle`
+// itself, intercepting the synthesized `UiEvent::ActivityBar` before it
+// would reach `AppShellDemo::handle`. These tests prove the full
+// `Tab → focus → j/k → Enter` round trip works for a `ShellApp` consumer.
 //
-// `Reaction::Redraw` vs `Reaction::Continue` is the key signal here: `j`/`k`/
-// `Escape` have no meaning to `AppShellDemo::handle` on their own (it would
+// `Reaction::Redraw` vs `Reaction::Continue` is the key signal: j/k/
+// Escape have no meaning to `AppShellDemo::handle` on their own (it would
 // return `Continue` for an unmatched raw key), so a `Redraw` after pressing
 // them proves `ShellAdapter` actually intercepted and handled the
-// synthesized `ActivityBar` event rather than the key falling through.
+// synthesized `ActivityBar` event.
 
 /// `Tab` focuses the activity bar, `j` `j` moves the keyboard cursor down
 /// two items (explorer → search → git), and `Enter` activates the
@@ -1692,14 +1645,11 @@ fn appshell_demo_escape_cancels_focus_without_switching_panel() {
     );
 }
 
-/// `ShellApp::take_requested_panel` (coord-tui #1029 bug A): an app can
-/// queue a panel switch from inside its own `handle()` — no ActivityBar
-/// click, no keyboard-cursor mode — and `ShellAdapter` must apply it to the
-/// *real* `AppShell` state (sidebar header) and re-notify `on_shell_event_ctx`,
-/// not just let the app's own internal view state drift out of sync with
-/// the chrome. Before this hook, the sidebar header would stay on
-/// "EXPLORER" here even though the app had "moved on" internally — the
-/// exact chrome-desync bug this regression guards against.
+/// An app can queue a panel switch from inside its own `handle()` via
+/// `ShellApp::take_requested_panel` — no ActivityBar click, no keyboard-cursor
+/// mode — and `ShellAdapter` must apply it to the *real* `AppShell` state
+/// (sidebar header) and re-notify `on_shell_event_ctx`, not just let the
+/// app's own internal view state drift out of sync with the chrome.
 #[test]
 fn appshell_demo_programmatic_panel_switch_updates_chrome() {
     let config = AppShellDemo::config();
@@ -1737,13 +1687,10 @@ fn appshell_demo_programmatic_panel_switch_updates_chrome() {
     );
 }
 
-/// #1055: a bottom item (the Settings gear, added via `with_bottom_items`)
-/// can own the sidebar header once its `BottomItemClicked` handler calls
-/// `show_panel` — before the fix, `show_panel` silently no-opped for a
-/// bottom item's id, so the header stayed captioned with whatever top
-/// panel was open previously (here: Explorer) no matter what the sidebar
-/// actually showed. `AppShellDemo::on_shell_event_ctx`'s `BottomItemClicked`
-/// arm now calls `ctx.shell_mut().show_panel(id)` to opt in.
+/// A bottom item (the Settings gear, added via `with_bottom_items`) can own
+/// the sidebar header once its `BottomItemClicked` handler calls
+/// `show_panel` — `show_panel` now works for a bottom item's id, so the
+/// header gets captioned with the actual panel the sidebar shows.
 #[test]
 fn appshell_demo_bottom_item_show_panel_retitles_sidebar_header() {
     let config = AppShellDemo::config();
@@ -1794,7 +1741,7 @@ fn appshell_demo_bottom_item_show_panel_retitles_sidebar_header() {
         driver.screen()
     );
 
-    // #1055 follow-up (review): now click a *different* top panel through
+    // Now click a *different* top panel through
     // the real mouse click path (not `show_panel` directly) and confirm
     // the header reclaims from Settings. Before the fix,
     // `handle_activity_click`'s top-panel arm never cleared
@@ -1827,17 +1774,13 @@ fn appshell_demo_bottom_item_show_panel_retitles_sidebar_header() {
     );
 }
 
-/// #454: `ctx.shell_mut()` reaches the real `AppShell` instance
-/// `ShellAdapter` renders — `AppShellDemo` binds `Ctrl+B` to
-/// `ctx.shell_mut().toggle_sidebar()`, exactly the call a consumer like
-/// vimcode needs for a toggle-sidebar keybinding. Before #454 a `ShellApp`
-/// had no way to reach the rendered `AppShell` at all, so this had to be
-/// faked with a second, shadow `AppShell` that silently drifted from the
-/// one actually painted (vimcode's `Ctrl+B` was dead on GTK because of
-/// exactly this). Driving this through `driver_with_shell` — the same
-/// `ShellApp` → `ShellAdapter` → `AppShell` dispatch `run_with_shell` uses
-/// in production — proves the fix on the real path, not a synthetic
-/// `ShellContext` built by hand.
+/// `ctx.shell_mut()` reaches the real `AppShell` instance `ShellAdapter`
+/// renders — `AppShellDemo` binds `Ctrl+B` to `ctx.shell_mut().toggle_sidebar()`,
+/// exactly the call a consumer like vimcode needs for a toggle-sidebar
+/// keybinding. A `ShellApp` can now reach the rendered `AppShell` and push
+/// state back to it. Driving this through `driver_with_shell` — the same
+/// `ShellApp` → `ShellAdapter` → `AppShell` dispatch `run_with_shell` uses in
+/// production — proves the fix on the real path.
 #[test]
 fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
     let config = AppShellDemo::config();
@@ -1887,24 +1830,14 @@ fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
     );
 }
 
-/// #307: the issue's suggested scenario for this demo was "open/close the
-/// bottom panel (#289)" — but #289's tabbed bottom panel
-/// (`BottomPanelConfig`/`BottomPanelController`) belongs to the separate
-/// `tui_bottom_panel` example (`BottomPanelDemo`), not `AppShellDemo`:
-/// `AppShellDemo::config()` never calls `.with_bottom_panel_config(..)` or
-/// even the plain `.with_bottom_panel(..)`, so there is no bottom panel to
-/// open or close here (`tui_bottom_panel` is out of scope for #307's named
-/// batch). `AppShellDemo` does have its own real, currently-untested
-/// open/close-a-chrome-region toggle though: `t` reveals/hides the title
-/// bar at runtime via `ctx.shell_mut().set_title_bar_visible(..)` (the
-/// #552 transition, see the module doc comment on `appshell_demo.rs`).
-/// Reserving that row shifts everything below it down by the title bar's
-/// height — `AppShell::compute_layout` re-derives `sidebar_content_bounds`
-/// (and `activity_bar_bounds`/`main_content_bounds`) from `band_y` on
+/// `t` reveals/hides the title bar at runtime via
+/// `ctx.shell_mut().set_title_bar_visible(..)`. Reserving that row shifts
+/// everything below it down — `AppShell::compute_layout` re-derives
+/// `sidebar_content_bounds` (and other layout bounds) from `band_y` on
 /// every call rather than caching an offset, so this is a real layout
-/// reflow, not just a repaint. Tracking the sidebar-content label's row
-/// (rather than asserting a hardcoded row number) is what makes this
-/// robust to the title bar's exact height changing later.
+/// reflow. Tracking the sidebar-content label's row (rather than asserting
+/// a hardcoded row number) is what makes this robust to the title bar's
+/// exact height changing later.
 #[test]
 fn appshell_demo_t_toggles_title_bar_and_reflows_sidebar_content_row() {
     let config = AppShellDemo::config();
@@ -1949,28 +1882,19 @@ fn appshell_demo_t_toggles_title_bar_and_reflows_sidebar_content_row() {
     );
 }
 
-/// #617 acceptance: `ShellApp::on_shell_event_ctx` receives a
-/// `&ShellContext`, so an app can push state back into the real `AppShell`
-/// on the *same* frame the shell event fires — no intervening
-/// `ShellApp::handle` dispatch required. `AppShellDemo::on_shell_event_ctx`
-/// reveals the title bar via `ctx.shell_mut().set_title_bar_visible(true)`
-/// the moment `PanelChanged { panel_id: "panel:git" }` fires (see its
-/// module doc / `on_shell_event_ctx` body).
-///
-/// Before #617, `ShellAdapter::handle` returned immediately after calling
-/// the (now-deprecated) one-argument `on_shell_event(&shell_ev)` — with no
-/// `ShellContext` parameter for the app to mutate the shell through in the
-/// first place — so a title-bar reveal triggered from inside that hook had
-/// no way to land before
-/// that `Reaction::Redraw` painted the frame; it would only appear once
-/// some unrelated *later* event happened to reach `handle`. Driving the
-/// programmatic switch (`p`, `take_requested_panel`) with a *single*
-/// `type_char` call and asserting the reserved title-bar row is already
-/// visible in the very next rendered frame proves the fix lands
-/// synchronously within that one dispatch, exactly as
-/// `appshell_demo_t_toggles_title_bar_and_reflows_sidebar_content_row`
-/// proves it for the (already-working) `ctx.shell_mut()` call from inside
-/// `handle` itself.
+/// `ShellApp::on_shell_event_ctx` receives a `&ShellContext`, so an app can
+/// push state back into the real `AppShell` on the *same* frame the shell
+/// event fires — no intervening `ShellApp::handle` dispatch required.
+/// `AppShellDemo::on_shell_event_ctx` reveals the title bar via
+/// `ctx.shell_mut().set_title_bar_visible(true)` the moment a PanelChanged
+/// event fires. Before this feature, `ShellAdapter::handle` returned
+/// immediately after calling the old one-argument `on_shell_event(&shell_ev)`
+/// — with no `ShellContext` parameter for the app to mutate the shell
+/// through — so a title-bar reveal had no way to land before that
+/// `Reaction::Redraw` painted the frame. Driving the programmatic switch
+/// with a single `type_char` call and asserting the reserved title-bar row
+/// is already visible in the very next rendered frame proves the fix lands
+/// synchronously within that one dispatch.
 #[test]
 fn appshell_demo_on_shell_event_pushes_title_bar_state_same_frame() {
     let config = AppShellDemo::config();
@@ -2014,7 +1938,7 @@ fn appshell_demo_on_shell_event_pushes_title_bar_state_same_frame() {
     );
 }
 
-// ─── DialogTableDemo (issue #225): table layout in dialog ───────────────────
+// ─── DialogTableDemo: table layout in dialog ────────────────────────────────
 
 /// Initial screen renders dialog title and table headers.
 ///
@@ -2099,8 +2023,6 @@ fn shell_runner_path_ctrl_a_selects_all() {
 
 // ─── TabGroupDemo: tab-click activation + keyboard exit ─────────────────────
 
-/// Regression test for #358.
-///
 /// Before the fix, `MouseDown` on a tab body primed a drag and returned early.
 /// `MouseUp` at the same position (no cursor movement) reached
 /// `handle_tab_drop`, which returned an empty `Vec` → status "tab drag
@@ -2140,7 +2062,7 @@ fn tab_group_q_exits() {
     assert!(driver.exited(), "'q' should exit the tab group demo");
 }
 
-/// quadraui#828: Ctrl-W is the keyboard equivalent of clicking a tab's `×`
+/// Ctrl-W is the keyboard equivalent of clicking a tab's `×`
 /// — before this fix there was no key path to close a tab at all. Closing
 /// "main.rs" (the active tab in the focused pane) must promote "lib.rs"
 /// (the next tab in the same pane) and leave the second pane's
@@ -2325,17 +2247,11 @@ fn toolbar_click_fires_action_without_focus() {
     );
 }
 
-/// #819 acceptance: hover state now flows through `InteractionState`
-/// (`ToolbarApp::interaction`, replacing the old hand-rolled
-/// `hovered_id`/`pressed_id` fields) — this asserts the *visual*
-/// consequence, not just that the field exists. Before wiring
-/// `InteractionState::handle_mouse` into `ToolbarApp::handle`, a
-/// regression that dropped the hover-changed signal (e.g. always
-/// returning `Reaction::Continue` from `MouseMoved`) would leave the
-/// button's background at its resting colour after the mouse moved over
-/// it — this test fails exactly that way if run against such a
-/// regression (verified red by temporarily hard-coding
-/// `InteractionState::handle_mouse`'s `MouseMoved` arm to `false`).
+/// Hover state now flows through `InteractionState` — this asserts the
+/// *visual* consequence, not just that the field exists. A regression that
+/// dropped the hover-changed signal (e.g. always returning `Reaction::Continue`
+/// from `MouseMoved`) would leave the button's background at its resting
+/// colour after the mouse moved over it.
 #[test]
 fn toolbar_hover_paints_hover_background_at_the_cursor() {
     let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
@@ -2379,7 +2295,7 @@ fn toolbar_hover_paints_hover_background_at_the_cursor() {
     );
 }
 
-/// #819: `InteractionState::handle_mouse` only presses on the **left**
+/// `InteractionState::handle_mouse` only presses on the **left**
 /// button. The hand-rolled `matches!(UiEvent::MouseDown { .. })` arm
 /// `ToolbarApp` used before matched any button, so a right-click lit the
 /// pressed highlight. This pins the new behaviour black-box: the painted
@@ -2428,7 +2344,7 @@ fn toolbar_press_highlights_only_on_the_left_button() {
     );
 }
 
-/// #819: a left `MouseDown` that resolves to no widget clears whatever
+/// A left `MouseDown` that resolves to no widget clears whatever
 /// was pressed, rather than leaving a stale highlight lit. The
 /// hand-rolled arm this replaced only *set* `pressed_id` on a hit and
 /// left it untouched on a miss, so a press → drag-off → press-on-empty
@@ -2491,11 +2407,9 @@ fn palette_dual_mode_tab_switches_to_input_mode() {
     );
 }
 
-/// #818 acceptance: palette mouse events reach the controller — clicking
-/// a palette entry changes the selection (the `▶ ` marker moves to the
-/// clicked row), not just arrow keys. Before this issue,
-/// `DualModePaletteController::handle` never matched on
-/// `UiEvent::MouseDown` at all, so a click here was a silent no-op.
+/// Clicking a palette entry changes the selection (the `▶ ` marker moves to
+/// the clicked row), not just arrow keys. Before this, palette mouse events
+/// never reached the controller.
 #[test]
 fn palette_dual_mode_click_selects_item() {
     let mut driver = TuiDriver::new(PaletteDualModeApp::new(), 100, 30);
@@ -2529,16 +2443,11 @@ fn toolbar_q_exits() {
     assert!(driver.exited(), "'q' should exit the toolbar demo");
 }
 
-/// #913 acceptance: a `ToolbarButton::Action` icon can carry a Nerd-Font
-/// glyph *and* a distinct ASCII fallback, with the backend's
-/// `nerd_fonts_enabled` flag choosing which one paints.
-///
-/// Before #913 there was no path at all: `icon` is one `String`, so a bar
-/// built with a Nerd glyph painted mojibake on a terminal without the
-/// font, and a bar built with ASCII never showed the glyph on one with
-/// it. `ToolbarApp` registers `Icon::new("\u{f0b0}", "*")` for Filter and
-/// `Icon::new("\u{f021}", "%")` for Reset, and bakes them in with
-/// `ToolbarIcons::apply`.
+/// A `ToolbarButton::Action` icon can carry a Nerd-Font glyph *and* a
+/// distinct ASCII fallback, with the backend's `nerd_fonts_enabled` flag
+/// choosing which one paints. `ToolbarApp` registers
+/// `Icon::new("\u{f0b0}", "*")` for Filter and `Icon::new("\u{f021}", "%")`
+/// for Reset, and bakes them in with `ToolbarIcons::apply`.
 #[test]
 fn toolbar_n_swaps_registered_icons_between_ascii_fallback_and_nerd_glyph() {
     let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
@@ -2613,11 +2522,10 @@ fn toolbar_click_still_hits_reset_after_the_nerd_glyph_swap() {
     );
 }
 
-/// Issue #260: `v` cycles the toolbar's `ToolbarVAlign` Top → Center →
-/// Bottom → Top. `toolbar_app`'s slot is reserved at 3 rows precisely so
-/// this is observable — the painted row of "Pause" must move down, then
-/// down again, then back to where it started. No hardcoded coordinates:
-/// every assertion locates "Pause" fresh via `find_bounds`.
+/// `v` cycles the toolbar's `ToolbarVAlign` Top → Center → Bottom → Top.
+/// The toolbar's slot is reserved at 3 rows precisely so this is observable
+/// — the painted row of "Pause" must move down, then down again, then back to
+/// where it started. Every assertion locates "Pause" fresh via `find_bounds`.
 #[test]
 fn toolbar_v_cycles_valign_and_moves_the_button_row() {
     let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
@@ -2681,7 +2589,7 @@ fn toolbar_v_cycles_valign_and_moves_the_button_row() {
 /// - All three pane tab labels are visible on screen.
 /// - The pane count shown in the status bar reflects 3 panes.
 ///
-/// This is the primary smoke-test for `TabGroupController::from_layout` (#393).
+/// This is the primary smoke-test for `TabGroupController::from_layout`.
 #[test]
 fn tab_group_f_key_switches_to_from_layout_3_pane() {
     let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
@@ -2720,7 +2628,7 @@ fn tab_group_f_key_switches_to_from_layout_3_pane() {
 /// - The 3-pane from_layout tabs (left.rs, top.rs, bottom.rs) are gone.
 /// - The pane count is back to 2.
 ///
-/// This exercises the full from_layout → reset round-trip (#393).
+/// This exercises the full from_layout → reset round-trip.
 #[test]
 fn tab_group_f_then_r_resets_to_default_layout() {
     let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
@@ -2760,8 +2668,6 @@ fn tab_group_f_then_r_resets_to_default_layout() {
     );
 }
 
-/// Regression test for #375.
-///
 /// Before the fix, crossing `TAB_DRAG_THRESHOLD` during a `MouseMoved` event
 /// panicked with "RefCell already borrowed":
 /// `if let Some((sx, sy)) = *self.tab_drag_pending_pos.borrow()` held an
@@ -2823,7 +2729,7 @@ fn palette_dual_mode_typing_in_input_mode_updates_query() {
     );
 }
 
-// ─── ShellApp: AppShell keyboard activity-bar nav (#386) ────────────────────
+// ─── ShellApp: AppShell keyboard activity-bar nav ───────────────────────────
 //
 // `ShellApp` uses `AppShell` (not the raw `ActivityBar` primitive directly).
 // These tests verify that the new keyboard navigation API (`set_activity_keyboard_focused`,
@@ -2986,7 +2892,7 @@ fn shell_app_k_saturates_at_first_item() {
     );
 }
 
-/// #307: `Shift+Tab` is `ShellApp`'s *other* focus-region control (see the
+/// `Shift+Tab` is `ShellApp`'s *other* focus-region control (see the
 /// module doc comment's "`Shift+Tab` cycle sidebar sections"), distinct
 /// from the activity-bar `Tab` focus the tests above cover. Real
 /// terminals/backends report Shift+Tab as the dedicated
@@ -3023,17 +2929,14 @@ fn shell_app_shift_tab_moves_sidebar_focus_indicator_between_sections() {
     );
 }
 
-// ─── FullChromeDemo: CSD title-bar drag / maximize escape hatch (#400) ──────
+// ─── FullChromeDemo: CSD title-bar drag / maximize escape hatch ─────────────
 //
-// `FullChromeDemo` reserves a title-bar band via `ShellConfig::with_title_bar`
-// and, on the empty part of that band, calls the new
-// `Backend::begin_window_drag` / `Backend::toggle_window_maximize` methods.
-// TUI has no window to drive, so both are documented no-ops (`false`) —
-// these tests prove the call path runs cleanly end-to-end (paint → hit-test
-// → `ShellApp::handle` → backend call → re-render) and falls back to the
-// "no window" message, exactly as a headless backend should. The real
-// window-drag/maximize behaviour is GTK-only and has no automated coverage
-// yet (`GtkDriver` — #301); see the manual smoke test instead.
+// `FullChromeDemo` reserves a title-bar band and calls `Backend::begin_window_drag`
+// / `Backend::toggle_window_maximize` methods on it. TUI has no window to drive,
+// so both are documented no-ops (`false`) — these tests prove the call path runs
+// cleanly end-to-end (paint → hit-test → `ShellApp::handle` → backend call →
+// re-render) and falls back to the "no window" message, exactly as a headless
+// backend should.
 
 /// Left-`MouseDown` on the empty title bar calls `begin_window_drag`, which
 /// must return `false` on `TuiBackend` (no window) and the demo must show
@@ -3080,7 +2983,7 @@ fn full_chrome_title_bar_double_click_requests_maximize_toggle() {
     );
 }
 
-// ─── FullChromeDemo: title-bar minimize/maximize/close button row (#402) ────
+// ─── FullChromeDemo: title-bar minimize/maximize/close button row ───────────
 //
 // `FullChromeDemo` paints a realistic CSD button row into the right side of
 // the title bar via `StatusBarSegment::action_id`, tracked with the same
@@ -3093,9 +2996,8 @@ fn full_chrome_title_bar_double_click_requests_maximize_toggle() {
 // segment — so these use `mouse_down` + `mouse_up` rather than the
 // single-event `click` helper the drag tests above use.
 
-/// Clicking the maximize button calls `toggle_window_maximize` (same
-/// backend hook as double-click-to-maximize on the empty bar, #400) and
-/// must NOT start a window drag.
+/// Clicking the maximize button calls `toggle_window_maximize` and must NOT
+/// start a window drag.
 #[test]
 fn full_chrome_title_bar_maximize_button_toggles_via_click() {
     let config = FullChromeDemo::config();
@@ -3161,9 +3063,9 @@ fn full_chrome_title_bar_close_button_exits() {
     );
 }
 
-// ─── FullChromeDemo: runtime title-bar visibility toggle (#532) ────────────
+// ─── FullChromeDemo: runtime title-bar visibility toggle ───────────────────
 //
-// `AppShell::set_title_bar_visible` (#532) is the runtime counterpart to the
+// `AppShell::set_title_bar_visible` is the runtime counterpart to the
 // construction-time `ShellConfig::with_title_bar` builder — see its doc
 // comment in `compose/app_shell.rs` for the motivating vimcode case (a menu
 // bar painted into the title-bar row that the app shows/hides at runtime).
@@ -3172,7 +3074,7 @@ fn full_chrome_title_bar_close_button_exits() {
 // `ShellApp` actually uses works end-to-end through the real
 // `ShellAdapter`-rendered `AppShell` — the same precedent
 // `appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar` set for
-// `toggle_sidebar()` (#454).
+// `toggle_sidebar()`.
 
 /// `Ctrl+T` on `FullChromeDemo` (which reserves a title bar via
 /// `with_title_bar` in `config()`) hides the real rendered title-bar band
@@ -3228,12 +3130,10 @@ fn full_chrome_ctrl_t_hides_and_shows_the_real_rendered_title_bar() {
     );
 }
 
-/// The operator's pinned ask on #532: confirm the activity bar reclaims the
-/// title bar's row rather than leaving it blank, through the *real*
-/// rendered path (not `AppShell::layout()` called directly, which the
-/// `compose/app_shell.rs` unit tests already cover). Row 0 must switch from
-/// the title bar's label to the activity bar's top icon once the title bar
-/// is hidden — proving `ShellAdapter` re-paints from the freshly toggled
+/// Confirm the activity bar reclaims the title bar's row rather than leaving
+/// it blank, through the *real* rendered path. Row 0 must switch from the
+/// title bar's label to the activity bar's top icon once the title bar is
+/// hidden — proving `ShellAdapter` re-paints from the freshly toggled
 /// `has_title_bar`, not a stale cached offset.
 #[test]
 fn full_chrome_ctrl_t_hands_the_title_bar_row_to_the_activity_bar() {
@@ -3260,16 +3160,13 @@ fn full_chrome_ctrl_t_hands_the_title_bar_row_to_the_activity_bar() {
     );
 }
 
-// ─── FullChromeDemo: window-edge resize escape hatch (#406) ────────────────
+// ─── FullChromeDemo: window-edge resize escape hatch ───────────────────────
 //
 // `FullChromeDemo` hit-tests `ShellContext::window_edge` on `MouseDown` and
-// calls `Backend::begin_window_resize`, mirroring #400's drag/maximize
-// pattern. TUI has no window to resize, so this must return `false` and the
-// demo must show the "no window" fallback message rather than crash or
-// hang — same story as the #400 tests above. `MouseMoved` hints the resize
-// cursor via `Backend::set_cursor`, which is also a documented no-op on
-// TUI; those tests just prove the call path runs cleanly (no automated way
-// to observe the OS pointer glyph headlessly).
+// calls `Backend::begin_window_resize`, mirroring the drag/maximize pattern.
+// TUI has no window to resize, so this must return `false` and the demo must
+// show the "no window" fallback message. `MouseMoved` hints the resize cursor
+// via `Backend::set_cursor`, which is also a documented no-op on TUI.
 
 /// Left-`MouseDown` on the window's right border (away from the title bar
 /// and any corner) calls `begin_window_resize(East)`, which must return
@@ -3330,7 +3227,7 @@ fn full_chrome_bottom_right_corner_click_requests_window_resize() {
 /// (including its corners), same as native GTK `HeaderBar` CSD having no
 /// top-edge resize handle. A click at the top-left corner — which falls
 /// within both `in_title_bar` and `window_edge`'s margin — must still
-/// resolve to the title-bar-drag gesture (#400), not edge-resize (#406).
+/// resolve to the title-bar-drag gesture, not edge-resize.
 #[test]
 fn full_chrome_title_bar_wins_over_window_edge_at_top_corner() {
     let config = FullChromeDemo::config();
@@ -3394,22 +3291,10 @@ fn full_chrome_mouse_moved_over_edge_does_not_crash() {
     );
 }
 
-/// #307: the issue's suggested scenario for this demo was "menu bar,
-/// toolbar, status line interactions, asserting on each" — but
-/// `FullChromeDemo` has no real `MenuBar`/`Toolbar` widgets wired in (the
-/// "File  Edit  View  Help" text in its title bar is a decorative label,
-/// not an interactive menu — see `build_title_bar`), and its status-bar
-/// row's own `ctx.in_status_bar(..)` branch is unreachable via `MouseDown`:
-/// `status_bar_bounds` is exactly the window's last row, which
-/// `ShellAppTrait::handle`'s `ctx.window_edge(..)` check (checked first,
-/// same #406 mechanism the edge-resize tests above exercise) always claims
-/// as the South edge before `ctx.in_status_bar` ever gets a look. What
-/// *is* real, live, and untested here are the other two "chrome slot"
-/// `MouseDown` branches this demo's own module doc says it proves
-/// (bottom panel + command line) — each just updates `last_event`, which
-/// `render_content` always repaints into `main_content_bounds`, so a
-/// mis-routed hit-test (or a click silently swallowed by `window_edge`
-/// like status-bar's) would leave the wrong message on screen.
+/// The real, live, untested chrome-slot `MouseDown` branches are bottom panel
+/// and command line — each updates `last_event`, which `render_content` always
+/// repaints into `main_content_bounds`, so a mis-routed hit-test would leave
+/// the wrong message on screen.
 #[test]
 fn full_chrome_bottom_panel_and_command_line_clicks_update_status_line() {
     let config = FullChromeDemo::config();
@@ -3438,16 +3323,14 @@ fn full_chrome_bottom_panel_and_command_line_clicks_update_status_line() {
     );
 }
 
-// ─── ShellMenuDemo: modal-over-chrome MouseDown routing (#411) ──────────────
+// ─── ShellMenuDemo: modal-over-chrome MouseDown routing ─────────────────────
 //
 // `ShellMenuDemo` opens a `MenuSystem` dropdown whose bar spans the full
-// viewport width starting at x=0, so the "File" entry (and the dropdown
-// opened below it) sits directly over the activity bar strip — the same
-// shape as vimcode's menu bar overlapping its activity bar (vimcode#552).
-// Before the #411 fix, `ShellAdapter::handle` ran `AppShell::handle` first,
-// which hit-tested `MouseDown` purely by screen position and swallowed any
-// click whose x fell inside the activity bar's width, even though
-// `dispatch_click` had already tagged the event for the open modal.
+// viewport width, so the dropdown sits directly over the activity bar strip.
+// Before the fix, `ShellAdapter::handle` ran `AppShell::handle` first, which
+// hit-tested `MouseDown` purely by screen position and swallowed any click
+// whose x fell inside the activity bar's width, even though the event was
+// tagged for the open modal.
 
 /// Clicking a dropdown item whose x lands inside the activity bar's width
 /// must still activate it — the regression this issue is about. Before the
@@ -3498,23 +3381,13 @@ fn shell_menu_dropdown_item_over_activity_bar_activates() {
     );
 }
 
-/// Sanity check for the other half of the fix: with no dropdown open, a
-/// click inside the activity bar strip must still behave as a normal chrome
-/// click (toggle/switch panels) — the #411 fix must not turn off chrome
-/// hit-testing unconditionally, only when a modal is actually open under the
-/// cursor.
-///
-/// Locates the click target instead of guessing a row: `ShellMenuDemo`'s
-/// first panel (Explorer) is active by default. `AppShell::build_activity_bar`
-/// doesn't set `active_accent`/`active_bg` (it has no `Theme` to source a
-/// colour from — see quadraui#658/#381), so as of #658 there is no
-/// left-edge accent glyph to search for here (the rasterisers no longer
-/// fall back to a theme default when those fields are `None`). Instead
-/// this searches for `"E│"` — the Explorer icon glyph immediately
-/// followed by the activity bar's right-edge separator column, which only
-/// `tui::activity_bar::draw_activity_bar` ever paints (`'│'` is unique to
-/// that separator; no other TUI chrome uses it), so the pair unambiguously
-/// locates the Explorer row without depending on any active-item styling.
+/// With no dropdown open, a click inside the activity bar strip must still
+/// behave as a normal chrome click (toggle/switch panels) — the fix must not
+/// turn off chrome hit-testing unconditionally, only when a modal is actually
+/// open under the cursor. Locates the click target instead of guessing a row:
+/// search for `"E│"` — the Explorer icon glyph immediately followed by the
+/// activity bar's right-edge separator column, which only the activity bar's
+/// renderer paints, so the pair unambiguously locates the Explorer row.
 #[test]
 fn shell_menu_activity_bar_click_still_switches_panel_when_no_modal_open() {
     let mut driver = driver_with_shell(ShellMenuDemo::new(), ShellMenuDemo::config(), 100, 30);
@@ -3536,7 +3409,7 @@ fn shell_menu_activity_bar_click_still_switches_panel_when_no_modal_open() {
     );
 }
 
-// ─── HitMapRecoverDemo: ScreenLayout::hit_map() (#425) ──────────────────────
+// ─── HitMapRecoverDemo: ScreenLayout::hit_map() ─────────────────────────────
 
 /// `HitMapRecoverDemo::render` paints the TabBar/List/StatusBar via direct
 /// `backend.draw_*()` calls, then builds a `ScreenLayout` from the same
@@ -3605,7 +3478,7 @@ fn hit_map_recover_clicking_the_tab_bar_routes_through_hit_map() {
     );
 }
 
-// ─── DataTableApp: pinned footer/summary row (#432) ─────────────────────────
+// ─── DataTableApp: pinned footer/summary row ────────────────────────────────
 //
 // `DataTableApp` sorts by Name ascending by default, so alphabetically
 // "api-gateway-..." is the first row and "worker-batch-..." is the
@@ -3710,7 +3583,7 @@ fn data_table_f_key_toggles_footer_off() {
     );
 }
 
-/// quadraui#828: `PageDown`/`PageUp` are the keyboard equivalent of
+/// `PageDown`/`PageUp` are the keyboard equivalent of
 /// clicking above/below the scrollbar thumb (a full-page jump) — before
 /// this fix the finest keyboard granularity was `j`/`k` (one row) with no
 /// page-sized step at all. Uses the table's own `visible_rows` (not a
@@ -3748,7 +3621,7 @@ fn data_table_page_down_and_page_up_move_selection_by_a_full_page() {
     );
 }
 
-// ─── DataTableApp: body clipping, separators, resize direction (#516) ──────
+// ─── DataTableApp: body clipping, separators, resize direction ─────────────
 //
 // A tall-enough viewport (26 rows) fits all 20 pod rows + header + the
 // 2-row pinned footer band + the 1-row status bar with no scrolling, so
@@ -3796,8 +3669,8 @@ fn data_table_wide_middle_column_does_not_corrupt_neighbouring_columns() {
 
 #[test]
 fn data_table_body_rows_show_column_separators_aligned_with_header() {
-    // Defect 2: body rows previously drew no separator at all, so
-    // adjacent cells butted directly together.
+    // Body rows previously drew no separator at all, so adjacent cells
+    // butted directly together.
     let driver = TuiDriver::new(DataTableApp::new(), 100, 26);
     let screen = driver.screen();
 
@@ -3843,22 +3716,12 @@ fn data_table_divider_before_last_column_resizes_in_drag_direction() {
 
     let before = driver.app().resolved_column_widths(driver.backend())[2];
 
-    // Age's natural resolved width (Flex(0.5) among a small total weight)
-    // is well under the app's own 4.0 resize floor, so the deltas below
-    // are chosen generously enough that both the widen *and* the narrow
-    // target land clear of that floor — otherwise both drags would clamp
-    // to the same 4.0 and the direction assertion would be vacuous
-    // rather than a real test of #516 defect 3.
-    //
-    // Kept small (not the ~40/80-unit drags this test used pre-#1031):
-    // `Restarts` (last) only has 6.0 units of room above its own 4.0
-    // floor (it starts at `Fixed(10.0)`) before the table overflows into
-    // h-scroll (#1031) — and once Age's own width balloons past what
-    // fits the 100-wide viewport, the *second* drag below can no longer
-    // grab the divider at all, since its down-click lands outside
-    // `viewport_width` and `hit_test` reports `Empty` there. Staying
-    // inside that 6.0-unit budget keeps the divider on-screen and
-    // reachable for both drags.
+    // Age's natural resolved width is well under the app's own 4.0 resize
+    // floor, so the deltas below are chosen generously enough that both the
+    // widen *and* the narrow target land clear of that floor — otherwise both
+    // drags would clamp to the same 4.0. Kept small so `Restarts` (last) with
+    // 6.0 units of room above its own 4.0 floor stays on-screen and reachable
+    // for both drags before the table overflows into h-scroll.
     let layout = driver.app().table_layout(driver.backend());
     let age = layout.columns[2];
     let divider_x = age.x + age.width;
@@ -3895,18 +3758,15 @@ fn data_table_divider_before_last_column_resizes_in_drag_direction() {
     );
 }
 
-// ─── DataTableApp: horizontally-scrolled click routing (#550) ──────────────
+// ─── DataTableApp: horizontally-scrolled click routing ─────────────────────
 //
-// `DataTableApp` sets `min_total_width = 80` cells, so a viewport
-// narrower than that lays the columns out wider than the visible area
-// and `h_scroll` becomes genuinely drivable (`L`/`H` step it by 5).
-//
-// Before #550 the renderer subtracted `h_scroll` when painting but
-// `DataTableLayout::hit_test` did not add it back, so every click
-// resolved against the *unscrolled* column geometry — the defect
-// coord-tui had latent in its Audit table (claude-coordinator#1853),
-// where a header click sorted whichever column happened to sit at that
-// x before scrolling.
+// `DataTableApp` sets `min_total_width = 80` cells, so a viewport narrower
+// than that lays the columns out wider than the visible area and `h_scroll`
+// becomes genuinely drivable. Before the fix, the renderer subtracted
+// `h_scroll` when painting but `DataTableLayout::hit_test` did not add it
+// back, so every click resolved against the *unscrolled* column geometry —
+// the defect that was latent in coord-tui's Audit table, where a header click
+// sorted whichever column happened to sit at that x before scrolling.
 
 /// Which column title carries the sort indicator, read off the painted
 /// header row. The status bar's `sort:` segment is the more direct
@@ -3922,9 +3782,8 @@ fn sorted_header(screen: &str) -> Option<&'static str> {
         })
 }
 
-/// The Audit regression: with the table scrolled horizontally, clicking
-/// a painted header must sort *that* column — not the one that used to
-/// occupy those cells at `h_scroll == 0`.
+/// With the table scrolled horizontally, clicking a painted header must sort
+/// *that* column — not the one that used to occupy those cells at `h_scroll == 0`.
 #[test]
 fn data_table_h_scrolled_header_click_sorts_the_column_under_the_cursor() {
     let mut driver = TuiDriver::new(DataTableApp::new(), 50, 26);
@@ -3935,8 +3794,8 @@ fn data_table_h_scrolled_header_click_sorts_the_column_under_the_cursor() {
         driver.screen()
     );
 
-    // Scroll right far enough that "Status" no longer sits over the
-    // cells "Name" occupied at rest.
+    // Scroll right far enough that "Status" no longer sits over the cells
+    // "Name" occupied at rest.
     let unscrolled_status_x = driver
         .find("Status")
         .unwrap_or_else(|| panic!("Status header not painted:\n{}", driver.screen()))
@@ -4013,16 +3872,13 @@ fn data_table_h_scrolled_body_click_selects_the_row_under_the_cursor() {
     );
 }
 
-// ─── HelpLayerDemo (#431): context-sensitive help registry + cheatsheet ────
+// ─── HelpLayerDemo: context-sensitive help registry + cheatsheet ───────────
 //
-// `HelpLayerDemo` implements `ShellApp` with two panels ("Explorer" and
-// "Source Control"), each registered with distinct notes + actions via
-// `HelpRegistry`. `?` opens a cheatsheet (`HelpOverlayController`, built on
-// `Panel` + `TextDisplay`) for the *active* panel; `p` opens a command
-// palette (`DualModePaletteController`) populated from the same registered
-// actions via `help_actions_to_palette_items` / `filter_help_actions`.
-// These tests prove the acceptance bar from #431: registered help renders
-// via `?`, the palette lists the same actions, and the palette query
+// `HelpLayerDemo` implements `ShellApp` with two panels, each registered with
+// distinct notes + actions via `HelpRegistry`. `?` opens a cheatsheet for the
+// *active* panel; `p` opens a command palette populated from the same
+// registered actions. These tests prove the acceptance bar: registered help
+// renders via `?`, the palette lists the same actions, and the palette query
 // matches on description text as well as label.
 
 /// `?` opens the cheatsheet for the default active panel (Explorer) and
@@ -4082,10 +3938,8 @@ fn help_layer_demo_escape_closes_cheatsheet() {
     );
 }
 
-/// Switching the active panel (Tab → focus bar → j → Enter, the same
-/// activity-bar keyboard flow proven by the `AppShellDemo` tests above)
-/// changes which panel's help `?` shows next — the "context-sensitive"
-/// half of #431.
+/// Switching the active panel changes which panel's help `?` shows next.
+/// The "context-sensitive" help reflects the currently active panel.
 #[test]
 fn help_layer_demo_switching_panel_changes_cheatsheet_content() {
     let config = HelpLayerDemo::config();
@@ -4175,14 +4029,10 @@ fn help_layer_demo_palette_query_matches_description_not_label() {
     );
 }
 
-/// A panel with **no** registered help (the demo's "Settings" panel)
-/// still lets `?` open a visible cheatsheet and `Escape` still closes
-/// it — the fix for #431 review finding 1. Before the fix,
-/// `HelpOverlayController::render` silently drew nothing when the
-/// active view had no `ViewHelp`, while `handle()` still unconditionally
-/// swallowed every subsequent key as if a modal cheatsheet were open —
-/// an unrecoverable-looking freeze for any consumer that hasn't
-/// registered help for every panel.
+/// A panel with no registered help still lets `?` open a visible cheatsheet
+/// and `Escape` still closes it. `HelpOverlayController::render` draws nothing
+/// when the active view has no `ViewHelp`, but `handle()` still accepts input
+/// to dismiss the modal — without this, an unregistered panel would appear frozen.
 #[test]
 fn help_layer_demo_no_registered_help_still_dismisses_via_escape() {
     let config = HelpLayerDemo::config();
@@ -4236,7 +4086,7 @@ fn help_layer_demo_no_registered_help_still_dismisses_via_escape() {
     );
 }
 
-// ─── SplitApp (issue #307): draggable single divider ───────────────────────
+// ─── SplitApp: draggable single divider ────────────────────────────────────
 
 /// Dragging `SplitApp`'s single divider must move it and shrink the pane
 /// it moves towards — `SplitApp::handle`'s `MouseMoved` arm recomputes
@@ -4295,7 +4145,7 @@ fn split_dragging_divider_moves_it_and_updates_ratio() {
     );
 }
 
-/// quadraui#828: `[`/`]` are the keyboard equivalent of dragging the
+/// `[`/`]` are the keyboard equivalent of dragging the
 /// divider — the mouse-only drag above had no key path at all before this
 /// fix. Also moves the painted divider (not just the status text), so a
 /// key handler that updated `ratio` without affecting layout would fail
@@ -4341,9 +4191,8 @@ fn split_bracket_keys_resize_the_divider_with_no_mouse_step() {
 // Tree shape: Split(Horizontal, Split(Vertical, a, b), c) — split_index 0
 // is the root (outer, side-by-side) divider painted as `│`; split_index 1
 // is the nested (stacked) divider painted as `─`, only inside the left
-// column. Exercises issue #435's DragTarget::SplitDivider end to end:
-// hit-test -> DragState::begin -> dispatch_mouse_drag ->
-// UiEvent::SplitDividerDragged -> SplitTree::set_ratio_at_index.
+// column. Exercises hit-test → DragState::begin → dispatch_mouse_drag →
+// UiEvent::SplitDividerDragged → SplitTree::set_ratio_at_index.
 
 #[test]
 fn split_tree_initial_screen_paints_all_leaves_and_status() {
@@ -4449,11 +4298,11 @@ fn split_tree_q_exits() {
     assert!(driver.exited());
 }
 
-// ─── ModalOcclusionDemo (issue #455 / #491): modal click-through guard ─────
+// ─── ModalOcclusionDemo: modal click-through guard ─────────────────────────
 //
 // `ModalOcclusionDemo` is the fixture behind
 // `tests/conformance/scenarios/modal/dialog.blocks_click_through.scn.json`
-// (quadraui#491). It has no `if dialog_open` guard anywhere in its own
+//. It has no `if dialog_open` guard anywhere in its own
 // `handle` — occlusion is entirely quadraui's `ModalStack` + `dispatch_click`
 // tagging a `MouseDown` that lands inside the topmost modal's bounds with
 // that modal's `WidgetId`. These tests exercise the same behaviour the
@@ -4520,11 +4369,9 @@ fn modal_occlusion_open_button_opens_dialog() {
     );
 }
 
-/// The #455 regression, made executable: clicking the dialog's own body
-/// text — which sits directly over a row in the middle of the list — must
-/// be tagged with the dialog's id and must NOT reach the row underneath. If
-/// a backend forgot to route `MouseDown` through `ModalStack` first, this
-/// click would arrive as `widget: None` and select the covered row instead.
+/// Clicking the dialog's own body text — which sits directly over a row
+/// in the middle of the list — must be tagged with the dialog's id and must
+/// NOT reach the row underneath. A click fall-through selects the covered row.
 #[test]
 fn modal_occlusion_dialog_body_click_does_not_fall_through() {
     let mut driver = TuiDriver::new(ModalOcclusionDemo::new(), 100, 30);
@@ -4633,11 +4480,11 @@ fn modal_occlusion_q_exits() {
     assert!(driver.exited());
 }
 
-// ─── ChatDemo (issue #305): ChatController submit round-trip ────────────────
+// ─── ChatDemo: ChatController submit round-trip ─────────────────────────────
 //
 // `ChatDemo` wraps a `ChatController`; typing goes through
 // `ChatController::handle`'s `Key::Char(c) if !ctrl && !alt` arm (character
-// insertion). `ChatDemo` opts into `submit_on_enter` (#1137), so plain
+// insertion). `ChatDemo` opts into `submit_on_enter`, so plain
 // `Enter` submits — `Ctrl+S` remains a working alternative in both modes.
 // A missed `ChatDemo::sync_controller()` call or a dropped
 // `Reaction::Redraw` on `ChatControllerEvent::Submit` would leave the typed
@@ -4675,13 +4522,12 @@ fn chat_typing_and_ctrl_s_submits_message_into_transcript() {
     );
 }
 
-// ─── ChatDemo (#1137): submit_on_enter, hint line, Send/Stop segment ────────
+// ─── ChatDemo: submit_on_enter, hint line, Send/Stop segment ────────────────
 //
 // `ChatDemo::new` opts into `set_submit_on_enter(true)` and a persistent
 // hint line via `set_hint`, and `ChatController::render` always paints the
 // Send/Stop segment when the row is wide enough. These drive the real
-// `ChatController::handle`/`render` path exactly like the Ctrl+S test
-// above, just through the new #1137 affordances instead.
+// `ChatController::handle`/`render` path through those affordances.
 
 #[test]
 fn chat_plain_enter_submits_when_submit_on_enter_is_set() {
@@ -4815,14 +4661,11 @@ fn chat_clicking_stop_segment_while_busy_cancels_the_reply() {
     );
 }
 
-// ─── ChatDemo (quadraui#1136): input soft-wrap + auto-grow ──────────────────
+// ─── ChatDemo: input soft-wrap + auto-grow ──────────────────────────────────
 //
-// Before #1136 `ChatController::build_text_input` split only on `\n` and
-// forwarded a `scroll_col`, so a line longer than the input box scrolled
-// horizontally — the last word of a long message would never appear on
-// screen at all. Now it's pre-wrapped to `TextInput::content_cols`, so a
-// long message's words all paint, spread across multiple visual rows
-// inside the (now auto-grown) box.
+// `ChatController::build_text_input` pre-wraps to `TextInput::content_cols`,
+// so a long message's words all paint across multiple visual rows inside the
+// (now auto-grown) box, rather than scrolling horizontally off-screen.
 
 #[test]
 fn chat_long_message_soft_wraps_inside_the_input_box_instead_of_scrolling() {
@@ -4851,16 +4694,12 @@ fn chat_long_message_soft_wraps_inside_the_input_box_instead_of_scrolling() {
 
 #[test]
 fn chat_input_box_grows_taller_as_wrapped_row_count_increases() {
-    // #1137 widened this from 30: the Send/Stop segment now reserves a
-    // fixed-width column on the right of the input row, so a narrower
-    // viewport shrinks the wrap budget further and can land the last
-    // wrapped row exactly on the horizontal-scroll boundary (cursor at
-    // the end of a row that exactly fills the visible column count),
-    // which shifts *every* row left by one column to keep the cursor's
-    // one-column slack visible (`TextInput::layout`'s documented
-    // behaviour) — incidental to what this test is about. The wider
-    // viewport keeps the wrap boundaries clear of that edge case while
-    // still exercising several rows of auto-grow.
+    // The viewport width determines the wrap budget: a narrower viewport
+    // shrinks wrap boundaries and may land the last wrapped row exactly on
+    // the horizontal-scroll boundary (cursor at row's end), which shifts every
+    // row left one column to keep the cursor's slack visible — incidental to
+    // what this test measures. This width keeps wrap boundaries clear of that
+    // edge case while still exercising several rows of auto-grow.
     let mut driver = TuiDriver::new(ChatDemo::new(), 40, 20);
 
     // Empty input: the placeholder sits on a single (min-clamped) row —
@@ -4893,21 +4732,11 @@ fn chat_input_box_grows_taller_as_wrapped_row_count_increases() {
     );
 }
 
-// ─── ChatDemo (quadraui#832): the "thinking" spinner schedules its own frames ─
+// ─── ChatDemo: the "thinking" spinner schedules its own frames ─
 //
-// Before #832 every backend polled on a fixed cadence (TUI 16ms, GTK 33ms) and
-// called `tick` on every timeout, so `ChatDemo`'s thinking countdown advanced
-// for free. That cadence is gone — TUI/GTK now poll a coarse 250ms fallback
-// ceiling and macOS/Windows have no idle poll at all — so the demo has to ask
-// for each of its own frames via `Backend::request_frame_in`.
-//
-// That request is invisible on the painted screen: an app that re-arms itself
-// every 100ms and one that free-rides on an idle poll render byte-identical
-// frames and return identical `Reaction`s. `TuiBackend::frame_requests()` is
-// what makes the difference observable, so a regression that dropped either
-// `request_frame_in` call from `chat_demo.rs` — leaving a spinner that freezes
-// on macOS/Windows and stutters at 250ms on TUI/GTK — would fail here instead
-// of shipping.
+// `ChatController` must call `Backend::request_frame_in` to animate the
+// thinking spinner — without it, the spinner freezes on macOS/Windows (no
+// idle poll) and stutters at 250ms on TUI/GTK (coarse fallback ceiling).
 
 #[test]
 fn chat_thinking_countdown_rearms_a_frame_per_tick_and_stops_when_the_reply_lands() {
@@ -4986,7 +4815,7 @@ fn chat_thinking_countdown_rearms_a_frame_per_tick_and_stops_when_the_reply_land
     );
 }
 
-// ─── ChatDemo (quadraui#1138): per-turn hit regions + collapsible turns ─────
+// ─── ChatDemo: per-turn hit regions + collapsible turns ─────────────────────
 //
 // `ChatDemo::handle` wires `ChatControllerEvent::TurnClicked { row_in_turn: 0,
 // .. }` to `ChatController::toggle_turn_collapsed` (the demo's own choice —
@@ -4999,7 +4828,7 @@ fn chat_thinking_countdown_rearms_a_frame_per_tick_and_stops_when_the_reply_land
 fn chat_click_turn_header_collapses_then_reexpands_via_click() {
     let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
     // Two deliberate, separate single clicks on the same spot — without
-    // this they'd fold into a `DoubleClick` (quadraui#592), which
+    // this they'd fold into a `DoubleClick`, which
     // `ChatController::handle` doesn't special-case for the transcript.
     driver.set_double_click_folding(false);
 
@@ -5051,8 +4880,7 @@ fn chat_click_turn_header_collapses_then_reexpands_via_click() {
 
 #[test]
 fn chat_click_then_enter_toggles_the_same_turn_the_mouse_focused() {
-    // Regression for the #1138 review's mouse/keyboard-sync finding: a
-    // click must move `ChatController::focused_turn` onto the clicked turn
+    // A click must move `ChatController::focused_turn` onto the clicked turn
     // so a following `Enter` (no mouse involved) acts on it.
     let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
 
@@ -5117,7 +4945,7 @@ fn chat_tab_then_enter_toggles_focused_turn_without_a_mouse() {
     );
 }
 
-// ─── SidebarPanelApp (issue #305): sidebar item click updates main panel ────
+// ─── SidebarPanelApp: sidebar item click updates main panel ─────────────────
 //
 // Clicking a task row is handled by `SidebarPanelApp::handle`'s `MouseDown`
 // arm via `SidebarPanelHit::Content` — a different hit-test branch than the
@@ -5141,7 +4969,7 @@ fn sidebar_panel_click_task_row_selects_it_and_updates_status() {
     );
 }
 
-// ─── FormGroupsApp (issue #305): ToggleGroup click flips a rendered field ───
+// ─── FormGroupsApp: ToggleGroup click flips a rendered field ────────────────
 //
 // The issue's suggested scenario for this demo is "type into a field", but
 // `FormGroupsApp::handle` has no keyboard text-entry arm at all for its
@@ -5288,14 +5116,10 @@ fn form_scroll_typing_q_while_editing_name_does_not_quit() {
     );
 }
 
-// ─── FormAllFieldsApp (quadraui#808): every FieldKind variant paints ──────
+// ─── FormAllFieldsApp: every FieldKind variant paints ─────────────────────
 //
-// Baseline for the shared `tests/cross_backend_parity.rs` needle set:
-// TUI's `tui::form` rasteriser is untouched by #808 (PaintSurface
-// deliberately excludes TUI — see `paint_surface.rs`'s module doc), so
-// every one of these has always painted here. The value is asserting it
-// as a fixed baseline other backends are checked against, not finding a
-// TUI regression.
+// Baseline: TUI's `tui::form` rasteriser paints all `FieldKind` variants,
+// establishing a fixed baseline other backends are checked against.
 
 #[test]
 fn form_all_fields_paints_every_field_kind_value() {
@@ -5323,7 +5147,7 @@ fn form_all_fields_paints_every_field_kind_value() {
     }
 }
 
-// ─── ChartApp (issue #308): state-derived axis labels + gridlines ─────────
+// ─── ChartApp: state-derived axis labels + gridlines ──────────────────────
 //
 // `ChartApp::new()` starts on the sparkline view, whose `Chart` has no
 // `x_label`/`y_label`/`show_grid` — so the axis-label/gridline codepath in
@@ -5379,18 +5203,13 @@ fn chart_switching_to_line_view_paints_axis_labels_and_gridlines() {
     );
 }
 
-// ─── ChartApp (issue #584): stacked vs grouped multi-series bars ──────────
+// ─── ChartApp: stacked vs grouped multi-series bars ───────────────────────
 //
-// `ChartApp`'s bar views share one three-series dataset (`OK`, `Slow`,
-// `Failed`), so '3' and '4' paint the same numbers composed two different
-// ways. Before #584 the TUI bar painter rendered `series[0]` and silently
-// dropped the rest, which looked like a perfectly plausible chart — the
-// only way to catch that regression is to assert on the rendered grid,
-// not on "did a bar appear".
-//
-// `Failed` is `[10, 0, 35, 20, 5]`: its zero at index 1 is the
-// "one series is all zeros at this x" case, which must contribute no
-// rows and must not shift the segments below or above it.
+// `ChartApp` shares one three-series dataset across two bar views — '3'
+// and '4' paint the same numbers composed two different ways. The TUI bar
+// painter must handle all series, not drop the rest. `Failed` is
+// `[10, 0, 35, 20, 5]`: its zero at index 1 contributes no rows and does
+// not shift segments below or above it.
 
 /// Height (in `█` rows) of every screen column, left to right.
 fn bar_column_heights(screen: &str) -> Vec<usize> {
@@ -5451,9 +5270,8 @@ fn chart_stacked_bar_view_paints_every_series_scaled_to_column_totals() {
         "expected one full-width stack per x-position, got {runs:?}:\n{screen}"
     );
 
-    // Heights track the *column totals* (170, 290, 240, 400, 115), not
-    // `series[0]` (120, 230, 180, 310, 95) and not the tallest single
-    // value — the pre-#584 painter would have scaled to series[0] alone.
+    // Heights track the column totals (170, 290, 240, 400, 115), not just
+    // the tallest single value or one series alone.
     let tallest = *runs.iter().max().unwrap() as f64;
     assert!(tallest > 0.0, "no bars painted:\n{screen}");
     let expected = [170.0, 290.0, 240.0, 400.0, 115.0];
@@ -5515,7 +5333,7 @@ fn chart_grouped_bar_view_paints_series_side_by_side() {
     );
 }
 
-// ─── IndicatorsApp (issue #308): toggling cancellable paints/clears '×' ────
+// ─── IndicatorsApp: toggling cancellable paints/clears '×' ─────────────────
 //
 // `IndicatorsApp::handle`'s `'c'` arm flips `self.cancellable`, which
 // `tui::progress::draw_progress` uses to decide whether to reserve a
@@ -5553,7 +5371,7 @@ fn indicators_toggling_cancellable_paints_and_clears_cancel_symbol() {
     );
 }
 
-// ─── MarkdownDemo (issue #308): headings + fenced code render correctly ───
+// ─── MarkdownDemo: headings + fenced code render correctly ────────────────
 //
 // `MarkdownDemo::render` pushes a fixed markdown document through
 // `render_markdown_to_styled` into a `RichTextPopup`. The adapter strips
@@ -5645,7 +5463,7 @@ fn markdown_demo_f_toggles_font_role_without_losing_content() {
     );
 }
 
-// ─── ToastApp (issue #308): triggering + dismissing a toast ────────────────
+// ─── ToastApp: triggering + dismissing a toast ─────────────────────────────
 //
 // The issue's suggested scenario is "trigger a toast, assert it appears;
 // advance time, assert it disappears" — but `ToastApp` (and the
@@ -5690,19 +5508,13 @@ fn toast_dismiss_click_removes_it_then_trigger_adds_a_new_one() {
     );
 }
 
-// ─── ToastActionsApp (issue #1185): multi-action toast, keyboard focus
-// controller, and mouse ─────────────────────────────────────────────────
+// ─── ToastActionsApp: multi-action toast, keyboard focus ──────────────────
 //
-// `ToastActionsApp::new` seeds one "Install Markdown Language Server?"
-// toast with two actions ("Install" primary, "Don't ask again"
-// secondary) plus the dismiss `×`. This exercises the full acceptance
-// list from #1185: both action labels paint on their own row (never
-// inline with the title), `Tab` gives the stack keyboard focus,
-// Tab/Left/Right cycle its buttons (dismiss → Install → Don't ask
-// again → wraps), `Enter` activates whichever is focused, and a plain
-// mouse click on the still-present dismiss glyph works exactly as
-// `ToastApp`'s own test already covers — proving keyboard and mouse
-// routing coexist on the same stack.
+// `ToastActionsApp::new` seeds one toast with two actions ("Install",
+// "Don't ask again") plus the dismiss `×`. Action labels paint on their own
+// row, `Tab` gives stack keyboard focus, Tab/Left/Right cycle buttons, `Enter`
+// activates the focused one, and a plain mouse click on the dismiss glyph also
+// works — proving keyboard and mouse routing coexist.
 
 #[test]
 fn toast_actions_app_renders_both_actions_on_their_own_row() {
@@ -5758,7 +5570,7 @@ fn toast_actions_app_mouse_dismiss_still_works_alongside_the_controller() {
     );
 }
 
-// ─── TooltipDemo (#541): border vocabulary + title round-trip ─────────────
+// ─── TooltipDemo: border vocabulary + title round-trip ────────────────────
 //
 // `TooltipDemo` starts at `TooltipBorder::Full` with a title, so the
 // initial screen should show a closed box (all four corner glyphs) with
@@ -5860,7 +5672,7 @@ fn tooltip_demo_key_t_toggles_the_title_independently_of_the_border() {
     );
 }
 
-// ─── AiTranscript (issue #308): appended turn renders below prior turns ────
+// ─── AiTranscript: appended turn renders below prior turns ─────────────────
 //
 // `AiTranscript::send_next` (invoked on `ChatControllerEvent::Submit`)
 // pushes a user turn followed by a markdown-rendered assistant turn onto
@@ -5914,13 +5726,10 @@ fn ai_transcript_submit_appends_turn_below_prior_turns() {
 // ─── #306: input/selection demo backfill ────────────────────────────────────
 //
 // text_input, folder_picker, search_panel, multi_tree (DebugSidebar), and
-// data_table — the input/typing/focus/selection-state batch from #306
-// (follow-up to #B1). `text_input` and `data_table` already had driver
-// coverage from earlier issues (see the `TextInputDemo`/`DataTableApp`
-// sections above); the tests below round each demo out to the acceptance
-// criteria's own scenario ("type, assert echoed; backspace, assert
-// deletion", "sort … assert row order … changes", etc.) rather than
-// duplicating what's already there.
+// data_table — the input/typing/focus/selection-state batch. `text_input`
+// and `data_table` already had driver coverage from earlier issues; the tests
+// below round each demo out to its acceptance criteria's own scenario rather
+// than duplicating what's already there.
 
 /// text_input: clearing the field all the way back (not just one char)
 /// restores the placeholder and resets the cursor to column 1 — a distinct
@@ -5958,7 +5767,7 @@ fn text_input_backspacing_to_empty_restores_placeholder() {
     );
 }
 
-/// folder_picker (issue #306): `FolderPickerApp` flattens the whole
+/// folder_picker: `FolderPickerApp` flattens the whole
 /// directory tree up front (see `FolderPickerController::new`'s
 /// `collect_dir_entries` walk) rather than descending one level at a
 /// time, so "navigate down a directory" here means selecting a real
@@ -6000,15 +5809,11 @@ fn folder_picker_navigating_into_a_subdirectory_updates_visible_path() {
 /// absolute path is longer than the terminal is wide.
 ///
 /// `StatusBar::layout` keeps the highest-priority right segment even when
-/// it alone overflows the bar (it lands at column 0), and right segments
-/// paint *after* left ones — so a right segment carrying the full
-/// confirmed path used to blank the whole "Confirmed: …" message once the
-/// checkout lived under a long enough directory. That is not hypothetical:
-/// `folder_picker_navigating_into_a_subdirectory_updates_visible_path`
-/// above passes or fails purely on how deep the checkout sits, because it
-/// picks up `env::current_dir()`. This test pins the behaviour to a root
-/// it controls instead of the checkout's, so the regression can't hide
-/// again on a short path.
+/// it alone overflows the bar, and right segments paint after left ones — so
+/// a right segment carrying the full confirmed path used to blank the whole
+/// "Confirmed: …" message once the checkout lived under a long directory.
+/// This test pins the behaviour to a root it controls instead of the
+/// checkout's, so the regression stays visible.
 #[test]
 fn folder_picker_confirmed_status_survives_a_path_longer_than_the_screen() {
     // 140-char directory name ⇒ an absolute path comfortably wider than
@@ -6045,7 +5850,7 @@ fn folder_picker_confirmed_status_survives_a_path_longer_than_the_screen() {
     );
 }
 
-// ─── FilePickerApp: compose::FilePickerController demo (issue #965) ────────
+// ─── FilePickerApp: compose::FilePickerController demo ─────────────────────
 //
 // Drives `FilePickerController` directly — no `PlatformServices` involved
 // — the same "app owns the controller, no backend branching" shape
@@ -6105,7 +5910,7 @@ fn file_picker_app_save_mode_confirms_seeded_filename() {
     );
 }
 
-// ─── MessageDialogApp: compose::MessageDialogController demo (issue #965) ──
+// ─── MessageDialogApp: compose::MessageDialogController demo ──
 //
 // Drives `MessageDialogController` directly — no `PlatformServices`
 // involved. See `tui_message_dialog_app.rs`.
@@ -6156,7 +5961,7 @@ fn message_dialog_app_right_then_enter_resolves_discard() {
     );
 }
 
-/// search_panel (issue #306): typing into the (mock) search input updates
+/// search_panel: typing into the (mock) search input updates
 /// `SearchPanelApp::query` and the status bar echoes it as "Searching:
 /// <query>" — the module doc comment calls this a "mock" that "cycles
 /// fake results" rather than a real substring filter (`build_tree_rows`
@@ -6187,17 +5992,11 @@ fn search_panel_typing_updates_the_search_status() {
     );
 }
 
-/// multi_tree / DebugSidebar (issue #306): `fake_rows()` builds every row
-/// with `is_expanded: None` (flat leaves, no branches), and all four
-/// sections are always rendered fully expanded side by side — there is no
-/// collapse/expand chevron to drive here (`allow_collapse` is never set,
-/// so header clicks don't hide rows either). The nearest real "drill into
-/// a node and see its children" interaction this demo supports is `Tab`
-/// (moves the active-section pointer, e.g. onto WATCH) followed by `Down`
-/// (selects that *now-active* section's own first child row, not the
-/// previously-active section's) — proving keyboard focus actually follows
-/// the active section rather than staying pinned to whichever rows were
-/// selected first.
+/// multi_tree / DebugSidebar: all four sections render fully expanded
+/// side by side (no collapse/expand chevron). The nearest "drill into a node"
+/// interaction is `Tab` (moves the active-section pointer) followed by `Down`
+/// (selects that section's first child row) — proving keyboard focus actually
+/// follows the active section rather than staying on previously-selected rows.
 #[test]
 fn multi_tree_tab_then_down_selects_a_row_in_the_newly_active_section() {
     let mut driver = TuiDriver::new(DebugSidebar::new(), 100, 40);
@@ -6223,7 +6022,7 @@ fn multi_tree_tab_then_down_selects_a_row_in_the_newly_active_section() {
     );
 }
 
-// ─── SidebarRevealDemo: SidebarSystem::reveal (#595) ───────────────────────
+// ─── SidebarRevealDemo: SidebarSystem::reveal ──────────────────────────────
 //
 // `DebugSidebar` above uses `ScrollMode::WholePanel`, where the rendered
 // viewport is driven by a single panel-level scroll offset, not each
@@ -6263,15 +6062,12 @@ fn sidebar_reveal_scrolls_offscreen_row_into_view() {
     );
 }
 
-/// `reveal` selects the target row, not just scrolls to it (the bug
-/// #595 was filed against: a scroll-only `reveal` left every caller
-/// needing a separate `set_selected_path` call with no guarantee both
-/// were made together). Proven behaviorally: `TreeController::
-/// move_selection_by` treats "no selection yet" specially — pressing Up
-/// with nothing selected jumps to the *last* row (item29), not up by
-/// one. So if `reveal` had only scrolled and left selection untouched,
-/// Up afterward would land back on item29. It instead lands on item28,
-/// which is only possible if `reveal` already selected item29.
+/// `reveal` selects the target row, not just scrolls to it. Proven
+/// behaviorally: `TreeController::move_selection_by` treats "no selection yet"
+/// specially — pressing Up with nothing selected jumps to the last row, not up
+/// by one. If `reveal` had only scrolled, Up afterward would land back there.
+/// It instead lands on the previous row, which is only possible if `reveal`
+/// already selected it.
 #[test]
 fn sidebar_reveal_selects_the_row_so_interactive_nav_continues_from_it() {
     let mut driver = TuiDriver::new(SidebarRevealDemo::new(), 60, 10);
@@ -6292,12 +6088,9 @@ fn sidebar_reveal_selects_the_row_so_interactive_nav_continues_from_it() {
     );
 }
 
-/// `reveal` on a collapsed section expands it first, then scrolls
-/// (acceptance criterion 3, #595) — a collapsed section's body renders
-/// zero rows, so a version that scrolled without expanding would be a
-/// silent no-op here. `z` collapses the section (the header stays, but
-/// every row disappears), `g` then reveals item29, which must first
-/// show the section's body again.
+/// `reveal` on a collapsed section expands it first, then scrolls. A collapsed
+/// section's body renders zero rows, so a version that scrolled without
+/// expanding would be a silent no-op.
 #[test]
 fn sidebar_reveal_expands_a_collapsed_section_then_scrolls() {
     let mut driver = TuiDriver::new(SidebarRevealDemo::new(), 60, 10);
@@ -6327,13 +6120,12 @@ fn sidebar_reveal_expands_a_collapsed_section_then_scrolls() {
     );
 }
 
-// ─── SidebarPanelBodyDemo: `SidebarPanelBody` composer (#1041) ─────────────
+// ─── SidebarPanelBodyDemo: `SidebarPanelBody` composer ─────────────────────
 
 /// Default chrome mode is `HeaderAndSearch`: the header text and the
-/// (empty-query) search placeholder must both be visible, painted by
-/// one `draw_settings_chrome` call the composer's `render` issued —
-/// exactly the "header + search" combination the audit's Settings and
-/// Extensions rungs needed and previously hand-rolled per backend.
+/// (empty-query) search placeholder are both visible, painted by one
+/// `draw_settings_chrome` call — exactly the "header + search" combination
+/// this rung needs without hand-rolling per backend.
 #[test]
 fn sidebar_panel_body_starts_with_header_and_search_chrome() {
     let driver = TuiDriver::new(SidebarPanelBodyDemo::new(), 60, 12);
@@ -6441,12 +6233,10 @@ fn sidebar_panel_body_search_query_filters_body_rows() {
     );
 }
 
-/// `↓` moves the panel's scroll offset — the composer reserved a
-/// scrollbar gutter (`scrollbar_gutter: Some(..)`), and the demo paints
-/// a real `Scrollbar` into `layout.scrollbar_rect`; scrolling far enough
-/// must bring the last row into view, proving the gutter geometry the
-/// composer returned is what the demo actually used to build the
-/// scrollbar's track.
+/// `↓` moves the panel's scroll offset — the composer reserved a scrollbar
+/// gutter and the demo paints a real `Scrollbar` into `layout.scrollbar_rect`.
+/// Scrolling far enough brings the last row into view, proving the gutter
+/// geometry is what the demo actually used for the scrollbar's track.
 #[test]
 fn sidebar_panel_body_scroll_reaches_last_row() {
     let mut driver = TuiDriver::new(SidebarPanelBodyDemo::new(), 60, 12);
@@ -6467,13 +6257,10 @@ fn sidebar_panel_body_scroll_reaches_last_row() {
     );
 }
 
-/// data_table (issue #306): flipping sort direction with `d` must reorder
-/// the *rendered rows*, not just the header's `▲`/`▼` indicator (the
-/// existing `#550` tests only assert the indicator/column, never that row
-/// content actually moves). `DataTableApp` starts sorted by Name ascending
-/// (`api-gateway…` first, per the `#432` tests above); flipping to
-/// descending must move `worker-batch…` (alphabetically last) to the top
-/// and scroll `api-gateway…` out of the fixed 20-row viewport.
+/// data_table: flipping sort direction must reorder the rendered rows, not
+/// just the header's `▲`/`▼` indicator. Starting sorted by Name ascending,
+/// flipping to descending reorders the visible rows and scrolls the first
+/// entry out of view.
 #[test]
 fn data_table_flipping_sort_direction_reorders_visible_rows() {
     let mut driver = TuiDriver::new(DataTableApp::new(), 100, 20);
@@ -6504,7 +6291,7 @@ fn data_table_flipping_sort_direction_reorders_visible_rows() {
     );
 }
 
-// ─── BottomPanelDemo: maximise layout + tab-close auto-hide (#309) ─────────
+// ─── BottomPanelDemo: maximise layout + tab-close auto-hide ────────────────
 //
 // `tui_bottom_panel`'s real ShellApp is `BottomPanelDemo`, driven through
 // `driver_with_shell` so the full `ShellApp -> ShellAdapter -> dispatch_event`
@@ -6630,7 +6417,7 @@ fn bottom_panel_closing_both_tabs_hides_the_panel() {
         !after.contains('×'),
         "no tabs remain, so no close glyph should remain either:\n{after}"
     );
-    // The real "hide the panel" signal (#309): `ShellAdapter` auto-hides the
+    // The real "hide the panel" signal: `ShellAdapter` auto-hides the
     // whole bottom-panel region once its tab list is empty, so the main
     // content column regains the full band height and the demo's
     // last-event hint ("Tab closed: bp:problems", from closing the second
@@ -6654,7 +6441,7 @@ fn bottom_panel_closing_both_tabs_hides_the_panel() {
     );
 }
 
-// ─── BottomPanelDemo: independently-gated bottom band (#997) ──────────────
+// ─── BottomPanelDemo: independently-gated bottom band ─────────────────────
 //
 // `BottomPanelDemo::config()` also registers one `BottomBand` (`band:status`)
 // via `ShellConfig::with_bottom_bands` — separate from the tabbed panel
@@ -6706,9 +6493,8 @@ fn bottom_band_s_key_toggles_visibility_independent_of_the_tabbed_panel() {
         !after_hide.contains("STATUS: everything ok"),
         "band should disappear once hidden:\n{after_hide}"
     );
-    // The tabbed panel above is untouched by the band's own toggle — this
-    // is the "independent presence" gating #997 asks for, not a shared
-    // height knob.
+    // The tabbed panel above is independent of the band's toggle — the band
+    // has its own visibility gate, not a shared height control.
     assert!(
         after_hide.contains("TERMINAL") && after_hide.contains("PROBLEMS"),
         "tabbed panel must be unaffected by the band's own visibility toggle:\n{after_hide}"
@@ -6723,7 +6509,7 @@ fn bottom_band_s_key_toggles_visibility_independent_of_the_tabbed_panel() {
     );
 }
 
-// ─── FrameDemo: TabBar + ListView + StatusBar surfaces (#309) ──────────────
+// ─── FrameDemo: TabBar + ListView + StatusBar surfaces ─────────────────────
 
 #[test]
 fn frame_demo_initial_paint_renders_all_three_surfaces() {
@@ -6768,7 +6554,7 @@ fn frame_demo_tab_key_cycles_active_tab_through_all_three() {
     );
 }
 
-// ─── HScrollEditor: horizontal scroll via key (#309) ───────────────────────
+// ─── HScrollEditor: horizontal scroll via key ──────────────────────────────
 
 #[test]
 fn hscroll_dollar_key_scrolls_visible_window_to_line_end() {
@@ -6808,7 +6594,7 @@ fn hscroll_dollar_key_scrolls_visible_window_to_line_end() {
     );
 }
 
-// ─── MenuBarApp: open / navigate / select via MenuSystem (#309) ────────────
+// ─── MenuBarApp: open / navigate / select via MenuSystem ───────────────────
 
 #[test]
 fn menu_bar_alt_f_opens_file_dropdown() {
@@ -6879,7 +6665,7 @@ fn menu_bar_down_then_enter_navigates_and_activates_open_file() {
     );
 }
 
-// ─── ToolbarApp: full press+release toggles is_active state (#309) ─────────
+// ─── ToolbarApp: full press+release toggles is_active state ────────────────
 //
 // The existing `toolbar_click_fires_action_without_focus` test only ever
 // calls `driver.click` (a bare `MouseDown`), which sets `pressed_id` but
@@ -6911,17 +6697,11 @@ fn toolbar_press_release_on_filter_toggles_is_active_state() {
         "a full press+release on Filter should flip filter_active to true:\n{after_on}"
     );
 
-    // Second press+release, at the button's icon glyph rather than its
-    // label: a second click at the *exact* label position within
-    // `DOUBLE_CLICK_MS` would fall inside `DoubleClickDetector`'s merge
-    // radius (`tui/events.rs`) and get folded into a `UiEvent::DoubleClick`
-    // instead of a plain `MouseDown` — which `ToolbarApp::handle` doesn't
-    // match, silently dropping the toggle. Clicking a couple of cells over
-    // (still inside the same button) stays outside that radius while
-    // exercising the same toggle path.
-    // `*` is Filter's icon because `ToolbarApp` registers
-    // `Icon::new("\u{f0b0}", "*")` for it and the demo starts with Nerd
-    // fonts off (issue #913) — it used to be a hardcoded `⚙`.
+    // Second press+release at the button's icon glyph: clicking the exact
+    // label position within `DOUBLE_CLICK_MS` would fall inside the merge
+    // radius and become a `DoubleClick` instead of `MouseDown`. Clicking a
+    // couple of cells over stays outside that radius while exercising the
+    // same toggle path. `*` is Filter's icon in the demo (Nerd fonts off).
     let (x2, y2) = driver
         .find("*")
         .unwrap_or_else(|| panic!("Filter icon not painted:\n{after_on}"));
@@ -6936,14 +6716,10 @@ fn toolbar_press_release_on_filter_toggles_is_active_state() {
 
 // ─── WideTabBarDemo: CJK tab label paints intact, q exits ──────────────────
 //
-// The quadraui#555 conformance-matrix fixture: a `TabBar` whose active tab
-// label contains a double-width (CJK) glyph. `TuiDriver` renders through
-// ratatui's in-memory `TestBackend`, so — per quadraui#555's own writeup —
-// this only ever sees the draw-time paint inventory, not the emitted
-// byte stream a real terminal flush would produce. It cannot by itself
-// catch quadraui#554-shaped bugs (see `tui_pty_smoke.rs` / the vt100
-// observer in `src/tui/vt_testing.rs` for that); it exists to prove the
-// example itself renders and behaves as intended under `TestBackend`.
+// A `TabBar` with an active tab label containing a double-width (CJK) glyph.
+// `TuiDriver` renders through ratatui's `TestBackend`, so this proves the
+// example renders and behaves as intended under `TestBackend` — it cannot
+// catch terminal-emitter bugs that the PTY smoke test catches instead.
 
 #[test]
 fn wide_tab_bar_demo_initial_screen_paints_both_tab_labels() {
@@ -6966,7 +6742,7 @@ fn wide_tab_bar_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the wide tab bar demo");
 }
 
-// ─── TabIconsDemo: per-tab icon glyphs through the sidecar (#620) ──────────
+// ─── TabIconsDemo: per-tab icon glyphs through the sidecar ─────────────────
 //
 // The icon sidecar's whole contract is geometric: a decorated tab must
 // reserve exactly the columns it paints, on both the paint path
@@ -7110,12 +6886,11 @@ fn tab_icons_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the tab icons demo");
 }
 
-// ─── TabChromeDemo: active-tab bracket framing through Backend::draw_tab_bar_with_chrome (#631) ───
+// ─── TabChromeDemo: active-tab bracket framing through
+//     Backend::draw_tab_bar_with_chrome ──────────────────────────────────
 //
-// The whole point of #631 is that a consumer never has to bake `[`/`]`
-// into `TabItem::label` (coord-tui's pre-#631 workaround) to get bracket
-// framing that encloses the close glyph. These drive the shipping
-// `tui_tab_chrome` example through the declarative chrome path end to end.
+// A consumer never has to bake `[`/`]` into `TabItem::label` to get bracket
+// framing around the close glyph; instead use the declarative chrome path.
 
 fn tab_chrome_bar_id() -> quadraui::WidgetId {
     quadraui::WidgetId::new("tab-chrome-demo:tabs")
@@ -7193,18 +6968,13 @@ fn tab_chrome_demo_q_exits() {
 }
 
 // ─── ActivityStyleDemo: VS-Code-style row fill through
-//     Backend::draw_activity_bar_with_style (#658) ────────────────────────
+//     Backend::draw_activity_bar_with_style ───────────────────────────────
 //
-// #658 adds `ActivityBarStyle::active_bg` as a sidecar rather than a field
-// on `ActivityBar` — see that type's doc for why a new field there would
-// have broken every existing exhaustive `ActivityBar { .. }` literal. These
-// drive the shipping `tui_activity_style` example through the new
-// `Backend::draw_activity_bar_with_style` entry point end to end. The TUI
-// rasteriser's actual fill *colour* is a cell-background assertion, already
-// covered at the primitive level by
-// `tui::activity_bar::tests::active_bg_fills_row_cells_with_zero_accent_glyph_when_accent_is_none`
-// — this driver test instead proves the example's own behaviour: no
-// left-edge accent glyph on screen, and a click on an icon activates it.
+// `ActivityBarStyle::active_bg` pairs with `ActivityBar` as a sidecar to
+// avoid breaking exhaustive literals. These drive the shipping example
+// through the new entry point end to end. The rasteriser's fill colour is
+// covered at the primitive level; this driver test proves the example itself
+// (no accent glyph on screen, click activates an icon).
 
 #[test]
 fn activity_style_demo_paints_no_accent_glyph() {
@@ -7247,7 +7017,7 @@ fn activity_style_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the activity style demo");
 }
 
-// ─── MinimapApp (issue #382): braille density view + click-to-seek ────────
+// ─── MinimapApp: braille density view + click-to-seek ─────────────────────
 //
 // The TUI rasteriser never shapes literal text — it packs `U+2800`-block
 // braille dots — so unlike every other driver test in this file, "did the
@@ -7307,11 +7077,8 @@ fn minimap_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the minimap demo");
 }
 
-/// Issue #1143: the `s` key toggles `MinimapScale::One`/`Two`, and the
-/// status bar's own scale label (the app's literal-text proof, same
-/// technique the braille test above uses) must flip with it — TUI has no
-/// font to scale, so this is only a state-toggle proof, not a visual one
-/// (the real visual difference is GTK's own atlas test).
+/// `s` toggles `MinimapScale::One`/`Two`, and the status bar's scale label
+/// flips with it — TUI has no font to scale, so this is a state-toggle proof.
 #[test]
 fn pressing_s_toggles_the_minimap_scale_label() {
     let mut driver = TuiDriver::new(MinimapApp::new(), 100, 30);
@@ -7336,7 +7103,7 @@ fn pressing_s_toggles_the_minimap_scale_label() {
     );
 }
 
-// ─── ImageApp (#662): Image primitive + MenuBar leading icon slot ─────────
+// ─── ImageApp: Image primitive + MenuBar leading icon slot ────────────────
 //
 // TUI can't rasterise `examples/assets/quadra_logo.png`, so
 // `Backend::draw_image` paints the descriptor's `fallback_text` ("[Q]")
@@ -7378,14 +7145,11 @@ fn clicking_the_first_menu_item_past_the_icon_slot_still_hits_it() {
     );
 }
 
-/// #818 acceptance: clicking the logo image reaches
-/// `ImageLayout::hit_test` — a real click, not just a unit test against
-/// `Image::layout` in isolation. Uses `find_bounds`'s full-span center
-/// (not `find`'s leftmost-cell center) because the clickable region is
-/// `Image::layout`'s `Contain`-fit sub-rect, which — on TUI, where the
-/// fallback text is centered in the *full* reserved icon column rather
-/// than the letterboxed image geometry — only overlaps the middle of the
-/// painted "[Q]" glyphs, not their first cell.
+/// Clicking the logo image reaches `ImageLayout::hit_test` — a real click,
+/// not just a unit test in isolation. Uses `find_bounds`'s full-span center
+/// because the clickable region is `Image::layout`'s `Contain`-fit sub-rect,
+/// which on TUI (where fallback text centers in the full icon column rather
+/// than the letterboxed image) only overlaps the middle of the painted glyphs.
 #[test]
 fn clicking_the_logo_image_activates_it() {
     let mut driver = TuiDriver::new(ImageApp::new(), 100, 10);
@@ -7410,13 +7174,10 @@ fn image_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the image demo");
 }
 
-// ─── CanvasApp (#1102): the `Canvas` primitive's custom gauge ─────────────
+// ─── CanvasApp: the `Canvas` primitive's custom gauge ─────────────────────
 //
-// `Canvas`'s TUI story is *degrade*, not `Unsupported` (issue #1097/D-014):
-// these tests prove the gauge's `DrawOp::Rect`/`DrawOp::TextRun` ops
-// actually reach the screen end to end through `Backend::draw_canvas` and
-// `Backend::canvas_layout`, the same way `image_paints_fallback_text_left_of_the_shifted_menu_items`
-// above proves `Image`'s degrade end to end.
+// `Canvas` degrades on TUI: `DrawOp::Rect`/`DrawOp::TextRun` ops reach the
+// screen end to end through `Backend::draw_canvas` and `Backend::canvas_layout`.
 
 #[test]
 fn canvas_demo_paints_the_initial_gauge_label() {
@@ -7529,7 +7290,7 @@ fn canvas_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the canvas demo");
 }
 
-// ─── FloatApp (#1321): placement, edge clamping, z-order, focus ───────────
+// ─── FloatApp: placement, edge clamping, z-order, focus ───────────────────
 //
 // `examples/common/float_app.rs`'s module doc names exactly what each
 // assertion below proves end to end through `Backend::draw_float` +
@@ -7727,19 +7488,17 @@ fn float_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the float demo");
 }
 
-// ─── WorkspaceDemo: `WorkspaceController` inside an AppShell panel (#596) ───
+// ─── WorkspaceDemo: `WorkspaceController` inside an AppShell panel ──────────
 //
-// #596 shipped the controller half of #469: an ordered set of *opaque*
-// document ids with one active, rendered through the `TabBar` primitive
-// into whatever rect the host owns — here, the sidebar panel's content
-// rect, with the active document's body painted by the app into the main
-// content area. These drive the shipping `tui_workspace` example
-// end-to-end through `driver_with_shell`, so the whole
-// `event → ShellAdapter → WorkspaceController → render` path is real.
+// An ordered set of opaque document ids with one active, rendered through
+// `TabBar` into the sidebar panel's content rect, with the active document's
+// body painted by the app into the main content area. These drive the shipping
+// example end-to-end through `driver_with_shell`, so the whole event →
+// ShellAdapter → WorkspaceController → render path is real.
 //
-// Tab targets always come from `tab_center` / `tab_close_center` against
-// the controller's own bar id — never a hardcoded column — because every
-// tab paints the same `×` chrome and `find()` cannot disambiguate them.
+// Tab targets come from `tab_center` / `tab_close_center` against the
+// controller's bar id — never hardcoded columns — because every tab paints
+// the same close glyph and `find()` cannot disambiguate them.
 
 fn workspace_bar_id() -> quadraui::WidgetId {
     quadraui::WidgetId::new(workspace_demo::BAR_ID)
@@ -7889,7 +7648,7 @@ fn workspace_demo_closing_the_last_document_leaves_an_empty_workspace() {
     // Three closes land on nearly the same cell in quick succession, which
     // the driver's double-click detector would otherwise fold into a
     // `DoubleClick` the demo doesn't bind — turn folding off so each click
-    // stays a distinct `MouseDown` (quadraui#592).
+    // stays a distinct `MouseDown`.
     driver.set_double_click_folding(false);
     // Repeatedly close whatever tab 0 is until the strip is empty. Each
     // close re-lays-out the strip, so the target is re-resolved every
@@ -7979,7 +7738,7 @@ fn workspace_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the workspace demo");
 }
 
-// ─── Preview tabs (quadraui#597) ────────────────────────────────────────
+// ─── Preview tabs ───────────────────────────────────────────────────────
 //
 // `p` opens the next backlog document as the workspace's single preview;
 // `m` promotes the active document explicitly. These drive the same
@@ -8148,7 +7907,7 @@ fn workspace_demo_middle_click_closes_a_tab_without_activating_it() {
     );
 }
 
-// ── tui_focus_ring / FocusDemo (issue #830) ──────────────────────────────
+// ── tui_focus_ring / FocusDemo ───────────────────────────────────────────
 //
 // The acceptance bar for the runner-owned `FocusManager`: Tab traversal is
 // derived from `ScreenLayout::tab_stops`, not from an app-maintained widget
@@ -8322,16 +8081,14 @@ fn focus_demo_ring_overlays_without_erasing_the_focused_widget() {
     );
 }
 
-// ─── TextDisplayWrapDemo: long lines wrap instead of truncating (#905) ──────
+// ─── TextDisplayWrapDemo: long lines wrap instead of truncating ─────────────
 
 #[test]
 fn text_display_wrap_demo_wraps_the_long_line_instead_of_truncating_it() {
-    // A narrow, fixed viewport with no scroll step anywhere in this test:
-    // before #905, `TAIL_MARKER` (the last word of the fixture's
+    // Before wrapping was added, `TAIL_MARKER` (the last word of the
     // deliberately-too-wide line) could never be painted here — the line
-    // was cut off at the right edge and the rest was gone. It's only
-    // reachable now because `TextDisplay` word-wraps the line onto
-    // continuation rows within the same tall-enough viewport.
+    // was cut off at the right edge. It's now reachable because
+    // `TextDisplay` word-wraps the line onto continuation rows.
     let driver = TuiDriver::new(TextDisplayWrapDemo::new(), 40, 20);
     let screen = driver.screen();
     assert!(
@@ -8358,13 +8115,9 @@ fn text_display_wrap_demo_pressing_q_exits() {
     assert!(driver.exited(), "'q' should make the app exit");
 }
 
-/// #1001 acceptance: `Backend::draw_command_line_selection` actually
-/// paints a highlight through the real example app, not just in the
-/// rasteriser's own unit tests. Before #1001 there was no way for an
-/// `AppLogic` to get a `CommandLine` selection highlight painted at all —
-/// `CommandLineLayout::selection_bounds` computed the rect but nothing
-/// consumed it. `find` locates the painted word (never a hard-coded
-/// coordinate, per this repo's driver-test convention) and `style_at`
+/// `Backend::draw_command_line_selection` actually paints a highlight through
+/// the real example app. Before this was added, the selection rect was computed
+/// but nothing consumed it. `find` locates the painted word and `style_at`
 /// reads back its actual cell background before and after toggling.
 #[test]
 fn command_line_selection_demo_toggles_the_highlight_on_the_painted_word() {
@@ -8429,13 +8182,10 @@ fn command_line_selection_demo_pressing_q_exits() {
     assert!(driver.exited(), "'q' should make the app exit");
 }
 
-/// Issue #1187 acceptance: on a TUI driver, opening a context menu
-/// through `ContextMenuController::open` with the resolved `Custom`
-/// style paints it and makes it hit-testable — clicking an item
-/// delivers `UiEvent::ContextMenuItemActivated` with the right id,
-/// routed through the app's one `handle_menu_event` path. `TuiBackend`
-/// never declares `native_menu`, so `Auto` (the default) already
-/// resolves `Custom` here without touching `set_menu_style` at all.
+/// Opening a context menu with the resolved `Custom` style paints it and makes
+/// it hit-testable — clicking an item delivers `UiEvent::ContextMenuItemActivated`
+/// with the right id. `TuiBackend` has no `native_menu` capability, so `Auto`
+/// (the default) already resolves to `Custom` here.
 #[test]
 fn context_menu_style_demo_click_activates_item() {
     let mut driver = TuiDriver::new(ContextMenuStyleDemo::new(), 60, 12);
@@ -8469,8 +8219,8 @@ fn context_menu_style_demo_click_activates_item() {
     );
 }
 
-/// Issue #1187 acceptance: Escape dismisses the painted menu and
-/// delivers `UiEvent::ContextMenuDismissed` without activating anything.
+/// Escape dismisses the painted menu and delivers
+/// `UiEvent::ContextMenuDismissed` without activating anything.
 #[test]
 fn context_menu_style_demo_escape_dismisses() {
     let mut driver = TuiDriver::new(ContextMenuStyleDemo::new(), 60, 12);
@@ -8490,10 +8240,9 @@ fn context_menu_style_demo_escape_dismisses() {
     );
 }
 
-/// Issue #1187 acceptance: the example shows switching `MenuStyle` at
-/// runtime via `Backend::set_menu_style` — `m` cycles the *requested*
-/// style even though TUI's *effective* style stays `custom` throughout
-/// (no `native_menu` capability to resolve `Native`/`Auto` against).
+/// The example shows switching `MenuStyle` at runtime via
+/// `Backend::set_menu_style` — `m` cycles the requested style even though
+/// TUI's effective style stays `custom` throughout (no native_menu capability).
 #[test]
 fn context_menu_style_demo_m_cycles_requested_style() {
     let mut driver = TuiDriver::new(ContextMenuStyleDemo::new(), 60, 12);
@@ -8524,7 +8273,7 @@ fn context_menu_style_demo_m_cycles_requested_style() {
 }
 
 // ─── StatusBarPriorityDemo: cursor segment survives a dirty width squeeze
-// (issue #1303) ──────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn status_bar_priority_demo_initial_screen_shows_every_segment() {

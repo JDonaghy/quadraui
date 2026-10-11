@@ -1,4 +1,4 @@
-//! GTK runner for the context-sensitive help layer demo (#431).
+//! GTK runner for the context-sensitive help layer demo.
 //!
 //! Same `HelpLayerDemo` `ShellApp` as `tui_help_layer` — proves the help
 //! registry + cheatsheet overlay + palette integration render on GTK with

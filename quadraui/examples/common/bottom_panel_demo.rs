@@ -1,5 +1,5 @@
 //! Demo: AppShell with a bottom panel tab strip plus an independently-gated
-//! bottom band (issue #997).
+//! bottom band.
 //!
 //! Demonstrates `ShellConfig.with_bottom_panel_config()`:
 //! - Two tabs ("TERMINAL" and "PROBLEMS") with a `BackendWidget` each.
@@ -8,7 +8,7 @@
 //! - Click `^` to maximise/restore.
 //! - Drag the resize grip (top edge of the panel) to change its height.
 //!
-//! Also demonstrates `ShellConfig.with_bottom_bands()` (#997): a one-line
+//! Also demonstrates `ShellConfig.with_bottom_bands()`: a one-line
 //! "STATUS" band docked directly below the tabbed panel, independent of it
 //! — closing/maximising the tabbed panel above does not affect the band,
 //! and the band's own presence is gated separately:
@@ -25,7 +25,7 @@ use quadraui::{
     ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
-/// Id of the demo's one `BottomBand` (issue #997).
+/// Id of the demo's one `BottomBand`.
 pub fn status_band_id() -> WidgetId {
     WidgetId::new("band:status")
 }
@@ -160,7 +160,7 @@ impl BottomPanelDemo {
             maximised: false,
             height_fraction: 0.3,
         })
-        // #997: an independently-gated band, separate from the tabbed
+        // An independently-gated band, separate from the tabbed
         // panel above — closing/maximising the panel doesn't touch this,
         // and its own visibility toggles independently (see `handle`'s
         // `s` binding below).
@@ -220,7 +220,7 @@ impl ShellApp for BottomPanelDemo {
         }
     }
 
-    // #997: the independently-gated status band, when visible. A separate
+    // The independently-gated status band, when visible. A separate
     // `ShellApp` hook (not read off `layout` in `render_content` above) —
     // see `render_bottom_band`'s doc for why bottom-band bounds aren't a
     // field on `AppShellLayout`.

@@ -1,39 +1,11 @@
-//! Guards the `# Safety` doc section on every `pub unsafe fn` in
-//! `src/macos/` (issue #913 follow-up).
+//! Checks that every `pub unsafe fn` in `src/macos/` has a `# Safety` doc section.
 //!
-//! ## Why this test exists
+//! This test runs on every platform and catches regressions that the `macos-latest`
+//! CI runner would miss, since `src/macos/` is only compiled when both the `macos`
+//! feature and `target_os = "macos"` are set.
 //!
-//! `clippy::missing_safety_doc` is warn-by-default and CI runs with
-//! `RUSTFLAGS: "-D warnings"`, so a `pub unsafe fn` whose doc comment has
-//! no `# Safety` section is a hard build failure — but **only on a
-//! `macos-latest` runner**. `lib.rs` gates `mod macos` on
-//! `all(feature = "macos", target_os = "macos")`, so none of `src/macos/`
-//! is compiled (let alone linted) by the `tui`, `gtk` or `win` legs, nor
-//! by `cargo clippy --features macos` on Linux. The only signal is
-//! `.github/workflows/macos.yml`, which is both slow and `paths:`-filtered
-//! — exactly the blind spot `tests/macos_appkit_features.rs` documents for
-//! missing `objc2-app-kit` features.
-//!
-//! That blind spot has already cost a round trip. While threading
-//! `nerd_fonts_enabled` through `macos::multi_section_view` for #913, a
-//! rewrite of `draw_multi_section_view`'s doc comment replaced the
-//! `# Safety` section with the new parameter's note instead of adding to
-//! it. Every local leg passed; the failure surfaced only on the macOS
-//! runner, as a lint with nothing to do with the change being made.
-//!
-//! This test closes that hole with a plain text check that runs on every
-//! leg, on any OS, in milliseconds. It is deliberately independent of the
-//! `macos` feature and of `target_os` — it reads the files as text, the
-//! same way `macos_appkit_features.rs` does, so a Linux worker sees the
-//! failure before CI does.
-//!
-//! ## Scope
-//!
-//! Only bare `pub unsafe fn` is checked, which is the set
-//! `clippy::missing_safety_doc` actually fires on: the lint is about
-//! *exported* API, so `pub(crate)` / `pub(super)` helpers (e.g.
-//! `macos::backend`'s `ns_fill_rect` family) are out of scope here, just
-//! as they are for clippy.
+//! Only bare `pub unsafe fn` is checked: `pub(crate)` and `pub(super)` helpers
+//! are out of scope, as they are for `clippy::missing_safety_doc`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -177,8 +149,8 @@ fn scanner_distinguishes_documented_from_undocumented() {
         "multi-line attributes must not hide the `# Safety` section above them"
     );
 
-    // The #913 regression shape: the section was replaced by a note about a
-    // newly added parameter.
+    // A missing `# Safety` section can occur when a doc comment is rewritten
+    // and a parameter note replaces the safety section instead of being added to it.
     let undocumented: Vec<&str> = vec![
         "/// Paint `view` into `(x, y, w, h)` on `ctx`.",
         "///",

@@ -1,4 +1,4 @@
-//! GTK runner for `HitMapRecoverDemo` — `ScreenLayout::hit_map()` proof (#425).
+//! GTK runner for `HitMapRecoverDemo` — `ScreenLayout::hit_map()` proof.
 #[path = "common/mod.rs"]
 mod common;
 

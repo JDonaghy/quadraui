@@ -1,16 +1,6 @@
-//! Guard against the documentation-vs-code drift that issue #798 fixed.
+//! Verify that documentation describes the crate as it is now.
 //!
-//! #487 did a manual "truth pass" over quadraui's docs in July and it had
-//! drifted again by September: the root README claimed Windows was "not
-//! implemented yet" while CI blocked merges on a real `windows-latest`
-//! build; `quadraui/src/lib.rs` (what docs.rs actually renders) still said
-//! "nine primitives" and "v0.1.x" against a crate that had 40 primitive
-//! modules and version `0.0.1`; `docs/UI_CRATE_DESIGN.md` claimed a11y
-//! fields shipped that don't exist; `docs/BACKEND.md` documented a
-//! `BackendError` type with zero occurrences anywhere in `src/`.
-//!
-//! A manual correction rots the instant the crate changes shape again. This
-//! test derives the ground truth (version, primitive count, per-backend
+//! This test derives ground truth (version, primitive count, per-backend
 //! reality) from the crate itself — `Cargo.toml`/`env!("CARGO_PKG_VERSION")`,
 //! `src/primitives/mod.rs`'s module list, `src/lib.rs`'s own `cfg` gates,
 //! `src/backend.rs` — and fails if the docs stop agreeing with it. Whoever
@@ -18,22 +8,8 @@
 //! rasterisers is the one who has to touch the docs, in the same PR,
 //! instead of leaving it for the next audit.
 //!
-//! What this cannot do: notice a NEW kind of drift nobody anticipated. It
-//! only re-checks the specific facts #798 corrected. Extend it when the
-//! next drift is found rather than trusting a truth pass to hold forever.
-//!
-//! #1107 ("truth pass II") found it had rotted again: the root README's
-//! `## Features` section only ever named `tui`/`gtk`, even after `terminal`,
-//! `win`, and `macos` features existed in `Cargo.toml`; README.md's Windows
-//! status paragraph still said "most `Backend::draw_*`/`*_layout` methods
-//! on `WinBackend` are `todo!()` stubs" against a `src/win/backend.rs` with
-//! zero non-comment `todo!()` calls left; and the README's sample
-//! `Cargo.toml` snippet labelled the `path =` dependency shape "vimcode's
-//! approach" after vimcode had already moved to a pinned `git`+`rev`
-//! dependency (vimcode#691, quadraui#795 — see the root `README-PATCH.md`).
-//! The tests below derive each of those three facts from `Cargo.toml` /
-//! `src/win/backend.rs` instead of restating a snapshot, the same strategy
-//! #798's tests already use for version and primitive count.
+//! This test only re-checks specific facts. Extend it when new kinds of
+//! drift are found rather than trusting a manual audit to hold forever.
 
 use std::fs;
 use std::path::PathBuf;
@@ -232,7 +208,7 @@ fn readme_and_lib_doc_state_the_real_version() {
 
 #[test]
 fn lib_doc_does_not_claim_still_unpublished() {
-    // #1355: v0.1.0 shipped to crates.io on 2026-10-07. `src/lib.rs`'s
+    // V0.1.0 shipped to crates.io on 2026-10-07. `src/lib.rs`'s
     // crate doc is what docs.rs actually renders as the package's front
     // page, and it kept saying "prepared for its first publish ... but
     // not yet published" well after the publish happened. This fix only
@@ -265,7 +241,7 @@ fn major_minor() -> String {
 
 #[test]
 fn readme_leads_with_a_resolvable_published_version() {
-    // #1355: v0.1.0 published to crates.io on 2026-10-07. The root
+    // V0.1.0 published to crates.io on 2026-10-07. The root
     // README's Getting started section is the first thing a prospective
     // consumer reads, and it must lead with a `quadraui = { version =
     // "..." }` dependency a plain `cargo add`/`cargo build` can actually
@@ -285,18 +261,14 @@ fn readme_leads_with_a_resolvable_published_version() {
     );
 }
 
-// ── Consumer pin shape (#1107, inverted by #1355) ────────────────────────
+// ── Consumer pin shape ─────────────────────────────────────────────────
 
 #[test]
 fn readme_does_not_attribute_the_path_dependency_shape_to_vimcode() {
-    // #1107: README's sample Cargo.toml block labelled the `path =`
-    // dependency snippet "vimcode's approach". vimcode moved to a pinned
-    // `git` + `rev` dependency in vimcode#691 — the same shape coord-tui
-    // uses — and no longer path-deps a sibling checkout; the vendored
-    // vt100 patch that the old path shape depended on is gone too
-    // (quadraui#795, see root `README-PATCH.md`'s regression note). A
-    // reader who copies the labelled snippet today gets a dependency
-    // shape neither real consumer actually uses.
+    // README's sample Cargo.toml block must not attribute a `path =`
+    // dependency snippet to vimcode, since vimcode uses a pinned `git` +
+    // `rev` dependency instead. A reader who copies the labelled snippet
+    // today gets a dependency shape vimcode does not actually use.
     let readme = root_readme();
     assert!(
         !readme.to_lowercase().contains("vimcode's approach"),
@@ -310,7 +282,7 @@ fn readme_does_not_attribute_the_path_dependency_shape_to_vimcode() {
 
 #[test]
 fn readme_still_mentions_git_rev_pin_for_unreleased_work() {
-    // #1355: now that v0.1.0 is on crates.io, the git+rev pin is no
+    // Now that v0.1.0 is on crates.io, the git+rev pin is no
     // longer the *lead* Getting started snippet (see
     // `readme_leads_with_a_resolvable_published_version` above) — but it
     // is still real: both coord-tui and vimcode can use it to track
@@ -361,12 +333,9 @@ fn root_readme_states_the_real_primitive_count() {
 
 #[test]
 fn canvas_doc_states_the_real_other_primitive_count() {
-    // #1393: `Canvas` is itself one of the `pub mod` entries
-    // `primitive_module_count` counts, so its own module doc's "the N
-    // other shipped primitives" phrasing must say one less than the
-    // total — it went stale at "40 other" against a 42-module crate (41
-    // others) after #798/#1107 kept `lib.rs`/README.md in sync but never
-    // taught this file about `canvas.rs`'s own doc comment.
+    // `Canvas` is itself one of the `pub mod` entries `primitive_module_count`
+    // counts, so its module doc's "the N other shipped primitives" phrasing
+    // must say one less than the total.
     let others = primitive_module_count() - 1;
     let canvas = canvas_rs();
     let needle = format!("{others} other shipped primitive");
@@ -381,11 +350,11 @@ fn canvas_doc_states_the_real_other_primitive_count() {
     );
 }
 
-// ── Feature list (#1107) ─────────────────────────────────────────────────
+// ── Feature list ─────────────────────────────────────────────────────────
 
 #[test]
 fn root_readme_features_section_lists_every_cargo_feature() {
-    // #1107: README's `## Features` section said only `tui`/`gtk` while
+    // README's `## Features` section said only `tui`/`gtk` while
     // Cargo.toml had grown `terminal`, `win`, and `macos` on top of those.
     // Derive the real feature set from Cargo.toml instead of re-pinning a
     // hand-written list that will drift the next time a feature is added.
@@ -483,14 +452,14 @@ fn win_backend_real_todo_call_count() -> usize {
 
 #[test]
 fn win_backend_todo_claim_tracks_source_reality() {
-    // #1107: README.md said "most `Backend::draw_*`/`*_layout` methods on
+    // README.md said "most `Backend::draw_*`/`*_layout` methods on
     // `WinBackend` are `todo!()` stubs" after src/win/backend.rs had
     // already been filled in for real (0 non-comment `todo!()` calls left).
     // Same shape as `backend_error_doc_claim_tracks_source_reality` below:
     // check both directions so neither "claims a stub gap that's gone" nor
     // "silently overclaims completeness" can land unnoticed.
     //
-    // #1355: `src/lib.rs`'s `## Status` (docs.rs's front page) made the
+    // `src/lib.rs`'s `## Status` (docs.rs's front page) made the
     // exact same claim independently of README.md, and rotted the same
     // way — so it's checked here too, not just the README.
     let real_todo_calls = win_backend_real_todo_call_count();
@@ -556,9 +525,8 @@ fn macos_backend_is_described_as_shipped_not_planned() {
 
 #[test]
 fn shipped_primitives_and_backend_trait_are_not_called_roadmapped() {
-    // docs/APP_ARCHITECTURE.md used to say Panel/MenuBar/Backend-trait were
-    // "roadmapped but not yet shipped". Verify they exist for real, then
-    // verify the doc no longer contradicts that.
+    // Panel, MenuBar, and the Backend trait are shipped; verify they exist
+    // and the documentation no longer claims they are roadmapped.
     let primitives = primitives_mod_rs();
     assert!(
         primitives.contains("pub mod panel;"),
@@ -627,18 +595,8 @@ fn a11y_fields_absence_is_still_disclosed_accurately() {
 
 #[test]
 fn backend_error_doc_claim_tracks_source_reality() {
-    // docs/BACKEND.md used to document `BackendError`, `Backend::last_error`,
-    // and `_result`-suffixed `PlatformServices` methods as design-only,
-    // with a "None of them exist in `src/`" disclaimer #798 added to
-    // correct drift the other way (the doc claimed shipped API that
-    // wasn't there). Issue #805 shipped the minimal error channel D-009
-    // designed — `BackendError`, `Backend::last_error`, and
-    // `Clipboard::write_text_result` (the three `PlatformServices`
-    // dialog `_result` twins remain follow-up scope, not shipped). If
-    // `BackendError` ever disappears from src/ again (a revert), this
-    // test starts failing — that's the signal to restore #798's
-    // "design only" framing instead of leaving a doc that describes API
-    // nothing implements.
+    // `BackendError` is shipped in `src/`. If it is removed, the docs that
+    // describe it must be updated to reflect that change.
     let src_dir = crate_root().join("src");
     let backend_error_in_src = walk_rs_files(&src_dir)
         .into_iter()
@@ -678,17 +636,12 @@ fn walk_rs_files(dir: &std::path::Path) -> Vec<PathBuf> {
     out
 }
 
-// ── Clipboard docs vs. the clipboard code (#331) ─────────────────────────
+// ── Clipboard docs vs. the clipboard code ────────────────────────────────
 //
-// #331 was reported as "Ctrl-A + Ctrl-C doesn't reach the clipboard inside
-// tmux". The code was already right — `TuiClipboard::write_text` detects
-// `$TMUX` and emits a DCS-passthrough-wrapped OSC 52 alongside the raw one
-// — but the tmux configuration both forms depend on (`set-clipboard on` /
-// `allow-passthrough on`) was documented only in a private module comment,
-// so from a user's seat the feature was indistinguishable from broken.
-// `docs/CLIPBOARD.md` is the fix. These tests keep it pinned to the code
-// it describes, so a future change to the emission strategy can't leave
-// the troubleshooting steps quietly pointing at the wrong knob.
+// The code detects `$TMUX` and emits a DCS-passthrough-wrapped OSC 52
+// sequence for clipboard operations inside tmux. This depends on tmux
+// configuration (`set-clipboard on` / `allow-passthrough on`). These tests
+// keep the documentation pinned to what the code actually does.
 
 #[test]
 fn clipboard_doc_names_both_tmux_knobs_the_code_depends_on() {
@@ -710,10 +663,9 @@ fn clipboard_doc_names_both_tmux_knobs_the_code_depends_on() {
 
 #[test]
 fn tui_clipboard_still_emits_the_tmux_passthrough_the_doc_promises() {
-    // The two halves of the tmux story in `docs/CLIPBOARD.md`: detection
-    // off `$TMUX`, and the DCS passthrough wrapper it enables. If either
-    // disappears from the code, the doc is lying about what happens
-    // inside tmux and #331 regresses into an undiagnosable bug report.
+    // The code must detect `$TMUX` and emit the passthrough wrapper it
+    // promises. If either disappears, the documentation is describing
+    // behavior that does not exist.
     let src = tui_services_rs();
     assert!(
         src.contains("\"TMUX\""),
@@ -751,18 +703,13 @@ fn clipboard_doc_lists_every_native_clipboard_tool_the_code_tries() {
     }
 }
 
-// ── Compose controllers (#1128) ──────────────────────────────────────────
+// ── Compose controllers ──────────────────────────────────────────────────
 //
-// #1128's audit of `develop @ ed402b4` found the root README's "Compose
-// Helpers" section naming three of fourteen-plus `src/compose/` modules —
-// the controllers own real state machines and emit semantic events, and
-// the audit rated them the best-and-least-documented part of the crate.
-// The fix is `docs/COMPOSE.md` (one section per module) plus the tests
-// below, which derive "every compose module" from `src/compose/mod.rs`'s
-// own `pub mod` list — the same mechanical strategy
-// [`primitive_module_count`] already uses for primitives — so adding
-// module #24 without documenting it fails CI instead of waiting for the
-// next manual audit.
+// The compose modules own real state machines and emit semantic events.
+// Tests derive "every compose module" from `src/compose/mod.rs`'s own
+// `pub mod` list — the same mechanical strategy [`primitive_module_count`]
+// already uses for primitives — so adding a module without documenting it
+// fails CI instead of waiting for a manual audit.
 
 /// Every `pub mod <name>;` declared in `src/compose/mod.rs`, in file
 /// order. This is the crate's own definition of "what compose modules
@@ -896,9 +843,8 @@ fn readme_compose_table_names_every_compose_controller() {
 
 #[test]
 fn quadraui_crate_has_no_duplicate_readme() {
-    // #798 deleted quadraui/README.md in favour of one root README.md —
-    // two READMEs is how the two drifted apart from each other (and from
-    // reality) in the first place.
+    // Having two README files allows them to drift apart from each other
+    // and from reality. Keep a single root README.md.
     let dup = crate_root().join("README.md");
     assert!(
         !dup.exists(),
@@ -910,7 +856,7 @@ fn quadraui_crate_has_no_duplicate_readme() {
     );
 }
 
-// ── Test count (#1393) ──────────────────────────────────────────────────
+// ── Test count ──────────────────────────────────────────────────────────
 
 /// Every `#[test]`-attributed item under this crate's own `src/` and
 /// `tests/` — the same mechanical "count the real thing instead of
@@ -984,7 +930,7 @@ fn with_thousands_separator(n: usize) -> String {
 
 #[test]
 fn root_readme_states_the_real_test_count_ballpark() {
-    // #1393: the "Heavily tested" bullet said "Around 4,000 tests" against
+    // The "Heavily tested" bullet said "Around 4,000 tests" against
     // a crate with over 5,000 — stale since whenever that bullet was last
     // hand-edited. `TEST_COUNT_BUCKET` is the granularity both this test
     // and the README text round to; bump the README bullet (and nothing

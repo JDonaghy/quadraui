@@ -1,4 +1,4 @@
-//! Demo for the runner-owned [`quadraui::FocusManager`] (issue #830):
+//! Demo for the runner-owned [`quadraui::FocusManager`]:
 //! Tab / Shift+Tab cycle keyboard focus through a multi-widget screen,
 //! and the backend paints a focus ring around whichever widget currently
 //! owns it.
@@ -104,7 +104,7 @@ impl FocusDemo {
                 .collect(),
             selected_idx: 0,
             scroll_offset: 0,
-            // #830: deliberately `false` on both lists. Keyboard focus is
+            // Deliberately `false` on both lists. Keyboard focus is
             // the runner's `FocusManager`, not a per-primitive bool — the
             // ring is what shows which one has it.
             has_focus: false,
@@ -147,7 +147,7 @@ impl Default for FocusDemo {
 impl AppLogic for FocusDemo {
     type AreaId = ();
 
-    /// Demonstrates [`quadraui::Style::focus_ring_width`] (issue #1133)
+    /// Demonstrates [`quadraui::Style::focus_ring_width`]
     /// through the same shared `AppLogic` every backend runs: a 4px ring
     /// instead of the `2.0` default, applied with no per-backend branch.
     /// On `gtk_focus_ring`/the macOS/Win-GUI runners this visibly
@@ -186,7 +186,7 @@ impl AppLogic for FocusDemo {
             pressed: None,
         });
 
-        // #830: the tab order is *derived from the layout* — the app never
+        // The tab order is *derived from the layout* — the app never
         // hand-maintains a widget list. Cache it for `tab_stops` below.
         *self.cached_tab_stops.borrow_mut() = frame.tab_stops();
 
@@ -199,7 +199,7 @@ impl AppLogic for FocusDemo {
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
         match event {
-            // #830: the app's entire focus responsibility. No cycling, no
+            // The app's entire focus responsibility. No cycling, no
             // wrap-around arithmetic, no per-primitive `has_focus` bools.
             UiEvent::FocusChanged(id) => {
                 self.focused = id;

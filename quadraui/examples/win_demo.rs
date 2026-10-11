@@ -13,13 +13,9 @@
 //! - `Return`            activate the focused status segment
 //! - `q` / `Esc`         quit
 //!
-//! Supersedes the #19 window-bootstrap-only version of this example now
-//! that #25–#30 have landed the chrome-strip rasterisers this app
-//! actually paints with (`TabBar`, `StatusBar`). `quadraui::win::run`
-//! stays available on every host (`src/win/mod.rs` keeps `mod win`
-//! un-target-gated, unlike `macos` — see that module's doc), so this
-//! compiles on Linux too under plain `cargo check --features win`; it
-//! only opens a real window and *runs* on Windows.
+//! `quadraui::win::run` is available on every host and compiles on Linux
+//! too under plain `cargo check --features win`, but only opens a real
+//! window and runs on Windows.
 
 #[path = "common/mod.rs"]
 mod common;

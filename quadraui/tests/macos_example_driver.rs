@@ -1,16 +1,15 @@
-//! First core smoke set for the macOS example-driver harness (quadraui#493)
+//! First core smoke set for the macOS example-driver harness
 //! — the macOS twin of `tests/gtk_example_driver.rs` / `tests/tui_example_driver.rs`.
 //! Each test instantiates the *same* backend-agnostic `AppLogic` impl the
 //! corresponding `macos_*` example runs, scripts real [`quadraui::UiEvent`]s
 //! through it via [`MacDriver`], and asserts on the painted text — no
 //! window, no `NSApplication`.
 //!
-//! Deliberately thin per the pattern the GTK/TUI suites already set ("a
-//! few tests, not a big-bang suite") — coverage grows incrementally per
-//! behaviour-changing issue. `PipelineApp` and `DataTableApp` are the two
-//! `examples/common` shapes quadraui#493 asks for explicitly: the same
-//! fixtures already covered on TUI/GTK in `tests/tui_example_driver.rs` /
-//! `tests/gtk_example_driver.rs` and in `tests/cross_backend_parity.rs`'s
+//! Deliberately thin per the pattern the GTK/TUI suites already set — coverage grows
+//! incrementally. `PipelineApp` and `DataTableApp` are the two `examples/common`
+//! shapes: the same fixtures already covered on TUI/GTK in
+//! `tests/tui_example_driver.rs` / `tests/gtk_example_driver.rs` and in
+//! `tests/cross_backend_parity.rs`'s
 //! `pipeline_parity_macos_agrees_with_tui_and_gtk_on_logical_state`.
 #![cfg(all(feature = "macos", target_os = "macos"))]
 
@@ -95,7 +94,7 @@ fn pipeline_pressing_r_resets_status_message() {
 /// A click round-trips paint -> hit_test -> handle -> state -> re-render,
 /// with NO hardcoded coordinates: `find` locates the painted "Go"
 /// (Deploy/stage-3) action button from the `text_runs` `MacBackend`
-/// records at the `draw_text` choke point (quadraui#493).
+/// records at the `draw_text` choke point.
 #[test]
 fn pipeline_clicking_a_stage_action_routes_the_click() {
     let mut driver = MacDriver::new(PipelineApp::new(), W, H);
@@ -119,7 +118,7 @@ fn pipeline_clicking_a_stage_action_routes_the_click() {
     );
 }
 
-// ─── AppShellDemo: `driver_with_shell` (ShellApp) coverage (#465) ──────────
+// ─── AppShellDemo: `driver_with_shell` (ShellApp) coverage ─────────────────
 //
 // `AppShellDemo` implements `ShellApp` (not `AppLogic` directly) and is
 // driven by `macos::shell_runner::run_with_shell` in production.
@@ -127,9 +126,7 @@ fn pipeline_clicking_a_stage_action_routes_the_click() {
 // the same `build_shell_adapter` factory `run_with_shell` calls — then
 // scripts events through it headlessly, with no `NSApplication` / window.
 // These are the macOS twins of `tests/tui_example_driver.rs` /
-// `tests/gtk_example_driver.rs`'s `appshell_demo_*` tests, proving #465's
-// `macos::shell_runner` reaches the same `ShellAdapter` composition the
-// other two backends already do.
+// `tests/gtk_example_driver.rs`'s `appshell_demo_*` tests.
 
 // Point canvas sized for the shell chrome (activity bar + sidebar + main
 // content), distinct from the pipeline canvas above.
@@ -173,7 +170,7 @@ fn appshell_demo_renders_shell_chrome_via_driver_with_shell() {
 /// (shared by `MacDriver::dispatch`) and reads `ShellAdapter` state built by
 /// `build_shell_adapter` — if `driver_with_shell` constructed that adapter
 /// differently than `run_with_shell` does, this round trip would desync
-/// exactly the way vimcode's Ctrl+B bug (#454) did for the sidebar toggle.
+/// exactly the way vimcode's Ctrl+B bug did for the sidebar toggle.
 #[test]
 fn appshell_demo_tab_focus_then_jj_enter_switches_panel() {
     let config = AppShellDemo::config();
@@ -230,11 +227,10 @@ fn appshell_demo_tab_focus_then_jj_enter_switches_panel() {
     );
 }
 
-/// #454's fix, proven on macOS: `ctx.shell_mut()` reaches the real `AppShell`
-/// instance `ShellAdapter` renders, so `Ctrl+B` hides/shows the sidebar
-/// `driver_with_shell` actually painted — not a shadow copy. Mirrors
-/// `tests/tui_example_driver.rs` / `tests/gtk_example_driver.rs`'s
-/// `appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar`.
+/// `ctx.shell_mut()` reaches the real `AppShell` instance `ShellAdapter`
+/// renders, so `Ctrl+B` hides/shows the sidebar `driver_with_shell` actually
+/// painted — not a shadow copy. Mirrors `tests/tui_example_driver.rs` /
+/// `tests/gtk_example_driver.rs`'s `appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar`.
 #[test]
 fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
     let config = AppShellDemo::config();
@@ -331,8 +327,8 @@ fn data_table_pressing_j_moves_selection() {
     );
 }
 
-/// #516 defect 3: the same divider-drag script the TUI and GTK driver
-/// tests run (`tests/tui_example_driver.rs`'s
+/// The same divider-drag script the TUI and GTK driver tests run
+/// (`tests/tui_example_driver.rs`'s
 /// `data_table_divider_before_last_column_resizes_in_drag_direction`,
 /// `tests/gtk_example_driver.rs`'s
 /// `data_table_divider_before_last_column_widens_on_right_drag`), run
@@ -340,11 +336,10 @@ fn data_table_pressing_j_moves_selection() {
 /// column (Age | Restarts) must move Age's width in the *drag's*
 /// direction, never inverted.
 ///
-/// The point of running it here too is that the fix lives in the shared
-/// `primitives::data_table::resolve_columns`, so every rasteriser must
-/// agree; `DataTableApp::resolved_column_widths` reads the width back
-/// through the very same `DataTable::layout` the macOS backend paints
-/// through, so nothing per-backend is hardcoded.
+/// The fix lives in the shared `primitives::data_table::resolve_columns`,
+/// so every rasteriser must agree; `DataTableApp::resolved_column_widths`
+/// reads the width back through the very same `DataTable::layout` the macOS
+/// backend paints through, so nothing per-backend is hardcoded.
 #[test]
 fn data_table_divider_before_last_column_resizes_in_drag_direction() {
     // Widen: drag the Age|Restarts divider right. `Restarts` is
@@ -396,24 +391,22 @@ fn data_table_divider_before_last_column_resizes_in_drag_direction() {
     );
 }
 
-// ─── MinimapApp / ImageApp: #802 — macOS must degrade, not panic ──────────
+// ─── MinimapApp / ImageApp: macOS must degrade, not panic ──────────────────
 //
-// Before #802, `MacBackend::draw_minimap`/`draw_image` were reachable
-// `todo!()`s. `MacDriver::new` paints the first frame immediately (same
-// as every other constructor in this file), so simply *constructing*
-// either driver below used to panic the whole test binary on macOS — the
-// one backend where these two examples were impossible to run at all,
-// the exact inverse of the four-backend promise these fixtures already
-// prove on TUI/GTK (`tests/tui_example_driver.rs`, `tests/gtk_example_
-// driver.rs`) and in `tests/cross_backend_parity.rs`.
+// `MacBackend::draw_minimap`/`draw_image` now have real implementations
+// on macOS. `MacDriver::new` paints the first frame immediately (same as every
+// other constructor in this file), so constructing either driver below
+// demonstrates these backends no longer panic on macOS — the exact inverse of
+// the four-backend promise these fixtures already prove on TUI/GTK
+// (`tests/tui_example_driver.rs`, `tests/gtk_example_driver.rs`) and in
+// `tests/cross_backend_parity.rs`.
 
 const MINIMAP_W: u32 = 400;
 const MINIMAP_H: u32 = 300;
 
 /// `draw_minimap` is called every frame `MinimapApp::render` runs; this
 /// proves that keeps working (and keeps scrolling) on macOS. The minimap
-/// track itself now has a real Core Graphics/Core Text rasteriser (#961,
-/// superseding the #382/#802 no-paint gap this test used to document).
+/// track has a real Core Graphics/Core Text rasteriser.
 #[test]
 fn minimap_app_renders_every_frame_without_panicking_and_scrolls() {
     let mut driver = MacDriver::new(MinimapApp::new(), MINIMAP_W, MINIMAP_H);
@@ -434,13 +427,11 @@ fn minimap_app_renders_every_frame_without_panicking_and_scrolls() {
 const IMAGE_W: u32 = 400;
 const IMAGE_H: u32 = 200;
 
-/// `draw_image` now decodes the demo's real `quadra_logo.png` asset and
-/// paints it via Core Graphics/ImageIO (#962), superseding the #662/#802
-/// no-paint gap this test used to document — macOS is no longer the only
-/// backend painting nothing for `ImageApp`'s logo (GTK already decoded it
-/// via `gdk_pixbuf`). The menu bar beside the icon still routes clicks
-/// correctly, proving the real paint doesn't disturb the icon-narrowed
-/// rect math both `render` and `handle` share.
+/// `draw_image` decodes the demo's real `quadra_logo.png` asset and
+/// paints it via Core Graphics/ImageIO on macOS — no longer the only
+/// backend that could paint nothing for `ImageApp`'s logo. The menu bar
+/// beside the icon still routes clicks correctly, proving the real paint
+/// doesn't disturb the icon-narrowed rect math both `render` and `handle` share.
 #[test]
 fn image_app_logo_paints_and_menu_click_routing_still_works() {
     let mut driver = MacDriver::new(ImageApp::new(), IMAGE_W, IMAGE_H);
@@ -486,13 +477,11 @@ fn image_app_logo_paints_and_menu_click_routing_still_works() {
     );
 }
 
-// ─── TabIconsDemo: the #926 CoreText icon-width pass ───────────────────────
+// ─── TabIconsDemo: the CoreText icon-width pass ───────────────────────────
 //
-// The macOS half of #620. Before #926 `MacBackend::draw_tab_bar_icons`
-// dropped the sidecar entirely (behind a `debug_assert!` that killed the
-// host process on the first decorated frame, #931), so every assertion
-// below would have failed — the glyph would never paint and the labels
-// would never shift. The pixel-level paint↔hit round trip lives in
+// The macOS half of icon-width handling. `MacBackend::draw_tab_bar_icons`
+// processes the sidecar for decorated tabs, so glyphs paint and labels shift
+// correctly. The pixel-level paint↔hit round trip lives in
 // `src/macos/tab_bar.rs`'s `#[cfg(test)]` block; this file covers the same
 // behaviour through the example an operator actually runs.
 
@@ -508,8 +497,7 @@ const TAB_ICON_GAP_PT: f32 = 6.0;
 #[test]
 fn tab_icons_demo_paints_the_icon_glyph_as_its_own_run() {
     let mut driver = MacDriver::new(TabIconsDemo::new(), TAB_ICONS_W, TAB_ICONS_H);
-    // One `draw_text` run per glyph, painted in `TabIcon::color` — the
-    // sidecar reaching CoreText at all is what #926 added.
+    // One `draw_text` run per glyph, painted in `TabIcon::color`.
     for glyph in ["R", "T", "M"] {
         assert!(
             driver.painted_texts().contains(&glyph),
@@ -568,11 +556,11 @@ fn tab_icons_demo_toggling_the_sidecar_shifts_labels_by_the_reservation() {
     );
 }
 
-/// The guarantee #926 exists for: a click on the *trailing* end of a
-/// decorated tab — past where an icon-blind layout would have put that
-/// tab's slot — still routes to the tab the user saw. Three upstream icon
-/// reservations have pushed tab 2's slot right, so a rasteriser that
-/// painted glyphs without widening the slots would leave tab 0 active.
+/// A click on the *trailing* end of a decorated tab — past where an
+/// icon-blind layout would have put that tab's slot — still routes to the
+/// tab the user saw. Three upstream icon reservations have pushed tab 2's
+/// slot right, so a rasteriser that painted glyphs without widening the
+/// slots would leave tab 0 active.
 #[test]
 fn tab_icons_demo_click_past_a_decorated_tab_label_activates_that_tab() {
     let mut driver = MacDriver::new(TabIconsDemo::new(), TAB_ICONS_W, TAB_ICONS_H);

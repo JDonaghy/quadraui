@@ -1,4 +1,4 @@
-//! GTK runner for the window-control demo (issue #950).
+//! GTK runner for the window-control demo.
 //!
 //! Same `AppLogic` as `tui_window_control`, proving the
 //! `Backend::window()` dispatch is backend-generic. On GTK, `t`/`f`/`m`/

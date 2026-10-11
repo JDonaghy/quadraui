@@ -1,5 +1,4 @@
 //! Throughput benchmark for [`quadraui::terminal_engine::TerminalSession`]
-//! (issue #340).
 //!
 //! "Simple and fast" is the terminal engine's product thesis but was
 //! unmeasured until this benchmark. It targets the two functions the

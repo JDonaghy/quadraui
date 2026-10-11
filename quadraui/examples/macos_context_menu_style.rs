@@ -1,5 +1,5 @@
 //! `ContextMenuStyleDemo` `AppLogic` + `quadraui::macos::run` example
-//! (issue #1187) — the one backend where `MenuStyle::Auto` actually
+//! — the one backend where `MenuStyle::Auto` actually
 //! switches presentation.
 //!
 //! Right-click anywhere for a context menu. Press `m` to cycle

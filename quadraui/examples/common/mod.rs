@@ -1,7 +1,6 @@
 //! Backend-agnostic app code shared by every example in this crate.
 //!
-//! After the runner-crate vision shipped (#269 / #270 stage B), every
-//! example is just a thin `main` that constructs an `AppLogic` impl
+//! Every example is a thin `main` that constructs an `AppLogic` impl
 //! and calls `quadraui::{tui,gtk}::run(app)`. The `AppLogic` bodies
 //! themselves live in this module, identical across both backends —
 //! that's the payoff of the runner abstraction.
@@ -24,30 +23,28 @@
 //!   scrollable transcript, multi-line input, history, and spinner,
 //!   used by `tui_chat` / `gtk_chat`.
 //! - [`SidebarRevealDemo`] (in [`sidebar_reveal_demo`]) — single Tree
-//!   section exercising `SidebarSystem::reveal` (#595), used by
+//!   section exercising `SidebarSystem::reveal`, used by
 //!   `tui_sidebar_reveal` / `gtk_sidebar_reveal`.
 //! - [`SidebarPanelBodyDemo`] (in [`sidebar_panel_body_demo`]) —
-//!   `quadraui::compose::sidebar_panel_body::SidebarPanelBody` (#1041)
+//!   `quadraui::compose::sidebar_panel_body::SidebarPanelBody`
 //!   composing a background fill + cyclable header/search chrome + a
 //!   raw `TreeView` body + a hand-built scrollbar. Used by
 //!   `tui_sidebar_panel_body` / `gtk_sidebar_panel_body`.
 //! - [`WorkspaceDemo`] (in [`workspace_demo`]) — `WorkspaceController`
-//!   (#596) mounted inside an `AppShell` panel: open-N-view-one document
+//!   mounted inside an `AppShell` panel: open-N-view-one document
 //!   tabs in the panel's rect, body painted by the app. Used by
 //!   `tui_workspace` / `gtk_workspace`.
 //! - [`FocusDemo`] (in [`focus_demo`]) — two lists + a status bar whose
 //!   Tab/Shift+Tab order is derived from `ScreenLayout::tab_stops` and
-//!   cycled by the runner-owned `FocusManager` (#830), with the backend
+//!   cycled by the runner-owned `FocusManager`, with the backend
 //!   painting the focus ring. Used by `tui_focus_ring` / `gtk_focus_ring`.
 //! - [`CaretShapeDemo`] (in [`caret_shape_demo`]) — cycles an `Editor`'s
 //!   caret through `EditorCursorShape`'s three modes, calling
-//!   `Backend::set_caret_shape` (#1015) on each change. Used by
+//!   `Backend::set_caret_shape` on each change. Used by
 //!   `tui_caret_shape` / `gtk_caret_shape`.
 //! - [`key_map`] — **not** an `AppLogic`, unlike everything else in this
-//!   list. `KeyMap`/`KeyContext` were demoted here from
-//!   `quadraui::compose` by #825 (zero adopters); this module is a
-//!   standalone copy-paste recipe, not wired into any runner. See its
-//!   own module doc.
+//!   list. `KeyMap`/`KeyContext` are a standalone copy-paste recipe, not
+//!   wired into any runner. See its own module doc.
 
 // Each example uses a subset of the shared items, so dead-code +
 // unused-import warnings are expected and not actionable here.

@@ -1,14 +1,13 @@
 //! Minimal `AppLogic` painting an `ActivityBar` whose active item shows a
-//! VS-Code-style row fill via [`ActivityBarStyle::active_bg`] (quadraui#658)
+//! VS-Code-style row fill via [`ActivityBarStyle::active_bg`]
 //! instead of the left-edge accent line `ActivityNavApp` (`tui_activity_nav`
 //! / `gtk_activity_nav`) demonstrates.
 //!
-//! The point of the demo is the **sidecar**: the fill is requested through
-//! [`Backend::draw_activity_bar_with_style`] — never a field on
-//! [`ActivityBar`] itself, which is exactly the break #658 exists to avoid
-//! (see [`quadraui::ActivityBarStyle`]'s doc for the full reasoning).
-//! `active_accent` stays `None` throughout, so there is **zero**
-//! accent-line rendering; the row fill is the only active-item indicator.
+//! The fill is requested through [`Backend::draw_activity_bar_with_style`] —
+//! never a field on [`ActivityBar`] itself, which avoids storing presentation
+//! state in the model (see [`quadraui::ActivityBarStyle`]'s doc for details).
+//! `active_accent` stays `None` throughout, so the row fill is the only
+//! active-item indicator.
 //!
 //! Click an icon (or press **1**/**2**/**3**) to activate it, **q** to quit.
 
@@ -39,7 +38,7 @@ impl ActivityStyleDemo {
     }
 
     /// `active_accent: None` — zero accent-line pixels. The row fill in
-    /// [`Self::style`] is the only active-item indicator (#658).
+    /// [`Self::style`] is the only active-item indicator.
     fn bar(&self) -> ActivityBar {
         let items = ICONS
             .iter()

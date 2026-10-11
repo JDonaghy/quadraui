@@ -1,4 +1,4 @@
-//! Conformance scenario **runner** (quadraui#491, audit §6.4/§6.6).
+//! Conformance scenario **runner**.
 //!
 //! Replays a [`Scenario`]'s steps against one backend driver and reports a
 //! [`Outcome`]. The top-level `tests/conformance.rs` crosses every scenario
@@ -101,7 +101,7 @@ pub trait DriverFactory {
     /// the backend, via [`DynDriver::backend_caps`].
     ///
     /// **Do not override this.** The default body is the whole point
-    /// (quadraui#492 review): it builds a throwaway driver over a
+    ///: it builds a throwaway driver over a
     /// paint-nothing [`AppLogic`] and asks the backend itself, so
     /// registering a backend cannot restate — and therefore cannot
     /// contradict — its own `Backend::backend_caps`. Overriding it would
@@ -132,26 +132,14 @@ pub trait DriverFactory {
 /// fixture. Always `fixtures::build::<F>` for some [`DriverFactory`] `F`.
 pub type BuildFn = fn(&str, LogicalViewport) -> Option<Box<dyn DynDriver>>;
 
-/// Whether a registered backend's `FAIL` cells **gate** the suite
-/// (quadraui#708).
+/// Whether a registered backend's `FAIL` cells gate the suite.
 ///
-/// Registering a backend and gating on it are two different decisions, and
-/// conflating them is what makes "add the column" impossible for a backend
-/// that is still being built: `WinBackend`'s rasterisers are landing one
-/// issue at a time (#480/#580's burn-down), and its driver has no
-/// painted-text-run recording yet, so *every* text-locating scenario step
-/// reports "not painted". That is the intended checklist signal — but as a
-/// hard assertion it turns the whole Windows CI leg red and blocks
-/// unrelated work, which is exactly the pressure that keeps a
-/// not-yet-finished backend out of the matrix entirely and therefore
-/// invisible.
+/// Registering a backend and gating on it are two different decisions.
+/// A backend under development (whose driver lacks some features) can be
+/// visible in the matrix as incomplete without blocking the whole suite,
+/// keeping failures loud but non-fatal during the rollout.
 ///
-/// Same shape (and same exit condition) as `ci.yml`'s phased
-/// `continue-on-error` rollout for the `windows-latest` leg: report loudly,
-/// gate once the column is real.
-///
-/// Reused directly by `c0_paint_smoke` (quadraui#722), not just by
-/// [`BackendReg`]/[`verdict`] here: that test's own local `Column` type
+/// Reused directly by `c0_paint_smoke`: that test's own local `Column` type
 /// carries a `gating: Gating` field so its per-primitive grid gets the same
 /// blocking/burn-down split as this file's per-scenario matrix, without a
 /// second enum. The doc on each variant below describes the
@@ -185,7 +173,7 @@ pub struct BackendReg {
     ///
     /// This is [`quadraui::Backend::backend_caps`]'s own return value,
     /// obtained through [`DriverFactory::caps`] — *not* a list restated
-    /// beside the registration (quadraui#492 review). One vocabulary,
+    /// beside the registration. One vocabulary,
     /// one source.
     pub caps: BackendCaps,
     pub build: BuildFn,
@@ -228,17 +216,13 @@ impl BackendReg {
 
 /// Whether `backend_name` should even attempt `scenario` at all.
 ///
-/// True for every backend except the vt100/ANSI-byte-stream TUI observer
-/// (`"tui-vt100"`, quadraui#555), which only runs scenarios that opt in via
-/// [`Scenario::text_fidelity`] — rendering through a real byte stream and a
-/// `vt100` parser costs more than a `TestBackend` buffer read, so the bulk
-/// of the suite stays `TestBackend`-only and this keeps that cost opt-in
-/// rather than paid by every scenario. Distinct from a capability
-/// [`Outcome::Skip`]: a scenario that doesn't opt in has no `tui-vt100`
-/// *cell* in its matrix row at all (renders as `-`), rather than a `skip`
-/// naming a missing capability — the two backends aren't disagreeing about
-/// what's supported, this scenario simply never asked the vt100 observer
-/// to look.
+/// True for every backend except `"tui-vt100"`, which only runs scenarios
+/// that opt in via [`Scenario::text_fidelity`] — rendering through a real
+/// byte stream and a `vt100` parser is more expensive than a `TestBackend`
+/// buffer read. A scenario that doesn't opt in has no `tui-vt100` cell in
+/// its matrix row at all (renders as `-`), rather than a `skip` naming a
+/// missing capability — the two backends aren't disagreeing about what's
+/// supported; this scenario simply doesn't ask the vt100 observer to run.
 pub fn backend_applies_to(backend_name: &str, scenario: &Scenario) -> bool {
     backend_name != "tui-vt100" || scenario.text_fidelity
 }
@@ -298,7 +282,7 @@ pub struct MatrixVerdict {
 }
 
 /// Split every `FAIL` cell in `rows` by whether its backend gates, and spot
-/// burn-down backends that have earned promotion (quadraui#708).
+/// burn-down backends that have earned promotion.
 ///
 /// Takes the burn-down *names* rather than `&[BackendReg]` so the judgement
 /// is a pure function of the rendered matrix — it is the thing worth unit
@@ -367,16 +351,11 @@ pub fn burn_down_legend(burn_down: &BTreeSet<&'static str>) -> String {
 /// lacks a required capability, so a capability gate never pays for a
 /// fixture build.
 ///
-/// Both fixture construction and each step run behind [`catch_unwind`]
-/// (quadraui#708). Every backend already wired in here (TUI/GTK/macOS)
-/// happens to have nothing left that panics, so this was previously never
-/// exercised — but it's exactly what "the harness runs and reports" a
-/// `todo!()` stub means for a backend that *isn't* fully implemented yet
-/// (Win-GUI, #480/#580's burn-down target): a scenario step that lands on
-/// a still-`todo!()` rasteriser must come back as one `Outcome::Fail` cell
-/// naming the panic, not abort the whole matrix run before it can print a
-/// single other row. `AssertUnwindSafe` is safe here because a caught
-/// panic makes this function return immediately without touching `driver`
+/// Both fixture construction and each step run behind [`catch_unwind`].
+/// A scenario step that lands on an unimplemented feature (such as a `todo!()`)
+/// is caught as a panic and reported as one `Outcome::Fail` cell, rather than
+/// aborting the whole matrix run. `AssertUnwindSafe` is safe here because a
+/// caught panic makes this function return immediately without touching `driver`
 /// again — there is no possibly-poisoned state a caller could observe.
 pub fn run_scenario(scenario: &Scenario, backend: &BackendReg) -> Outcome {
     if let Some(missing_cap) = backend.missing_cap(&scenario.requires) {
@@ -866,7 +845,7 @@ mod tests {
         );
     }
 
-    /// `backend_applies_to` (quadraui#555): the vt100 observer only runs a
+    /// `backend_applies_to`: the vt100 observer only runs a
     /// scenario that opts in via `text_fidelity`; every other backend name
     /// runs everything, opted in or not.
     #[test]
@@ -996,7 +975,7 @@ mod tests {
         );
     }
 
-    // ── Gating / burn-down (quadraui#708) ───────────────────────────────
+    // ── Gating / burn-down ──────────────────────────────────────────────
     //
     // These run on every platform, including the Linux legs that register
     // no burn-down backend at all — the whole point is that the *rule* is

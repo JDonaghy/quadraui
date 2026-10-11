@@ -1,18 +1,12 @@
-//! Cross-backend parity test (quadraui#448, GD-3) — the headline payoff of
-//! the driver-test epic (#301): one `AppLogic`, one scripted event
+//! Cross-backend parity test — one `AppLogic`, one scripted event
 //! sequence, run against *both* [`TuiDriver`] and [`GtkDriver`], asserting
-//! the two backends agree on logical state. A pty-only tool can never do
-//! this — it only ever sees one backend.
+//! the two backends agree on logical state.
 //!
-//! Runs each shared test body generic over the promoted
-//! [`quadraui::testing::ConformanceDriver`] trait (quadraui#488 — formerly
-//! a test-local `ExampleDriver` copy here that dropped `drag_text` from
-//! `docs/TESTING.md`'s canonical sketch). The two backend-specific rows
-//! (reading "the screen", coordinate units) are hidden behind the trait's
-//! small surface. Locate targets with `find`/`click_text`, never a
-//! hardcoded coordinate — TUI cells and GTK pixels are different units, so
-//! a literal `click(x, y)` in a shared body would silently be wrong on one
-//! side.
+//! Runs each shared test body generic over the [`quadraui::testing::ConformanceDriver`]
+//! trait. The two backend-specific rows (reading "the screen", coordinate units)
+//! are hidden behind the trait's small surface. Locate targets with `find`/`click_text`,
+//! never a hardcoded coordinate — TUI cells and GTK pixels are different units, so
+//! a literal `click(x, y)` in a shared body would silently be wrong on one side.
 //!
 //! Needs both drivers compiled in, so this file only runs under
 //! `--features tui,gtk` (the CI `gtk` job builds/tests with both).
@@ -59,12 +53,11 @@ use minimap_app::MinimapApp;
 mod image_app;
 use image_app::ImageApp;
 
-/// Extra backend-specific surface the #552 activity-bar section below
-/// needs on top of [`ConformanceDriver`]: raw-coordinate click/hover
-/// (always derived from shell-reported geometry — see `activity_row_center`
-/// — never a literal) and the one genuinely per-backend number, activity
-/// row height. Kept separate from `ConformanceDriver` itself, which by
-/// design never exposes raw coordinates to a shared body.
+/// Extra backend-specific surface that needs on top of [`ConformanceDriver`]:
+/// raw-coordinate click/hover (always derived from shell-reported geometry —
+/// see `activity_row_center` — never a literal) and the one genuinely per-backend
+/// number, activity row height. Kept separate from `ConformanceDriver` itself,
+/// which by design never exposes raw coordinates to a shared body.
 trait ActivityBarProbeDriver: ConformanceDriver {
     /// Click at an explicit point in this backend's native units.
     fn click_at(&mut self, x: f32, y: f32);
@@ -145,7 +138,7 @@ fn pipeline_parity_tui_and_gtk_agree_on_logical_state() {
     );
 }
 
-/// macOS twin of the test above (quadraui#493): `MacDriver` now
+/// macOS twin of the test above: `MacDriver` now
 /// implements `ConformanceDriver`, so `run_pipeline_script` — written
 /// once, against the trait, with no per-backend branch — runs unmodified
 /// a third time. Kept as its own test (rather than folded into
@@ -177,28 +170,19 @@ fn pipeline_parity_macos_agrees_with_tui_and_gtk_on_logical_state() {
     );
 }
 
-// ─── FormAllFieldsApp parity (quadraui#808) ────────────────────────────────
+// ─── FormAllFieldsApp parity ───────────────────────────────────────────────
 //
-// #808's audit: `gtk::form::draw_form` and `macos::form::draw_form` each
-// independently matched `FieldKind`, and `macos::form::draw_form` matched
-// only 10 of 14 variants — a form using `Slider` / `ColorPicker` /
-// `Dropdown` / `TextArea` rendered nothing on macOS for that field, with
-// no error anywhere. Painting now goes through the one shared
-// `primitives::form::paint` (written against `PaintSurface`) for every
-// pixel backend, so this asserts the fix at the only level that would
-// have caught the original bug: painting a form with every variant and
-// checking each one's value text actually appears, on every backend that
-// paints pixels. `tests/tui_example_driver.rs`'s
-// `form_all_fields_paints_every_field_kind_value` establishes the TUI
-// baseline these needles are drawn from (TUI's rasteriser is untouched
-// by #808 — see `paint_surface.rs`'s module doc for why TUI stays a
-// separate implementation).
+// Painting form fields now goes through the shared `primitives::form::paint`
+// for every pixel backend, so this asserts that painting a form with every
+// variant renders each one's value text on every backend that paints pixels.
+// `tests/tui_example_driver.rs`'s `form_all_fields_paints_every_field_kind_value`
+// establishes the TUI baseline these needles are drawn from.
 
-/// One needle per `FieldKind` variant `FormAllFieldsApp` uses, chosen so
-/// each string is unique on screen and only ever painted by that
-/// variant's *value* rendering (not its label, which every pre-#808
-/// backend already painted regardless of whether the value fell through
-/// — see `primitives::form.rs`'s `native_surface_paint` module doc).
+/// One needle per `FieldKind` variant `FormAllFieldsApp` uses, chosen so each
+/// string is unique on screen and only ever painted by that variant's *value*
+/// rendering (not its label, which every backend paints regardless of whether
+/// the value falls through — see `primitives::form.rs`'s `native_surface_paint`
+/// module doc).
 const FORM_ALL_FIELDS_NEEDLES: &[&str] = &[
     "Editor",             // Label
     "line numbers",       // Toggle (label; value is a glyph, not text)
@@ -233,12 +217,8 @@ fn form_all_field_kinds_render_on_tui_and_gtk() {
     assert_form_all_fields_painted(&gtk, "GTK");
 }
 
-/// macOS twin (quadraui#808): the exact regression this issue fixes —
-/// pre-#808, `macos::form::draw_form` would have failed this on 4 of the
-/// 13 needles above (every one but `"Editor"`/`"line numbers"`/
-/// `"quadraui"`/`"Save settings"`/`"v0zerodotonezero"`/`"Filescope"`/
-/// `"Casesens"`/`"Runaction"`/`"Buildaction"` — i.e. `Slider` /
-/// `ColorPicker` / `Dropdown` / `TextArea`).
+/// macOS twin: asserts that form field variants render correctly on macOS,
+/// specifically `Slider`, `ColorPicker`, `Dropdown`, and `TextArea`.
 #[cfg(all(feature = "macos", target_os = "macos"))]
 #[test]
 fn form_all_field_kinds_render_on_macos() {
@@ -248,12 +228,9 @@ fn form_all_field_kinds_render_on_macos() {
     assert_form_all_fields_painted(&mac, "macOS");
 }
 
-// ─── TabChrome parity (quadraui#631): bracket framing encloses the close
-// glyph on both backends, and a click on it resolves to *close*, never
-// *activate* — the logical distinction #631 exists to make reachable
-// through `Backend::draw_tab_bar_with_chrome` instead of a hand-rolled
-// bracket string baked into `TabItem::label` (coord-tui's pre-#631
-// workaround, which had no declarative close-button geometry at all).
+// ─── TabChrome parity: bracket framing encloses the close glyph on both
+// backends, and a click on it resolves to *close*, never *activate* — the
+// logical distinction made declarative through `Backend::draw_tab_bar_with_chrome`.
 
 /// Script: read the hint bar before touching anything, click the `×` glyph
 /// (unique on screen — only the active tab in [`TabChromeDemo`] is
@@ -315,18 +292,12 @@ fn tab_chrome_parity_tui_and_gtk_agree_on_logical_state() {
     );
 }
 
-// ─── Shell-level parity (quadraui#518): a ShellApp, not just an AppLogic ───
+// ─── Shell-level parity: a ShellApp, not just an AppLogic ──────────────────
 //
-// `pipeline_parity_*` above proves parity for the `AppLogic`-level harness
-// (#448/GD-3). But every *real* quadraui consumer (coord-tui included)
-// implements `ShellApp` and is driven by `{tui,gtk}::testing::driver_with_shell`,
-// not `AppLogic` directly — so this lifts the same claim to the shell level:
-// one `ShellApp` (`AppShellDemo`), one script, both `driver_with_shell`
-// entry points, same logical outcome. `ConformanceDriver` is reused
-// unchanged — both `driver_with_shell` functions return a driver generic
-// over `impl AppLogic` (the `ShellAdapter` wrapping the `ShellApp`), which
-// the blanket `impl<A: AppLogic> ConformanceDriver for {Tui,Gtk}Driver<A>`
-// in `quadraui::{tui,gtk}::testing` already covers.
+// Every real quadraui consumer implements `ShellApp` and is driven by
+// `{tui,gtk}::testing::driver_with_shell`, not `AppLogic` directly — so this
+// lifts the same claim to the shell level: one `ShellApp` (`AppShellDemo`), one
+// script, both `driver_with_shell` entry points, same logical outcome.
 
 /// Script: focus the activity bar, move the keyboard cursor down two items
 /// (explorer → search → git), activate the selection, then quit. Returns
@@ -368,16 +339,11 @@ fn appshell_demo_parity_tui_and_gtk_agree_on_logical_state() {
     );
 }
 
-// ─── quadraui#488: promoted `ConformanceDriver` — a shared `drag_text` step ─
+// ─── ConformanceDriver: a shared `drag_text` step ───────────────────────────
 //
-// `docs/TESTING.md`'s canonical `ExampleDriver` sketch included a
-// `drag_text(from, to)` method; the test-local trait this file used to
-// define dropped it, so no drag scenario could be written once and shared
-// across backends. Promoting it to `quadraui::testing::ConformanceDriver`
-// (see the top of this file) restores it — this is the acceptance case:
-// one generic test body, one `drag_text` step, constructed via the
-// trait's `LogicalViewport`-aligned `new_fixture` and run against both
-// drivers unmodified.
+// The shared test body defines one generic test body with one `drag_text` step,
+// constructed via the trait's `LogicalViewport`-aligned `new_fixture` and run
+// against both drivers unmodified.
 
 /// Drag-select from "brown" (content line 0) to "wizards" (content line 3)
 /// across `PanelApp`'s selectable content block — the same fixture and
@@ -394,9 +360,9 @@ fn run_panel_drag_select_script<D: ConformanceDriver<App = PanelApp>>(d: &mut D)
 
 #[test]
 fn panel_drag_text_selects_across_lines_parity_tui_and_gtk_agree() {
-    // `new_fixture` is `ConformanceDriver`'s LogicalViewport-aligned
-    // constructor (quadraui#488 TEST-07) — the same 80×24 logical size on
-    // both backends, each interpreting it in its own native units.
+    // `new_fixture` is `ConformanceDriver`'s LogicalViewport-aligned constructor
+    // — the same 80×24 logical size on both backends, each interpreting it in
+    // its own native units.
     let mut tui = TuiDriver::new_fixture(PanelApp::new(), LogicalViewport::new(80, 24));
     let mut gtk = GtkDriver::new_fixture(PanelApp::new(), LogicalViewport::new(80, 24));
 
@@ -420,17 +386,14 @@ fn panel_drag_text_selects_across_lines_parity_tui_and_gtk_agree() {
     );
 }
 
-// ─── DataTableApp resize-direction parity (#516 defect 3) ──────────────────
+// ─── DataTableApp resize-direction parity ───────────────────────────────────
 //
-// The acceptance bar for defect 3 is specifically that the fix landed in
-// the *shared* `primitives::data_table::resolve_columns`, not in one
-// rasteriser — so the same divider-drag script must produce the same
-// *direction* of change on both backends. `ConformanceDriver` above is
-// generic over any `AppLogic` and can't reach `DataTableApp`-specific
-// methods (`table_layout`, `resolved_column_widths`), so this uses a
-// narrower trait implemented directly for the two concrete driver types
-// instead — same "one script body, two backends" shape, just scoped to
-// what this script needs.
+// The fix for divider-drag direction landed in the shared `primitives::data_table::
+// resolve_columns`, so the same divider-drag script must produce the same
+// *direction* of change on both backends. `ConformanceDriver` is generic over any
+// `AppLogic` and can't reach `DataTableApp`-specific methods (`table_layout`,
+// `resolved_column_widths`), so this uses a narrower trait implemented directly
+// for the two concrete driver types instead.
 trait DataTableResizeDriver {
     /// Resolved width of the "Age" column (index 2) — the one directly
     /// before the last column ("Restarts"), the divider this script drags.
@@ -439,9 +402,8 @@ trait DataTableResizeDriver {
     /// right = widen) in this backend's native coordinate space.
     fn drag_age_divider(&mut self, dx: f32);
     /// Drag the divider to the right of column `col` by `dx`, in this
-    /// backend's native coordinate space — generalized `drag_age_divider`
-    /// for #521's pair-resize and viewport-fill coverage, which needs to
-    /// drag dividers other than just the one before the last column.
+    /// backend's native coordinate space — generalized for resizing any column,
+    /// not just the one before the last column.
     fn drag_divider_at(&mut self, col: usize, dx: f32);
     /// All resolved column widths, in this backend's native units.
     fn column_widths(&self) -> Vec<f32>;
@@ -574,10 +536,9 @@ fn run_pair_isolation_script<D: DataTableResizeDriver + DataTableDriverCtor>(
 
 #[test]
 fn data_table_divider_drag_leaves_unrelated_columns_untouched_parity_tui_and_gtk_agree() {
-    // Grabbing and shrinking the Age|Restarts divider must leave Name and
-    // Status exactly as they were — the literal #521 defect 1 symptom was
-    // that shrinking one divider moved a column it didn't border. Shared
-    // `resolve_columns` logic, so this must hold on both backends.
+    // Dragging the Age|Restarts divider must leave Name and Status exactly as
+    // they were — the divider affects only adjacent columns. Shared `resolve_columns`
+    // logic ensures this holds on both backends.
     let (tui_before, tui_after) = run_pair_isolation_script::<TuiDriver<DataTableApp>>(-20.0);
     let (gtk_before, gtk_after) = run_pair_isolation_script::<GtkDriver<DataTableApp>>(-40.0);
 
@@ -603,7 +564,7 @@ fn data_table_divider_drag_leaves_unrelated_columns_untouched_parity_tui_and_gtk
     }
 }
 
-// ─── #521 defect 2: viewport-fill parity after resize ───────────────────────
+// ─── Viewport-fill parity after resize ──────────────────────────────────────
 
 /// Drags several dividers in sequence (Name|Status, then Status|Age, then
 /// Age|Restarts) and returns whether the table still fills its viewport
@@ -621,21 +582,11 @@ fn run_multi_drag_fill_script<D: DataTableResizeDriver + DataTableDriverCtor>(dx
 
 #[test]
 fn data_table_rightmost_column_stays_flush_after_multiple_drags_parity_tui_and_gtk_agree() {
-    // After a sequence of divider drags, the table must still fill its
-    // viewport exactly — #521 defect 2's literal symptom was the
-    // rightmost column's right edge detaching from the frame's right
-    // edge once every `Flex` column had been overridden by a drag.
-    //
-    // dx=5.0 on both backends (not dx=10.0/20.0 scaled to each
-    // viewport, as before #1031): every divider drag now shares the
-    // *same* last column (`Restarts`, `Fixed(10.0)` — a literal pixel/
-    // cell value identical on both backends, not scaled to the
-    // viewport) as its absorbing partner, so this script's net demand on
-    // that one shared 10.0-wide, 4.0-floored column (6.0 units of room)
-    // is what has to stay non-overflowing here, not the per-backend
-    // viewport size. This is deliberately a "no accidental overflow"
-    // regression guard, distinct from the dedicated overflow-parity case
-    // below.
+    // After a sequence of divider drags, the table must still fill its viewport
+    // exactly. Every divider drag now shares the same last column (`Restarts`,
+    // `Fixed(10.0)` — a literal pixel/cell value identical on both backends) as its
+    // absorbing partner. The same dx=5.0 on both backends ensures the net demand on
+    // the shared column stays non-overflowing.
     let tui_flush = run_multi_drag_fill_script::<TuiDriver<DataTableApp>>(5.0);
     let gtk_flush = run_multi_drag_fill_script::<GtkDriver<DataTableApp>>(5.0);
 
@@ -649,7 +600,11 @@ fn data_table_rightmost_column_stays_flush_after_multiple_drags_parity_tui_and_g
     );
 }
 
-// ─── #1031: rightmost column absorbs the slack, then the table overflows ──
+// ─── Rightmost column absorbs the slack, then the table overflows ──────────
+//
+// When dragging the divider far enough right to overflow, the h-scrollbar appearing
+// on overflow is shared `primitives::data_table` logic, so it must be a cross-backend
+// parity assertion, not TUI-only.
 
 /// Drags the Name|Status divider (col 0) far enough right to drive
 /// `Restarts` (the last column, `Fixed(10.0)`, floored at 4.0 — 6.0 units
@@ -688,33 +643,20 @@ fn data_table_divider_drag_overflows_into_h_scroll_parity_tui_and_gtk_agree() {
     );
 }
 
-// ─── Issue #552: activity-bar hit regions vs. a revealed title bar ───────
+// ─── Issue #552: activity-bar hit regions vs. a revealed title bar ───────────
 //
-// `Backend::draw_activity_bar` returns `ActivityBarRowHit`s whose
-// `y_start`/`y_end` are **bar-relative** — measured from the `rect` the bar
-// was drawn into. `AppShell` adds `activity_bar_bounds.y` itself in both its
-// click reader (`cached_activity_hit`) and its hover reader
-// (`update_hover`). The TUI rasteriser used to fold that origin in a second
-// time, so every TUI hit region sat `activity_bar_bounds.y` too low.
+// `Backend::draw_activity_bar` returns `ActivityBarRowHit`s whose `y_start`/`y_end`
+// are **bar-relative** — measured from the `rect` the bar was drawn into. `AppShell`
+// adds `activity_bar_bounds.y` itself in both its click reader (`cached_activity_hit`)
+// and its hover reader (`update_hover`). The TUI rasteriser used to fold that origin
+// in a second time, so every TUI hit region sat `activity_bar_bounds.y` too low.
+// That offset is **zero while the title bar is hidden**, which is why the bug was
+// invisible to every existing test: they all construct in a fixed state. Only the
+// *transition* — hidden bar, then `set_title_bar_visible(true)` — makes the origin
+// nonzero and the double-count observable.
 //
-// That offset is **zero while the title bar is hidden**, which is why the
-// bug was invisible to every existing test: they all construct in a fixed
-// state, and `AppShell`'s own layout assertions only ever check
-// `activity_bar_bounds.y` against the title bar, never a hit region against
-// a click. Only the *transition* — hidden bar, then `set_title_bar_visible(
-// true)` — makes the origin nonzero and the double-count observable. Same
-// trap #547 documented ("static construction tests cannot catch it … only a
-// toggle exercises the defect"); this is its coordinate-space half.
-//
-// Symptom downstream (JDonaghy/vimcode#634, three consecutive failed smoke
-// rounds): reveal the menu bar, click the Search icon, and the *adjacent*
-// panel opens — icons painted correctly, click-to-action mapping off by one
-// row. Hover drifted identically, because both readers share the bug.
-//
-// GTK was always correct here, so the GTK half of each test below is the
-// parity guard `GtkDriver` (#301/#446) exists for: it pins the behaviour
-// TUI now has to match, and would catch a "fix" that merely moved the error
-// to the other backend.
+// GTK was always correct here, so the GTK half of each test below is the parity
+// guard: it pins the behaviour TUI now has to match.
 
 /// Center of activity-bar row `idx` in the driver's native units, derived
 /// from the bounds the *shell* reported this frame — never a literal.
@@ -831,9 +773,7 @@ fn activity_click_row_two_hits_row_two_after_title_bar_reveal_parity() {
 ///
 /// Note the returned index is a position in the shell's hit-region list,
 /// which is **bottom-pinned-first** (see `ActivityBarLayout::visible_items`)
-/// — so it is deliberately not asserted against `idx` directly. What
-/// matters for #552 is that the answer does not *change* when the bar
-/// moves.
+/// — so it is deliberately not asserted against `idx` directly.
 fn hover_row<D: ActivityBarProbeDriver>(
     d: &mut D,
     probe: &ActivityProbe,
@@ -932,14 +872,11 @@ fn activity_hover_distinguishes_adjacent_rows_after_title_bar_reveal() {
     );
 }
 
-// ─── quadraui#490: FrameInventory relational vocabulary ────────────────────
+// ─── FrameInventory relational vocabulary ────────────────────────────────────
 //
-// `left_of`/`above`/`inside` are the whole point of `FrameInventory` — a
-// shared test body asks how two painted things relate, in whichever units
-// the backend that produced them uses, and never writes a coordinate
-// itself. Proves the three hold identically for `AppShellDemo` (the
-// `shell_app` fixture) on both `TuiDriver` and `GtkDriver`, per #490's
-// acceptance bar.
+// `left_of`/`above`/`inside` describe how two painted things relate in the units
+// the backend uses, without hardcoding coordinates. Proves the three hold
+// identically for `AppShellDemo` on both `TuiDriver` and `GtkDriver`.
 
 /// Switch to the Source Control panel (`p` is `AppShellDemo`'s
 /// jump-to-Source-Control binding — see its `handle` impl) and return the
@@ -994,48 +931,26 @@ fn frame_inventory_relations_agree_tui_and_gtk() {
     }
 }
 
-// ─── Issue #541: Tooltip border vocabulary agrees across backends ──────────
+// ─── Issue #541: Tooltip border vocabulary agrees across backends ──────────────
 //
-// #542 gave the tooltip a *structural-parity* tier (sealed in
-// `tests/acceptance/ms-11/structural_parity.rs`) pinning the *default*
-// border (`TooltipBorder::Full`) so both backends enclose their text on
-// every side. #541 adds the vocabulary itself — `Sides` / `Full` / `None`
-// plus an optional title — and this section is its parity coverage: for
-// every setting a consumer can choose, not just the default, TUI and GTK
+// The tooltip now has border vocabulary — `Sides` / `Full` / `None` plus an optional
+// title — and this section is its parity coverage: for every setting, TUI and GTK
 // must agree on the resulting chrome shape.
 //
-// Known, documented exception (not covered below): TUI's `Full` falls
-// back to `Sides`-style chrome when the measured box is too short to fit
-// both border rows (`height < 3`, see `tui::tooltip`'s module doc and its
-// `full_border_drops_title_when_too_short_to_close` /
-// `sides_border_never_closes_even_when_height_allows_it` unit tests,
-// which pin that fallback in isolation). GTK and macOS always stroke a
-// full rectangle regardless of height — they have no equivalent
-// short-height degrade. Every `Full` fixture below therefore measures
-// `rows: 3.0` (room enough to close on every backend) specifically so
-// this divergence never fires here; it is TUI's own rendering detail
-// rather than something a consumer selects, and asserting parity at
-// `height < 3` would be asserting two backends *disagree* by design, not
-// a parity bug. Left as a documented exception per the #541 review
-// rather than force-added coverage here.
+// Known, documented exception: TUI's `Full` falls back to `Sides`-style chrome when
+// the measured box is too short to fit both border rows (`height < 3`, see
+// `tui::tooltip`'s module doc). GTK and macOS always stroke a full rectangle
+// regardless of height. Every `Full` fixture below therefore measures `rows: 3.0`
+// (room enough to close on every backend) specifically so this divergence never
+// fires here.
 //
-// Scope note — the tooltip-border harness below is still *two*-backend
-// only, not three. `ConformanceDriver` now has a `MacDriver` impl
-// (quadraui#493 — see `pipeline_parity_macos_agrees_with_tui_and_gtk_on_
-// logical_state` above for where it *does* participate), but
-// `TooltipBorderFixture` below asserts on a registered zone
-// (`border_tooltip_zone`), and `macos::backend::MacBackend::
-// draw_tooltip_with_chrome` doesn't call `Backend::register_zone` the way
-// `TuiBackend`'s and `GtkBackend`'s do — so macOS still can't participate
-// in *this specific* harness (a real gap, not something #541 introduced
-// or could close on its own). macOS's side of the #541 vocabulary is
-// covered instead by direct pixel-probe unit tests in
-// `src/macos/tooltip.rs`
-// (`sides_border_only_strokes_left_and_right`, `none_border_strokes_nothing`,
-// `full_border_title_punches_a_gap_...`, `title_is_ignored_when_border_is_
-// sides_or_none`), which mirror the GTK rasteriser's assertions one for one.
-// Anyone treating this file as the single source of truth across all three
-// backends should read those too.
+// Scope note — the tooltip-border harness below is still *two*-backend only, not
+// three. `ConformanceDriver` now has a `MacDriver` impl, but `TooltipBorderFixture`
+// below asserts on a registered zone (`border_tooltip_zone`), and
+// `macos::backend::MacBackend::draw_tooltip_with_chrome` doesn't call
+// `Backend::register_zone` the way `TuiBackend` and `GtkBackend` do — so macOS
+// still can't participate in this specific harness. macOS's side is covered instead
+// by direct pixel-probe unit tests in `src/macos/tooltip.rs`.
 
 const BORDER_TOOLTIP_ID: &str = "cbp:541:tooltip";
 const BORDER_TOOLTIP_TEXT: &str = "BorderProbe";
@@ -1064,7 +979,7 @@ impl AppLogic for TooltipBorderFixture {
         let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
         let anchor = Rect::new(0.0, 0.0, vp.width, lh);
 
-        // `border`/`title` (#541) travel in a `TooltipChrome` sidecar
+        // `border`/`title` travel in a `TooltipChrome` sidecar
         // passed alongside the tooltip and its layout — not as fields on
         // either. See `primitives::tooltip`'s module doc for why: it keeps
         // every exhaustive `Tooltip { .. }` *and* `TooltipLayout { .. }`
@@ -1298,16 +1213,10 @@ fn title_does_not_reach_the_screen_when_border_is_not_full() {
     }
 }
 
-// ─── Minimap / Image: #802 parity coverage ─────────────────────────────────
+// ─── Minimap / Image: parity coverage ────────────────────────────────────────
 //
-// quadraui#802 fixed `MacBackend::draw_minimap`/`draw_image` being
-// reachable `todo!()`s — macOS now degrades (real layout / a clean
-// `Unsupported` result) instead of panicking; see the macOS-only
-// `tests/macos_example_driver.rs` for that leg. This pair proves the two
-// backends that *do* rasterise both primitives already agree on the
-// resulting logical state, the same "one AppLogic, one script, both
-// backends" shape as `pipeline_parity_tui_and_gtk_agree_on_logical_state`
-// above.
+// The two backends that rasterise both primitives agree on the resulting logical
+// state, the same "one AppLogic, one script, both backends" shape.
 
 /// Bounds of the zone [`minimap_app::MinimapApp`] registers every frame
 /// via `Backend::draw_minimap`'s `register_zone` call — read from each
@@ -1365,24 +1274,16 @@ fn scroll_line_number(status: &str) -> u32 {
 }
 
 /// Issue #1181: the TUI minimap's viewport-highlight slider must paint the
-/// same pre-blended tint (`Color::blend(background, accent_bg, 0.25)`)
-/// GTK and macOS already converge on — GTK/macOS get there by compositing
-/// a translucent `accent_bg`-at-0.25 fill *over* the already-painted
-/// background via Cairo/Core Graphics source-over, which is
-/// mathematically the same result as the CPU-side pre-mix TUI (and Win-GUI)
-/// must do instead, since a terminal cell's background is one opaque
-/// colour with no alpha channel to composite through.
+/// same pre-blended tint (`Color::blend(background, accent_bg, 0.25)`) GTK and
+/// macOS converge on — GTK/macOS get there by compositing a translucent
+/// `accent_bg`-at-0.25 fill *over* the already-painted background, which is
+/// mathematically the same result as the CPU-side pre-mix TUI must do instead,
+/// since a terminal cell's background has no alpha channel to composite through.
 ///
-/// Drives each backend's real, production `draw_minimap` rasteriser
-/// directly (not through an `AppLogic`/driver, since `MinimapApp`'s own
-/// syntax-highlighted, non-blank buffer would paint opaque glyph/column
-/// blocks — themselves *not* alpha-blended — right over the highlighted
-/// band, making a raw pixel read ambiguous between "the highlight tint"
-/// and "a block's own solid colour"). An all-blank-lines fixture sidesteps
-/// that entirely: nothing paints over the highlight band on either
-/// backend, so a pixel anywhere inside it is pure `background`/`accent_bg`
-/// tint. TUI's cell read is exact (no anti-aliasing); GTK's is Cairo's own
-/// alpha-composited byte result, allowed a small rounding tolerance.
+/// Drives each backend's real, production `draw_minimap` rasteriser directly
+/// (not through an `AppLogic`/driver), using an all-blank-lines fixture so nothing
+/// paints over the highlight band on either backend. TUI's cell read is exact;
+/// GTK's is Cairo's alpha-composited byte result, allowed a small rounding tolerance.
 #[test]
 fn minimap_viewport_slider_is_a_blended_tint_not_opaque_accent_bg_on_tui_and_gtk() {
     use gtk4::cairo::{Context as CairoContext, Format, ImageSurface};
@@ -1496,10 +1397,10 @@ fn minimap_seek_click_agrees_tui_and_gtk_on_resulting_scroll_line() {
     );
 }
 
-/// The two halves of #662 (real pixels on GTK, `Unsupported` +
-/// `fallback_text` on TUI) still must not desync the menu bar's
-/// icon-reserved click routing — `ImageApp::bar_rects` narrows the same
-/// way regardless of which `ImagePaintResult` `draw_image` returns.
+/// The two halves of #662 (real pixels on GTK, `Unsupported` + `fallback_text`
+/// on TUI) still must not desync the menu bar's icon-reserved click routing —
+/// `ImageApp::bar_rects` narrows the same way regardless of which `ImagePaintResult`
+/// `draw_image` returns.
 #[test]
 fn image_menu_click_agrees_tui_and_gtk_on_activated_action() {
     fn activated_after_clicking_file<D: ConformanceDriver>(d: &mut D) -> bool {

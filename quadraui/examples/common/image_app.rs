@@ -1,26 +1,23 @@
 //! Image + MenuBar leading-icon-slot `AppLogic` ([`tui_image`] /
 //! [`gtk_image`]).
 //!
-//! Demonstrates the two halves of #662 together, since that's the real
-//! motivating scenario (vimcode wanting its app logo left of `File`,
-//! VS-Code style):
+//! [`quadraui::Image`] painted through `Backend::draw_image` — GTK
+//! decodes and paints the real `quadra_logo.png` asset via
+//! `gdk_pixbuf`; TUI paints the descriptor's `fallback_text` instead
+//! (`Backend::draw_image` cannot rasterise pixels on TUI — see that
+//! trait method's doc comment for why that's a deliberate
+//! `ImagePaintResult::Unsupported`, not a silent no-op).
 //!
-//! - [`quadraui::Image`] painted through `Backend::draw_image` — GTK
-//!   decodes and paints the real `quadra_logo.png` asset via
-//!   `gdk_pixbuf`; TUI paints the descriptor's `fallback_text` instead
-//!   (`Backend::draw_image` cannot rasterise pixels on TUI — see that
-//!   trait method's doc comment for why that's a deliberate
-//!   `ImagePaintResult::Unsupported`, not a silent no-op).
-//! - A leading icon slot on the menu bar: the bar's rect is narrowed by
-//!   the icon's width before *both* `Backend::draw_menu_bar` (paint) and
-//!   `Backend::menu_bar_layout` (click-routing) — see [`ImageApp::bar_rects`],
-//!   computed once so paint and hit-test can never disagree. This demo
-//!   narrows the rect itself rather than calling
-//!   [`quadraui::MenuBar::layout_with_leading`] directly, because
-//!   `Backend::draw_menu_bar` has no leading-width parameter to hand it
-//!   to — that per-app narrowing is exactly the offset math
-//!   `layout_with_leading` exists to centralize (see its doc comment
-//!   and `primitives::menu_bar::tests` for the primitive-level proof).
+//! A leading icon slot on the menu bar: the bar's rect is narrowed by
+//! the icon's width before *both* `Backend::draw_menu_bar` (paint) and
+//! `Backend::menu_bar_layout` (click-routing) — see [`ImageApp::bar_rects`],
+//! computed once so paint and hit-test can never disagree. This demo
+//! narrows the rect itself rather than calling
+//! [`quadraui::MenuBar::layout_with_leading`] directly, because
+//! `Backend::draw_menu_bar` has no leading-width parameter to hand it
+//! to — that per-app narrowing is exactly the offset math
+//! `layout_with_leading` exists to centralize (see its doc comment
+//! and `primitives::menu_bar::tests` for the primitive-level proof).
 //!
 //! Controls:
 //! - click a menu item   show which one was activated
@@ -149,7 +146,7 @@ impl AppLogic for ImageApp {
                 ..
             } => {
                 let (_full, icon_rect, items_rect) = self.bar_rects(backend);
-                // Logo click routing (#818): `Image::layout` + `ImageLayout::hit_test`
+                // Logo click routing: `Image::layout` + `ImageLayout::hit_test`
                 // — the logo's `Contain` fit letterboxes within `icon_rect`,
                 // so only the actual scaled-image sub-rect is clickable,
                 // not the full reserved icon column.

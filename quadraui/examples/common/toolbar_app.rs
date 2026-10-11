@@ -9,11 +9,11 @@
 //! - A non-clickable `Label` showing live state ("paused" / "running")
 //! - Hover state (highlight tracks the mouse cursor)
 //! - **Keyboard focus** (Tab / Shift-Tab cycles focus, Enter / Space activates)
-//! - **Nerd-Font icon fallback** (issue #913): "Filter" and "Reset" register
+//! - **Nerd-Font icon fallback**: "Filter" and "Reset" register
 //!   a glyph + ASCII fallback pair in a [`ToolbarIcons`] table, baked into
 //!   the painted `Toolbar` via `ToolbarIcons::apply`. "Continue" and
 //!   "Pause" register nothing, so they paint their own icon either way.
-//! - **Multi-row `valign`** (issue #260): the toolbar slot is reserved at
+//! - **Multi-row `valign`**: the toolbar slot is reserved at
 //!   3 rows so `v` can cycle [`ToolbarVAlign`] through `Top` → `Center` →
 //!   `Bottom` and visually confirm all three — `Top`'s row 0 + padding
 //!   below, `Center`'s pre-#260 middle row, `Bottom`'s padding above +
@@ -25,7 +25,7 @@
 //! - Enter / Space                activate the focused button
 //! - 1 / 2 / 3 / 4               keyboard shortcuts for the four enabled actions
 //! - n                           toggle Nerd-Font glyphs vs ASCII fallbacks
-//! - v                           cycle toolbar text vertical alignment (#260)
+//! - v                           cycle toolbar text vertical alignment
 //! - q / Esc                     quit
 
 use quadraui::{
@@ -41,11 +41,9 @@ pub struct ToolbarApp {
     running: bool,
     /// Last status line message (echoes the most recent click / keypress).
     last_message: String,
-    /// Hovered/pressed toolbar button, keyed by `WidgetId` (issue #819).
-    /// Replaces what used to be two hand-rolled `Option<WidgetId>`
-    /// fields, and is handed to `Backend::draw_toolbar_interactive`
-    /// whole — the rasteriser reads hover and pressed out of it rather
-    /// than taking them as two positional arguments.
+    /// Hovered/pressed toolbar button, keyed by `WidgetId`.
+    /// Handed to `Backend::draw_toolbar_interactive` whole —
+    /// the rasteriser reads hover and pressed state out of it.
     interaction: InteractionState,
     /// Index into `self.toolbar().buttons` of the keyboard-focused button,
     /// or `None` when the toolbar has no keyboard focus.
@@ -61,7 +59,7 @@ pub struct ToolbarApp {
     /// halves of every registered [`Icon`] pair without restarting.
     nerd_fonts: bool,
     /// Vertical alignment of the toolbar's button/label text within its
-    /// (3-row) slot — issue #260. `v` cycles this Top → Center → Bottom.
+    /// (3-row) slot. `v` cycles this Top → Center → Bottom.
     valign: ToolbarVAlign,
 }
 
@@ -88,7 +86,6 @@ impl ToolbarApp {
     }
 
     /// Nerd-Font glyph + ASCII fallback pairs for two of the buttons
-    /// (issue #913).
     ///
     /// `ToolbarButton::Action::icon` is a single `String`, so the pair
     /// lives in this side table and [`ToolbarIcons::apply`] writes the
@@ -201,7 +198,7 @@ impl ToolbarApp {
     }
 
     /// Reserved height of the toolbar slot, in rows. 3 rows (not 1) so
-    /// `v` cycling [`ToolbarVAlign`] (#260) actually moves the painted
+    /// `v` cycling [`ToolbarVAlign`] actually moves the painted
     /// button row visibly instead of every variant collapsing onto the
     /// same single row.
     const TOOLBAR_ROWS: f32 = 3.0;
@@ -321,9 +318,7 @@ impl AppLogic for ToolbarApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        // Push the host's Nerd-Font capability every frame, per
-        // `Backend::set_nerd_fonts`'s contract (a `setup()`-only call
-        // silently sticks at whatever the first frame saw — vimcode#547).
+        // Push the host's Nerd-Font capability every frame, per the contract.
         backend.set_nerd_fonts(self.nerd_fonts);
 
         let viewport = backend.viewport();
@@ -447,7 +442,7 @@ impl AppLogic for ToolbarApp {
                 Reaction::Redraw
             }
 
-            // ── v: cycle toolbar text vertical alignment (issue #260) ──────
+            // ── v: cycle toolbar text vertical alignment ───────────────────
             UiEvent::KeyPressed {
                 key: Key::Char('v'),
                 ..
@@ -488,7 +483,7 @@ impl AppLogic for ToolbarApp {
             }
 
             // ── Mouse: hover / press / release ────────────────────────────
-            // One arm, one convention (issue #819): `self.interaction`
+            // One arm, one convention: `self.interaction`
             // (an `InteractionState`) owns *all* hover/pressed
             // bookkeeping for every mouse event, and `render` hands the
             // whole thing to `draw_toolbar_interactive` above. This app

@@ -1,4 +1,4 @@
-//! Conformance scenario **schema v0** (quadraui#491, audit §6.4).
+//! Conformance scenario schema.
 //!
 //! A scenario is a JSON file under
 //! `quadraui/tests/conformance/scenarios/<area>/<name>.scn.json`. It names
@@ -163,7 +163,7 @@ pub struct Scenario {
     /// capability named in the matrix — silence is impossible.
     #[serde(default)]
     pub requires: Vec<String>,
-    /// Opt-in for the TUI vt100/ANSI-byte-stream observer (quadraui#555):
+    /// Opt-in for the TUI vt100/ANSI-byte-stream observer:
     /// when `true`, the conformance matrix also runs this scenario against
     /// the `tui-vt100` backend, in addition to the default `TestBackend`
     /// `tui` column.

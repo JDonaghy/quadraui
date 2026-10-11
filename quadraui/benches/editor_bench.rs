@@ -1,5 +1,4 @@
 //! criterion benches for [`quadraui::Editor`] against a 4k-line buffer
-//! (issue #1118).
 //!
 //! Unlike `DataTable`/`TreeView`, [`quadraui::Editor::lines`] is
 //! documented as "visible lines, one per row" — the *viewport* slice,

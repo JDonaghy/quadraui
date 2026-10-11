@@ -1,4 +1,4 @@
-//! Win-GUI runner for the shell + MenuSystem regression demo (#411).
+//! Win-GUI runner for the shell + MenuSystem regression demo.
 //!
 //! Open the "File" menu and click an item — including the ones drawn
 //! over the activity bar strip on the left, which `AppShell`'s chrome

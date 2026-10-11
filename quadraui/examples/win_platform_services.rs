@@ -1,18 +1,13 @@
 //! `cargo run --example win_platform_services --features win` (Windows only)
 //!
-//! Manual smoke test for issue #23's `WinPlatformServices`: clipboard
-//! round-trip, native file open/save dialogs, a `Shell_NotifyIconW`
-//! balloon notification, and `open_url` — plus issue #744's
-//! `TaskDialogIndirect`-backed message dialog.
+//! Smoke test for `WinPlatformServices`: clipboard round-trip, native file
+//! open/save dialogs, a `Shell_NotifyIconW` balloon notification, `open_url`,
+//! and `TaskDialogIndirect`-backed message dialogs.
 //!
-//! Draws nothing — like `win_demo`, every `WinBackend::draw_*` rasteriser
-//! is still a `todo!()` stub (no `draw_status_bar` to report results
-//! in-window with), so this exercises `backend.services()` directly from
-//! `AppLogic::handle` and reports results to stderr — the console this
-//! example is launched from — instead of an in-window status bar. Once a
-//! later issue lands the Direct2D status-bar rasteriser, this can be
-//! rewritten to share `examples/common/file_dialog_demo.rs`'s in-window
-//! status the way `gtk_file_dialog`/`tui_file_dialog` already do.
+//! Draws nothing — every `WinBackend::draw_*` rasteriser is still a `todo!()`
+//! stub (no `draw_status_bar` to report results in-window), so this exercises
+//! `backend.services()` directly from `AppLogic::handle` and reports results to
+//! stderr instead of an in-window status bar.
 //!
 //! Controls:
 //! - `c` — write a fixed string to the clipboard, then read it back and
@@ -20,30 +15,27 @@
 //! - `o` — native file-open dialog (filtered to `*.rs`)
 //! - `s` — native file-save dialog (initial name `untitled.txt`)
 //! - `n` — fire a balloon notification (watch the notification area)
-//! - `m` — native message dialog (`TaskDialogIndirect`, #744) with
+//! - `m` — native message dialog (`TaskDialogIndirect`) with
 //!   Save/Don't Save/Cancel buttons; reports which one was chosen
 //! - `u` — `open_url` a fixed address (the default browser should launch)
 //! - `t` — query the OS light/dark/accent/high-contrast preference
-//!   (`system_theme`, #952) and report it; flip Windows' Settings ->
+//!   (`system_theme`) and report it; flip Windows' Settings ->
 //!   Personalization -> Colors "Choose your mode" between runs to see the
 //!   answer change
-//! - `f` — `reveal_in_file_manager` (#956) a freshly-written temp file —
+//! - `f` — `reveal_in_file_manager` a freshly-written temp file —
 //!   an Explorer window should open with it selected
-//! - `p` — `open_path` (#956) that same temp file with its default
-//!   handler
-//! - `x` — write a *second* temp file and `move_to_trash` (#956) it —
+//! - `p` — `open_path` that same temp file with its default handler
+//! - `x` — write a second temp file and `move_to_trash` it —
 //!   check the Recycle Bin afterward
-//! - `b` — `beep` (#956)
-//! - `d` — issue #959's `displays`/`cursor_screen_point`: prints every
-//!   connected monitor (bounds, work area, scale, primary) and the
-//!   current cursor position to stderr — move the window to a second
-//!   monitor and press `d` again to see the list/cursor position change
+//! - `b` — `beep`
+//! - `d` — `displays`/`cursor_screen_point`: prints every connected monitor
+//!   (bounds, work area, scale, primary) and the current cursor position to
+//!   stderr — move the window to a second monitor and press `d` again to see
+//!   the list/cursor position change
 //! - `Esc` / `q` — quit
 //!
-//! `quadraui::win::run` only exists when compiled for `target_os =
-//! "windows"` (see `src/win/mod.rs`/`Cargo.toml`'s `win` feature
-//! comment) — this example is Windows-only, same posture as `win_demo`
-//! (see that example's module docs).
+//! `quadraui::win::run` only exists when compiled for `target_os = "windows"`
+//! — this example is Windows-only.
 
 #[cfg(target_os = "windows")]
 use quadraui::{
@@ -51,20 +43,15 @@ use quadraui::{
     MessageDialogOptions, NamedKey, Notification, Reaction, UiEvent, WidgetId,
 };
 
-// `pub`, not private: quadraui#1229's `WinDriver` coverage
-// (`tests/win_example_driver.rs`) constructs this directly via a
-// `#[path]`-included module, the same way `tests/tui_example_driver.rs` /
-// `tests/gtk_example_driver.rs` reach every other `examples/common/*`
-// shape. This is the one example whose `AppLogic` lives in the example
-// file itself rather than `examples/common/` (see this file's module
-// docs for why — no in-window status bar to share with a common demo
-// yet), so the test hook is this visibility bump instead of a `pub mod`
-// under `common/`.
+// `pub` for test coverage: `tests/win_example_driver.rs` constructs this
+// directly. This is the one example whose `AppLogic` lives in the example
+// file itself rather than `examples/common/` (see module docs above), so the
+// test hook is this visibility rather than a `pub mod` in `common/`.
 #[cfg(target_os = "windows")]
 pub struct PlatformServicesDemo;
 
 /// Write a throwaway temp file for `f`/`p`/`x` to act on, so this demo
-/// never touches anything the user actually cares about (issue #956).
+/// never touches anything the user actually cares about.
 #[cfg(target_os = "windows")]
 fn scratch_file(label: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(

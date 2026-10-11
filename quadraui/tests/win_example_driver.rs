@@ -1,12 +1,11 @@
-//! First driver-harness smoke set for the Win-GUI backend (quadraui#707)
-//! — the Win-GUI twin of `tests/macos_example_driver.rs` /
-//! `tests/gtk_example_driver.rs` / `tests/tui_example_driver.rs`'s
-//! `appshell_demo_*` tests.
+//! First driver-harness smoke set for the Win-GUI backend.
+//! This file is the Win-GUI twin of the `appshell_demo_*` tests in
+//! `tests/macos_example_driver.rs`, `tests/gtk_example_driver.rs`, and
+//! `tests/tui_example_driver.rs`.
 //!
 //! Only compiled on `target_os = "windows"`: [`quadraui::win::testing`]
 //! (and the `WinBackend` rasterisers it drives) only exist there — see
-//! `win::mod`'s module docs. Runs for real on `ci.yml`'s `windows-latest`
-//! leg's "Test (win feature, real Windows)" step, against a real (WARP
+//! `win::mod`'s module docs. Runs on `windows-latest` against a real (WARP
 //! software) Direct2D device via `HeadlessSurface` — no live window, no
 //! GPU, no display.
 //!
@@ -22,13 +21,12 @@
 //! - the `Reaction` each scripted event returns — in particular, the
 //!   `Redraw`-vs-`Continue` split a `'j'` keypress gets depending on
 //!   whether the activity bar is keyboard-focused proves
-//!   `win::run::dispatch_event`'s ActivityBar intercept (quadraui#707's
-//!   second review finding) is actually wired, without needing to reach
-//!   `WinBackend::focused_activity_bar_id` directly — that method is
-//!   `pub(crate)` and this file is a separate crate (an integration test),
-//!   same visibility boundary `tests/macos_example_driver.rs` /
-//!   `tests/gtk_example_driver.rs` respect for their own backends'
-//!   equivalent internals.
+//!   `win::run::dispatch_event`'s ActivityBar intercept is actually wired,
+//!   without needing to reach `WinBackend::focused_activity_bar_id`
+//!   directly — that method is `pub(crate)` and this file is a separate
+//!   crate (an integration test), same visibility boundary
+//!   `tests/macos_example_driver.rs` / `tests/gtk_example_driver.rs`
+//!   respect for their own backends' equivalent internals.
 #![cfg(all(feature = "win", target_os = "windows"))]
 
 use quadraui::testing::ConformanceDriver;
@@ -45,19 +43,12 @@ use appshell_demo::AppShellDemo;
 mod panel_app;
 use panel_app::PanelApp;
 
-// ─── quadraui#1116 slice 1: parity with the vimcode-relevant Win examples ──
-//
-// `tests/tui_example_driver.rs` / `tests/gtk_example_driver.rs` /
-// `tests/macos_example_driver.rs` already cover these `examples/common`
-// shapes; each block below ports the same script (same `AppLogic`, same
-// scripted `UiEvent`s / driver calls, same assertions on painted text and
-// status-bar state) onto `WinDriver` — proving the whole
-// `AppLogic → WinBackend` chain agrees with the other three backends, not
-// just that it compiles. `WinDriver::new`/`driver_with_shell` paint the
-// first frame with painted-text-run recording on unconditionally
-// (quadraui#721), so `find`/`screen_contains` work here exactly as they do
-// on `GtkDriver`/`MacDriver` — this file's module doc predates that
-// landing (see the `PanelApp` section above).
+// These tests port the same script (same `AppLogic`, same scripted
+// `UiEvent`s / driver calls, same assertions on painted text and
+// status-bar state) from `tests/tui_example_driver.rs`,
+// `tests/gtk_example_driver.rs`, and `tests/macos_example_driver.rs`
+// onto `WinDriver` — proving the whole `AppLogic → WinBackend` chain
+// agrees with the other three backends, not just that it compiles.
 
 #[path = "../examples/common/menu_bar_app.rs"]
 mod menu_bar_app;
@@ -91,16 +82,9 @@ use multi_tree::DebugSidebar;
 mod data_table_app;
 use data_table_app::DataTableApp;
 
-// ─── quadraui#1229: slice 2, the remaining examples ────────────────────────
-//
-// `win_app`, `win_demo`, `win_chart`, `win_form_groups`, `win_hscroll`,
-// `win_indicators` and `win_platform_services` — the rest of #1116's
-// scope, left untracked when #1116 was closed by slice 1 (PR #1226).
-// Same posture as the slice-1 block above: port each shape's
-// `tests/tui_example_driver.rs` script onto `WinDriver` where one exists,
-// or author directly from the `examples/common` module when it doesn't
-// (`mini_app`/`hscroll_editor` have no TUI/GTK/macOS driver test to port
-// — grepped, see each section's own doc).
+// These tests port shapes from `examples/common` that lack TUI/GTK/macOS
+// driver tests, or author directly when one exists (`mini_app`/`hscroll_editor`
+// have no existing driver test to port).
 
 #[path = "../examples/common/mini_app.rs"]
 mod mini_app;
@@ -151,10 +135,10 @@ const SHELL_H: u32 = 480;
 
 /// `driver_with_shell` composes `AppShellDemo` through the exact same
 /// `build_shell_adapter` factory `win::shell_runner::run_with_shell` calls
-/// in production (quadraui#707's first review finding) — and the first
-/// frame it paints reaches real Direct2D calls (`WinBackend::draw_activity_bar`
-/// / `draw_status_bar`, both landed in #25) with no `todo!()` panic, proving
-/// the whole `ShellApp → ShellAdapter → WinBackend` chain actually runs.
+/// in production — and the first frame it paints reaches real Direct2D
+/// calls (`WinBackend::draw_activity_bar` / `draw_status_bar`) with no
+/// `todo!()` panic, proving the whole `ShellApp → ShellAdapter →
+/// WinBackend` chain actually runs.
 ///
 /// The activity-bar bounds `AppShellDemo::render_content` publishes into
 /// `ActivityProbe` come from the real `AppShellLayout` the shell computed —
@@ -182,17 +166,15 @@ fn appshell_demo_renders_shell_chrome_via_driver_with_shell() {
     );
 }
 
-/// The activity-bar keyboard-focus redirect (quadraui#707's second
-/// blocking review finding): `AppShellDemo::handle` has no `'j'` arm of
-/// its own (its match falls through to `_ => Reaction::Continue`), so a
-/// plain `'j'` reaching it unintercepted must return `Continue`. `Tab`
-/// asks `ShellContext` to enter activity-bar keyboard-cursor mode; from
-/// then on a `'j'` must instead be redirected by
+/// The activity-bar keyboard-focus redirect: `AppShellDemo::handle` has
+/// no `'j'` arm of its own (its match falls through to
+/// `_ => Reaction::Continue`), so a plain `'j'` reaching it unintercepted
+/// must return `Continue`. `Tab` asks `ShellContext` to enter activity-bar
+/// keyboard-cursor mode; from then on a `'j'` must instead be redirected by
 /// `win::run::dispatch_event` into `UiEvent::ActivityBar(..)` navigation,
 /// which the real, composed `ShellAdapter` handles by moving its cursor
 /// and returning `Redraw` — a real behavioural difference this test can
-/// observe without reaching `WinBackend::focused_activity_bar_id`
-/// directly (see this file's module doc).
+/// observe without reaching `WinBackend::focused_activity_bar_id` directly.
 #[test]
 fn appshell_demo_tab_then_j_is_intercepted_as_activity_bar_navigation() {
     let config = AppShellDemo::config();
@@ -222,15 +204,11 @@ fn appshell_demo_tab_then_j_is_intercepted_as_activity_bar_navigation() {
     );
 }
 
-/// Global accelerator dispatch (the other half of #707's second review
-/// finding): a registered `Global`-scope accelerator must reach the app
-/// as `UiEvent::Accelerator`, not a raw `KeyPressed` — proven here by
-/// pressing the plain `q`/`Escape` exit path `AppShellDemo::handle`
-/// already wires as a raw `KeyPressed` match (no accelerator registered
-/// for it), which still reaches the app unchanged when nothing intercepts
-/// it. This is the negative case: confirms `dispatch_event`'s pipeline
-/// doesn't swallow ordinary keys that match neither the activity-bar
-/// focus nor any registered accelerator.
+/// Global accelerator dispatch: a registered `Global`-scope accelerator
+/// must reach the app as `UiEvent::Accelerator`, not a raw `KeyPressed`.
+/// This negative test confirms `dispatch_event`'s pipeline doesn't
+/// swallow ordinary keys that match neither the activity-bar focus nor
+/// any registered accelerator.
 #[test]
 fn appshell_demo_unintercepted_key_still_reaches_the_app() {
     let config = AppShellDemo::config();
@@ -247,14 +225,14 @@ fn appshell_demo_unintercepted_key_still_reaches_the_app() {
     assert!(driver.exited());
 }
 
-// ─── PanelApp: drag text selection + Ctrl-C copy (#741) ────────────────────
+// ─── PanelApp: drag text selection + Ctrl-C copy ───────────────────────────
 //
 // Win-GUI twin of `tests/tui_example_driver.rs`'s
 // `panel_drag_selects_text_and_ctrl_c_copies_it` — same `PanelApp`
 // `AppLogic`, same script (drag across two painted content lines, assert
 // selection feedback, Ctrl-C, assert the copy landed). `WinDriver::new`
 // (unlike `driver_with_shell`) enables painted-text-run recording
-// unconditionally (quadraui#721), so `find`/`screen_contains` resolve real
+// unconditionally, so `find`/`screen_contains` resolve real
 // `StatusBar` text the same way `GtkDriver`'s do — the stale "no painted-text
 // lookup yet" caveat in this file's module doc predates that landing.
 //
@@ -280,7 +258,7 @@ fn panel_drag_selects_text_and_ctrl_c_copies_it() {
     // Drag down across the content lines → `route_mouse_down` begins a
     // TextSelection drag on MouseDown and `route_mouse_move` emits
     // TextSelectionChanged, which `dispatch_event` turns into an active
-    // selection (#741).
+    // selection.
     driver.mouse_down(x0, y0);
     driver.mouse_move(x1, y1);
     assert!(
@@ -306,8 +284,7 @@ fn panel_drag_selects_text_and_ctrl_c_copies_it() {
 fn panel_ctrl_a_selects_the_sole_content_region_and_ctrl_c_copies_it() {
     let mut driver = WinDriver::new(PanelApp::new(), PANEL_W, PANEL_H);
 
-    // No prior click — Ctrl-A must still resolve the sole registered
-    // `TextRegion` fallback path (`select_all_text_region`, #741).
+    // Without a prior click, Ctrl-A must resolve the sole registered
     driver.ctrl_char('a');
     driver.ctrl_char('c');
     assert!(
@@ -320,7 +297,7 @@ fn panel_ctrl_a_selects_the_sole_content_region_and_ctrl_c_copies_it() {
     );
 }
 
-// ─── MenuBarApp: open / navigate / select via MenuSystem (issue #1116) ────
+// ─── MenuBarApp: open / navigate / select via MenuSystem ──────────────────
 //
 // Win-GUI twin of `tests/tui_example_driver.rs`'s
 // `menu_bar_alt_f_opens_file_dropdown` /
@@ -453,12 +430,6 @@ fn shell_menu_file_click_in_title_bar_band_opens_dropdown() {
     let mut driver = driver_with_shell(ShellMenuDemo::new(), config, SHELL_MENU_W, SHELL_MENU_H);
 
     // "File"'s painted *center* must fall inside the registered
-    // `app-shell:title-bar` zone (quadraui#490's "no hardcoded
-    // coordinates" vocabulary) — not full-bounds containment
-    // (`FrameInventory::inside`), since DirectWrite's glyph box for a
-    // single text run can extend a point or two past a tightly-fit
-    // one-line-height row without the click point itself ever landing
-    // outside the band.
     let inventory = ConformanceDriver::inventory(&driver);
     let title_bar = inventory
         .zones()
@@ -562,7 +533,7 @@ fn shell_menu_activity_bar_click_still_switches_panel_when_no_modal_open() {
     );
 }
 
-// ─── SplitApp: draggable single divider (issue #1116) ──────────────────────
+// ─── SplitApp: draggable single divider ────────────────────────────────────
 //
 // Win-GUI twin of `tests/tui_example_driver.rs`'s
 // `split_dragging_divider_moves_it_and_updates_ratio` /
@@ -689,7 +660,7 @@ fn split_v_toggles_direction_and_r_resets_ratio() {
     );
 }
 
-// ─── ToastApp: triggering + dismissing a toast (issue #1116) ───────────────
+// ─── ToastApp: triggering + dismissing a toast ─────────────────────────────
 //
 // Win-GUI twin of `tests/tui_example_driver.rs`'s
 // `toast_dismiss_click_removes_it_then_trigger_adds_a_new_one`.
@@ -729,7 +700,7 @@ fn toast_dismiss_click_removes_it_then_trigger_adds_a_new_one() {
 }
 
 // Two more scripted directly from `examples/common/toast_app.rs`'s
-// `add_toast`/`handle` (issue #1229) — bringing this slice-1 shape up to
+// `add_toast`/`handle` — bringing this slice-1 shape up to
 // three tests: an action-button toast and a plain body click, neither
 // covered by the dismiss-then-trigger test above.
 
@@ -775,7 +746,7 @@ fn toast_clicking_the_toast_body_logs_the_click() {
     );
 }
 
-// ─── SidebarSearchApp: SidebarSystem search panel (issue #1116) ───────────
+// ─── SidebarSearchApp: SidebarSystem search panel ─────────────────────────
 //
 // No TUI/GTK/macOS driver test exists yet for this shape (grepped —
 // `SidebarSearchApp` doesn't appear in any other `tests/*_example_driver.rs`),
@@ -883,7 +854,7 @@ fn sidebar_search_clicking_a_file_header_collapses_then_reexpands_its_matches() 
     assert!(driver.screen_contains("Expanded file 0"));
 }
 
-// ─── SearchPanelApp: MSV + TreeView file-search results (issue #1116) ─────
+// ─── SearchPanelApp: MSV + TreeView file-search results ───────────────────
 //
 // Win-GUI twin of `tests/tui_example_driver.rs`'s
 // `search_panel_typing_updates_the_search_status`, plus a click-routed
@@ -957,7 +928,7 @@ fn search_panel_clicking_a_file_header_collapses_its_matches() {
     );
 }
 
-// ─── DebugSidebar / multi_tree: 4-section debug sidebar (issue #1116) ─────
+// ─── DebugSidebar / multi_tree: 4-section debug sidebar ───────────────────
 //
 // Win-GUI twin of `tests/tui_example_driver.rs`'s
 // `multi_tree_tab_then_down_selects_a_row_in_the_newly_active_section`,
@@ -1022,7 +993,7 @@ fn multi_tree_clicking_a_header_activates_that_section() {
 }
 
 // ─── DataTableApp: initial paint, sort cycling, row selection, divider drag
-// (issue #1116) ──────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
 //
 // Win-GUI twin of `tests/macos_example_driver.rs`'s
 // `data_table_initial_screen_paints_headers_and_rows` /
@@ -1123,7 +1094,7 @@ fn data_table_divider_before_last_column_resizes_in_drag_direction() {
     );
 }
 
-// ─── MiniApp: single-StatusBar smoke app (issue #1229) ─────────────────────
+// ─── MiniApp: single-StatusBar smoke app ───────────────────────────────────
 //
 // Win-GUI twin of `tests/tui_example_driver.rs`'s
 // `mini_counts_keystrokes_and_records_last_key` / `mini_q_exits` /
@@ -1184,7 +1155,7 @@ fn mini_app_q_exits() {
     assert!(driver.exited());
 }
 
-// ─── AppState / demo: tabs + status-segment focus cycling (issue #1229) ───
+// ─── AppState / demo: tabs + status-segment focus cycling ─────────────────
 //
 // Win-GUI twin of `tests/tui_example_driver.rs`'s
 // `demo_arrow_keys_switch_active_tab` / `demo_n_opens_a_new_scratch_tab`,
@@ -1300,7 +1271,7 @@ fn demo_tab_then_enter_activates_the_next_status_segment() {
     );
 }
 
-// ─── ChartApp: sparkline / line / bar chart views (issue #1229) ────────────
+// ─── ChartApp: sparkline / line / bar chart views ──────────────────────────
 //
 // Win-GUI twin of `tests/tui_example_driver.rs`'s
 // `chart_switching_to_line_view_paints_axis_labels_and_gridlines` /
@@ -1385,7 +1356,7 @@ fn chart_switching_to_bar_grouped_shows_its_own_status_label() {
     }
 }
 
-// ─── FormGroupsApp: ToggleGroup / ButtonRow / Toolbar field clicks (#1229) ─
+// ─── FormGroupsApp: ToggleGroup / ButtonRow / Toolbar field clicks ─
 //
 // Win-GUI twin of `tests/tui_example_driver.rs`'s
 // `form_groups_click_toggle_flips_rendered_value`, plus two more scripted
@@ -1470,7 +1441,7 @@ fn form_groups_clicking_find_next_logs_the_action() {
     );
 }
 
-// ─── HScrollEditor: horizontal scroll via key (issue #1229) ───────────────
+// ─── HScrollEditor: horizontal scroll via key ─────────────────────────────
 //
 // Win-GUI twin of `tests/tui_example_driver.rs`'s
 // `hscroll_dollar_key_scrolls_visible_window_to_line_end`, which already
@@ -1538,7 +1509,7 @@ fn hscroll_zero_key_after_dollar_returns_to_start() {
     );
 }
 
-// ─── IndicatorsApp: ProgressBar + Spinner (issue #1229) ───────────────────
+// ─── IndicatorsApp: ProgressBar + Spinner ─────────────────────────────────
 //
 // Win-GUI twin of `tests/tui_example_driver.rs`'s
 // `indicators_toggling_cancellable_paints_and_clears_cancel_symbol` — the
@@ -1625,37 +1596,16 @@ fn indicators_clicking_cancel_resets_progress() {
     );
 }
 
-// ─── PlatformServicesDemo: win_platform_services (issue #1229) ────────────
+// PlatformServicesDemo: win_platform_services
 //
-// Unlike every other section in this file, `win_platform_services.rs`'s
-// `render` paints nothing (see that example's module doc: "every
-// `WinBackend::draw_*` rasteriser is still a `todo!()` stub" — stale now
-// that #25–#30 landed the chrome rasterisers, but still true *for this
-// example*, which never calls one), and every one of its key handlers
-// reports its result to stderr rather than an in-window status bar,
-// specifically so a human can watch it against a real desktop session.
-// So there is no painted output for a headless `WinDriver` to assert on
-// for `o`/`s`/`m` (blocking native dialogs — would hang a test run
-// waiting on user input that never comes), `n` (a tray balloon has no
-// pixel presence in a `HeadlessSurface`, and no live tray to inspect
-// either), `u`/`f`/`p`/`x`/`t`/`d`/`b` (real desktop side effects: a
-// browser launch, Explorer/shell UI, filesystem/Recycle-Bin mutation, a
-// registry-backed theme query, real monitor enumeration, an audible
-// beep — none of which a `HeadlessSurface` renders and none of which
-// this crate's own `src/win/services.rs` unit tests leave unexercised
-// already, see e.g. `open_url_result_and_open_path_report_a_real_shell_execute_failure`).
-//
-// What *is* headlessly observable:
+// `win_platform_services.rs` doesn't paint output for key handlers that
+// block on native dialogs (`o`/`s`/`m`), display tray notifications (`n`),
+// or produce desktop side effects (`u`/`f`/`p`/`x`/`t`/`d`/`b`) — none of
+// which a headless `WinDriver` can observe. What is headlessly observable:
 // - the `Reaction`/exit behaviour of the app's own key dispatch (proves
-//   `WinDriver` can drive this example's `AppLogic` at all, the same bar
-//   every other section here clears first); and
-// - the clipboard round trip, which needs no window/desktop UI at all
-//   (`OpenClipboard(None)` — see `src/win/services.rs`'s
-//   `win_clipboard_read`/`win_clipboard_write` docs) — exercised here via
-//   `WinBackend::services()` directly rather than routing through `'c'`
-//   and reading the app's `eprintln!`, which a `WinDriver` test has no
-//   way to capture. This is the same real `WinPlatformServices` the `'c'`
-//   handler calls, just reached without needing to observe stderr.
+//   `WinDriver` can drive this example's `AppLogic` at all); and
+// - the clipboard round trip via `WinBackend::services()` directly,
+//   which needs no window/desktop UI at all (`OpenClipboard(None)`).
 
 const PLATFORM_SERVICES_W: u32 = 400;
 const PLATFORM_SERVICES_H: u32 = 200;

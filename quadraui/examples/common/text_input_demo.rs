@@ -2,12 +2,9 @@
 //! editing behaviour.
 //!
 //! Renders a single multi-line `TextInput` filling most of the viewport.
-//! All editing goes through `TextEditor::apply(EditOp)` (issue #833) —
-//! this file no longer hand-rolls insert/backspace/cursor-movement logic
-//! itself. Exercises cursor positioning, line wrap on Enter, scroll
-//! auto-clamp, placeholder rendering, Shift+arrow selection, and
-//! Ctrl+Z/Ctrl+Shift+Z undo/redo (bound to the universal
-//! `KeyBinding::Undo`/`KeyBinding::Redo` accelerator names).
+//! All editing goes through `TextEditor::apply(EditOp)`. Exercises cursor
+//! positioning, line wrap on Enter, scroll auto-clamp, placeholder rendering,
+//! Shift+arrow selection, and Ctrl+Z/Ctrl+Shift+Z undo/redo.
 
 use quadraui::{
     Accelerator, AcceleratorId, AcceleratorScope, AppLogic, Backend, Color, EditOp,
@@ -38,7 +35,7 @@ impl TextInputDemo {
 
     /// Same `input_rect` geometry `render` uses — shared so
     /// `handle`'s click routing can't drift from where the primitive
-    /// was actually painted (quadraui#818).
+    /// was actually painted.
     fn input_rect(backend: &dyn Backend) -> Rect {
         let viewport = backend.viewport();
         let lh = backend.line_height();
@@ -87,10 +84,9 @@ impl Default for TextInputDemo {
 impl AppLogic for TextInputDemo {
     type AreaId = ();
 
-    /// Registers the demo's undo/redo accelerators — see #833's module
-    /// doc. `Backend::register_accelerator` resolves `Global`-scope
-    /// bindings natively, translating a matching raw key press straight
-    /// into `UiEvent::Accelerator` before `handle` ever sees it.
+    /// Registers the demo's undo/redo accelerators. `Backend::register_accelerator`
+    /// resolves `Global`-scope bindings natively, translating a matching raw key
+    /// press straight into `UiEvent::Accelerator` before `handle` ever sees it.
     fn setup(&mut self, backend: &mut dyn Backend) {
         backend.register_accelerator(&Accelerator {
             id: AcceleratorId::new(UNDO_ACCEL),
@@ -119,11 +115,9 @@ impl AppLogic for TextInputDemo {
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
-            // Accelerators fire ahead of raw key events (quadraui's
-            // backends match registered accelerators first) — this is
-            // #833's undo/redo wiring: the long-declared
-            // `KeyBinding::Undo`/`Redo` names now reach
-            // `TextEditor::apply` via `EditOp::from_key_binding`.
+            // Accelerators fire ahead of raw key events: backends match registered
+            // accelerators first. `KeyBinding::Undo`/`Redo` names reach `TextEditor::apply`
+            // via `EditOp::from_key_binding`.
             UiEvent::Accelerator(id, _modifiers) => {
                 let op = if id.as_str() == UNDO_ACCEL {
                     EditOp::from_key_binding(&KeyBinding::Undo)
@@ -137,7 +131,7 @@ impl AppLogic for TextInputDemo {
                     Some(false) | None => Reaction::Continue,
                 }
             }
-            // Click routing (#818): move the cursor to the clicked line
+            // Click routing: move the cursor to the clicked line
             // via `TextInputLayout::hit_test` — the same layout `render`
             // just painted from.
             UiEvent::MouseDown {

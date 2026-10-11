@@ -1,7 +1,7 @@
 //! `SplitApp` driven through [`quadraui::gtk::GtkRunner`]'s non-blocking
 //! `step`/`pump` entry points instead of the all-owning [`quadraui::gtk::run`]
 //! (`Application::run()`, which blocks the calling thread until the app
-//! quits) — the GTK counterpart of `examples/tui_embedded.rs` (issue #1100).
+//! quits) — the GTK counterpart of `examples/tui_embedded.rs`.
 //!
 //! This example's own `main` plays the "host loop" role: a bare `loop {}`
 //! that does nothing but call `runner.pump(...)` every iteration. A real
@@ -55,7 +55,7 @@ fn main() -> std::process::ExitCode {
         // drive it from.
         if runner.pump(Duration::from_millis(50)) == StepOutcome::Exited {
             // Mirrors `run_with`'s post-`gapp.run()` `smoke_failed.get()`
-            // check (issue #1100 review) — see `GtkRunner::smoke_failed`'s
+            // check — see `GtkRunner::smoke_failed`'s
             // doc.
             return if runner.smoke_failed() {
                 std::process::ExitCode::FAILURE

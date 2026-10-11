@@ -1,4 +1,4 @@
-//! TUI runner for the context-sensitive help layer demo (#431).
+//! TUI runner for the context-sensitive help layer demo.
 //!
 //! `?` opens a cheatsheet for the active panel, `p` opens a command
 //! palette populated from the same registered actions.

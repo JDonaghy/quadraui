@@ -1,4 +1,4 @@
-//! `SidebarSystem::reveal` (#595) `AppLogic` + `quadraui::gtk::run`
+//! `SidebarSystem::reveal` `AppLogic` + `quadraui::gtk::run`
 //! example. Same logic as `tui_sidebar_reveal`, paired by shape — see
 //! `examples/common/sidebar_reveal_demo.rs`.
 //!

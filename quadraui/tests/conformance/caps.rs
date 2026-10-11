@@ -1,57 +1,38 @@
-//! Capability **honesty check** (quadraui#492 acceptance item 2, epic
-//! #480).
+//! Capability honesty check: [`quadraui::BackendCaps`] is a backend saying "these optional surfaces
+//! are real on me". C0 (`c0.rs`) proves the *required* `draw_*` surface paints something; this
+//! module proves the *optional* surface isn't lying, in both directions:
 //!
-//! [`quadraui::BackendCaps`] is a backend saying "these optional surfaces
-//! are real on me". C0 (`c0.rs`) proves the *required* `draw_*` surface
-//! paints something; this module proves the *optional* surface isn't
-//! lying, in both directions:
-//!
-//! - **Declared ⇒ overridden.** A backend that reports
-//!   `text_selection: true` must actually override
-//!   `register_text_region` *and* `cancel_text_selection_drag`. Otherwise
-//!   the trait's no-op default silently eats every registration and the
-//!   conformance runner cheerfully *runs* the selection scenarios it
-//!   should have skipped.
-//! - **Not declared ⇒ untouched default.** The reverse is just as much a
-//!   lie, and a more insidious one: a backend that overrides `set_cursor`
-//!   but forgets `pointer_cursor: true` makes every scenario gating on it
-//!   skip forever, and a skip row looks like a known gap rather than a
-//!   stale declaration.
-//!
-//! This is not a hypothetical. quadraui#492's own review found GTK
-//! declaring `text_selection: true` while `cancel_text_selection_drag`
-//! was still the trait default — exactly this class of drift, shipped in
-//! the same PR that introduced `BackendCaps`, and invisible because this
-//! check did not exist yet.
+//! - **Declared ⇒ overridden.** A backend that reports `text_selection: true` must actually
+//!   override `register_text_region` *and* `cancel_text_selection_drag`. Otherwise the trait's
+//!   no-op default silently eats every registration.
+//! - **Not declared ⇒ untouched default.** A backend that overrides `set_cursor` but forgets
+//!   `pointer_cursor: true` makes every scenario gating on it skip forever, and a skip row
+//!   looks like a known gap rather than a stale declaration.
 //!
 //! ## Why source parsing
 //!
-//! "Is this trait method overridden, or is it the default?" is not a
-//! question a running program can ask: a defaulted method and an
-//! overriding one are the same call at the same vtable slot. The only
-//! place the answer exists is the source, so that is where this reads it
-//! — the same technique `c0::tests::cases_cover_every_draw_method_on_the_trait`
-//! already uses to hold `CASES` to the trait.
+//! "Is this trait method overridden, or is it the default?" is not a question a running
+//! program can ask: a defaulted method and an overriding one are the same call at the same
+//! vtable slot. The only place the answer exists is the source, so that is where this reads it
+//! — the same technique [`c0::tests::cases_cover_every_draw_method_on_the_trait`] already uses
+//! to hold `CASES` to the trait.
 //!
 //! Two things keep that from being a fragile trick:
 //!
-//! 1. [`declared_in_source`] is cross-checked against the *running*
-//!    backend's `Backend::backend_caps()` for every backend this build
-//!    compiles in (`conformance::source_parsed_caps_match_the_running_backend`).
-//!    If the parser ever goes stale against reformatted source, that test
-//!    fails loudly instead of this one quietly passing on an empty parse.
-//! 2. [`parse_sanity`] asserts each impl block yields a plausible number
-//!    of methods, so a header rename can't silently degrade every backend
-//!    to "overrides nothing" — which would read as a clean bill of health.
+//! 1. [`declared_in_source`] is cross-checked against the *running* backend's
+//!    `Backend::backend_caps()` for every backend this build compiles in
+//!    (`conformance::source_parsed_caps_match_the_running_backend`). If the parser ever goes
+//!    stale against reformatted source, that test fails loudly instead of this one quietly
+//!    passing on an empty parse.
+//! 2. [`parse_sanity`] asserts each impl block yields a plausible number of methods, so a
+//!    header rename can't silently degrade every backend to "overrides nothing" — which
+//!    would read as a clean bill of health.
 //!
 //! ## Win and macOS
 //!
-//! Source parsing has one large bonus over a driver-based check: it works
-//! on backends that have no conformance driver, and can't even be
-//! compiled on this host. `MacBackend` and `WinBackend` are checked here
-//! on every run, on every platform — so quadraui#492's "Win/macOS gaps
-//! enumerate as red/skip rows, not silence" holds for the capability half
-//! even though the C0 paint half still has no Win/macOS column.
+//! Source parsing works on backends that have no conformance driver, and can't even be
+//! compiled on this host. `MacBackend` and `WinBackend` are checked here on every run, on
+//! every platform — so capability gaps enumerate as red/skip rows, not silence.
 
 use std::collections::BTreeSet;
 
@@ -175,15 +156,8 @@ pub const CAP_CONTRACTS: &[CapContract] = &[
             "`PlatformServices::send_notification` likewise has no default to diverge from",
         ),
     },
-    // Was `Proof::Any` until issue #1013: `GtkBackend` declared this cap
-    // `true` while overriding only `set_nerd_font_fallback`, leaving
-    // `register_font_from_memory` on the trait's no-op default — an
-    // `Any` proof is satisfied by either method alone, so this exact
-    // "declared true, one of the two methods still defaulted" shape
-    // passed this check vacuously. `All` is the accurate contract today
-    // — every backend that declares this (`MacBackend`/`WinBackend`, and
-    // `GtkBackend` since #1013) overrides both methods — and is the one
-    // that would have caught #1013 here instead of in a consumer.
+    // `generic_font_families` entry: every backend that declares this capability
+    // overrides both `register_font_from_memory` and `set_nerd_font_fallback`
     CapContract {
         cap: "app_font_registration",
         proof: Proof::All(&["register_font_from_memory", "set_nerd_font_fallback"]),
@@ -324,23 +298,15 @@ fn fn_name(trimmed: &str) -> Option<&str> {
 /// default body.
 const BACKEND_TRAIT_SRC: &str = include_str!("../../src/backend.rs");
 
-/// Every `Backend` method that ships a default body, parsed from the
-/// trait itself.
+/// Every `Backend` method that ships a default body, parsed from the trait itself.
 ///
-/// quadraui#492's Problem section counts 13 such methods and calls them
-/// the bug: a new backend compiles while silently discarding whatever
-/// they carry. `CAP_CONTRACTS` covers the ones a `BackendCaps` field
-/// gates (`set_editor_font`/`set_ui_font` included, since #1023's
-/// `generic_font_families` entry) and `c0::CASES` covers the defaulted
-/// `draw_*` ones, which leaves a remainder — `set_theme`,
-/// `set_nerd_fonts`, `scales_text_rows`, `editor_col_at_x`,
-/// `register_zone` — that nothing else in this suite looks at. Those are
-/// the issue's *headline* example ("discarding the theme — the Win stub
-/// takes this default today") and its `editor_col_at_x` example, so they
-/// get a table of their own.
+/// `CAP_CONTRACTS` covers the ones a `BackendCaps` field gates, and C0 covers the
+/// defaulted `draw_*` methods. This returns the remainder — `set_theme`, `set_nerd_fonts`,
+/// `scales_text_rows`, `editor_col_at_x`, `register_zone` — that nothing else in this
+/// suite looks at.
 ///
-/// Derived from source rather than listed, so a new defaulted method
-/// enters the report the moment it is added to the trait.
+/// Derived from source rather than listed, so a new defaulted method enters the report
+/// the moment it is added to the trait.
 pub fn defaulted_trait_methods() -> Vec<&'static str> {
     let mut lines = BACKEND_TRAIT_SRC
         .lines()
@@ -384,14 +350,9 @@ pub fn defaulted_trait_methods() -> Vec<&'static str> {
 /// override landed. The `draw_*` defaults are absent on purpose: C0 owns
 /// those, and it is a hard failure there rather than an entry here.
 pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
-    // ── `last_error` (issue #507/#805, D-009 in DECISIONS.md): `WinBackend`
-    // is the one backend with a concrete producer today (`end_frame`
-    // recording `BackendError::SurfaceLost` on a failed `EndDraw`), so it's
-    // the only one that overrides this. TUI/GTK/macOS never set an internal
-    // error field — the always-`None` default answers exactly like the
-    // method doesn't exist, at zero cost, per the trait doc's own "Default:
-    // always None" note. Not a gap to close; these three backends simply
-    // have nothing to report yet.
+    // `last_error`: `WinBackend` is the only backend with a concrete error producer
+    // (`end_frame` recording `BackendError::SurfaceLost` on a failed `EndDraw`), so it's
+    // the only one that overrides this. TUI/GTK/macOS never set an internal error field.
     (
         "tui",
         "last_error",
@@ -410,7 +371,7 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "no concrete BackendError producer yet — Cocoa/CoreGraphics failures aren't wired to \
          this channel",
     ),
-    // ── GTK, macOS, Win: `request_full_repaint` (issue #1037) exists to
+    // ── GTK, macOS, Win: `request_full_repaint` exists to
     // discard an incremental-diff cache that can desync from the physical
     // display — TUI's problem, because `ratatui::Terminal` tracks a
     // `Buffer` it diffs against the real terminal's actual contents,
@@ -440,13 +401,7 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "Direct2D repaints the whole render target between `BeginDraw`/`EndDraw` every frame — \
          no incremental diff cache to desync, so the no-op default is correct (quadraui#1037)",
     ),
-    // ── TUI: a fixed-cell backend, so the font-shaped methods have no
-    // meaning rather than being unfinished. `set_editor_font`/`set_ui_font`
-    // are no longer here (#1023): both are now covered by
-    // `CAP_CONTRACTS`'s `generic_font_families` entry instead — TUI's
-    // `false` there (neither method is overridden) *is* the honest
-    // "fixed-cell backend, no font to override" answer, so this table no
-    // longer needs a separate excuse for the same fact.
+    // TUI: a fixed-cell backend, so the font-shaped methods have no meaning.
     (
         "tui",
         "scales_text_rows",
@@ -459,7 +414,7 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "the default *is* uniform-monospace division (`EditorLayout::col_at_x`), which is exact \
          for a cell grid — GTK overrides it only because Pango advance widths vary",
     ),
-    // TUI: `has_font_family` (issue #1024) answers "does the platform have
+    // TUI: `has_font_family` answers "does the platform have
     // this font installed", which a terminal emulator's hosting process
     // cannot answer — the terminal's own font choice is invisible to
     // whatever it's running. `None` (the trait default) *is* the honest
@@ -475,28 +430,15 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // ── GTK, macOS, Win: `snap_height` is deliberately unimplemented on
     // every pixel backend. The trait's default (identity) *is* the right
     // answer for them — they paint fractional heights exactly, unlike
-    // TUI's cell grid — so there is nothing to override (quadraui#632).
+    // TUI's cell grid — so there is nothing to override.
     (
         "gtk",
         "snap_height",
         "pixel backend — Cairo paints fractional heights exactly, so the identity default is \
          correct, not unfinished work (quadraui#632)",
     ),
-    // ── macOS: real backend, genuinely unfinished. `MacDriver`
-    // (quadraui#493) gives it a `ConformanceDriver` and a Tier-1
-    // (`backends()`) row, but it's deliberately still absent from
-    // `c0_paint_smoke`'s columns — `draw_diff_view`'s known fake (see this
-    // module's doc comment) would turn straight into a hard C0 failure,
-    // which is its own follow-up, not this list's job.
-    // `set_editor_font`/`set_ui_font` are no longer here (#963): both are
-    // now overridden — `set_editor_font` maps onto the existing
-    // `set_current_font` machinery, and `set_ui_font` installs a second,
-    // independent CoreText font (`chrome_font`) that defaults to the
-    // system UI font and backs `draw_status_bar_interactive`/
-    // `status_bar_layout` via `ChromeSurface`. Wiring the rest of the
-    // chrome rasterisers (tab bar, tree, menu bar, dialogs, …) off that
-    // same adapter is tracked follow-up — see `macos::backend::ChromeSurface`'s
-    // doc — same scope Win-GUI's #724 `chrome_dwrite` shipped with.
+    // macOS: real backend with unfinished work. `MacDriver` gives it a `ConformanceDriver`
+    // and a Tier-1 row, but it's deliberately absent from `c0_paint_smoke`'s columns.
     (
         "macos",
         "scales_text_rows",
@@ -527,19 +469,8 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "pixel backend — CoreText paints fractional heights exactly, so the identity default is \
          correct, not unfinished work (quadraui#632)",
     ),
-    // ── Win: every method is a `todo!()` stub (#19). Listed one by one
-    // anyway — "the whole backend is a stub" is exactly the kind of
-    // blanket excuse that outlives the stub. `set_theme`/`set_ui_font`
-    // are no longer here (#724): both are now overridden — `set_theme`
-    // stores `current_theme` for every `draw_*` rasteriser that used to
-    // fall back to `Theme::default()`, and `set_ui_font` builds a chrome
-    // `IDWriteTextFormat` alongside the editor one. `set_nerd_fonts` is
-    // no longer here either (#804): `WinBackend` now stores the flag and
-    // `draw_tree` honours it, matching TUI/GTK/macOS. `register_zone` is
-    // no longer here either (#1199): `WinBackend` now stores zones in a
-    // real `Vec` and reads them back in `nc_hit_test`'s `WM_NCHITTEST`
-    // classification, the same way `draw_focus_ring`/`draw_solid_fill`
-    // always expected `register_zone` to work.
+    // Win: every method is a `todo!()` stub. Listed one by one anyway — "the whole
+    // backend is a stub" is exactly the kind of blanket excuse that outlives the stub.
     ("win", "scales_text_rows", "stub backend — see #19"),
     ("win", "editor_col_at_x", "stub backend — see #19"),
     (
@@ -559,26 +490,16 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "pixel backend — DirectWrite paints fractional heights exactly, so the identity default \
          is correct, not unfinished work (quadraui#632); unrelated to the #19 stub gaps above",
     ),
-    // ── issue #947: `titlebar_control_inset` reports how much of the
-    // leading edge of the app-drawn title band the *backend's own*
-    // chrome already occupies, so the app can leave that region unpainted.
-    // macOS overrides it (AppKit's traffic lights float over the content
-    // area once `ShellConfig::client_side_titlebar` turns on
-    // `FullSizeContentView`); the other three take the empty default, but
-    // for two different reasons, which is why they're listed separately
-    // rather than under one blanket line:
+    // `titlebar_control_inset` reports how much of the leading edge of the app-drawn
+    // title band the *backend's own* chrome already occupies. macOS overrides it (AppKit's
+    // traffic lights float over the content area); the other three take the empty default
+    // for different reasons:
     //
-    //   * TUI has no window concept at all — there is no native chrome
-    //     that could overlap the band, ever. Permanent, like `snap_height`
-    //     above: the default *is* the answer, not a stand-in for one.
-    //   * GTK and Win-GUI could one day overlap it, but don't today:
-    //     neither backend reads `ShellConfig::client_side_titlebar` (#947
-    //     wired macOS only), so their windows keep full native decorations
-    //     and their window controls stay outside the app's content area.
-    //     These two entries are live TODOs — whichever backend grows
-    //     client-side decorations must override this method in the same PR
-    //     and delete its line here, which the staleness check below turns
-    //     into a hard failure if it forgets.
+    //   * TUI has no window concept at all — no native chrome could overlap the band.
+    //   * GTK and Win-GUI don't read `ShellConfig::client_side_titlebar` yet, so their
+    //     windows keep full native decorations and their window controls stay outside the
+    //     app's content area. These are live TODOs: whichever backend grows client-side
+    //     decorations must override this method and delete its line here.
     (
         "tui",
         "titlebar_control_inset",
@@ -599,54 +520,22 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          Win-GUI window keeps its native non-client titlebar, so no Win-drawn control overlaps \
          the app's title band; override this and delete this line when CSD lands",
     ),
-    // ── issue #506: `terminal_layout` / `editor_layout` / `diff_view_layout`
-    // each ship with a trait default that is a pure function of
-    // `Backend::char_width()` / `Backend::line_height()` (plus, for
-    // `diff_view_layout`, `DiffView::mode`) — the exact same values every
-    // backend's own `draw_terminal` / `draw_editor` / `draw_diff_view`
-    // already resolves them to (see `Backend::editor_layout`'s doc for the
-    // per-backend trace: `GtkBackend`/`WinBackend`/`MacBackend` all pass
-    // `current_char_width` / `current_line_height`, which is exactly what
-    // the two accessor methods return; TUI's fixed `(1.0, 1.0)` matches its
-    // uniform cell grid). There is no backend-specific measurement these
-    // three could add — unlike `board_layout` / `list_layout` (also new in
-    // #506), which route through backend-native constants
-    // (`BoardMeasure`'s column/card sizing, `ListView`'s scrollbar
-    // reservation) and so have no default at all. Declaring all four
-    // backends here for all three methods is the honest statement that the
-    // default *is* the answer, not a stand-in for one.
+    // `terminal_layout` / `editor_layout` / `diff_view_layout` each ship with a trait
+    // default that is a pure function of `Backend::char_width()` / `Backend::line_height()`
+    // (plus, for `diff_view_layout`, `DiffView::mode`) — the exact same values every
+    // backend's own `draw_terminal` / `draw_editor` / `draw_diff_view` already resolves
+    // them to. There is no backend-specific measurement these three could add, unlike
+    // `board_layout` / `list_layout`, which route through backend-native constants and
+    // have no default at all. All four backends take the default as the honest answer.
     //
-    // ── issue #737 revisit: `diff_view_layout`'s exemption above still
-    // holds after the row/pane geometry lift. Before #737 the row/pane
-    // math (pane widths, divider position, the scroll-clamped visible-line
-    // window) existed four times — once inline in this trait's own
-    // default body, and once more in each of gtk/macos/tui's own
-    // `draw_diff_view` — and this file's job was only ever "does a
-    // backend override the *trait method*", which was already true and
-    // stayed true. #737 didn't change that: it added
-    // `primitives::diff_view::DiffView::layout` as the *fifth* place that
-    // math could have lived and made it the *only* place it does — gtk,
-    // macos, tui, and win's `draw_diff_view` all call it now instead of
-    // re-deriving. `Backend::diff_view_layout`'s default body deliberately
-    // keeps its own compact copy rather than delegating to
-    // `DiffView::layout`: the two differ in one degenerate corner
-    // (`line_height <= 0` with unified rows present) that has never been
-    // observed from a real backend's `line_height()`, and collapsing them
-    // risked changing behaviour in that corner for a mechanical
-    // clarity-only refactor with no accompanying scenario to guard it.
-    // Still zero backends override the method, so the honesty check's
-    // verdict is unchanged — this note exists so the "revisit" isn't
-    // silent.
-    // ── issue #506 review fix: `terminal_scrollbar_default_width` backs
-    // `terminal_layout`'s scrollbar-gutter reservation (a `Terminal` with
-    // `scrollbar: Some(TerminalScrollbar { width: None, .. })` needs a
-    // fallback gutter width before it can compute `grid_cols`). GTK,
-    // macOS, and Win all default a `None` `TerminalScrollbar::width` to
-    // 8px (`sb_width: … .unwrap_or(8.0)` in each backend's own
-    // `draw_terminal`) — exactly the trait default — so the three take it
-    // as the honest answer, not a stand-in for one. TUI overrides it to
-    // `1.0` (one cell), matching `src/tui/terminal.rs`'s
-    // `sb_cols: … .unwrap_or(1)`.
+    // `diff_view_layout`'s default still holds after the row/pane geometry lift: its
+    // default body keeps its own copy of the pane math rather than delegating to
+    // `DiffView::layout`, differing only in one degenerate corner.
+    //
+    // `terminal_scrollbar_default_width` backs `terminal_layout`'s scrollbar-gutter
+    // reservation. GTK, macOS, and Win all default `TerminalScrollbar::width` to 8px —
+    // exactly the trait default — so the three take it as the honest answer. TUI
+    // overrides it to `1.0` (one cell).
     (
         "gtk",
         "terminal_scrollbar_default_width",
@@ -725,14 +614,8 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "diff_view_layout",
         "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
     ),
-    // ── issue #1102: `canvas_layout` is `CanvasLayout { bounds: rect }` —
-    // a pure fn of `rect` alone, with no backend-specific metric at all
-    // (unlike `terminal_layout`/`editor_layout` above, which still depend
-    // on `char_width()`/`line_height()`). `Canvas`'s `DrawOp` coordinates
-    // are already LOCAL to `rect` (see that primitive's module doc), so
-    // there is nothing for any backend to resolve beyond the rect it was
-    // already given. All four backends take the default; none has a
-    // reason to override it.
+    // `canvas_layout` is `CanvasLayout { bounds: rect }` — a pure function of `rect`
+    // alone, with no backend-specific metric. All four backends take the default.
     (
         "tui",
         "canvas_layout",
@@ -753,19 +636,11 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "canvas_layout",
         "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
     ),
-    // ── issue #776: `scrollbar_reserve` is the width of *toolkit* scrollbar
-    // chrome that a backend paints over the content edge, which a caller
-    // must subtract before it computes a content viewport width. GTK is
-    // the only backend that hosts its content inside something with such
-    // chrome (a `ScrolledWindow` and its overlay scrollbar), so GTK is the
-    // only backend that overrides it. The other three draw straight into a
-    // surface they own end to end — a terminal cell grid, a `CGContext`, an
-    // HWND's Direct2D render target — and any scrollbar visible in them is
-    // quadraui's own `Scrollbar` primitive, laid out *inside* the rect the
-    // caller already passed rather than floated on top of it. Reserving a
-    // second gutter for it would double-count. Unlike the `#19` Win stub
-    // rows above, these are not unfinished work: `0.0` is the answer, and
-    // it does not change when the Win rasterisers land.
+    // `scrollbar_reserve` is the width of *toolkit* scrollbar chrome that a backend paints
+    // over the content edge. GTK is the only backend that hosts its content inside
+    // something with such chrome (a `ScrolledWindow`). The other three draw into a surface
+    // they own end to end, and any scrollbar visible in them is quadraui's own `Scrollbar`
+    // primitive, laid out *inside* the rect, not floated on top. `0.0` is the answer.
     (
         "tui",
         "scrollbar_reserve",
@@ -785,15 +660,9 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          no native scrollbar floated over the content edge; unrelated to the #19 stub gaps above \
          (#776)",
     ),
-    // ── issue #817: `measure` bundles `char_width()`/`line_height()` into
-    // one `Metrics` value. Its trait default is a pure fn of those two
-    // *required* methods — same shape as the `terminal_layout` /
-    // `editor_layout` / `diff_view_layout` block above (#506) — so every
-    // backend's default answer is that backend's own real metrics, not a
-    // placeholder. There is nothing backend-specific left for any of the
-    // four to add: overriding `measure` could only ever re-derive
-    // `Self { char_width: self.char_width(), line_height: self.line_height() }`
-    // by hand, which is the exact duplication #817 exists to remove.
+    // `measure` bundles `char_width()`/`line_height()` into one `Metrics` value. Its trait
+    // default is a pure function of those two *required* methods, so every backend's default
+    // answer is that backend's own real metrics. There is nothing backend-specific left to add.
     (
         "tui",
         "measure",
@@ -818,15 +687,10 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "pure fn of char_width()/line_height() — see the block comment above (#506); nothing \
          backend-specific to add (#817)",
     ),
-    // ── issue #1015: `set_caret_shape` drives the terminal/OS *hardware*
-    // caret to match an Editor's shape. TUI is the one backend with a
-    // hardware caret distinct from the one it paints (DECSCUSR), which is
-    // why it's the one override — see `Backend::set_caret_shape`'s own
-    // doc. GTK/macOS/Win-GUI all paint their own caret glyph as part of
-    // `draw_editor` and have no separate hardware cursor to steer, so the
-    // trait's no-op default is the honest, permanent answer for them, not
-    // unfinished work — the same "structurally absent" shape
-    // `Backend::tray`'s TUI doc uses.
+    // `set_caret_shape` drives the terminal/OS *hardware* caret to match an Editor's shape.
+    // TUI is the only backend with a hardware caret distinct from the one it paints (DECSCUSR).
+    // GTK/macOS/Win-GUI all paint their own caret glyph as part of `draw_editor` and have no
+    // separate hardware cursor to steer, so the trait's no-op default is the honest answer.
     (
         "gtk",
         "set_caret_shape",
@@ -845,14 +709,10 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "WinBackend paints its own caret in draw_editor; there is no separate hardware caret to \
          steer (#1015)",
     ),
-    // ── issue #1143: `minimap_scale`/`set_minimap_scale` pick the on-screen
-    // size of one character cell in `MinimapRenderMode::Characters` — a
-    // font-scaling-technique concept. TUI's braille rasteriser has no font
-    // to scale at all (it packs 4 buffer lines x 2 columns into one
-    // cell-native `U+2800`-block dot cell, per `primitives::minimap`'s own
-    // module doc), so the trait's no-op default is the correct, permanent
-    // answer, not unfinished work — GTK/macOS/Win-GUI all override both
-    // methods to back a real field.
+    // `minimap_scale`/`set_minimap_scale` pick the on-screen size of one character cell in
+    // `MinimapRenderMode::Characters`. TUI's braille rasteriser has no font to scale at all
+    // (it packs 4 buffer lines x 2 columns into one cell-native `U+2800`-block dot cell),
+    // so the trait's no-op default is the correct answer. GTK/macOS/Win-GUI override both.
     (
         "tui",
         "minimap_scale",
@@ -865,16 +725,11 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "braille has no font to scale — the cell-native dot packing described in \
          primitives::minimap's module doc has no `MinimapScale` concept to hold (#1143)",
     ),
-    // ── issue #1086: `set_current_line_height`/`set_current_char_width`
-    // let a host re-apply a pixel backend's font-derived metrics through
-    // `&mut dyn Backend` (closing the gap `vimcode`'s `TextMetricsBackend`
-    // supertrait used to paper over). TUI is a fixed-cell backend — its
-    // line height and character width are `1.0` by construction, per
-    // `Backend::line_height`/`Backend::char_width`'s own TUI bodies just
-    // above — so there is no font-derived value for a host to ever
-    // re-apply, and the no-op default is the honest, permanent answer,
-    // not unfinished work. GTK/macOS/Win-GUI all override both methods to
-    // forward onto their existing inherent setters.
+    // `set_current_line_height`/`set_current_char_width` let a host re-apply a pixel
+    // backend's font-derived metrics. TUI is a fixed-cell backend — its line height and
+    // character width are `1.0` by construction — so there is no font-derived value for a
+    // host to ever re-apply, and the no-op default is the honest answer. GTK/macOS/Win-GUI
+    // override both.
     (
         "tui",
         "set_current_line_height",
@@ -887,14 +742,9 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "fixed-cell backend — char_width() is 1.0 by construction, so there is no font-derived \
          value to re-apply (#1086)",
     ),
-    // ── issue #1187: `effective_menu_style` is `menu_style().resolve(&backend_caps())`
-    // — built purely from two methods every backend already supplies
-    // (`menu_style`/`set_menu_style`, both overridden below to persist via
-    // `BackendCore`, and the required `backend_caps`). There is nothing
-    // backend-specific left to override; a per-backend copy would just
-    // repeat the same one-line call. Same shape as `Metrics`/`measure`
-    // above this test file's own precedent for "derived from other
-    // required/overridden methods, intentionally never overridden".
+    // `effective_menu_style` is `menu_style().resolve(&backend_caps())` — built purely
+    // from two methods every backend already supplies. There is nothing backend-specific
+    // left to override.
     (
         "tui",
         "effective_menu_style",
@@ -919,17 +769,11 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "menu_style().resolve(&backend_caps()) — derived purely from two already-overridden/\
          required methods, nothing backend-specific to add (#1187)",
     ),
-    // ── issue #1133: `Style` carries non-colour geometry tokens for the
-    // three `PaintSurface`-backed pixel backends (GTK/macOS/Win, each of
-    // which does override `set_style`/`style` with a real `current_style`
-    // field). TUI takes the trait's no-op default on purpose, not as
-    // unfinished work: every `Style` token shipped so far (today, just
-    // `focus_ring_width`) has a TUI story of "no-op" — see `Style`'s own
-    // module doc's *Where each token maps on TUI* section —  because the
-    // TUI rasterisers it would apply to never read sub-cell geometry at
-    // all. There is nothing for a TUI `current_style` field to do yet;
-    // the day a cell-quantised token lands, TUI gains a real override and
-    // this pair of entries is deleted.
+    // `Style` carries non-colour geometry tokens. TUI takes the trait's no-op default
+    // on purpose, not as unfinished work: every `Style` token so far has a TUI story of
+    // "no-op" because the TUI rasterisers never read sub-cell geometry at all. There is
+    // nothing for a TUI `current_style` field to do yet; the day a cell-quantised token
+    // lands, TUI gains a real override.
     (
         "tui",
         "set_style",
@@ -942,7 +786,7 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "mirrors set_style above — default Style::default() is correct since TUI never stores \
          an override (#1133)",
     ),
-    // ── TUI: `paint_surface` (issue #1101) exposes the public
+    // ── TUI: `paint_surface` exposes the public
     // `PaintSurface` pixel-paint-verb seam — `Rect`/`Point`-taking fills,
     // strokes, rounded rects, text runs. TUI paints a cell grid, not a
     // pixel canvas (no sub-cell `Rect`, no fractional stroke width, no
@@ -990,7 +834,7 @@ pub fn declared_in_source(name: &str) -> BTreeSet<&'static str> {
         .declared()
 }
 
-// ─── PlatformServices honesty (quadraui#949) ────────────────────────────
+// ─── PlatformServices honesty ───────────────────────────────────────────
 //
 // `BackendCaps`/`CAP_CONTRACTS` above polices `Backend`'s defaulted
 // methods: declare a capability and the matching override must exist, in
@@ -1117,29 +961,25 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
     // The twin itself already returns a typed `ServiceResult` — there is
     // nothing further to report absence of.
     ("open_url_result", ServiceHonesty::AlwaysReal),
-    // quadraui#956's four `shell.*`-style methods all return
-    // `ServiceResult<()>` directly (D-009 seam-2 shape from the start,
-    // not a bare-`()` method retrofitted with a `_result` twin the way
-    // `open_url`/`open_url_result` needed) — same reasoning as
-    // `open_url_result`/`system_theme`: the `Result` type itself already
-    // carries the "unsupported" signal, so there is no separate
-    // `BackendCaps` flag or `_result` twin to check.
+    // The four `shell.*`-style methods all return `ServiceResult<()>` directly — the
+    // `Result` type itself already carries the "unsupported" signal, so there is no
+    // separate `BackendCaps` flag or `_result` twin to check.
     ("reveal_in_file_manager", ServiceHonesty::AlwaysReal),
     ("open_path", ServiceHonesty::AlwaysReal),
     ("move_to_trash", ServiceHonesty::AlwaysReal),
     ("beep", ServiceHonesty::AlwaysReal),
-    // `system_theme` (quadraui#952) returns `ServiceResult<SystemTheme>`
+    // `system_theme` returns `ServiceResult<SystemTheme>`
     // directly — same reasoning as `open_url_result` just above: the
     // `Result` type itself already carries the "unsupported" signal, so
     // there is no separate `BackendCaps` flag or `_result` twin to check.
     ("system_theme", ServiceHonesty::AlwaysReal),
-    // `secret_store` (quadraui#958) vends a `&dyn SecretStore` rather than
+    // `secret_store` vends a `&dyn SecretStore` rather than
     // answering anything itself — same shape as `clipboard` above, so the
     // honesty story lives on the vended trait's own methods, each of which
     // returns `ServiceResult<...>` (including the no-feature build's
     // always-`Unsupported` store). Nothing for this method to report.
     ("secret_store", ServiceHonesty::Delegates("SecretStore")),
-    // `displays`/`cursor_screen_point` (quadraui#959) both return
+    // `displays`/`cursor_screen_point` both return
     // `ServiceResult<...>` directly — same reasoning as `system_theme`
     // above: the `Result` type itself already carries the "unsupported"
     // signal (GTK/TUI's honest `cursor_screen_point` gap included), so
@@ -1155,10 +995,9 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
 mod tests {
     use super::*;
 
-    /// Every capability has a contract, and every contract is a
-    /// capability. A new `BackendCaps` field with no `CAP_CONTRACTS`
-    /// entry would be exempt from the honesty check by omission — the
-    /// same "silence reads as a pass" failure mode #480 exists to kill.
+    /// Every capability has a contract, and every contract is a capability. A new
+    /// `BackendCaps` field with no `CAP_CONTRACTS` entry would be exempt from the honesty
+    /// check by omission.
     #[test]
     fn cap_contracts_cover_every_capability() {
         let vocabulary = BackendCaps::vocabulary();
@@ -1177,7 +1016,7 @@ mod tests {
     /// [`every_bare_unit_service_method_has_a_typed_honesty_story`] by
     /// omission — the same "silence reads as a pass" failure mode
     /// `cap_contracts_cover_every_capability` guards against for
-    /// `BackendCaps` (quadraui#949).
+    /// `BackendCaps`.
     #[test]
     fn platform_service_contracts_cover_every_method() {
         let parsed: Vec<&str> = platform_services_methods()
@@ -1214,17 +1053,10 @@ mod tests {
         );
     }
 
-    /// **The honesty check.** A `PlatformServices` method that returns a
-    /// bare `()` has no way to report absence on itself — the trait
-    /// method and its no-op default compile to the same call. Every such
-    /// method must instead be backed by a [`BackendCaps`] field
-    /// (`send_notification`/`notifications`, same shape as `Backend`'s
-    /// optional surfaces) or have a `<name>_result` twin returning
-    /// `ServiceResult<...>` (`open_url`/`open_url_result`, D-009 seam 2).
-    /// `AlwaysReal`/`Delegates` are not valid stories for a bare-`()`
-    /// method — declaring one is exactly the
-    /// `TuiPlatformServices::open_url` bug quadraui#949 exists to catch,
-    /// reintroduced.
+    /// **The honesty check.** A `PlatformServices` method that returns a bare `()`
+    /// has no way to report absence on itself. Every such method must be backed by a
+    /// [`BackendCaps`] field or have a `<name>_result` twin returning `ServiceResult<...>`.
+    /// `AlwaysReal`/`Delegates` are not valid stories for a bare-`()` method.
     #[test]
     fn every_bare_unit_service_method_has_a_typed_honesty_story() {
         let methods = platform_services_methods();
@@ -1302,14 +1134,12 @@ mod tests {
         }
     }
 
-    /// **The honesty check.** For every backend in the tree and every
-    /// capability with a checkable contract: declared ⇒ the methods are
-    /// overridden, and not declared ⇒ they are untouched defaults.
+    /// **The honesty check.** For every backend in the tree and every capability with
+    /// a checkable contract: declared ⇒ the methods are overridden, and not declared ⇒
+    /// they are untouched defaults.
     ///
-    /// Prints a backend × capability table first, so the *shape* of what
-    /// each backend claims is visible in the log even on a green run —
-    /// quadraui#492's "gaps enumerate, never silence", extended to the
-    /// two backends (Win, macOS) that have no C0 column at all.
+    /// Prints a backend × capability table first, so the *shape* of what each backend
+    /// claims is visible in the log even on a green run.
     #[test]
     fn backends_declare_only_what_they_override() {
         let mut table = String::from("\nCapability declarations (backend × capability)\n");
@@ -1421,20 +1251,10 @@ mod tests {
         );
     }
 
-    /// The no-op defaults that neither `CAP_CONTRACTS` nor C0 covers —
-    /// `set_theme` and friends — are each either overridden or written
-    /// down in [`ACCEPTED_DEFAULTS`] with a reason.
-    ///
-    /// quadraui#492 review, non-blocking note 2: the issue's headline
-    /// example is "a new backend compiles while discarding the theme
-    /// (`set_theme` — the Win stub takes this default today)", and
-    /// neither C0 (draw methods only) nor `BackendCaps` (the ten named
-    /// capabilities) says anything about it. This is where that stops
-    /// being invisible. It is deliberately *not* a hard failure — the Win
-    /// backend is a declared stub and macOS is unfinished, so a red row
-    /// per gap would just be permanently red — but an *undeclared* gap is
-    /// a failure, which is the whole difference between a known gap and
-    /// silence.
+    /// The no-op defaults that neither `CAP_CONTRACTS` nor C0 covers — `set_theme`
+    /// and friends — are each either overridden or written down in [`ACCEPTED_DEFAULTS`]
+    /// with a reason. An undeclared gap is a failure, which distinguishes a known gap
+    /// from silence.
     #[test]
     fn silent_defaults_are_declared_gaps_not_silence() {
         let capability_methods: BTreeSet<&str> = CAP_CONTRACTS
@@ -1531,11 +1351,9 @@ mod tests {
         );
     }
 
-    /// The parser must distinguish `cancel_text_selection_drag` from the
-    /// inherent helper `cancel_text_selection_drag_impl` that both TUI
-    /// and GTK keep beside it. A prefix match would see the helper and
-    /// clear a backend that never wired the trait method — the precise
-    /// drift quadraui#492's review caught by hand.
+    /// The parser must distinguish `cancel_text_selection_drag` from the inherent
+    /// helper `cancel_text_selection_drag_impl` that both TUI and GTK keep beside it.
+    /// A prefix match would see the helper and clear a backend that never wired the trait method.
     #[test]
     fn fn_name_matches_whole_names_not_prefixes() {
         assert_eq!(

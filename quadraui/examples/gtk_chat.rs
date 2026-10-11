@@ -11,7 +11,7 @@
 //! ```
 //!
 //! Controls:
-//! - Type any text; `Enter` submits it (`submit_on_enter` — #1137).
+//! - Type any text; `Enter` submits it.
 //! - `Shift+Enter` (or `Alt+Enter` as a fallback) inserts a newline.
 //! - Click the Send/Stop segment at the right of the input row to submit
 //!   or interrupt the simulated reply with the mouse.
