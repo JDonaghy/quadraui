@@ -62,6 +62,16 @@ jobs:
         # one-shot exhaustive search. Widen via `workflow_dispatch` inputs
         # if a specific target needs a longer soak after a suspected
         # regression.
+        env:
+          # ASan's allocator batches returning freed pages to the OS (every
+          # 5s by default) and keeps freed-but-poisoned blocks in a
+          # quarantine ahead of that release; across a long coverage-guided
+          # run this unreleased-but-freed memory — not anything a target or
+          # its dependencies retain — is what drives RSS up over time.
+          # Releasing pages immediately and capping the quarantine keeps
+          # peak RSS on a 300s run far under libFuzzer's 2048MB default
+          # `-rss_limit_mb`.
+          ASAN_OPTIONS: "allocator_release_to_os_interval_ms=0:quarantine_size_mb=16"
         run: |
           cargo +nightly fuzz run ${{ matrix.target }} -- \
             -max_total_time=300 -print_final_stats=1
