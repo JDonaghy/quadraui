@@ -154,4 +154,51 @@ mod tests {
     fn click_in_header_resolves_to_toolbar_button_at_nonzero_origin() {
         click_in_header_round_trip_at(7.0, 13.0);
     }
+
+    /// The header toolbar paints its button glyphs with the chrome font
+    /// (`ChromeSurface`), so the slot reserved for that row must size
+    /// itself off the same font's line height rather than the editor's
+    /// independently-sized one — otherwise a chrome font taller than the
+    /// editor's current line height clips the tops of the row's own icon
+    /// glyphs against the header's clip rect. Holding the editor font
+    /// tiny and fixed while growing only the chrome ("ui") font proves
+    /// the slot height tracks chrome, not editor, metrics.
+    #[test]
+    fn toolbar_header_height_tracks_chrome_font_not_editor_font() {
+        use crate::Backend;
+
+        fn toolbar_height_for(editor: (&str, f32), chrome_desc: &str) -> f32 {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(0.0, 0.0, 0.0, 0.0);
+            let mut backend = MacBackend::new();
+            Backend::set_editor_font(&mut backend, editor.0, editor.1);
+            Backend::set_ui_font(&mut backend, chrome_desc);
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let panel = panel_with_toolbar();
+            let layout = std::cell::RefCell::new(None);
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                let l = b.draw_sidebar_panel_interactive(
+                    QRect::new(0.0, 0.0, W as f32, H as f32),
+                    &panel,
+                    &crate::InteractionState::new(),
+                );
+                *layout.borrow_mut() = Some(l);
+            });
+            backend.end_frame();
+            layout
+                .into_inner()
+                .unwrap()
+                .toolbar_bounds
+                .expect("toolbar bounds present")
+                .height
+        }
+
+        let h_small_chrome = toolbar_height_for(("Menlo", 9.0), "Menlo 9");
+        let h_huge_chrome = toolbar_height_for(("Menlo", 9.0), "Menlo 60");
+        assert!(
+            h_huge_chrome > h_small_chrome * 2.0,
+            "sidebar header slot height must grow with the chrome font, not stay \
+             pinned to the editor's: {h_small_chrome} vs {h_huge_chrome}"
+        );
+    }
 }

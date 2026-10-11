@@ -3684,17 +3684,19 @@ impl Backend for MacBackend {
             !self.current_cg().is_null(),
             "MacBackend::draw_sidebar_panel called outside enter_frame_scope",
         );
-        // Issue #1003: `SidebarPanel` composes a `Toolbar` header — its
-        // icon glyphs are chrome (`ChromePrimitive::SidebarPanel`), not
-        // editor content — so this paints through `ChromeSurface`
-        // (routes text through `chrome_font`) rather than `self`
-        // directly, the same switch `draw_status_bar_interactive` makes
-        // (#963) and `GtkBackend::draw_sidebar_panel_interactive` makes
-        // via its own font-swap (#416/#862). `line_height` stays the
-        // editor pitch, matching `GtkBackend`'s own unchanged
-        // `current_line_height` there.
+        // `SidebarPanel` composes a `Toolbar` header — its icon glyphs
+        // are chrome (`ChromePrimitive::SidebarPanel`), not editor
+        // content — so this paints through `ChromeSurface` (routes text
+        // through `chrome_font`), the same switch
+        // `draw_status_bar_interactive` makes. The default header slot
+        // height must be sized off that same `chrome_line_height`
+        // metric: the row paints with `chrome_font`, so sizing it off
+        // `current_line_height` (the editor's, independently-sized,
+        // font pitch) under-reserves the slot whenever the chrome font's
+        // line height exceeds the editor's, clipping the tops of the
+        // toolbar's icon glyphs against the header's own clip rect.
         let theme = self.current_theme;
-        let line_height = self.current_line_height as f32;
+        let line_height = self.chrome_line_height as f32;
         let mut surface = ChromeSurface { backend: self };
         crate::primitives::sidebar_panel::native_surface_paint::paint(
             panel,
@@ -3744,18 +3746,17 @@ impl Backend for MacBackend {
         rect: Rect,
         panel: &crate::primitives::sidebar_panel::SidebarPanel,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        // Issue #1003: no-paint twin of `draw_sidebar_panel_interactive`
-        // — must agree with what that method painted, so its header
-        // toolbar measures against `chrome_font` too. The old
-        // `current_font.is_none()` fallback is gone: `chrome_font` is
-        // never `None` (seeded at construction — see its field doc), so
-        // the "no font installed yet" case it guarded against cannot
-        // happen for chrome. `line_height` stays the editor pitch,
-        // matching `draw_sidebar_panel_interactive` above.
+        // No-paint twin of `draw_sidebar_panel_interactive` — must agree
+        // with what that method painted, so its header toolbar both
+        // measures against `chrome_font` and sizes its default slot
+        // height off `chrome_line_height`, matching
+        // `draw_sidebar_panel_interactive` above. `chrome_font` is never
+        // `None` (seeded at construction — see its field doc), so there
+        // is no "no font installed yet" fallback to guard against here.
         super::sidebar_panel::mac_sidebar_panel_layout(
             panel,
             &self.chrome_font,
-            self.current_line_height,
+            self.chrome_line_height,
             rect.x as f64,
             rect.y as f64,
             rect.width as f64,
