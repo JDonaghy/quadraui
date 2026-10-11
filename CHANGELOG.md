@@ -59,6 +59,16 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+### Added
+
+- `AppShell::with_status_bar_under_main_column(self) -> Self` (issue #1497) —
+  opt-in layout mode where the activity bar and sidebar run the full height
+  of the area below the title bar, and the status bar + command line are
+  carved from the main column's x/width only, still flush against the
+  bottom edge, instead of spanning the full window width. Off by default,
+  which keeps the original full-width carve byte-identical to before this
+  method existed.
+
 ## [0.1.4] - 2026-10-11
 
 ### Added

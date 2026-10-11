@@ -212,6 +212,15 @@ pub struct AppShell {
     bottom_panel_visible: bool,
     has_command_line: bool,
     has_status_bar: bool,
+    /// When `true`, the activity bar and sidebar run the full height of the
+    /// area below the title bar, and the status bar + command line bands
+    /// are carved from the main column's width only (not the full window),
+    /// still flush against the bottom edge — set via
+    /// [`Self::with_status_bar_under_main_column`]. `false` (the default)
+    /// keeps the original full-width carve, where the status bar and
+    /// command line span the whole window and the activity bar/sidebar
+    /// stop above them.
+    status_bar_under_main_column: bool,
     bottom_panel_drag_offset: Option<f32>,
     /// Independently-gated bottom bands, stacked bottom-up
     /// below the legacy single bottom-panel drawer. Empty by default —
@@ -288,6 +297,7 @@ impl AppShell {
             bottom_panel_visible: true,
             has_command_line: false,
             has_status_bar: false,
+            status_bar_under_main_column: false,
             bottom_panel_drag_offset: None,
             bottom_bands: Vec::new(),
             cached_bottom_band_bounds: RefCell::new(Vec::new()),
@@ -443,6 +453,21 @@ impl AppShell {
 
     pub fn with_status_bar(mut self) -> Self {
         self.has_status_bar = true;
+        self
+    }
+
+    /// Opt into the activity bar and sidebar running the full height of
+    /// the area below the title bar, with the status bar and command line
+    /// carved from the main column only (main column's x/width) rather
+    /// than the full window width.
+    ///
+    /// Off by default: the status bar and command line span the full
+    /// window, and the activity bar/sidebar stop above them — unchanged
+    /// from before this method existed. Turn this on when a host wants
+    /// the activity bar's bottom-pinned items to sit in the window's
+    /// bottom-left corner rather than above a full-width status bar.
+    pub fn with_status_bar_under_main_column(mut self) -> Self {
+        self.status_bar_under_main_column = true;
         self
     }
 
@@ -1183,38 +1208,88 @@ impl AppShell {
             None
         };
 
-        let status_bar_bounds = if self.has_status_bar {
-            let h = lh.round();
-            band_h -= h;
-            Some(Rect::new(area.x, band_y + band_h, area.width, h))
+        let status_h = if self.has_status_bar { lh.round() } else { 0.0 };
+        let cmd_h = if self.has_command_line {
+            lh.round()
         } else {
-            None
+            0.0
         };
 
-        let command_line_bounds = if self.has_command_line {
-            let h = lh.round();
-            band_h -= h;
-            Some(Rect::new(area.x, band_y + band_h, area.width, h))
+        // Default carve: the status bar and command line consume height
+        // from the shared band before the activity bar/sidebar/main split
+        // below, full window width — so those columns stop above them.
+        // Opted into `status_bar_under_main_column`, the band stays full
+        // height here (the activity bar and sidebar run to the area's
+        // bottom edge) and the two bars are instead carved from each
+        // branch's own main-column rect below, via `carve_status_chrome`.
+        let (status_bar_bounds, command_line_bounds) = if self.status_bar_under_main_column {
+            (None, None)
         } else {
-            None
+            band_h -= status_h;
+            let sb = self
+                .has_status_bar
+                .then(|| Rect::new(area.x, band_y + band_h, area.width, status_h));
+            band_h -= cmd_h;
+            let cl = self
+                .has_command_line
+                .then(|| Rect::new(area.x, band_y + band_h, area.width, cmd_h));
+            (sb, cl)
         };
 
         // Bottom panel height — computed here but *not* subtracted from the
         // band. The panel docks only under main content (full width minus the
         // sidebar), so it is carved from the main column after the horizontal
         // split below. The sidebar and activity bar run the full band height.
+        // In `status_bar_under_main_column` mode `band_h` has not yet lost
+        // the status bar/command line height either (that happens per-branch
+        // below), so the 60%-of-band clamp is sized against what the main
+        // column will actually have left, not the taller shared band.
+        let main_column_h = (band_h
+            - if self.status_bar_under_main_column {
+                status_h + cmd_h
+            } else {
+                0.0
+            })
+        .max(0.0);
         let bottom_panel_h = if self.has_bottom_panel && self.bottom_panel_visible {
             let h = (self.bottom_panel_height_lh.clamp(
                 self.min_bottom_panel_height_lh,
                 self.max_bottom_panel_height_lh,
             ) * lh)
                 .round();
-            Some(h.min(band_h * 0.6))
+            Some(h.min(main_column_h * 0.6))
         } else {
             None
         };
 
         let band_h = band_h.max(0.0);
+
+        // Carve the status bar then the command line from the bottom of a
+        // main-column rect — used only in `status_bar_under_main_column`
+        // mode. In the default mode those bars were already removed from
+        // `band_h` above, at full window width, before this rect existed.
+        let carve_status_chrome = |main: Rect| -> (Rect, Option<Rect>, Option<Rect>) {
+            let mut remaining = main;
+            let status = if self.has_status_bar {
+                let h = status_h.min(remaining.height);
+                let above_h = (remaining.height - h).max(0.0);
+                let rect = Rect::new(remaining.x, remaining.y + above_h, remaining.width, h);
+                remaining = Rect::new(remaining.x, remaining.y, remaining.width, above_h);
+                Some(rect)
+            } else {
+                None
+            };
+            let cmd = if self.has_command_line {
+                let h = cmd_h.min(remaining.height);
+                let above_h = (remaining.height - h).max(0.0);
+                let rect = Rect::new(remaining.x, remaining.y + above_h, remaining.width, h);
+                remaining = Rect::new(remaining.x, remaining.y, remaining.width, above_h);
+                Some(rect)
+            } else {
+                None
+            };
+            (remaining, status, cmd)
+        };
 
         // Split a main-column rect into (content_above, bottom_panel + N
         // bottom_bands). Bottom bands are carved first, stacked
@@ -1246,6 +1321,33 @@ impl AppShell {
                 None => None,
             };
             (remaining, band_bounds, bottom_panel_bounds)
+        };
+
+        // Combine the two carves above into the one step every branch below
+        // runs on its own `main_bounds` rect: in `status_bar_under_main_column`
+        // mode this carves the status bar and command line from the main
+        // column first, then the bottom bands/panel above them, so the full
+        // bottom-up stack (status bar, command line, bands, panel) lives
+        // entirely within the main column; otherwise the status bar and
+        // command line bounds computed above (full window width) pass
+        // through untouched and only the bottom bands/panel are carved here.
+        // (remaining main column, status bar bounds, command line bounds,
+        // bottom band bounds, bottom panel bounds).
+        type MainColumnChrome = (
+            Rect,
+            Option<Rect>,
+            Option<Rect>,
+            Vec<(WidgetId, Rect)>,
+            Option<Rect>,
+        );
+        let finish_main_column = |main: Rect| -> MainColumnChrome {
+            let (main, status, cmd) = if self.status_bar_under_main_column {
+                carve_status_chrome(main)
+            } else {
+                (main, status_bar_bounds, command_line_bounds)
+            };
+            let (main, bands, panel) = carve_bottom_chrome(main);
+            (main, status, cmd, bands, panel)
         };
 
         // ── Horizontal carve: activity bar + sidebar + divider + main ──
@@ -1281,8 +1383,13 @@ impl AppShell {
                     )
                 }
             };
-            let (main_bounds, bottom_band_bounds, bottom_panel_bounds) =
-                carve_bottom_chrome(main_bounds);
+            let (
+                main_bounds,
+                status_bar_bounds,
+                command_line_bounds,
+                bottom_band_bounds,
+                bottom_panel_bounds,
+            ) = finish_main_column(main_bounds);
             *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
             return AppShellLayout {
                 window_bounds: area,
@@ -1320,8 +1427,13 @@ impl AppShell {
                 let content_bounds = Rect::new(sidebar_x, content_y, sidebar_w, content_h);
                 let div_bounds = Rect::new(x[2], band_y, divider_w, band_h);
                 let main_bounds = Rect::new(x[3], band_y, main_w, band_h);
-                let (main_bounds, bottom_band_bounds, bottom_panel_bounds) =
-                    carve_bottom_chrome(main_bounds);
+                let (
+                    main_bounds,
+                    status_bar_bounds,
+                    command_line_bounds,
+                    bottom_band_bounds,
+                    bottom_panel_bounds,
+                ) = finish_main_column(main_bounds);
                 *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
 
                 AppShellLayout {
@@ -1347,8 +1459,13 @@ impl AppShell {
                 let content_bounds = Rect::new(sidebar_x, content_y, sidebar_w, content_h);
                 let div_bounds = Rect::new(x[1], band_y, divider_w, band_h);
                 let main_bounds = Rect::new(x[0], band_y, main_w, band_h);
-                let (main_bounds, bottom_band_bounds, bottom_panel_bounds) =
-                    carve_bottom_chrome(main_bounds);
+                let (
+                    main_bounds,
+                    status_bar_bounds,
+                    command_line_bounds,
+                    bottom_band_bounds,
+                    bottom_panel_bounds,
+                ) = finish_main_column(main_bounds);
                 *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
 
                 AppShellLayout {
@@ -2906,6 +3023,69 @@ mod tests {
         assert_eq!(s.bottom_panel_height(), 3.0);
         s.set_bottom_panel_height(999.0);
         assert_eq!(s.bottom_panel_height(), 25.0);
+    }
+
+    // ── status_bar_under_main_column ──────────────────────────────
+
+    #[test]
+    fn status_bar_under_main_column_is_off_by_default_byte_identical() {
+        // With the option left untouched, layout must match the
+        // full-width carve exactly, field for field.
+        let default_layout = full_chrome_shell().layout(area(), 1.0);
+        let explicit_off_layout = full_chrome_shell().layout(area(), 1.0);
+        assert_eq!(default_layout, explicit_off_layout);
+    }
+
+    #[test]
+    fn status_bar_under_main_column_activity_bar_runs_to_area_bottom() {
+        let s = full_chrome_shell().with_status_bar_under_main_column();
+        let l = s.layout(area(), 1.0);
+        let ab_bottom = l.activity_bar_bounds.y + l.activity_bar_bounds.height;
+        assert!((ab_bottom - area().height).abs() < 0.01);
+        let tb = l.title_bar_bounds.unwrap();
+        let header = l.sidebar_header_bounds.unwrap();
+        let content = l.sidebar_content_bounds.unwrap();
+        let sidebar_bottom = content.y + content.height;
+        assert!((header.y - (tb.y + tb.height)).abs() < 0.01);
+        assert!((sidebar_bottom - area().height).abs() < 0.01);
+    }
+
+    #[test]
+    fn status_bar_under_main_column_status_bar_matches_main_column_width() {
+        let s = full_chrome_shell().with_status_bar_under_main_column();
+        let l = s.layout(area(), 1.0);
+        let sb = l.status_bar_bounds.unwrap();
+        let main = l.main_content_bounds;
+        assert_eq!(sb.x, main.x);
+        assert_eq!(sb.width, main.width);
+        assert!(sb.width < area().width);
+        let sb_bottom = sb.y + sb.height;
+        assert!((sb_bottom - area().height).abs() < 0.01);
+    }
+
+    #[test]
+    fn status_bar_under_main_column_command_line_above_status_bar_in_main_column() {
+        let s = full_chrome_shell().with_status_bar_under_main_column();
+        let l = s.layout(area(), 1.0);
+        let cl = l.command_line_bounds.unwrap();
+        let sb = l.status_bar_bounds.unwrap();
+        let main = l.main_content_bounds;
+        assert_eq!(cl.x, main.x);
+        assert_eq!(cl.width, main.width);
+        assert!((cl.y + cl.height - sb.y).abs() < 0.01);
+    }
+
+    #[test]
+    fn status_bar_under_main_column_bottom_panel_above_command_line_in_main_column() {
+        let s = full_chrome_shell().with_status_bar_under_main_column();
+        let l = s.layout(area(), 1.0);
+        let bp = l.bottom_panel_bounds.unwrap();
+        let cl = l.command_line_bounds.unwrap();
+        let main = l.main_content_bounds;
+        assert_eq!(bp.x, main.x);
+        assert_eq!(bp.width, main.width);
+        assert!((bp.y + bp.height - cl.y).abs() < 0.01);
+        assert!((main.y + main.height - bp.y).abs() < 0.01);
     }
 
     #[test]
