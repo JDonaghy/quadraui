@@ -1,17 +1,8 @@
 //! GTK rasteriser for [`crate::ToastOverlay`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::toast::native_surface_paint::paint`] (#861,
-//! `PaintSurface` Phase 2d slice 4/9) — see that fn's doc for the named
-//! divergences (Win never took a live theme; Win's dismiss/action text
-//! wasn't centred in its sub-region) found while unifying
-//! `gtk::draw_toast_stack`, `macos::toast::draw_toast_stack` and
-//! `win::toast::draw_toast_stack` into one implementation. This module
-//! now only carries [`gtk_toast_stack_layout`] (pure layout, still needed
-//! by `GtkDriver`/downstream callers for no-paint hit-test queries); the
-//! deprecated `draw_toast_stack` compatibility shim over the shared
-//! [`super::surface::CairoSurface`] adapter was removed in issue #1109
-//! (zero uses in coord-tui's `main` and vimcode's `develop`).
+//! Painting moved to the shared [`crate::primitives::toast::native_surface_paint::paint`].
+//! This module now only carries [`gtk_toast_stack_layout`] (pure layout, still needed
+//! by `GtkDriver`/downstream callers for no-paint hit-test queries).
 
 use gtk4::pango;
 
@@ -27,15 +18,10 @@ use crate::theme::Theme;
 /// — hosts call `layout.hit_test(x, y)` with raw click coordinates, no
 /// localisation needed.
 ///
-/// Still its own pango-based measurer, independent of the shared paint's
-/// internal layout computation (which measures via
-/// [`PaintSurface::surface_measure_text`]) — same "no-paint layout stays
-/// put" posture as `GtkBackend::status_bar_layout` (#860). Shares its
-/// geometry with `mac_toast_stack_layout` / `win_toast_stack_layout` via
-/// [`pixel_toast_stack_layout`] (issue #1079); `pango_layout`'s
-/// `set_attributes(None)` reset (previously done per-column inside the
-/// measure closure) happens once up front instead, since
-/// `super::toolbar::PangoMeasure` never touches attributes itself.
+/// Uses pango-based text measurement. Shares its geometry with
+/// `mac_toast_stack_layout` / `win_toast_stack_layout` via
+/// [`pixel_toast_stack_layout`]; `pango_layout`'s `set_attributes(None)`
+/// reset happens once up front for efficiency.
 #[allow(clippy::too_many_arguments)]
 pub fn gtk_toast_stack_layout(
     stack: &ToastOverlay,
@@ -69,13 +55,7 @@ mod tests {
     use crate::types::{Color, WidgetId};
     use pangocairo::cairo::{Context, Format, ImageSurface};
 
-    // Fixed overlay size, independent of the test's origin — this file
-    // had no test module at all before quadraui#494 (the reviewed gap:
-    // `gtk_toast_stack_layout`/`draw_toast_stack` never received the
-    // overlay's origin, so a non-zero-origin toast stack — e.g.
-    // coord-tui's `main_content_bounds`, which sits right of a sidebar —
-    // painted at the wrong screen position and hit-tested against the
-    // wrong coordinates).
+    // Fixed overlay size, independent of the test's origin.
     const VIEW_W: f64 = 340.0;
     const VIEW_H: f64 = 200.0;
     const LINE_HEIGHT: f64 = 16.0;
@@ -111,18 +91,13 @@ mod tests {
 
     /// Paint→click round trip at `(origin_x, origin_y)`: paints a single
     /// toast through [`super::super::surface::CairoSurface`] and the shared
-    /// `primitives::toast::native_surface_paint::paint` directly — the
-    /// same adapter the now-removed `draw_toast_stack` shim used (issue
-    /// #1109) — confirms the box's fill colour lands at the
-    /// origin-shifted *absolute*
-    /// position — not the viewport-local one `gtk_toast_stack_layout`
-    /// used to compute internally before shifting — and that `hit_test`
-    /// resolves clicks at that same absolute position through Dismiss
-    /// and Body.
+    /// `primitives::toast::native_surface_paint::paint`, confirms the box's
+    /// fill colour lands at the origin-shifted *absolute* position, and that
+    /// `hit_test` resolves clicks at that same absolute position through
+    /// Dismiss and Body.
     ///
-    /// Canvas grows with the origin (`VIEW_W`/`VIEW_H` stay fixed) so a
-    /// dropped-origin regression shows up as a shifted absolute paint
-    /// position rather than being masked by a shrinking viewport.
+    /// Canvas grows with the origin (`VIEW_W`/`VIEW_H` stay fixed) so an
+    /// origin regression would show as a shifted absolute paint position.
     fn paint_and_click_round_trip_at(origin_x: f64, origin_y: f64) {
         let canvas_w = (origin_x + VIEW_W).ceil() as i32;
         let canvas_h = (origin_y + VIEW_H).ceil() as i32;
@@ -189,11 +164,9 @@ mod tests {
         paint_and_click_round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md
-    /// "Layout helpers must return coords in the same frame across
-    /// backends"): before this fix `gtk_toast_stack_layout` had no
-    /// origin parameter at all, so `draw_toast_stack` could only ever
-    /// paint correctly when the overlay's own rect started at `(0, 0)`.
+    /// Regression guard: `gtk_toast_stack_layout` must return coordinates in
+    /// the same frame (absolute window coordinates) regardless of the overlay's
+    /// starting position.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         paint_and_click_round_trip_at(7.0, 13.0);

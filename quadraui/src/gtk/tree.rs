@@ -1,19 +1,14 @@
 //! GTK rasteriser for [`crate::TreeView`].
 //!
 //! Content painting (background, rows, chevron/icon/badge/text or
-//! inline-edit, vertical scrollbar) moved to the shared
-//! [`crate::primitives::tree::native_surface_paint::paint`] (#1075,
-//! `PaintSurface` Phase 4 slice 2/8) — see that fn's module doc for
-//! what's shared (including two divergences it fixes: Win never painted
-//! `TreeRow::edit`, and none of the three backends painted the vertical
-//! scrollbar despite `Backend::tree_vscrollbar` already returning real
-//! geometry).
+//! inline-edit, vertical scrollbar) is shared via
+//! [`crate::primitives::tree::native_surface_paint::paint`].
 //!
 //! Per-row heights are **non-uniform**: header rows use `line_height`,
 //! leaves and ordinary branches use `(line_height * 1.4).round()` (the
 //! established GTK convention) — unless the host set
 //! [`TreeStyle::row_height`](crate::types::TreeStyle::row_height), which
-//! pins the leaf/branch pitch independent of `line_height` (#623). The
+//! pins the leaf/branch pitch independent of `line_height`. The
 //! primitive's `tree.layout()` measurer reports each row's height so
 //! the visible-row positions stack accurately.
 
@@ -28,7 +23,7 @@ use crate::theme::Theme;
 /// `area` at `line_height`. Hosts and tests call this to drive
 /// hit-testing without re-deriving row pitch (`1.0 × line_height` for
 /// `Decoration::Header`, `1.4 × line_height` for everything else, unless
-/// `tree.style.row_height` overrides the non-header pitch — #623).
+/// `tree.style.row_height` overrides the non-header pitch).
 /// `draw_tree` uses this same helper internally so paint and hit_test
 /// consume one layout instance per frame — the source-of-truth
 /// contract `TreeView` exists to enforce.
@@ -37,7 +32,7 @@ use crate::theme::Theme;
 /// in row pitch (TUI = 1 cell uniform; GTK = mixed via decoration).
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::tree_layout`]
-/// (#499) — the row-pitch/chevron math is identical across every pixel
+/// — the row-pitch/chevron math is identical across every pixel
 /// backend, so it lives there once instead of once per backend.
 pub fn gtk_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
     crate::primitives::layout_metrics::tree_layout(tree, area, line_height)
@@ -46,11 +41,10 @@ pub fn gtk_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeVi
 /// Draw a [`TreeView`] into `(x, y, w, h)` on `cr`. `nerd_fonts_enabled`
 /// controls which icon variant the consumer's icon registry exposes.
 ///
-/// Row labels/badges/chevrons are chrome, not editor content — per
-/// #624, the caller is responsible for setting `layout`'s font
-/// description to the desired UI font (`GtkBackend::ui_font`) before
-/// calling and restoring whatever it was afterward
-/// (`GtkBackend::draw_tree` does this). This rasteriser has no separate
+/// Row labels/badges/chevrons are chrome, not editor content —
+/// the caller is responsible for setting `layout`'s font
+/// description to the desired UI font before calling and restoring
+/// whatever it was afterward. This rasteriser has no separate
 /// "editor font" concept of its own; it measures and paints with
 /// whatever font is current on `layout`.
 ///
@@ -79,7 +73,7 @@ pub fn gtk_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeVi
 /// - **Badge** (right-aligned): rendered in `badge.fg`/`badge.bg`
 ///   (falling back to [`Theme::muted_fg`] / row bg) when there's
 ///   room past the text.
-/// - **Icon:** painted in `icon.color` when set (#1057), else the row's
+/// - **Icon:** painted in `icon.color` when set, else the row's
 ///   default fg.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_tree(
@@ -472,13 +466,12 @@ mod tests {
         );
     }
 
-    /// Regression for issue #503: an inline-rename cursor/selection byte
-    /// offset landing mid-multibyte-character used to panic
-    /// `&edit.text[..cursor]` (and the selection lo/hi slices) instead of
-    /// snapping to the nearest char boundary. Paints a row with a
-    /// multibyte name and a cursor position that sits inside a
-    /// multibyte character's byte range, plus an active selection whose
-    /// bounds also land mid-character.
+    /// An inline-rename cursor/selection byte offset landing
+    /// mid-multibyte-character must snap to the nearest char boundary
+    /// rather than panic on slice operations like `&edit.text[..cursor]`.
+    /// Paints a row with a multibyte name and a cursor position that sits
+    /// inside a multibyte character's byte range, plus an active selection
+    /// whose bounds also land mid-character.
     #[test]
     fn gtk_editing_row_with_multibyte_cursor_does_not_panic() {
         // "café🎉中文" — cursor/selection offsets below are deliberately
@@ -591,12 +584,10 @@ mod tests {
         }
     }
 
-    // ── #623: TreeStyle::row_height host override ───────────────────────
-
     /// With `row_height` set, the painted row pitch is identical at two
-    /// wildly different editor `line_height`s — the whole point of #623.
-    /// Without the override, `item_height` scales with `line_height` and
-    /// this would fail (`14.0 * 1.4 = 19.6` vs `48.0 * 1.4 = 67.2`).
+    /// wildly different editor `line_height`s. Without the override,
+    /// `item_height` scales with `line_height` and this would fail
+    /// (`14.0 * 1.4 = 19.6` vs `48.0 * 1.4 = 67.2`).
     #[test]
     fn gtk_row_height_override_pins_pitch_across_line_heights() {
         let mut tree = make_tree(vec![
@@ -638,7 +629,7 @@ mod tests {
     /// position still resolves to row N at both line_heights, and
     /// `draw_tree`'s own internal layout (not just `gtk_tree_layout`
     /// called standalone) honours the same override — paint and
-    /// hit-test can't drift apart by construction (#654).
+    /// hit-test can't drift apart by construction.
     #[test]
     fn gtk_row_height_override_click_resolves_to_same_row_at_any_line_height() {
         let mut tree = make_tree(vec![
@@ -690,14 +681,11 @@ mod tests {
         }
     }
 
-    /// `tree_layout` is documented **LOCAL** (issue #505): `bounds` must
-    /// stay relative to `area`'s origin regardless of where `area`
-    /// itself lives — the same contract `mac_tree_layout`'s
-    /// `layout_returns_local_coords_when_area_offset` guards (#44
-    /// postmortem, `docs/LESSONS.md`). Since #499, `gtk_tree_layout` and
-    /// `mac_tree_layout` share one implementation
-    /// (`layout_metrics::tree_layout`), but this repo's own GTK test
-    /// suite had no non-zero-origin coverage of its own until now.
+    /// `tree_layout` returns bounds relative to `area`'s origin
+    /// regardless of where `area` itself lives — a contract that
+    /// shared implementation [`crate::primitives::layout_metrics::tree_layout`]
+    /// maintains across backends. Since the GTK and macOS backends share this
+    /// implementation, this test verifies non-zero-origin coverage.
     #[test]
     fn layout_returns_local_coords_when_area_offset() {
         let tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
@@ -726,15 +714,14 @@ mod tests {
         }
     }
 
-    /// #1057: a row with `Icon::color` set paints its icon glyph in that
-    /// colour; a row without one paints it in the default row fg,
-    /// unchanged from pre-#1057 rendering. Rows have no label text (so
-    /// the icon glyph is the *only* ink in the row — nothing else can
-    /// win the "most inked pixel" scan) and a high-contrast theme
-    /// (near-black default fg vs. white bg vs. a distinct orange icon
-    /// colour), so the strongest departure from the white background
-    /// within the row's bounds is unambiguously the icon glyph, not an
-    /// antialiasing fringe pixel or competing label text.
+    /// A row with `Icon::color` set paints its icon glyph in that
+    /// colour; a row without one paints it in the default row fg.
+    /// Rows have no label text (so the icon glyph is the *only* ink in
+    /// the row) and use a high-contrast theme (near-black default fg vs.
+    /// white bg vs. a distinct orange icon colour), so the strongest
+    /// departure from the white background within the row's bounds is
+    /// unambiguously the icon glyph, not an antialiasing fringe pixel or
+    /// competing label text.
     #[test]
     fn icon_color_paints_icon_glyph_in_that_color_else_default_fg() {
         use crate::types::Icon;
@@ -828,13 +815,10 @@ mod tests {
         }
     }
 
-    /// #1075 regression: before the `native_surface_paint` migration,
-    /// `draw_tree` never painted a vertical scrollbar even though
-    /// `Backend::tree_vscrollbar` (#1043) already returned real
-    /// geometry for hit-testing. Paints through the real `draw_tree`
-    /// into a Cairo `ImageSurface` and probes a pixel inside the
-    /// resolved track rect — this would have failed (background
-    /// colour, nothing painted) against the pre-#1075 body.
+    /// The vertical scrollbar track is painted when the tree overflows,
+    /// alongside row content. This test paints through `draw_tree` into
+    /// a Cairo `ImageSurface` and probes a pixel inside the resolved
+    /// track rect to confirm the track is rendered.
     #[test]
     fn gtk_paints_vertical_scrollbar_track_when_overflowing() {
         let tree = make_tree((0..40).map(|i| leaf(i, &format!("row{i}"))).collect());
@@ -883,7 +867,7 @@ mod tests {
         );
     }
 
-    /// #1075 regression: before the `native_surface_paint` migration,
+    /// Before the `native_surface_paint` migration,
     /// `paint`'s row-being-edited path did not yet exist on Windows at
     /// all (`win::tree::draw_tree` painted the row's stale label
     /// instead — see that module's pre-migration doc). GTK already had

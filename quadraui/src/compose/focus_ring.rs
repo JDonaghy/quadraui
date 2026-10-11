@@ -19,11 +19,10 @@
 //!
 //! # Relationship to [`FocusGroup`]
 //!
-//! Both types cycle a "current" position with wrap-around, and used to
-//! carry two independent copies of the same modulo arithmetic (#509).
-//! `FocusRing` is now a thin [`WidgetId`]-keyed shim over a
+//! Both types cycle a "current" position with wrap-around.
+//! `FocusRing` is a thin [`WidgetId`]-keyed shim over a
 //! [`FocusGroup`] — the cycling itself has exactly one implementation,
-//! in [`FocusGroup::cycle`]. The two types still exist separately
+//! in [`FocusGroup::cycle`]. The two types exist separately
 //! because their call sites need different keys: `FocusRing` suits a
 //! fixed list of named widgets (form fields looked up by the
 //! [`WidgetId`] a hit-test returns — see `examples/common/form_groups.rs`),
@@ -32,13 +31,6 @@
 //! [`crate::compose::sidebar_system`] / [`crate::compose::tab_group`]),
 //! where there's no natural `WidgetId` to key by and the count changes
 //! at runtime as sections/panes are added or removed.
-//!
-//! # Adoption status (#825)
-//!
-//! No compose-layer consumer today beyond `examples/common/form_groups.rs`
-//! (both backends). Kept public: this is the named prerequisite shape
-//! for #788's focus manager (per that issue) — check #788's status
-//! before demoting.
 
 use super::focus_group::FocusGroup;
 use crate::types::WidgetId;

@@ -1,7 +1,6 @@
-//! TUI rasteriser for the [`Editor`] primitive (#276 Stage 1C).
+//! TUI rasteriser for the [`Editor`] primitive.
 //!
-//! Verbatim port of vimcode's `src/tui_main/render_impl::render_window`
-//! body. Handles every editor paint category: backgrounds (active /
+//! Handles every editor paint category: backgrounds (active /
 //! cursorline / DAP-stopped / diff), gutter (BP / git / diagnostics /
 //! lightbulb / line numbers), syntax-highlighted text, indent guides,
 //! color columns, ghost continuation, diagnostic + spell underlines,
@@ -12,29 +11,24 @@
 //! ## Scrollbars
 //!
 //! The rasteriser internally calls [`super::draw_scrollbar`] for both
-//! vertical and horizontal scrollbars when overflow is present. This
-//! mirrors the pre-#276 layout where `render_window` painted both
-//! scrollbars inline. Externalising the scrollbar paint to the host
-//! is filed as a follow-up (see PLAN.md "Sharp edges").
+//! vertical and horizontal scrollbars when overflow is present.
 //!
 //! ## Status line
 //!
-//! The per-window status line (lifted Session 241) is **not** painted
-//! by this rasteriser. The host is responsible for reserving a row at
-//! the bottom of `area` if `Editor.status_line` would be drawn there.
-//! Vimcode's delegator does this: shrinks `area` by 1 if a status
-//! line is present, calls `draw_editor`, then paints the status line
-//! at the reserved row.
+//! The per-window status line is **not** painted by this rasteriser.
+//! The host is responsible for reserving a row at the bottom of `area`
+//! if `Editor.status_line` would be drawn there. The host should shrink
+//! `area` by 1 if a status line is present, call `draw_editor`, then
+//! paint the status line at the reserved row.
 //!
 //! ## Cursor side-effect
 //!
 //! The TUI [`Frame`](ratatui::Frame) cursor (used by Bar / Underline
-//! shapes) is set by calling `Frame::set_cursor_position` — a method
-//! on `Frame`, not `Buffer`. To keep this rasteriser pure-paint, the
-//! Bar / Underline cursor *position* is returned via
-//! [`EditorPaintResult::cursor_position`]; the host calls
-//! `set_cursor_position` after this function returns. Block cursors
-//! are painted directly by inverting the buffer cell's fg/bg.
+//! shapes) is set by calling `Frame::set_cursor_position`. To keep this
+//! rasteriser pure-paint, the Bar / Underline cursor *position* is
+//! returned via [`EditorPaintResult::cursor_position`]; the host calls
+//! `set_cursor_position` after this function returns. Block cursors are
+//! painted directly by inverting the buffer cell's fg/bg.
 
 use crate::primitives::editor::{
     CursorShape, DiagnosticSeverity, DiffLine, Editor, EditorLine, EditorSelection, GitLineStatus,
@@ -71,13 +65,12 @@ pub fn draw_editor(
     let mut result = EditorPaintResult::default();
 
     // Bounds-check overlay writes against the buffer's *actual* allocated
-    // extent, not the caller-supplied `area`. The two are normally
-    // identical, but can diverge across a resize (see module docs / #1040):
-    // the host computes `area` from a layout pass against one terminal
-    // size, and by the time this paint runs `buf` may already have been
-    // reallocated for a smaller size. Indexing against a stale, larger
-    // `area` panics with "index outside of buffer"; indexing against
-    // `buf.area` is always safe.
+    // extent, not the caller-supplied `area`. The two can diverge across
+    // a resize: the host computes `area` from a layout pass against one
+    // terminal size, and by the time this paint runs `buf` may already
+    // have been reallocated for a smaller size. Indexing against a stale,
+    // larger `area` panics with "index outside of buffer"; indexing
+    // against `buf.area` is always safe.
     let buf_area = buf.area;
 
     let window_bg = qc(if editor.show_active_bg {
@@ -165,13 +158,8 @@ pub fn draw_editor(
                 };
                 set_cell(buf, gx, screen_y, ch, fg, line_bg);
             }
-            // Diagnostic gutter icon. When `has_breakpoints` is true,
-            // skip the BP column (col 0) so the BP marker stays visible
-            // — paint the dot at col `bp_offset`. Without a BP column
-            // the dot keeps overwriting the leftmost gutter char (the
-            // pre-#283 behaviour). Same shift applies to the lightbulb
-            // fallback so code-action affordances don't displace BPs
-            // either. (#283)
+            // Diagnostic gutter icon is painted at column `bp_offset` to
+            // keep the breakpoint marker visible when both are present.
             let diag_x = area.x + bp_offset as u16;
             if let Some(severity) = editor.diagnostic_gutter.get(&line.line_idx) {
                 let (diag_ch, diag_color) = match severity {
@@ -685,11 +673,10 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect as RtRect;
 
-    /// Minimal one-line [`EditorLine`] carrying every one of the five
-    /// decoration-overlay categories fixed by #1040, at the given columns.
-    /// All columns land past `raw_text`'s own length — none of the five
-    /// paint sites require character content under them to attempt the
-    /// `buf[(cx, screen_y)]` index that panics pre-fix.
+    /// Minimal one-line [`EditorLine`] carrying decoration-overlay
+    /// categories at the given columns. All columns land past `raw_text`'s
+    /// own length — none of the paint sites require character content under
+    /// them to safely index `buf[(cx, screen_y)]`.
     fn decorated_line(line_idx: usize, col: usize) -> EditorLine {
         EditorLine {
             raw_text: "x".repeat(col + 2),
@@ -753,20 +740,16 @@ mod tests {
         }
     }
 
-    /// #1040 regression: `draw_editor` must bounds-check every overlay
-    /// write against `buf.area` (the buffer's real, already-resized
-    /// extent), not the caller-supplied `area` — a resize between when a
-    /// host computes its layout rects and when `ratatui::Terminal::draw`
-    /// actually reallocates its buffer can leave `area` describing a
-    /// larger region than `buf` actually has. Reproduces that gap
-    /// directly: `area` is wider and taller than `buf`, and every one of
-    /// the five previously-inconsistent overlay categories (indent
-    /// guides, color columns, diagnostics, spell errors, bracket match)
-    /// targets a cell that's inside `area` but outside `buf.area` — both
-    /// horizontally (row 0, column 15, `buf` width 10) and vertically
-    /// (row 1, column 2, `buf` height 1). Pre-fix this panicked with
-    /// ratatui's "index outside of buffer"; post-fix it must silently
-    /// skip the off-buffer writes and return normally.
+    /// `draw_editor` must bounds-check every overlay write against
+    /// `buf.area` (the buffer's real, already-resized extent), not the
+    /// caller-supplied `area`. A resize between layout computation and
+    /// `ratatui::Terminal::draw` can leave `area` describing a larger
+    /// region than `buf` actually has. This test reproduces that gap:
+    /// `area` is wider and taller than `buf`, and the overlay categories
+    /// (indent guides, color columns, diagnostics, spell errors, bracket
+    /// match) target cells inside `area` but outside `buf.area` both
+    /// horizontally and vertically. The function must silently skip the
+    /// off-buffer writes and return normally.
     #[test]
     fn draw_editor_does_not_panic_when_area_outlives_buf() {
         let lines = vec![
@@ -777,8 +760,7 @@ mod tests {
         let theme = Theme::default();
 
         // `buf` is the real, already-shrunk buffer (10x1); `area` is the
-        // stale, larger layout rect (20x5) a host computed before the
-        // resize — exactly #1040's TOCTOU shape.
+        // stale, larger layout rect (20x5) from before a terminal resize.
         let mut buf = Buffer::empty(RtRect::new(0, 0, 10, 1));
         let area = RtRect::new(0, 0, 20, 5);
 
@@ -786,7 +768,7 @@ mod tests {
         let _ = draw_editor(&mut buf, area, &editor, &theme);
     }
 
-    // ── Selection column math via `EditorSelection::cols_on` (#1082) ────
+    // ── Selection column math via `EditorSelection::cols_on` ────────────
 
     fn sel_test_line(
         line_idx: usize,

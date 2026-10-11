@@ -1,20 +1,15 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::MenuBar`] (issue #25).
+//! Direct2D / DirectWrite rasteriser for [`crate::MenuBar`].
 //!
-//! [`win_menu_bar_layout`] stays here — pure geometry generic over
-//! [`crate::primitives::layout_metrics::TextMeasure`], no Direct2D/
-//! DirectWrite type in its signature, so it compiles and runs everywhere,
-//! including a plain `cargo test --features win` on Linux (issue #1078;
-//! `super::mod`'s `mod menu_bar;` is no longer whole-module gated — see
-//! `backend.rs`'s module docs). Content painting (background,
-//! active/disabled colouring, label text, Alt-key underline) moved to
-//! the shared [`crate::primitives::menu_bar::native_surface_paint::paint`]
-//! (#1081, `PaintSurface` Phase 4 slice 5/8) — see that fn's module doc
-//! for the underline-mechanism drift it resolved (this backend's own
-//! manual-rectangle underline was the one every backend adopted; GTK's
-//! Pango per-character attribute and macOS's total absence of underline
-//! both had to give way to it).
+//! [`win_menu_bar_layout`] is generic over
+//! [`crate::primitives::layout_metrics::TextMeasure`], with no Direct2D/
+//! DirectWrite type in its signature, so it compiles and runs everywhere.
+//! Content painting (background, active/disabled colouring, label text,
+//! Alt-key underline) uses the shared
+//! [`crate::primitives::menu_bar::native_surface_paint::paint`] — see that
+//! fn's module doc for the underline-mechanism it implements (a manual
+//! rectangle underline adopted by every backend).
 //!
-//! Takes the live theme as a `&Theme` parameter (quadraui#789) — the
+//! Takes the live theme as a `&Theme` parameter — the
 //! caller ([`crate::win::WinBackend::draw_menu_bar`]) passes
 //! `&self.current_theme`, the same field `Backend::set_theme` writes.
 
@@ -45,7 +40,7 @@ fn display_text(label: &str) -> String {
 /// Compute the [`MenuBar`]'s layout without painting — the measurer twin
 /// of [`draw_menu_bar`], and what
 /// [`crate::win::WinBackend::menu_bar_layout`] calls directly. Pure
-/// geometry over [`TextMeasure`] (issue #1078) — `measure` may be a live
+/// geometry over [`TextMeasure`] — `measure` may be a live
 /// `&DWrite` (when painting) or [`super::backend`]'s nominal measurer (no
 /// surface yet).
 pub fn win_menu_bar_layout(measure: &dyn TextMeasure, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
@@ -88,7 +83,7 @@ pub fn draw_menu_bar(
     layout
 }
 
-// #1078: the paint↔click round-trip tests below need a real
+// The paint↔click round-trip tests below need a real
 // `DWrite`/`HeadlessSurface` — gated the same way the whole module used
 // to be.
 #[cfg(test)]
@@ -207,7 +202,7 @@ mod tests {
 
     // `alt_char_index`'s own tests (none-without-ampersand,
     // char-after-ampersand, empty/trailing-marker) moved with it to
-    // `crate::primitives::menu_bar::native_surface_paint::tests` (#1081)
+    // `crate::primitives::menu_bar::native_surface_paint::tests`
     // — `display_text` is the only helper still local to this module
     // (still needed by `win_menu_bar_layout`).
     #[test]

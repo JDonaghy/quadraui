@@ -6,33 +6,30 @@
 //! `sample_blocks` (row down-sampling) and `aggregate_spans` (colour
 //! down-sampling) feeding one `Minimap` descriptor that both backends
 //! paint with zero backend-specific app code — GTK via fixed-pitch
-//! per-column colour blocks, TUI via braille (#382, #667).
+//! per-column colour blocks, TUI via braille.
 //!
 //! The buffer is deliberately tall enough that GTK's fixed row pitch
 //! (`gtk::minimap::ROW_PITCH_PX`) can't show every row in a typical strip
-//! at once — this app hands `Minimap.lines` every buffer line (no
-//! app-level pre-downsampling to "just enough to fill the strip"; that
-//! was the old `Fill`-only model) and lets `Minimap::layout`'s own
-//! `FixedPitch` slide window decide how much is visible, so scrolling
-//! with Up/Down visibly slides the map (#667).
+//! at once — this app hands `Minimap.lines` every buffer line and lets
+//! `Minimap::layout`'s own `FixedPitch` slide window decide how much is
+//! visible, so scrolling with Up/Down visibly slides the map.
 //!
 //! Controls:
 //! - Up/Down       scroll the viewport (moves the highlighted band)
 //! - Click minimap seek the viewport to that fraction of the file
-//! - s             toggle `MinimapScale::One` / `MinimapScale::Two` (#1143)
+//! - s             toggle `MinimapScale::One` / `MinimapScale::Two`
 //! - q / Esc       quit
 //!
-//! The `s` toggle is this example's #1143 demonstration: `MinimapScale::Two`
-//! is a 2px wide x 4px tall cell (VS Code's own default `minimap.scale`) —
-//! large enough for GTK's atlas-blitted glyph tile to read back as an actual
-//! character shape instead of a density dot. `MinimapScale::One` (the
-//! pre-#1143 default every backend already painted at) is a 1x2 px cell —
-//! too small for a downsampled tile to carry any shape at all, so it always
-//! reads as a solid dot regardless of the character. TUI has no font to
-//! scale (braille packs 4 buffer lines x 2 columns into one cell-native dot
-//! cell, independent of `MinimapScale`), so the toggle is visually inert
-//! there — it's real on every pixel backend (GTK today; Win-GUI/macOS once
-//! their own atlas lands, issue #1143).
+//! `MinimapScale::Two` is a 2px wide x 4px tall cell (VS Code's default
+//! `minimap.scale`) — large enough for GTK's atlas-blitted glyph tile to
+//! read back as an actual character shape instead of a density dot.
+//! `MinimapScale::One` is a 1x2 px cell — too small for a downsampled
+//! tile to carry any shape at all, so it always reads as a solid dot
+//! regardless of the character. TUI has no font to scale (braille packs
+//! 4 buffer lines x 2 columns into one cell-native dot cell, independent
+//! of `MinimapScale`), so the toggle is visually inert there — it's real
+//! on every pixel backend (GTK today; Win-GUI/macOS once their own atlas
+//! lands).
 
 use quadraui::{
     aggregate_spans, sample_blocks, AppLogic, Backend, Color, InteractionState, Key, Minimap,
@@ -51,13 +48,13 @@ const VIEWPORT_ROWS: usize = 10;
 /// correctly against a coarser span, just at TUI's granularity rather
 /// than its own finer one. Unrelated to how many rows are actually
 /// *visible* at once, which is `Minimap::layout`'s own `MinimapSizing`
-/// concern (#667), not this app's.
+/// concern, not this app's.
 const LINES_PER_ROW: usize = 4;
 
 pub struct MinimapApp {
     buffer: Vec<String>,
     scroll_offset: usize,
-    /// Toggled by the `s` key (#1143) — see the module doc's "Controls"
+    /// Toggled by the `s` key — see the module doc's "Controls"
     /// section for what each value paints.
     scale_two: bool,
 }
@@ -91,32 +88,21 @@ impl MinimapApp {
 
     /// Build the `Minimap` descriptor for the current scroll position.
     ///
-    /// Unlike the pre-#667 model, this doesn't try to pre-compute "just
-    /// enough rows to fill the strip" from the viewport's pixel height —
-    /// that was only ever needed because `Fill` sizing had no sliding
-    /// window, so a mismatch meant either wasted rows or an over-squeezed
-    /// pitch. `sample_blocks` here is called with a target at least as
-    /// large as the buffer, so it's the identity (never upscales): GTK's
-    /// `FixedPitch` layout and TUI's `Fill` layout each decide for
-    /// themselves how much of `lines` actually gets painted. Passing a
-    /// closure over `self.buffer` rather than a pre-collected `Vec<&str>`
-    /// (the pre-#1012 shape) is the whole point of `sample_blocks`' line
-    /// accessor — this app happens to already hold every line in memory,
-    /// but a host backed by something more expensive to fully
-    /// materialise (a rope, say) would not have to.
+    /// This calls `sample_blocks` with a target at least as large as the
+    /// buffer, so it's the identity (never upscales): GTK's `FixedPitch`
+    /// layout and TUI's `Fill` layout each decide for themselves how much of
+    /// `lines` actually gets painted. Passing a closure over `self.buffer`
+    /// rather than a pre-collected `Vec<&str>` lets `sample_blocks` work with
+    /// line accessors that materialize rows on demand.
     ///
-    /// `backend` is only used to read back the horizontal cell scale
-    /// TUI's rasteriser will actually paint dots at
-    /// (`backend.minimap_layout(..).cols_per_cell`, issue #1032) — GTK's
-    /// own scale is always `1` (its strip is wide enough in pixels that
-    /// no folding is needed), so this same call works unmodified on
-    /// either backend. Reading it back instead of hardcoding a constant
-    /// is what keeps `MinimapGrid::cols_per_cell` below in lockstep with
-    /// whatever `draw_minimap` paints: before #1032, TUI's scale was a
-    /// fixed compile-time constant a host could safely copy; once it
-    /// became buffer-width-adaptive, a copied constant would silently
-    /// desync colour from dot content the moment a file's lines got wide
-    /// enough to trigger the adaptive widening.
+    /// `backend` is used to read the horizontal cell scale TUI's rasteriser
+    /// will paint dots at (`backend.minimap_layout(..).cols_per_cell`) — GTK's
+    /// scale is always `1`, so this same call works unmodified on either
+    /// backend. Reading it keeps `MinimapGrid::cols_per_cell` in lockstep with
+    /// whatever `draw_minimap` paints: when TUI's scale became buffer-width-
+    /// adaptive, a copied constant would silently desync colour from dot
+    /// content once a file's lines got wide enough to trigger the adaptive
+    /// widening.
     fn minimap(&self, backend: &dyn Backend) -> Minimap {
         let buffer = &self.buffer;
         let lines = sample_blocks(buffer.len(), buffer.len(), |i| buffer[i].clone());

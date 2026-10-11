@@ -1,27 +1,20 @@
-//! File-dialog demo — exercises [`PlatformServices::show_file_open_dialog`]
-//! / `show_file_save_dialog` (#427) and, since quadraui#935,
+//! File-dialog demo — exercises [`PlatformServices::show_file_open_dialog`],
+//! [`PlatformServices::show_file_save_dialog`], and
 //! [`PlatformServices::show_folder_open_dialog`].
 //!
-//! - **GTK** (`gtk_file_dialog`): opens a real native `gtk4::FileDialog`
+//! - **GTK** (`gtk_file_dialog`): opens a native `gtk4::FileDialog`
 //!   (via the nested-mainloop adapter in `gtk::services`) and blocks until
-//!   the user picks a file/location/folder or cancels. This is the primary
-//!   manual smoke test for #427/#935 — driving it headlessly isn't possible
-//!   (no `GtkDriver` yet, #301), so exercise it by hand: run the example,
-//!   press `o` / `s` / `f`, and confirm the native dialog appears, is
+//!   the user picks a file/location/folder or cancels. The native dialog is
 //!   parented to the demo window, and the status bar reflects the picked
 //!   path (or "cancelled" on Escape/close).
-//! - **TUI** (`tui_file_dialog`): since issue #965,
-//!   `show_file_open_dialog`/`show_file_save_dialog` drive a real
-//!   in-canvas `compose::FilePickerController` through a nested
-//!   draw-and-read loop (see `tui::services`'s module doc) and return a
-//!   genuine chosen path — press `o`/`s` and type/arrow through the
-//!   picker like `tui_file_picker` does. `show_folder_open_dialog` is
-//!   the one method here **not** touched by #965 (out of that issue's
-//!   scope — see `tui::services`'s module doc) and still always returns
-//!   `None` on TUI; apps should provide an in-canvas picker instead (see
-//!   the separate `tui_folder_picker`/`gtk_folder_picker` examples). Both
-//!   the open/save real-path round trip and the folder `None` degrade
-//!   are covered by the `TuiDriver` tests in
+//! - **TUI** (`tui_file_dialog`): `show_file_open_dialog` and
+//!   `show_file_save_dialog` drive a real in-canvas
+//!   `compose::FilePickerController` through a nested draw-and-read loop
+//!   (see `tui::services`'s module doc) and return a genuine chosen path.
+//!   `show_folder_open_dialog` always returns `None` on TUI; apps should
+//!   provide an in-canvas picker instead (see the separate `tui_folder_picker`
+//!   / `gtk_folder_picker` examples). Both the open/save real-path round trip
+//!   and the folder `None` degrade are covered by the `TuiDriver` tests in
 //!   `tests/tui_example_driver.rs`.
 //!
 //! ```sh
@@ -32,7 +25,7 @@
 //! Controls:
 //! - `o` — open-file dialog (filtered to `*.rs`)
 //! - `s` — save-as dialog (initial name `untitled.txt`)
-//! - `f` — open-folder dialog (quadraui#935)
+//! - `f` — open-folder dialog
 //! - `Esc` / `q` — quit
 //!
 //! The status bar shows the full confirmed path on the left and just its

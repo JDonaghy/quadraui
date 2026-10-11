@@ -1,16 +1,10 @@
 //! macOS (Core Graphics + Core Text) rasteriser for
 //! [`crate::primitives::command_line::CommandLine`].
 //!
-//! Painting moved to the shared
+//! Painting uses the shared
 //! [`crate::primitives::command_line::native_surface_paint::paint`]
-//! (#1083, `PaintSurface` Phase 4 6/8) — see that fn's doc for the named
-//! divergences this closed (this module used to paint no selection
-//! highlight at all, and anchored its insert cursor at `text_x +
-//! prefix_width` via a real Core Text glyph-prefix measurement rather
-//! than the shared [`crate::primitives::command_line::CommandLineLayout::char_bounds`]
-//! fixed-advance column — the latter is what the unified `paint` uses
-//! now). [`draw_command_line`]/[`draw_command_line_selection`] below are
-//! thin wrappers over it, using [`crate::macos::surface::CgSurface`] as
+//! — see that fn's doc for details. [`draw_command_line`]/[`draw_command_line_selection`]
+//! are thin wrappers over it, using [`crate::macos::surface::CgSurface`] as
 //! the `PaintSurface` adapter.
 
 use core_graphics::sys::CGContextRef;
@@ -57,9 +51,8 @@ pub unsafe fn draw_command_line(
 }
 
 /// Paint `cmd` exactly like [`draw_command_line`], additionally painting
-/// a selection highlight behind the text for `selection` — the macOS
-/// side of closing #1083's "selection silently dropped" divergence (see
-/// this module's doc). Sibling function, not a new parameter, mirroring
+/// a selection highlight behind the text for `selection`. Sibling function,
+/// not a new parameter, mirroring
 /// [`crate::gtk::command_line::draw_command_line_selection`]'s shape.
 ///
 /// # Safety
@@ -196,12 +189,10 @@ mod tests {
         );
     }
 
-    /// #1083: the cursor bar paints at the shared
+    /// The cursor bar paints at the shared
     /// [`crate::primitives::command_line::CommandLineLayout::char_bounds`]
     /// column — the same rect [`Backend::command_line_layout`] would hand
-    /// back for hit-testing that column — not a hand-measured Core Text
-    /// prefix width (this test's pre-#1083 shape). Mirrors
-    /// `win::command_line`'s `cursor_paints_at_the_shared_layout_column`.
+    /// back for hit-testing that column, not a hand-measured Core Text prefix width.
     #[test]
     fn cursor_paints_cursor_colour_after_the_prefix() {
         let cmd = sample(":wq", Some(1), false);
@@ -224,12 +215,7 @@ mod tests {
         );
     }
 
-    /// #1083: closes the divergence this module's doc names — before the
-    /// port, `MacBackend::draw_command_line_selection` silently ignored
-    /// `selection` and forwarded to the plain (unhighlighted) paint (see
-    /// issue #1001's "no visual highlight yet" note on that method), so
-    /// this assertion was RED: no pixel anywhere in the bar ever carried
-    /// `theme.selection`. After the port, it paints through the shared
+    /// Selection highlight paints behind text through the shared
     /// `native_surface_paint::paint`, same as `gtk::command_line`'s
     /// `gtk_command_line_selection_paints_highlight_behind_text` twin.
     #[test]
@@ -290,7 +276,7 @@ mod tests {
     }
 
     /// Regression for the multibyte panic the GTK twin fixed under
-    /// quadraui#503: a `cursor_offset` landing mid-character must snap,
+    /// A `cursor_offset` landing mid-character must snap,
     /// not slice a `str` at a non-boundary.
     #[test]
     fn multibyte_cursor_offset_does_not_panic() {
@@ -351,21 +337,14 @@ mod tests {
         );
     }
 
-    /// Paint/click round-trip (`docs/TESTING.md` coverage-taxonomy row 1,
-    /// #705 review): paint through the real `Backend::draw_command_line`
-    /// path (same infra as `paint_via_backend` above), find the actual
-    /// painted (non-background) pixel for two different characters, then
-    /// `hit_test` those exact pixels via `Backend::command_line_layout`
-    /// and assert they resolve to the right byte offsets. `MacBackend`
-    /// derives `current_char_width` from the same Menlo font metrics
-    /// `draw_text` paints with (`set_current_font` -> `font_metrics` ->
-    /// `measure_text(font, "M")`), so — unlike the GTK twin's
-    /// fixed-advance approximation — paint and layout share one
-    /// ground-truth measurement here, and no separate font-width probe
-    /// is needed.
+    /// Paint/click round-trip: paint through the real `Backend::draw_command_line`
+    /// path, find the actual painted (non-background) pixel for two different
+    /// characters, then `hit_test` those exact pixels via `Backend::command_line_layout`
+    /// and assert they resolve to the right byte offsets. `MacBackend` derives
+    /// `current_char_width` from the same Menlo font metrics `draw_text` paints
+    /// with, so paint and layout share one ground-truth measurement here.
     ///
-    /// Non-zero-origin per LESSONS.md:159-181 (a LOCAL/ABSOLUTE mixup is
-    /// invisible at `rect.x == 0`).
+    /// Non-zero-origin to catch LOCAL/ABSOLUTE mixups (invisible at `rect.x == 0`).
     #[test]
     fn command_line_layout_hit_test_matches_painted_glyph_at_nonzero_origin() {
         let origin_x = 24.0_f32;

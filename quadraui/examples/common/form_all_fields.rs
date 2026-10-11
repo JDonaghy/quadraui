@@ -1,16 +1,6 @@
 //! Backend-agnostic [`Form`] demo covering all 14 [`FieldKind`] variants
-//! (quadraui#808).
 //!
-//! Before #808, `macos::form::draw_form` matched only 10 of 14
-//! `FieldKind` variants and silently fell through (`_ => {}`) on
-//! `Slider` / `ColorPicker` / `Dropdown` / `TextArea` — a form using one
-//! of those rendered nothing on macOS, with no error. `gtk::form::
-//! draw_form` separately left `Slider` / `ColorPicker` / `Dropdown`
-//! blank. This fixture exists to give `tests/cross_backend_parity.rs` a
-//! single `Form` exercising every variant, so a regression that drops
-//! one again fails a shared assertion instead of shipping silently on
-//! whichever backend nobody happened to check.
-//!
+//! Exercises every `FieldKind` variant to verify all backends render them.
 //! Static display only — no field in this form needs interactive state
 //! for the parity check, so `handle` only wires up quit.
 
@@ -77,7 +67,7 @@ impl FormAllFieldsApp {
                     disabled: false,
                     validation: None,
                 },
-                // ── The four variants pre-#808 macOS silently dropped ──
+                // These four variants must render on all backends:
                 FormField {
                     id: WidgetId::new("font-size"),
                     label: StyledText::plain("Font size"),

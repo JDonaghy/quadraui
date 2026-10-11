@@ -1,19 +1,15 @@
 //! Direct2D / DirectWrite rasteriser for
-//! [`crate::primitives::command_line::CommandLine`] (issue #725).
+//! [`crate::primitives::command_line::CommandLine`].
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod command_line;` and `backend.rs`'s
 //! module docs for why the rest of this repo's `--features win` compile
 //! gate stays meaningful without a Windows host.
 //!
-//! Painting moved to the shared
+//! Painting uses the shared
 //! [`crate::primitives::command_line::native_surface_paint::paint`]
-//! (#1083, `PaintSurface` Phase 4 6/8) — see that fn's doc for the named
-//! divergences this closed on the other two backends (this module's own
-//! `char_bounds`-based cursor and lack of any selection paint were
-//! already what the port converged everyone onto, so this file's own
-//! behaviour is unchanged by the move — only its implementation is now
-//! shared). [`draw_command_line`]/[`draw_command_line_selection`] below
+//! — see that fn's doc for the named divergences across backends.
+//! [`draw_command_line`]/[`draw_command_line_selection`] below
 //! are thin wrappers over it, using [`crate::win::surface::D2dSurface`]
 //! as the `PaintSurface` adapter.
 
@@ -24,7 +20,7 @@ use crate::primitives::command_line::{CommandLine, CommandLineLayout, CommandLin
 use crate::theme::Theme;
 
 /// Compute [`CommandLineLayout`] for `cmd` painted at `rect`, using the
-/// backend's monospace `char_width` (issue #705) — what
+/// backend's monospace `char_width` — what
 /// [`crate::win::WinBackend::command_line_layout`] calls directly, and
 /// what [`draw_command_line`] paints against.
 pub fn win_command_line_layout(
@@ -39,7 +35,7 @@ pub fn win_command_line_layout(
 /// the resolved [`CommandLineLayout`] — same contract as the GTK/macOS/
 /// TUI twins' `draw_command_line`: callers (and tests) read the layout
 /// back instead of re-deriving it, so paint and hit-test can't drift
-/// apart (#705 review).
+/// apart.
 pub fn draw_command_line(
     target: &ID2D1RenderTarget,
     dwrite: &super::text::DWrite,
@@ -52,9 +48,8 @@ pub fn draw_command_line(
 }
 
 /// Paint `cmd` exactly like [`draw_command_line`], additionally painting
-/// a selection highlight behind the text for `selection` — the Windows
-/// side of closing #1083's "selection silently dropped" divergence (see
-/// this module's doc). Sibling function, not a new parameter, mirroring
+/// a selection highlight behind the text for `selection`. Sibling function,
+/// not a new parameter, mirroring
 /// [`crate::gtk::command_line::draw_command_line_selection`]'s shape.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_command_line_selection(
@@ -99,10 +94,7 @@ mod tests {
         }
     }
 
-    /// Regression for the multibyte panic the GTK twin fixed under
-    /// quadraui#503 (`text_area_with_multibyte_cursor_does_not_panic`'s
-    /// command-line sibling, this issue's acceptance criterion): a
-    /// `cursor_offset` landing mid-`é` must snap via
+    /// A `cursor_offset` landing mid-multibyte sequence must snap via
     /// [`CommandLineLayout::char_bounds`], not slice `text` at a
     /// non-boundary.
     #[test]
@@ -125,16 +117,13 @@ mod tests {
             .expect("paint command line");
     }
 
-    /// Paint↔click round trip (`docs/TESTING.md` coverage-taxonomy row
-    /// 1): paint via the real `draw_command_line` rasteriser into a
-    /// headless Direct2D surface, find the actual painted (non-
-    /// background) pixel for two different characters, then `hit_test`
-    /// those exact pixels via the returned [`CommandLineLayout`] and
-    /// assert they resolve to the correct byte offsets — mirrors
-    /// `gtk::command_line`'s and `macos::command_line`'s #705-review
-    /// twins.
+    /// Paint↔click round trip: paint via the real `draw_command_line`
+    /// rasteriser into a headless Direct2D surface, find the actual painted
+    /// (non-background) pixel for two different characters, then `hit_test`
+    /// those exact pixels via the returned [`CommandLineLayout`] and assert
+    /// they resolve to the correct byte offsets.
     ///
-    /// #505: a LOCAL/ABSOLUTE mixup is invisible at `rect.x == 0`, so
+    /// A LOCAL/ABSOLUTE mixup is invisible at `rect.x == 0`, so
     /// this is exercised at a nonzero origin too.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
@@ -228,26 +217,16 @@ mod tests {
         );
     }
 
-    /// #1083: closes the divergence this module's doc names — before the
-    /// port, `WinBackend::draw_command_line_selection` silently ignored
-    /// `selection` and forwarded to the plain (unhighlighted) paint (see
-    /// issue #1001's "no visual highlight yet" note on that method), so
-    /// this assertion was RED: no pixel anywhere in the bar ever carried
-    /// `theme.selection`. After the port, it paints through the shared
+    /// Selection highlight paints behind text via the shared
     /// `native_surface_paint::paint`, same as `gtk::command_line`'s
     /// `gtk_command_line_selection_paints_highlight_behind_text` twin.
     ///
     /// # Why the probes never sit in a column that holds a glyph
     ///
-    /// The GTK twin pays for its `"  x"` / "column 1 is an ink-free
-    /// control pixel" shape with a **monospace** paint font
-    /// (`"Monospace 12"`), so Pango's per-glyph advances line up with
-    /// [`CommandLineLayout`]'s fixed column pitch and column *n* holds
-    /// character *n* and nothing else. This module's paint font is the
-    /// proportional `Segoe UI`, and the pitch is `measure_text("0")`
-    /// (see `win::text::DWrite::new`): a space advances ~3.5 DIP against
-    /// a ~7.3 DIP column, so in `"  x"` DirectWrite paints the `x`
-    /// *inside column 1* — the exact pixel a transplanted twin reads as
+    /// This module's paint font is the proportional `Segoe UI`, and the pitch
+    /// is `measure_text("0")` (see `win::text::DWrite::new`): a space advances
+    /// ~3.5 DIP against a ~7.3 DIP column, so in `"  x"` DirectWrite paints
+    /// the `x` *inside column 1* — the exact pixel a transplanted twin reads as
     /// its unselected control. That is a font-metric coincidence, not
     /// the behaviour under test, so the colour probes here run against
     /// an **all-spaces** string (ink-free on any face, proportional or

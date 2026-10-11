@@ -3,72 +3,41 @@
 //!
 //! Both functions are framework-shaped — no platform dependencies, no
 //! `Backend` coupling — so they're unconditionally compiled and free of
-//! feature gates. They exist here (rather than in a consuming app) so
-//! [`fuzzy_score`] backs every fuzzy matcher in the crate
-//! ([`crate::compose::folder_picker`]'s directory filter,
-//! [`crate::compose::filter_help_actions`]) instead of each one carrying
-//! its own ad-hoc scorer, and so [`word_wrap`] gives
+//! feature gates. They exist here so [`fuzzy_score`] backs every fuzzy
+//! matcher in the crate ([`crate::compose::folder_picker`]'s directory
+//! filter, [`crate::compose::filter_help_actions`]) instead of each one
+//! carrying its own ad-hoc scorer, and so [`word_wrap`] gives
 //! [`crate::compose::chat_controller`] (and any other consumer that
 //! needs to wrap plain text to a column budget) real word-aware
 //! wrapping instead of a mid-word hard break.
 //!
-//! See issue #474 ("Text-util gaps") for the audit that found three
-//! independent fuzzy matchers (two of them weaker ad-hoc versions) and a
-//! hard-break wrap living app-side while quadraui had no shared version.
-//!
 //! The boundary-snap helpers below ([`snap_to_char_boundary`],
 //! [`prev_char_boundary`], [`next_char_boundary`], [`safe_prefix`],
-//! [`safe_slice`]) close a related gap tracked by issue #503: GUI
-//! rasterisers (gtk, macos) receive byte-offset cursor/selection
-//! positions from host apps and consumers of this crate (see
-//! `primitives/palette.rs`'s `query_cursor` field) with no guarantee
+//! [`safe_slice`]) prevent panics when GUI rasterisers (gtk, macos)
+//! receive byte-offset cursor/selection positions with no guarantee
 //! those offsets land on a UTF-8 char boundary — slicing a `String`
 //! directly at such an offset panics the paint pass the moment a
-//! multibyte character (é, CJK, emoji) sits left of the cursor. Before
-//! this module these existed as seven byte-identical private copies
-//! (`tui/editor.rs`, `compose/chat_controller.rs`,
-//! `compose/tree_controller.rs`); they're unified here so every
-//! caller — in-crate and, eventually, downstream — gets the same
-//! panic-free behaviour.
+//! multibyte character (é, CJK, emoji) sits left of the cursor. This
+//! module unifies them so every caller — in-crate and, eventually,
+//! downstream — gets the same panic-free behaviour.
 //!
 //! [`char_cell_width`] and [`display_width`] measure real terminal
-//! display width (CJK/emoji count double, combining marks count zero) —
-//! see issue #471, which found `StyledText::visible_width`
-//! (`crate::types`) still counting `chars()` years after #206 fixed the
-//! equivalent terminal-cell logic, because that fix landed only in the
-//! `tui`-feature-gated `tui::text` module while `types` is core and
-//! unconditionally compiled. These live here instead so core code can
-//! use them without depending on `tui`/`gtk`; `tui::text` re-exports the
-//! same two functions for API stability.
+//! display width (CJK/emoji count double, combining marks count zero).
+//! These live here instead so core code can use them without depending
+//! on `tui`/`gtk`; [`crate::tui::char_cell_width`] re-exports the same
+//! function for API stability.
 //!
 //! [`wrap_spans`] is the one display-width-aware line wrapper in the
-//! crate — see issue #821. Before it, three independent wrappers existed,
-//! all budgeting rows by `chars().count()` instead of [`display_width`]:
-//! this module's own [`word_wrap`], `compose::markdown`'s private
-//! `wrap_plain_line`, and `compose::chat_controller`'s private
-//! `wrap_spans`. `chars().count()` wraps a row of CJK or emoji text too
-//! late — a 10-cell-wide row of double-width characters was let through
-//! at 10 *characters* (20 cells), overflowing the budget it was supposed
-//! to respect. [`word_wrap`] is now a thin adapter over [`wrap_spans`]
-//! (same signature, same behaviour, now display-width-correct); the
-//! other two copies are gone — their call sites
-//! (`markdown::render_markdown_to_styled_wrapped`,
-//! `chat_controller::build_transcript_rows`) call [`wrap_spans`]
-//! directly.
+//! crate. [`word_wrap`] is now a thin adapter over [`wrap_spans`]
+//! (same signature, same behaviour, now display-width-correct).
 //!
 //! [`char_to_byte_idx`], [`char_col_to_visual`] and
-//! [`strip_json_comments`] close the gap tracked by issue #1094: vimcode
-//! carried byte-identical copies of all three because they were private
-//! to `theme.rs` / `tui/editor.rs` (and, for the char→byte helper,
-//! `primitives/find_replace.rs`'s paint closure). They're unified here so
-//! downstream hosts reach `quadraui::text_util::*` instead of copying the
-//! logic. Moving [`strip_json_comments`] also fixed a latent bug: the
-//! original byte-indexed implementation pushed `bytes[i] as char` for
-//! every byte, including the continuation bytes of a multi-byte UTF-8
-//! sequence — which corrupts (not merely mis-measures) any non-ASCII
-//! content, in or out of a JSON string. The version here walks whole
-//! `char`s instead of raw bytes, so multi-byte input round-trips intact;
-//! see [`strip_json_comments`]'s tests.
+//! [`strip_json_comments`] are unified here so downstream hosts reach
+//! `quadraui::text_util::*` instead of copying the logic. Moving
+//! [`strip_json_comments`] also fixed a latent bug: earlier
+//! byte-indexed implementations corrupted non-ASCII content. The version
+//! here walks whole `char`s instead of raw bytes, so multi-byte input
+//! round-trips intact; see [`strip_json_comments`]'s tests.
 
 use crate::types::StyledSpan;
 
@@ -151,7 +120,7 @@ pub fn safe_slice(s: &str, lo: usize, hi: usize) -> &str {
 /// byte offset to slice or index the underlying `&str`. Formerly
 /// duplicated as private `char_to_byte` closures/functions in
 /// `primitives/find_replace.rs` and the `gtk`/`win` `rich_text_popup`
-/// rasterisers (issue #1094); this is the shared implementation.
+/// rasterisers; this is the shared implementation.
 pub fn char_to_byte_idx(text: &str, char_idx: usize) -> usize {
     text.char_indices()
         .nth(char_idx)
@@ -168,9 +137,7 @@ pub fn char_to_byte_idx(text: &str, char_idx: usize) -> usize {
 /// Every non-tab character advances the visual column by exactly one
 /// cell (this does *not* account for double-width CJK/emoji glyphs —
 /// callers that need display-width-aware measurement should use
-/// [`display_width`] instead). Mirrors `vimcode::tui_main::render_impl
-/// ::char_col_to_visual`; formerly private to `tui::editor` (issue
-/// #1094).
+/// [`display_width`] instead).
 pub fn char_col_to_visual(raw_text: &str, char_col: usize, tabstop: usize) -> usize {
     let tabstop = tabstop.max(1);
     let mut vis = 0usize;
@@ -197,9 +164,9 @@ pub fn char_col_to_visual(raw_text: &str, char_col: usize, tabstop: usize) -> us
 ///
 /// Walks whole `char`s (not raw bytes), so multi-byte UTF-8 content —
 /// inside a string literal or in bare JSON text — round-trips intact.
-/// Lifted from vimcode's `render::strip_json_comments` (#775) — a pure
+/// Lifted from vimcode's `render::strip_json_comments` — a pure
 /// text transform with nothing editor-specific about it — and moved here
-/// from a private `theme.rs` helper (issue #1094).
+/// from a private `theme.rs` helper.
 pub fn strip_json_comments(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let bytes = input.as_bytes();
@@ -270,11 +237,9 @@ pub fn strip_json_comments(input: &str) -> String {
 /// font/theme property, not something derivable from the codepoint
 /// alone; if double-width PUA glyphs ever need supporting, it must come
 /// in as an explicit input (theme/config/probe), not a range guess here.
-/// See issue #545.
 ///
-/// Lives here (rather than `tui::text`) so core types like
-/// [`crate::types::StyledText`] can measure real display width without
-/// depending on the `tui` or `gtk` features — see #471.
+/// Lives here so core types like [`crate::types::StyledText`] can measure
+/// real display width without depending on the `tui` or `gtk` features.
 /// [`crate::tui::char_cell_width`] re-exports this same function; it
 /// is not a separate implementation.
 pub fn char_cell_width(c: char) -> u16 {
@@ -296,7 +261,7 @@ pub fn display_width(s: &str) -> usize {
 /// Named for callers that only need the wide/narrow classification, not
 /// the numeric width: pixel-based terminal rasterisers (`gtk`, `macos`)
 /// use this to decide whether a cell claims one grid column or two — see
-/// [`crate::terminal_style::wide_cell_advance`], issue #500.
+/// [`crate::terminal_style::wide_cell_advance`].
 pub fn is_wide_char(c: char) -> bool {
     char_cell_width(c) == 2
 }
@@ -396,11 +361,10 @@ pub fn fuzzy_score(haystack: &str, query: &str) -> Option<(i32, Vec<usize>)> {
 /// returns `text` unmodified as a single row (there's no sane way to
 /// wrap to zero columns), and empty `text` returns one empty row.
 ///
-/// A thin adapter over [`wrap_spans`] with [`WrapPolicy::Word`] — see
-/// issue #821. The signature and behaviour are unchanged from before
-/// that issue; only the row-budget accounting changed, from
-/// `chars().count()` to [`display_width`], so CJK/emoji text now wraps
-/// at the correct column instead of overflowing.
+/// A thin adapter over [`wrap_spans`] with [`WrapPolicy::Word`]. The
+/// signature and behaviour are unchanged; only the row-budget accounting
+/// changed from `chars().count()` to [`display_width`], so CJK/emoji
+/// text now wraps at the correct column instead of overflowing.
 pub fn word_wrap(text: &str, col_budget: usize) -> Vec<String> {
     let spans = [StyledSpan::plain(text)];
     wrap_spans(&spans, col_budget, WrapPolicy::Word)
@@ -417,14 +381,10 @@ pub enum WrapPolicy {
     /// [`word_wrap`]'s policy, generalised to styled spans.
     Word,
     /// Ignore word boundaries entirely: break exactly at the
-    /// display-width budget, mid-word or mid-span if necessary. Matches
-    /// the pre-#821 `chat_controller::wrap_spans` behaviour, used for
-    /// markdown-styled chat turns where per-span word-splitting was
-    /// previously considered too costly — now that [`wrap_spans`] does
-    /// it directly, [`WrapPolicy::Word`] is available there too, but
-    /// `Char` is kept as an explicit, distinct policy so that switching a
-    /// call site's wrap behaviour is a one-word decision, not a silent
-    /// side effect of this unification.
+    /// display-width budget, mid-word or mid-span if necessary. As an
+    /// explicit policy option, switching a call site's wrap behaviour is
+    /// a one-word decision, not a silent side effect of unifying multiple
+    /// independent wrappers.
     Char,
 }
 
@@ -445,7 +405,6 @@ pub enum WrapPolicy {
 /// (the input unmodified, as a single row).
 ///
 /// This is the crate's one line wrapper — see the module doc and issue
-/// #821.
 pub fn wrap_spans(
     spans: &[StyledSpan],
     col_budget: usize,
@@ -515,7 +474,7 @@ fn wrap_chars_by_width(chars: &[(char, usize)], budget: usize) -> Vec<Vec<(char,
 fn wrap_chars_by_word(chars: &[(char, usize)], budget: usize) -> Vec<Vec<(char, usize)>> {
     // Tokenize into alternating whitespace / non-whitespace runs. Only
     // the literal space character `' '` is treated as a separator,
-    // matching `word_wrap`'s pre-#821 `text.split(' ')`.
+    // matching `word_wrap`'s standard word-wrap tokenization.
     enum TokenKind {
         Word,
         Space,
@@ -855,7 +814,7 @@ mod tests {
     fn strip_json_comments_multibyte_content_round_trips() {
         // RED against the original byte-indexed implementation, which
         // pushed `bytes[i] as char` per byte and corrupted any multi-byte
-        // UTF-8 sequence, in or out of a string literal (issue #1094).
+        // UTF-8 sequence, in or out of a string literal.
         let input = r#"{"a": "日本語 🎉", "b": "héllo"}"#;
         let stripped = strip_json_comments(input);
         assert_eq!(
@@ -1057,7 +1016,7 @@ mod tests {
 
     // ── word_wrap / wrap_spans: CJK + emoji display-width correctness ────
     //
-    // RED against a `chars().count()`-based wrapper (issue #821): five CJK
+    // RED against a `chars().count()`-based wrapper: five CJK
     // characters are 5 *characters* but 10 *display cells*. A
     // `chars().count()` budget of 6 would let all 5 through as "6 chars or
     // fewer" and never wrap at all; a display-width budget of 6 must wrap
@@ -1219,7 +1178,7 @@ mod tests {
     }
 }
 
-/// Property tests for [`strip_json_comments`] (quadraui#1130): it runs on
+/// Property tests for [`strip_json_comments`]: it runs on
 /// foreign input (a VS Code theme file someone downloaded), so "never
 /// panics" and "never mangles comment-free JSON" need to hold for more
 /// than the hand-picked fixtures in `mod tests` above.

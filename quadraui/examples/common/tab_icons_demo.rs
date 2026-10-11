@@ -1,5 +1,5 @@
 //! Minimal `AppLogic` painting a `TabBar` whose tabs carry per-tab
-//! [`TabIcon`] glyphs (quadraui#620) — VS Code's coloured
+//! [`TabIcon`] glyphs — VS Code's coloured
 //! language/file-type badge ahead of each tab label.
 //!
 //! The point of the demo is the **sidecar**: icons are passed to
@@ -120,8 +120,7 @@ impl AppLogic for TabIconsDemo {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let bar = self.bar();
-        // The same `TabBar`, painted with or without the sidecar — the
-        // whole point of #620's shape.
+        // The `TabBar` is painted with or without the sidecar.
         let icons = if self.icons_on { self.icons() } else { vec![] };
         backend.draw_tab_bar_icons(Rect::new(0.0, 0.0, viewport.width, lh), &bar, &icons, None);
         backend.draw_status_bar_interactive(

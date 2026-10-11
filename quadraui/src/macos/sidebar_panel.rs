@@ -1,17 +1,8 @@
 //! macOS rasteriser for [`crate::primitives::sidebar_panel::SidebarPanel`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
-//! (#862, `PaintSurface` Phase 2d slice 5/9) — see that fn's module doc
-//! for the four named divergences found while unifying
-//! `gtk::draw_sidebar_panel`, `macos::sidebar_panel::draw_sidebar_panel`
-//! and `win::sidebar_panel::draw_sidebar_panel` into one implementation.
-//! This module now only carries [`mac_sidebar_panel_layout`] (pure
-//! layout, still needed by `MacBackend::sidebar_panel_layout` for
-//! no-paint hit-test queries); the deprecated `draw_sidebar_panel`
-//! compatibility shim over the shared [`super::surface::CgSurface`]
-//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
-//! and vimcode's `develop`).
+//! This module carries [`mac_sidebar_panel_layout`] (pure layout, needed by
+//! `MacBackend::sidebar_panel_layout` for hit-test queries). Painting uses the
+//! shared [`crate::primitives::sidebar_panel::native_surface_paint::paint`].
 
 use core_text::font::CTFont;
 
@@ -19,9 +10,8 @@ use crate::primitives::sidebar_panel::{SidebarPanel, SidebarPanelLayout, Sidebar
 use crate::primitives::toolbar::{measure_button, ToolbarItemMeasure};
 
 /// Compute the macOS pixel-unit layout for a `SidebarPanel`. `font`
-/// is required for accurate text measurement — it's a
-/// [`crate::primitives::layout_metrics::TextMeasure`] itself (issue
-/// #1078), so no wrapper struct is needed.
+/// is required for accurate text measurement — it implements
+/// [`crate::primitives::layout_metrics::TextMeasure`].
 pub fn mac_sidebar_panel_layout(
     panel: &SidebarPanel,
     font: &CTFont,
@@ -126,13 +116,11 @@ mod tests {
     }
 
     /// Shared body for the header-click↔toolbar-button round trip, run
-    /// at both the origin and a non-zero origin (quadraui#494 /
-    /// LESSONS.md "Layout helpers must return coords in the same frame
-    /// across backends"). `mac_sidebar_panel_layout` bakes `x`/`y`
-    /// straight into `panel.layout`'s returned bounds (absolute frame,
-    /// matching the GTK/TUI twins) — call it directly (pure fn, no
-    /// paint needed) and prove a click near the header's top-left
-    /// still resolves to the toolbar button through `hit_test`.
+    /// at both the origin and a non-zero origin. `mac_sidebar_panel_layout` bakes
+    /// `x`/`y` straight into `panel.layout`'s returned bounds (absolute frame,
+    /// matching the GTK/TUI twins) — call it directly (pure fn, no paint needed)
+    /// and prove a click near the header's top-left still resolves to the toolbar
+    /// button through `hit_test`.
     fn click_in_header_round_trip_at(origin_x: f64, origin_y: f64) {
         let panel = panel_with_toolbar();
         let f = font();
@@ -149,9 +137,56 @@ mod tests {
         click_in_header_round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494).
+    /// Non-zero-origin regression guard.
     #[test]
     fn click_in_header_resolves_to_toolbar_button_at_nonzero_origin() {
         click_in_header_round_trip_at(7.0, 13.0);
+    }
+
+    /// The header toolbar paints its button glyphs with the chrome font
+    /// (`ChromeSurface`), so the slot reserved for that row must size
+    /// itself off the same font's line height rather than the editor's
+    /// independently-sized one — otherwise a chrome font taller than the
+    /// editor's current line height clips the tops of the row's own icon
+    /// glyphs against the header's clip rect. Holding the editor font
+    /// tiny and fixed while growing only the chrome ("ui") font proves
+    /// the slot height tracks chrome, not editor, metrics.
+    #[test]
+    fn toolbar_header_height_tracks_chrome_font_not_editor_font() {
+        use crate::Backend;
+
+        fn toolbar_height_for(editor: (&str, f32), chrome_desc: &str) -> f32 {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(0.0, 0.0, 0.0, 0.0);
+            let mut backend = MacBackend::new();
+            Backend::set_editor_font(&mut backend, editor.0, editor.1);
+            Backend::set_ui_font(&mut backend, chrome_desc);
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let panel = panel_with_toolbar();
+            let layout = std::cell::RefCell::new(None);
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                let l = b.draw_sidebar_panel_interactive(
+                    QRect::new(0.0, 0.0, W as f32, H as f32),
+                    &panel,
+                    &crate::InteractionState::new(),
+                );
+                *layout.borrow_mut() = Some(l);
+            });
+            backend.end_frame();
+            layout
+                .into_inner()
+                .unwrap()
+                .toolbar_bounds
+                .expect("toolbar bounds present")
+                .height
+        }
+
+        let h_small_chrome = toolbar_height_for(("Menlo", 9.0), "Menlo 9");
+        let h_huge_chrome = toolbar_height_for(("Menlo", 9.0), "Menlo 60");
+        assert!(
+            h_huge_chrome > h_small_chrome * 2.0,
+            "sidebar header slot height must grow with the chrome font, not stay \
+             pinned to the editor's: {h_small_chrome} vs {h_huge_chrome}"
+        );
     }
 }

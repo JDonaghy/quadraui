@@ -1,6 +1,6 @@
 //! Win32 message → `quadraui::UiEvent` translation.
 //!
-//! Issue #20. Mirrors the shape of [`crate::gtk::events`] and
+//! Mirrors the shape of [`crate::gtk::events`] and
 //! [`crate::macos::events`]: pure free functions taking primitive input
 //! types (already-decoded ints, floats, bools) so unit tests construct
 //! synthetic inputs without linking WinAPI. `super::run`'s `wndproc`
@@ -8,22 +8,21 @@
 //! [`super::msg`]'s decoders for the arithmetic — and calls into these
 //! helpers.
 //!
-//! # Scope vs #19
+//! # Window-lifecycle events
 //!
 //! `WM_SIZE` → [`UiEvent::WindowResized`], `WM_DPICHANGED` →
 //! [`UiEvent::DpiChanged`], and `WM_CLOSE` → [`UiEvent::WindowClose`]
-//! already landed in #19 (`super::msg`'s decoders, dispatched directly
-//! from `super::run`'s `wndproc`) — the window-lifecycle events the
-//! message loop itself needs to stay alive. This module covers the rest
-//! of the table: mouse buttons/motion/wheel, keyboard, and focus.
+//! are dispatched directly from `super::run`'s `wndproc` using
+//! [`super::msg`]'s decoders. This module covers the rest of the table:
+//! mouse buttons/motion/wheel, keyboard, and focus.
 //!
-//! # Known gaps (follow-up, not this issue's table)
+//! # Known gaps
 //!
 //! - `WM_SYSKEYUP` isn't dispatched — mirrors plain `WM_KEYUP` staying
 //!   unhandled (no [`UiEvent`] key-release variant exists yet; see
 //!   `super::run`'s `WM_KEYDOWN` arm doc). `WM_SYSKEYDOWN`/`WM_SYSCHAR`
-//!   (fired while Alt is held — Alt+F4, menu mnemonics) *are* dispatched
-//!   as of #743, reusing [`wm_keydown_to_uievent`]/[`wm_char_to_uievent`]
+//!   (fired while Alt is held — Alt+F4, menu mnemonics) *are* dispatched,
+//!   reusing [`wm_keydown_to_uievent`]/[`wm_char_to_uievent`]
 //!   exactly as `WM_KEYDOWN`/`WM_CHAR` do — see `super::run`'s
 //!   `WM_SYSKEYDOWN`/`WM_SYSCHAR` arms for the Alt+F4 dispatch-vs-
 //!   `DefWindowProcW` decision.
@@ -31,7 +30,7 @@
 //!   [`UiEvent::DoubleClick`] is instead synthesized from repeated
 //!   `MouseDown`s by the shared `dispatch::DoubleClickDetector`, folded
 //!   in by `WinBackend::fold_double_click` from `win::run::dispatch_event`
-//!   (#729) — the same pattern `MacBackend::fold_double_click` uses, not
+//! — the same pattern `MacBackend::fold_double_click` uses, not
 //!   a native translator. Adding a `WM_*BUTTONDBLCLK` arm here would be a
 //!   second, redundant double-click producer.
 //!
@@ -179,7 +178,7 @@ pub fn win_mouse_moved(x: i16, y: i16, scale: f32, buttons: ButtonMask) -> UiEve
     }
 }
 
-// ─── Files dropped (issue #834) ─────────────────────────────────────────
+// ─── Files dropped ──────────────────────────────────────────────────────
 
 /// Translate a decoded `WM_DROPFILES` payload into
 /// [`UiEvent::FilesDropped`]. `paths` and the raw client-area device-pixel
@@ -340,11 +339,11 @@ pub fn wm_char_to_uievent(c: char, modifiers: Modifiers, repeat: bool) -> Option
 ///
 /// `super::run`'s `wndproc` doesn't call this directly — it builds the
 /// same event inline via `WinBackend::resize_surface` +
-/// `Backend::viewport()` (see this module's "Scope vs #19" doc for why
-/// window-lifecycle events are handled there rather than through a
+/// `Backend::viewport()` (see this module's "Window-lifecycle events"
+/// doc for why those events are handled there rather than through a
 /// translator here). This function exists as the public,
-/// host-independent entry point tier C2 (`tests/conformance/c2.rs`,
-/// quadraui#742) asserts against, mirroring
+/// host-independent entry point tier C2 (`tests/conformance/c2.rs`)
+/// asserts against, mirroring
 /// `gtk::events::gdk_resize_to_uievent` / `macos::events::ns_resize_to_uievent`
 /// — and `resize_surface` builds the identical `Viewport` shape (width/
 /// height carried in device pixels, `scale` kept separate rather than
@@ -509,10 +508,7 @@ mod tests {
         }
     }
 
-    /// Issue #834: before this issue nothing in `src/win` constructed
-    /// `UiEvent::FilesDropped` — `grep -rn FilesDropped quadraui/src/win`
-    /// had zero hits outside this new function and its test. Also
-    /// exercises the DIP conversion `win_files_dropped` shares with every
+    /// Exercises the DIP conversion `win_files_dropped` shares with every
     /// other Win mouse translator.
     #[test]
     fn files_dropped_scales_position_and_carries_paths() {
@@ -730,13 +726,13 @@ mod tests {
         }
     }
 
-    // ── Keyboard: WM_SYSKEYDOWN/WM_SYSCHAR (Alt-modified, #743) ──────
+    // ── Keyboard: WM_SYSKEYDOWN/WM_SYSCHAR (Alt-modified) ──────
     //
     // `super::run`'s `WM_SYSKEYDOWN`/`WM_SYSCHAR` arms reuse these exact
     // translators (no new translation logic — see this module's "Known
     // gaps" doc), so an Alt-modified key producing `Modifiers::alt ==
-    // true` here is the host-independent half of #743's acceptance bar;
-    // the wndproc wiring itself only compiles under `target_os =
+    // true` here is the host-independent half of the Alt key acceptance
+    // criterion; the wndproc wiring itself only compiles under `target_os =
     // "windows"`.
 
     #[test]
@@ -872,7 +868,7 @@ mod tests {
         }
     }
 
-    // ── Ctrl-modified shortcuts (vimcode#1674 / quadraui#1262) ──────
+    // ── Ctrl-modified shortcuts ─────────────────────────────────────
     //
     // A real-hardware bugbash found Ctrl+` and Ctrl+B never reaching a
     // Win-GUI app. `char_ctrl_letter_recovers_base_letter` and

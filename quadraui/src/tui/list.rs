@@ -37,7 +37,7 @@ pub fn tui_list_layout(area: Rect, list: &ListView) -> ListViewLayout {
     let hscrollbar = list.hscrollbar(area_f, 1.0);
     let needs_hscrollbar = hscrollbar.is_some();
 
-    // #326 fix: when an h-scrollbar reserves the bottom row, the v-scrollbar's
+    // When an h-scrollbar reserves the bottom row, the v-scrollbar's
     // track and visible-row count must be computed against the REDUCED height.
     let v_area_f = if needs_hscrollbar {
         crate::event::Rect::new(

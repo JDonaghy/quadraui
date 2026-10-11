@@ -1,24 +1,20 @@
-//! Backend-agnostic `ShellApp` for the context-sensitive help layer demo
-//! (#431 — [`tui_help_layer`] / [`gtk_help_layer`]).
+//! Backend-agnostic `ShellApp` for the context-sensitive help layer demo.
 //!
 //! Two panels ("Explorer" and "Source Control"), each registered with its
 //! own [`quadraui::HelpRegistry`] entry — different notes, different
-//! actions. Demonstrates the full #431 acceptance shape:
+//! actions. Demonstrates context-sensitive help:
 //!
 //! - `?` opens a cheatsheet overlay ([`quadraui::HelpOverlayController`])
 //!   showing the **active panel's** registered notes + actions — switch
-//!   panels, reopen `?`, and the content changes. That's the
-//!   "context-sensitive" part.
+//!   panels, reopen `?`, and the content changes.
 //! - `p` opens a command palette ([`quadraui::DualModePaletteController`])
 //!   populated from the active panel's registered actions via
 //!   [`quadraui::help_actions_to_palette_items`]; typing filters by label
 //!   **and** description via [`quadraui::filter_help_actions`].
 //!
-//! A third panel ("Settings") intentionally has **no** registered help,
-//! demonstrating [`quadraui::HelpOverlayController::render`]'s fallback:
-//! `?` still opens a visible "no help available" cheatsheet rather than
-//! silently rendering nothing while still swallowing keys (#431 review
-//! finding — see the doc comment on `render`).
+//! A third panel ("Settings") intentionally has **no** registered help.
+//! [`quadraui::HelpOverlayController::render`] shows a visible
+//! "no help available" cheatsheet rather than silently rendering nothing.
 //!
 //! Controls:
 //! - `?`                 toggle the help cheatsheet for the active panel

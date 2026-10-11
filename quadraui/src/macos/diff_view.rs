@@ -1,23 +1,15 @@
 //! macOS (Core Graphics + Core Text) rasteriser for
 //! [`crate::primitives::diff_view::DiffView`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::diff_view::native_surface_paint::paint`] (#866,
-//! `PaintSurface` Phase 2d slice 9/9) — see that fn's doc for the two
-//! named divergences (row/header text vertical alignment; header-label
-//! ellipsize vs. hard-clip) found while unifying
-//! `gtk::diff_view::draw_diff_view`, `macos::diff_view::draw_diff_view`
-//! and `win::diff_view::draw_diff_view` into one implementation. This
-//! module no longer carries any public rasteriser of its own — the
-//! deprecated `draw_diff_view` compatibility shim over the shared
-//! [`super::surface::CgSurface`] adapter was removed in issue #1109
-//! (zero uses in coord-tui's `main` and vimcode's `develop`); callers
-//! reach the same paint through [`crate::Backend::draw_diff_view`].
+//! Painting is implemented in the shared
+//! [`crate::primitives::diff_view::native_surface_paint::paint`] — see that fn's doc for
+//! the two named divergences (row/header text vertical alignment; header-label
+//! ellipsize vs. hard-clip) found while unifying the platform-specific diff view
+//! implementations. Callers reach the paint through [`crate::Backend::draw_diff_view`].
 //!
-//! Before #737 landed, `MacBackend::draw_diff_view` painted nothing and
-//! returned `visible_rows: 0`, which silently pinned every host's scroll
-//! clamp to zero (quadraui#484 §4) — the shared paint below inherits
-//! that fix via [`DiffView::layout`].
+//! The shared paint inherits a fix: `MacBackend::draw_diff_view` previously painted
+//! nothing and returned `visible_rows: 0`, which silently pinned every host's scroll
+//! clamp to zero — this is corrected via [`DiffView::layout`].
 
 #[cfg(test)]
 use crate::primitives::diff_view::{DiffView, DiffViewLayout};

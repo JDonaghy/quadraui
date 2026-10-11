@@ -1,16 +1,14 @@
 //! macOS rasteriser for [`crate::Dialog`].
 //!
-//! Content painting moved to the shared
-//! [`crate::primitives::dialog::native_surface_paint::paint`] (#1077,
-//! `PaintSurface` Phase 4 slice 4/8) — see that fn's module doc for the
-//! drift it resolved. macOS's own font-role behaviour (the whole dialog
-//! paints in `self.chrome_font`, per issue #1003) is unchanged by this
-//! migration — it was already the answer the shared `paint` adopted for
-//! every backend.
+//! Content painting uses the shared
+//! [`crate::primitives::dialog::native_surface_paint::paint`] function.
+//! macOS's font-role behaviour (the whole dialog paints in `self.chrome_font`)
+//! is unchanged by this — it was already the answer the shared `paint` adopted
+//! for every backend.
 //!
 //! `DialogInput::Toolbar` still renders through
 //! [`super::toolbar::draw_toolbar`] after the shared `paint` returns,
-//! using the same `font` (chrome) as before — unchanged.
+//! using the same `font` (chrome) as before.
 //!
 //! Returns the per-button bounds as `Vec<Rect>` so the caller's click
 //! handler can resolve button hits without re-running layout.
@@ -127,10 +125,7 @@ mod tests {
             width: 240.0,
             title_height: line_height,
             body_height: line_height,
-            // Fixture dialogs carry no `table`, so the table slot is
-            // zero-height. Field added to `DialogMeasure` after this
-            // fixture was written; it never compiled until quadraui#484
-            // first built the macOS test target.
+            // Fixture dialogs carry no `table`, so the table slot is zero-height.
             table_height: 0.0,
             input_height: if dialog.input.is_some() {
                 line_height
@@ -226,7 +221,7 @@ mod tests {
         assert_eq!(rects.len(), 2);
     }
 
-    /// #1077: every button now gets a stroked border, not just the
+    /// Every button now gets a stroked border, not just the
     /// default button's selected-bg fill — pre-migration macOS drew no
     /// button border at all (this test would have failed against the
     /// old per-backend rasteriser: the edge pixel equalled the plain
@@ -260,7 +255,7 @@ mod tests {
         );
     }
 
-    /// #1077: `DialogButton::tint` is now honoured on every backend —
+    /// `DialogButton::tint` is now honoured on every backend —
     /// pre-migration macOS always painted every label in
     /// `theme.surface_fg`, silently dropping a caller's tint (the field's
     /// own doc says it's for destructive-action colouring, e.g. "Delete").

@@ -5,10 +5,9 @@
 //! corners, matching the `border-radius` used by the GTK rasteriser. Each
 //! box shows a status icon on the first row, the stage label on as many
 //! rows as fit directly below it, bounded by the box border and the
-//! action button row (#282 generalises #280's 2-row cap to arbitrary
-//! N-line labels; see [`label_row_bounds`] for why this is computed from
-//! the rows actually painted rather than the layout's proportional
-//! `label_bounds`), and an optional `[Action]` button on the bottom row.
+//! action button row. See [`label_row_bounds`] for how label rows are
+//! computed from the rows actually painted. An optional `[Action]` button
+//! appears on the bottom row.
 //!
 //! ## Colour mapping
 //!
@@ -68,11 +67,8 @@ pub fn tui_pipeline_view_layout(view: &PipelineView, area: Rect) -> PipelineView
 /// (`bh`), and the stage's action-button bounds (if any).
 ///
 /// `label_top` is pinned directly below the icon's single rendered row
-/// (`icon_row = by + 1`, see [`draw_pipeline_view`]) rather than
-/// `label_bounds.y`, whose proportional 40%-of-box-height icon reservation
-/// doesn't correspond to any row this renderer actually paints into. The
-/// `2.min(bh.saturating_sub(2))` clamp matches the pre-#282 single-line
-/// behaviour for very short boxes.
+/// (`icon_row = by + 1`, see [`draw_pipeline_view`]) to avoid a gap
+/// between the icon and label as box height grows.
 ///
 /// `label_bottom` stops before whichever comes first: the box's bottom
 /// border row, or the action-button row (if the stage has one) — i.e. the
@@ -112,8 +108,7 @@ pub fn draw_pipeline_view(
         // Per-status border colour. Focus no longer overrides it — a ▼
         // indicator drawn in the reserved row above the box signals focus.
         // Stale gets the same dim (muted) border as Pending/Skipped so it
-        // visually retreats — the prior verdict is shown but de-emphasised
-        // to signal "no longer trusted."
+        // visually retreats — the prior verdict is shown but de-emphasised.
         let border_col = ratatui_color(status_color(&stage.status, theme));
 
         let bx = sb.box_bounds.x.round() as u16;
@@ -180,22 +175,12 @@ pub fn draw_pipeline_view(
         // ── Label (arbitrary N lines, directly below the icon row) ───────
         // The label may carry any number of newlines (e.g. "Review T12\n3:45\n+2"
         // — stage+turns, elapsed mm:ss, extra detail each on their own line).
-        // #282 generalises #280's hardcoded 2-row assumption: render every
-        // line, centred, with char-based (not byte-based) truncation so a
-        // stray byte boundary never splits a multi-byte char.
+        // Render every line, centred, with char-based (not byte-based) truncation
+        // so a stray byte boundary never splits a multi-byte char.
         //
-        // NOTE: this deliberately does NOT use `sb.label_bounds.y` as the
-        // first label row. `label_bounds` (from `PipelineView::layout`)
-        // reserves a *proportional* 40%-of-box-height icon area above the
-        // label, but this renderer always paints the status icon on a single
-        // fixed row (`icon_row = by + 1`, above). Anchoring the label to the
-        // proportional `label_bounds.y` instead of the icon's actual rendered
-        // row opens a growing blank gap between the icon glyph and the first
-        // label line as box height grows. So `label_top` is pinned right
-        // after the icon row (contiguous, matching pre-#282 behaviour), and
-        // `label_bottom` is derived from the box border / action button rows
-        // that are actually painted — not from `label_bounds.height`, which
-        // inherits the same proportional-icon mismatch.
+        // label_top is pinned right after the icon row (contiguous), and
+        // label_bottom is derived from the box border / action button rows
+        // actually painted — not from proportional layout bounds.
         let (label_top, label_bottom) = label_row_bounds(by, bh, sb.action_bounds);
         if label_top < label_bottom && !stage.label.is_empty() {
             let avail = bw.saturating_sub(2) as usize;
@@ -304,15 +289,12 @@ mod tests {
     }
 
     /// Shared body for the action↔click round trip, run at both the
-    /// origin and a non-zero `area` origin (quadraui#494 / LESSONS.md
-    /// "Layout helpers must return coords in the same frame across
-    /// backends"). `tui_pipeline_view_layout` bakes `area.x`/`area.y`
-    /// straight into the returned bounds (absolute frame, matching the
-    /// GTK/macOS twins) — and *also* adds `TUI_FOCUS_INDICATOR_H` to
-    /// `area.y` itself before laying out, an extra reason a non-zero
-    /// `area.y` regression is plausible here. Deriving `ab`/`bb` from the
-    /// layout (not hardcoding them) means this exercises whatever origin
-    /// math the function actually does, at any origin.
+    /// origin and a non-zero `area` origin. `tui_pipeline_view_layout`
+    /// bakes `area.x`/`area.y` straight into the returned bounds (absolute
+    /// frame, matching the GTK/macOS twins) and adds `TUI_FOCUS_INDICATOR_H`
+    /// to `area.y` before laying out. Deriving `ab`/`bb` from the layout
+    /// ensures this exercises the actual origin math the function performs,
+    /// at any origin.
     fn layout_hit_test_action_round_trip_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 40, 5);
         let mut buf = Buffer::empty(area);
@@ -342,7 +324,7 @@ mod tests {
         layout_hit_test_action_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494).
+    /// Non-zero-origin regression guard.
     #[test]
     fn layout_hit_test_action_round_trip_at_nonzero_origin() {
         layout_hit_test_action_round_trip_at(7, 13);
@@ -369,7 +351,7 @@ mod tests {
         layout_hit_test_body_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494).
+    /// Non-zero-origin regression guard.
     #[test]
     fn layout_hit_test_body_round_trip_at_nonzero_origin() {
         layout_hit_test_body_round_trip_at(7, 13);
@@ -461,8 +443,7 @@ mod tests {
     }
 
     /// A 3-line label renders all three lines on their own rows when the box
-    /// has room — regression guard for #282's generalisation of #280's
-    /// hardcoded `.take(2)` cap to arbitrary N-line labels.
+    /// has room, ensuring arbitrary N-line labels are fully displayed.
     #[test]
     fn three_line_label_renders_on_separate_rows() {
         let area = Rect::new(0, 0, 40, 10);
@@ -506,8 +487,7 @@ mod tests {
     }
 
     /// When the box is too short to fit every line, overflow lines are
-    /// dropped — never painted past the box border. Regression guard for
-    /// #282's clamp requirement.
+    /// dropped and never painted past the box border.
     #[test]
     fn label_overflow_is_clamped_not_painted_past_the_box() {
         // A short box (action button reserves a row too) leaves only one row

@@ -1,4 +1,4 @@
-//! `SidebarPanelBody` (#1041) `AppLogic` + `quadraui::gtk::run`
+//! `SidebarPanelBody` `AppLogic` + `quadraui::gtk::run`
 //! example. Same logic as `tui_sidebar_panel_body`, paired by shape —
 //! see `examples/common/sidebar_panel_body_demo.rs`.
 //!

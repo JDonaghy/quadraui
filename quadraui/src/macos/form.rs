@@ -1,13 +1,9 @@
 //! macOS layout + settings-chrome rasteriser for [`crate::Form`].
 //!
-//! Field-kind *painting* moved to the shared
-//! [`crate::primitives::form::paint`] (#808, PaintSurface Phase 2a) —
-//! `mac_form_layout` here only computes geometry (used both for
-//! hit-testing via `MacBackend::form_layout` and to feed `paint` from
-//! `MacBackend::draw_form`). Before #808, this module's own `draw_form`
-//! matched only 10 of 14 `FieldKind` variants and silently fell through
-//! on `Slider` / `ColorPicker` / `Dropdown` / `TextArea`; the shared
-//! `paint` handles all 14, so that gap can't recur here.
+//! Field-kind painting moved to the shared [`crate::primitives::form::paint`].
+//! `mac_form_layout` here only computes geometry (used both for hit-testing via
+//! `MacBackend::form_layout` and to feed `paint` from `MacBackend::draw_form`).
+//! The shared `paint` handles all 14 `FieldKind` variants, so coverage is complete.
 
 use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
@@ -47,29 +43,24 @@ const SETTINGS_CURSOR_W: f64 = 1.5;
 /// Prefix rendered before the settings search query.
 const SETTINGS_SEARCH_PREFIX: &str = " /  ";
 
-/// Draw settings-panel chrome: a header row and, when `height` leaves
-/// room for it, a search input row beneath it, designed to sit
-/// immediately above a [`Form`] body.
+/// Draw settings-panel chrome: a header row and, when `height` leaves room for it,
+/// a search input row beneath it, designed to sit immediately above a [`Form`] body.
 ///
-/// Port of [`crate::gtk::form::draw_settings_chrome`] — same row
-/// layout, same `" /  "` prefix, same placeholder rule (shown only when
-/// the query is empty *and* the row is inactive), same accent caret when
-/// active, and the same height-aware search-row gate (issue #1041
-/// review): the header row always paints at one `line_height`; the
-/// search row paints only when `height >= line_height * 1.5`, so a
-/// caller reserving a single row (e.g.
-/// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`])
-/// gets a header-only strip instead of an unrequested second row
-/// painted past its own rect.
+/// Mirrors [`crate::gtk::form::draw_settings_chrome`] — same row layout, same
+/// `" /  "` prefix, same placeholder rule (shown only when the query is empty
+/// *and* the row is inactive), same accent caret when active. The header row always
+/// paints at one `line_height`; the search row paints only when
+/// `height >= line_height * 1.5`, so a caller reserving a single row gets a
+/// header-only strip instead of an unrequested second row painted past its rect.
 ///
 /// Chrome only: the form body and any scrollbar layered below are painted
 /// separately by the caller.
 ///
 /// # Safety
 ///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of the
-/// call (typical: the frame-scope pointer stashed on [`super::MacBackend`]).
-/// Calling with a freed or null pointer is UB.
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of the call
+/// (typical: the frame-scope pointer stashed on [`super::MacBackend`]). Calling
+/// with a freed or null pointer is UB.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_settings_chrome(
     ctx: CGContextRef,
@@ -362,19 +353,10 @@ mod tests {
 
     #[test]
     fn layout_returns_local_coords_when_area_offset() {
-        // Cross-backend contract: visible_fields.bounds, item_bounds,
-        // and hit_regions are in form-local coords (origin 0, 0),
-        // regardless of where `area` lives. Hosts (SidebarSystem,
-        // FormController, AppLogic) subtract area.x/area.y from
-        // absolute click coords before hit_test. Matches the
-        // `gtk_form_layout` and `mac_tree_layout` contract.
-        //
-        // Regression for #44 macos_sidebar_search "Find click selects
-        // row above": prior to the fix, mac_form_layout shifted
-        // hit_regions to absolute coords, causing AppLogic that
-        // localised position (per the documented contract) to hit the
-        // field at `position.y - 2*area.y` instead of the one under
-        // the cursor.
+        // Cross-backend contract: visible_fields.bounds, item_bounds, and hit_regions
+        // are in form-local coords (origin 0, 0), regardless of where `area` lives.
+        // Hosts subtract area.x/area.y from absolute click coords before hit_test.
+        // Matches the gtk_form_layout and mac_tree_layout contract.
         let form = sample_form();
         // Area offset by (0, 40) — typical when a form lives below an
         // MSV section header.
@@ -404,8 +386,6 @@ mod tests {
             );
         }
     }
-
-    // ── #189 ToggleGroup / SegmentedControl / ButtonRow / PasswordInput ──
 
     fn toggle_group_field(id: &str, toggles: Vec<ToggleGroupItem>) -> FormField {
         FormField {
@@ -532,26 +512,14 @@ mod tests {
 
     #[test]
     fn toggle_group_on_item_paints_selected_bg() {
-        // The "on" toggle (regex / `.*`) must paint `selected_bg`
-        // behind its rect so it is visually distinguishable from
-        // the off toggles at a glance. Regression for #808: the shared
-        // `primitives::form::paint` was written from the Windows copy,
-        // which never painted this pill, so unifying the three
-        // rasterisers silently dropped macOS's on-state affordance.
-        //
-        // This test stays macOS-only (#857) because `region_has_color`
-        // scans real `BitmapSurface` pixels for glyph-free ground —
-        // which pixels a Core Text-rasterised glyph does or doesn't
-        // touch is genuinely host-specific, not arithmetic. The
-        // widget-state → "does this item get the pill" decision this
-        // test is actually exercising is not host-specific, and has its
-        // own host-independent coverage: `paint_geometry::
-        // selected_item_fill`'s tests (every host, no features — the
-        // pure decision) and `native_surface_paint::tests::
-        // toggle_group_fills_selected_bg_behind_on_items_only` (the full
-        // `paint()` pipeline via a `RecordingSurface` mock, needs
-        // `--features {gtk,win,macos}`). See `paint_geometry`'s module
-        // doc for the full layered-coverage rationale.
+        // The "on" toggle must paint `selected_bg` behind its rect so it is visually
+        // distinguishable from the off toggles at a glance. This test stays macOS-only
+        // because `region_has_color` scans real `BitmapSurface` pixels for glyph-free
+        // ground — which pixels a Core Text-rasterised glyph does or doesn't touch is
+        // genuinely host-specific, not arithmetic. The widget-state decision is covered
+        // independently: `paint_geometry::selected_item_fill` tests the pure decision,
+        // and `native_surface_paint::tests::toggle_group_fills_selected_bg_behind_on_items_only`
+        // tests the full `paint()` pipeline via a `RecordingSurface` mock.
         let form = search_flags_form();
         let (surface, layout) = paint_via_backend(&form);
         let theme = Theme::default();
@@ -620,11 +588,8 @@ mod tests {
         let (surface, layout) = paint_via_backend(&form);
         let theme = Theme::default();
         let vis = &layout.visible_fields[0];
-        // Synthetic per-segment ids `<field>__seg_<idx>` — assert
-        // the SELECTED segment paints selected_bg and its neighbours
-        // don't (regression for #808: the shared painter filled
-        // `hover_bg` here, a hover cue on a segment nothing is
-        // hovering).
+        // Synthetic per-segment ids `<field>__seg_<idx>` — assert the SELECTED segment
+        // paints selected_bg and its neighbours don't.
         let rect_for = |id: &str| {
             vis.item_bounds
                 .iter()
@@ -760,10 +725,8 @@ mod tests {
         );
     }
 
-    /// Regression for issue #503: `TextInput.cursor` is a host-supplied
-    /// byte offset with no guarantee it lands on a char boundary —
-    /// `&shown[..prefix_byte]` used to panic the moment a multibyte
-    /// character sat left of the cursor.
+    /// `TextInput.cursor` is a host-supplied byte offset with no guarantee it lands
+    /// on a char boundary. Byte officing must not panic on multibyte characters.
     #[test]
     fn text_input_with_multibyte_cursor_does_not_panic() {
         // "café🎉" — byte 4 sits inside the 2-byte 'é' (starts at byte 3).
@@ -793,8 +756,8 @@ mod tests {
         let _ = paint_via_backend(&form);
     }
 
-    /// Regression for issue #503: same class of bug in the
-    /// `PasswordInput` byte-cursor-to-mask-char-position conversion.
+    /// `PasswordInput` byte-cursor-to-mask-char-position conversion must not panic
+    /// on multibyte characters.
     #[test]
     fn password_input_with_multibyte_cursor_does_not_panic() {
         let value = "café🎉";
@@ -823,7 +786,7 @@ mod tests {
         let _ = paint_via_backend(&form);
     }
 
-    // ── Settings chrome (quadraui#484) ──────────────────────────────────
+    // ── Settings chrome ─────────────────────────────────────────────────
 
     /// Paint the settings chrome through the real
     /// `Backend::draw_settings_chrome` path at an arbitrary origin.
@@ -1017,13 +980,9 @@ mod tests {
         );
     }
 
-    /// Issue #1041 review: a `rect.height` of exactly one `line_height`
-    /// (the shape
-    /// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`]
-    /// reserves) must not paint the search row — before this fix the
-    /// second row always painted (clipped to `2 * line_height`)
-    /// regardless of what the caller reserved, overpainting whatever sat
-    /// directly beneath a header-only chrome strip.
+    /// A `rect.height` of exactly one `line_height` must not paint the search row.
+    /// The second row paints only when `height >= line_height * 1.5`, so
+    /// a header-only chrome strip does not overpaint content beneath it.
     #[test]
     fn settings_chrome_one_row_height_paints_no_search_row() {
         let one_row_lh = MacBackend::new().line_height() as f64;

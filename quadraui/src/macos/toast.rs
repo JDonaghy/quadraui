@@ -1,17 +1,9 @@
 //! macOS rasteriser for [`crate::ToastOverlay`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::toast::native_surface_paint::paint`] (#861,
-//! `PaintSurface` Phase 2d slice 4/9) — see that fn's doc for the named
-//! divergences (Win never took a live theme; Win's dismiss/action text
-//! wasn't centred in its sub-region) found while unifying
-//! `gtk::toast::draw_toast_stack`, `macos::toast::draw_toast_stack` and
-//! `win::toast::draw_toast_stack` into one implementation. This module
-//! now only carries [`mac_toast_stack_layout`] (pure layout, still needed
-//! by `MacBackend::toast_stack_layout` for no-paint hit-test queries);
-//! the deprecated `draw_toast_stack` compatibility shim over the shared
-//! [`super::surface::CgSurface`] adapter was removed in issue #1109
-//! (zero uses in coord-tui's `main` and vimcode's `develop`).
+//! Painting is handled by the shared
+//! [`crate::primitives::toast::native_surface_paint::paint`].
+//! This module carries [`mac_toast_stack_layout`] (pure layout, needed
+//! by `MacBackend::toast_stack_layout` for no-paint hit-test queries).
 //!
 //! The shared paint reads [`crate::Style`]'s corner radius/border
 //! width/shadow-elevation tokens, so the box this module's layout
@@ -33,13 +25,11 @@ use crate::theme::Theme;
 ///
 /// Still its own Core Text-based measurer, independent of the shared
 /// paint's internal layout computation (which measures via
-/// [`crate::paint_surface::PaintSurface::surface_measure_text`]) — same
-/// "no-paint layout stays put" posture as `MacBackend::status_bar_layout`
-/// (#860). Shares its geometry with `gtk_toast_stack_layout` /
-/// `win_toast_stack_layout` via [`pixel_toast_stack_layout`] (issue
-/// #1079) — `font: &CTFont` is passed straight through as `&dyn
-/// TextMeasure` (`CTFont` implements it directly, see `macos::text`'s
-/// module doc).
+/// [`crate::paint_surface::PaintSurface::surface_measure_text`]).
+/// Shares its geometry with `gtk_toast_stack_layout` /
+/// `win_toast_stack_layout` via [`pixel_toast_stack_layout`].
+/// `font: &CTFont` is passed straight through as `&dyn TextMeasure`
+/// (`CTFont` implements it directly, see `macos::text`'s module doc).
 #[allow(clippy::too_many_arguments)]
 pub fn mac_toast_stack_layout(
     stack: &ToastOverlay,
@@ -109,13 +99,10 @@ mod tests {
 
     /// Like [`paint_via_backend`] but paints the toast overlay anchored
     /// at an arbitrary `(origin_x, origin_y)` instead of always `(0, 0)`.
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md
-    /// "Layout helpers must return coords in the same frame across
-    /// backends"): `mac_toast_stack_layout` bakes the origin straight
-    /// into the returned bounds (absolute frame, matching
-    /// `mac_menu_bar_layout` / `mac_panel_layout`), so `hit_test` must
-    /// keep resolving against raw (unshifted) click coordinates at any
-    /// origin, not just `(0, 0)`.
+    /// `mac_toast_stack_layout` bakes the origin straight into the returned
+    /// bounds (absolute frame, matching `mac_menu_bar_layout` /
+    /// `mac_panel_layout`), so `hit_test` must keep resolving against raw
+    /// (unshifted) click coordinates at any origin, not just `(0, 0)`.
     fn paint_via_backend_at(
         stack: &ToastOverlay,
         origin_x: f32,
@@ -178,14 +165,13 @@ mod tests {
         let (r, g, b, _) = surface.pixel(px, py);
         // Error severity's fallback tint is `theme.error_fg` — see
         // `primitives::toast::native_surface_paint::severity_bg`, the
-        // one shared copy of this formula post-#861.
+        // shared implementation of this formula.
         let expected = theme.error_fg;
         assert_eq!((r, g, b), (expected.r, expected.g, expected.b));
     }
 
-    /// Shared body for `hit_test_dismiss_vs_body` — see
-    /// [`paint_via_backend_at`] for the quadraui#494 non-zero-origin
-    /// rationale.
+    /// Shared body for `hit_test_dismiss_vs_body` — returns layout with
+    /// the toast overlay anchored at `(origin_x, origin_y)`.
     fn hit_test_dismiss_vs_body_at(origin_x: f32, origin_y: f32) {
         let stack = sample_stack();
         let (_surface, layout) = paint_via_backend_at(&stack, origin_x, origin_y);
@@ -204,16 +190,15 @@ mod tests {
         hit_test_dismiss_vs_body_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494): same round trip,
+    /// Non-zero-origin regression guard: same round trip,
     /// painted at a shifted overlay origin.
     #[test]
     fn hit_test_dismiss_vs_body_at_nonzero_origin() {
         hit_test_dismiss_vs_body_at(7.0, 13.0);
     }
 
-    /// Shared body for `action_button_reserves_action_bounds` — see
-    /// [`paint_via_backend_at`] for the quadraui#494 non-zero-origin
-    /// rationale.
+    /// Shared body for `action_button_reserves_action_bounds` — returns
+    /// layout with the toast overlay anchored at `(origin_x, origin_y)`.
     fn action_button_reserves_action_bounds_at(origin_x: f32, origin_y: f32) {
         let stack = ToastOverlay {
             id: WidgetId::new("toasts"),

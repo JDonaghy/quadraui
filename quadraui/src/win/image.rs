@@ -1,16 +1,12 @@
 //! Direct2D + WIC rasteriser for [`crate::primitives::image::Image`]
-//! (#739).
 //!
-//! Port of [`crate::gtk::image::draw_image`]: decode `image.source`'s
-//! encoded bytes through the platform's native image decoder — WIC
-//! (`IWICImagingFactory`/`IWICBitmapDecoder`/`IWICFormatConverter`) here,
-//! `gdk_pixbuf` there — convert to a pixel format the 2D API can paint
-//! directly, and stretch it into `image.layout(rect)`'s resolved target
-//! rect. Same collapse-to-`Unsupported` posture on any decode failure
-//! (missing file, corrupt bytes, unrecognised format): WIC reports all of
-//! these as an `Err` at one step or another, and this rasteriser doesn't
-//! distinguish further — see [`crate::backend::Backend::draw_image`]'s
-//! doc comment for why.
+//! Decodes `image.source`'s encoded bytes through WIC
+//! (`IWICImagingFactory`/`IWICBitmapDecoder`/`IWICFormatConverter`),
+//! converts to a pixel format the 2D API can paint directly, and
+//! stretches it into `image.layout(rect)`'s resolved target rect.
+//! Collapses to `Unsupported` on any decode failure (missing file,
+//! corrupt bytes, unrecognised format) — see
+//! [`crate::backend::Backend::draw_image`]'s doc comment for why.
 //!
 //! Painting is always clipped to the caller's `rect` — the only
 //! [`crate::primitives::image::ImageFit`] variants that can extend past
@@ -19,24 +15,16 @@
 //! pair `super::panel`/`super::sidebar_panel` use for their own
 //! overflow-prone content).
 //!
-//! # No decode cache here yet (#1014)
+//! # No decode cache here yet
 //!
-//! GTK (`gdk_pixbuf::Pixbuf`, [`crate::gtk::image`]) and macOS
-//! (`CGImage`, [`crate::macos::image`]) both cache their decoded/scaled
-//! bitmap across paints via [`crate::image_cache::ImageCache`] — this
-//! module deliberately does not yet, and the reason is specific to this
-//! backend, not an oversight: an [`ID2D1Bitmap`] is bound to the
-//! [`ID2D1RenderTarget`] `CreateBitmapFromWicBitmap` built it from, and
-//! `WinBackend::ensure_surface`'s device-lost recovery (`D2DERR_RECREATE_TARGET`,
-//! see `win::backend`'s module docs) can replace that target out from
-//! under a live app. A cache keyed the way GTK's/macOS's are would hand
-//! back a bitmap bound to a target that no longer exists post-recovery —
-//! silently wrong (or a D2D error) rather than a decode-cost regression.
+//! An [`ID2D1Bitmap`] is bound to the [`ID2D1RenderTarget`]
+//! `CreateBitmapFromWicBitmap` built it from. `WinBackend::ensure_surface`'s
+//! device-lost recovery (`D2DERR_RECREATE_TARGET`, see `win::backend`'s
+//! module docs) can replace that target, so a cache would hand back a
+//! bitmap bound to a target that no longer exists post-recovery.
 //! Wiring this in correctly needs the cache to be invalidated in lockstep
 //! with `ensure_surface`'s rebuild, which needs verifying against a real
-//! Direct2D device-loss cycle (see `CLAUDE.md`'s "Win-GUI: building and
-//! testing for real" section) — out of scope for a change authored and
-//! only type-checked on Linux. Tracked as 1014's Win follow-up.
+//! Direct2D device-loss cycle — out of scope for now.
 //!
 //! # Why WIC instead of `ID2D1RenderTarget::CreateBitmap` from raw pixels
 //!
@@ -292,7 +280,7 @@ mod tests {
     }
 
     /// The impl this replaced was a genuine `todo!()` — every image paint
-    /// panicked (quadraui#739).
+    /// panicked.
     #[test]
     fn draw_image_from_bytes_paints_real_pixels() {
         let surface = HeadlessSurface::new(W, H).expect("create surface");

@@ -106,8 +106,7 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
 
 /// Shared paint context for one form-field row, threaded through the
 /// per-[`FieldKind`] `draw_field_*` helpers below so each stays a
-/// small function with a handful of args instead of a giant match arm
-/// closing over a dozen locals (#1113: split the `draw_form` god fn).
+/// small function with a handful of args instead of a giant match arm.
 struct RowCtx<'a> {
     area: Rect,
     y: u16,
@@ -187,8 +186,8 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
 }
 
 /// Theme colours `draw_form` resolves once per call and threads into
-/// every row via [`build_row_ctx`] — kept as a small struct (rather than
-/// nine positional args) per #1113's "option structs for arg lists".
+/// every row via [`build_row_ctx`] — kept as a small struct rather than
+/// nine positional args.
 struct FormColors {
     bg: ratatui::style::Color,
     fg: ratatui::style::Color,
@@ -214,8 +213,7 @@ impl FormColors {
 }
 
 /// Paints one field row's background + label, and builds the [`RowCtx`]
-/// the `draw_field_*` dispatch table below consumes. Split out of
-/// `draw_form`'s loop body (#1113: split the god fn) — this is the
+/// the `draw_field_*` dispatch table below consumes. This is the
 /// per-row "prelude" every `FieldKind` arm shares before its own paint.
 fn build_row_ctx<'a>(
     buf: &mut Buffer,
@@ -234,7 +232,7 @@ fn build_row_ctx<'a>(
     let is_header = matches!(field.kind, FieldKind::Label);
 
     let (default_fg, row_bg) = match (is_header, is_focused) {
-        // quadraui#1180: `fg` (`theme.foreground`, the editor-body text
+        // `fg` (`theme.foreground`, the editor-body text
         // colour) has no guaranteed contrast against `selected_bg` — on
         // `vscode-light` both are near-black on mid-blue and the focused
         // row goes unreadable. `hdr_fg` (`theme.header_fg`) is `Theme`'s
@@ -495,7 +493,7 @@ fn draw_field_read_only(buf: &mut Buffer, ctx: &RowCtx, value: &crate::types::St
         (area.width as usize).saturating_sub(w + 2)
     };
     if start_col > label_end + 1 || no_label {
-        // quadraui#1180: was unconditionally painted in `dim_fg`
+        // Was unconditionally painted in `dim_fg`
         // (`theme.muted_fg`), so a focused (`selected_bg`)
         // `ReadOnly` row's value stayed in the same dim colour
         // as an unfocused one — unreadable on `selected_bg`,
@@ -1141,7 +1139,7 @@ mod tests {
         assert_eq!(bg, ratatui::style::Color::Rgb(99, 0, 0));
     }
 
-    /// quadraui#1180: a focused row painted its label in `theme.foreground`
+    /// A focused row painted its label in `theme.foreground`
     /// — no guaranteed contrast against `selected_bg` (both near-black on
     /// mid-blue under `vscode-light`) — while `Tree`'s equivalent focused
     /// row already used `theme.header_fg`. Also covers the `ReadOnly` field
@@ -1327,13 +1325,11 @@ mod tests {
     }
 
     /// Shared body for the ToggleGroup paint↔click round trip, run at both
-    /// the origin and a non-zero `area` origin (quadraui#494 / LESSONS.md
-    /// "Layout helpers must return coords in the same frame across
-    /// backends"). `tui_form_layout`/`Form::layout` never read `area.x`/
-    /// `area.y` — the returned layout is field-local by construction, even
-    /// though `draw_form` separately adds `area.x`/`area.y` per cell when
-    /// painting. So `hit_test` always takes LOCAL coordinates (painted
-    /// column minus `area.x`), regardless of where the form is painted.
+    /// the origin and a non-zero `area` origin. `tui_form_layout`/`Form::layout`
+    /// never read `area.x`/`area.y` — the returned layout is field-local by
+    /// construction, even though `draw_form` separately adds `area.x`/`area.y`
+    /// per cell when painting. So `hit_test` always takes LOCAL coordinates
+    /// (painted column minus `area.x`), regardless of where the form is painted.
     fn toggle_group_click_hits_correct_item_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 40, 3);
         let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 40, origin_y + 3));
@@ -1408,7 +1404,7 @@ mod tests {
         toggle_group_click_hits_correct_item_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494): same round trip,
+    /// Non-zero-origin regression guard: same round trip,
     /// painted at a shifted `area` origin, proving the local-frame contract
     /// holds even when the form isn't painted at (0, 0). See
     /// `toggle_group_click_hits_correct_item_at` for why `hit_test` still
@@ -1474,8 +1470,7 @@ mod tests {
 
     /// Shared body for the ButtonRow paint↔click round trip — see
     /// `toggle_group_click_hits_correct_item_at` for why `hit_test` takes
-    /// local (not absolute) coordinates even at a non-zero `area` origin
-    /// (quadraui#494 / LESSONS.md local-vs-absolute-frame guard).
+    /// local (not absolute) coordinates even at a non-zero `area` origin.
     fn button_row_click_hits_correct_item_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 40, 3);
         let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 40, origin_y + 3));
@@ -1556,7 +1551,7 @@ mod tests {
         button_row_click_hits_correct_item_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494): same round trip,
+    /// Non-zero-origin regression guard: same round trip,
     /// painted at a shifted `area` origin.
     #[test]
     fn button_row_click_hits_correct_item_at_nonzero_origin() {
@@ -1994,17 +1989,13 @@ mod tests {
         assert_eq!(ev, back);
     }
 
-    // ── CJK label paint↔measure agreement (#471 fix iteration 1) ──────────
+    // ── CJK label paint↔measure agreement ───────────────────────────────
     //
-    // Before this fix, `tui_form_layout` reserved `label.visible_width()`
-    // (display-width-aware) columns for the label, but `draw_form` painted
-    // it via the char-count-strided `draw_styled_text` — so a CJK label
-    // measured wider than it was actually painted, leaving a stray gap
-    // before the right-aligned value/controls that scales with how much
-    // non-ASCII content the label has. These tests pin that the *painted*
-    // label span and the *measured* `visible_width()` now agree, for both
-    // a right-aligned value field (`ReadOnly`) and an items-after-label
-    // field (`ToggleGroup`).
+    // `tui_form_layout` reserves `label.visible_width()` (display-width-aware)
+    // columns for the label, and `draw_form` paints it via the char-count-
+    // strided `draw_styled_text`. These tests pin that the *painted* label
+    // span and the *measured* `visible_width()` agree, for both a right-aligned
+    // value field (`ReadOnly`) and an items-after-label field (`ToggleGroup`).
 
     #[test]
     fn readonly_field_cjk_label_paints_full_display_width_no_gap() {

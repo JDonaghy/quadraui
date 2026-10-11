@@ -1,23 +1,20 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::TabBar`] (issue #25).
+//! Direct2D / DirectWrite rasteriser for [`crate::TabBar`].
 //!
 //! Calls [`TabBar::layout`] (the D6 layout API) with DirectWrite pixel
 //! measurers, then paints from the resolved `visible_tabs` /
 //! `visible_segments`. Converts to [`TabBarHits`] via the shared
 //! [`crate::backend::tab_bar_hits_from_layout`] / `shift_tab_bar_hits`
 //! helpers, the same ones the TUI and GTK backends use — see
-//! `Backend::tab_bar_layout`'s doc for why that shift matters (issue
-//! #552).
+//! `Backend::tab_bar_layout`'s doc for why that shift matters.
 //!
-//! Issue #1078: only the actual Direct2D paint entry points
-//! ([`draw_tab_bar`], [`draw_tab_bar_icons`], [`draw_tab_bar_layout`],
+//! Only the actual Direct2D paint entry points ([`draw_tab_bar`],
+//! [`draw_tab_bar_icons`], [`draw_tab_bar_layout`],
 //! [`draw_tab_bar_icons_layout`], and their shared paint loop) are
 //! `#[cfg(target_os = "windows")]`-gated. [`compute_layout`] and every
 //! `win_tab_bar_*` no-paint fn below are pure geometry generic over
 //! [`crate::primitives::layout_metrics::TextMeasure`] — no Direct2D/
 //! DirectWrite type in their signature — so they compile and run
 //! everywhere, including a plain `cargo test --features win` on Linux.
-//! `super::mod`'s `mod tab_bar;` is no longer whole-module gated; see
-//! `backend.rs`'s module docs.
 //!
 //! Takes the live theme as a `&Theme` parameter, matching every other
 //! Win-GUI rasteriser's convention — the caller
@@ -25,17 +22,15 @@
 //! `draw_tab_bar_icons_layout`) passes `&self.current_theme`, the same
 //! field `Backend::set_theme` writes.
 //!
-//! Scope for #25: no [`crate::TabChrome`] / bracket-frame support (the
-//! `Backend` trait gives `draw_tab_bar_with_chrome` /
-//! `tab_bar_layout_with_chrome` default bodies that fall back to the
-//! plain methods below, so this is not a compile-error gap — see those
-//! methods' docs) and no italic preview-tab styling (would need a second
-//! `IDWriteTextFormat`; deferred to a follow-up rather than widening this
-//! issue).
+//! Scope: no [`crate::TabChrome`] / bracket-frame support (the `Backend`
+//! trait gives `draw_tab_bar_with_chrome` / `tab_bar_layout_with_chrome`
+//! default bodies that fall back to the plain methods below, so this is
+//! not a compile-error gap — see those methods' docs) and no italic
+//! preview-tab styling (would need a second `IDWriteTextFormat`; deferred
+//! to a follow-up rather than widening this issue).
 //!
-//! Still a per-backend paint loop: **#1081 did NOT migrate `TabBar`.**
-//! Unlike `win::menu_bar` / `win::toolbar` / `win::activity_bar`, which
-//! `PaintSurface` Phase 4 slice 5/8 collapsed into
+//! Still a per-backend paint loop. Unlike `win::menu_bar` /
+//! `win::toolbar` / `win::activity_bar`, which were collapsed into
 //! `primitives::<name>::native_surface_paint::paint`, every pixel
 //! `paint_tab_bar_icons_from_layout` below draws is still Direct2D-
 //! specific and still triplicated with `gtk::tab_bar` / `macos::tab_bar`
@@ -43,9 +38,8 @@
 //! styling; this module also ignores `theme.tab_preview_*_fg` entirely)
 //! are three of the five live drifts between those copies. See
 //! [`crate::primitives::tab_bar`]'s "`PaintSurface` migration status"
-//! section for the full drift table, the macOS `close_bounds`-convention
-//! prerequisite that blocks the move, and why #1081 stays open rather
-//! than closing as complete.
+//! section for the full drift table and the macOS `close_bounds`-convention
+//! prerequisite that blocks the move.
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
@@ -59,7 +53,7 @@ use crate::event::Rect;
 use crate::primitives::layout_metrics::TextMeasure;
 #[cfg(target_os = "windows")]
 use crate::theme::Theme;
-// `TabBarHits` is `#[deprecated]` (issue #823) — this module still
+// `TabBarHits` is `#[deprecated]` — this module still
 // narrows its `TabBarLayout` down to that struct because the six
 // `Backend` tab-bar methods `WinBackend` implements still return it, so
 // the import needs the same allow every use site below does.
@@ -75,7 +69,7 @@ const TAB_OUTER_GAP_DIP: f32 = 1.0;
 /// Gap (DIPs) between a tab's icon glyph ([`crate::TabIcon`]) and its label.
 const TAB_ICON_GAP_DIP: f32 = 6.0;
 /// Height (DIPs) of the active tab's top-edge accent line. Only used by
-/// the paint path (issue #1078).
+/// the paint path.
 #[cfg(target_os = "windows")]
 const TAB_ACTIVE_ACCENT_DIP: f32 = 2.0;
 
@@ -103,21 +97,17 @@ fn icon_extra_width(measure: &dyn TextMeasure, icons: &[Option<TabIcon>], i: usi
 }
 
 /// Compute `(layout, corrected_scroll_offset, available_cols)` for `bar`
-/// against `rect`'s dimensions, measuring every tab/segment via
-/// `measure`. Shared by every paint and no-paint entry point in this
-/// module so they can never disagree on geometry.
+/// against `rect`'s dimensions, measuring every tab/segment via `measure`.
+/// Shared by every paint and no-paint entry point in this module so they
+/// can never disagree on geometry.
 ///
-/// Issue #1080: this module's own `measure_tab`/`measure_segment`/
-/// `correct_scroll_offset` composition used to duplicate exactly what
-/// `gtk::tab_bar`/`macos::tab_bar` also each computed independently —
-/// now a thin wrapper over the shared
-/// [`crate::primitives::layout_metrics::pixel_tab_bar_layout`]. Windows
-/// has no bracket-chrome support yet (see this module's "Scope" doc), so
-/// `chrome` is always [`TabChrome::default`]. Pure geometry over
-/// [`TextMeasure`] (issue #1078) — no Direct2D/DirectWrite type needed,
-/// so [`super::backend::WinBackend`] can call this directly with a
+/// Wraps the shared [`crate::primitives::layout_metrics::pixel_tab_bar_layout`].
+/// Windows has no bracket-chrome support yet (see this module's "Scope" doc),
+/// so `chrome` is always [`TabChrome::default`]. Pure geometry over
+/// [`TextMeasure`] — no Direct2D/DirectWrite type needed, so
+/// [`super::backend::WinBackend`] can call this directly with a
 /// [`super::backend`]-local nominal measurer when no live `DWrite`
-/// handle exists yet, instead of carrying a separate duplicate.
+/// handle exists yet.
 fn pixel_layout(
     measure: &dyn TextMeasure,
     rect: Rect,
@@ -174,7 +164,7 @@ fn hits_from_layout(
 }
 
 /// Compute a [`TabBar`]'s layout without painting, for a bar decorated
-/// with per-tab icons (#620) — the no-paint twin of
+/// with per-tab icons — the no-paint twin of
 /// [`draw_tab_bar_icons`]. `&[]` reproduces [`win_tab_bar_layout`].
 #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn win_tab_bar_layout_icons(
@@ -195,12 +185,11 @@ pub fn win_tab_bar_layout(measure: &dyn TextMeasure, rect: Rect, bar: &TabBar) -
 }
 
 /// Compute a [`TabBar`]'s [`TabBarLayout`] without painting, for a bar
-/// decorated with per-tab icons — issue #919's `TabBarLayout`-returning
-/// counterpart to [`win_tab_bar_layout_icons`]. Unlike macOS's
-/// `mac_tab_bar_native_layout`, no duplicated measurement code is
-/// needed here: [`compute_layout`] already *is* the single measurement
-/// path both [`draw_tab_bar_icons`] and [`win_tab_bar_layout_icons`]
-/// narrow down to `TabBarHits` — this just returns it directly.
+/// decorated with per-tab icons. Unlike macOS's `mac_tab_bar_native_layout`,
+/// no duplicated measurement code is needed here: [`compute_layout`] already
+/// *is* the single measurement path both [`draw_tab_bar_icons`] and
+/// [`win_tab_bar_layout_icons`] narrow down to `TabBarHits` — this just
+/// returns it directly.
 pub fn win_tab_bar_native_layout_icons(
     measure: &dyn TextMeasure,
     rect: Rect,
@@ -220,7 +209,7 @@ pub fn win_tab_bar_native_layout(
     win_tab_bar_native_layout_icons(measure, rect, bar, &[])
 }
 
-/// Draw a [`TabBar`] with per-tab icon glyphs (#620) into `rect` (DIPs)
+/// Draw a [`TabBar`] with per-tab icon glyphs into `rect` (DIPs)
 /// on `target`. Returns [`TabBarHits`] in **target-surface (absolute)**
 /// coordinates, matching [`crate::Backend::draw_tab_bar_icons`]'s
 /// contract.
@@ -266,7 +255,7 @@ pub fn draw_tab_bar_icons(
 }
 
 /// Draw a [`TabBar`] with per-tab icon glyphs, returning [`TabBarLayout`]
-/// instead of the deprecated [`TabBarHits`] (issue #919) — the
+/// instead of the deprecated [`TabBarHits`] — the
 /// `TabBarLayout`-returning counterpart to [`draw_tab_bar_icons`] above.
 /// Shares [`compute_layout`] and [`paint_tab_bar_icons_from_layout`] with
 /// it, so the two can never paint different pixels — only the return
@@ -444,7 +433,7 @@ pub fn draw_tab_bar(
 }
 
 /// Draw a [`TabBar`] with no per-tab icons, returning [`TabBarLayout`]
-/// instead of the deprecated [`TabBarHits`] (issue #919) —
+/// instead of the deprecated [`TabBarHits`] —
 /// [`draw_tab_bar_icons_layout`] with `icons: &[]`.
 #[cfg(target_os = "windows")]
 pub fn draw_tab_bar_layout(
@@ -458,13 +447,10 @@ pub fn draw_tab_bar_layout(
     draw_tab_bar_icons_layout(target, dwrite, rect, bar, &[], hovered_close_tab, theme)
 }
 
-// #1078: every test below paints through a real `DWrite`/`HeadlessSurface`
-// (the module's paint fns are now the only Windows-only parts, but these
-// specific tests all exercise them) — gated the same way the whole
-// module used to be, rather than pretending they run on Linux. A
-// cross-platform-safe pure-geometry test lives in `win::list`'s test mod
-// instead (issue #1078's acceptance test), since `list_layout` is where
-// the drift this issue fixes actually was.
+// Tests below paint through a real `DWrite`/`HeadlessSurface` — the module's
+// paint fns are now the only Windows-only parts. A cross-platform-safe
+// pure-geometry test lives in `win::list`'s test mod instead, since
+// `list_layout` exercises the measurement code in a portable way.
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
@@ -599,12 +585,11 @@ mod tests {
         assert_eq!(painted, no_paint);
     }
 
-    /// Issue #919: the new `TabBarLayout`-returning fns
-    /// (`draw_tab_bar_layout` / `win_tab_bar_native_layout`) must agree
-    /// with each other exactly as their `TabBarHits`-returning siblings
-    /// do above — same bar, same rect, same measurer. Since both new
-    /// fns are thin wrappers over the shared `compute_layout` this is
-    /// mostly a wiring check, but it pins the paint path's `layout`
+    /// The new `TabBarLayout`-returning fns (`draw_tab_bar_layout` /
+    /// `win_tab_bar_native_layout`) must agree with each other exactly as their
+    /// `TabBarHits`-returning siblings do — same bar, same rect, same measurer.
+    /// Since both new fns are thin wrappers over the shared `compute_layout`
+    /// this is mostly a wiring check, but it pins the paint path's `layout`
     /// (post-paint) against the no-paint path's independently-called
     /// `compute_layout` so the two can't silently diverge later.
     #[test]
@@ -634,12 +619,11 @@ mod tests {
     }
 
     /// The `TabBarLayout`-returning accessor and the deprecated
-    /// `TabBarHits`-returning one must report the same geometry —
-    /// converting the former through the shared `tab_bar_hits_from_layout`
-    /// helper and comparing field-by-field against the latter's direct
-    /// output. This is the "twin" pattern issue #919 asks every backend
-    /// to cover; the other three each get their own version of this
-    /// test (`gtk::testing::tab_bar_layout_twin_matches_painted_geometry_headless`,
+    /// `TabBarHits`-returning one must report the same geometry — converting the
+    /// former through the shared `tab_bar_hits_from_layout` helper and comparing
+    /// field-by-field against the latter's direct output. This is the "twin"
+    /// pattern: the other backends each get their own version of this test
+    /// (`gtk::testing::tab_bar_layout_twin_matches_painted_geometry_headless`,
     /// its TUI counterpart, and macOS's `native_layout_agrees_with_hits_layout`).
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823

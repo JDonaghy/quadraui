@@ -140,7 +140,7 @@ impl MessageListMeasure {
 
     /// Build from the backend's own [`crate::backend::Metrics`]
     /// (`backend.measure()`), matching the other `*Measure::from_metrics`
-    /// constructors (quadraui#817).
+    /// constructors.
     pub fn from_metrics(m: &crate::backend::Metrics) -> Self {
         Self::new(m.line_height)
     }
@@ -159,7 +159,7 @@ pub enum MessageListHit {
 impl MessageList {
     /// Hit-test a click at surface-native `(x, y)` against this list,
     /// painted into `rect` with `measure.line_height`-tall uniform rows
-    /// starting at [`Self::scroll_top`] (quadraui#818) — the same walk
+    /// starting at [`Self::scroll_top`] — the same walk
     /// `tui::draw_message_list` / `gtk::draw_message_list` use to
     /// position each row.
     ///
@@ -188,7 +188,7 @@ impl MessageList {
     }
 }
 
-// ── PaintSurface paint (issue #1084, PaintSurface Phase 4 7/8) ───────────
+// ── PaintSurface paint ──────────────────────────────────────────────
 //
 // `paint` below is shared by the **macOS and Windows** rasterisers only —
 // `gtk::message_list::draw_message_list` is **not** migrated and stays a
@@ -205,42 +205,31 @@ impl MessageList {
 // has no "shape one line with N attribute ranges" verb, only single-
 // style runs (`surface_draw_text_run(_styled)`), so migrating GTK onto
 // `paint` below would mean reintroducing that previously-fixed bug class.
-// Per this issue's "do not tranche silently" instruction: this is that
-// call, made explicitly.
+// This explicit limitation is documented to avoid silent tranche regressions.
 //
 // macOS and Windows never had that problem — both already painted
 // per-span with manual x-advance (the same shape `paint` below takes) —
 // so consolidating *their* two copies carries no such risk, and closes a
 // real, pre-existing gap between them:
 //
-// - **Spans ignored entirely.** `macos::message_list::draw_message_list`
+// - **Spans ignored entirely.** macOS `message_list::draw_message_list`
 //   never read `row.spans` at all — every row painted flat `row.text` +
-//   `row.fg`, even when the caller supplied rich per-span styling. This
-//   was not a documented scope omission on that module (unlike, say,
-//   `win::message_list`'s italic/underline/scale note below) — it simply
-//   never implemented the styled path `win::message_list` (#30) already
-//   had. `paint` reads spans on both backends uniformly now: this is the
-//   RED-before-the-port case — see `macos::message_list`'s
-//   `styled_row_paints_per_span_colour` test, which has no pre-#1084
-//   equivalent because there was no way to even ask for it.
+//   `row.fg`, even when the caller supplied rich per-span styling.
+//   `paint` reads spans on both backends uniformly now.
 // - **Per-span bold.** Carried via [`PaintSurface::surface_draw_text_run_styled`]
-//   on both backends now. Win's `D2dSurface` honours it for real
-//   (`DWrite::draw_text_styled`, matching this module's pre-#1084
-//   behaviour exactly); macOS's `CgSurface` takes that verb's *default*,
+//   on both backends now. Windows's `D2dSurface` honours it for real
+//   (`DWrite::draw_text_styled`); macOS's `CgSurface` takes that verb's *default*,
 //   which drops style entirely — inert on macOS (no visual regression,
 //   no new bold either), the same posture `crate::primitives::status_bar`
-//   and `crate::primitives::rich_text_popup` already document for the
-//   identical default.
+//   and `crate::primitives::rich_text_popup` already document.
 //
-// Not carried over on either backend, matching pre-#1084 `win::message_list`'s
-// own documented gap:
+// Not carried over on either backend, matching pre-existing limitations:
 //
 // - **Per-span italic / underline.** Passed through to
 //   `surface_draw_text_run_styled`, but dropped by both backends' current
 //   adapters (`D2dSurface` explicitly ignores them; `CgSurface` takes the
 //   style-dropping default) — no Direct2D italic text format or underline
-//   attribute is wired up today, matching `win::message_list`'s pre-#1084
-//   module doc verbatim. Not a new gap introduced by this migration.
+//   attribute is wired up today.
 // - **`MessageRow::scale`** (markdown heading rows). `PaintSurface` has
 //   no font-*size* verb (`surface_draw_text_run_styled`'s `scale_x` is a
 //   horizontal *stretch* of the same-size glyph, for the wide-CJK-glyph
@@ -248,21 +237,13 @@ impl MessageList {
 //   no way to honour it through this trait, matching
 //   `crate::primitives::rich_text_popup::native_surface_paint`'s
 //   identical gap for its own per-line font scale. Every row paints at
-//   its regular glyph size on both backends, same as every pre-#1084
-//   macOS row (which ignored `scale` along with the rest of the styled
-//   path) and every pre-#1084 Windows row (which never read `scale` at
-//   all — see that module's old doc).
+//   its regular glyph size on both backends.
 //
 // **Zero-size guard**, closed uniformly like every other
-// `native_surface_paint::paint` in this crate: pre-#1084, only
-// `macos::message_list::draw_message_list` short-circuited a non-positive
-// `w`; `win::message_list::draw_message_list` had no `w` parameter to
-// guard at all. `paint` below takes no `w` — every original caller's `w`
-// was used solely for that early-return, never to clip or size anything —
-// so each backend's thin wrapper keeps its own pre-paint check instead
+// `native_surface_paint::paint` in this crate: `paint` takes no `w` —
+// each backend's thin wrapper keeps its own pre-paint check instead
 // (see `macos::message_list::draw_message_list`'s `if w <= 0.0` guard);
-// `paint` itself only needs `line_height > 0.0`, matching Windows's
-// pre-#1084 guard exactly.
+// `paint` itself only needs `line_height > 0.0`.
 #[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
@@ -426,10 +407,9 @@ pub(crate) mod native_surface_paint {
             assert_eq!(surface.text_runs[0].2, Color::rgb(255, 220, 0));
         }
 
-        /// The RED-before-the-port case named in this module's doc: prior
-        /// to #1084, `macos::message_list::draw_message_list` had no way
-        /// to paint a styled row at all — it never read `row.spans`. This
-        /// asserts the shared `paint` now does, on any backend.
+        /// The styled row case: `paint` now reads `row.spans` uniformly
+        /// on all backends, allowing per-span styling that was previously
+        /// unavailable on macOS. This asserts that capability works.
         #[test]
         fn styled_rows_paint_per_span_via_styled_run() {
             let mut list = sample_list();
@@ -608,8 +588,6 @@ mod tests {
         );
         assert_eq!(row.text, "legacy");
     }
-
-    // ── #818: hit_test ───────────────────────────────────────────────────
 
     fn list_with_rows(n: usize, scroll_top: usize) -> MessageList {
         MessageList {

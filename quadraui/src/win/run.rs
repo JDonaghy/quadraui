@@ -10,7 +10,7 @@
 //! call `quadraui::win::run(MyApp::new())` and the same `AppLogic`
 //! impl drives every backend. [`run_with`] takes a [`RunConfig`] for the
 //! one value a `ShellConfig`-driven consumer needs that [`run`] hardcodes
-//! (the window title) — see `win::shell_runner::run_with_shell` (#707),
+//! (the window title) — see `win::shell_runner::run_with_shell`,
 //! mirroring `gtk::run::RunConfig`.
 //!
 //! # Window chrome: standard frame, not CSD — `desktop::WindowDragArm` N/A
@@ -174,7 +174,7 @@ use crate::primitives::image::ImageSource;
 use crate::runner::AppLogic;
 // `EventOutcome` — what the caller should do after `dispatch_event`
 // handles one event — is defined once in `crate::runtime` and shared by
-// every backend runner (quadraui#496); re-exported (not just imported)
+// every backend runner; re-exported (not just imported)
 // so `win::testing` reaches it through this path, mirroring
 // `tui::run`/`macos::run`.
 pub(crate) use crate::runtime::EventOutcome;
@@ -184,17 +184,17 @@ use crate::{ButtonMask, Modifiers, MouseButton, UiEvent};
 /// Dispatch one already-translated [`UiEvent`] through the app, applying
 /// the shared runner pre-processing pipeline first. This is the funnel
 /// both the live `wndproc`'s `dispatch` helper (`mod win32`, below) and
-/// [`super::testing::WinDriver`] (quadraui#707) route through, so a test
+/// [`super::testing::WinDriver`] route through, so a test
 /// exercises the exact pre-processing a real keypress gets.
 ///
 /// The pre-processing itself — double-click folding, ActivityBar
-/// keyboard-focus redirect, Tab/Shift+Tab focus cycling (#830),
+/// keyboard-focus redirect, Tab/Shift+Tab focus cycling,
 /// global accelerator rewrite, Ctrl-C copy,
 /// Ctrl-V/Ctrl-Shift-V paste, middle-click PRIMARY-selection paste
 /// (a no-op on Windows — see
 /// [`crate::backend::Clipboard::read_primary_selection`]'s default),
 /// Ctrl-A select-all, selection-display clearing, `TextSelectionChanged`
-/// — lives in [`crate::runtime::preprocess_event`] (quadraui#813), shared
+/// — lives in [`crate::runtime::preprocess_event`], shared
 /// with TUI/GTK/macOS; see that function's doc for the exact priority
 /// order.
 ///
@@ -225,7 +225,7 @@ use crate::{ButtonMask, Modifiers, MouseButton, UiEvent};
 /// warnings`' dead-code lint on that leg despite being genuinely used on
 /// the `windows-latest` leg where it matters.
 ///
-/// # Panic safety (#922)
+/// # Panic safety
 ///
 /// This is the one funnel every message `wndproc` dispatches to
 /// `app.handle` passes through (directly, or via
@@ -272,7 +272,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
 /// ([`crate::dispatch::route_pointer`], issue #1088) before handing the
 /// resulting event(s) to [`dispatch_event`] — the Win-GUI twin of
 /// `gtk::run`'s `connect_pressed` closure / `TuiBackend::apply_dispatch`'s
-/// `MouseDown` arm (#741). `route_pointer` also tracks the clicked region
+/// `MouseDown` arm. `route_pointer` also tracks the clicked region
 /// so Ctrl-A can resolve it even before the first drag-move fires a
 /// `TextSelectionChanged` event.
 ///
@@ -315,7 +315,7 @@ pub(crate) fn route_mouse_down<A: AppLogic>(
         if matches!(step, EventOutcome::Exit) {
             return EventOutcome::Exit;
         }
-        // quadraui#832: keep the *earliest* `RedrawAfter` deadline seen in
+        // Keep the *earliest* `RedrawAfter` deadline seen in
         // this batch rather than the first non-`Continue` one — see
         // `EventOutcome::merge`'s doc for why that distinction matters.
         outcome = outcome.merge(step);
@@ -355,7 +355,7 @@ pub(crate) fn route_mouse_move<A: AppLogic>(
         if matches!(step, EventOutcome::Exit) {
             return EventOutcome::Exit;
         }
-        // quadraui#832: keep the *earliest* `RedrawAfter` deadline seen in
+        // Keep the *earliest* `RedrawAfter` deadline seen in
         // this batch rather than the first non-`Continue` one — see
         // `EventOutcome::merge`'s doc for why that distinction matters.
         outcome = outcome.merge(step);
@@ -398,7 +398,7 @@ pub(crate) fn route_mouse_up<A: AppLogic>(
         if matches!(step, EventOutcome::Exit) {
             return EventOutcome::Exit;
         }
-        // quadraui#832: keep the *earliest* `RedrawAfter` deadline seen in
+        // Keep the *earliest* `RedrawAfter` deadline seen in
         // this batch rather than the first non-`Continue` one — see
         // `EventOutcome::merge`'s doc for why that distinction matters.
         outcome = outcome.merge(step);
@@ -412,13 +412,13 @@ pub(crate) fn route_mouse_up<A: AppLogic>(
 /// with *some* surface attached (a real one via
 /// [`WinBackend::attach_surface`], or a headless one via
 /// [`WinBackend::attach_headless`]). Shared by the live runner and
-/// [`super::testing::WinDriver`] (quadraui#707) — mirrors
+/// [`super::testing::WinDriver`] — mirrors
 /// [`crate::gtk::run::render_frame`] / [`crate::macos::run::render_frame`].
 ///
 /// `#[allow(dead_code)]`: same reasoning as [`dispatch_event`]'s doc —
 /// both its callers only exist on `target_os = "windows"`.
 ///
-/// # Panic safety (#922)
+/// # Panic safety
 ///
 /// `WM_PAINT`'s handler in `mod win32` runs this from inside `wndproc` —
 /// a Win32 `WNDPROC`, a C ABI callback that cannot unwind — so `app.render`
@@ -446,9 +446,9 @@ pub(crate) fn render_frame<A: AppLogic>(backend: &mut WinBackend, app: &A, viewp
         backend.end_frame();
         return;
     }
-    // After app.render: paint the focus-ring convention (#830) — mirrors
+    // After app.render: paint the focus-ring convention — mirrors
     // the other three runners' post-render overlay ordering.
-    // `focused_stop_rect` (issue #1088) is the one implementation of this
+    // `focused_stop_rect` is the one implementation of this
     // lookup; every runner used to carry its own copy.
     let focus_ring_rect =
         crate::runtime::focused_stop_rect(backend, app, <A as AppLogic>::AreaId::default());
@@ -456,7 +456,7 @@ pub(crate) fn render_frame<A: AppLogic>(backend: &mut WinBackend, app: &A, viewp
         backend.draw_focus_ring(rect);
     }
     // After app.render: overlay the text-selection highlight on top of the
-    // rendered content (#741) — mirrors `gtk::run::render_frame`'s
+    // rendered content — mirrors `gtk::run::render_frame`'s
     // `apply_selection_highlight(cr)` call and `TuiBackend::run`'s
     // `apply_selection_highlight(buf)` call, both made at this same point
     // in the frame.
@@ -479,7 +479,7 @@ pub(crate) fn render_frame<A: AppLogic>(backend: &mut WinBackend, app: &A, viewp
 /// (same "compiles everywhere, only *works* on Windows" posture as the
 /// rest of `src/win/` — see `Cargo.toml`'s `win`-example comments).
 ///
-/// ## Downstream impact (CLAUDE.md rule 8): `single_instance` field (#957)
+/// ## Downstream impact (CLAUDE.md rule 8): `single_instance` field
 ///
 /// `RunConfig` is a plain, all-`pub`-field struct with no
 /// `#[non_exhaustive]`, so adding [`Self::single_instance`] is only safe
@@ -507,10 +507,9 @@ pub struct RunConfig {
     /// worth knowing if this is ever built from untrusted input.
     pub title: String,
     /// Whether a second launch of this app is forwarded to the
-    /// already-running instance instead of opening a second window —
-    /// issue #957. `false` (the default — see [`Self::default`])
-    /// reproduces every pre-#957 launch: one independent window per
-    /// process, no dedup of any kind.
+    /// already-running instance instead of opening a second window.
+    /// `false` (the default — see [`Self::default`]) reproduces every
+    /// pre-single-instance launch: one independent window per process.
     ///
     /// When `true`, `run`/`run_with` creates a named `CreateMutexW`
     /// keyed off [`Self::title`] (Win has no `app_id` concept the way
@@ -530,10 +529,7 @@ pub struct RunConfig {
     /// `title` too — via a hash, not `title` embedded verbatim, see
     /// `instance_identity`'s doc comment in `win/run.rs` — so two
     /// different-titled quadraui apps running at once never collide on
-    /// either name. Review fix for issue #957: before this, the class
-    /// name was one literal shared by every quadraui Win app regardless
-    /// of `title`, so a second launch of app A could find and hijack app
-    /// B's window instead.
+    /// either name.
     pub single_instance: bool,
     /// App icon applied to the window's titlebar and taskbar entry via
     /// `WM_SETICON` (`ICON_BIG` + `ICON_SMALL`) — issue #1142. `None`
@@ -557,7 +553,7 @@ impl RunConfig {
     }
 
     /// Opt in/out of single-instance dedup + `WM_COPYDATA` `argv`
-    /// forwarding (issue #957) — see [`Self::single_instance`]'s doc for
+    /// forwarding — see [`Self::single_instance`]'s doc for
     /// the full contract. Defaults to `false`.
     pub fn with_single_instance(mut self, single_instance: bool) -> Self {
         self.single_instance = single_instance;
@@ -565,7 +561,7 @@ impl RunConfig {
     }
 
     /// Set the window/taskbar icon applied via `WM_SETICON` — see
-    /// [`Self::app_icon`] (#1142).
+    /// [`Self::app_icon`].
     pub fn with_app_icon(mut self, icon: ImageSource) -> Self {
         self.app_icon = Some(icon);
         self
@@ -585,7 +581,7 @@ impl Default for RunConfig {
     }
 }
 
-/// Encode `args` as a `WM_COPYDATA` payload body (issue #957): joined on
+/// Encode `args` as a `WM_COPYDATA` payload body: joined on
 /// `'\0'`, not `'\n'` — a NUL byte can never appear inside a real `argv`
 /// entry on any platform (C-style `argv` strings are themselves
 /// NUL-terminated), whereas `'\n'` is a legal, if unusual, path
@@ -632,40 +628,27 @@ fn decode_copydata_argv(payload: &str) -> Vec<String> {
 /// Prefix for [`window_class_name_string`]'s per-title window class name.
 const CLASS_NAME_PREFIX: &str = "QuadrauiWin32WindowClass";
 
-/// Issue #957 (review fix): a deterministic identity derived from
-/// `RunConfig::title`, shared by the single-instance mutex
-/// (`win32::is_primary_instance`) and the window class name
-/// ([`window_class_name_string`]).
-///
-/// Before this, the mutex name was scoped by `title`
-/// (`Local\quadraui-single-instance-{title}`) but the window class name
-/// was one process-wide literal shared by *every* quadraui Win app. That
-/// mismatch meant `win32::forward_argv_to_existing_instance`'s
-/// `FindWindowW` — which only had the shared class name to search by —
-/// could find and hijack a completely unrelated app's window (same
-/// class, different title) whenever two different quadraui-based apps
-/// happened to be running at once: app A's second launch would deliver
-/// its `argv` to app B's window instead of app A's, force app B to the
-/// foreground, and app A's own request would go nowhere. Deriving *both*
-/// names from this one function keeps the two scopes locked together by
-/// construction — there's no second literal left to drift out of sync.
+/// A deterministic identity derived from `RunConfig::title`, shared
+/// by the single-instance mutex and the window class name
+/// ([`window_class_name_string`]). This ensures both names are
+/// locked together by construction — two different quadraui-based
+/// apps running at once never collide on either name.
 ///
 /// A hash (rather than embedding `title` verbatim in the class name)
-/// also sidesteps Win32's ~256-character class-name limit and any
-/// characters in an arbitrary title that Win32 class names can't carry,
-/// and — since neither the mutex name nor the class name embeds `title`
-/// literally any more — sidesteps the embedded-`\`/embedded-`\0` mutex
+/// sidesteps Win32's ~256-character class-name limit and any
+/// characters in an arbitrary title that Win32 class names can't
+/// carry, and sidesteps the embedded-`\`/embedded-`\0` mutex
 /// namespace hazard [`RunConfig::title`]'s doc flags too.
 ///
 /// `DefaultHasher`'s `SipHash` keys have been fixed (not
-/// process-randomized) since Rust 1.36, so this is deterministic across
-/// the two separate process launches that need to agree on it. It is
-/// *not* guaranteed stable across different Rust/std versions —
-/// irrelevant here, since both launches being compared are always the
-/// same build of the same binary.
+/// process-randomized) since Rust 1.36, so this is deterministic
+/// across the two separate process launches that need to agree on
+/// it. It is *not* guaranteed stable across different Rust/std
+/// versions — irrelevant here, since both launches being compared
+/// are always the same build of the same binary.
 ///
-/// Pure hashing, no WinAPI dependency, so it's unit-tested off Windows
-/// below.
+/// Pure hashing, no WinAPI dependency, so it's unit-tested off
+/// Windows below.
 fn instance_identity(title: &str) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -748,11 +731,10 @@ mod win32 {
     use windows::Win32::Graphics::Gdi::{
         InvalidateRect, ScreenToClient, UpdateWindow, ValidateRect,
     };
-    // Issue #957 single-instance forwarding: `WM_COPYDATA`'s payload
-    // struct lives in `System::DataExchange`, not `WindowsAndMessaging`
-    // (the message id itself, and every other API this feature needs —
-    // `FindWindowW`/`SendMessageW`/`SetForegroundWindow`/`SW_RESTORE` —
-    // do).
+    // `WM_COPYDATA`'s payload struct lives in `System::DataExchange`,
+    // not `WindowsAndMessaging` (the message id itself, and every other
+    // API this feature needs — `FindWindowW`/`SendMessageW`/
+    // `SetForegroundWindow`/`SW_RESTORE` — do).
     use windows::Win32::System::DataExchange::COPYDATASTRUCT;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::CreateMutexW;
@@ -775,7 +757,7 @@ mod win32 {
         WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETICON, WM_SIZE, WM_SYSCHAR,
         WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
     };
-    // #834: `WM_DROPFILES` decode (`HDROP`, `DragAcceptFiles`/
+    // `WM_DROPFILES` decode (`HDROP`, `DragAcceptFiles`/
     // `DragQueryFileW`/`DragQueryPoint`/`DragFinish`) — all real Shell32
     // calls against a live drag session, so (unlike `super::events`'
     // pure translators) this stays inside `mod win32` rather than a
@@ -792,7 +774,7 @@ mod win32 {
     use crate::primitives::image::ImageSource;
     use crate::runner::{AppLogic, Reaction};
     use crate::win::backend::WinBackend;
-    // #1142: reuses the tray icon's WIC → `HICON` decode for the
+    // Reuses the tray icon's WIC → `HICON` decode for the
     // titlebar/taskbar icon — see [`decode_hicon`]'s doc for why this is
     // a shared pipeline rather than a second decoder.
     use crate::win::tray::decode_hicon;
@@ -823,17 +805,16 @@ mod win32 {
         wide(&format!("{}\0", super::window_class_name_string(title)))
     }
 
-    /// `COPYDATASTRUCT::dwData` tag identifying an argv-forward payload
-    /// (issue #957). Checked by `wndproc`'s `WM_COPYDATA` arm on receipt
-    /// (review fix, non-blocking concern) so a `WM_COPYDATA` message from
-    /// something other than [`forward_argv_to_existing_instance`] isn't
-    /// mistaken for one and acted on as `UiEvent::OpenRequested`. This is
-    /// a same-process-family sanity tag, not an authentication mechanism
-    /// — any local process that can `FindWindowW` this window (trivial;
-    /// it's the same lookup this backend itself relies on) can read this
-    /// constant from the source and forge a matching one. `WM_COPYDATA`
-    /// has no stronger built-in provenance check than that; see the
-    /// module docs / issue #957 review notes for the accepted tradeoff.
+    /// `COPYDATASTRUCT::dwData` tag identifying an argv-forward payload.
+    /// Checked by `wndproc`'s `WM_COPYDATA` arm on receipt so a
+    /// `WM_COPYDATA` message from something other than
+    /// [`forward_argv_to_existing_instance`] isn't mistaken for one and
+    /// acted on as `UiEvent::OpenRequested`. This is a same-process-
+    /// family sanity tag, not an authentication mechanism — any local
+    /// process that can `FindWindowW` this window can read this constant
+    /// from the source and forge a matching one. `WM_COPYDATA` has no
+    /// stronger built-in provenance check; see the module docs for the
+    /// accepted tradeoff.
     const ARGV_FORWARD_TAG: usize = 0x957;
 
     /// Seed window size in DIPs, matching the GTK runner's
@@ -844,7 +825,7 @@ mod win32 {
     const DEFAULT_WIDTH: i32 = 800;
     const DEFAULT_HEIGHT: i32 = 600;
 
-    // ─── Headless smoke mode (#702) ─────────────────────────────────────
+    // ─── Headless smoke mode ────────────────────────────────────────────
     //
     // See the module doc's "Headless smoke mode" section. Env var names
     // mirror GTK's `QUADRAUI_GTK_SMOKE_MS`/`_PASTE` with a `WIN` infix —
@@ -852,18 +833,17 @@ mod win32 {
     // so a second backend's adoption never collides with GTK's.
     const SMOKE_MS_VAR: &str = "QUADRAUI_WIN_SMOKE_MS";
     const SMOKE_PASTE_VAR: &str = "QUADRAUI_WIN_SMOKE_PASTE";
-    /// Comfortably below [`DEFAULT_WIDTH`]/[`DEFAULT_HEIGHT`] so a normal
-    /// (even heavily letterboxed) window passes, but still catches the
-    /// quadraui#437 tiny/wrapped-window regression class — same floor
-    /// GTK's `SMOKE_MIN_WIDTH`/`SMOKE_MIN_HEIGHT` use.
+    /// Comfortably below [`DEFAULT_WIDTH`]/[`DEFAULT_HEIGHT`] so a
+    /// normal (even heavily letterboxed) window passes, but still
+    /// catches the tiny/wrapped-window regression class.
     const SMOKE_MIN_WIDTH: i32 = 200;
     const SMOKE_MIN_HEIGHT: i32 = 150;
     /// `SetTimer`/`KillTimer`'s `nIDEvent`. Only ever one timer live on a
     /// given `hwnd` in this runner, so any nonzero id is fine — Win32
     /// scopes timer ids per-window, not per-process.
     const SMOKE_TIMER_ID: usize = 1;
-    /// `SetTimer`/`KillTimer`'s `nIDEvent` for the resize-settle debounce
-    /// (quadraui#780). Distinct from [`SMOKE_TIMER_ID`] — Win32 timer ids
+    /// `SetTimer`/`KillTimer`'s `nIDEvent` for the resize-settle debounce.
+    /// Distinct from [`SMOKE_TIMER_ID`] — Win32 timer ids
     /// are scoped per-`hwnd`, and both can legitimately be armed on the
     /// same window (a headless smoke run that also resizes).
     const RESIZE_TIMER_ID: usize = 2;
@@ -894,11 +874,11 @@ mod win32 {
     /// [`dispatch`] and the `WM_PAINT` handler below) must be able to
     /// read it without itself needing a borrow of the very `RefCell` a
     /// reentrant `wndproc` call would already be fighting over — see
-    /// `super::guarded_call`'s docs (#702).
+    /// `super::guarded_call`'s docs.
     struct WindowState<A: AppLogic> {
         state: RefCell<RunState<A>>,
         pump_depth: ModalPumpDepth,
-        /// `Some` only when `QUADRAUI_WIN_SMOKE_MS` is set (#702) — see
+        /// `Some` only when `QUADRAUI_WIN_SMOKE_MS` is set — see
         /// the module doc's "Headless smoke mode" section. Read once by
         /// the `WM_TIMER` handler in [`wndproc`]; never mutated.
         smoke: Option<SmokeConfig>,
@@ -910,7 +890,7 @@ mod win32 {
         /// shared with the `Application`, not a plain local.
         smoke_failed: Rc<Cell<bool>>,
         /// Pending-viewport store for the resize-settle debounce
-        /// (quadraui#780) — see `crate::runtime::ResizeDebouncer`'s doc.
+        /// — see `crate::runtime::ResizeDebouncer`'s doc.
         /// `WM_SIZE` calls `note()` on every message; the `RESIZE_TIMER_ID`
         /// `WM_TIMER` arm calls `take()` once `SetTimer` proves the drag
         /// has settled (`SetTimer` replaces an already-armed timer of the
@@ -919,7 +899,7 @@ mod win32 {
         /// ever actually fires).
         resize_debouncer: RefCell<ResizeDebouncer>,
         /// Set by the top-of-`wndproc` `pump_depth.is_pumping()`
-        /// re-entrancy check (#702) when the message it just ceded to
+        /// re-entrancy check when the message it just ceded to
         /// `DefWindowProcW` was `WM_SIZE` or `WM_DPICHANGED` — i.e. a
         /// synchronous Win32 call made from inside a live `guarded_call`
         /// (`ShowWindow(SW_MAXIMIZE)` from a drawn maximize-button click,
@@ -956,10 +936,10 @@ mod win32 {
     const MK_RBUTTON: usize = 0x0002;
     const MK_MBUTTON: usize = 0x0010;
 
-    // `WM_QUADRAUI_USER_EVENT` (issue #831) is defined in
+    // `WM_QUADRAUI_USER_EVENT` is defined in
     // `crate::win::backend` (`WinBackend::waker` — the producer — needs
     // it too, so it lives next to that field rather than being
-    // duplicated). `FRAME_TIMER_ID` (quadraui#832) is its
+    // duplicated). `FRAME_TIMER_ID` is its
     // `request_frame_in` sibling, same rationale.
     use crate::win::backend::{FRAME_TIMER_ID, WM_QUADRAUI_TRAY_CALLBACK, WM_QUADRAUI_USER_EVENT};
 
@@ -990,9 +970,9 @@ mod win32 {
         unsafe { GetKeyState(vk.0 as i32) < 0 }
     }
 
-    /// Issue #957 single-instance gate. Creates a named `CreateMutexW`
-    /// keyed off [`super::instance_identity`] (Win has no `app_id` concept the
-    /// way `gtk::RunConfig` does, so the window title doubles as this
+    /// Single-instance gate. Creates a named `CreateMutexW` keyed off
+    /// [`super::instance_identity`] (Win has no `app_id` concept the way
+    /// `gtk::RunConfig` does, so the window title doubles as this
     /// backend's stable app identity) and reports whether *this* call is
     /// the one that actually created it.
     ///
@@ -1006,20 +986,18 @@ mod win32 {
     ///
     /// The returned handle is deliberately never closed: Win32 releases
     /// every handle a process still holds open when it exits, and a
-    /// single-instance guard is meant to live exactly that long — there
-    /// is no earlier point at which `CloseHandle` would be correct rather
-    /// than premature.
+    /// single-instance guard is meant to live exactly that long.
     ///
-    /// A `CreateMutexW` failure for any *other* reason (out of handles,
-    /// say) fails open — returns `true` — so a `RunConfig` opting into
-    /// this convenience never silently refuses to open a window over it;
-    /// it degrades to "act as the primary instance", not "don't start".
+    /// A `CreateMutexW` failure for any other reason fails open —
+    /// returns `true` — so a `RunConfig` opting into this convenience
+    /// never silently refuses to open a window over it; it degrades to
+    /// "act as the primary instance", not "don't start".
     ///
-    /// Named via [`super::instance_identity`] rather than `title` embedded
-    /// verbatim (review fix, #957): a raw title could contain `\`, which
-    /// the kernel-object namespace treats as a hierarchy separator, or an
-    /// embedded `\0`, which would silently truncate the effective name —
-    /// hashing sidesteps both.
+    /// Named via [`super::instance_identity`] rather than `title`
+    /// embedded verbatim: a raw title could contain `\`, which the
+    /// kernel-object namespace treats as a hierarchy separator, or an
+    /// embedded `\0`, which would silently truncate the effective
+    /// name — hashing sidesteps both.
     fn is_primary_instance(title: &str) -> bool {
         let name = wide(&format!(
             "Local\\quadraui-single-instance-{:016x}\0",
@@ -1055,25 +1033,19 @@ mod win32 {
         }
     }
 
-    /// Issue #957: called only once [`is_primary_instance`] has reported
-    /// another instance already holds the single-instance mutex. Finds
-    /// that instance's window — by [`window_class_name`], scoped to this
-    /// same `title` the mutex check just used (review fix: previously
-    /// this searched by a process-wide class-name literal shared by
-    /// *every* quadraui Win app, which could find and hijack a different
-    /// app's window entirely — see [`super::instance_identity`]'s doc comment)
-    /// — and forwards this process's own `argv` to it via `WM_COPYDATA`,
-    /// the same message [`wndproc`]'s `WM_COPYDATA` arm decodes back into
-    /// a `UiEvent::OpenRequested` on the receiving end. `SendMessageW`
-    /// (unlike `PostMessageW`) blocks until the receiver has processed
-    /// the message, so it's safe to let `payload_wide`/`cds` drop right
-    /// after this call returns.
+    /// Forwards this process's own `argv` to another instance that
+    /// already holds the single-instance mutex. Finds that instance's
+    /// window — by [`window_class_name`], scoped to this same `title`
+    /// the mutex check just used — and forwards this process's own
+    /// `argv` to it via `WM_COPYDATA`, the same message [`wndproc`]'s
+    /// `WM_COPYDATA` arm decodes back into a `UiEvent::OpenRequested`
+    /// on the receiving end. `SendMessageW` (unlike `PostMessageW`)
+    /// blocks until the receiver has processed the message, so it's safe
+    /// to let `payload_wide`/`cds` drop right after this call returns.
     ///
     /// A `FindWindowW` failure (the mutex's owner exited in the narrow
     /// window between creating it and this call reaching it) silently
-    /// does nothing further — there's no window left to forward to, and
-    /// this function's contract is "don't open a second window", not
-    /// "guarantee delivery".
+    /// does nothing further — there's no window left to forward to.
     fn forward_argv_to_existing_instance(title: &str) {
         let class_name = window_class_name(title);
         // SAFETY: `class_name` is a `Vec<u16>` from `window_class_name`,
@@ -1088,22 +1060,16 @@ mod win32 {
         // the open request — every other backend's argv-classification
         // (see `classify_open_args`'s callers) skips it the same way.
         //
-        // Encoded via `super::encode_copydata_argv` (review fix, #957
-        // non-blocking concern), not a raw `"\n"`.join`: an argv entry
-        // (an unusual but legal path) could itself contain a literal
+        // Encoded via `super::encode_copydata_argv`, not a raw
+        // `"\n"`.join`: an argv entry could itself contain a literal
         // newline, which would silently split into two bogus entries on
         // the receiving end — see that function's doc for why `'\0'`
         // is the separator that can't collide with real argv content.
         let payload = super::encode_copydata_argv(&std::env::args().skip(1).collect::<Vec<_>>());
         let payload_wide = wide(&format!("{payload}\0"));
         let cds = COPYDATASTRUCT {
-            // Checked on the receiving end (review fix, #957 non-blocking
-            // concern): `wndproc`'s `WM_COPYDATA` arm rejects any payload
-            // that doesn't carry this exact tag, so a message forged by
-            // some other local process that merely knows how to
-            // `FindWindowW` this window (trivial — the same mechanism
-            // this function itself uses) can't be mistaken for a real
-            // argv-forward and acted on as `UiEvent::OpenRequested`.
+            // Tag checked on the receiving end: `wndproc`'s `WM_COPYDATA`
+            // arm rejects any payload that doesn't carry this exact tag.
             dwData: ARGV_FORWARD_TAG,
             cbData: (payload_wide.len() * size_of::<u16>()) as u32,
             lpData: payload_wide.as_ptr() as *mut c_void,
@@ -1140,26 +1106,23 @@ mod win32 {
         app: A,
         config: super::RunConfig,
     ) -> std::process::ExitCode {
-        // #19 acceptance: "DPI scale factor plumbed to Viewport::scale".
-        // Without per-monitor-v2 awareness, Windows silently bitmap-scales
-        // the whole window on HiDPI displays and `GetDpiForWindow` always
+        // DPI scale factor plumbed to Viewport::scale. Without
+        // per-monitor-v2 awareness, Windows silently bitmap-scales the
+        // whole window on HiDPI displays and `GetDpiForWindow` always
         // reports 96 (100%) — this must run before the window (and its
         // DPI-aware render target) is created. Best-effort: an older
         // Windows build lacking this API, or a manifest that already
-        // declared DPI awareness (the acceptance criteria's other listed
-        // option), both make this call fail harmlessly — either way the
-        // process keeps running at whatever awareness level is already
-        // active rather than aborting startup over it.
+        // declared DPI awareness, both make this call fail harmlessly.
         //
-        // SAFETY: `SetProcessDpiAwarenessContext` takes a plain enum value
-        // (no pointer, no handle) and has no precondition beyond "call it
-        // before creating any window", which this function does — `run`
-        // is the very first thing `RunConfig::run` invokes.
+        // SAFETY: `SetProcessDpiAwarenessContext` takes a plain enum
+        // value (no pointer, no handle) and has no precondition beyond
+        // "call it before creating any window", which this function
+        // does.
         unsafe {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }
 
-        // #957: checked *before* any window/backend/`A` setup below — if
+        // Checked *before* any window/backend/`A` setup below — if
         // another instance already holds the single-instance mutex, this
         // process's only job is to forward its own `argv` to that
         // instance's window and get out of the way, never touching `app`
@@ -1181,7 +1144,7 @@ mod win32 {
         match unsafe { run_inner(app, &config.title, config.app_icon.as_ref()) } {
             // `Ok(smoke_ok)`: `smoke_ok` is `true` unless
             // `QUADRAUI_WIN_SMOKE_MS` was set *and* `run_smoke_check`
-            // found a failure (#702) — see the module doc's "Headless
+            // found a failure — see the module doc's "Headless
             // smoke mode" section. Always `true` when smoke mode is off.
             Ok(smoke_ok) => {
                 if smoke_ok {
@@ -1192,10 +1155,9 @@ mod win32 {
             }
             Err(_) => {
                 // `Backend`'s frame/window lifecycle has no error
-                // channel (docs/SMELL_AUDIT_2026-07.md #93) and this
-                // crate denies `clippy::print_stderr` crate-wide, so the
-                // `windows::core::Error`'s message has nowhere to go
-                // beyond the process exit code.
+                // channel and this crate denies `clippy::print_stderr`
+                // crate-wide, so the `windows::core::Error`'s message
+                // has nowhere to go beyond the process exit code.
                 std::process::ExitCode::FAILURE
             }
         }
@@ -1209,7 +1171,7 @@ mod win32 {
     /// this same thread (no synchronization guards `RunState`'s
     /// `RefCell`).
     ///
-    /// Returns `Ok(smoke_ok)` rather than plain `Ok(())` (#702):
+    /// Returns `Ok(smoke_ok)` rather than plain `Ok(())`:
     /// `smoke_ok` is always `true` unless `QUADRAUI_WIN_SMOKE_MS` armed
     /// the headless smoke check and it found a failure — see the module
     /// doc's "Headless smoke mode" section and [`run_smoke_check`].
@@ -1225,10 +1187,8 @@ mod win32 {
         // (never needs freeing).
         let hinstance: HINSTANCE = unsafe { GetModuleHandleW(PCWSTR::null())?.into() };
 
-        // Issue #957 (review fix): scoped by `title` via
-        // `window_class_name`, matching `is_primary_instance`'s mutex
-        // scope — see [`super::instance_identity`]'s doc comment for why
-        // the two must agree.
+        // Scoped by `title` via `window_class_name`, matching
+        // `is_primary_instance`'s mutex scope.
         let class_name = window_class_name(title);
         // `wide()` expects an already-`\0`-terminated string (see its doc
         // comment) — `title` (from `RunConfig::title`) carries no
@@ -1279,7 +1239,7 @@ mod win32 {
         let mut backend = WinBackend::new();
         app.setup(&mut backend);
 
-        // #702: `None` (zero runtime cost — no timer ever armed below)
+        // `None` (zero runtime cost — no timer ever armed below)
         // unless `QUADRAUI_WIN_SMOKE_MS` is set. See the module doc's
         // "Headless smoke mode" section.
         let smoke = SmokeConfig::from_env(SMOKE_MS_VAR, SMOKE_PASTE_VAR);
@@ -1332,11 +1292,10 @@ mod win32 {
         };
 
         // The window exists now, so `WinBackend` can create its
-        // `ID2D1HwndRenderTarget` sized to the real client rect (#19's
-        // "Direct2D `ID2D1HwndRenderTarget`" + "DPI scale factor plumbed
-        // to `Viewport::scale`" criteria). `WM_SIZE` fired synchronously
-        // during `CreateWindowExW` above already ran with `surface: None`
-        // (see `WinBackend::resize_surface`'s docs) — this is the first
+        // `ID2D1HwndRenderTarget` sized to the real client rect.
+        // `WM_SIZE` fired synchronously during `CreateWindowExW` above
+        // already ran with `surface: None` (see
+        // `WinBackend::resize_surface`'s docs) — this is the first
         // point a surface can exist at all.
         let attach_result = {
             // SAFETY: `state_ptr` is valid and no other reference to it
@@ -1346,38 +1305,17 @@ mod win32 {
             // path only stores the pointer in `GWLP_USERDATA`, never
             // dereferences it.
             let ws: &WindowState<A> = unsafe { &*state_ptr };
-            // #1213 (the hazard that motivated this guard has since gone
-            // away — see the note below): a call inside `attach_surface`
-            // that synchronously re-enters `wndproc` with a nested
-            // message *before* returning — while `ws.state` is still
-            // borrowed on this same stack — is the same "arrives from a
-            // synchronous Win32 API call, not the main pump" hazard
-            // `ModalPumpGuard` already guards every `guarded_call`
-            // against (see `wndproc`'s `pump_depth.is_pumping()` check).
-            // This call happens during window creation, before the first
-            // `guarded_call` has ever run — nothing had armed
-            // `pump_depth` yet — so a nested message here would sail
-            // through to a second, panicking `ws.state.borrow_mut()`
-            // without this guard. Arm it explicitly so any such message
-            // bounces to `DefWindowProcW` instead.
-            //
-            // #1213's original trigger was `WinBackend::attach_surface`
-            // replaying a `setup()`-time `install_menu_bar` via a
-            // `SetMenu` call, which synchronously fires a nested
-            // `WM_SIZE` (Win32 recalculates the non-client area from
-            // inside `SetMenu`, per MSDN) before `SetMenu` itself
-            // returns. Issue #1228 removed that call path entirely —
-            // Win-GUI's custom caption (#1199) permanently covers the
-            // non-client area a native menu bar would live in, so
-            // `WinBackend` no longer overrides `Backend::install_menu_bar`
-            // at all (matching `GtkBackend`/`TuiBackend`'s no-op
-            // default). This guard stays anyway as defensive coverage
-            // for `attach_surface`'s *other* Win32 calls
-            // (`CreateHwndRenderTarget`, `DWrite::new` ×2,
-            // `WinPlatformServices::set_window`) — none is currently
-            // known to pump messages synchronously, but the guard is
-            // free once armed and removing it would re-open exactly this
-            // class of bug the moment one of them starts to.
+            // A call inside `attach_surface` that synchronously
+            // re-enters `wndproc` with a nested message before returning
+            // — while `ws.state` is still borrowed on this same stack —
+            // is the same reentrancy hazard `ModalPumpGuard` already
+            // guards every `guarded_call` against. This call happens
+            // during window creation, before the first `guarded_call`
+            // has ever run — nothing had armed `pump_depth` yet — so a
+            // nested message here would sail through to a second,
+            // panicking `ws.state.borrow_mut()` without this guard.
+            // Arm it explicitly so any such message bounces to
+            // `DefWindowProcW` instead.
             let _guard = ModalPumpGuard::new(&ws.pump_depth);
             ws.state.borrow_mut().backend.attach_surface(hwnd)
         };
@@ -1404,7 +1342,7 @@ mod win32 {
             return Err(e);
         }
 
-        // #834: opt the window into `WM_DROPFILES` — off by default for
+        // Opt the window into `WM_DROPFILES` — off by default for
         // every `HWND`. Without this, `WM_DROPFILES` never
         // arrives at all (rather than arriving with an empty `HDROP`),
         // so a missing call here is silent, not a visible failure.
@@ -1416,7 +1354,7 @@ mod win32 {
             DragAcceptFiles(hwnd, true);
         }
 
-        // #1142: apply `RunConfig::app_icon` (from `ShellConfig::with_app_icon`)
+        // Apply `RunConfig::app_icon` (from `ShellConfig::with_app_icon`)
         // to the titlebar/taskbar via `WM_SETICON` — before `ShowWindow`
         // below, so the icon is already in place for the window's first
         // paint rather than flashing the generic default first. Both
@@ -1460,50 +1398,37 @@ mod win32 {
             }
         }
 
-        // Issue #1263: paint the real first frame into the swap chain
-        // *before* the window becomes visible, not after. `attach_surface`
-        // above only creates the `ID2D1HwndRenderTarget` — nothing has
-        // called `BeginDraw`/`Clear`/`EndDraw` on it yet, so the backing
+        // Paint the real first frame into the swap chain *before* the
+        // window becomes visible, not after. `attach_surface` above
+        // only creates the `ID2D1HwndRenderTarget` — nothing has called
+        // `BeginDraw`/`Clear`/`EndDraw` on it yet, so the backing
         // surface DWM would composite the instant `ShowWindow` (below)
         // makes this window visible still holds whatever undefined
-        // contents a brand-new swap-chain backbuffer starts with
-        // (reported downstream as a flat, raw-OS-white minimap strip
-        // regardless of theme — see `WinBackend::draw_minimap`'s doc for
-        // why that symptom traces back to exactly this unpainted-first-
-        // frame gap, not a theme-wiring bug). `render_frame` — the same
-        // `begin_frame`/`app.render`/`end_frame` bracket `WM_PAINT`'s
-        // handler below runs — works on any `WinBackend` with *a*
-        // surface attached regardless of whether its `HWND` is visible
-        // yet (`EndDraw`'s `Present` writes into the backbuffer either
-        // way), so calling it here, while the window is still hidden,
-        // guarantees the current theme's background (and whatever
-        // `app.render` paints on top of it) is already the first thing
-        // DWM ever composites for this window — the standard mitigation
-        // for the Win32/Direct2D "first-frame white flash" class of bug.
+        // contents a brand-new swap-chain backbuffer starts with.
+        // `render_frame` — the same `begin_frame`/`app.render`/
+        // `end_frame` bracket `WM_PAINT`'s handler below runs — works
+        // on any `WinBackend` with a surface attached regardless of
+        // whether its `HWND` is visible yet, so calling it here, while
+        // the window is still hidden, guarantees the current theme's
+        // background (and whatever `app.render` paints on top of it)
+        // is already the first thing DWM ever composites for this
+        // window — the standard mitigation for the Win32/Direct2D
+        // "first-frame white flash" class of bug.
         //
         // Routed through the same `super::guarded_call`/`ModalPumpGuard`
         // bracket the `WM_PAINT` handler below uses, for the same
         // reentrancy reason `attach_surface` above is guarded: `app.render`
-        // is arbitrary consumer code, and nothing yet guarantees it can't
-        // synchronously trigger a nested message on this thread. A `None`
-        // result (the guard already armed, which nothing before this
-        // point in `run_inner` can actually trigger) just means this
-        // priming frame is skipped — the first real `WM_PAINT` after
-        // `ShowWindow` below still recovers it, same as any other missed
-        // frame.
+        // is arbitrary consumer code, and nothing yet guarantees it
+        // can't synchronously trigger a nested message on this thread.
+        // A `None` result just means this priming frame is skipped —
+        // the first real `WM_PAINT` after `ShowWindow` below still
+        // recovers it, same as any other missed frame.
         //
-        // One retry if `EndDraw` itself failed (device lost /
-        // `D2DERR_RECREATE_TARGET` — `end_frame`'s own doc): `ensure_surface`
+        // One retry if `EndDraw` itself failed (device lost): `ensure_surface`
         // rebuilds the render target exactly the way the next `WM_PAINT`
         // would, so a transient failure right here gets the same
         // recovery a transient failure mid-session already gets, instead
-        // of this window showing with nothing painted after all. Bounded
-        // at one retry, not a loop until success — a persistently
-        // unavailable device (no GPU, broken driver) must never block
-        // the window from ever appearing; `Self::last_error`'s doc
-        // already documents this as a "recovered lazily, not
-        // immediately" contract, which a bounded retry upholds without
-        // turning into a hang.
+        // of this window showing with nothing painted after all.
         {
             // SAFETY: `state_ptr` is valid and not concurrently referenced
             // here — same as the `attach_surface`/app-icon/smoke-timer
@@ -1529,15 +1454,10 @@ mod win32 {
         // enum) — no pointer.
         let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
         // The priming render above already painted the real first frame
-        // into the surface while the window was still hidden (#1263), so
-        // this is now belt-and-suspenders rather than the primary
-        // mechanism it used to be: it still forces a synchronous repaint
-        // of whatever became invalid between the priming render and here
-        // (e.g. a nested nonclient-area recalculation), so "opens a Win32
-        // window with an already-painted Direct2D surface" (#19's second
-        // acceptance criterion, now strictly stronger than "cleared")
-        // stays true by the time this function returns control to the
-        // message loop below.
+        // into the surface while the window was still hidden, so this
+        // is now belt-and-suspenders rather than the primary mechanism
+        // it used to be: it still forces a synchronous repaint of
+        // whatever became invalid between the priming render and here.
         //
         // SAFETY: same as `ShowWindow` immediately above.
         let _ = unsafe { UpdateWindow(hwnd) };
@@ -1564,7 +1484,7 @@ mod win32 {
             );
         }
 
-        // #702: arm the one-shot smoke-check timer, if enabled. See the
+        // Arm the one-shot smoke-check timer, if enabled. See the
         // module doc's "Headless smoke mode" section and
         // `run_smoke_check`'s `WM_TIMER` handler in `wndproc` below.
         {
@@ -1583,7 +1503,7 @@ mod win32 {
             }
         }
 
-        // #957: dispatch `argv` (skipping `argv[0]`, the executable path
+        // Dispatch `argv` (skipping `argv[0]`, the executable path
         // itself) as an `OpenRequested` right away, unconditionally —
         // independent of `RunConfig::single_instance`, which only gates
         // *runtime* forwarding from a second launch. A document app
@@ -1635,7 +1555,7 @@ mod win32 {
         // already gone, so there is no `wndproc` invocation left that
         // could observe this free.
         drop(unsafe { Box::from_raw(state_ptr) });
-        // #702: read *after* freeing `state_ptr` — `smoke_failed` is the
+        // Read *after* freeing `state_ptr` — `smoke_failed` is the
         // `Rc<Cell<bool>>` clone taken before `Box::into_raw` above, so
         // it's still valid (the `Rc`'s count just dropped by one, not to
         // zero) even though `WindowState` itself is gone.
@@ -1644,29 +1564,20 @@ mod win32 {
 
     /// Dispatch `event` through [`super::dispatch_event`] (the shared
     /// pre-processing funnel — ActivityBar keyboard-focus redirect,
-    /// Tab/Shift+Tab focus cycling (#830),
-    /// global accelerator matching, then `app.handle`, quadraui#707),
-    /// then honour the returned outcome via [`dispatch_with`]: a redraw
-    /// invalidates the whole client area so the next message-loop
-    /// iteration repaints via `WM_PAINT`, and an exit destroys the
-    /// window there — `dispatch_with` is the single place any caller's
-    /// `Reaction` gets acted on; nothing below this function decides
-    /// anything about exit on its own.
+    /// Tab/Shift+Tab focus cycling, global accelerator matching, then
+    /// `app.handle`), then honour the returned outcome via
+    /// [`dispatch_with`]: a redraw invalidates the whole client area
+    /// so the next message-loop iteration repaints via `WM_PAINT`, and
+    /// an exit destroys the window there — `dispatch_with` is the
+    /// single place any caller's `Reaction` gets acted on.
     ///
     /// Routes the `state.borrow_mut()` that spans `super::dispatch_event`
-    /// (the shared pre-processing funnel, #707) through
-    /// `super::guarded_call(&ws.state, &ws.pump_depth, ...)`: no
-    /// bootstrap-era `AppLogic` (#19) pumps messages synchronously, but a
-    /// future impl that shows a native modal or
-    /// `SendMessage`s its own `hwnd` from inside `handle` would
-    /// synchronously re-enter `wndproc` on this same thread while this
-    /// borrow is still live. `guarded_call` makes that reentrant call
-    /// see `ws.pump_depth.is_pumping()` and no-op — via `wndproc`'s own
-    /// `is_pumping()` check before it ever reaches here — instead of
-    /// panicking on a double `borrow_mut()`. When that happens, `dispatch`
-    /// returns `Reaction::Continue` for the dropped message: no redraw,
-    /// no exit, matching every other message this `wndproc` doesn't
-    /// otherwise handle.
+    /// through `super::guarded_call(&ws.state, &ws.pump_depth, ...)` so
+    /// a reentrant message is ceded to `DefWindowProcW` rather than
+    /// panicking on a double `borrow_mut()`. When that happens,
+    /// `dispatch` returns `Reaction::Continue` for the dropped message:
+    /// no redraw, no exit, matching every other message this `wndproc`
+    /// doesn't otherwise handle.
     fn dispatch<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND, event: UiEvent) -> Reaction {
         dispatch_with(ws, hwnd, |backend, app| {
             super::dispatch_event(event, backend, app)
@@ -1675,7 +1586,7 @@ mod win32 {
 
     /// [`dispatch`]'s generalisation: runs `f` — any of `super::dispatch_event`,
     /// [`super::route_mouse_down`], [`super::route_mouse_move`], or
-    /// [`super::route_mouse_up`] (#741) — under the same `guarded_call`
+    /// [`super::route_mouse_up`] — under the same `guarded_call`
     /// re-entrancy guard and `InvalidateRect`-on-redraw handling `dispatch`
     /// already provided. `dispatch` itself is now a one-line wrapper around
     /// this; the mouse handlers below call this directly so a `MouseDown`/
@@ -1700,7 +1611,7 @@ mod win32 {
         let reaction = match outcome {
             super::EventOutcome::Continue => Reaction::Continue,
             super::EventOutcome::Redraw => Reaction::Redraw,
-            // quadraui#832: arm the scheduled-wake timer. `guarded_call`
+            // Arm the scheduled-wake timer. `guarded_call`
             // above has already released its borrow of `ws.state` by
             // this point, so a fresh `borrow_mut()` here is safe.
             super::EventOutcome::RedrawAfter(delay) => {
@@ -1781,19 +1692,16 @@ mod win32 {
         reaction
     }
 
-    /// #702's headless-smoke check, fired once by [`wndproc`]'s
-    /// `WM_TIMER` handler `cfg.after_ms` after the window is shown — see
-    /// the module doc's "Headless smoke mode" section. No-ops (does
-    /// nothing, sets nothing) if `ws.smoke` is `None`, though in practice
-    /// the `WM_TIMER` handler never fires without it (no timer is ever
-    /// armed unless `ws.smoke.is_some()`).
+    /// Fired once by [`wndproc`]'s `WM_TIMER` handler `cfg.after_ms`
+    /// after the window is shown — see the module doc's "Headless smoke
+    /// mode" section. No-ops (does nothing, sets nothing) if `ws.smoke`
+    /// is `None`, though in practice the `WM_TIMER` handler never fires
+    /// without it (no timer is ever armed unless `ws.smoke.is_some()`).
     ///
-    /// #619-style exemption (mirrors `gtk::run::schedule_smoke_check`'s
-    /// identical one): this *is* the headless smoke harness's own
-    /// diagnostic output, opt-in via `QUADRAUI_WIN_SMOKE_MS`, never
-    /// reached by a host embedding a live quadraui backend — so printing
-    /// here doesn't fight the crate-wide `print_stderr` deny's actual
-    /// purpose (keeping a *library* silent by default).
+    /// This *is* the headless smoke harness's own diagnostic output,
+    /// opt-in via `QUADRAUI_WIN_SMOKE_MS`, never reached by a host
+    /// embedding a live quadraui backend — so printing here doesn't
+    /// fight the crate-wide `print_stderr` deny's actual purpose.
     #[allow(clippy::print_stderr)]
     fn run_smoke_check<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND) {
         let Some(cfg) = ws.smoke.as_ref() else {
@@ -1831,7 +1739,7 @@ mod win32 {
                 );
                 ws.smoke_failed.set(true);
             } else {
-                // #728: also exercise the real Ctrl-V interception path
+                // Also exercise the real Ctrl-V interception path
                 // (the exact code `WM_CHAR`'s live dispatch calls) —
                 // mirrors `gtk::run::schedule_smoke_check`'s identical
                 // follow-up dispatch. Note: the return value below isn't
@@ -1860,7 +1768,7 @@ mod win32 {
     }
 
     /// Decode a `WM_DROPFILES` `HDROP` into the dropped file paths plus
-    /// the client-area device-pixel drop position (issue #834).
+    /// the client-area device-pixel drop position.
     ///
     /// `DragQueryFileW(hdrop, u32::MAX, None)` is the documented sentinel
     /// for "return the number of dropped files" rather than a path;
@@ -1926,7 +1834,7 @@ mod win32 {
             s.backend.viewport()
         };
         // Debounce the `WindowResized` *dispatch* to the app
-        // (quadraui#780) — painting stays live regardless, via
+        // — painting stays live regardless, via
         // `resize_surface` above and `InvalidateRect` below on every call.
         // `note()` stashes the latest size; `SetTimer` (re)arms the
         // shared `RESIZE_TIMER_ID` timer, which Win32 resets rather than
@@ -1954,7 +1862,7 @@ mod win32 {
     }
 
     /// Replays a `WM_SIZE`/`WM_DPICHANGED` notification that
-    /// the top-of-`wndproc` `pump_depth.is_pumping()` check (#702) ceded
+    /// the top-of-`wndproc` `pump_depth.is_pumping()` check ceded
     /// to `DefWindowProcW` instead of handling, because it arrived
     /// re-entrantly while a `super::guarded_call` borrow was already live
     /// on this thread (chiefly: `ShowWindow(SW_MAXIMIZE)`, called
@@ -2057,7 +1965,7 @@ mod win32 {
         // SAFETY: see this function's contract above.
         let ws: &WindowState<A> = unsafe { &*state_ptr };
 
-        // #702: a message re-entering `wndproc` while a `super::
+        // A message re-entering `wndproc` while a `super::
         // guarded_call` borrow (`dispatch`'s `app.handle`, or `WM_PAINT`'s
         // `app.render`, below) is already live on this same thread — see
         // `super::guarded_call`'s and `dispatch`'s docs for the hazard
@@ -2143,7 +2051,7 @@ mod win32 {
                     let (x, y) = point_from_lparam(lparam.0);
                     let scale = ws.state.borrow().backend.viewport().scale;
                     let modifiers = win_key_modifiers();
-                    // #741: route through `dispatch_click` (text-region/
+                    // Route through `dispatch_click` (text-region/
                     // scrollbar drag hit-testing) before `dispatch_event`'s
                     // own pre-processing, instead of handing the raw
                     // `MouseDown` straight to `dispatch` — see
@@ -2174,7 +2082,7 @@ mod win32 {
                 if let Some(button) = win_mouse_button_for_message(msg, wparam.0) {
                     let (x, y) = point_from_lparam(lparam.0);
                     let scale = ws.state.borrow().backend.viewport().scale;
-                    // #741: route through `dispatch_mouse_up` (ends an
+                    // Route through `dispatch_mouse_up` (ends an
                     // in-progress scrollbar/text-selection drag) — see
                     // `dispatch_with`'s doc.
                     // `win_button_up` is an unconditional constructor — it
@@ -2202,7 +2110,7 @@ mod win32 {
                     right: wparam.0 & MK_RBUTTON != 0,
                     middle: wparam.0 & MK_MBUTTON != 0,
                 };
-                // #741: route through `dispatch_mouse_drag` so a
+                // Route through `dispatch_mouse_drag` so a
                 // `TextSelection`/scrollbar drag armed by the button-down
                 // handler above emits `TextSelectionChanged`/scroll events
                 // — see `dispatch_with`'s doc.
@@ -2288,7 +2196,7 @@ mod win32 {
                 LRESULT(0)
             }
             WM_SYSKEYDOWN => {
-                // Alt-held twin of `WM_KEYDOWN` (#743) — fires for Alt+F4,
+                // Alt-held twin of `WM_KEYDOWN` — fires for Alt+F4,
                 // menu mnemonics, and any Alt accelerator an app
                 // registers. Reuses the exact same translator; the only
                 // new decision is what to do about `DefWindowProcW`.
@@ -2319,7 +2227,7 @@ mod win32 {
                 unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
             }
             WM_SYSCHAR => {
-                // Alt-held twin of `WM_CHAR` (#743) — menu-mnemonic
+                // Alt-held twin of `WM_CHAR` — menu-mnemonic
                 // characters (Alt+letter). Same translator, same
                 // forward-to-`DefWindowProcW` reasoning as `WM_SYSKEYDOWN`
                 // above (this runner has no menu, so `DefWindowProcW`'s
@@ -2347,7 +2255,7 @@ mod win32 {
             }
             WM_PAINT => {
                 // Routed through `super::guarded_call` for the same
-                // reason as `dispatch` (#702): `app.render` can hit the
+                // reason as `dispatch`: `app.render` can hit the
                 // same synchronous-reentrancy hazard `app.handle` can.
                 // The top-of-`wndproc` `is_pumping()` check above already
                 // guarantees `WM_PAINT` itself is never the *reentrant*
@@ -2383,18 +2291,15 @@ mod win32 {
                 LRESULT(0)
             }
             WM_NCCALCSIZE => {
-                // Issue #1199: fold a host's drawn title-bar band into
-                // the native caption instead of stacking a second, always
-                // -drawn row underneath a still-real native one — the
-                // custom-caption half of this issue's ask (the other half
-                // is `WM_NCHITTEST`, below).
+                // Fold a host's drawn title-bar band into the native
+                // caption instead of stacking a second, always-drawn row
+                // underneath a still-real native one — the custom-caption
+                // half of this issue's ask (the other half is
+                // `WM_NCHITTEST`, below).
                 //
                 // `wparam != 0` is the "validate/adjust the proposed
-                // client rect" form (the one this window ever receives —
-                // Windows only sends the `wparam == 0` "just tell me the
-                // client rect" form to windows that ask for it
-                // explicitly, which `run_inner` never does); the
-                // `NCCALCSIZE_PARAMS` it points at is in/out, and
+                // client rect" form (the one this window ever receives);
+                // the `NCCALCSIZE_PARAMS` it points at is in/out, and
                 // `rgrc[0]` starts out holding the *proposed new window
                 // rect* (screen coordinates) before any adjustment.
                 if wparam.0 != 0 {
@@ -2436,23 +2341,16 @@ mod win32 {
                 }
             }
             WM_NCHITTEST => {
-                // Issue #1199: the `WM_NCHITTEST` half of the
-                // custom-caption extension. Ask Windows for its own
-                // answer first — it still owns the resize-border edges
-                // (`WM_NCCALCSIZE` above only reclaimed the caption
-                // strip, not the sizing-frame inset) and anything else
+                // The `WM_NCHITTEST` half of the custom-caption
+                // extension. Ask Windows for its own answer first — it
+                // still owns the resize-border edges and anything else
                 // outside the client area — and only reclassify an
                 // ordinary `HTCLIENT` answer into `HTCAPTION` when the
                 // point falls inside a host-registered title-bar drag
-                // band that isn't itself covered by a smaller
-                // (button/search-box) zone. See
-                // `WinBackend::nc_hit_test`'s doc for the exact
+                // band that isn't itself covered by a smaller zone.
+                // See `WinBackend::nc_hit_test`'s doc for the exact
                 // classification this defers to.
-                // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW` (top of
-                // this function) — forwarded unchanged; the return value
-                // is inspected here (not just discarded) but that's an
-                // ordinary use of the `LRESULT` the call already hands
-                // back, not an extra unsafety.
+                // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW`.
                 let default = unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
                 if default.0 as u32 != HTCLIENT {
                     return default;
@@ -2487,7 +2385,7 @@ mod win32 {
                 }
             }
             WM_SETCURSOR => {
-                // #702: Windows asks "what cursor belongs here?" via this
+                // Windows asks "what cursor belongs here?" via this
                 // message on every mouse move over the window, including
                 // moves that never reach `WM_MOUSEMOVE` (e.g. the pointer
                 // re-entering after a click elsewhere). The low word of
@@ -2510,12 +2408,12 @@ mod win32 {
                 }
             }
             WM_TIMER => {
-                // #702: the one-shot headless-smoke timer armed by
+                // The one-shot headless-smoke timer armed by
                 // `run_inner`, if `QUADRAUI_WIN_SMOKE_MS` was set — see
                 // the module doc's "Headless smoke mode" section.
-                // #780: the resize-settle debounce timer armed by the
+                // The resize-settle debounce timer armed by the
                 // `WM_SIZE` arm above.
-                // #832: `FRAME_TIMER_ID` — the scheduled-wake timer armed
+                // `FRAME_TIMER_ID` — the scheduled-wake timer armed
                 // by `WinBackend::request_frame_in`, itself reached via
                 // `Reaction::RedrawAfter`/`EventOutcome::RedrawAfter`.
                 // `IDLE_POLL_TIMER_ID` — the coarse idle-poll safety net
@@ -2562,7 +2460,7 @@ mod win32 {
                         let _ = KillTimer(Some(hwnd), FRAME_TIMER_ID);
                     }
                     // The scheduled wake this timer existed for has
-                    // arrived — run `tick` (quadraui#832). `tick` itself
+                    // arrived — run `tick`. `tick` itself
                     // re-arms a fresh timer via `request_frame_in` if it
                     // wants to be woken again (the chained-rearm pattern
                     // `Reaction::RedrawAfter`'s doc describes), and acts
@@ -2585,15 +2483,12 @@ mod win32 {
                 }
             }
             WM_QUADRAUI_USER_EVENT => {
-                // Issue #831: `WinBackend::waker()` posted this to wake a
-                // possibly-`GetMessageW`-blocked loop after a background
+                // Woke by `WinBackend::waker()` after a background
                 // thread queued one or more `UiEvent::User` payloads.
-                // `wndproc` already holds everything a live producer would
-                // need (`ws`, `hwnd`) — unlike GTK's `MainContext::invoke`
-                // callback, which has no such handle and needs the
-                // `wake_callback` indirection (see `GtkBackend::waker`'s
-                // doc) — so this drains and dispatches directly, the same
-                // `dispatch` helper every other message in this match uses.
+                // `wndproc` already holds everything a live producer
+                // would need (`ws`, `hwnd`), so this drains and
+                // dispatches directly, the same `dispatch` helper every
+                // other message in this match uses.
                 let events = ws.state.borrow_mut().backend.drain_user_events();
                 for event in events {
                     // `dispatch` acts on `Reaction::Exit` itself (see
@@ -2607,14 +2502,13 @@ mod win32 {
                 LRESULT(0)
             }
             WM_QUADRAUI_TRAY_CALLBACK => {
-                // Issue #953: `NOTIFYICONDATAW::uCallbackMessage` — posted
-                // by `Shell_NotifyIconW` on every mouse event over the
-                // tray icon. Classic (pre-`NOTIFYICON_VERSION_4`)
+                // Posted by `Shell_NotifyIconW` on every mouse event
+                // over the tray icon. Classic (pre-`NOTIFYICON_VERSION_4`)
                 // contract: `lparam` carries the raw Win32 mouse message
                 // that fired (`WM_LBUTTONUP`/`WM_RBUTTONUP`/etc — see
                 // `win::tray::tray_click_button`'s doc); `wparam` carries
                 // the icon's `uID`, unread here since this backend owns
-                // exactly one tray icon (`win::tray::TRAY_ICON_UID`).
+                // exactly one tray icon.
                 let Some(button) = crate::win::tray::tray_click_button(lparam.0 as u32) else {
                     return LRESULT(0);
                 };
@@ -2661,26 +2555,23 @@ mod win32 {
                 LRESULT(0)
             }
             WM_COPYDATA => {
-                // Issue #957: arrives from `forward_argv_to_existing_instance`
-                // (this same module) — a second launch of this app, with
+                // Arrives from `forward_argv_to_existing_instance` — a
+                // second launch of this app, with
                 // `RunConfig::single_instance` on, detected this instance
                 // already holds the single-instance mutex and forwarded
                 // its own `argv` here instead of opening a second window.
                 //
-                // SAFETY: `WM_COPYDATA`'s contract guarantees `lparam` is
-                // a valid `*const COPYDATASTRUCT` for the duration of
+                // SAFETY: `WM_COPYDATA`'s contract guarantees `lparam`
+                // is a valid `*const COPYDATASTRUCT` for the duration of
                 // this call — `SendMessageW` (unlike `PostMessageW`)
                 // blocks the sender until this handler returns, so the
-                // buffer it points into can't be freed out from under us
-                // mid-decode.
+                // buffer it points into can't be freed out from under us.
                 let cds = unsafe { &*(lparam.0 as *const COPYDATASTRUCT) };
-                // Review fix (#957 non-blocking concern): reject anything
-                // that isn't tagged as an argv-forward before touching
-                // `cds.lpData`/bringing this window forward — see
-                // `ARGV_FORWARD_TAG`'s doc comment for what this does and
-                // doesn't guard against. `LRESULT(0)` here means
-                // "unhandled", the same as any other `WM_COPYDATA` this
-                // window doesn't recognize.
+                // Reject anything that isn't tagged as an argv-forward
+                // before touching `cds.lpData`/bringing this window
+                // forward. `LRESULT(0)` here means "unhandled", the
+                // same as any other `WM_COPYDATA` this window doesn't
+                // recognize.
                 if cds.dwData != ARGV_FORWARD_TAG {
                     return LRESULT(0);
                 }
@@ -2691,9 +2582,8 @@ mod win32 {
                     // `WM_COPYDATA` contract above.
                     unsafe { std::slice::from_raw_parts(cds.lpData.cast::<u16>(), code_units) };
                 let payload = String::from_utf16_lossy(units);
-                // Decoded via `super::decode_copydata_argv` (review fix,
-                // #957 non-blocking concern), the exact inverse of
-                // `forward_argv_to_existing_instance`'s
+                // Decoded via `super::decode_copydata_argv`, the exact
+                // inverse of `forward_argv_to_existing_instance`'s
                 // `super::encode_copydata_argv` — see that function's doc
                 // for why the separator is `'\0'`, not `'\n'`.
                 let args = super::decode_copydata_argv(&payload);
@@ -2724,16 +2614,11 @@ mod win32 {
                 // (since #743) from Alt+F4: `WM_SYSKEYDOWN`'s arm above
                 // forwards to `DefWindowProcW`, whose own `VK_F4` handling
                 // posts `WM_SYSCOMMAND(SC_CLOSE)`, which `DefWindowProcW`
-                // in turn resolves to this same `WM_CLOSE` — so the veto
-                // decision below is Alt+F4's veto decision too, with no
-                // separate Alt+F4 code path to keep in sync.
-                //
-                // `dispatch` acts on `Reaction::Exit` itself (see
-                // `dispatch_with`'s doc) by destroying the window. An app
-                // returning `Reaction::Continue`/`Redraw` here vetoes the
-                // close, matching the GTK runner's
-                // `Reaction::Exit => window.close()` — every other
-                // reaction leaves the window open.
+                // in turn resolves to this same `WM_CLOSE`. `dispatch`
+                // acts on `Reaction::Exit` itself by destroying the
+                // window. An app returning `Reaction::Continue`/`Redraw`
+                // here vetoes the close, matching the GTK runner's
+                // `Reaction::Exit => window.close()`.
                 dispatch(ws, hwnd, UiEvent::WindowClose);
                 LRESULT(0)
             }
@@ -2755,23 +2640,19 @@ mod win32 {
         }
     }
 
-    /// Issue #1232's acceptance bar: a live-window `WM_NCHITTEST` round
-    /// trip. Every other test in this file proves the Rust-side half —
-    /// `nc_hit_test`'s classification, and (in `win::backend`'s own test
-    /// module) that `draw_menu_bar`/`draw_status_bar_interactive`/
+    /// A live-window `WM_NCHITTEST` round trip. Every other test in
+    /// this file proves the Rust-side half — `nc_hit_test`'s
+    /// classification, and (in `win::backend`'s own test module) that
+    /// `draw_menu_bar`/`draw_status_bar_interactive`/
     /// `draw_command_center` now call `register_zone` for their own
-    /// clickable bounds — but per this issue's "Why it slipped through",
-    /// the #1199 regression only showed up once a real `WM_NCHITTEST`
-    /// round-trips through a real `wndproc` on a real `HWND`; nothing
-    /// else in this crate's test suite ever sends that message, and the
-    /// probes that *did* exist (vimcode#1629) used `PostMessageW`, which
-    /// bypasses it entirely. This module creates a real top-level
-    /// window, paints real menu-bar / status-bar / command-centre
-    /// widgets into its title-bar band via the real `WinBackend::draw_*`
-    /// calls (so it exercises this issue's actual fix, not a
-    /// hand-registered zone), then drives `WM_NCHITTEST` with
-    /// `SendMessageW` at each widget's real resolved centre and at an
-    /// empty strip of the band between them.
+    /// clickable bounds — but the regression only showed up once a
+    /// real `WM_NCHITTEST` round-trips through a real `wndproc` on a
+    /// real `HWND`. This module creates a real top-level window, paints
+    /// real menu-bar / status-bar / command-centre widgets into its
+    /// title-bar band via the real `WinBackend::draw_*` calls (so it
+    /// exercises the actual fix, not a hand-registered zone), then
+    /// drives `WM_NCHITTEST` with `SendMessageW` at each widget's real
+    /// resolved centre and at an empty strip of the band between them.
     #[cfg(test)]
     mod live_window_nchittest_tests {
         use super::*;
@@ -2864,7 +2745,7 @@ mod win32 {
                             v.bounds.y + v.bounds.height / 2.0,
                         )
                     });
-                // quadraui#1259: `status_layout`'s `hit_regions` bounds are
+                // `status_layout`'s `hit_regions` bounds are
                 // bar-local (see `register_status_bar_segment_zones`'s
                 // doc in `win::backend`), so the real absolute probe
                 // point needs `status_rect`'s own origin added back in —
@@ -3541,20 +3422,12 @@ mod win32 {
         }
     }
 
-    /// Issue #1263: a real window must never report itself visible
-    /// (`IsWindowVisible`) before its first real frame has actually
-    /// painted — see `run_inner`'s priming-render comment, right before
-    /// its `ShowWindow` call, for the full rationale (the standard
-    /// mitigation for the Win32/Direct2D "first-frame white flash" class
-    /// of bug). This proves the *ordering* directly by racing a tight
-    /// polling thread against `IsWindowVisible` — rather than reading
-    /// back composited pixel colour, which `ID2D1HwndRenderTarget`'s own
-    /// presentation path makes unreliable to sample through plain GDI
-    /// `GetPixel` (it is not a GDI surface) — so this would have been
-    /// flaky-to-failing before the fix (`ShowWindow` ran strictly before
-    /// any paint) and is deterministic after it (the paint now runs
-    /// strictly before `ShowWindow`, on the same thread, with no
-    /// intervening yield point).
+    /// A real window must never report itself visible (`IsWindowVisible`)
+    /// before its first real frame has actually painted. This proves the
+    /// *ordering* directly by racing a tight polling thread against
+    /// `IsWindowVisible` — rather than reading back composited pixel
+    /// colour, which `ID2D1HwndRenderTarget`'s own presentation path
+    /// makes unreliable to sample through plain GDI `GetPixel`.
     #[cfg(test)]
     mod first_paint_before_show_tests {
         use super::*;
@@ -3701,7 +3574,7 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
-    /// #1131: the 2026-09-26 framework audit flagged "6 non-test
+    /// The 2026-09-26 framework audit flagged "6 non-test
     /// `todo!()` in `win/run.rs`" as unverified. Re-measured at this
     /// commit there are 2 (the count has moved since the audit's
     /// snapshot, not grown) — [`run`] and [`run_with`]'s
@@ -3784,15 +3657,15 @@ mod tests {
 
     #[test]
     fn default_matches_runs_previously_hardcoded_title() {
-        // `run(app)` used to always show a `"quadraui\0"`-derived window
-        // title; `RunConfig::default()` must reproduce that exact value
-        // so `run(app)` staying `run_with(app, RunConfig::default())`
-        // (see both functions above) doesn't change existing behaviour.
+        // `run(app)` used to always show a `"quadraui\0"`-derived
+        // window title; `RunConfig::default()` must reproduce that exact
+        // value so `run(app)` staying `run_with(app, RunConfig::default())`
+        // doesn't change existing behaviour.
         assert_eq!(RunConfig::default().title, "quadraui");
         assert!(!RunConfig::default().single_instance);
     }
 
-    /// #957: `with_single_instance(true)` is how an app opts into
+    /// `with_single_instance(true)` is how an app opts into
     /// `CreateMutexW` + `WM_COPYDATA` single-instance forwarding.
     #[test]
     fn with_single_instance_overrides_the_default() {
@@ -3800,16 +3673,15 @@ mod tests {
         assert!(config.single_instance);
     }
 
-    /// #1142: a fresh `RunConfig` sets no app icon — every existing
-    /// consumer keeps the pre-#1142 behaviour (no `WM_SETICON` call at
-    /// all).
+    /// A fresh `RunConfig` sets no app icon — every existing consumer
+    /// keeps the pre-single-instance behaviour (no `WM_SETICON` call).
     #[test]
     fn new_and_default_set_no_app_icon() {
         assert_eq!(RunConfig::new("kubeui").app_icon, None);
         assert_eq!(RunConfig::default().app_icon, None);
     }
 
-    /// #1142: `with_app_icon` stores the source verbatim for
+    /// `with_app_icon` stores the source verbatim for
     /// `run_inner`'s `WM_SETICON` call site to decode via
     /// `win::tray::decode_hicon`.
     #[test]
@@ -3818,7 +3690,7 @@ mod tests {
         assert_eq!(config.app_icon, Some(ImageSource::Bytes(vec![0xde, 0xad])));
     }
 
-    /// #957 review (non-blocking concern): round-tripping an ordinary
+    /// Round-tripping an ordinary
     /// argv through the `WM_COPYDATA` wire encoding must reproduce it
     /// exactly.
     #[test]
@@ -3858,7 +3730,7 @@ mod tests {
         assert!(decode_copydata_argv("\0").is_empty());
     }
 
-    /// #957 review (blocking finding): the core scoping guarantee this
+    /// The core scoping guarantee this
     /// fix exists for — two different `RunConfig::title`s must never
     /// collide on [`instance_identity`], since that's what the
     /// single-instance mutex name and the window class name are both
@@ -3904,16 +3776,12 @@ mod tests {
         );
     }
 
-    /// Reproduces the exact hazard `win32::dispatch`'s doc comment used
-    /// to only describe as a future risk: a synchronous reentrant call
-    /// into [`guarded_call`] while the outer call's `state.borrow_mut()`
-    /// is still live. Without the `pump_depth.is_pumping()` check, the
-    /// inner `state.borrow_mut()` would panic ("already mutably
-    /// borrowed"); with it, the inner call is skipped and the outer one
-    /// completes normally — this is the "test that re-enters wndproc ...
-    /// and does not panic" #702 asks for, at the nearest seam that's
-    /// testable without a live Win32 message loop (`wndproc` itself only
-    /// compiles under `target_os = "windows"`; this doesn't).
+    /// Reproduces the exact hazard `guarded_call` guards against: a
+    /// synchronous reentrant call while the outer call's
+    /// `state.borrow_mut()` is still live. Without the
+    /// `pump_depth.is_pumping()` check, the inner `state.borrow_mut()`
+    /// would panic ("already mutably borrowed"); with it, the inner
+    /// call is skipped and the outer one completes normally.
     #[test]
     fn reentrant_call_is_skipped_not_double_borrowed() {
         let state = RefCell::new(0i32);
@@ -3945,41 +3813,15 @@ mod tests {
         );
     }
 
-    /// Issue #1213: reproduces the *other* reentrancy hazard `wndproc`
-    /// must survive — one that [`reentrant_call_is_skipped_not_double_borrowed`]
-    /// above does not cover. That test's outer borrow goes through
-    /// [`guarded_call`] itself, so `pump_depth` is armed by the same
-    /// helper that later checks it. `win32::run_inner`'s initial
-    /// `attach_surface` call is different: it takes `ws.state.borrow_mut()`
-    /// *directly* (window creation happens before any `wndproc` dispatch
-    /// has ever run `guarded_call`), and — at the time #1213 was filed —
-    /// `WinBackend::install_menu_bar_now` (called from inside that
-    /// borrow, replaying a `setup()`-time `install_menu_bar`) could
-    /// trigger a synchronous nested `WM_SIZE` via `SetMenu`: Win32
-    /// recalculates the non-client area from inside that call, per
-    /// MSDN, before `attach_surface` itself returns. Issue #1228 later
-    /// removed that specific call path (`WinBackend` no longer overrides
-    /// `install_menu_bar` — see `backend.rs`'s `backend_caps` doc), but
-    /// this test models the *hazard class* — any synchronous nested
-    /// message arriving mid-direct-borrow — rather than that one
-    /// trigger, so it stays a live regression guard for
-    /// `attach_surface`'s other Win32 calls (see the `ModalPumpGuard`
-    /// call site's own doc in `run_inner`).
-    ///
-    /// Without a `ModalPumpGuard` armed around the outer direct borrow,
-    /// nothing stops `wndproc`'s `WM_SIZE` arm (which itself borrows
-    /// `ws.state` directly, not via `guarded_call` — see that arm's own
-    /// code) from attempting a second `borrow_mut()` on the same
-    /// `RefCell` while the outer one is still live, panicking with
-    /// "already mutably borrowed" — the exact crash observed on real
-    /// hardware (`RefCell already borrowed` at the `WM_SIZE` arm, called
-    /// from `NtUserSetMenu`, back when `SetMenu` was the trigger).
-    /// `run_inner` wraps that initial `attach_surface` call in a
-    /// `ModalPumpGuard` (mirroring `guarded_call`'s own protection) so
-    /// `wndproc`'s `pump_depth.is_pumping()` top-of-function check —
-    /// modeled here as `fake_wndproc_arm` — bounces the nested message
-    /// to a `DefWindowProcW` stand-in instead of ever re-touching
-    /// `state`.
+    /// Models a reentrancy hazard in `wndproc`: a synchronous nested
+    /// message arriving while a direct `borrow_mut()` of `ws.state` is
+    /// live. Without a `ModalPumpGuard` around the outer borrow,
+    /// `wndproc`'s `WM_SIZE` arm (which borrows `ws.state` directly)
+    /// can attempt a second `borrow_mut()` on the same `RefCell` while
+    /// the outer one is still live, panicking with "already mutably
+    /// borrowed". `ModalPumpGuard` arms `pump_depth.is_pumping()`,
+    /// which `wndproc`'s top-of-function check bounces to
+    /// `DefWindowProcW` instead, avoiding the double borrow.
     #[test]
     fn reentrant_message_during_a_direct_borrow_is_deferred_not_double_borrowed() {
         let state = RefCell::new(0i32);
@@ -4153,58 +3995,30 @@ mod tests {
             "depth must return to 0 once each guarded call completes"
         );
     }
-
-    // Issue #1213's live, real-hardware regression test used to live
-    // here: it drove `win32::run_inner` → `CreateWindowExW` →
-    // `WinBackend::attach_surface` → `install_menu_bar_now` → `SetMenu`
-    // → nested `WM_SIZE` → `win32::wndproc` end to end via `run_with`,
-    // proving a `setup()`-time `Backend::install_menu_bar` call no
-    // longer double-borrowed `ws.state` and aborted the process. Issue
-    // #1228 removed that whole call path — `WinBackend` no longer
-    // overrides `install_menu_bar` (see `backend.rs`'s `backend_caps`
-    // doc), so there is no `SetMenu` call left for a live window to
-    // exercise, and a test that still called the now-no-op
-    // `Backend::install_menu_bar` and asserted "no panic" would prove
-    // nothing — the crash it used to guard against is structurally
-    // unreachable, not merely fixed. `ModalPumpGuard`'s own general
-    // defensive coverage of `attach_surface` (kept per that call site's
-    // doc) is still exercised by
-    // [`reentrant_message_during_a_direct_borrow_is_deferred_not_double_borrowed`]
-    // above, which models the hazard class rather than this one
-    // specific trigger.
 }
 
-/// Coverage for #728 — Ctrl-V/Ctrl-Shift-V clipboard-paste interception in
-/// [`dispatch_event`]. `dispatch_event` itself is deliberately not
-/// `target_os`-gated (see its doc comment), so this runs on every host,
-/// including plain `cargo test --features win` on Linux (`win::testing`'s
-/// `WinDriver`, by contrast, only exists under `target_os = "windows"` —
-/// see that module's doc — so it can't be used here).
+/// Coverage for clipboard-paste interception in [`dispatch_event`].
+/// `dispatch_event` itself is deliberately not `target_os`-gated
+/// (see its doc comment), so this runs on every host.
 ///
 /// **Which assertions are host-independent, and why that matters here.**
-/// `WinPlatformServices::clipboard()` has no test seam (unlike
-/// `gtk::testing::GtkDriver::new`'s in-memory fake): `read_text()` is an
-/// unconditional `None` off Windows and a *real, uncontrolled* Win32
-/// `CF_UNICODETEXT` read on Windows — the machine's live systemwide
-/// clipboard, whatever some other process happened to leave on it. So
-/// "the app received nothing at all" is a claim only the non-Windows
-/// hosts can make, and asserting it unconditionally makes the outcome of
-/// this test depend on CI-runner clipboard state nothing in this repo
-/// owns. The tests below are split accordingly:
+/// `WinPlatformServices::clipboard()` has no test seam: `read_text()`
+/// is an unconditional `None` off Windows and a *real, uncontrolled*
+/// Win32 `CF_UNICODETEXT` read on Windows — the machine's live
+/// systemwide clipboard. So "the app received nothing at all" is a
+/// claim only non-Windows hosts can make. The tests below are split
+/// accordingly:
 ///
 /// - `ctrl_v_is_never_forwarded_to_the_app_as_a_raw_keypress` runs on
-///   every host and asserts the invariant #728 actually promises and
-///   that holds for *both* clipboard branches: once `is_paste_keypress`
-///   recognises the chord, the raw `KeyPressed` is consumed — anything
-///   the app does see is a `ClipboardPaste`, never the key event.
+///   every host and asserts the invariant that holds for both branches:
+///   once `is_paste_keypress` recognises the chord, the raw `KeyPressed`
+///   is consumed.
 /// - `ctrl_v_with_nothing_to_paste_is_consumed_not_forwarded` is gated
-///   to non-Windows, where "nothing to paste" is a compile-time property
-///   of `WinClipboard::read_text` rather than a guess about the host.
-/// - `ctrl_v_delivers_real_clipboard_text_as_clipboard_paste` is gated to
-///   Windows and seeds the clipboard first, so it covers the "reads real
-///   clipboard text and delivers `ClipboardPaste`" branch for real on the
-///   one CI leg that can — see `CLAUDE.md`'s "Win-GUI: building and
-///   testing for real".
+///   to non-Windows, where "nothing to paste" is a property of
+///   `WinClipboard::read_text`.
+/// - `ctrl_v_delivers_real_clipboard_text_as_clipboard_paste` is gated
+///   to Windows and seeds the clipboard first, covering the "reads real
+///   clipboard text" branch on the CI leg that can.
 #[cfg(test)]
 mod paste_dispatch_tests {
     use super::*;
@@ -4303,34 +4117,23 @@ mod paste_dispatch_tests {
 
     /// The branch that only a live Windows host can reach: a real
     /// `CF_UNICODETEXT` clipboard read feeding `UiEvent::ClipboardPaste`.
-    /// Seeds the clipboard itself rather than assuming what is on it, so
-    /// this asserts on state the test owns.
+    /// Seeds the clipboard itself rather than assuming what is on it.
     ///
     /// Self-guarding: if the round-trip write→read doesn't come back
     /// intact, this host's clipboard is unavailable to the process
     /// (`OpenClipboard` fails on a non-interactive window station, for
     /// one), which is a property of the environment and not of
-    /// `dispatch_event` — there is nothing left for the assertions below
-    /// to prove, so say so on stderr and stop rather than reporting an
-    /// interception bug that isn't there. The
-    /// `ctrl_v_is_never_forwarded_to_the_app_as_a_raw_keypress` test
-    /// above still covers the interception path unconditionally on this
+    /// `dispatch_event`. The `ctrl_v_is_never_forwarded_to_the_app_as_a_raw_keypress`
+    /// test above still covers the interception path unconditionally on this
     /// same host.
     ///
-    /// The seed → read-back → `dispatch_event` sequence below is only
-    /// sound while nothing else writes the one systemwide clipboard in
-    /// between, so it runs under [`crate::win::lock_real_clipboard`] —
-    /// without it, `text_selection_dispatch_tests`'
-    /// `drag_select_then_ctrl_c_copies_the_selection` (which copies
-    /// `"hello world"` with Ctrl-C) can land between the read-back and
-    /// the dispatch and this test then reports a `ClipboardPaste`
-    /// interception bug that is really just the other test's payload.
+    /// The seed → read-back → `dispatch_event` sequence is only sound while
+    /// nothing else writes the systemwide clipboard in between, so it runs
+    /// under [`crate::win::lock_real_clipboard`] to avoid races with other
+    /// tests that write the clipboard.
     ///
-    /// `#[allow(clippy::print_stderr)]`: same #619-style exemption
-    /// `run_smoke_check` above carries — this is test-harness diagnostic
-    /// output, never reached by a host embedding a live quadraui backend,
-    /// so it doesn't fight the crate-wide deny's purpose of keeping the
-    /// *library* silent.
+    /// `#[allow(clippy::print_stderr)]`: this is test-harness diagnostic
+    /// output, never reached by a host embedding a live quadraui backend.
     #[cfg(target_os = "windows")]
     #[test]
     #[allow(clippy::print_stderr)]
@@ -4376,34 +4179,21 @@ mod paste_dispatch_tests {
     }
 }
 
-/// Coverage for vimcode#1674 (quadraui issue #1262): does a registered
-/// Ctrl-chord accelerator actually reach the app once the *translated*
-/// `WM_CHAR` payload Windows is documented to deliver for each reported
-/// chord is fed through the real, shared `dispatch_event` →
-/// `crate::runtime::preprocess_event` → `BackendCore::match_keypress`
-/// pipeline?
+/// Coverage for Ctrl-chord accelerator dispatch: does a registered
+/// accelerator actually reach the app once the *translated* `WM_CHAR`
+/// payload Windows delivers for each chord is fed through the real,
+/// shared `dispatch_event` → `crate::runtime::preprocess_event` →
+/// `BackendCore::match_keypress` pipeline?
 ///
-/// Unlike `win::testing::WinDriver` (whose `ctrl_char` builds an
-/// already-decoded `UiEvent::KeyPressed` directly, bypassing
-/// `events.rs`'s `WM_CHAR` translation by design — see that type's doc),
-/// this module chains the translation step genuinely: it builds the raw
-/// `char` + modifiers payload a real `wndproc` would hand
-/// [`crate::win::events::wm_char_to_uievent`] for each chord, translates it
-/// through that function, and only then feeds the result to
-/// [`dispatch_event`] — so it exercises translation *and* accelerator
-/// dispatch together, not either in isolation. `dispatch_event` is
-/// deliberately not `target_os`-gated (see its doc comment), so unlike a
-/// `WinDriver`-based test this one **genuinely executes**, including on
-/// plain `cargo test --features win` on Linux.
-///
-/// This closes the "does translation + dispatch work for these two
-/// specific chords" half of #1262's investigation. It does **not** close
-/// the issue: whether a real Windows `wndproc` actually receives the
-/// `WM_CHAR`/`WM_KEYDOWN` messages this module assumes as input (Ctrl+`
-/// generating `WM_CHAR('`')` with `GetKeyState(VK_CONTROL)` true; Ctrl+B
-/// generating `WM_CHAR('\x02')`) for the bugbash's injected-input methods
-/// is a live-hardware fact no test in this repo can observe — see
-/// #1262's "Ask" section.
+/// Unlike `win::testing::WinDriver` (which builds an already-decoded
+/// `UiEvent::KeyPressed` directly, bypassing `events.rs`'s `WM_CHAR`
+/// translation by design), this module chains the translation step
+/// genuinely: it builds the raw `char` + modifiers payload a real
+/// `wndproc` would hand [`crate::win::events::wm_char_to_uievent`] for
+/// each chord, translates it through that function, and only then feeds
+/// the result to [`dispatch_event`]. `dispatch_event` is deliberately
+/// not `target_os`-gated (see its doc comment), so this one **genuinely
+/// executes**, including on plain `cargo test --features win` on Linux.
 #[cfg(test)]
 mod ctrl_accelerator_dispatch_tests_1674 {
     use super::*;
@@ -4506,17 +4296,12 @@ mod ctrl_accelerator_dispatch_tests_1674 {
     }
 }
 
-/// Coverage for #741: `dispatch_event`'s Ctrl-C/Ctrl-A/`MouseDown`/
-/// `TextSelectionChanged` text-selection pre-processing, plus
-/// [`route_mouse_down`]/[`route_mouse_move`]/[`route_mouse_up`]'s
-/// `dispatch_click`/`dispatch_mouse_drag`/`dispatch_mouse_up` routing.
+/// Coverage for text-selection pre-processing in `dispatch_event`, plus
+/// [`route_mouse_down`]/[`route_mouse_move`]/[`route_mouse_up`]'s routing.
 /// None of this depends on a live Direct2D surface or `target_os =
 /// "windows"` — the state machine, `dispatch_event`, and the three
 /// `route_mouse_*` helpers are all plain `WinBackend`/`crate::dispatch`
-/// logic — so, unlike the Direct2D paint half of #741
-/// (`WinBackend::apply_selection_highlight`'s `FillRectangle` call), this
-/// runs and is asserted on every host, exactly like
-/// `paste_dispatch_tests` above.
+/// logic — so this runs and is asserted on every host.
 #[cfg(test)]
 mod text_selection_dispatch_tests {
     use super::*;
@@ -4563,18 +4348,13 @@ mod text_selection_dispatch_tests {
     }
 
     /// End-to-end round trip: click-drag across a registered `TextRegion`,
-    /// then Ctrl-C — the exact sequence `panel.drag_select_copy` (the
-    /// Tier-1 scenario #741 unblocks) drives. `WinBackend::new()`'s
-    /// default metrics (16.0 line height, 8.0 char width) make the pixel
-    /// math easy to reason about: a region one line tall and 88 DIPs wide
-    /// covers exactly 11 columns — the length of "hello world".
+    /// then Ctrl-C. `WinBackend::new()`'s default metrics (16.0 line
+    /// height, 8.0 char width) make the pixel math easy: a region one line
+    /// tall and 88 DIPs wide covers exactly 11 columns.
     ///
-    /// The Ctrl-C at the end writes `"hello world"` to the **real**
-    /// systemwide clipboard on Windows (`runtime`'s copy path emits
-    /// `TextCopied` unconditionally, but it still performs the write), so
-    /// this takes [`crate::win::lock_real_clipboard`] for its whole body
-    /// — see that function's doc for the pair of `paste_dispatch_tests`
-    /// it would otherwise race.
+    /// The Ctrl-C at the end writes to the **real** systemwide clipboard on
+    /// Windows, so this takes [`crate::win::lock_real_clipboard`] for its
+    /// whole body to avoid races with other tests that access the clipboard.
     #[test]
     fn drag_select_then_ctrl_c_copies_the_selection() {
         let _clipboard = crate::win::lock_real_clipboard();
@@ -4728,7 +4508,7 @@ mod text_selection_dispatch_tests {
         assert!(backend.active_text_selection().is_some());
     }
 
-    /// quadraui#813: before this, `win::run::dispatch_event` had no
+    /// Before this, `win::run::dispatch_event` had no
     /// middle-click step at all — only GTK read the PRIMARY selection.
     /// `WinClipboard` never overrides
     /// [`crate::backend::Clipboard::read_primary_selection`] (Windows has
@@ -4757,18 +4537,12 @@ mod text_selection_dispatch_tests {
     }
 }
 
-/// Coverage for #922: `dispatch_event` must catch a panic from
-/// `app.handle` rather than let it propagate out to `wndproc`'s C ABI
-/// boundary — see that function's "Panic safety" doc. Runs on every
-/// host, deliberately: `dispatch_event` itself isn't `target_os`-gated
-/// (see its doc), and the real `WNDPROC`/`wndproc::<A>` only exists
-/// under `mod win32` (`target_os = "windows"`), which no test on this
-/// host can drive. This module proves the Rust-side half of the fix —
-/// the shared funnel every real `WM_*` message dispatches `app.handle`
-/// through — not the C-ABI boundary itself; see `render_frame`'s
-/// equivalent windows-only test in `win::testing` for the render half,
-/// which — unlike `dispatch_event` — needs a live Direct2D surface and
-/// so can only run where `HeadlessSurface` exists.
+/// Coverage for panic safety in `dispatch_event`: it must catch a panic
+/// from `app.handle` rather than let it propagate out to `wndproc`'s C
+/// ABI boundary (see `dispatch_event`'s "Panic safety" doc). Runs on
+/// every host: `dispatch_event` itself isn't `target_os`-gated (see its
+/// doc), and this module proves the Rust-side half of the fix — the
+/// shared funnel every `WM_*` message dispatches `app.handle` through.
 #[cfg(test)]
 mod panic_guard_tests {
     use super::*;
@@ -4816,11 +4590,9 @@ mod panic_guard_tests {
     fn a_panicking_handle_keeps_working_across_repeated_frames() {
         let mut backend = WinBackend::new();
         let mut app = PanicsOnHandle;
-        // A reachable rasteriser/app-logic panic is re-entered on every
-        // repaint (the vimcode#896 incident this issue names) — assert
-        // `dispatch_event` keeps degrading gracefully rather than
-        // aborting or hanging on the second, third, ... occurrence, not
-        // just the first.
+        // A reachable panic in app logic is re-entered on every repaint —
+        // assert `dispatch_event` keeps degrading gracefully rather than
+        // aborting or hanging on repeated occurrences.
         for _ in 0..5 {
             let outcome = dispatch_event(some_key(), &mut backend, &mut app);
             assert!(matches!(outcome, EventOutcome::Continue));

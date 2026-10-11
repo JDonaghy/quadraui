@@ -1,40 +1,31 @@
-//! Paint-time text recording for the GTK backend (quadraui#489).
+//! Paint-time text recording for the GTK backend.
 //!
 //! # Why a sink instead of per-primitive geometry
 //!
 //! [`super::testing::GtkDriver::find`] / `screen_contains` are backed by
 //! [`super::backend::GtkBackend::painted_text`] — a `(text, bounds)` map
-//! that has to be populated at paint time, because GTK has no character
-//! grid to scan the way `TuiDriver::screen` does. Before this module only
-//! three trait methods (`draw_status_bar`, `draw_data_table`,
-//! `draw_pipeline_view`) recorded anything: each *re-derived* its labels'
-//! rects from the primitive's returned `*Layout` after the rasteriser had
-//! already painted them. That works for a handful of primitives with
-//! flat, layout-addressable labels, but it does not scale to all 37
-//! rasterisers:
+//! that must be populated at paint time, because GTK has no character
+//! grid to scan the way `TuiDriver::screen` does. Recording per-primitive
+//! geometry does not scale to all 37 rasterisers:
 //!
 //! * The rasterisers are free functions (`quadraui::gtk::draw_tree` etc.)
 //!   with no `&mut GtkBackend` to record into, and they are **`pub`** — a
 //!   sink parameter or a changed return type would be a breaking change
-//!   for every path-dep consumer (see `CLAUDE.md` → *Downstream
-//!   consumers*).
+//!   for every path-dep consumer.
 //! * Several (palette, editor, form, diff view) resolve their text
 //!   positions with intermediate state that never leaves the paint
 //!   function — a per-primitive re-derivation would be a second,
-//!   silently-drifting copy of that geometry, exactly the failure
-//!   `docs/LESSONS.md` calls "cache at paint, hit-test at click".
+//!   silently-drifting copy of that geometry.
 //!
-//! So instead of re-deriving anything, this module records at the **one
-//! choke point every GTK rasteriser already funnels its text through**:
-//! `pangocairo`'s `show_layout`. [`show_layout`] is a drop-in replacement
-//! that reads the text and extents straight off the `pango::Layout` about
-//! to be painted, converts the Cairo current point to device (surface)
-//! coordinates, and appends the run to the thread-local sink shared by
-//! every backend ([`crate::testing::record_text_run`], lifted here by
-//! quadraui#721 — this module used to own a private copy of the sink
-//! itself; see that module's doc for why it's shared now). No rasteriser
-//! signature changes, and the recorded bounds cannot drift from the
-//! painted glyphs because they *are* the painted glyphs' bounds.
+//! So instead, this module records at the **one choke point every GTK
+//! rasteriser already funnels its text through**: `pangocairo`'s
+//! `show_layout`. [`show_layout`] is a drop-in replacement that reads the
+//! text and extents straight off the `pango::Layout` about to be painted,
+//! converts the Cairo current point to device (surface) coordinates, and
+//! appends the run to the thread-local sink shared by every backend
+//! ([`crate::testing::record_text_run`]). No rasteriser signature changes,
+//! and the recorded bounds cannot drift from the painted glyphs because
+//! they *are* the painted glyphs' bounds.
 //!
 //! # Lifecycle
 //!
@@ -46,10 +37,10 @@
 //! installs a fresh sink for the duration of the frame's paint pass and
 //! drains it into `GtkBackend::painted_text` afterwards. Draining *after*
 //! the frame keeps the pre-existing logical records (whole status-bar
-//! segments, whole data-table cells — recorded by the trait methods
-//! during the frame) ahead of the per-glyph-run records in the map, so
-//! `find_bounds` still resolves those primitives to their hit-testable
-//! label rect rather than to a vertically-centred glyph run inside it.
+//! segments, whole data-table cells) ahead of the per-glyph-run records
+//! in the map, so `find_bounds` still resolves those primitives to their
+//! hit-testable label rect rather than to a vertically-centred glyph run
+//! inside it.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -63,7 +54,7 @@ use crate::Rect;
 /// Drop-in replacement for `pangocairo::functions::show_layout` — every
 /// GTK rasteriser calls this instead, which is what makes
 /// `GtkDriver::find` work for *all* text-bearing primitives rather than
-/// the three that hand-rolled their own recording (quadraui#489).
+/// the three that hand-rolled their own recording.
 ///
 /// Bounds are converted with `Context::user_to_device`, so a rasteriser
 /// painting under an active `cr.translate(...)` / `cr.scale(...)` (e.g.
@@ -110,9 +101,8 @@ mod tests {
     const ROW_H: f32 = 20.0;
 
     /// Two stacked `StatusBar`s — the primitive that records *both* a
-    /// logical label (from `GtkBackend::draw_status_bar`, aligned with
-    /// `status_bar_layout`'s hit regions) and a per-glyph-run record
-    /// (from this module). Used to pin the ordering contract.
+    /// logical label (from `GtkBackend::draw_status_bar`) and a per-glyph-run
+    /// record (from this module). Used to pin the ordering contract.
     struct StackedBarsApp;
 
     impl AppLogic for StackedBarsApp {
@@ -177,8 +167,7 @@ mod tests {
     /// keep winning `find_bounds`, because that rect is the one aligned
     /// with the primitive's hit regions. The glyph run inside it is
     /// vertically centred, so resolving to it instead would silently
-    /// change the y a `find`-driven click lands on (the quadraui#488
-    /// bug's shape).
+    /// change the y a `find`-driven click lands on.
     #[test]
     fn logical_records_precede_glyph_runs_in_the_map() {
         let driver = GtkDriver::new(StackedBarsApp, W, H);

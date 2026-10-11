@@ -1,26 +1,16 @@
 //! GTK layout helper for [`crate::Chart`].
 //!
-//! Painting moved to the shared [`crate::primitives::chart::paint`]
-//! (#810, PaintSurface Phase 2c) — see that fn's doc for the
-//! divergences (the quadraui#791 clip, most notably) resolved while
-//! unifying `gtk::chart::draw_chart`, `macos::chart::draw_chart` and
-//! `win::chart::draw_chart` into one implementation. This module now
-//! only carries [`gtk_chart_layout`], the pixel-unit layout query used
-//! for both hit-testing (`GtkBackend::chart_layout`) and painting
+//! Painting is implemented in the shared [`crate::primitives::chart::paint`].
+//! This module provides [`gtk_chart_layout`], the pixel-unit layout query
+//! used for both hit-testing (`GtkBackend::chart_layout`) and painting
 //! (`GtkBackend::draw_chart`, via `Backend::chart_layout`).
-//!
-//! The deleted `gtk::chart::draw_chart` free function had zero call
-//! sites in `coord-tui`/`vimcode` (`grep -rn draw_chart ~/src/coord-tui/src
-//! ~/src/vimcode/src` — both only call `Backend::draw_chart`, whose
-//! signature is unchanged), so it needed no deprecation shim (CLAUDE.md
-//! rule 1).
 
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::layout_metrics::pixel_chart_layout;
 
 /// Compute the GTK pixel-unit layout for a [`Chart`] without painting.
 /// Shares its geometry with `mac_chart_layout` / `win_chart_layout` via
-/// [`pixel_chart_layout`] (issue #1079).
+/// [`pixel_chart_layout`].
 pub fn gtk_chart_layout(
     chart: &Chart,
     x: f64,
@@ -72,7 +62,7 @@ mod tests {
         }
     }
 
-    /// `chart_layout` is documented **ABSOLUTE** (issue #505):
+    /// `chart_layout` is documented **ABSOLUTE**:
     /// `plot_area` / `data_point_positions` must be shifted by the
     /// chart's own origin, not left at (0, 0) — the case that hides a
     /// LOCAL/ABSOLUTE mixup.
@@ -99,7 +89,7 @@ mod tests {
         layout_round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    /// Non-zero-origin regression guard.
     #[test]
     fn layout_round_trip_at_nonzero_origin() {
         layout_round_trip_at(7.0, 13.0);

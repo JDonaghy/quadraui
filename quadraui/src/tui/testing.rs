@@ -56,7 +56,7 @@ use ratatui::Terminal;
 /// `ratatui` dependency — it already depends on `quadraui` to get
 /// [`TuiDriver`]. Scoped to `tui::testing` rather than the crate root to
 /// avoid colliding with [`crate::types::Color`], which is re-exported there
-/// already (quadraui#593).
+/// already.
 pub use ratatui::style::{Color, Modifier};
 
 use crate::backend::Backend;
@@ -115,8 +115,8 @@ pub fn driver_with_shell<A: ShellApp + 'static>(
 /// `sub_modifier`/`underline_color` ratatui carries for *diffing* two
 /// styles against each other — a rendered cell has no "subtracted"
 /// modifiers, only the resolved `add_modifier` bits ratatui reports back as
-/// [`Modifier`], which is what a driver test wants to assert against
-/// (quadraui#593). `fg`/`bg` are ratatui's own [`Color`] (re-exported as
+/// [`Modifier`], which is what a driver test wants to assert against.
+/// `fg`/`bg` are ratatui's own [`Color`] (re-exported as
 /// [`self::Color`], see [`TuiDriver::style_at`]) rather than
 /// `quadraui::types::Color` because that's what the rasterisers actually
 /// paint into the buffer — comparing against a theme token means wrapping
@@ -156,7 +156,7 @@ impl<A: AppLogic> TuiDriver<A> {
         let terminal = Rc::new(RefCell::new(terminal));
         let mut backend = TuiBackend::new();
         // Wire the same `Terminal` this driver renders through as the
-        // nested dialog loop's paint target (issue #965) — see
+        // nested dialog loop's paint target — see
         // `tui::services`'s module doc, "Dialogs" section. Lets a test
         // drive `PlatformServices::show_file_open_dialog` et al. through
         // a real `AppLogic` via [`Self::queue_dialog_events`], the same
@@ -180,7 +180,7 @@ impl<A: AppLogic> TuiDriver<A> {
             .tui_services()
             .queue_dialog_events(std::iter::empty());
         // Seed the viewport from the driver's terminal size BEFORE setup,
-        // exactly as the live runner does (quadraui#437). Without this,
+        // exactly as the live runner does. Without this,
         // `app.setup()` would read the default 80×24 viewport instead of
         // the requested `width`×`height`, so any setup-time sizing (e.g.
         // `TerminalApp` spawning its PTY) would use the wrong dimensions.
@@ -195,7 +195,7 @@ impl<A: AppLogic> TuiDriver<A> {
         driver
     }
 
-    /// Seed the nested dialog loop's scripted input (issue #965) — see
+    /// Seed the nested dialog loop's scripted input — see
     /// [`crate::tui::services::TuiPlatformServices::queue_dialog_events`].
     /// Must be called *before* the event that triggers a
     /// `show_file_open_dialog`/`show_file_save_dialog`/
@@ -212,7 +212,7 @@ impl<A: AppLogic> TuiDriver<A> {
     /// Repaint one frame through the shared production render path.
     ///
     /// Consumes any pending [`crate::Backend::request_full_repaint`]
-    /// request (issue #1037) the same way the live runner's
+    /// request the same way the live runner's
     /// `tui::run::TuiRunner::step`/`pump` frame loop does — `Terminal::clear()` before
     /// this frame's `render_frame` call — so a driver test can exercise
     /// the same "next frame paints as if blank" behaviour a real terminal
@@ -233,20 +233,16 @@ impl<A: AppLogic> TuiDriver<A> {
     /// [`crate::Viewport`] or any layout state a previous [`Self::render`]
     /// cached (e.g. [`Self::tab_center`]'s `cached_tab_bar_layout`). Those
     /// stay exactly as they were after the last repaint, at whatever size
-    /// the driver last actually painted (quadraui#1063).
+    /// the driver last actually painted.
     ///
     /// This deliberately does **not** go through [`Self::render`] /
-    /// `Terminal::draw`'s `autoresize`: that path (`paint_frame`,
-    /// quadraui#1040) re-derives `TuiBackend`'s per-frame `Viewport` from
-    /// the buffer's own post-resize `frame.area()` on *every* call, so a
-    /// full `Self::render` right after a resize always self-heals — a test
-    /// that only ever resized-then-rendered would never observe a
-    /// mismatch. To construct the exact stale-layout-vs-shrunk-buffer race
-    /// quadraui#1040 fixed for `draw_editor` (and the bug class this issue
-    /// exists to guard against for everything else that caches geometry
-    /// across frames — tab bars, sidebars, click hit maps), a test calls
-    /// this to shrink *only* the physical buffer first, then reads
-    /// [`Self::backend`]'s still-stale, larger viewport (or a cached
+    /// `Terminal::draw`'s `autoresize`: that path re-derives `TuiBackend`'s
+    /// per-frame `Viewport` from the buffer's own post-resize `frame.area()`
+    /// on *every* call, so a full `Self::render` right after a resize always
+    /// self-heals — a test that only ever resized-then-rendered would never
+    /// observe a mismatch. To construct the exact stale-layout-vs-shrunk-buffer
+    /// race a test calls this to shrink *only* the physical buffer first, then
+    /// reads [`Self::backend`]'s still-stale, larger viewport (or a cached
     /// layout) to drive a click or a direct paint against it, asserting
     /// the result degrades gracefully — truncates, ignores an
     /// out-of-bounds hit — instead of panicking. Call [`Self::render`]
@@ -292,7 +288,7 @@ impl<A: AppLogic> TuiDriver<A> {
             match &outcome {
                 EventOutcome::Continue => {}
                 EventOutcome::Redraw => self.render(),
-                // quadraui#832: arm the same bookkeeping the live runner
+                // Arm the same bookkeeping the live runner
                 // would via `Backend::request_frame_in` — harmless on a
                 // driver with no real timer loop, and lets a test assert
                 // on `backend().frame_requests()` /
@@ -305,7 +301,7 @@ impl<A: AppLogic> TuiDriver<A> {
                     return Reaction::Exit;
                 }
             }
-            // quadraui#832: `Redraw` always wins over `RedrawAfter`, and
+            // `Redraw` always wins over `RedrawAfter`, and
             // two `RedrawAfter`s in the same batch keep the *earlier*
             // deadline rather than whichever arrived first — see
             // `Reaction::merge`'s doc.
@@ -316,7 +312,7 @@ impl<A: AppLogic> TuiDriver<A> {
 
     /// Deliver every [`UiEvent::User`] payload queued via
     /// [`crate::Backend::waker`] since the last call, through the same
-    /// production dispatch pipeline [`Self::dispatch`] uses (issue #831).
+    /// production dispatch pipeline [`Self::dispatch`] uses.
     ///
     /// Unlike `dispatch`, this doesn't take an event — it drains
     /// [`TuiBackend::drain_user_events`] (the same `user_events` queue the
@@ -341,7 +337,7 @@ impl<A: AppLogic> TuiDriver<A> {
             match &outcome {
                 EventOutcome::Continue => {}
                 EventOutcome::Redraw => self.render(),
-                // quadraui#832 — see `Self::dispatch`'s identical arm.
+                // See `Self::dispatch`'s identical arm.
                 EventOutcome::RedrawAfter(d) => {
                     self.core.backend_mut().request_frame_in(*d);
                 }
@@ -350,14 +346,14 @@ impl<A: AppLogic> TuiDriver<A> {
                     return Reaction::Exit;
                 }
             }
-            // quadraui#832 — see `Self::dispatch`'s identical merge.
+            // See `Self::dispatch`'s identical merge.
             result = result.merge(outcome.into());
         }
         result
     }
 
     /// Run one [`AppLogic::tick`], applying its [`Reaction`] exactly as
-    /// the live runner's loop does (quadraui#832).
+    /// the live runner's loop does.
     ///
     /// The live TUI loop calls `app.tick(backend)` once after every event
     /// batch — including the empty batch a bare poll timeout produces —
@@ -474,7 +470,7 @@ impl<A: AppLogic> TuiDriver<A> {
     /// Deliver a [`UiEvent::DoubleClick`] at `(x, y)` directly — the same
     /// event `TuiBackend`'s `DoubleClickDetector` would eventually
     /// synthesise from two close-together `MouseDown`s, but produced here
-    /// with no dependence on wall-clock timing (quadraui#592). A test that
+    /// with no dependence on wall-clock timing. A test that
     /// fired two `click()`s and relied on the 400ms/1.5-cell detector
     /// window was a race against real time — flaky under load, identical
     /// on the 1st and 1000th call here since no clock is consulted.
@@ -528,7 +524,7 @@ impl<A: AppLogic> TuiDriver<A> {
     }
 
     /// Enable or disable double-click folding for subsequent
-    /// [`Self::click`]/[`Self::mouse_down`] calls (quadraui#592). Defaults
+    /// [`Self::click`]/[`Self::mouse_down`] calls. Defaults
     /// to `true` — today's behaviour, where two `click()`s landing inside
     /// `TuiBackend`'s `DoubleClickDetector` window (400ms, 1.5 cells) fold
     /// into a single `DoubleClick`. Pass `false` when a test means two
@@ -547,21 +543,20 @@ impl<A: AppLogic> TuiDriver<A> {
 
     /// The current rendered screen as newline-joined rows.
     ///
-    /// Wide-char aware (quadraui#555): strides by each glyph's
+    /// Wide-char aware: strides by each glyph's
     /// [`char_cell_width`], the same way [`Self::row_cells`] does, rather
     /// than one buffer column per iteration. A double-width glyph's
-    /// reserved continuation cell is always blank by construction (see
-    /// `tui::set_cell_wide`) and never reaches `next` in `Buffer::diff`'s
-    /// output, so `TestBackend` never actually writes it — it just
-    /// retains whatever was in that column *before* this frame, which for
-    /// a freshly-painted glyph is `Cell::default()`'s `symbol()`, `" "`.
-    /// Reading column-by-column therefore inserted a phantom space after
-    /// every wide glyph that was never really there (a real terminal
-    /// shows the glyph occupying both columns with nothing "under" it),
-    /// which made `screen_contains`/`screen_has` — the direct backer of
-    /// the conformance suite's `assert_screen_has` step — report a needle
-    /// spanning a wide glyph as absent even though [`Self::find_bounds`]
-    /// (already wide-char aware, quadraui#488) found it painted as one
+    /// reserved continuation cell is always blank by construction and never
+    /// reaches `next` in `Buffer::diff`'s output, so `TestBackend` never
+    /// actually writes it — it just retains whatever was in that column
+    /// *before* this frame, which for a freshly-painted glyph is
+    /// `Cell::default()`'s `symbol()`, `" "`. Reading column-by-column
+    /// therefore inserted a phantom space after every wide glyph that was
+    /// never really there (a real terminal shows the glyph occupying both
+    /// columns with nothing "under" it), which made `screen_contains`/`screen_has`
+    /// — the direct backer of the conformance suite's `assert_screen_has` step —
+    /// report a needle spanning a wide glyph as absent even though
+    /// [`Self::find_bounds`] (already wide-char aware) found it painted as one
     /// contiguous run. Striding here brings `screen()` in line with what
     /// `row_cells`/`find_bounds`/`inventory` already saw, and with what
     /// [`crate::tui::vt_testing::TuiVtDriver::screen`]'s vt100-observed
@@ -594,7 +589,7 @@ impl<A: AppLogic> TuiDriver<A> {
     ///
     /// [`Self::screen`] only surfaces glyphs, so a driver test can prove a
     /// cell exists but not, e.g., that it's the *preview*-tab italic rather
-    /// than the permanent-tab plain style (quadraui#593) — both stringify
+    /// than the permanent-tab plain style — both stringify
     /// identically. `style_at` reads the same buffer cell `screen()` does,
     /// just its [`ratatui::buffer::Cell::style`] instead of its symbol.
     ///
@@ -678,7 +673,7 @@ impl<A: AppLogic> TuiDriver<A> {
     /// The `(x, y)` position `Terminal::draw` last applied to the
     /// underlying `TestBackend` via `Frame::set_cursor_position` —
     /// reflecting [`super::run::render_frame`]'s `take_last_cursor_position`
-    /// handoff from `TuiBackend::draw_editor` (quadraui#466).
+    /// handoff from `TuiBackend::draw_editor`.
     ///
     /// Note `TestBackend` tracks only the last-set position, not whether
     /// the cursor is currently hidden — so this always returns the most
@@ -706,7 +701,7 @@ impl<A: AppLogic> TuiDriver<A> {
     /// far `x` advances. Without this, two adjacent double-width
     /// characters (e.g. CJK) get a spurious blank cell wedged between them
     /// in the reconstructed row, and a needle spanning them would never
-    /// match (quadraui#488).
+    /// match.
     fn row_cells(&self, y: u16) -> Vec<(char, u16, u16)> {
         let terminal = self.terminal.borrow();
         let buf = terminal.backend().buffer();
@@ -752,19 +747,18 @@ impl<A: AppLogic> TuiDriver<A> {
     }
 
     /// Coordinates of the first row containing `needle`, at the center of
-    /// the matched span's *first* cell — preserved from the pre-#488
-    /// behaviour (a click there always lands inside the match regardless
-    /// of span width) even though [`Self::find_bounds`] now reports the
-    /// full wide-char-aware span. Callers that want the full span's
-    /// center use `find_bounds` directly (e.g.
-    /// [`ConformanceDriver::click_text_at`]'s `Anchor::Center`).
+    /// the matched span's *first* cell — preserved from earlier behaviour
+    /// (a click there always lands inside the match regardless of span width)
+    /// even though [`Self::find_bounds`] now reports the full wide-char-aware
+    /// span. Callers that want the full span's center use `find_bounds`
+    /// directly (e.g. [`ConformanceDriver::click_text_at`]'s `Anchor::Center`).
     pub fn find(&self, needle: &str) -> Option<(f32, f32)> {
         self.find_bounds(needle)
             .map(|b| (b.x + 0.5, b.y + b.height / 2.0))
     }
 
     /// Cell coordinates of tab `tab_idx`'s center in the tab bar `bar`, for
-    /// [`Self::click`] to land on that specific tab (quadraui#594).
+    /// [`Self::click`] to land on that specific tab.
     ///
     /// `find` can't do this job: every tab paints the same chrome (and a
     /// closed/active tab's label may repeat elsewhere on screen), so there
@@ -781,7 +775,7 @@ impl<A: AppLogic> TuiDriver<A> {
 
     /// Cell coordinates of tab `tab_idx`'s close-button center in the tab
     /// bar `bar` — the `×`/`●` glyph every tab shares, so [`Self::find`]
-    /// can't target one tab's close button over another's (quadraui#594).
+    /// can't target one tab's close button over another's.
     ///
     /// `None` for the same reasons as [`Self::tab_center`], plus: the tab
     /// drew no close button this frame (`is_closable: false` on the tab,
@@ -796,7 +790,7 @@ impl<A: AppLogic> TuiDriver<A> {
 /// The four raw primitives [`DriverInput`]'s default `press`/`type_char`/
 /// `press_named`/`ctrl_char`/`click`/`drag` methods build on — see that
 /// trait's doc for why `dispatch`/`mouse_down`/`mouse_move`/`mouse_up`
-/// stay required (genuinely per-backend) rather than shared (quadraui#708).
+/// stay required (genuinely per-backend) rather than shared.
 /// `TuiDriver` doesn't also adopt [`crate::testing::PixelClickConformance`]
 /// — its `ConformanceDriver::click_text_at`/`drag_text`/`scroll_at` stay
 /// bespoke below, since TUI's cell-unit `+0.5`/`-0.5` edge offsets (vs the
@@ -832,7 +826,7 @@ impl<A: AppLogic> ConformanceDriver for TuiDriver<A> {
 
     fn backend_caps(&self) -> crate::BackendCaps {
         // Straight off the real `TuiBackend` this driver wraps — never a
-        // re-statement (quadraui#492).
+        // re-statement.
         crate::Backend::backend_caps(self.core.backend())
     }
 
@@ -928,7 +922,7 @@ impl<A: AppLogic> ConformanceDriver for TuiDriver<A> {
             // currently the shell-chrome zones `AppShell::render` records
             // (activity-bar items, sidebar header/content, status bar,
             // ...). Primitives that don't yet call `register_zone`
-            // contribute no zone (quadraui#490).
+            // contribute no zone.
             zones: self.core.backend().zones().to_vec(),
         }
     }
@@ -951,12 +945,11 @@ mod tests {
 
     /// Minimal app that records the viewport it observes in `setup()`.
     ///
-    /// This is the driver-reachable regression guard for quadraui#437's
-    /// TUI initial-layout bug: `setup()` must see the driver's real
-    /// terminal size, not the `Viewport::default()` (80×24) that
-    /// `TuiBackend::new()` seeds. An app that sizes a side effect from the
-    /// setup-time viewport (e.g. `TerminalApp` spawning its PTY) would
-    /// otherwise under-fill the pane until the first resize event.
+    /// `setup()` must see the driver's real terminal size, not the
+    /// `Viewport::default()` (80×24) that `TuiBackend::new()` seeds. An app
+    /// that sizes a side effect from the setup-time viewport (e.g. `TerminalApp`
+    /// spawning its PTY) would otherwise under-fill the pane until the first
+    /// resize event.
     struct SetupViewportRecorder {
         seen: Rc<Cell<Option<Viewport>>>,
     }
@@ -975,7 +968,7 @@ mod tests {
         }
     }
 
-    /// App that requests a full repaint (issue #1037) whenever it handles
+    /// App that requests a full repaint whenever it handles
     /// a key press, and otherwise does nothing.
     struct FullRepaintRequester;
 
@@ -993,15 +986,15 @@ mod tests {
         }
     }
 
-    /// Issue #1037: `TuiDriver::dispatch` routes through [`TuiDriver::render`]
-    /// on a `Redraw` reaction, exactly like the live runner's frame loop —
-    /// so a `Backend::request_full_repaint` call made from `handle` must be
+    /// `TuiDriver::dispatch` routes through [`TuiDriver::render`] on a
+    /// `Redraw` reaction, exactly like the live runner's frame loop — so a
+    /// `Backend::request_full_repaint` call made from `handle` must be
     /// consumed by that same `render` call, not left pending. Verified
     /// indirectly: if `render` had consumed it, a direct
-    /// `take_full_repaint_requested` call made *after* the dispatch
-    /// returns `false` (already cleared); if `render` never consulted it
-    /// at all, that same call would still see the original `true` and
-    /// this assertion would fail.
+    /// `take_full_repaint_requested` call made *after* the dispatch returns
+    /// `false` (already cleared); if `render` never consulted it at all, that
+    /// same call would still see the original `true` and this assertion would
+    /// fail.
     #[test]
     fn dispatch_consumes_a_pending_full_repaint_request_via_render() {
         let mut driver = TuiDriver::new(FullRepaintRequester, 20, 5);
@@ -1016,11 +1009,10 @@ mod tests {
         );
     }
 
-    /// Issue #1037 (non-blocking review follow-up): prove `render` doesn't
-    /// just *consume* the pending flag (see the test above) but actually
-    /// forces `ratatui::Terminal::clear()`'s effect — the next frame
-    /// repaints every cell unconditionally, even one the app's own
-    /// (unchanged) content never touches.
+    /// Prove `render` doesn't just *consume* the pending flag (see the test
+    /// above) but actually forces `ratatui::Terminal::clear()`'s effect —
+    /// the next frame repaints every cell unconditionally, even one the
+    /// app's own (unchanged) content never touches.
     ///
     /// `FullRepaintRequester::render` never paints anything, so once the
     /// first frame lands the widget-side content stays blank forever —
@@ -1034,7 +1026,7 @@ mod tests {
     ///
     /// Without a pending full-repaint request, a plain redraw leaves that
     /// stale glyph in place (diff sees no change at that cell, so it's
-    /// never told to repaint it) — matching vimcode#58's symptom. With
+    /// never told to repaint it) — matching the symptom. With
     /// `request_full_repaint()` set first, `render` must clear it, proving
     /// `Terminal::clear()` actually ran rather than the flag merely being
     /// read and discarded.
@@ -1062,7 +1054,7 @@ mod tests {
 
         // A plain redraw with nothing pending: ratatui's diff still
         // believes this cell is unchanged (blank), so the stale glyph
-        // survives — the vimcode#58 symptom this hook exists to fix.
+        // survives.
         driver.render();
         assert!(
             driver.screen_contains("X"),
@@ -1086,8 +1078,9 @@ mod tests {
     }
 
     /// `setup()` must observe the driver's real terminal dimensions, not
-    /// the default 80×24 viewport. Regression guard for the #437 TUI
-    /// initial-layout bug (pane under-filled until first interaction).
+    /// the default 80×24 viewport. An app that sizes a side effect from the
+    /// setup-time viewport (e.g. PTY initialization) would under-fill the
+    /// pane until first interaction.
     #[test]
     fn setup_sees_real_viewport_not_default() {
         let seen = Rc::new(Cell::new(None));
@@ -1102,8 +1095,6 @@ mod tests {
             "setup() must see the driver's real size, not Viewport::default() (80×24)"
         );
     }
-
-    // ─── quadraui#488 ────────────────────────────────────────────────────
 
     use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
     use crate::types::{Color, WidgetId};
@@ -1142,10 +1133,10 @@ mod tests {
         }
     }
 
-    /// Regression guard for quadraui#488's wide-char `find`/`find_bounds`
-    /// fix: two adjacent double-width (CJK) glyphs must be found as one
-    /// 4-cell-wide span, not silently unmatched because ratatui wedges a
-    /// blank continuation cell between them that isn't a real space.
+    /// Regression guard: two adjacent double-width (CJK) glyphs must be
+    /// found as one 4-cell-wide span, not silently unmatched because
+    /// ratatui wedges a blank continuation cell between them that isn't a
+    /// real space.
     #[test]
     fn find_bounds_is_wide_char_aware_for_adjacent_cjk_glyphs() {
         let driver = TuiDriver::new(
@@ -1166,9 +1157,9 @@ mod tests {
             "two double-width glyphs occupy 4 cells total"
         );
 
-        // `find` still returns the first cell's center (pre-#488
-        // behaviour preserved — see its doc comment), not the span's
-        // midpoint.
+        // `find` returns the first cell's center, not the span's midpoint,
+        // which preserves earlier behaviour where a click there always lands
+        // inside the match regardless of span width.
         let (x, y) = driver.find("你好").expect("find should also locate it");
         assert_eq!((x, y), (0.5, 0.5));
 
@@ -1181,19 +1172,14 @@ mod tests {
         assert_eq!(world.x, cjk.x + cjk.width + 1.0);
     }
 
-    /// Regression guard for quadraui#555's `screen()` fix: adjacent
-    /// double-width glyphs must read back as a contiguous substring, with
-    /// no phantom space inserted for the wide glyph's (always-blank)
-    /// continuation cell — the same needle `find_bounds` above already
-    /// located as one 4-cell span. Before this fix `screen()` walked one
-    /// buffer column per iteration, so `screen_contains`/`screen_has` (the
-    /// direct backer of the conformance suite's `assert_screen_has` step)
-    /// disagreed with `find_bounds`/`inventory` on the exact same frame —
-    /// discovered via `tests/conformance/scenarios/tabs/
-    /// tabbar.wide_label_text_fidelity.scn.json`, which runs this same
-    /// class of content against both the `TestBackend` and the vt100
-    /// observer (`quadraui::tui::vt_testing::TuiVtDriver`) and caught the
-    /// two disagreeing on a needle both had, in fact, painted.
+    /// Regression guard: adjacent double-width glyphs must read back as a
+    /// contiguous substring, with no phantom space inserted for the wide
+    /// glyph's (always-blank) continuation cell — the same needle
+    /// [`find_bounds`] above already located as one 4-cell span. Before
+    /// this fix `screen()` walked one buffer column per iteration, so
+    /// `screen_contains`/`screen_has` (the direct backer of the
+    /// conformance suite's `assert_screen_has` step) disagreed with
+    /// `find_bounds`/`inventory` on the exact same frame.
     #[test]
     fn screen_is_wide_char_aware_for_adjacent_cjk_glyphs() {
         let driver = TuiDriver::new(
@@ -1253,8 +1239,6 @@ mod tests {
         driver.scroll_at("world", 1);
     }
 
-    // ─── quadraui#592 ────────────────────────────────────────────────────
-
     /// Records every `UiEvent` the app's `handle()` receives, verbatim —
     /// lets a test assert exactly what reached the app (button, modifiers,
     /// `DoubleClick` vs `MouseDown`) without screen-scraping.
@@ -1278,7 +1262,7 @@ mod tests {
     /// the given position, with no prior `MouseDown`, and do so
     /// identically whether it's the 1st or 1000th call — the deterministic
     /// alternative to two `click()`s racing `DoubleClickDetector`'s 400ms
-    /// wall-clock window (quadraui#592).
+    /// wall-clock window.
     #[test]
     fn double_click_is_deterministic_across_many_calls() {
         let events = Rc::new(RefCell::new(Vec::new()));
@@ -1443,8 +1427,6 @@ mod tests {
         );
     }
 
-    // ─── quadraui#593 ────────────────────────────────────────────────────
-
     use crate::primitives::tab_bar::{TabBar, TabItem};
     use crate::theme::Theme;
     use crate::types::WidgetId as QWidgetId;
@@ -1501,7 +1483,6 @@ mod tests {
     /// permanent one by `Modifier::ITALIC` and by the theme's
     /// `tab_preview_inactive_fg` vs `tab_inactive_fg` foreground — neither
     /// of which `screen()` can see, since both tabs stringify identically
-    /// (quadraui#593).
     #[test]
     fn style_at_distinguishes_preview_tab_from_permanent_tab() {
         let theme = Theme::default();
@@ -1729,18 +1710,15 @@ mod tests {
         );
     }
 
-    /// Issue #1068: the rect a consumer hit-tests against must be the
-    /// *same* rect `draw_tab_bar` painted. `tab_close_center` resolves
-    /// against the [`crate::TabBarLayout`] `TuiBackend` cached at paint
-    /// time (quadraui#594); this test takes that exact point and runs it
-    /// back through the authoritative no-paint accessor,
-    /// [`crate::Backend::resolve_tab_bar_layout`] +
+    /// The rect a consumer hit-tests against must be the *same* rect
+    /// `draw_tab_bar` painted. `tab_close_center` resolves against the
+    /// [`crate::TabBarLayout`] `TuiBackend` cached at paint time; this test
+    /// takes that exact point and runs it back through the authoritative
+    /// no-paint accessor, [`crate::Backend::resolve_tab_bar_layout`] +
     /// [`crate::TabBarLayout::hit_test`] — not the deprecated
-    /// `TabBarHits`/`tab_bar_layout` pair `InteractiveTabBarApp::handle`
-    /// uses above — and asserts it resolves to `TabBarHit::TabClose(1)`,
-    /// not a plain tab-select. If this is green, the TUI backend's paint
-    /// and hit-test rects agree and any divergence a consumer observes
-    /// (e.g. vimcode's hand-rolled click router) is on the consumer side.
+    /// `TabBarHits`/`tab_bar_layout` pair — and asserts it resolves to
+    /// `TabBarHit::TabClose(1)`, not a plain tab-select. If this is green,
+    /// the TUI backend's paint and hit-test rects agree.
     #[test]
     fn tab_close_center_resolves_to_authoritative_tab_close_hit() {
         use crate::primitives::tab_bar::TabBarHit;
@@ -1896,7 +1874,7 @@ mod tests {
         );
     }
 
-    // ── Background-thread wake (issue #831) ─────────────────────────────
+    // ── Background-thread wake ──────────────────────────────────────────
     //
     // Before `Backend::waker` existed, there was no `Send`-safe way to get
     // a value from a background thread into the app at all — every
@@ -1963,10 +1941,7 @@ mod tests {
 
     /// Calling the closure `Backend::waker()` returns from another thread
     /// delivers a `UiEvent::User` that reaches `AppLogic::handle` and
-    /// produces a rendered change — observed RED before issue #831 (no
-    /// `waker` existed to call at all; the only way to see a background
-    /// result was to re-check the app's own state from `tick()` on
-    /// whatever cadence the backend happened to poll at).
+    /// produces a rendered change.
     #[test]
     fn waker_delivers_background_thread_result_to_rendered_output() {
         let mut driver = TuiDriver::new(BackgroundResultApp::new(), 40, 3);
@@ -2022,8 +1997,6 @@ mod tests {
         );
     }
 
-    // ─── #914: ShellConfig::with_panel_icon reaches driver-rendered chrome ──
-
     use crate::compose::app_shell::{AppShellLayout, PanelDefinition};
     use crate::shell::ShellContext;
     use crate::types::Icon;
@@ -2052,8 +2025,8 @@ mod tests {
         }
     }
 
-    /// The `ShellConfig` #914's acceptance tests share: one top panel and
-    /// one bottom item, each carrying a `with_panel_icon` override whose
+    /// The `ShellConfig` used by acceptance tests: one top panel and one
+    /// bottom item, each carrying a `with_panel_icon` override whose
     /// glyph/fallback halves are unmistakable non-ASCII symbols — chosen so
     /// they can't collide with any chrome text (titles, tooltips) the shell
     /// itself paints.
@@ -2079,11 +2052,9 @@ mod tests {
         .with_panel_icon(bottom_id, Icon::new("\u{f013}", "\u{25a0}"))
     }
 
-    /// #914 acceptance: a `ShellConfig` panel-icon override, rendered
-    /// through `driver_with_shell` — the consumer path a real `ShellApp`
-    /// takes, not a direct `AppShell::with_panel_icon` builder chain, which
-    /// is exactly what passed while this issue's gap was open — with
-    /// `nerd_fonts_enabled` off, paints the fallback.
+    /// A `ShellConfig` panel-icon override, rendered through
+    /// `driver_with_shell` — the consumer path a real `ShellApp` takes —
+    /// with `nerd_fonts_enabled` off, paints the fallback.
     #[test]
     fn shell_config_panel_icon_paints_fallback_when_nerd_fonts_off() {
         let driver = driver_with_shell(
@@ -2102,7 +2073,7 @@ mod tests {
         );
     }
 
-    /// #914 acceptance: the same config with the flag on paints the glyph.
+    /// The same config with `nerd_fonts_enabled` on paints the glyph.
     #[test]
     fn shell_config_panel_icon_paints_glyph_when_nerd_fonts_on() {
         let driver = driver_with_shell(
@@ -2121,10 +2092,8 @@ mod tests {
         );
     }
 
-    /// #914 acceptance, bottom-item half: fallback when nerd_fonts is off —
-    /// pins that the override reaches `bottom_items`, not just `panels`
-    /// (#683's `with_panel_icon_applies_to_bottom_items` pins the same
-    /// thing one layer down, on `AppShell` directly).
+    /// Bottom-item half: fallback when nerd_fonts is off — pins that the
+    /// override reaches `bottom_items`, not just `panels`.
     #[test]
     fn shell_config_panel_icon_paints_fallback_for_bottom_item_when_nerd_fonts_off() {
         let driver = driver_with_shell(
@@ -2143,7 +2112,7 @@ mod tests {
         );
     }
 
-    /// #914 acceptance, bottom-item half: glyph when nerd_fonts is on.
+    /// Bottom-item half: glyph when nerd_fonts is on.
     #[test]
     fn shell_config_panel_icon_paints_glyph_for_bottom_item_when_nerd_fonts_on() {
         let driver = driver_with_shell(
@@ -2162,13 +2131,11 @@ mod tests {
         );
     }
 
-    // ─── quadraui#1063 ───────────────────────────────────────────────────
-
     /// `resize` must shrink the physical `TestBackend` buffer immediately,
     /// but leave `TuiBackend`'s cached viewport exactly as it was after the
-    /// last `render()` — the stale-layout-vs-shrunk-buffer condition
-    /// quadraui#1040 fixed for `draw_editor`, now reproducible from a
-    /// driver test instead of only a hand-built `Buffer`/`Rect` pair.
+    /// last `render()` — the stale-layout-vs-shrunk-buffer condition,
+    /// reproducible from a driver test instead of only a hand-built
+    /// `Buffer`/`Rect` pair.
     #[test]
     fn resize_shrinks_buffer_without_touching_cached_viewport() {
         let mut driver = TuiDriver::new(
@@ -2198,8 +2165,7 @@ mod tests {
         );
 
         // ...but TuiBackend's cached viewport must NOT have moved: `resize`
-        // never reaches into `TuiBackend` at all, only `render()` (via
-        // `paint_frame`'s #1040 self-heal) does.
+        // never reaches into `TuiBackend` at all, only `render()` does.
         assert_eq!(
             (
                 driver.backend().viewport().width,
@@ -2211,12 +2177,12 @@ mod tests {
         );
 
         // Driving a repaint against a buffer now far smaller than the
-        // app's content assumes must not panic — the exact TOCTOU shape
-        // #1040 fixed, reproduced here at driver tier rather than by
+        // app's content assumes must not panic — the stale-layout-vs-shrunk-
+        // buffer condition, reproduced here at driver tier rather than by
         // hand-building a `Buffer`/`Rect` pair.
         driver.render();
 
-        // render()'s autoresize (#1040) rebases TuiBackend's viewport to
+        // render()'s autoresize rebases TuiBackend's viewport to
         // the new, smaller size before `app.render()` runs, so it's back
         // in sync afterward.
         assert_eq!(

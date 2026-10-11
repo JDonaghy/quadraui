@@ -59,6 +59,57 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-11
+
+### Added
+
+- `Backend::tree_paints_own_scrollbar() -> bool` (issue #1476) — a provided
+  (default `false`) trait method a tree-hosting consumer (e.g.
+  `compose::TreeController`) calls to decide whether it must still reserve a
+  column and paint a scrollbar itself, or whether the backend's `draw_tree`
+  already paints an overlay scrollbar over the tree's own content. GTK,
+  macOS and Win override it to `true`; TUI keeps the default `false`.
+- `FlexLayout::without_rounding(self) -> Self` (issue #1428) — opts a
+  `FlexLayout` out of its default pixel-snapping so a caller can compare
+  raw `taffy` output bit-for-bit against a hand-rolled layout in tests.
+  `AppShell`'s chrome-band carve, `Form`'s field stacking, and `Toolbar`'s
+  item packing now route their 1D position arithmetic through
+  `crate::flex::pack_1d` when the `layout` feature is enabled, falling
+  back to the original hand-rolled arithmetic when it isn't; both paths
+  are verified byte-identical by each primitive's own exact-value tests
+  plus three `TuiDriver` end-to-end tests, all run under both
+  configurations. `layout` stays its own opt-in feature (not
+  bundled into `tui`/`gtk`/`win`/`macos`, per this crate's "no feature
+  pulls in another opt-in feature" policy) — see its doc comment in
+  `quadraui/Cargo.toml` for how to enable it alongside a backend feature.
+
+### Changed
+
+- macOS idiom pass (issue #1383): the menu bar installs the native
+  `NSMenu` whenever the effective menu style resolves to `Native` (the macOS
+  default), falling back to the in-window painted strip only after
+  `set_menu_style(MenuStyle::Custom)`; the painted strip no longer draws
+  Alt-mnemonic underlines on macOS; the active tab paints as an inset,
+  rounded chip matching GTK's instead of an edge-to-edge fill.
+
+### Fixed
+
+- `compose::TreeController` no longer double-paints the tree's vertical
+  scrollbar on GTK, macOS and Win (issue #1476): it previously always
+  reserved a column and called `Backend::draw_scrollbar` even on backends
+  whose `draw_tree` already paints an overlay scrollbar, producing two
+  scrollbars (one of them an extra-wide reserved column) beside the tree.
+  It now checks the new `Backend::tree_paints_own_scrollbar()` and, when
+  `true`, paints nothing itself — the existing `Backend::tree_vscrollbar`
+  geometry is still used for hit-testing and dragging. TUI's behavior is
+  unchanged.
+- Over-long tree row labels on GTK, macOS and Win are truncated with a
+  trailing `…` (keeping the badge reserve) instead of being hard-clipped
+  mid-glyph, matching TUI (issue #1475).
+- macOS `SidebarPanel` header toolbar rows are sized off the chrome font's
+  line height rather than the editor's, so header icons are no longer
+  clipped at the top when the chrome font is taller (issue #1470).
+
 ## [0.1.3] - 2026-10-10
 
 ### Added

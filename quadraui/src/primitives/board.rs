@@ -44,16 +44,8 @@ use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
 // ── Shared layout constants ─────────────────────────────────────────────────
-//
-// #736: `gtk::board` and `macos::board` each carried their own copy of these
-// seven geometry constants (`GTK_BOARD_*_PX` / `MAC_BOARD_*_PX`), byte-for-
-// byte identical in every value. Per #713's primitive-first rule, a third
-// (`win::board`) or fourth copy is exactly the duplication that rule exists
-// to stop, so all three pixel/DIP-unit backends (gtk, macos, win — a DIP is
-// a pixel at 100% display scale, the same convention `win::board`'s module
-// doc uses) now share one definition. `tui::board` keeps its own
-// `TUI_BOARD_*_CELLS`/`TUI_BOARD_CARD_H` constants — cells are a genuinely
-// different unit with different natural values, not a fourth copy of these.
+// These constants are shared by pixel/DIP-unit backends (gtk, macos, win).
+// Cells and DIP units are not the same unit; tui::board keeps its own constants.
 
 /// Minimum column width in pixel/DIP-unit backends' native units.
 pub const BOARD_COL_MIN_PX: f32 = 200.0;
@@ -100,11 +92,7 @@ pub enum BadgeStatus {
     Blocked,
 }
 
-/// The `status → icon` table for a badge — shared by every backend's
-/// rasteriser (gtk, macos, tui, win). #736: previously duplicated
-/// verbatim as a private `badge_icon` in `gtk::board`, `macos::board`, and
-/// `tui::board`; #713's primitive-first rule forbids a fourth copy in
-/// `win::board`, so this is the one definition all four call.
+/// The `status → icon` table for a badge — shared by every backend's rasteriser.
 pub fn badge_icon(status: BadgeStatus) -> char {
     match status {
         BadgeStatus::Passed => '✓',
@@ -115,8 +103,7 @@ pub fn badge_icon(status: BadgeStatus) -> char {
     }
 }
 
-/// The `status → colour` table for a badge icon — shared by every
-/// backend's rasteriser (#736, same rationale as [`badge_icon`]).
+/// The `status → colour` table for a badge icon — shared by every backend's rasteriser.
 pub fn badge_fg_color(status: BadgeStatus, theme: &Theme) -> Color {
     match status {
         BadgeStatus::Passed => theme.badge_passed,
@@ -637,93 +624,26 @@ fn count_fitting_columns(available: usize, col_w: f32, gap: f32, total_width: f3
     count.max(1)
 }
 
-// ── PaintSurface paint (shared gtk/macos/win implementation, issue #1085,
-// PaintSurface Phase 4 8/8) ────────────────────────────────────────────
+// ── PaintSurface paint (shared gtk/macos/win implementation) ──────────────────
+// `paint` below is the shared implementation across all backends, written against
+// [`crate::paint_surface::PaintSurface`] instead of any one backend's drawing API.
 //
-// Before this, `gtk::board::draw_board` (Cairo + Pango),
-// `macos::board::draw_board` (Core Graphics + Core Text) and
-// `win::board::draw_board` (Direct2D + DirectWrite) each independently
-// painted the same column/card geometry (already unified by #736's
-// `BoardLayout`/[`pixel_board_layout`]) with their own drawing API.
-// `paint` below is the one shared implementation, written against
-// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
-// one backend's drawing API — same shape as `diff_view`'s #866 migration.
+// ## Divergences from pre-unified backends:
 //
-// ## Divergences found (re-verified, reported here rather than silently
-// resolved — CLAUDE.md's "re-verify before you implement" + this issue's
-// acceptance bar)
-//
-// 1. **Column header text overflow.** `gtk::board` painted the header
-//    title with no clip at all — an overlong title could bleed into the
-//    next column. `macos::board` wrapped its header draw in
-//    `CGContextSaveGState`/`CGContextClipToRect(header_bounds)`.
-//    `win::board` relied on `DWrite::draw_text`'s own
-//    `D2D1_DRAW_TEXT_OPTIONS_CLIP`. `PaintSurface` has no wrap/ellipsize
-//    verb (see `diff_view`'s #866 "Header-label overflow handling"
-//    divergence for the identical tradeoff), so `paint` below hard-clips
-//    every column header to its own bounds on every backend — the
-//    macOS/Windows behaviour. An overlong header on GTK now hard-clips
-//    instead of silently bleeding into the next column (a real bug fix).
-// 2. **Card title wrapping.** `gtk::board` word-wrapped an overlong title
-//    across multiple lines (`pango::Layout::set_width`, no explicit max
-//    line count). `macos::board` and `win::board` both painted a single
-//    line, clipped to the card box (macOS: `CGContextClipToRect`;
-//    Windows: `D2D1_DRAW_TEXT_OPTIONS_CLIP`). Per the same "no wrap verb"
-//    constraint as divergence 1, `paint` hard-clips the (single-line)
-//    title to the card box on every backend — the macOS/Windows
-//    behaviour. A long title on GTK now clips instead of wrapping to a
-//    second line (`BOARD_CARD_H_PX` is a fixed 64px regardless of
-//    wrapping, so a wrapped second line was never guaranteed to avoid
-//    colliding with the badge row 26px below the card top anyway).
-// 3. **Card border shape.** `gtk::board` and `macos::board` stroked a
-//    *rounded*-rect border (`BOARD_CARD_CORNER_RADIUS_PX`); `win::board`
-//    could only stroke a straight rectangle (`win::text` has no
-//    `ID2D1RoundedRectangleGeometry`-backed rounded stroke — see that
-//    module's former doc). `PaintSurface::surface_stroke_rect` is
-//    axis-aligned only (there is no `surface_stroke_rounded_rect`), so
-//    `paint` strokes every card border as a straight rectangle on every
-//    backend — the Windows behaviour. Card fills stay flat rectangles
-//    too (not [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`])
-//    so the fill and its border never mismatch in shape. GTK/macOS cards
-//    lose their rounded-pill corners; `BOARD_CARD_CORNER_RADIUS_PX` is no
-//    longer consumed by any rasteriser (TUI has no notion of rounded
-//    corners either, so this makes all four backends agree).
-// 4. **Per-element font size.** Pre-port `gtk::board::draw_board` varied
-//    Pango point size per text run (`TITLE_FONT_SIZE = 11.0` for the
-//    column header and card title, `BADGE_FONT_SIZE = 9.0` /
-//    `HINT_FONT_SIZE = 9.0` for the badge row and hint strip, each set
-//    via a `set_pango_size` helper that mutated a fresh
-//    `pango::FontDescription` per call). `macos::board::draw_board` and
-//    `win::board::draw_board` never had that: both modules' own
-//    pre-port doc comments already disclosed painting every element
-//    with the backend's single ambient font/`CTFont`/`DWrite` text
-//    format as a "divergence from the GTK twin (deliberate)", because
-//    per-element sizing needs a format/attribute cache neither
-//    rasteriser had. `PaintSurface` has no per-call font-size verb at
-//    all (only `scale_x`/bold/italic/underline via
-//    `surface_draw_text_run_styled` — confirmed against
-//    `paint_surface.rs`), so `paint` below paints every run — header,
-//    title, badges, hint — at the ambient surface font on every
-//    backend: the macOS/Windows (2-of-3) behaviour, GTK now matching
-//    rather than the reverse. GTK's default ambient font at the point
-//    `draw_board` is called is `editor_font` (11pt Monospace by
-//    default — see `GtkBackend::enter_frame_scope`), which happens to
-//    equal the old `TITLE_FONT_SIZE`, so the header and title are
-//    visually unchanged at defaults; only the badge/hint text grows
-//    from 9pt to the ambient size. Because a *user* can set an
-//    arbitrarily large `editor_font`/`ui_font` (accessibility, demo
-//    projection, etc.), `paint` no longer assumes any text run fits
-//    the fixed `BADGE_Y_OFF`/`HINT_Y_OFF`/`HINT_H` pixel geometry those
-//    constants were tuned for at 9pt: the badge row and the hint strip
-//    are each now wrapped in their own `surface_push_clip`/
-//    `surface_pop_clip` bracket (nested inside the card's own bracket
-//    from divergences 1/2), so oversized text is clipped to its own
-//    band instead of bleeding into the title or past the bottom of the
-//    hint's background strip. See
-//    `badge_row_and_hint_strip_are_each_clipped_to_their_own_band`
-//    below for the regression (observed RED before the extra clip
-//    brackets were added — a tall badge/hint measurement painted past
-//    its intended strip with only the outer card clip in place).
+// 1. **Column header text overflow.** `PaintSurface` hard-clips every column header
+//    to its own bounds on every backend (the macOS/Windows behaviour; GTK previously
+//    allowed overflow into the next column).
+// 2. **Card title wrapping.** `PaintSurface` hard-clips the single-line title to the
+//    card box on every backend (the macOS/Windows behaviour; GTK previously wrapped).
+// 3. **Card border shape.** `PaintSurface::surface_stroke_rect` is axis-aligned only,
+//    so every card border is a straight rectangle on every backend (the Windows
+//    behaviour; GTK/macOS previously used rounded corners). Card fills use the same
+//    straight rectangle so fill and border always match.
+// 4. **Per-element font size.** `PaintSurface` has no per-call font-size verb, so
+//    every run — header, title, badges, hint — paints at the ambient surface font
+//    on every backend (the macOS/Windows behaviour; GTK previously varied by element).
+//    The badge row and hint strip are each wrapped in their own clip bracket so
+//    oversized text clips to its band instead of bleeding into adjacent elements.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -743,11 +663,8 @@ pub(crate) mod native_surface_paint {
     const TITLE_Y_OFF: f32 = 6.0;
     /// Vertical offset of the badge row from the card top.
     const BADGE_Y_OFF: f32 = 26.0;
-    /// Height of the badge-row clip band — see divergence 4 above. Tuned
-    /// generously past the 9pt badge text these offsets were originally
-    /// measured for, so the default 11pt ambient font (divergence 4)
-    /// still fits with headroom; a much larger user-configured ambient
-    /// font clips rather than bleeding into the title above it.
+    /// Height of the badge-row clip band. Sized generously to accommodate the ambient
+    /// font size without bleeding into the title above.
     const BADGE_ROW_H: f32 = 18.0;
     /// Vertical offset of the hint strip from the card bottom.
     const HINT_Y_OFF: f32 = 18.0;
@@ -924,7 +841,7 @@ pub(crate) mod native_surface_paint {
         use crate::Image;
 
         /// Records every drawing verb `paint` issues — mirrors
-        /// `primitives::diff_view`'s own `RecordingSurface` (#810/#865/#866).
+        /// `primitives::diff_view`'s own `RecordingSurface`.
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
@@ -1231,9 +1148,7 @@ pub(crate) mod native_surface_paint {
                 .any(|(_, t, _)| t.starts_with('✓') && t.contains('P')));
         }
 
-        /// A hint is only painted when there's room below the badge row —
-        /// mirrors every pre-#1085 backend's `if hint_y > badge_y + 10.0`
-        /// guard.
+        /// A hint is only painted when there's room below the badge row.
         #[test]
         fn hint_paints_only_when_present() {
             let mut model = sample_model();
@@ -1335,12 +1250,8 @@ mod tests {
         assert_eq!(m.badges_count(), 15);
     }
 
-    /// Badge vocabulary is entirely host-defined — the primitive has no
-    /// fixed notion of a "stage" or pipeline order (#476: the framework
-    /// previously hardcoded one consumer's `Plan/Work/Test/Review/Merge`
-    /// workflow via a `Stage` enum). Any label string and any order is
-    /// valid; this test uses a vocabulary unrelated to that workflow to
-    /// prove there's no hidden coupling.
+    /// Badge vocabulary is entirely host-defined — the primitive has no fixed notion of
+    /// a workflow order. Any label string and any order is valid.
     #[test]
     fn badge_vocabulary_is_host_defined() {
         let card = BoardCard {
@@ -1604,11 +1515,8 @@ mod tests {
         assert_eq!(m.handle_key("Escape", Modifiers::default()), None);
     }
 
-    /// #476: the v1 hardcoded keymap used to bind `r`/`d`/`P`/`m`/`b` to
-    /// coord-tui's workflow verbs (refine/dispatch/merge/drop-to-backlog).
-    /// Those verbs are gone from `BoardAction`, so `handle_key` must leave
-    /// these keys unconsumed — hosts that want them are free to bind their
-    /// own meaning without fighting the primitive's default keymap.
+    /// The keymap does not consume former workflow verb keys (`r`, `d`, `P`, `m`, `b`),
+    /// allowing hosts to bind their own meaning without conflict.
     #[test]
     fn handle_key_no_longer_consumes_former_workflow_verb_keys() {
         let m = make_model();

@@ -1,6 +1,5 @@
 //! Minimal `AppLogic` painting a `TabBar` with a double-width (CJK) tab
-//! label — the conformance-matrix fixture for quadraui#555's TUI vt100
-//! observer.
+//! label.
 //!
 //! Deliberately independent of two other things that look similar:
 //!
@@ -8,16 +7,13 @@
 //!   labels are hardcoded ASCII and not settable from outside, so it can't
 //!   host a wide-char label at all.
 //! - `tests/acceptance/ms-11/wide_tab_labels.rs`'s sealed `WideTabFixture`
-//!   — oracle-owned acceptance fixture for issue #554 itself; a worker may
-//!   not import from or depend on a sealed acceptance slice. This fixture
-//!   is a separate, conformance-suite-owned construction that happens to
-//!   exercise the same class of content (a `TabBar` whose label contains
-//!   double-width glyphs), via nothing but `quadraui`'s public API.
+//!   — a separate conformance-suite-owned construction that exercises
+//!   a `TabBar` whose label contains double-width glyphs via `quadraui`'s
+//!   public API.
 
 use quadraui::{AppLogic, Backend, Color, Reaction, Rect, TabBar, TabItem, UiEvent, WidgetId};
 
-/// Tab 0's label — a CJK filename mid-string, matching quadraui#555's own
-/// worked example verbatim.
+/// Tab 0's label — contains double-width CJK characters mid-string.
 pub const WIDE_LABEL: &str = " 1: 日本語.rs ";
 /// Tab 1's label — an ASCII control, unaffected by wide-char handling.
 pub const ASCII_LABEL: &str = " 2: main.rs ";

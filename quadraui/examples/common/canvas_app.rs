@@ -1,5 +1,4 @@
-//! `Canvas` primitive `AppLogic` ([`tui_canvas`] / [`gtk_canvas`], issue
-//! #1102).
+//! `Canvas` primitive `AppLogic` ([`tui_canvas`] / [`gtk_canvas`]).
 //!
 //! A custom gauge the 40 other shipped primitives don't cover — exactly the
 //! scenario `Canvas`'s own module doc names as the escape hatch's

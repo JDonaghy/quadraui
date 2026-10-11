@@ -1,26 +1,15 @@
 //! macOS layout helper for [`crate::Chart`].
 //!
-//! Painting moved to the shared [`crate::primitives::chart::paint`]
-//! (#810, PaintSurface Phase 2c) — see that fn's doc for the
-//! divergences (the quadraui#791 clip, most notably) resolved while
-//! unifying `gtk::chart::draw_chart`, `macos::chart::draw_chart` and
-//! `win::chart::draw_chart` into one implementation. This module now
-//! only carries [`mac_chart_layout`], the pixel-unit layout query used
-//! for both hit-testing (`MacBackend::chart_layout`) and painting
+//! Painting is implemented in the shared [`crate::primitives::chart::paint`].
+//! This module carries [`mac_chart_layout`], the pixel-unit layout query
+//! used for both hit-testing (`MacBackend::chart_layout`) and painting
 //! (`MacBackend::draw_chart`, via `Backend::chart_layout`).
-//!
-//! The deleted `macos::chart::draw_chart` free function had zero call
-//! sites in `coord-tui`/`vimcode` (`grep -rn draw_chart ~/src/coord-tui/src
-//! ~/src/vimcode/src` — both only call `Backend::draw_chart`, whose
-//! signature is unchanged), so it needed no deprecation shim (CLAUDE.md
-//! rule 1).
 
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::layout_metrics::pixel_chart_layout;
 
 /// Compute the macOS pixel-unit layout for `chart`. Shares its geometry
-/// with `gtk_chart_layout` / `win_chart_layout` via [`pixel_chart_layout`]
-/// (issue #1079).
+/// with `gtk_chart_layout` / `win_chart_layout` via [`pixel_chart_layout`].
 pub fn mac_chart_layout(
     chart: &Chart,
     x: f64,
@@ -77,14 +66,11 @@ mod tests {
         assert_eq!(layout.hit_test(cx, cy), ChartHit::Body(WidgetId::new("ch")),);
     }
 
-    /// Regression for quadraui#494 / LESSONS.md "Layout helpers must
-    /// return coords in the same frame across backends": every other
-    /// test in this file lays out at origin (0, 0), where an
-    /// origin-offset bug is invisible (see #44's mac_tree_layout).
-    /// `mac_chart_layout` bakes `x`/`y` straight into `plot_area`
-    /// (absolute frame, matching the GTK/TUI twins) — call it directly
-    /// at a non-zero origin and prove a click at the resulting absolute
-    /// plot-area centre still resolves through `hit_test`.
+    /// Regression test: layout helpers must return coords in the same frame
+    /// across backends. `mac_chart_layout` bakes `x`/`y` straight into
+    /// `plot_area` (absolute frame, matching the GTK/TUI twins) — call it
+    /// directly at a non-zero origin and prove a click at the resulting
+    /// absolute plot-area centre still resolves through `hit_test`.
     #[test]
     fn hit_test_inside_plot_area_at_nonzero_origin() {
         let chart = sample_line();

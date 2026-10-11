@@ -1,17 +1,13 @@
-//! Terminal capability detection: colour depth (quadraui#826) and kitty
-//! keyboard protocol support (quadraui#827).
+//! Terminal capability detection: colour depth, kitty keyboard protocol,
+//! SGR-Pixels mouse mode, and underline-colour support.
 //!
-//! Before this module existed, [`super::ratatui_color`] emitted 24-bit
-//! `RatatuiColor::Rgb` unconditionally — correct on a truecolor terminal,
-//! silently wrong (not missing, wrong-*looking*) on the 256-colour and
-//! 16-colour terminals real users hit constantly: plain SSH to an older
-//! box, tmux without `Tc`/`RGB` passthrough, a serial console, older
-//! Windows terminals. [`detect_color_depth`] reads the same environment
-//! signals every terminal-aware CLI tool reads (`COLORTERM`, `TERM`) to
-//! answer "what can this terminal actually show", and
-//! [`super::color::DepthLimitedBackend`] is what acts on the answer.
+//! This module reads environment signals (`COLORTERM`, `TERM`, `KITTY_WINDOW_ID`,
+//! `TERM_PROGRAM`, `WT_SESSION`) and performs live terminal queries to detect
+//! what a terminal can actually display and accept.
 //!
 //! ## Detection rules
+//!
+//! ### Colour depth
 //!
 //! 1. `COLORTERM` containing `truecolor` or `24bit` (case-insensitive) ⇒
 //!    [`ColorDepth::TrueColor`]. This is the explicit, positive signal a
@@ -21,10 +17,9 @@
 //!    all set this.
 //! 2. Otherwise, `TERM` containing `256color` ⇒ [`ColorDepth::Indexed256`].
 //!    Covers `xterm-256color`, `screen-256color`, `tmux-256color` — the
-//!    common tmux-without-passthrough case named in quadraui#826: tmux
-//!    sets `TERM` to one of these but does not forward `COLORTERM` by
-//!    default, so this rule alone (without rule 1 firing) correctly lands
-//!    on 256-colour rather than assuming truecolor.
+//!    common tmux-without-passthrough case: tmux sets `TERM` to one of these
+//!    but does not forward `COLORTERM` by default, so this rule alone
+//!    correctly lands on 256-colour rather than assuming truecolor.
 //! 3. Otherwise ⇒ [`ColorDepth::Ansi16`], the conservative fallback for
 //!    every other `TERM` value (`xterm`, `vt100`, `linux`, `screen`, an
 //!    unset/empty `TERM`, …) — a wrong `Ansi16` degrades a terminal that
@@ -36,75 +31,52 @@
 //! Detection is a pure function of an environment-lookup closure
 //! ([`detect_color_depth_from`]) so it can be exercised with a fixed
 //! table of `(COLORTERM, TERM)` pairs rather than mutating the real
-//! process environment (which is both `unsafe` in modern Rust and
-//! flaky under `cargo test`'s multi-threaded runner, where env vars are
-//! genuinely global mutable state shared across every test in the
-//! binary). [`detect_color_depth`] is the thin `std::env::var`-backed
+//! process environment. [`detect_color_depth`] is the thin `std::env::var`-backed
 //! wrapper real callers use.
 //!
-//! ## Kitty keyboard protocol (quadraui#827)
+//! ### Kitty keyboard protocol
 //!
 //! `super::run::run` pushes [kitty's progressive keyboard enhancement
-//! flags](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) (so e.g.
-//! Ctrl+Enter is unambiguous from plain Enter) on a best-effort basis —
-//! before this issue, the *result* of that attempt was thrown away the
-//! instant it was used to decide whether to pop the flags on exit. An app
-//! had no way to ask "did that actually work", so it could only build a
-//! gesture on the assumption it did and silently never see the events on a
-//! terminal where it didn't — the exact "silently degrades" failure this
-//! module exists to close (see `docs/KITTY_KEYBOARD_PROTOCOL.md`'s degrade
-//! table for which real terminals land on which side).
-//!
-//! Two layers, same shape as the colour-depth split above:
+//! flags](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) on a best-effort
+//! basis. Two layers:
 //!
 //! 1. [`detect_kitty_keyboard`] — a pure, instant, environment-only
-//!    heuristic (`TERM`, `KITTY_WINDOW_ID`, `TERM_PROGRAM`) for the
-//!    terminals crossterm's own [`ratatui::crossterm::event::PushKeyboardEnhancementFlags`]
-//!    doc names as supporting the protocol and that this crate can
-//!    identify with high confidence from the environment alone: kitty
-//!    itself, foot, and WezTerm. Never claims a false positive it can't
-//!    back with a specific, checked signal — an unrecognised terminal
-//!    answers `false`, the cheaper failure mode (see this function's doc).
+//!    heuristic (`TERM`, `KITTY_WINDOW_ID`, `TERM_PROGRAM`) for terminals
+//!    that support the protocol: kitty itself, foot, and WezTerm.
+//!    Never claims a false positive it can't back with a specific, checked
+//!    signal — an unrecognised terminal answers `false`, the cheaper failure
+//!    mode.
 //! 2. [`probe_kitty_keyboard`] — the live, authoritative signal: the real
 //!    query/response round trip
 //!    ([`ratatui::crossterm::terminal::supports_keyboard_enhancement`],
 //!    which writes `ESC[?u ESC[c` and waits up to 2s for a reply) *when
 //!    the terminal actually answers it*, falling back to
 //!    [`detect_kitty_keyboard`]'s heuristic when it does not. That fallback
-//!    is the fix, not a decoration: a terminal that genuinely supports the
-//!    protocol but sits behind a multiplexer or relay that doesn't forward
-//!    the query/response (tmux without `terminal-features`, mosh, some
-//!    serial links) makes the live probe time out with no answer at all —
-//!    collapsing "no answer" to "unsupported" (this crate's behaviour
-//!    before #827) is indistinguishable from a terminal that was actually
-//!    asked and said no, and silently drops support the environment
-//!    heuristic would have caught. [`super::run::run`] calls
-//!    [`probe_kitty_keyboard`] once at startup and stores the result on
-//!    [`crate::tui::backend::TuiBackend`] via
-//!    [`crate::tui::backend::TuiBackend::set_kitty_keyboard`], where
-//!    [`crate::backend::BackendCaps::kitty_keyboard`] exposes it to the
-//!    app before it relies on any gesture that needs it.
+//!    is essential: a terminal that genuinely supports the protocol but sits
+//!    behind a multiplexer or relay that doesn't forward the query/response
+//!    (tmux without `terminal-features`, mosh, some serial links) makes the
+//!    live probe time out with no answer — the environment heuristic catches
+//!    what the probe cannot. [`super::run::run`] calls [`probe_kitty_keyboard`]
+//!    once at startup and stores the result on [`crate::tui::backend::TuiBackend`]
+//!    via [`crate::tui::backend::TuiBackend::set_kitty_keyboard`], where
+//!    [`crate::backend::BackendCaps::kitty_keyboard`] exposes it to the app
+//!    before it relies on any gesture that needs it.
 //!
-//! ## SGR-Pixels mouse mode (quadraui#1048)
+//! ### SGR-Pixels mouse mode
 //!
 //! Ordinary SGR mouse mode (`?1006h`, always enabled by [`super::run::run`])
 //! only reports motion when the pointer crosses a *cell* boundary — every
-//! coordinate quadraui hands an app is a whole terminal cell, which is fine
-//! for clicks but too coarse for an absolute drag over a track shorter than
-//! its content (a scrollbar or minimap thumb; see vimcode#1271). Mode 1016
+//! coordinate quadraui hands an app is a whole terminal cell. Mode 1016
 //! ("SGR-Pixels") reports the identical `CSI < Cb ; Cx ; Cy M/m` wire
 //! format with `Cx`/`Cy` in *pixels* instead of cells, so crossterm parses
-//! it unmodified — the finer values just arrive in
-//! `MouseEvent.column`/`.row`, and dividing by the real cell size recovers
-//! a fractional cell coordinate.
+//! it unmodified — dividing by the real cell size recovers a fractional
+//! cell coordinate.
 //!
 //! Same two-layer split as colour depth and kitty keyboard, but with one
-//! deliberate asymmetry from the kitty-keyboard probe: **a swallowed or
-//! negative DECRQM round trip here must resolve to `false`, not fall back
-//! to the environment heuristic.** Misdetecting pixel mode is far worse
-//! than not having it — a pixel coordinate read as a cell index puts every
-//! click in the wrong place, whereas a swallowed kitty-keyboard query only
-//! costs an ambiguous key.
+//! deliberate asymmetry: **a swallowed or negative DECRQM round trip here
+//! must resolve to `false`, not fall back to the environment heuristic.**
+//! Misdetecting pixel mode is far worse than not having it — a pixel
+//! coordinate read as a cell index puts every click in the wrong place.
 //!
 //! 1. [`detect_sgr_pixel_mouse`] — pure, instant, environment-only
 //!    heuristic, positive only for terminals this crate can identify with
@@ -112,62 +84,47 @@
 //!    `TERM_PROGRAM=WezTerm`. `TERM=screen*`/`tmux*` or `$TMUX` set is a
 //!    hard `false` regardless of any other signal — a multiplexer that
 //!    does not forward the mode must never be inferred from the outer
-//!    terminal's identity (tmux 3.7c's own binary contains zero references
-//!    to `1016`: it implements neither the mode nor a passthrough for it).
+//!    terminal's identity.
 //! 2. [`probe_sgr_pixel_mouse`] — the live, authoritative answer: a DECRQM
 //!    query (`CSI ? 1016 $ p`), whose reply (`CSI ? 1016 ; Ps $ y`) reports
 //!    `Ps` ∈ {0 not recognised, 1 set, 2 reset, 3 permanently set, 4
 //!    permanently reset}. Only `Ps` ∈ {1, 3} answers `true`; a timeout, a
 //!    truncated/unparseable reply, or `Ps` ∈ {0, 2, 4} all answer `false`.
-//!    Unlike [`probe_kitty_keyboard`] (which routes its query through
-//!    crossterm's own internal event reader, whose filters already know how
-//!    to recognise and discard that specific reply), crossterm has no
-//!    concept of an arbitrary DECRQM response — reading it that way would
-//!    itself leak the raw `CSI ... $ y` bytes into the app as stray
-//!    `KeyPressed` events. So this probe reads its reply directly off the
-//!    file descriptor (`#[cfg(unix)]`, via a real `poll(2)` with a hard
-//!    deadline so a terminal that never answers — tmux — can be abandoned
-//!    cleanly without leaving a reader that could later steal the user's
-//!    first genuine keystroke; see [`super::run::run`]'s call site for why
-//!    this must run *before* the event loop starts). No non-unix
-//!    implementation exists yet — see this module's `query_sgr_pixel_decrqm`
-//!    for why a spawned-thread-based read would be a correctness bug, not
-//!    just a missing feature, on a host with no cancellable fd-level poll;
-//!    non-unix hosts get the honest `false` a timeout would have produced
-//!    anyway. `super::run::run` calls this once at startup and stores the
-//!    result — together with the resolved [`crate::TerminalCellSize`] a
-//!    live `window_size()` query provides — on
+//!    Unlike [`probe_kitty_keyboard`], crossterm has no concept of an
+//!    arbitrary DECRQM response — reading it that way would leak the raw
+//!    `CSI ... $ y` bytes into the app as stray `KeyPressed` events. So this
+//!    probe reads its reply directly off the file descriptor (`#[cfg(unix)]`,
+//!    via a real `poll(2)` with a hard deadline so a terminal that never
+//!    answers can be abandoned cleanly). No non-unix implementation exists
+//!    yet; non-unix hosts get the honest `false` a timeout would produce.
+//!    [`super::run::run`] calls this once at startup and stores the result
+//!    — together with the resolved [`crate::TerminalCellSize`] — on
 //!    [`crate::tui::backend::TuiBackend`] via
 //!    [`crate::tui::backend::TuiBackend::set_sgr_pixel_mouse`] /
 //!    [`crate::tui::backend::TuiBackend::set_cell_pixel_size`], surfaced to
 //!    an app via [`crate::backend::BackendCaps::sgr_pixel_mouse`].
 //!
-//! ## Underline-colour (SGR 58) support
+//! ### Underline-colour (SGR 58) support
 //!
 //! `ratatui-crossterm`'s `SetUnderlineColor` only ever emits SGR 58 in the
 //! semicolon form (`ESC[58;5;Nm` / `ESC[58;2;R;G;Bm`). ConPTY — the pty
 //! layer every native Windows terminal (including Windows Terminal) sits
 //! behind — only recognises the *colon* form (`ESC[58:5:Nm`); fed the
 //! semicolon form, it drops the leading `58` and reinterprets the
-//! remaining numbers as unrelated SGR parameters (`5` → blink, `2` →
-//! faint, …), so any cell this crate paints with `underline_color` set
-//! blinks or fades on Windows instead of showing an underline in that
-//! colour. Every Windows build sits behind ConPTY, so
-//! [`detect_underline_color_support`] answers `false` there
-//! unconditionally. A *non-Windows* build can sit behind ConPTY too: a
-//! Linux binary in WSL whose output is drawn by Windows Terminal hits the
-//! exact same misparse (vimcode's Linux `vcd` showed runs of faded text
-//! after every LSP-hint underline). Windows Terminal exports `WT_SESSION`,
-//! and WSL forwards it into the Linux environment, so
-//! [`detect_underline_color_support_from`] also answers `false` whenever
-//! that variable is set. macOS Terminal.app (`TERM_PROGRAM=Apple_Terminal`)
-//! misparses the semicolon form the same way, so it strips too. The one case no signal covers is an SSH session
-//! out of Windows Terminal (`WT_SESSION` is not forwarded over SSH).
+//! remaining numbers as unrelated SGR parameters, so any cell this crate
+//! paints with `underline_color` set blinks or fades instead of showing
+//! an underline in that colour. Every Windows build sits behind ConPTY, so
+//! [`detect_underline_color_support`] answers `false` there unconditionally.
+//! A *non-Windows* build can sit behind ConPTY too: a Linux binary in WSL
+//! whose output is drawn by Windows Terminal hits the same misparse. Windows
+//! Terminal exports `WT_SESSION`, and WSL forwards it into the Linux
+//! environment, so [`detect_underline_color_support_from`] also answers
+//! `false` whenever that variable is set. macOS Terminal.app
+//! (`TERM_PROGRAM=Apple_Terminal`) misparses the semicolon form the same way.
 //! [`crate::tui::backend::TuiBackend::new`] seeds
-//! [`crate::tui::backend::TuiBackend::underline_color_supported`] with
-//! this; [`crate::tui::backend::TuiBackend::set_underline_color_supported`]
-//! overrides it for tests that want to exercise the degrade without an
-//! actual Windows host. [`crate::tui::backend::TuiBackend::strip_unsupported_underline_colors`]
+//! [`crate::tui::backend::TuiBackend::underline_color_supported`] with this;
+//! [`crate::tui::backend::TuiBackend::set_underline_color_supported`]
+//! overrides it for tests. [`crate::tui::backend::TuiBackend::strip_unsupported_underline_colors`]
 //! is where the flag is actually acted on — see that method's doc for why
 //! a single per-frame sweep, not a parameter threaded through every
 //! rasteriser, is the chosen choke point.
@@ -331,7 +288,7 @@ pub(crate) fn detect_sgr_pixel_mouse_from(getenv: impl Fn(&str) -> Option<String
 /// forward SGR-Pixels mouse reports at all: `$TMUX` set, or `TERM` starting
 /// with `screen`/`tmux`. Extracted out of [`detect_sgr_pixel_mouse_from`] so
 /// [`super::run::run_with`] can skip [`probe_sgr_pixel_mouse`]'s live
-/// DECRQM round trip entirely in this case (quadraui#1048 review) — a
+/// DECRQM round trip entirely in this case — a
 /// multiplexer that doesn't forward the mode will never answer the query
 /// usefully, so the up-to-2s wait for a reply that never comes only stacks
 /// startup latency on top of the kitty-keyboard probe's own up-to-2s wait,
@@ -516,7 +473,7 @@ pub(crate) fn detect_underline_color_support_from(
     getenv("TERM_PROGRAM").as_deref() != Some("Apple_Terminal")
 }
 
-/// System dark/light detection (quadraui#952) — the TUI half of
+/// System dark/light detection — the TUI half of
 /// `PlatformServices::system_theme`'s "honest degrade" story. Unlike
 /// [`detect_color_depth`]/[`detect_kitty_keyboard`], there is no `probe_*`
 /// live-query twin here yet: a real answer would need an OSC 11
@@ -599,9 +556,8 @@ mod tests {
         );
     }
 
-    /// The acceptance-criteria case named directly in quadraui#826:
-    /// `TERM=xterm-256color` with no `COLORTERM` set at all must land on
-    /// indexed, not truecolor.
+    /// This test case covers the acceptance criterion: `TERM=xterm-256color`
+    /// with no `COLORTERM` set must land on indexed, not truecolor.
     #[test]
     fn xterm_256color_with_no_colorterm_is_indexed() {
         assert_eq!(
@@ -645,7 +601,7 @@ mod tests {
         );
     }
 
-    // ── Kitty keyboard protocol (quadraui#827) ──────────────────────────
+    // ── Kitty keyboard protocol ─────────────────────────────────────────
 
     #[test]
     fn xterm_kitty_term_is_detected() {
@@ -677,10 +633,9 @@ mod tests {
         )])));
     }
 
-    /// The acceptance-criteria case for quadraui#827's degrade table: a
-    /// plain `TERM=xterm-256color` session (raw SSH, tmux without
-    /// `terminal-features`) has none of the three positive signals and
-    /// must land on `false`, not a hopeful guess.
+    /// This test case covers the acceptance criterion: a plain
+    /// `TERM=xterm-256color` session (raw SSH, tmux without `terminal-features`)
+    /// has none of the three positive signals and must land on `false`.
     #[test]
     fn plain_256color_term_is_not_detected() {
         assert!(!detect_kitty_keyboard_from(env(&[(
@@ -720,7 +675,7 @@ mod tests {
         assert!(!detect_kitty_keyboard_from(env(&[("TERM", "alacritty")])));
     }
 
-    // ── SGR-Pixels mouse mode (quadraui#1048) ───────────────────────────
+    // ── SGR-Pixels mouse mode ───────────────────────────────────────────
 
     #[test]
     fn kitty_window_id_is_detected_for_sgr_pixel_mouse() {
@@ -789,7 +744,7 @@ mod tests {
         ])));
     }
 
-    // ── SGR-Pixels probe gating (quadraui#1048 review) ──────────────────
+    // ── SGR-Pixels probe gating ─────────────────────────────────────────
 
     #[test]
     fn tmux_env_var_blocks_the_live_probe() {
@@ -828,7 +783,7 @@ mod tests {
         assert!(!sgr_pixel_mouse_blocked_by_multiplexer_from(env(&[])));
     }
 
-    // ── DECRQM reply parsing (quadraui#1048) ────────────────────────────
+    // ── DECRQM reply parsing ────────────────────────────────────────────
 
     #[test]
     fn decrqm_reply_parses_each_ps_value() {
@@ -921,7 +876,7 @@ mod tests {
         assert!(!decrqm_reply_supports_mode(None));
     }
 
-    // ── System theme detection (quadraui#952) ───────────────────────────
+    // ── System theme detection ──────────────────────────────────────────
 
     #[test]
     fn no_colorfgbg_returns_none() {
@@ -973,7 +928,7 @@ mod tests {
     }
 }
 
-/// Property tests for [`parse_decrqm_reply`] (quadraui#1130): the bytes it
+/// Property tests for [`parse_decrqm_reply`]: the bytes it
 /// parses come straight off a real terminal's reply to a DECRQM query — a
 /// foreign, unvalidated byte stream this crate does not control — so
 /// "never panics, and only ever returns a `Ps` digit that was actually in

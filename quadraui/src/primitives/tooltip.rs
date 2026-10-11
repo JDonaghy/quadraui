@@ -15,12 +15,12 @@
 //! placement, adjusting if it would overflow the viewport. Backends
 //! render a box with the content at the resolved position.
 //!
-//! ## Border/title vocabulary is a *sidecar*, not a field on either struct (#541)
+//! ## Border/title vocabulary is a *sidecar*, not a field on either struct
 //!
 //! [`TooltipBorder`] and an optional title are per-tooltip chrome a
 //! consumer can now ask for (`Sides` bars-only, `Full` closed box, `None`
 //! no chrome at all; an optional title centred into `Full`'s top border
-//! row). They live together in [`TooltipChrome`], a **brand-new type**
+//! row). They live together in [`TooltipChrome`], a separate type
 //! passed *alongside* the tooltip and its layout to
 //! [`crate::Backend::draw_tooltip_with_chrome`] (and the per-backend
 //! `draw_tooltip_with_chrome` rasterisers).
@@ -28,31 +28,26 @@
 //! They are deliberately **not** fields on [`Tooltip`] and **not** fields
 //! on [`TooltipLayout`]. Both of those are plain, non-`#[non_exhaustive]`,
 //! all-`pub`-field structs, and both are constructed with *exhaustive*
-//! literals today — `Tooltip { .. }` by the sealed acceptance slices under
-//! `tests/acceptance/ms-11/` and by seven `vimcode` call sites, and
-//! `TooltipLayout { bounds, resolved_placement }` by hand at
-//! `vimcode`'s `src/tui_main/panels.rs` (that popup centres itself over an
-//! area rather than anchoring to an element, so it cannot use
-//! [`Tooltip::layout`] and builds the layout value directly — its public
-//! fields exist for exactly that). Adding a required field to *either*
-//! struct is an `error[E0063]: missing fields` break for every one of
-//! those literals the instant it lands on `develop`, and Rust offers no
-//! shim that keeps an exhaustive literal compiling across an added field:
+//! literals — `Tooltip { .. }` by several call sites, and
+//! `TooltipLayout { bounds, resolved_placement }` by hand where a popup
+//! centres itself over an area rather than anchoring to an element, so it
+//! cannot use [`Tooltip::layout`] and builds the layout value directly —
+//! its public fields exist for exactly that. Adding a required field to
+//! *either* struct breaks every one of those literals the instant it
+//! lands, and Rust offers no shim that keeps an exhaustive literal
+//! compiling across an added field:
 //!
 //! - `Default` + `..Default::default()` only helps literals that already
 //!   spread, which these don't.
 //! - `#[non_exhaustive]` applied retroactively swaps `E0063` for
 //!   `E0639: cannot construct non-exhaustive struct outside its crate` —
-//!   strictly worse for `panels.rs`, which *needs* to construct one.
+//!   strictly worse for code that *needs* to construct one.
 //!
 //! Threading the vocabulary through a separate value sidesteps the break
 //! entirely. Nothing about `Tooltip`'s or `TooltipLayout`'s field set
-//! changes in #541, so every existing exhaustive literal of either — in
-//! tree, in the sealed acceptance slices, and downstream — keeps compiling
-//! untouched, and the new capability is reached by calling a new method
-//! instead of by filling in a new field. Per rule 8 of
-//! `quadraui/docs/PRIMITIVE_RULES.md` this makes #541 a purely additive
-//! change with no downstream migration to schedule.
+//! changes, so every existing exhaustive literal of either — in tree and
+//! downstream — keeps compiling untouched, and the new capability is
+//! reached by calling a new method instead of by filling in a new field.
 //!
 //! [`crate::Backend::draw_tooltip`] keeps its exact signature and
 //! behaviour (it renders `TooltipChrome::default()`, i.e. the
@@ -61,34 +56,21 @@
 //! `draw_tooltip_with_chrome` is an added trait method with a default body
 //! that delegates to it.
 //!
-//! Measured per rule 8's *Measure before you cut* (grepped across both
-//! path-dep consumers, `~/src/vimcode/src` and
-//! `~/src/claude-coordinator/tui/src`): 7 exhaustive `Tooltip { .. }`
-//! literals in `vimcode` (`src/render.rs:1151,1490,4285`;
-//! `src/gtk/draw.rs:1378,1667,1765`; `src/tui_main/panels.rs:810`), 1
-//! exhaustive `TooltipLayout { .. }` literal (`panels.rs:818`), and no
-//! tooltip hits at all in `coord-tui`. Every one of them still compiles
-//! against this change — nothing to migrate, so no companion consumer PR
-//! and no `#[deprecated]` shim are required.
-//!
-//! ## `with_*` builder removal (issue #824, then #1109)
+//! ## `with_*` builder removal
 //!
 //! `Tooltip`'s `with_styled_lines` / `with_placement` / `with_bg` /
 //! `with_fg` and `TooltipChrome`'s `with_border` / `with_title` builders
 //! were pure convenience sugar around a field write, not something that
 //! guarded an invariant — every one of those fields is already `pub`.
-//! #824 deprecated them; #1109 removed them (zero uses in coord-tui's
-//! `main` and vimcode's `develop`). Set the field directly instead —
-//! `TooltipChrome` is `#[non_exhaustive]` + `Default` already, so it *is*
-//! the options-struct shape this issue asks for, and a future chrome/
-//! tooltip field is additive either way. `Tooltip` itself stays a plain,
-//! non-`#[non_exhaustive]` struct per the exhaustive-literal reasoning
-//! above — that part of #824's "adding a field must not break" goal
-//! already lives on `TooltipChrome`, which is why new tooltip knobs have
-//! gone there (`#541`) rather than onto `Tooltip` since.
+//! They were removed because they were not used. Set the field directly
+//! instead — `TooltipChrome` is `#[non_exhaustive]` + `Default` already,
+//! so it *is* the options-struct shape, and a future chrome/tooltip field
+//! is additive either way. `Tooltip` itself stays a plain,
+//! non-`#[non_exhaustive]` struct — that part of the "adding a field must
+//! not break" goal already lives on `TooltipChrome`, which is why new
+//! tooltip knobs have gone there rather than onto `Tooltip` since.
 //!
 //! Usage:
-//!
 //! ```
 //! # use quadraui::{Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, WidgetId, Rect};
 //! let mut tip = Tooltip::new(WidgetId::new("hover"), "Hover hint");
@@ -152,34 +134,24 @@ pub struct Tooltip {
     pub fg: Option<Color>,
 }
 
-/// Border chrome vocabulary for [`Tooltip`] (#541).
+/// Border chrome vocabulary for [`Tooltip`].
 ///
-/// Before this existed, each backend hardcoded its own answer — TUI drew
-/// `│` side bars only, GTK and macOS always stroked a full 4-sided box —
-/// so a consumer had no way to ask for one or the other; a raw-drawing
-/// popup that migrated to `Backend::draw_tooltip` (JDonaghy/vimcode#635)
-/// silently lost its top/bottom border and title because there was no
-/// field to carry the request. This type is that field's vocabulary.
+/// Each backend can ask for a particular border style: side bars only,
+/// a full 4-sided box, or no border at all. An optional title can be
+/// embedded in the top border row when the border is `Full`.
 ///
-/// `#[non_exhaustive]`: brand new this PR, so marking it costs no
-/// consumer anything today, and it means a future fourth variant (e.g. a
+/// `#[non_exhaustive]`: marking it means a future variant (e.g. a
 /// `Rounded` corner style) is additive instead of a breaking change.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TooltipBorder {
     /// Vertical bars on the left/right edge only — no top or bottom rule,
-    /// regardless of box height. The pre-#542 TUI look, now available on
-    /// every backend by explicit request. `title` is not rendered in this
-    /// mode (there is no top rule to embed it in).
+    /// regardless of box height. `title` is not rendered in this mode.
     Sides,
-    /// A closed box on all four sides. The default (see the note on
-    /// [`TooltipLayout::border`]): GTK and macOS have always stroked a full
-    /// rectangle here, and TUI has done the same since #542 whenever the
-    /// measured box leaves room for both border rows (`height >= 3` and
-    /// `width >= 2`); below that TUI falls back to `Sides` chrome for
-    /// this variant specifically, so a tooltip too short for a box still
-    /// shows *something* — that fallback is a rendering detail of `Full`,
-    /// not a separate mode a consumer selects.
+    /// A closed box on all four sides. The default: all backends stroke
+    /// a full rectangle here when there is room; on TUI, if the box is
+    /// too short (`height < 3` or `width < 2`), the border falls back to
+    /// `Sides` chrome so the tooltip still shows border.
     ///
     /// Carries `title`, centred into the top border row, when set.
     #[default]
@@ -212,14 +184,14 @@ pub enum TooltipPlacement {
 /// reserved on screen, in the active backend's own units (character cells
 /// on TUI, pixels on GTK).
 ///
-/// # Contract (#542)
+/// # Contract
 ///
 /// `height` is the whole tooltip box, border chrome included — not just
 /// the content. `Tooltip::layout` passes it straight through to
 /// [`TooltipLayout::bounds`], and that is what a backend's `draw_tooltip`
 /// paints into. Concretely, on TUI:
 ///
-/// - When `height >= 3` (and `width >= 2`), [`crate::tui::draw_tooltip`]
+/// - When `height >= 3` (and `width >= 2`), the TUI backend
 ///   strokes a full 4-sided box — one row each for the top and bottom
 ///   border — leaving only `height - 2` rows for content. GTK has always
 ///   stroked a full box the same way, but pays for it in sub-cell pixels
@@ -229,14 +201,9 @@ pub enum TooltipPlacement {
 ///   rows are usable for content.
 ///
 /// **Callers that want *N* content lines visible on TUI once a bordered
-/// box is drawn must pass `height >= N + 2`**, not `N`. This is a
-/// behaviour change from before #542, when TUI drew no vertical chrome at
-/// all and `height` meant exactly "content rows" on every backend; a
-/// caller written against that older contract that still passes a bare
-/// content-line count will silently lose its last two lines once its
-/// tooltip is 3+ rows tall. See the #542 review discussion for the
-/// concrete downstream call sites this bit (`vimcode`'s hover-popup and
-/// diff-peek tooltip builders) — those need a matching `+ 2` migration.
+/// box is drawn must pass `height >= N + 2`**, not `N`. Tooltips 3+ rows
+/// tall draw a full 4-sided border, consuming 2 rows; passing a bare
+/// content-line count will silently lose the last two lines.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TooltipMeasure {
     pub width: f32,
@@ -277,7 +244,7 @@ pub enum TooltipHit {
 /// Both fields are `pub` and this struct is not `#[non_exhaustive]`,
 /// because consumers that position a popup themselves (rather than
 /// anchoring it to an element via [`Tooltip::layout`]) construct one
-/// directly with an exhaustive literal. #541's border/title vocabulary
+/// directly with an exhaustive literal. Border and title vocabulary
 /// therefore lives in the separate [`TooltipChrome`] sidecar rather than
 /// as fields here — see the module doc.
 #[derive(Debug, Clone, PartialEq)]
@@ -300,13 +267,13 @@ impl TooltipLayout {
     }
 }
 
-/// Per-tooltip chrome request (#541): which border a backend should
+/// Per-tooltip chrome request: which border a backend should
 /// stroke, and an optional title to embed in it.
 ///
 /// Passed alongside a [`Tooltip`] + [`TooltipLayout`] to
 /// [`crate::Backend::draw_tooltip_with_chrome`]. It is a separate value
-/// rather than fields on either of those structs so that #541 adds no
-/// required field to a publicly-literal-constructible type — see the
+/// rather than fields on either of those structs so that the change adds
+/// no required field to a publicly-literal-constructible type — see the
 /// module doc for the full reasoning.
 ///
 /// [`TooltipChrome::default()`] is `Full` with no title: exactly what
@@ -314,16 +281,12 @@ impl TooltipLayout {
 /// why [`crate::Backend::draw_tooltip`] can keep its old signature and
 /// simply render the default.
 ///
-/// `#[non_exhaustive]`: brand new in this change, so marking it costs no
-/// consumer anything today (nobody has an exhaustive literal of it yet),
-/// and it means future chrome knobs — a corner radius, a border colour
-/// override — are additive rather than the very breaking change this type
-/// exists to avoid. Construct with [`TooltipChrome::new`] /
+/// `#[non_exhaustive]`: marking it means future chrome knobs — a corner
+/// radius, a border colour override — are additive rather than breaking
+/// changes. Construct with [`TooltipChrome::new`] /
 /// [`TooltipChrome::default`], then set `border` / `title` directly —
 /// both fields are `pub` and the type is already `#[non_exhaustive]` +
-/// `Default`, so it *is* the options struct (quadraui#824); the
-/// `with_border` / `with_title` builders that used to be the only way to
-/// reach those fields were removed in issue #1109.
+/// `Default`, so it *is* the options struct.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TooltipChrome {
@@ -386,7 +349,7 @@ impl Tooltip {
     /// both fail (unusual — anchor in the middle of a tiny viewport),
     /// the tooltip is pinned to the viewport edge on the preferred side.
     ///
-    /// # Border/title (#541)
+    /// # Border/title
     ///
     /// The returned [`TooltipLayout`] carries geometry only. Border chrome
     /// and an optional title are requested separately, via a
@@ -394,7 +357,7 @@ impl Tooltip {
     /// [`crate::Backend::draw_tooltip_with_chrome`]; drawing through plain
     /// [`crate::Backend::draw_tooltip`] uses `TooltipChrome::default()`
     /// ([`TooltipBorder::Full`], no title) — the behaviour every backend
-    /// used unconditionally before #541 introduced a choice. See the module
+    /// used unconditionally before a choice was introduced. See the module
     /// doc for why that vocabulary is a sidecar rather than a field here.
     pub fn layout(
         &self,
@@ -482,13 +445,12 @@ impl Tooltip {
     }
 }
 
-// ── PaintSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
+// ── PaintSurface Phase 4 slice 4/8 ─────────────────────────────────────────
 //
 // `paint` below is the one shared paint implementation, written against
 // [`crate::paint_surface::PaintSurface`] instead of any one backend's
 // API — see `crate::primitives::context_menu::native_surface_paint` for
-// the same pattern applied one primitive earlier in this slice (#1077,
-// part 1/4).
+// the same pattern applied one primitive earlier in this slice.
 //
 // Pre-migration, `gtk::tooltip`, `macos::tooltip` and `win::tooltip`
 // were already near-identical (bg fill, border-chrome match on `Full` /
@@ -501,20 +463,18 @@ impl Tooltip {
 //   already measured and drew each span through
 //   `DWrite::{measure_text_styled, draw_text_styled}`, honouring
 //   `span.bold` (DirectWrite has no italic/underline draw path of its
-//   own, so those two were dropped there too); GTK and macOS both
+//   own, so those two were not supported there); GTK and macOS both
 //   ignored all three — GTK explicitly cleared Pango attributes before
 //   drawing each span, and macOS's `draw_text`/`measure_text` never took
 //   a style parameter at all. `paint` calls
 //   [`crate::paint_surface::PaintSurface::surface_draw_text_run_styled`]
 //   /`surface_measure_text_styled` for every backend now: Windows keeps
-//   its bold rendering exactly as before (dropping italic/underline, per
-//   [`crate::paint_surface::PaintSurface::surface_draw_text_run_styled`]'s
-//   own documented per-backend override survey); GTK gains real
-//   bold/italic/underline rendering it never had; macOS's adapter takes
-//   the verb's default (ignore style, forward to the plain measure/draw)
-//   so its rendering is unchanged. Plain `tooltip.text` (no
-//   `styled_lines`) is unaffected on every backend — it never carried
-//   per-run style.
+//   its bold rendering exactly as before (italic/underline not supported
+//   per DirectWrite capabilities); GTK gains real bold/italic/underline
+//   rendering it never had; macOS's adapter ignores style and forwards to
+//   the plain measure/draw so its rendering is unchanged. Plain
+//   `tooltip.text` (no `styled_lines`) is unaffected on every backend —
+//   it never carried per-run style.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -531,7 +491,7 @@ pub(crate) mod native_surface_paint {
 
     /// Paint a [`Tooltip`] at its resolved `tooltip_layout` onto
     /// `surface`, with the border and optional title requested by
-    /// `chrome` (#541).
+    /// `chrome`.
     ///
     /// `line_height` / `padding_x` are in `surface`-native units
     /// (character cells for TUI-shaped callers, pixels for every pixel
@@ -692,12 +652,12 @@ mod tests {
 
     // ── Tooltip primitive tests (D6 shape) ────────────────────────────
 
-    /// #541: the border/title vocabulary is a separate [`TooltipChrome`]
+    /// The border/title vocabulary is a separate [`TooltipChrome`]
     /// value passed alongside the tooltip and its layout — *not* a field
     /// on `Tooltip` or on `TooltipLayout`, both of which consumers
     /// construct with exhaustive literals (see `primitives::tooltip`'s
     /// module doc). `TooltipChrome::default()` matches what every backend
-    /// drew unconditionally before #541 introduced a choice.
+    /// drew unconditionally before a choice was introduced.
     #[test]
     fn tooltip_chrome_defaults_to_full_then_fields_override() {
         let chrome = TooltipChrome::default();
@@ -713,12 +673,12 @@ mod tests {
         assert_eq!(chrome.border, TooltipBorder::Sides);
     }
 
-    /// #541 rule-8 guard: `TooltipLayout` must stay constructible from a
-    /// bare exhaustive literal, because downstream consumers that
-    /// position a popup themselves (rather than anchoring it via
-    /// `Tooltip::layout`) build one by hand. If a future change adds a
-    /// required field here, this test stops compiling — which is the
-    /// point: that would be an `E0063` break for every such call site.
+    /// `TooltipLayout` must stay constructible from a bare exhaustive
+    /// literal, because downstream consumers that position a popup
+    /// themselves (rather than anchoring it via `Tooltip::layout`) build
+    /// one by hand. If a future change adds a required field here, this
+    /// test stops compiling — which would signal an `E0063` break for
+    /// every such call site.
     #[test]
     fn tooltip_layout_stays_exhaustively_constructible() {
         let layout = TooltipLayout {
@@ -793,9 +753,8 @@ mod tests {
 
     #[test]
     fn tooltip_layout_does_not_panic_when_wider_than_viewport() {
-        // Regression for #213: when content width exceeds viewport width
-        // the legacy clamp produced max < min and `f32::clamp` panicked.
-        // The fix pins the tooltip to the viewport edge.
+        // When content width exceeds viewport width, the tooltip is
+        // pinned to the viewport edge rather than panicking.
         let t = Tooltip {
             id: WidgetId::new("tip"),
             text: "Very wide".to_string(),

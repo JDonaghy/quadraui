@@ -17,11 +17,10 @@ use crate::theme::Theme;
 
 /// Equivalent to [`draw_activity_bar_with_style`] with
 /// `ActivityBarStyle::default()`, i.e. no active-row fill — see that
-/// function for the full behaviour and #658's reasoning for why the fill
-/// lives in a separate style value rather than a field on [`ActivityBar`].
+/// function for the full behaviour.
 ///
 /// `nerd_fonts_enabled` picks which half of each item's [`crate::Icon`]
-/// paints — `glyph` when `true`, `fallback` when `false` (issue #683).
+/// paints — `glyph` when `true`, `fallback` when `false`.
 /// Pass the backend's own flag (`Backend::set_nerd_fonts`), same as
 /// [`super::list::draw_list`].
 #[allow(clippy::too_many_arguments)]
@@ -44,8 +43,8 @@ pub fn draw_activity_bar(
     )
 }
 
-/// [`draw_activity_bar`] with an explicit [`ActivityBarStyle`] request
-/// (#658). `ActivityBarStyle::default()` reproduces [`draw_activity_bar`]
+/// [`draw_activity_bar`] with an explicit [`ActivityBarStyle`] request.
+/// `ActivityBarStyle::default()` reproduces [`draw_activity_bar`]
 /// cell for cell. See [`draw_activity_bar`] for `nerd_fonts_enabled`.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_activity_bar_with_style(
@@ -63,7 +62,7 @@ pub fn draw_activity_bar_with_style(
 
     let bg = qc(theme.tab_bar_bg);
     let sep = qc(theme.separator);
-    // #658: no theme fallback for either knob — `None` genuinely means
+    // No theme fallback for either knob — `None` genuinely means
     // "don't paint this" for both the accent line and the row fill.
     let accent: Option<ratatui::style::Color> = bar.active_accent.map(qc);
     let active_bg: Option<ratatui::style::Color> = style.active_bg.map(qc);
@@ -138,7 +137,7 @@ pub fn draw_activity_bar_with_style(
         }
 
         // Left-edge accent bar for active items — only when the bar opts in
-        // via `active_accent`. `None` paints zero accent-line pixels (#658).
+        // via `active_accent`. `None` paints zero accent-line pixels.
         if item.is_active {
             if let Some(ac) = accent {
                 set_cell(buf, area.x, y, '▎', ac, row_bg);
@@ -147,7 +146,7 @@ pub fn draw_activity_bar_with_style(
 
         // Icon glyph — centered in the available width (excluding accent
         // column and separator column). Picks `Icon::glyph` /
-        // `Icon::fallback` per `nerd_fonts_enabled` (#683); TUI paints
+        // `Icon::fallback` per `nerd_fonts_enabled`; TUI paints
         // only the resolved string's first character.
         let icon_str = if nerd_fonts_enabled {
             item.icon.glyph.as_str()
@@ -175,15 +174,7 @@ pub fn draw_activity_bar_with_style(
         }
 
         // Hit regions are **bar-relative**, not absolute: report the
-        // row offset within `area`, not the screen row `y` we painted
-        // at. Keeping `area.y` in here double-counted the bar origin,
-        // because `AppShell` adds `activity_bar_bounds.y` itself in
-        // both its click and hover readers — a shift that was zero
-        // (invisible) while the title bar was hidden and became a
-        // one-row off-by-one the instant `set_title_bar_visible(true)`
-        // revealed it. GTK, macOS, and `backend::activity_bar_hits`
-        // all already used this space; the TUI was the lone outlier.
-        // Issue #552 (the coordinate-space half of #547's height fix).
+        // row offset within `area`, not the screen row `y` we painted at.
         let rel_y = (y - area.y) as f32;
         regions.push(ActivityBarRowHit {
             y_start: rel_y,
@@ -227,14 +218,8 @@ mod tests {
         }
     }
 
-    /// The #552 contract, stated as an assertion: hit regions are
-    /// **bar-relative**, so the top row starts at `0.0` no matter where
-    /// the bar is painted.
-    ///
-    /// This is the test that fails against pre-fix `develop`: with
-    /// `area.y == 3` the rasteriser returned `y_start == 3.0` for the
-    /// first top row (its absolute paint row), which `AppShell` then
-    /// shifted by `activity_bar_bounds.y` a second time.
+    /// Hit regions are **bar-relative**, not absolute, so the top row
+    /// starts at `0.0` no matter where the bar is painted.
     ///
     /// Looks rows up **by id** rather than by position: `visible_items`
     /// (and therefore this list) is bottom-pinned-first, not visual
@@ -301,10 +286,7 @@ mod tests {
         }
     }
 
-    /// Painting still uses the absolute row — the fix must not move the
-    /// glyphs, only the reported regions. The operator's note on
-    /// vimcode#634 was explicit that rendering was already correct and
-    /// only the click mapping was wrong.
+    /// Painting uses the absolute row; hit regions are bar-relative.
     #[test]
     fn icons_still_paint_at_the_absolute_row() {
         let b = bar();
@@ -331,7 +313,7 @@ mod tests {
         );
     }
 
-    /// #683: `nerd_fonts_enabled` picks `Icon::glyph` when `true` and
+    /// `nerd_fonts_enabled` picks `Icon::glyph` when `true` and
     /// `Icon::fallback` when `false` — the activity bar had no fallback
     /// path at all before this issue, painting whatever bare string it
     /// was handed on every backend regardless of Nerd Font availability.
@@ -359,9 +341,6 @@ mod tests {
             "nerd_fonts_enabled: false should paint the fallback half of the Icon"
         );
     }
-
-    // ── #658: active_bg / active_accent independence (TUI parity with the
-    //    GTK acceptance test in `crate::gtk::activity_bar::tests`) ────────
 
     /// `style.active_bg: Some(..)` with `active_accent: None` fills the
     /// active row's cells with the requested colour and paints **zero**

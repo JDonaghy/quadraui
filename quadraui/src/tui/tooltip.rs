@@ -1,35 +1,20 @@
 //! TUI rasteriser for [`crate::Tooltip`].
 //!
-//! Border chrome is chosen by the [`TooltipChrome`] argument (#541 —
-//! [`crate::TooltipBorder`]), not hardcoded here — see
-//! `primitives::tooltip`'s module doc for why the vocabulary is a
+//! Border chrome is chosen by the [`TooltipChrome`] argument —
+//! see `primitives::tooltip`'s module doc for why the vocabulary is a
 //! sidecar value rather than a field on [`Tooltip`] or [`TooltipLayout`].
-//! [`draw_tooltip`] keeps its pre-#541 signature and renders
-//! `TooltipChrome::default()`; [`draw_tooltip_with_chrome`] takes the
-//! request explicitly:
+//! [`draw_tooltip`] renders `TooltipChrome::default()`; [`draw_tooltip_with_chrome`]
+//! takes the request explicitly:
 //!
 //! - [`TooltipBorder::Full`] (the default) renders a closed box —
 //!   `┌─┐`/`└─┘` top and bottom rows plus `│` sides — whenever the
 //!   measured height leaves room for both border rows and at least one
-//!   content row (`height >= 3`, `width >= 2`). This matches
-//!   `quadraui::gtk::draw_tooltip`, which has always stroked a full
-//!   rectangle. Below that room threshold, `Full` falls back to the
-//!   `Sides` rendering rather than an empty box — a rendering detail of
-//!   this variant, not a mode a consumer selects. An optional
-//!   `chrome.title` is centred into the top row when the box closes.
-//! - [`TooltipBorder::Sides`] always renders `│` on the first/last column
-//!   only, regardless of height — the pre-#542 TUI look, now available
-//!   by explicit request rather than as the only option. No title (no
-//!   top rule to embed it in).
+//!   content row (`height >= 3`, `width >= 2`). Below that room threshold,
+//!   `Full` falls back to the `Sides` rendering rather than an empty box.
+//!   An optional `chrome.title` is centred into the top row when the box closes.
+//! - [`TooltipBorder::Sides`] renders `│` on the first/last column only,
+//!   regardless of height. No title (no top rule to embed it in).
 //! - [`TooltipBorder::None`] renders no border chrome at all.
-//!
-//! Before #541 gave backends an explicit vocabulary, the choice was
-//! hardcoded per backend: TUI painted side bars only, GTK stroked a full
-//! box, so the same primitive produced materially different chrome while
-//! `screen_has("Keybindings")` stayed `true` on both — the divergence
-//! #542's structural-parity tier exists to catch (see that tier's tests
-//! for the historical case, still pinned there against `Full`, today's
-//! default).
 //!
 //! When `tooltip.styled_lines` is `Some`, each entry renders as one
 //! row of styled spans (multi-line styled path used by signature help
@@ -63,7 +48,7 @@ fn qc(c: Color) -> ratatui::style::Color {
 /// the tooltip's zone via `Backend::register_zone`. Registering the
 /// unrounded bounds would let a structural-parity observer see a surface
 /// that doesn't match the cells actually painted — a latent precision
-/// mismatch (#542 review) that today's 0.35 ratio tolerance in the
+/// mismatch that today's 0.35 ratio tolerance in the
 /// structural-parity acceptance slice happens to absorb, but which should
 /// stay aligned regardless.
 pub fn painted_bounds(layout: &TooltipLayout) -> QRect {
@@ -76,8 +61,7 @@ pub fn painted_bounds(layout: &TooltipLayout) -> QRect {
 }
 
 /// Draw a [`Tooltip`] into `layout.bounds` on `buf` with the default
-/// chrome — a [`TooltipBorder::Full`] box, no title, i.e. exactly what
-/// this rasteriser drew before #541 added a choice.
+/// chrome — a [`TooltipBorder::Full`] box, no title.
 ///
 /// Per-tooltip `tooltip.fg` / `tooltip.bg` overrides win over the
 /// theme defaults. The frame border always uses [`Theme::hover_border`].
@@ -88,7 +72,7 @@ pub fn draw_tooltip(buf: &mut Buffer, tooltip: &Tooltip, layout: &TooltipLayout,
 }
 
 /// Draw a [`Tooltip`] into `layout.bounds` on `buf`, with the border and
-/// optional title requested by `chrome` (#541).
+/// optional title requested by `chrome`.
 ///
 /// Per-tooltip `tooltip.fg` / `tooltip.bg` overrides win over the
 /// theme defaults. The frame border always uses [`Theme::hover_border`].
@@ -157,13 +141,10 @@ pub fn draw_tooltip_with_chrome(
             let title_len = title_chars.len() as u16;
             // Integer divide rounds down, so when `interior - title_len` is
             // odd the title sits one column left of dead-centre (the extra
-            // column goes to the right). Deliberate and stable rather than
-            // arbitrary: cells are indivisible, so *some* side gets the odd
-            // column, and biasing left matches how the rest of this crate
-            // centres odd remainders (`tui::panel`'s title bar, `tui::
-            // dialog`'s buttons). Flagged as a cosmetic nit in the #541
-            // review; documented rather than "fixed", since rounding the
-            // other way is equally off-centre.
+            // column goes to the right). Cells are indivisible, so *some* side
+            // gets the odd column, and biasing left matches how the rest of
+            // this crate centres odd remainders (`tui::panel`'s title bar,
+            // `tui::dialog`'s buttons).
             let title_start = 1 + interior.saturating_sub(title_len) / 2;
 
             for col in 0..w {
@@ -263,7 +244,7 @@ mod tests {
         buf[(x, y)].symbol().chars().next().unwrap_or(' ')
     }
 
-    /// #542 review (non-blocking): the zone a backend registers for a
+    /// The zone a backend registers for a
     /// tooltip must match the cells `draw_tooltip` actually painted, not
     /// the raw float layout bounds — otherwise a structural-parity
     /// observer sees a surface offset from what's really on screen.
@@ -296,7 +277,7 @@ mod tests {
         assert_eq!(row, "hello");
     }
 
-    /// #541/#542: once there's room for both border rows (`height >= 3`),
+    /// Once there's room for both border rows (`height >= 3`),
     /// the box must be closed on every side — not just left/right — so a
     /// structural-parity observer sees the same chrome shape GTK has
     /// always drawn.
@@ -390,13 +371,11 @@ mod tests {
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
-    // ── #541: explicit border vocabulary ─────────────────────────────────
-
     fn tooltip_with() -> Tooltip {
         Tooltip::new(WidgetId::new("hover"), "hi")
     }
 
-    /// `make_layout` paired with the [`TooltipChrome`] (#541) a test
+    /// `make_layout` paired with the [`TooltipChrome`] a test
     /// wants — the in-crate equivalent of `tooltip.layout(...)` plus a
     /// `TooltipChrome::new(..)` sidecar with `title` set directly.
     fn layout_with(
@@ -475,7 +454,7 @@ mod tests {
         assert_eq!(row, "hi");
     }
 
-    /// #541 ask 2: an optional title is centred into the top border row
+    /// An optional title is centred into the top border row
     /// when `Full` actually closes the box.
     #[test]
     fn full_border_centers_title_in_top_row() {

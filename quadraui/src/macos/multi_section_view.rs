@@ -7,8 +7,7 @@
 //! the body bounds returned by the primitive's
 //! [`crate::MultiSectionView::layout`].
 //!
-//! Vertical-only in v1 (per #294 / D-003 in
-//! `quadraui/docs/decisions/DECISIONS.md`); horizontal sections fall through to
+//! Vertical-only in v1; horizontal sections fall through to
 //! a no-op.
 //!
 //! Mirrors [`crate::gtk::multi_section_view`] in shape:
@@ -18,11 +17,10 @@
 //! for paint. Apps call `mac_msv_layout` for hit-testing so paint and
 //! click share one source of truth.
 //!
-//! ## Scope omissions (follow-up)
+//! ## Scope omissions
 //!
-//! - **Terminal section bodies** — `Terminal` rasteriser lands in #43.
-//!   `SectionBody::Terminal` paints the bg only for now.
-//! - **MessageList section bodies** — same; `MessageList` lands in #43.
+//! - **Terminal section bodies** — `SectionBody::Terminal` paints the bg only.
+//! - **MessageList section bodies** — same as Terminal.
 //! - **Custom-icon empty bodies** — placeholder text rendering matches
 //!   GTK but the `EmptyBody::action` button is rendered as plain
 //!   centred text (no clickable button chrome yet).
@@ -45,7 +43,7 @@ use crate::types::StyledText;
 /// with the same metrics so paint and click resolve to the same bounds.
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::msv_metrics`]
-/// (#499) — identical math across every pixel backend.
+/// — identical math across every pixel backend.
 pub fn mac_msv_metrics(line_height: f64, allow_resize: bool) -> MsvLayoutMetrics {
     crate::primitives::layout_metrics::msv_metrics(line_height, allow_resize)
 }
@@ -55,13 +53,10 @@ pub fn mac_msv_metrics(line_height: f64, allow_resize: bool) -> MsvLayoutMetrics
 /// testing without re-computing — paint and click share this single
 /// layout per frame.
 ///
-/// Thin wrapper over [`crate::primitives::layout_metrics::msv_layout`]
-/// (#499). Before #499 this backend's own `body_measure` returned
-/// `0.0` for `SectionBody::MessageList` (a copy-paste drift from GTK's
-/// version, which measured real content height) — sharing one
-/// function fixes it: MessageList sections now measure correctly on
-/// macOS too. See `crate::primitives::layout_metrics::msv_body_measure`'s
-/// doc and its regression test.
+/// Thin wrapper over [`crate::primitives::layout_metrics::msv_layout`].
+/// This backend and GTK now share one function, ensuring that
+/// `SectionBody::MessageList` measures correctly on both platforms.
+/// See `crate::primitives::layout_metrics::msv_body_measure`.
 pub fn mac_msv_layout(
     view: &MultiSectionView,
     bounds: QRect,
@@ -152,17 +147,13 @@ pub unsafe fn draw_multi_section_view(
     // Panel-level scrollbar (WholePanel mode) painted outside the
     // panel clip so it isn't itself clipped. Thumb geometry comes
     // straight from `view_layout.panel_scrollbar_thumb` (computed once,
-    // via `fit_thumb`, in `MultiSectionView::layout`) — see
-    // `paint_panel_scrollbar`'s doc for the quadraui#820-class bug this
-    // fixes: pre-#1074 this call re-derived thumb geometry from
-    // `(scroll, total_content)` with a formula that disagreed with the
-    // layout's own, the same bug GTK/Win already had fixed.
+    // via `fit_thumb`, in `MultiSectionView::layout`).
     if let Some(panel_sb) = view_layout.panel_scrollbar {
         paint_panel_scrollbar(ctx, panel_sb, view_layout.panel_scrollbar_thumb, theme);
     }
 }
 
-// #1074 (PaintSurface Phase 4): header/aux/text/empty/scrollbar/divider
+// Header/aux/text/empty/scrollbar/divider
 // chrome painting moved to the shared
 // [`crate::primitives::multi_section_view::native_surface_paint`] — these
 // wrappers just build a [`super::surface::CgSurface`] adapter and forward.
@@ -209,7 +200,7 @@ unsafe fn paint_aux(
         ctx,
         font: Some(font),
     };
-    // `caret_visible` threads macOS's own blink-timer phase (#188)
+    // `caret_visible` threads macOS's own blink-timer phase
     // straight through to the shared implementation, preserving this
     // backend's blink-aware caret exactly.
     crate::primitives::multi_section_view::native_surface_paint::paint_aux(
@@ -245,31 +236,26 @@ unsafe fn paint_body(
 
     match body {
         SectionBody::Tree(t) => {
-            // #804 fixed the nerd-fonts no-op in `macos::tree::draw_tree`
-            // itself; wiring `nerd_fonts_enabled` through
-            // `draw_multi_section_view`'s own call chain (it isn't a
-            // parameter here yet, unlike TUI/GTK's MSV) is separate,
-            // unstarted scope — passing `false` preserves today's
-            // fallback-only behaviour for tree bodies nested in an MSV.
+            // `nerd_fonts_enabled` isn't threaded through
+            // `draw_multi_section_view`'s call chain yet, so `false`
+            // preserves today's fallback-only behaviour for tree bodies nested in an MSV.
             super::tree::draw_tree(ctx, font, bx, by, bw, bh, t, theme, line_height, false);
         }
         SectionBody::List(l) => {
-            // Same rationale as the `SectionBody::Tree` arm just above:
             // `nerd_fonts_enabled` isn't threaded through
             // `draw_multi_section_view`'s call chain yet, so `false`
-            // preserves this call site's pre-#1075 behaviour (which
-            // never painted list-item icons at all).
+            // preserves today's behaviour (list-item icons not painted in MSV).
             super::list::draw_list(ctx, font, bx, by, bw, bh, l, theme, line_height, false);
         }
         SectionBody::Form(f) => {
             draw_form_body(ctx, font, bx, by, bw, bh, f, theme, line_height);
         }
         SectionBody::Chart(c) => {
-            // #810: painting moved to the shared
+            // Painting moved to the shared
             // `crate::primitives::chart::paint`; this raw
             // `(CGContextRef, &CTFont)` call site (no live `MacBackend`
             // on hand) reuses the shared `super::surface::CgSurface`
-            // adapter (#1072).
+            // adapter.
             let chart_layout =
                 super::chart::mac_chart_layout(c, bx, by, bw, bh, line_height, char_width);
             let mut surface = super::surface::CgSurface {
@@ -279,7 +265,7 @@ unsafe fn paint_body(
             crate::primitives::chart::paint(c, &chart_layout, &mut surface, theme, None, None);
         }
         SectionBody::Terminal(_) | SectionBody::MessageList(_) => {
-            // Lands in #43 — paint the bg only for now.
+            // Terminal and MessageList section bodies paint the background only.
             fill_rect(ctx, bx, by, bw, bh, theme.background);
         }
         SectionBody::Text(lines) => {
@@ -295,12 +281,12 @@ unsafe fn paint_body(
     CGContextRestoreGState(ctx);
 }
 
-/// Paint an embedded [`crate::Form`] section body. #808: field-kind
+/// Paint an embedded [`crate::Form`] section body. Field-kind
 /// painting goes through the shared [`crate::primitives::form::paint`]
 /// via [`super::surface::CgSurface`] (this call site has only a raw
-/// `CGContextRef`, not a live [`super::MacBackend`]) — `FieldKind::
+/// `CGContextRef`, not a live [`super::MacBackend`]). `FieldKind::
 /// Toolbar` is painted separately below, same as
-/// `MacBackend::draw_form`, for the same reason (see that fn's doc).
+/// `MacBackend::draw_form`, for the same reason.
 #[allow(clippy::too_many_arguments)]
 unsafe fn draw_form_body(
     ctx: CGContextRef,
@@ -404,12 +390,8 @@ unsafe fn paint_empty_body(
 
 /// Per-section scrollbar gutter — 50%-alpha track, 90%-alpha thumb, both
 /// real alpha blends against whatever is already painted underneath.
-/// [`super::surface::CgSurface::surface_fill_rect`] has honoured real
-/// alpha since before #1072 (see that adapter's module doc: "no
-/// fill-translucency divergence to preserve"), so routing this through
-/// the shared, real-alpha
-/// [`crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar`]
-/// is not a behaviour change here.
+/// Routed through the shared
+/// [`crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar`].
 unsafe fn paint_section_scrollbar(
     ctx: CGContextRef,
     gutter: QRect,
@@ -426,21 +408,14 @@ unsafe fn paint_section_scrollbar(
 }
 
 /// Panel-level scrollbar (`ScrollMode::WholePanel`) — opaque track and
-/// thumb. Thumb geometry comes from `thumb_bounds` — computed once by
+/// thumb. Thumb geometry comes from `thumb_bounds`, computed once by
 /// [`crate::primitives::multi_section_view::MultiSectionView::layout`]
 /// (`fit_thumb`) and published as
 /// [`crate::primitives::multi_section_view::MultiSectionViewLayout::panel_scrollbar_thumb`].
 ///
-/// Pre-#1074 this function recomputed thumb size/position itself from
-/// `(scroll, total_content)` — the same quadraui#820 class of bug
-/// already fixed on GTK/Win: a hardcoded `20.0`-pixel minimum thumb here
-/// disagreed with `panel_thumb_min`'s
-/// `metrics.scrollbar_size.max(8.0)` used everywhere else, and the
-/// caller's `total_content` summed only section sizes, silently
-/// dropping divider strips. Consuming the layout's own `thumb_bounds`
-/// closes both gaps at once. Mirrors [`paint_section_scrollbar`]'s
-/// (per-section) pattern of consuming pre-computed bounds instead of
-/// re-deriving them.
+/// Consuming the layout's pre-computed bounds instead of re-deriving them
+/// avoids mismatches between different calculation methods.
+/// Mirrors [`paint_section_scrollbar`]'s pattern of using pre-computed bounds.
 unsafe fn paint_panel_scrollbar(
     ctx: CGContextRef,
     bounds: QRect,
@@ -601,15 +576,10 @@ mod tests {
 
     #[test]
     fn hit_test_resolves_header_and_body_at_nonzero_origin() {
-        // Regression for quadraui#494 / LESSONS.md "Layout helpers must
-        // return coords in the same frame across backends": the sibling
-        // at-origin test above only exercises (0, 0), where an origin
-        // bug is invisible. `mac_msv_layout` bakes `bounds.x`/`bounds.y`
-        // straight into every returned Rect (absolute frame, matching
-        // the GTK/TUI twins) — call it directly (pure fn, no paint
-        // needed) at a non-zero origin and round-trip both a header
-        // click AND a section body click through `hit_test` (the
-        // existing at-origin test only covers a header click).
+        // Regression test: layout helpers must return coords in the same frame
+        // across backends. `mac_msv_layout` bakes `bounds.x`/`bounds.y` into
+        // every returned Rect (absolute frame). Test at a non-zero origin to
+        // ensure both header and section body clicks resolve correctly.
         let view = two_section_view();
         let origin = QRect::new(7.0, 13.0, W as f32, H as f32);
         let layout = mac_msv_layout(&view, origin, 16.0);
@@ -662,7 +632,7 @@ mod tests {
         assert_eq!(m_resize.divider_size, 1.0);
     }
 
-    // ── #188 InlineInput caret-blink ─────────────────────────────────
+    // InlineInput caret-blink tests
 
     use crate::primitives::multi_section_view::InlineInput;
 

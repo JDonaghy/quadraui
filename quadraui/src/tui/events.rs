@@ -44,18 +44,14 @@ use ratatui::crossterm::event::{
 /// The identity cell size — dividing by this leaves `event.column`/`.row`
 /// unchanged, so [`crossterm_mouse_to_uievent`] and [`crossterm_to_uievents`]
 /// delegating to their `_scaled` sibling with this value is exactly
-/// today's cell-quantised behaviour (quadraui#1048).
+/// today's cell-quantised behaviour.
 const UNSCALED_CELL: TerminalCellSize = TerminalCellSize {
     width: 1.0,
     height: 1.0,
 };
 
 /// Translate one crossterm event to zero or more quadraui events, treating
-/// `event.column`/`.row` (mouse events only) as whole terminal cells — the
-/// behaviour every caller got before quadraui#1048. See
-/// [`crossterm_to_uievents_scaled`] for the SGR-Pixels-aware sibling that
-/// [`super::backend::TuiBackend::poll_events`]/`wait_events` actually call
-/// once a terminal has negotiated pixel-resolution mouse reporting.
+/// `event.column`/`.row` (mouse events only) as whole terminal cells.
 ///
 /// Single events translate one-to-one (Vec of length 1); some
 /// crossterm events have no quadraui equivalent and translate to
@@ -103,14 +99,14 @@ pub fn crossterm_key_to_uievent(event: KeyEvent) -> Option<UiEvent> {
 /// Translate one crossterm mouse event, treating `column`/`row` as whole
 /// terminal cells. Equivalent to
 /// `crossterm_mouse_to_uievent_scaled(event, UNSCALED_CELL)` — see that
-/// function's doc for the SGR-Pixels-aware (quadraui#1048) behaviour this
+/// function's doc for the SGR-Pixels-aware behaviour this
 /// leaves on the table.
 pub fn crossterm_mouse_to_uievent(event: MouseEvent) -> Option<UiEvent> {
     crossterm_mouse_to_uievent_scaled(event, UNSCALED_CELL)
 }
 
 /// Translate one crossterm mouse event, dividing `column`/`row` by
-/// `cell_size` before they become a [`UiEvent`] `Point` (quadraui#1048).
+/// `cell_size` before they become a [`UiEvent`] `Point`.
 ///
 /// `event.column`/`.row` are always plain integers — crossterm has no
 /// separate "pixel" mouse-event shape. What they *mean* depends entirely on
@@ -183,7 +179,7 @@ pub fn crossterm_mouse_to_uievent_scaled(
 
 // ── Double-click synthesis ───────────────────────────────────────────────
 //
-// Relocated to `crate::dispatch` (issue #486) so `macos::run` can reuse
+// Relocated to `crate::dispatch` so `macos::run` can reuse
 // the same detector without pulling in the `tui` feature. Re-exported
 // here so existing `super::events::DoubleClickDetector` references
 // (this module's own `TuiBackend` usage) keep working.
@@ -602,12 +598,11 @@ mod tests {
         }
     }
 
-    // ── SGR-Pixels sub-cell scaling (quadraui#1048) ─────────────────────────
+    // ── SGR-Pixels sub-cell scaling ─────────────────────────────────────────
 
-    /// Cell-mode regression: `crossterm_mouse_to_uievent` (the unscaled
-    /// entry point every pre-#1048 caller still uses) must be byte-identical
-    /// to dividing by `UNSCALED_CELL` — i.e. to today's behaviour, whole
-    /// cell indices straight through with no fractional component.
+    /// `crossterm_mouse_to_uievent` divides mouse coordinates by
+    /// `UNSCALED_CELL` — i.e. whole cell indices straight through with
+    /// no fractional component.
     #[test]
     fn unscaled_mouse_translation_is_byte_identical_to_scaled_with_unit_cell() {
         let raw = mouse(MouseEventKind::Down(CtMouseButton::Left), 37, 21);
@@ -647,7 +642,6 @@ mod tests {
     /// caller would see one repeated position) resolves to several
     /// distinct fractional positions once divided by the real cell size —
     /// the sub-cell resolution a scrollbar/minimap drag needs
-    /// (quadraui#1048, vimcode#1271).
     #[test]
     fn pixel_mode_resolves_finer_than_a_single_cell() {
         let cell = TerminalCellSize::new(10.0, 20.0);
@@ -697,7 +691,7 @@ mod tests {
     /// produced by this crate's own runner, but reachable through this
     /// `pub` function directly) must fall back to the identity cell size
     /// instead of dividing by zero and handing the caller an `inf`/`NaN`
-    /// coordinate (quadraui#1048 review).
+    /// coordinate.
     #[test]
     fn degenerate_cell_size_falls_back_to_identity_instead_of_producing_nan() {
         let raw = mouse(MouseEventKind::Down(CtMouseButton::Left), 37, 21);
@@ -845,5 +839,5 @@ mod tests {
     }
 
     // DoubleClickDetector tests moved to `crate::dispatch` alongside its
-    // new home (issue #486).
+    // new home.
 }

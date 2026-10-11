@@ -1,4 +1,4 @@
-//! Headless Direct2D test surface (issue #24).
+//! Headless Direct2D test surface.
 //!
 //! Per `docs/TESTING.md`'s backend-testability requirement, every backend
 //! must support paint-to-memory so tests don't need a real display —
@@ -10,37 +10,23 @@
 //!
 //! # Why a DC render target, not `CreateWicBitmapRenderTarget`
 //!
-//! A WIC bitmap render target needs COM (`CoInitializeEx`) and the
-//! `Win32_Graphics_Imaging` crate feature. `ID2D1Factory::CreateDCRenderTarget`
-//! only needs GDI (`Win32_Graphics_Gdi`, already pulled in by the `win`
-//! feature for [`super::backend::WinBackend::attach_surface`]'s
-//! `GetClientRect`) plus an in-memory device context bound to a
-//! `CreateDIBSection` bitmap. `CreateDIBSection` hands back a raw pointer
-//! to the pixel buffer directly ([`HeadlessSurface::pixel_at`]), so reading
-//! a pixel back is a pointer offset — no `IWICBitmap::Lock`/copy step, and
-//! no COM apartment-per-thread bookkeeping for `cargo test`'s
-//! multi-threaded test runner to trip over.
+//! A DC render target uses GDI (`Win32_Graphics_Gdi`, already pulled in by the
+//! `win` feature) plus an in-memory device context bound to a `CreateDIBSection`
+//! bitmap. `CreateDIBSection` hands back a raw pointer to the pixel buffer
+//! directly ([`HeadlessSurface::pixel_at`]), so reading a pixel back is a
+//! pointer offset — no copy step required.
 //!
 //! # Software, not hardware
 //!
 //! [`D2D1_RENDER_TARGET_TYPE_SOFTWARE`] forces Direct2D's WARP software
-//! rasteriser — no GPU, no driver, no display adapter needed, only a
-//! CPU. `CreateCompatibleDC(None)` still asks GDI for a DC "compatible
-//! with the current screen", but that's a virtual/basic display device
-//! every Windows host has (including headless CI runners) — it does not
-//! require a physically attached monitor.
+//! rasteriser — no GPU, no driver, no display adapter needed, only a CPU.
+//! `CreateCompatibleDC(None)` still asks GDI for a DC, but that is a
+//! virtual/basic display device every Windows host has (including headless CI
+//! runners) — it does not require a physically attached monitor.
 //!
-//! # `feature = "win"` alone — not `target_os = "windows"` (issue #1038)
+//! # `feature = "win"` alone — not `target_os = "windows"`
 //!
-//! This module used to exist only on `target_os = "windows"`. That meant
-//! no `cargo check`/`cargo test --no-run --features win` on a Linux host
-//! could ever *see* [`WinDriver`], let alone type-check code that builds
-//! one — blocking `vimcode`'s adoption of
-//! `quadraui::testing::ConformanceDriver` (`JDonaghy/vimcode#928`'s
-//! acceptance criterion #2) from ever being verified off a real Windows
-//! box.
-//!
-//! Instead, every real Direct2D/GDI call in here is individually
+//! Every real Direct2D/GDI call in here is individually
 //! `cfg(target_os = "windows")`-gated with a non-functional fallback
 //! everywhere else — the same "compiles-everywhere, only *works* on
 //! Windows" posture `backend.rs`/`run.rs`/`shell_runner.rs` already use
@@ -49,12 +35,9 @@
 //! (there is no non-Windows Direct2D to construct one from), so
 //! [`WinDriver::new`]'s `.expect(..)` panics if it is ever actually
 //! *run* off Windows — but nothing does that: every call site that
-//! constructs a `WinDriver` (this module's own `#[cfg(test)]` block,
-//! `tests/win_example_driver.rs`, `tests/conformance.rs`'s `WinFactory`)
-//! is itself gated to `target_os = "windows"`, since a headless Direct2D
-//! surface is the whole point of the exercise. Off Windows this module
-//! buys exactly one thing — type-checking — and that is exactly what
-//! issue #1038 asked for.
+//! constructs a `WinDriver` is itself gated to `target_os = "windows"`, since a
+//! headless Direct2D surface is the whole point of the exercise. Off Windows
+//! this module buys exactly one thing — type-checking.
 //!
 //! `pub` (like [`crate::tui::testing`] and [`crate::gtk::testing`])
 //! rather than `pub(crate)`, both to match those siblings' convention and
@@ -458,7 +441,7 @@ fn color_to_d2d(color: Color) -> D2D1_COLOR_F {
 /// painting into a [`HeadlessSurface`] instead of opening a live Win32
 /// window. The Win-GUI twin of [`crate::gtk::testing::driver_with_shell`]
 /// / [`crate::macos::testing::driver_with_shell`] /
-/// [`crate::tui::testing::driver_with_shell`] (quadraui#707); all four
+/// [`crate::tui::testing::driver_with_shell`]; all four
 /// share the same [`ShellApp`] + [`ShellConfig`] input, differing only in
 /// the native units their respective drivers take (Win-GUI: DIPs, same
 /// as GTK/macOS points/pixels).
@@ -512,7 +495,7 @@ pub fn driver_with_shell<A: ShellApp + 'static>(
 /// accelerator matching) identically to a real keypress — mirrors
 /// `MacDriver`'s "no drift from production" contract.
 ///
-/// ## Painted-text recording (quadraui#721)
+/// ## Painted-text recording
 ///
 /// Like [`crate::gtk::testing::GtkDriver`] / [`crate::macos::testing::MacDriver`],
 /// this driver records every [`super::text::DWrite::draw_text`]/
@@ -560,7 +543,7 @@ impl<A: AppLogic> WinDriver<A> {
         // `find`/`find_bounds`/`screen_contains`/`inventory` can locate
         // text from any DirectWrite-painted primitive — off in
         // production, mirrors `GtkBackend::set_painted_text_recording` /
-        // `MacBackend::set_painted_text_recording` (quadraui#721).
+        // `MacBackend::set_painted_text_recording`.
         backend.set_painted_text_recording(true);
         // `attach_headless` (like `HeadlessSurface::target`) takes/returns
         // Windows-only types and so is itself whole-function
@@ -586,7 +569,7 @@ impl<A: AppLogic> WinDriver<A> {
     /// Repaint one frame through the shared production render path.
     ///
     /// Calls [`WinBackend::ensure_surface`] first, mirroring `win::run`'s
-    /// live `WM_PAINT`/`WM_SIZE` handlers (issue #805): without this, a
+    /// live `WM_PAINT`/`WM_SIZE` handlers: without this, a
     /// surface `end_frame` dropped after a failed `EndDraw` (device
     /// lost / `D2DERR_RECREATE_TARGET`) stayed `None` forever in a
     /// headless driver, since nothing else in this type's call path ever
@@ -619,7 +602,7 @@ impl<A: AppLogic> WinDriver<A> {
 
     /// Advance idle scheduling by calling [`AppLogic::tick`] directly,
     /// mirroring [`crate::tui::testing::TuiDriver::tick`] /
-    /// [`crate::macos::testing::MacDriver::tick`] (quadraui#1264) — until
+    /// [`crate::macos::testing::MacDriver::tick`] — until
     /// now `WinDriver` had no way to drive `tick` at all short of a real
     /// `WM_TIMER`, which never fires in a headless test. Repaints on
     /// redraw and latches `exited`, via the same [`Self::apply_outcome`]
@@ -643,9 +626,9 @@ impl<A: AppLogic> WinDriver<A> {
     }
 
     /// Shared outcome→[`Reaction`] bookkeeping [`Self::dispatch`] and
-    /// [`Self::mouse_down`]/[`Self::mouse_move`]/[`Self::mouse_up`] (#741)
+    /// [`Self::mouse_down`]/[`Self::mouse_move`]/[`Self::mouse_up`]
     /// all need: repaint on redraw, latch `exited` on exit. Thin wrapper
-    /// over [`DriverCore::apply_outcome`] (quadraui#814) — `render` still
+    /// over [`DriverCore::apply_outcome`] — `render` still
     /// has to be a closure here (not `Self::render`) because `DriverCore`
     /// doesn't own this driver's `surface`/`width`/`height`.
     fn apply_outcome(&mut self, outcome: EventOutcome) -> Reaction {
@@ -682,7 +665,6 @@ impl<A: AppLogic> WinDriver<A> {
     /// press-down, [`DriverInput::click`]'s default), Win-GUI's has
     /// always released too — preserved here as an explicit
     /// [`DriverInput`] override rather than silently homogenised
-    /// (quadraui#708).
     pub fn click(&mut self, x: f32, y: f32) -> Reaction {
         DriverInput::click(self, x, y)
     }
@@ -693,7 +675,7 @@ impl<A: AppLogic> WinDriver<A> {
     }
 
     /// Press the left mouse button down at `(x, y)`. Routes through
-    /// [`route_mouse_down`] (#741) — the same `dispatch_click` text-region/
+    /// [`route_mouse_down`] — the same `dispatch_click` text-region/
     /// scrollbar hit-testing the live `wndproc` runs — rather than handing
     /// a raw `MouseDown` straight to [`Self::dispatch`], so a click into a
     /// registered `TextRegion` starts a selection drag here exactly as it
@@ -716,7 +698,7 @@ impl<A: AppLogic> WinDriver<A> {
     }
 
     /// Move the cursor to `(x, y)` with the left button held. Routes
-    /// through [`route_mouse_move`] (#741) so an in-progress
+    /// through [`route_mouse_move`] so an in-progress
     /// `TextSelection`/scrollbar drag emits `TextSelectionChanged`/scroll
     /// events, mirroring the live `wndproc`.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> Reaction {
@@ -739,7 +721,7 @@ impl<A: AppLogic> WinDriver<A> {
     }
 
     /// Release the left mouse button at `(x, y)`. Routes through
-    /// [`route_mouse_up`] (#741) so an in-progress scrollbar/text-selection
+    /// [`route_mouse_up`] so an in-progress scrollbar/text-selection
     /// drag ends cleanly, mirroring the live `wndproc`.
     pub fn mouse_up(&mut self, x: f32, y: f32) -> Reaction {
         if self.core.exited() {
@@ -775,33 +757,24 @@ impl<A: AppLogic> WinDriver<A> {
 
     /// Mutable access to the backend — needed for `&mut self` trait
     /// methods like [`Backend::last_error`] that a test wants to poll
-    /// directly rather than through a scripted event (issue #805).
+    /// directly rather than through a scripted event.
     pub fn backend_mut(&mut self) -> &mut WinBackend {
         self.core.backend_mut()
     }
 
     /// Force the backend's surface back to the "not attached" state a
-    /// genuine `EndDraw` failure (device lost / `D2DERR_RECREATE_TARGET`)
-    /// leaves it in, without needing to manufacture a real Direct2D error
-    /// to get there — the testing-infrastructure half of issue #1263.
+    /// genuine `EndDraw` failure leaves it in, without needing to manufacture
+    /// a real Direct2D error to get there.
     ///
     /// `WinBackend::surface`/`attach_surface`/`attach_headless` are all
-    /// `pub(crate)`, so before this, nothing outside quadraui itself
-    /// could reach the "had a surface, then lost it" state at all —
-    /// only the "never attached one in the first place" state (plain
-    /// `WinBackend::new()`, with no `WinDriver` involved). That gap is
-    /// why `draw_minimap_with_no_surface_reports_unpainted_and_agrees_with_minimap_layout`
-    /// (`win::backend`'s own test module) could only prove the fallback
-    /// contract for the *never-attached* case — this method plus
-    /// [`Self::backend_mut`] lets a downstream regression test (in this
-    /// crate or a consumer) drive the *transient-loss* case the same
-    /// way: call this, then assert whatever `draw_*` fallback behaviour
-    /// the fix under test is supposed to guarantee against
-    /// [`Self::backend_mut`] directly, bypassing [`Self::render`] (which
-    /// would otherwise immediately paper over the dropped state via its
-    /// own `ensure_surface` call before any assertion gets to see it).
-    /// The next [`Self::render`] (or a direct `ensure_surface` call on
-    /// [`Self::backend_mut`]) recreates it again, exactly like the real
+    /// `pub(crate)`, so before this, nothing outside quadraui itself could reach
+    /// the "had a surface, then lost it" state at all. This method plus
+    /// [`Self::backend_mut`] lets tests drive the transient-loss case: call this,
+    /// then assert fallback behaviour against [`Self::backend_mut`] directly,
+    /// bypassing [`Self::render`] (which would otherwise immediately paper over
+    /// the dropped state via its own `ensure_surface` call before any assertion
+    /// gets to see it). The next [`Self::render`] (or a direct `ensure_surface`
+    /// call on [`Self::backend_mut`]) recreates it again, exactly like the real
     /// recovery path this simulates.
     pub fn drop_surface(&mut self) {
         #[cfg(target_os = "windows")]
@@ -821,8 +794,7 @@ impl<A: AppLogic> WinDriver<A> {
 
     /// All text painted during the last [`Self::render`], as recorded at
     /// the [`super::text::DWrite::draw_text`]/`draw_text_styled` choke
-    /// point (quadraui#721) — shared body: [`DriverCore::painted_texts`]
-    /// (quadraui#814).
+    /// point — shared body: [`DriverCore::painted_texts`]
     pub fn painted_texts(&self) -> Vec<&str> {
         self.core.painted_texts()
     }
@@ -830,13 +802,13 @@ impl<A: AppLogic> WinDriver<A> {
     /// True if any painted text contains `needle` — the Win-GUI analogue
     /// of [`crate::gtk::testing::GtkDriver::screen_contains`] /
     /// [`crate::macos::testing::MacDriver::screen_contains`] — shared
-    /// body: [`DriverCore::screen_contains`] (quadraui#814).
+    /// body: [`DriverCore::screen_contains`].
     pub fn screen_contains(&self, needle: &str) -> bool {
         self.core.screen_contains(needle)
     }
 
     /// Bounds (DIPs) of the first painted text run containing `needle` —
-    /// shared body: [`DriverCore::find_bounds`] (quadraui#814).
+    /// shared body: [`DriverCore::find_bounds`].
     pub fn find_bounds(&self, needle: &str) -> Option<Rect> {
         self.core.find_bounds(needle)
     }
@@ -844,7 +816,6 @@ impl<A: AppLogic> WinDriver<A> {
     /// Center coordinates (DIPs) of the first painted text run containing
     /// `needle` — pass straight to [`Self::click`]. `None` if nothing
     /// painted this frame matched. Shared body: [`DriverCore::find`]
-    /// (quadraui#814).
     pub fn find(&self, needle: &str) -> Option<(f32, f32)> {
         self.core.find(needle)
     }
@@ -853,7 +824,7 @@ impl<A: AppLogic> WinDriver<A> {
 /// The four raw primitives [`DriverInput`]'s default `press`/`type_char`/
 /// `press_named`/`ctrl_char` methods build on — see that trait's doc for
 /// why `dispatch`/`mouse_down`/`mouse_move`/`mouse_up` stay required
-/// (genuinely per-backend) rather than shared (quadraui#708). `click` is
+/// (genuinely per-backend) rather than shared. `click` is
 /// overridden (not the default bare press-down) to preserve `WinDriver`'s
 /// existing down-then-up behaviour — see [`WinDriver::click`]'s doc.
 impl<A: AppLogic> DriverInput for WinDriver<A> {
@@ -880,9 +851,9 @@ impl<A: AppLogic> DriverInput for WinDriver<A> {
 }
 
 /// Backs [`ConformanceDriver::click_text_at`]/`drag_text`/`scroll_at`'s
-/// shared pixel-unit bodies (quadraui#708), resolved against the real
-/// painted-text-run recording described on [`WinDriver`]'s module doc
-/// (quadraui#721). A needle no rasteriser has painted this frame (either
+/// shared pixel-unit bodies, resolved against the real
+/// painted-text-run recording described on [`WinDriver`]'s module doc.
+/// A needle no rasteriser has painted this frame (either
 /// because it genuinely isn't on screen, or because its rasteriser is
 /// still a `todo!()` stub) reports `None`/`false`, same as every other
 /// backend's driver does for a genuinely-missing needle — any
@@ -928,7 +899,7 @@ impl<A: AppLogic> ConformanceDriver for WinDriver<A> {
 
     fn backend_caps(&self) -> crate::BackendCaps {
         // Straight off the real `WinBackend` this driver wraps — never a
-        // re-statement (quadraui#492).
+        // re-statement.
         crate::Backend::backend_caps(self.core.backend())
     }
 
@@ -1040,13 +1011,9 @@ mod tests {
     }
 
     /// A minimal `AppLogic` that paints one `StatusBar` segment — the
-    /// acceptance scenario quadraui#721 names: `WinDriver::find` should
-    /// locate a status-bar label, and `inventory().text_runs()` should be
-    /// non-empty, after a real `WinBackend::draw_status_bar` paint
-    /// (`super::status_bar::draw_status_bar`, which paints through
-    /// [`super::text::DWrite::draw_text_styled`] — the choke point this
-    /// module's recording hooks into). `target_os`-gated: its only use
-    /// site, below, is too (see this module's `mod tests` doc).
+    /// acceptance scenario that `WinDriver::find` should locate a status-bar
+    /// label after a real `WinBackend::draw_status_bar` paint.
+    /// `target_os`-gated: its only use site is too.
     #[cfg(target_os = "windows")]
     struct StatusBarApp;
 
@@ -1077,10 +1044,9 @@ mod tests {
         }
     }
 
-    /// quadraui#721's acceptance criterion, verified headlessly (the real
-    /// `windows-latest` run is what `ci.yml`'s "Test (win feature, real
-    /// Windows)" step covers — see `HeadlessSurface`'s module doc for why
-    /// this needs no live `HWND`/GPU/display to be a faithful stand-in).
+    /// Acceptance criterion: verify that `WinDriver::find` locates a status-bar
+    /// segment after painting headlessly (this test runs headlessly; the real
+    /// Windows run is covered separately).
     #[cfg(target_os = "windows")]
     #[test]
     fn find_locates_a_status_bar_segment_after_paint() {
@@ -1101,37 +1067,24 @@ mod tests {
         assert!(inventory.screen_has("NORMAL"));
     }
 
-    /// Issue #805 acceptance: force a real `EndDraw` failure and assert
-    /// the *next* frame still paints — the black-box proof that
-    /// `WinBackend::end_frame`'s device-lost recovery (drop the surface,
-    /// report `BackendError::SurfaceLost`, let `ensure_surface` rebuild
-    /// it) actually round-trips, including the headless case this test
-    /// runs in.
+    /// Verify that a real `EndDraw` failure triggers device-lost recovery and
+    /// the next frame still paints.
     ///
-    /// ## Forcing a genuine `EndDraw` failure, not a fake one
+    /// ## Forcing a genuine `EndDraw` failure
     ///
     /// `DrawBitmap` returns `void` in the Direct2D API — any failure it
     /// hits is recorded internally and only reported later, by `EndDraw`.
     /// Drawing an [`ID2D1Bitmap`] created against a *different*
     /// `ID2D1DCRenderTarget`'s resource domain (a second, independent
-    /// [`HeadlessSurface`], its own `D2D1CreateFactory` call) is a
-    /// well-defined Direct2D error (`D2DERR_WRONG_RESOURCE_DOMAIN`) —
-    /// this reaches `WinBackend::end_frame`'s real `EndDraw(None,
-    /// None)` call through the same deferred-error path a genuine
-    /// `D2DERR_RECREATE_TARGET` device-loss would, without corrupting
-    /// any OS resource the recovery path then has to fake its way
-    /// around. `HeadlessSurface::paint`'s own doc already calls out
-    /// this pattern ("`Err` on device loss or an invalid drawing
-    /// call") — this test is the "invalid drawing call" half of it,
-    /// driven through the real `Backend::end_frame`/`last_error`
-    /// wiring instead of `HeadlessSurface::paint` directly.
-    ///
-    /// Observed RED before issue #805's `ensure_surface` headless-recovery
-    /// fix landed: `WinBackend::headless_target` didn't exist, so once
-    /// `end_frame` dropped `self.surface`, `ensure_surface` had no `hwnd`
-    /// to reattach through and stayed a permanent no-op — the recovered
-    /// frame below painted nothing (`pixel_at` stayed the frame-1 clear
-    /// colour) instead of the frame-1 divider colour.
+    /// [`HeadlessSurface`]) is a well-defined Direct2D error
+    /// (`D2DERR_WRONG_RESOURCE_DOMAIN`) — this reaches `WinBackend::end_frame`'s
+    /// real `EndDraw(None, None)` call through the same deferred-error path a
+    /// genuine `D2DERR_RECREATE_TARGET` device-loss would, without corrupting
+    /// any OS resource the recovery path then has to fake its way around.
+    /// `HeadlessSurface::paint`'s own doc already calls out this pattern.
+    /// This test is the "invalid drawing call" half of it, driven through the
+    /// real `Backend::end_frame`/`last_error` wiring instead of
+    /// `HeadlessSurface::paint` directly.
     #[cfg(target_os = "windows")]
     #[test]
     fn end_frame_recovers_the_next_frame_after_a_forced_end_draw_failure() {
@@ -1247,7 +1200,7 @@ mod tests {
         // after the forced failure. `ensure_surface` before
         // `paint_divider` mirrors exactly what `WinDriver::render` (and
         // `win::run`'s live `WM_PAINT`/`WM_SIZE` handlers) do before
-        // every real frame (issue #805) — this test calls it explicitly
+        // every real frame — this test calls it explicitly
         // since it drives `WinBackend` directly rather than through
         // `WinDriver`.
         {
@@ -1266,24 +1219,15 @@ mod tests {
         );
     }
 
-    /// Coverage for #922: `render_frame`'s `catch_unwind` around
-    /// `app.render` must (a) survive a panicking render — if it didn't,
-    /// this test would fail with an *uncaught* panic rather than an
-    /// assertion, since nothing upstream of `render_frame` in this test
-    /// catches anything — and (b) leave the `BeginDraw`/`EndDraw`
-    /// bracket balanced, so the *next* frame still paints. Mirrors
-    /// `end_frame_recovers_the_next_frame_after_a_forced_end_draw_failure`
-    /// (#805) immediately above, but forcing the failure from
-    /// `app.render` instead of a genuine Direct2D error.
+    /// Verify that `render_frame`'s panic guard around `app.render` must
+    /// (a) survive a panicking render, and (b) leave the `BeginDraw`/`EndDraw`
+    /// bracket balanced, so the next frame still paints.
     ///
-    /// This drives the real `super::run::render_frame` the live
-    /// `wndproc`'s `WM_PAINT` handler calls — the same production
-    /// function, not a reimplementation — but not `wndproc`/`WNDPROC`
-    /// itself: that C ABI entry point only exists inside `mod win32`
-    /// (`target_os = "windows"`, live message loop), which no headless
-    /// test can drive. This is the closest reachable seam; see
-    /// `render_frame`'s "Panic safety" doc for why catching one level
-    /// below the C boundary is still a correct fix.
+    /// This drives the real `super::run::render_frame` that the live
+    /// `wndproc`'s `WM_PAINT` handler calls — the same production function, not
+    /// a reimplementation — but not `wndproc`/`WNDPROC` itself: that C ABI
+    /// entry point only exists inside `mod win32` (`target_os = "windows"`),
+    /// which no headless test can drive.
     #[cfg(target_os = "windows")]
     #[test]
     fn render_frame_survives_a_panicking_app_render_and_the_next_frame_still_paints() {
@@ -1333,11 +1277,9 @@ mod tests {
         // Frame 1: `app.render` panics.
         render_frame(&mut backend, &app, viewport);
 
-        // Frame 2 — the acceptance criterion: painting must still work
-        // after the caught panic, proving `end_frame` ran (so
-        // `BeginDraw` from frame 1 wasn't left unmatched) even though
-        // frame 1's `app.render` never returned normally. Mirrors the
-        // #805 test's `ensure_surface` call before every real frame.
+        // Frame 2 — verify painting still works after the caught panic,
+        // proving `end_frame` ran (so `BeginDraw` from frame 1 wasn't left
+        // unmatched) even though frame 1's `app.render` never returned normally.
         let _ = backend.ensure_surface();
         render_frame(&mut backend, &app, viewport);
         assert_eq!(
@@ -1352,15 +1294,10 @@ mod tests {
         );
     }
 
-    /// Issue #1263's testing-infrastructure ask: prove [`WinDriver::drop_surface`]
-    /// actually reaches the same `painted: false` fallback contract a real
-    /// `EndDraw` failure leaves `WinBackend` in — on a driver that *had* a
-    /// real surface attached, not just a bare `WinBackend::new()` that
-    /// never got one in the first place.
-    /// `win::backend::tests::draw_minimap_with_no_surface_reports_unpainted_and_agrees_with_minimap_layout`
-    /// already covers that narrower (never-attached) case, in-crate only —
-    /// this is the downstream-shaped version of the actual reported gap:
-    /// a backend that *lost* a surface it once had.
+    /// Verify that [`WinDriver::drop_surface`] reaches the same `painted: false`
+    /// fallback contract a real `EndDraw` failure leaves `WinBackend` in — on a
+    /// driver that *had* a real surface attached, not just a bare
+    /// `WinBackend::new()` that never got one in the first place.
     #[cfg(target_os = "windows")]
     #[test]
     fn drop_surface_reaches_the_same_unpainted_fallback_a_real_end_draw_failure_does() {
@@ -1426,7 +1363,6 @@ mod tests {
 
         // Recovery: the next `WinDriver::render` call's `ensure_surface`
         // recreates the surface, exactly like the real recovery path
-        // (issue #805).
         driver.render();
         driver.backend_mut().begin_frame(viewport);
         let recovered = driver.backend_mut().draw_minimap(rect, &minimap);
@@ -1440,7 +1376,7 @@ mod tests {
 
     /// An `AppLogic` whose `tick` counts its own calls and, on the
     /// first one only, asks to be woken again — the minimal shape
-    /// [`WinDriver::tick`] (quadraui#1264) needs to exercise both halves
+    /// [`WinDriver::tick`] needs to exercise both halves
     /// of the contract: that it actually calls `AppLogic::tick`, and
     /// that it applies the returned `Reaction` the same way
     /// `WinDriver::dispatch` applies a dispatched event's outcome.
@@ -1472,11 +1408,9 @@ mod tests {
         }
     }
 
-    /// quadraui#1264's acceptance criterion: before this, `WinDriver` had
-    /// no `tick` method at all, so there was no way to drive
-    /// `AppLogic::tick` through it short of a real `WM_TIMER`, which
-    /// never fires in a headless test. RED before this landed (the
-    /// method didn't exist to call).
+    /// Verify that `WinDriver::tick` calls `AppLogic::tick` and applies its
+    /// reaction. Before this, there was no way to drive `AppLogic::tick` through
+    /// `WinDriver` short of a real `WM_TIMER`.
     #[cfg(target_os = "windows")]
     #[test]
     fn tick_calls_applogic_tick_and_applies_its_reaction() {

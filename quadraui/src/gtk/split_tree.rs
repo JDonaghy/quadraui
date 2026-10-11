@@ -1,14 +1,9 @@
 //! GTK rasteriser for [`crate::SplitTree`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::split_tree::native_surface_paint::paint`] (#863,
-//! `PaintSurface` Phase 2d slice 6/9, child of #811) — see that fn's
-//! module doc for why the three per-backend copies were found to be
-//! already identical (no divergence). This module now carries
-//! [`gtk_split_tree_layout`]; the deprecated `draw_split_tree`
-//! compatibility shim over the shared [`super::surface::CairoSurface`]
-//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
-//! and vimcode's `develop`).
+//! Painting is implemented in the shared
+//! [`crate::primitives::split_tree::native_surface_paint::paint`].
+//! This module provides [`gtk_split_tree_layout`]; it shares divider
+//! thickness with `mac_split_tree_layout` / `win_split_tree_layout`
 
 use crate::event::Rect;
 use crate::primitives::layout_metrics::pixel_split_tree_layout;
@@ -16,7 +11,7 @@ use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 
 /// Compute the GTK pixel-unit layout for a [`SplitTree`] without
 /// painting. Shares its divider thickness with `mac_split_tree_layout` /
-/// `win_split_tree_layout` via [`pixel_split_tree_layout`] (issue #1079).
+/// `win_split_tree_layout` via [`pixel_split_tree_layout`].
 pub fn gtk_split_tree_layout(tree: &SplitTree, x: f64, y: f64, w: f64, h: f64) -> SplitTreeLayout {
     let bounds = Rect::new(x as f32, y as f32, w as f32, h as f32);
     pixel_split_tree_layout(tree, bounds)
@@ -33,7 +28,7 @@ mod tests {
         WidgetId::new(s)
     }
 
-    /// `split_tree_layout` is documented **ABSOLUTE** (issue #505):
+    /// `split_tree_layout` is documented **ABSOLUTE**:
     /// leaf/divider bounds are shifted by the origin, so `(x, y) = (0, 0)`
     /// is exactly the case where a LOCAL/ABSOLUTE mixup is invisible.
     fn round_trip_at(x: f64, y: f64) {
@@ -87,7 +82,7 @@ mod tests {
         round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    /// Regression guard: layout must work at non-zero origins.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         round_trip_at(7.0, 13.0);

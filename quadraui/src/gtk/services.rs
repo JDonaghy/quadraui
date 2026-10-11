@@ -3,13 +3,13 @@
 //! Clipboard uses `arboard` for synchronous system clipboard access
 //! (GTK's native read API is async, incompatible with the sync trait).
 //! `open_url` uses GIO. File dialogs use `gtk4::FileDialog`, and message
-//! dialogs use `gtk4::AlertDialog` (quadraui#666) — `gtk4::MessageDialog`
+//! dialogs use `gtk4::AlertDialog` — `gtk4::MessageDialog`
 //! has been deprecated since GTK 4.10, and the fleet is on 4.14.5 — both
 //! behind the same nested-mainloop adapter (see [`pump_until_ready`]) so
 //! the trait's synchronous signatures can be honored even though GTK4
-//! only exposes async dialog APIs (#427).
+//! only exposes async dialog APIs.
 //!
-//! ## `shell.*` parity (issue #956)
+//! ## `shell.*` parity
 //!
 //! `reveal_in_file_manager` calls `org.freedesktop.FileManager1.ShowItems`
 //! over the session D-Bus directly (no dedicated GIO wrapper exists for
@@ -21,7 +21,7 @@
 //! not a hand-rolled `gio::File::trash` — see that function's doc for why
 //! every backend shares it. `beep` is `gdk::Display::beep`.
 //!
-//! ## Notifications (issue #955)
+//! ## Notifications
 //!
 //! `send_notification` is a real `gio::Notification` sent through the
 //! `gtk4::Application` the window belongs to
@@ -57,7 +57,7 @@
 //! [`Self::show_message_dialog`]'s `opts.severity` having nowhere to go
 //! on `gtk4::AlertDialog`.
 //!
-//! ## Tray / status-bar icon (issue #953) — deliberately not implemented
+//! ## Tray / status-bar icon — deliberately not implemented
 //! here
 //!
 //! `GtkBackend::tray` (see [`crate::backend::Backend::tray`]) is left at
@@ -79,7 +79,7 @@
 //! structural "not yet" this crate's docs consistently prefer over a
 //! capability flag nobody set.
 //!
-//! ## Displays (issue #959)
+//! ## Displays
 //!
 //! `displays` reads `gdk::Display::monitors()` +
 //! `Monitor::geometry()`/`scale_factor()`. `cursor_screen_point` stays
@@ -108,11 +108,11 @@
 //!
 //! The depth counter and its RAII guard are the backend-neutral
 //! [`crate::desktop::ModalPumpDepth`] / [`crate::desktop::ModalPumpGuard`]
-//! (#498) — extracted here first (#427) and generalised because AppKit's
+//! — extracted here first and generalised because AppKit's
 //! `runModal` and Win32's `IFileOpenDialog::Show` have the identical
 //! nested-pump re-entrancy hazard.
 //!
-//! ## Native-dialog CSS theming (issue #1091)
+//! ## Native-dialog CSS theming
 //!
 //! `gtk4::FileDialog`'s fallback widgets — the places sidebar, the
 //! scrollbars, and popover-hosted content (the filter dropdown, the
@@ -161,8 +161,7 @@ type EventQueueHandle = Rc<RefCell<VecDeque<UiEvent>>>;
 /// GTK platform-services impl. Clipboard is backed by `arboard` for
 /// cross-platform synchronous access. File dialogs use `gtk4::FileDialog`
 /// pumped through a nested main-loop iteration (see module docs).
-/// Notifications use a real `gio::Notification` (issue #955, see module
-/// docs).
+/// Notifications use a real `gio::Notification` (see module docs).
 pub struct GtkPlatformServices {
     clipboard: GtkClipboard,
     /// Top-level window used to parent file dialogs, so they open modal
@@ -180,7 +179,7 @@ pub struct GtkPlatformServices {
     /// `RefCell` — see the module-level re-entrancy note.
     pumping: ModalPumpDepth,
     /// The queue `GtkBackend::poll_events` drains, shared via
-    /// [`Self::set_events_handle`] (issue #955) — `None` until that's
+    /// [`Self::set_events_handle`] — `None` until that's
     /// called (and in unit tests, which never call it), mirroring
     /// `window`'s own "`None` until wired" shape. A notification action
     /// activated before this is set (or in a test-only
@@ -195,7 +194,7 @@ pub struct GtkPlatformServices {
     /// registered.
     action_registered: Cell<bool>,
     /// Display-level CSS provider theming quadraui's own native-dialog
-    /// fallback widgets (issue #1091) — see the module doc's "Native-dialog
+    /// fallback widgets — see the module doc's "Native-dialog
     /// CSS theming" section and [`dialog_css`]'s doc for the full
     /// rationale. Reloaded from scratch on every [`Self::set_theme`] call
     /// rather than diffed, mirroring how cheaply every other backend
@@ -246,7 +245,7 @@ impl GtkPlatformServices {
     /// window is constructed.
     ///
     /// Also gives [`Self::ensure_css_provider_attached`] another chance to
-    /// run (issue #1091): a consumer that calls `Backend::set_theme`
+    /// run: a consumer that calls `Backend::set_theme`
     /// before the window/display exists yet (theme-then-window ordering)
     /// otherwise never gets its dialog CSS attached, since
     /// [`Self::set_theme`]'s own attach attempt would have found no
@@ -258,7 +257,7 @@ impl GtkPlatformServices {
 
     /// Share the backend's event queue so a notification-action
     /// activation can push [`crate::UiEvent::NotificationActivated`]
-    /// onto it (issue #955). Called once by [`crate::gtk::backend::GtkBackend::new`]
+    /// onto it. Called once by [`crate::gtk::backend::GtkBackend::new`]
     /// right after both the queue and `self` exist — see the module doc.
     pub(crate) fn set_events_handle(&self, events: EventQueueHandle) {
         *self.events.borrow_mut() = Some(events);
@@ -322,28 +321,20 @@ impl GtkPlatformServices {
     /// Concrete (non-trait-object) handle on the clipboard, so in-crate
     /// tests can call [`GtkClipboard::install_test_contents`] — the
     /// `&dyn Clipboard` returned by [`PlatformServices::clipboard`]
-    /// can't reach an inherent method. Test-only (quadraui#415).
+    /// can't reach an inherent method. Test-only.
     #[cfg(test)]
     pub(crate) fn gtk_clipboard(&self) -> &GtkClipboard {
         &self.clipboard
     }
 
-    /// Issue #1091: rebuild [`Self::css_provider`]'s rules from `theme`
-    /// and (re)load them. Called from `GtkBackend::set_theme` — the GTK
-    /// impl of `Backend::set_theme` — every time the app changes its
-    /// [`crate::Theme`], mirroring `push_native_theme_preference`'s own
-    /// "recompute from scratch every call" posture right next to it in
-    /// `gtk::backend`.
+    /// Rebuilds [`Self::css_provider`]'s rules from `theme` and reloads
+    /// them. Called from `GtkBackend::set_theme` every time the app
+    /// changes its [`crate::Theme`].
     ///
-    /// [`dialog_css`] itself is a pure string builder that needs no live
-    /// GTK object, so it always runs and always updates
-    /// [`Self::last_dialog_css`] — including in a headless unit test with
-    /// no `gtk4::init()` at all. Only the GTK-object half
-    /// ([`Self::css_provider`]'s lazy construction + `load_from_data`)
-    /// is gated on GTK actually being initialized, via the same
-    /// `gtk4::is_initialized_main_thread()` guard
-    /// `push_native_theme_preference` uses for the identical reason (see
-    /// that method's doc).
+    /// [`dialog_css`] is a pure string builder that updates
+    /// [`Self::last_dialog_css`] regardless of whether GTK is initialized.
+    /// Only the GTK-object half ([`Self::css_provider`]'s lazy construction
+    /// + `load_from_data`) is gated on `gtk4::is_initialized_main_thread()`.
     pub(crate) fn set_theme(&self, theme: &crate::Theme) {
         let css = dialog_css(theme);
         *self.last_dialog_css.borrow_mut() = css.clone();
@@ -396,11 +387,8 @@ impl GtkPlatformServices {
     }
 
     /// The CSS string most recently loaded via [`Self::set_theme`] —
-    /// test-only window onto [`Self::last_dialog_css`], since
-    /// `gtk4::CssProvider` itself keeps no getter back to its loaded
-    /// source (issue #1091 acceptance: "a GTK test asserting the
-    /// provider's CSS reflects a changed `Theme` background after
-    /// `set_theme`").
+    /// for test inspection, since `gtk4::CssProvider` itself keeps no
+    /// getter back to its loaded source.
     #[cfg(test)]
     pub(crate) fn dialog_css_for_test(&self) -> String {
         self.last_dialog_css.borrow().clone()
@@ -445,10 +433,8 @@ impl PlatformServices for GtkPlatformServices {
             .and_then(|file| gtk4::prelude::FileExt::path(&file))
     }
 
-    /// `gtk4::FileDialog::select_folder` (quadraui#935) — the exact call
-    /// vimcode#815 removed when it gave up its native "Open Folder" panel
-    /// for lack of this primitive. Same builder, same nested-pump adapter
-    /// as the file dialogs above.
+    /// `gtk4::FileDialog::select_folder` — opens a native folder picker
+    /// with the same builder and nested-pump adapter as the file dialogs.
     fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
         let dialog = build_file_dialog(&opts, None);
         let window = self.window.borrow().clone();
@@ -462,7 +448,7 @@ impl PlatformServices for GtkPlatformServices {
             .and_then(|file| gtk4::prelude::FileExt::path(&file))
     }
 
-    /// `gtk4::AlertDialog::choose()` (quadraui#666) — see the module docs
+    /// `gtk4::AlertDialog::choose()` — see the module docs
     /// for why `AlertDialog`, not the deprecated `MessageDialog`. Driven
     /// through the same [`pump_until_ready`] + `pump_depth` guard the
     /// file dialogs use above; this does **not** hand-roll a second
@@ -505,7 +491,7 @@ impl PlatformServices for GtkPlatformServices {
     }
 
     /// `gio::Notification` sent through the window's owning
-    /// `gtk4::Application` (issue #955) — see the module doc for the full
+    /// `gtk4::Application` — see the module doc for the full
     /// design (action routing, icon decode, the `silent` gap). A no-op
     /// when there is no window yet, or the window has no `Application`
     /// (a `GtkPlatformServices` used outside `quadraui::gtk::run`, e.g.
@@ -571,7 +557,7 @@ impl PlatformServices for GtkPlatformServices {
         let _ = self.open_url_result(url);
     }
 
-    /// Fallible twin of [`Self::open_url`] (issue #1087): reports
+    /// Fallible twin of [`Self::open_url`]: reports
     /// `gio::AppInfo::launch_default_for_uri`'s real outcome instead of
     /// `open_url`'s discarded one — before this override,
     /// `open_url_result` fell to
@@ -587,7 +573,7 @@ impl PlatformServices for GtkPlatformServices {
     }
 
     /// `org.freedesktop.FileManager1.ShowItems` over the session D-Bus
-    /// (issue #956) — the standard method every major Linux file manager
+    /// — the standard method every major Linux file manager
     /// (Nautilus/Files, Dolphin, Nemo, Thunar via a plugin) implements
     /// for "reveal this file, selected, in a file-manager window." GIO
     /// ships no dedicated wrapper for this interface the way it does for
@@ -625,7 +611,7 @@ impl PlatformServices for GtkPlatformServices {
     }
 
     /// `gio::AppInfo::launch_default_for_uri` on `path`'s `file://` URI
-    /// (issue #956) — the same launch call [`Self::open_url`] makes,
+    /// — the same launch call [`Self::open_url`] makes,
     /// just fed a path converted to a URI (`gio::File::for_path(..).uri()`)
     /// instead of a caller-supplied URL string directly.
     fn open_path(&self, path: &Path) -> ServiceResult<()> {
@@ -637,7 +623,7 @@ impl PlatformServices for GtkPlatformServices {
         })
     }
 
-    /// [`crate::desktop::move_to_trash`] (issue #956) — see that
+    /// [`crate::desktop::move_to_trash`] — see that
     /// function's doc for why every backend, GTK included, shares this
     /// one `trash`-crate-backed implementation instead of hand-rolling
     /// `gio::File::trash` here.
@@ -645,7 +631,7 @@ impl PlatformServices for GtkPlatformServices {
         crate::desktop::move_to_trash(path)
     }
 
-    /// `gdk::Display::beep` (issue #956) — the parented window's own
+    /// `gdk::Display::beep` — the parented window's own
     /// display when one is attached (mirrors
     /// [`Self::show_file_open_dialog`]'s parenting), falling back to
     /// [`gtk4::gdk::Display::default`] otherwise (unit tests, or a
@@ -663,7 +649,7 @@ impl PlatformServices for GtkPlatformServices {
         Ok(())
     }
 
-    /// quadraui#952: `gtk4::Settings`' dark-preference + theme-name
+    /// `gtk4::Settings`' dark-preference + theme-name
     /// properties. `Settings::default()` returns `None` only when GTK has
     /// no default display connection at all (headless dev box, CI) — the
     /// same condition this module's own `require_gtk` test helper skips
@@ -677,7 +663,7 @@ impl PlatformServices for GtkPlatformServices {
     }
 
     /// `gdk::Display::monitors()` + `Monitor::geometry()`/
-    /// `scale_factor()` (issue #959) — the parented window's own display
+    /// `scale_factor()` — the parented window's own display
     /// when one is attached, falling back to [`gtk4::gdk::Display::default`]
     /// otherwise, the exact same fallback chain [`Self::beep`] uses (see
     /// that method's doc).
@@ -730,19 +716,11 @@ impl PlatformServices for GtkPlatformServices {
         Ok(out)
     }
 
-    /// **Deliberately not overridden** — kept explicit purely so a reader
-    /// scanning this file for #959 coverage finds this note instead of
-    /// wondering why the method is missing (same posture
-    /// [`Self::reveal_in_file_manager`]'s TUI counterpart's doc explains
-    /// for an identical case). GDK4 removed the global/root-window
-    /// pointer-position query entirely: `Surface::device_position` only
-    /// returns a *surface-relative* position, and a GDK4 surface exposes
-    /// no screen origin of its own to translate that into a global point
-    /// with. This is a real protocol-level Wayland restriction — a
-    /// Wayland client is never told where its own surface sits on
-    /// screen — not a missing binding this module could add on top of.
-    /// `Err(BackendError::Unsupported)`, the trait's own default, is the
-    /// honest final answer here.
+    /// **Deliberately not overridden** — GDK4 removed the global/root-window
+    /// pointer-position query entirely. `Surface::device_position` only
+    /// returns a surface-relative position with no way to translate to a
+    /// global point. This is a Wayland protocol restriction, not a missing
+    /// binding. `Err(BackendError::Unsupported)` is the correct answer.
     fn cursor_screen_point(&self) -> ServiceResult<Point> {
         Err(BackendError::Unsupported)
     }
@@ -752,7 +730,7 @@ impl PlatformServices for GtkPlatformServices {
     }
 }
 
-// ── Notifications (issue #955) ───────────────────────────────────────────
+// ── Notifications ────────────────────────────────────────────────────────
 
 /// Counter backing an untagged notification's `gio::Application::send_notification`
 /// id — a fresh value per call, so two untagged notifications never
@@ -848,26 +826,19 @@ fn system_theme_from_gtk_settings(dark: bool, theme_name: Option<&str>) -> Syste
     }
 }
 
-// ── Native-dialog CSS theming (issue #1091) ──────────────────────────────
+// ── Native-dialog CSS theming ────────────────────────────────────────────
 
 /// CSS rules [`GtkPlatformServices::set_theme`] loads into
-/// [`GtkPlatformServices::css_provider`] to theme the real GTK chrome
-/// this crate's own fallback dialogs pull in but never rasterises
-/// itself: `gtk4::FileDialog`'s places sidebar (`.sidebar`), its
-/// scrollbars, and popover-hosted content — the filter dropdown, the
-/// "create folder" popover (`popover contents`). See the module doc's
-/// "Native-dialog CSS theming" section for why this exists at all
-/// (previously every GTK consumer, e.g. vimcode, had to ship this by
-/// hand).
+/// [`GtkPlatformServices::css_provider`] to theme the GTK chrome
+/// in native dialogs: `gtk4::FileDialog`'s places sidebar (`.sidebar`),
+/// scrollbars, and popover-hosted content — the filter dropdown and
+/// "create folder" popover. See the module doc's "Native-dialog CSS
+/// theming" section for context.
 ///
-/// Colour choices are deliberately the same pairing this crate's other
-/// bordered-surface primitives use ([`crate::Theme::surface_bg`]/
-/// [`crate::Theme::surface_fg`]) for the sidebar and popover
-/// backgrounds/text, plus [`crate::Theme::muted_fg`] — a dim,
-/// non-content colour — for the scrollbar slider. Pure and
-/// GTK-object-free, so it's unit-testable (and always kept current via
-/// [`GtkPlatformServices::last_dialog_css`]) with no live display needed,
-/// mirroring `hig_button_order`/`system_theme_from_gtk_settings` above.
+/// Uses [`crate::Theme::surface_bg`]/[`crate::Theme::surface_fg`] for
+/// sidebar and popover backgrounds/text, plus [`crate::Theme::muted_fg`]
+/// for scrollbar slider. Pure and GTK-object-free, unit-testable and
+/// kept current via [`GtkPlatformServices::last_dialog_css`].
 fn dialog_css(theme: &crate::Theme) -> String {
     let surface_bg = css_hex(theme.surface_bg);
     let surface_fg = css_hex(theme.surface_fg);
@@ -927,7 +898,7 @@ fn build_file_dialog(opts: &FileDialogOptions, initial_name: Option<&str>) -> gt
 }
 
 /// Nested-mainloop adapter: `gtk4::FileDialog::open`/`save` and
-/// `gtk4::AlertDialog::choose` (quadraui#666) are async-only (GTK4
+/// `gtk4::AlertDialog::choose` are async-only (GTK4
 /// dropped the blocking `FileChooserDialog` API and never had a blocking
 /// alert), but [`PlatformServices::show_file_open_dialog`] /
 /// `show_file_save_dialog` / `show_message_dialog` are synchronous
@@ -960,7 +931,7 @@ fn build_file_dialog(opts: &FileDialogOptions, initial_name: Option<&str>) -> gt
 /// duration of this call — is how the runner's other backend-touching
 /// callbacks (idle-drain timer, input controllers, draw func) detect
 /// that and skip their own `backend.borrow_mut()` instead of panicking
-/// on a double-borrow (#427).
+/// on a double-borrow.
 fn pump_until_ready<T>(result: &Rc<RefCell<Option<T>>>, pumping: &ModalPumpDepth) -> T {
     let _guard = ModalPumpGuard::new(pumping);
     let ctx = glib::MainContext::default();
@@ -1007,14 +978,13 @@ fn hig_button_order(buttons: &[MessageDialogButton]) -> Vec<usize> {
     order
 }
 
-// The RAII bump/decrement for the shared pump-depth counter used to be
-// defined here as `PumpGuard`; extracted to the backend-neutral
-// `crate::desktop::ModalPumpGuard` by #498 — see that module's doc.
+// The RAII bump/decrement for the shared pump-depth counter is defined
+// in `crate::desktop::ModalPumpGuard` — extracted there for use by all backends.
 
 /// In-memory stand-in for the two OS selections, installed by
 /// [`GtkClipboard::install_test_contents`] so unit tests can exercise the
 /// clipboard-paste code paths **without** depending on whatever the host
-/// running the tests happens to have on its real clipboard (quadraui#415).
+/// running the tests happens to have on its real clipboard.
 ///
 /// Test-only on purpose: without it, a test asserting "nothing to paste"
 /// passes on a headless box (where `arboard::Clipboard::new()` fails) and
@@ -1058,7 +1028,7 @@ impl GtkClipboard {
     /// `contents`. Every subsequent read and write goes to the fake and
     /// the OS clipboard is left untouched — so a test can assert on the
     /// "there is something to paste" and "there is nothing to paste"
-    /// branches independently of the host (quadraui#415).
+    /// branches independently of the host.
     #[cfg(test)]
     pub(crate) fn install_test_contents(&self, contents: TestClipboardContents) {
         *self.test_contents.borrow_mut() = Some(contents);
@@ -1124,7 +1094,7 @@ impl Clipboard for GtkClipboard {
 
     /// PRIMARY selection (middle-click paste source) — only meaningful on
     /// X11/Wayland, where `arboard`'s Linux extension trait exposes it as
-    /// a distinct selection from CLIPBOARD (quadraui#415). See
+    /// a distinct selection from CLIPBOARD. See
     /// [`GtkClipboard::read_os_primary_selection`] for the per-target
     /// split.
     fn read_primary_selection(&self) -> Option<String> {
@@ -1137,10 +1107,9 @@ impl Clipboard for GtkClipboard {
         self.read_os_primary_selection()
     }
 
-    /// Decoded RGBA pixels via `arboard::Clipboard::get_image` (issue
-    /// #954). Not covered by [`Self::install_test_contents`]'s fake —
-    /// [`TestClipboardContents`] only ever modeled text — so this always
-    /// goes to the real OS clipboard, same as production.
+    /// Decoded RGBA pixels via `arboard::Clipboard::get_image`.
+    /// Not covered by [`Self::install_test_contents`]'s fake — that only
+    /// modeled text — so this always goes to the real OS clipboard.
     fn read_image(&self) -> ServiceResult<RgbaImage> {
         let mut inner = self.inner.borrow_mut();
         let cb = inner.as_mut().ok_or(BackendError::PlatformFailure {
@@ -1205,8 +1174,8 @@ impl Clipboard for GtkClipboard {
 const NO_ARBOARD_HANDLE_CONTEXT: &str = "arboard::Clipboard::new (no clipboard available)";
 
 /// Map an `arboard::Error` from a named native call into a
-/// [`BackendError::PlatformFailure`] (issue #954) — the one
-/// implementation shared with `macos::services` (issue #1087); see
+/// [`BackendError::PlatformFailure`] — the one
+/// implementation shared with `macos::services`; see
 /// [`crate::desktop::map_arboard_error`]'s own doc for the full
 /// rationale.
 use crate::desktop::map_arboard_error;
@@ -1217,19 +1186,14 @@ mod tests {
     use gtk4::prelude::ListModelExt;
     use std::sync::OnceLock;
 
-    // ── Clipboard image/html/file-list/clear (#954) ────────────────────
+    // ── Clipboard image/html/file-list/clear ───────────────────────────
 
-    /// Real OS-clipboard round trip through every method #954 added to
-    /// [`GtkClipboard`] — needs no `gtk4::init()` (arboard talks to the
-    /// display server directly, independent of GTK), but does need a
-    /// live clipboard session, which a headless CI runner (no X11/
-    /// Wayland) genuinely doesn't have. Skips gracefully there rather
-    /// than failing the crate's test run over an environment gap this
-    /// test isn't trying to cover — same posture as
-    /// `build_file_dialog_behaviors`'s display-optional skip below, for
-    /// the same "can't assert about a resource that isn't there" reason.
-    /// One `#[test]` fn, not several, so parallel test threads don't
-    /// fight over the one real systemwide clipboard.
+    /// Real OS-clipboard round trip through all clipboard methods.
+    /// Needs no `gtk4::init()` (arboard talks directly to the display
+    /// server) but does need a live clipboard session. Skips gracefully
+    /// on headless CI runners with no X11/Wayland, the same way as
+    /// `build_file_dialog_behaviors`. Single test so parallel threads
+    /// don't fight over the systemwide clipboard.
     #[allow(clippy::print_stderr)]
     #[test]
     fn clipboard_image_html_file_list_and_clear_round_trip() {
@@ -1299,7 +1263,7 @@ mod tests {
     /// this same problem). Cached in a `OnceLock` since `gtk4::init()`
     /// after a failed first attempt keeps failing.
     ///
-    /// # Thread affinity (#460)
+    /// # Thread affinity
     ///
     /// gtk4-rs's thread-affinity guard is a per-thread flag
     /// (`IS_MAIN_THREAD`, a `thread_local!` in gtk4-rs's `rt.rs`) set only
@@ -1325,7 +1289,7 @@ mod tests {
     /// fold its assertions into `build_file_dialog_behaviors` instead, or
     /// this panic comes back.
     ///
-    /// # macOS main-thread affinity (#1129)
+    /// # macOS main-thread affinity
     ///
     /// On macOS, gtk4-rs's `gtk4::init()` asserts main-thread affinity
     /// itself, *before* it can fail gracefully: `rt.rs::set_initialized`
@@ -1365,7 +1329,7 @@ mod tests {
         unsafe { pthread_main_np() != 0 }
     }
 
-    /// quadraui#1129: `require_gtk()` must degrade to a graceful `false`
+    /// `require_gtk()` must degrade to a graceful `false`
     /// on macOS instead of panicking inside `gtk4::init()` — `cargo test`
     /// never runs a `#[test]` fn on the process's real OS main thread, so
     /// this is a deterministic assertion here (not an environment-gap
@@ -1385,12 +1349,12 @@ mod tests {
 
     /// Covers every `build_file_dialog` behavior that requires
     /// constructing a real `gtk4::FileDialog`. Deliberately one `#[test]`
-    /// fn (not three) — see the thread-affinity note on [`require_gtk`]
-    /// (#460): splitting these across separate `#[test]` fns lets the
+    /// fn (not three) — see the thread-affinity note on [`require_gtk`]:
+    /// splitting these across separate `#[test]` fns lets the
     /// Rust test harness run them on different OS threads, which
     /// deterministically panics every thread except whichever one wins
     /// the `require_gtk()` / `gtk4::init()` race.
-    // #619: exempt from the crate-wide `print_stderr` deny. `cargo test`
+    // Exempt from the crate-wide `print_stderr` deny. `cargo test`
     // output, not code that runs inside a host's live UI session — this
     // line only ever executes on a headless dev box with no display,
     // where it's the reason the test reports "ok" without covering
@@ -1448,7 +1412,7 @@ mod tests {
             assert!(dialog.filters().is_none());
         }
 
-        // `beep` (issue #956) also needs a real live GTK/GDK object
+        // `beep` also needs a real live GTK/GDK object
         // (`gdk4::Display::default()`, since no window is attached to
         // this bare `GtkPlatformServices`) — folded in here, despite this
         // function's file-dialog-flavoured name, for the exact
@@ -1461,7 +1425,7 @@ mod tests {
             assert_eq!(services.beep(), Ok(()));
         }
 
-        // `displays` (issue #959) needs the same real `gdk4::Display`
+        // `displays` needs the same real `gdk4::Display`
         // `beep` above does — folded in for the identical thread-affinity
         // reason. A live display always has at least one monitor; every
         // returned `Display` must report the crate-wide "no work-area
@@ -1479,15 +1443,14 @@ mod tests {
     }
 
     /// `set_window` stores the handle used to parent future dialogs.
-    /// Nothing observable to assert without a real window, but this
-    /// guards against a panic/wrong-field regression in the setter.
+    /// Guards against a panic/wrong-field regression in the setter.
     #[test]
     fn set_window_is_none_until_called() {
         let services = GtkPlatformServices::new();
         assert!(services.window.borrow().is_none());
     }
 
-    /// quadraui#959: GDK4 has no global pointer-position query at all —
+    /// GDK4 has no global pointer-position query at all —
     /// `cursor_screen_point` always reports `Unsupported`, on every host
     /// this runs on (no `gtk4::init()`/display needed, unlike `displays`
     /// above, so this is an ordinary `#[test]` fn with no
@@ -1501,16 +1464,10 @@ mod tests {
         );
     }
 
-    /// #1087 acceptance bar: `open_url_result` reports a real failure
-    /// when there's no registered handler for the URL's scheme, instead
-    /// of the pre-#1087 capability lie (`open_url` discarded
-    /// `gio::AppInfo::launch_default_for_uri`'s outcome;
-    /// `open_url_result` fell to the trait's `Ok(())` default). A made-up
-    /// scheme no desktop registers a handler for is the deterministic way
-    /// to provoke this without any live display/session — GIO's
-    /// `AppInfo` scheme lookup doesn't need `gtk4::init()` (no widget
-    /// toolkit involved), so this runs unconditionally, unlike
-    /// `build_file_dialog_behaviors`'s `require_gtk()`-guarded tests.
+    /// `open_url_result` reports real failures when there's no registered
+    /// handler for a URL's scheme. A made-up scheme no desktop registers
+    /// is the deterministic way to test this without a live display/session.
+    /// GIO's scheme lookup needs no `gtk4::init()`, so this runs unconditionally.
     #[test]
     fn open_url_result_reports_failure_for_an_unregistered_scheme() {
         let services = GtkPlatformServices::new();
@@ -1522,8 +1479,8 @@ mod tests {
     // Regression test for #427 ("depth counter stays positive until the
     // outermost re-entrant pump unwinds") used to live here directly
     // against a local `PumpGuard`; that behavior is now covered once,
-    // backend-neutrally, by `crate::desktop`'s own `modal_pump_tests`
-    // (#498). The test below stays GTK-specific: it pins that
+    // backend-neutrally, by `crate::desktop`'s own `modal_pump_tests`.
+    // The test below stays GTK-specific: it pins that
     // `GtkPlatformServices::pump_depth()`'s returned handle really does
     // share state with the services' own counter (same `Rc`, not an
     // independent clone).
@@ -1546,7 +1503,7 @@ mod tests {
         );
     }
 
-    // ── hig_button_order (quadraui#666) ────────────────────────────────
+    // ── hig_button_order ───────────────────────────────────────────────
 
     fn msg_btn(id: &str, is_default: bool, is_cancel: bool) -> MessageDialogButton {
         MessageDialogButton {
@@ -1596,7 +1553,7 @@ mod tests {
         assert_eq!(hig_button_order(&buttons), vec![0, 1]);
     }
 
-    // ── system_theme_from_gtk_settings (quadraui#952) ───────────────────
+    // ── system_theme_from_gtk_settings ──────────────────────────────────
 
     #[test]
     fn system_theme_from_gtk_settings_reports_dark() {
@@ -1625,7 +1582,7 @@ mod tests {
         assert!(!system_theme_from_gtk_settings(true, None).high_contrast);
     }
 
-    // ── Native-dialog CSS theming (issue #1091) ──────────────────────────
+    // ── Native-dialog CSS theming ────────────────────────────────────────
 
     /// [`dialog_css`] is a pure string builder — needs no `gtk4::init()`
     /// — so it's tested directly for the exact colours/selectors the
@@ -1657,14 +1614,11 @@ mod tests {
         );
     }
 
-    /// Acceptance bar for #1091: a GTK test asserting the provider's CSS
-    /// reflects a changed `Theme` background after `set_theme`. Runs with
-    /// no `gtk4::init()` at all — [`GtkPlatformServices::set_theme`]
-    /// always refreshes [`GtkPlatformServices::last_dialog_css`]
-    /// regardless of whether a live GTK runtime exists to actually
-    /// attach the `CssProvider` to a display (see that method's doc) —
-    /// so this covers every consumer's headless test suite too, not just
-    /// a live-display CI leg.
+    /// Asserts the provider's CSS reflects a changed `Theme` background
+    /// after `set_theme`. Runs with no `gtk4::init()` — `set_theme` always
+    /// refreshes [`GtkPlatformServices::last_dialog_css`] regardless of
+    /// whether a live GTK runtime exists, so this covers every consumer's
+    /// headless test suite.
     #[test]
     fn set_theme_updates_the_dialog_css_provider_when_theme_background_changes() {
         let services = GtkPlatformServices::new();
@@ -1690,7 +1644,7 @@ mod tests {
         );
     }
 
-    // ── Notification target encode/decode + icon decode (issue #955) ────
+    // ── Notification target encode/decode + icon decode ─────────────────
     //
     // Pure functions — no `gtk4::init()`/display needed (unlike
     // `build_file_dialog_behaviors` above), so these run as ordinary

@@ -55,9 +55,7 @@ pub(crate) fn dpi_scale_from_wparam(wparam: usize) -> f32 {
     dpi_ratio((wparam & 0xFFFF) as u32)
 }
 
-/// `dpi / 96.0` — the ratio `Viewport::scale` carries for this backend
-/// (issue #19's "DPI scale factor plumbed to `Viewport::scale`"
-/// acceptance criterion).
+/// `dpi / 96.0` — the ratio `Viewport::scale` carries for this backend.
 ///
 /// `dpi == 0` maps to 100% rather than dividing by zero. In practice that
 /// only happens for an invalid `HWND` passed to `GetDpiForWindow`, which

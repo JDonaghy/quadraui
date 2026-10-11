@@ -10,7 +10,7 @@
 //!
 //! Typical use: sidebar sections, panel layouts, dialog tab order.
 //! [`FocusRing`](super::FocusRing) is a thin ID-keyed wrapper around
-//! this same cycling engine — see its module doc (#509).
+//! this same cycling engine — see its module doc.
 
 /// Manages Tab-cycling across N focusable regions with wrap-around.
 #[derive(Debug, Clone, PartialEq, Eq)]

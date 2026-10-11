@@ -8,19 +8,10 @@
 //! `Dialog` primitive ([`Backend::draw_dialog`]) — no new `Backend`
 //! trait method needed, mirroring [`crate::compose::FolderPickerController`].
 //!
-//! # Relation to issue #965
-//!
-//! Before this controller existed, `TuiPlatformServices::show_message_dialog`
-//! returned `None` unconditionally — a terminal has no native alert
-//! facility, and nothing in this crate drove the `Dialog` primitive's
-//! show/block/resolve contract to degrade to. `crate::tui::services`
-//! now drives exactly this controller through a nested draw-and-read
-//! loop (see that module's doc) so `show_message_dialog` returns a real
-//! [`crate::backend::MessageDialogChoice`] on TUI too — see
-//! `examples/tui_message_dialog.rs` for the same controller used
-//! directly by an app (no `PlatformServices` involved), and
-//! `crate::tui::services`'s own tests for the `PlatformServices`-level
-//! round trip.
+//! On TUI, `TuiPlatformServices::show_message_dialog` drives this controller
+//! through a nested draw-and-read loop (see `crate::tui::services` module docs)
+//! to return a real [`crate::backend::MessageDialogChoice`] — see
+//! `examples/tui_message_dialog.rs` for the controller used directly by an app.
 //!
 //! # Usage pattern
 //!
@@ -465,9 +456,7 @@ mod tests {
     #[test]
     fn escape_falls_back_to_default_when_no_cancel_button() {
         // A single "OK" button dialog has no `is_cancel` button — Escape
-        // must still resolve (to the default), not hang the caller
-        // forever. This is the concrete case #965's "there is always
-        // something to degrade to" principle protects against.
+        // must still resolve (to the default), not hang the caller forever.
         let mut controller = MessageDialogController::new(opts_ok_only());
         let backend = crate::tui::backend::TuiBackend::new();
         let esc = UiEvent::KeyPressed {

@@ -4,8 +4,7 @@
 //! The shared [`crate::shell_adapter::ShellAdapter`] owns all runtime logic
 //! (bottom-panel init, panel routing, resize recalc, click dispatch), and
 //! [`crate::shell_adapter::build_shell_adapter`] owns assembling one from a
-//! [`ShellConfig`] — shared across every backend since #497. This module
-//! only wires the adapter into the TUI event loop.
+//! [`ShellConfig`]. This module only wires the adapter into the TUI event loop.
 
 use crate::shell::{ShellApp, ShellConfig};
 use crate::shell_adapter::build_shell_adapter;

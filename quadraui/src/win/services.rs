@@ -1,4 +1,4 @@
-//! Win-GUI implementation of [`quadraui::PlatformServices`] (#23).
+//! Win-GUI implementation of [`quadraui::PlatformServices`].
 //!
 //! - **Clipboard** — Win32 `OpenClipboard`/`GetClipboardData`/
 //!   `SetClipboardData` against `CF_UNICODETEXT`, with the payload backed
@@ -11,7 +11,7 @@
 //!   live `HWND` [`WinBackend::attach_surface`][super::backend::WinBackend::attach_surface]
 //!   hands to [`WinPlatformServices::set_window`] — same role as
 //!   `GtkPlatformServices::window`.
-//! - **Folder dialog** (quadraui#935) — the same `IFileOpenDialog`, with
+//! - **Folder dialog** — the same `IFileOpenDialog`, with
 //!   `FOS_PICKFOLDERS` set on its options: Windows has no separate
 //!   directory-picker COM object, so this is the documented way to turn
 //!   the file-open dialog into one.
@@ -31,7 +31,7 @@
 //!   `CLAUDE.md`'s "Win-GUI: building and testing for real" section).
 //!   The balloon stays the fallback either way, per this issue's own
 //!   note.
-//! - **Message dialogs** (#744) — `TaskDialogIndirect`, the modern
+//! - **Message dialogs** — `TaskDialogIndirect`, the modern
 //!   common-controls v6 alert (preferred over the legacy `MessageBoxW`
 //!   for its richer, arbitrarily-labelled button row — `MessageDialogOptions`
 //!   carries caller-declared buttons, not a fixed OK/Cancel/Yes/No set).
@@ -40,12 +40,12 @@
 //!   this module's `#702` audit note below, which applies identically
 //!   here.
 //! - **`open_url`/`open_url_result`** — `ShellExecuteW(NULL, "open", url,
-//!   ...)` via [`crate::desktop::open_with_default`] (issue #1087) — the
+//!   ...)` via [`crate::desktop::open_with_default`] — the
 //!   crate-wide opener shared with `tui::services`/`macos::services`.
 //!   `open_url_result` now overrides the trait's `Ok(())` default and
 //!   reports the call's real outcome; `open_url` itself stays the
 //!   infallible fire-and-forget wrapper.
-//! - **`shell.*` parity (#956)** — `reveal_in_file_manager`
+//! - **`shell.*` parity** — `reveal_in_file_manager`
 //!   (`SHOpenFolderAndSelectItems`, see `win_reveal_in_file_manager`'s own
 //!   doc for the PIDL dance it takes), `open_path` (the same
 //!   `ShellExecuteW` call `open_url_result` makes, via
@@ -53,7 +53,7 @@
 //!   `move_to_trash` (delegates to [`crate::desktop::move_to_trash`] — the
 //!   cross-platform `trash` crate, not a hand-rolled `SHFileOperationW`, see that
 //!   function's doc for why), and `beep` (`MessageBeep(MB_OK)`).
-//! - **Displays (#959)** — `displays` uses `EnumDisplayMonitors` +
+//! - **Displays** — `displays` uses `EnumDisplayMonitors` +
 //!   `GetMonitorInfoW` (`rcMonitor`/`rcWork`/`MONITORINFOF_PRIMARY`) and
 //!   `GetDpiForMonitor`; `cursor_screen_point` uses `GetCursorPos`. See
 //!   `win_displays`/`win_cursor_screen_point`'s own docs.
@@ -155,7 +155,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, LoadIconW, HICON, IDI_ERROR, IDI_INFORMATION, MB_OK, MONITORINFOF_PRIMARY,
     USER_DEFAULT_SCREEN_DPI,
 };
-// WinRT (not Win32) — `system_theme` (quadraui#952). `UISettings` is the
+// WinRT (not Win32) — `system_theme`. `UISettings` is the
 // same class the issue names (`UISettings::GetColorValue`); `AccessibilitySettings`
 // is its sibling in the same `Windows.UI.ViewManagement` namespace and the
 // natural WinRT source for "is high contrast active" — no separate Win32
@@ -164,7 +164,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 #[cfg(target_os = "windows")]
 use windows::UI::ViewManagement::{AccessibilitySettings, UIColorType, UISettings};
 
-/// System clipboard via raw Win32 calls (issue #23). Stateless — every
+/// System clipboard via raw Win32 calls. Stateless — every
 /// call opens, does one thing, and closes the clipboard, matching the
 /// classic Win32 clipboard's own "hold it as briefly as possible"
 /// contract (it's a single systemwide resource; holding it open blocks
@@ -195,7 +195,7 @@ impl Clipboard for WinClipboard {
     }
 
     /// Real `OpenClipboard`/`GlobalAlloc`/`SetClipboardData` failure,
-    /// surfaced instead of silently discarded (issue #805) — the one
+    /// surfaced instead of silently discarded — the one
     /// in-tree override of [`Clipboard::write_text_result`]'s default.
     fn write_text_result(&self, text: &str) -> ServiceResult<()> {
         #[cfg(target_os = "windows")]
@@ -209,7 +209,7 @@ impl Clipboard for WinClipboard {
         }
     }
 
-    /// `CF_HDROP` file-path list — a Finder/Explorer copy (issue #954).
+    /// `CF_HDROP` file-path list — a Finder/Explorer copy.
     /// `read_image`/`write_image`/`write_html` stay at the trait's
     /// `Unsupported` default here: unlike `CF_HDROP` (one well-known
     /// fixed-layout struct, `DROPFILES` + a `\0`-separated `\0\0`-terminated
@@ -237,7 +237,7 @@ impl Clipboard for WinClipboard {
         }
     }
 
-    /// `EmptyClipboard` — clears every format, not just text (issue #954).
+    /// `EmptyClipboard` — clears every format, not just text.
     fn clear(&self) -> ServiceResult<()> {
         #[cfg(target_os = "windows")]
         {
@@ -255,11 +255,8 @@ pub struct WinPlatformServices {
     /// Top-level window used to parent file dialogs (`IModalWindow::Show`)
     /// and host the notification tray icon's owning `HWND`. `None` until
     /// [`WinBackend::attach_surface`][super::backend::WinBackend::attach_surface]
-    /// calls [`Self::set_window`] with a live window — mirrors
-    /// `GtkPlatformServices::window`'s "unparented until the first
-    /// attach" lifecycle. `Cell`, not `RefCell<Option<_>>` like GTK's,
-    /// since `HWND` is `Copy` and there's nothing here that needs to hold
-    /// a borrow across a call.
+    /// calls [`Self::set_window`] with a live window. `Cell`, not
+    /// `RefCell<Option<_>>`, since `HWND` is `Copy`.
     #[cfg(target_os = "windows")]
     window: Cell<Option<HWND>>,
 }
@@ -323,8 +320,7 @@ impl PlatformServices for WinPlatformServices {
         }
     }
 
-    /// The shell folder-picker (`IFileOpenDialog` + `FOS_PICKFOLDERS`,
-    /// quadraui#935) — see `win_show_folder_open_dialog` below.
+    /// The shell folder-picker (`IFileOpenDialog` + `FOS_PICKFOLDERS`).
     fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
         #[cfg(target_os = "windows")]
         {
@@ -337,7 +333,7 @@ impl PlatformServices for WinPlatformServices {
         }
     }
 
-    /// `TaskDialogIndirect` (#744) — see this module's doc comment for
+    /// `TaskDialogIndirect` — see this module's doc comment for
     /// why `TaskDialog` over the legacy `MessageBoxW`.
     fn show_message_dialog(&self, opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
         #[cfg(target_os = "windows")]
@@ -366,7 +362,7 @@ impl PlatformServices for WinPlatformServices {
         let _ = self.open_url_result(url);
     }
 
-    /// Fallible twin of [`Self::open_url`] (issue #1087): reports
+    /// Fallible twin of [`Self::open_url`]: reports
     /// `ShellExecuteW`'s real outcome via
     /// [`crate::desktop::open_with_default`] instead of `open_url`'s
     /// discarded one — before this override, `open_url_result` fell to
@@ -394,7 +390,7 @@ impl PlatformServices for WinPlatformServices {
         }
     }
 
-    /// `SHOpenFolderAndSelectItems` (issue #956) — see
+    /// `SHOpenFolderAndSelectItems` — see
     /// `win_reveal_in_file_manager`'s doc for the `ILCreateFromPathW`/
     /// `ILClone`/`ILRemoveLastID` PIDL dance it takes.
     fn reveal_in_file_manager(&self, path: &Path) -> ServiceResult<()> {
@@ -409,8 +405,8 @@ impl PlatformServices for WinPlatformServices {
         }
     }
 
-    /// `ShellExecuteW(NULL, "open", path, ...)` (issue #956) via
-    /// [`crate::desktop::open_with_default`] (issue #1087) — the exact
+    /// `ShellExecuteW(NULL, "open", path, ...)` via
+    /// [`crate::desktop::open_with_default`] — the exact
     /// same call [`Self::open_url_result`] makes above, just fed a
     /// filesystem path instead of a URL string; `ShellExecuteW`'s
     /// `"open"` verb already accepts either.
@@ -426,7 +422,7 @@ impl PlatformServices for WinPlatformServices {
         }
     }
 
-    /// [`crate::desktop::move_to_trash`] (issue #956) — see that
+    /// [`crate::desktop::move_to_trash`] — see that
     /// function's doc for why every backend, Win-GUI included, shares
     /// this one `trash`-crate-backed implementation rather than
     /// hand-rolling `SHFileOperationW(FOF_ALLOWUNDO)` here.
@@ -442,7 +438,7 @@ impl PlatformServices for WinPlatformServices {
         }
     }
 
-    /// `MessageBeep(MB_OK)` (issue #956) — the default system
+    /// `MessageBeep(MB_OK)` — the default system
     /// notification sound (Windows' Settings maps `MB_OK`'s alias, "Asterisk"/
     /// "Default Beep" depending on the Windows version, to whichever sound
     /// scheme the user picked; there is no dedicated "just beep" API
@@ -460,7 +456,7 @@ impl PlatformServices for WinPlatformServices {
     }
 
     /// `UISettings::GetColorValue` (`Background`/`Accent`) +
-    /// `AccessibilitySettings::HighContrast` (quadraui#952) — see this
+    /// `AccessibilitySettings::HighContrast` — see this
     /// module's WinRT import comment for why the latter comes from the
     /// same namespace rather than a separate Win32 SPI call.
     fn system_theme(&self) -> ServiceResult<SystemTheme> {
@@ -476,7 +472,7 @@ impl PlatformServices for WinPlatformServices {
 
     /// `EnumDisplayMonitors` + `GetMonitorInfoW` for `bounds`/`work_area`/
     /// `primary` (`rcMonitor`/`rcWork`/`MONITORINFOF_PRIMARY`),
-    /// `GetDpiForMonitor` for `scale` (issue #959).
+    /// `GetDpiForMonitor` for `scale`.
     fn displays(&self) -> ServiceResult<Vec<Display>> {
         #[cfg(target_os = "windows")]
         {
@@ -488,7 +484,7 @@ impl PlatformServices for WinPlatformServices {
         }
     }
 
-    /// `GetCursorPos` (issue #959) — the global cursor position in
+    /// `GetCursorPos` — the global cursor position in
     /// virtual-screen coordinates, the same coordinate space
     /// [`Self::displays`]'s `bounds`/`work_area` use.
     fn cursor_screen_point(&self) -> ServiceResult<Point> {
@@ -509,7 +505,7 @@ impl PlatformServices for WinPlatformServices {
 /// Encode `text` as a NUL-terminated UTF-16 buffer — the shape every
 /// wide-string Win32 API below expects (`CF_UNICODETEXT`'s clipboard
 /// payload, `NOTIFYICONDATAW`'s fixed-size fields). The one
-/// implementation shared crate-wide (issue #1087) — see
+/// implementation shared crate-wide — see
 /// [`crate::desktop::wide_nul_terminated`]'s own doc for why it's
 /// `allow`-gated rather than `cfg`-gated.
 use crate::desktop::wide_nul_terminated;
@@ -546,7 +542,7 @@ pub(crate) fn copy_wide_truncated(dst: &mut [u16], text: &str) {
     dst[take] = 0;
 }
 
-// ─── Clipboard (#23) ────────────────────────────────────────────────────
+// ─── Clipboard ──────────────────────────────────────────────────────────
 
 #[cfg(target_os = "windows")]
 fn win_clipboard_read() -> Option<String> {
@@ -586,7 +582,7 @@ fn win_clipboard_read() -> Option<String> {
 }
 
 /// Write `text` to the system clipboard as `CF_UNICODETEXT`, returning
-/// the real failure instead of swallowing it (issue #805). Every early
+/// the real failure instead of swallowing it. Every early
 /// return below leaves the clipboard exactly as `write_text`/
 /// `write_text_result`'s callers have always observed it — this only
 /// adds the `Err` a caller can now ask for via `write_text_result`;
@@ -643,7 +639,7 @@ fn win_clipboard_write(text: &str) -> ServiceResult<()> {
     }
 }
 
-/// Read the `CF_HDROP` file-path list off the clipboard (issue #954) — a
+/// Read the `CF_HDROP` file-path list off the clipboard — a
 /// Finder/Explorer copy, on Windows a `DROPFILES` struct whose payload is
 /// enumerated with `DragQueryFileW` rather than parsed by hand (the same
 /// API a drag-and-drop `WM_DROPFILES` handler uses for the live-drag
@@ -704,7 +700,7 @@ fn win_clipboard_read_file_list() -> ServiceResult<Vec<PathBuf>> {
 }
 
 /// `EmptyClipboard` — clears every clipboard format at once, regardless
-/// of what's on it (issue #954). Unlike `win_clipboard_write`, there is
+/// of what's on it. Unlike `win_clipboard_write`, there is
 /// no payload to allocate/own, so this is the shortest possible
 /// open/mutate/close cycle.
 #[cfg(target_os = "windows")]
@@ -727,24 +723,17 @@ fn win_clipboard_clear() -> ServiceResult<()> {
     }
 }
 
-// ─── File dialogs (#23) ─────────────────────────────────────────────────
+// ─── File dialogs ───────────────────────────────────────────────────────
 
 /// `CoInitializeEx(COINIT_APARTMENTTHREADED)`, once per thread. File
-/// dialogs are always shown synchronously from whatever thread calls
-/// `show_file_open_dialog`/`show_file_save_dialog` — in practice the
-/// Win32 message-loop thread `win::run` owns. Both `S_OK` (first call on
-/// this thread) and `S_FALSE` (already initialized on this thread) are
-/// "COM is ready"; a genuine failure has no good recovery here short of
-/// not showing the dialog, which the subsequent `CoCreateInstance` call
-/// surfaces on its own. Never paired with `CoUninitialize` — COM stays
-/// initialized for the rest of the thread's life, same posture as the
-/// GTK backend never tearing down its GLib main context.
+/// dialogs are always shown synchronously from the Win32 message-loop
+/// thread. Both `S_OK` (first call on this thread) and `S_FALSE` (already
+/// initialized) are "COM is ready"; a genuine failure has no good
+/// recovery here. Never paired with `CoUninitialize` — COM stays
+/// initialized for the rest of the thread's life.
 ///
 /// `pub(crate)` (not private) since #739: `super::image`'s WIC decode
-/// path also needs COM ready (`CoCreateInstance(CLSID_WICImagingFactory,
-/// ..)`) before it can build a factory, same requirement as the file
-/// dialogs below — one thread-local init guard for both call sites
-/// rather than two copies of the same `Cell<bool>` dance.
+/// path also needs COM ready before building a factory.
 #[cfg(target_os = "windows")]
 pub(crate) fn ensure_com_initialized() {
     thread_local! {
@@ -795,8 +784,6 @@ fn configure_file_dialog(
                     None,
                 ) {
                     // `SetFolder` failing (e.g. the directory no longer
-                    // exists) shouldn't abort showing the dialog at all —
-                    // degrade to the dialog's own default folder instead.
                     let _ = dialog.SetFolder(&item);
                 }
             }
@@ -868,7 +855,7 @@ fn win_show_open_dialog(owner: Option<HWND>, opts: &FileDialogOptions) -> Option
     }
 }
 
-/// The shell folder-picker (quadraui#935): the same `IFileOpenDialog` as
+/// The shell folder-picker: the same `IFileOpenDialog` as
 /// [`win_show_open_dialog`], with `FOS_PICKFOLDERS` set on its options —
 /// the documented way to turn the common file-open dialog into a
 /// directory chooser (Microsoft's own `IFileDialog::SetOptions` docs name
@@ -912,7 +899,7 @@ fn win_show_save_dialog(owner: Option<HWND>, opts: &FileDialogOptions) -> Option
     }
 }
 
-// ─── Message dialog (#744) ──────────────────────────────────────────────
+// ─── Message dialog ─────────────────────────────────────────────────────
 
 /// Win32 reserves ids 1–11 for its own common-button set (`IDOK` = 1,
 /// `IDCANCEL` = 2, `IDABORT` = 3, …, `IDCONTINUE` = 11 — see
@@ -960,7 +947,7 @@ fn assign_button_ids(buttons: &[MessageDialogButton]) -> Vec<i32> {
         .collect()
 }
 
-/// `TaskDialogIndirect` (issue #744) — the common-controls v6 alert,
+/// `TaskDialogIndirect` — the common-controls v6 alert,
 /// preferred over the legacy `MessageBoxW` per this module's doc
 /// comment. Blocking: returns once the user picks a button or dismisses
 /// the dialog.
@@ -1053,7 +1040,7 @@ fn win_show_message_dialog(
         .map(|i| opts.buttons[i].id.clone())
 }
 
-// ─── Notifications (#23) ────────────────────────────────────────────────
+// ─── Notifications ──────────────────────────────────────────────────────
 
 /// Monotonic per-process tray-icon id, so two notifications fired close
 /// together (before the first's removal thread wakes up) each get their
@@ -1095,18 +1082,13 @@ fn win_send_notification(owner: Option<HWND>, n: &Notification) {
         let icon = LoadIconW(None, icon_resource).unwrap_or(HICON(std::ptr::null_mut()));
         let uid = NEXT_NOTIFICATION_ID.fetch_add(1, Ordering::Relaxed);
 
-        // Issue #955 extended `Notification` with `icon`/`actions`/
-        // `silent`/`tag`. Only `silent` has anywhere to go on this
-        // balloon-tip path — `NIIF_NOSOUND` is a real, documented
-        // `dwInfoFlags` bit (combined with the severity flag below, not
-        // a replacement for it). `icon`, `actions`, and `tag` are
+        // Only `silent` from the extended `Notification` fields has a
+        // place on this balloon-tip path — `NIIF_NOSOUND` is a real,
+        // documented `dwInfoFlags` bit. `icon`, `actions`, and `tag` are
         // dropped: a balloon has no caller-supplied icon slot beyond the
-        // severity icon already chosen above, no button/action UI at
-        // all, and (like macOS's `osascript` fallback) no click-through
-        // channel to report an activation back through — see this
-        // module's doc and `UiEvent::NotificationActivated`'s own doc
-        // for what a real fix (WinRT `ToastNotificationManager`, which
-        // has all three) would need.
+        // severity icon, no button/action UI, and no click-through channel
+        // to report an activation — see this module's doc for what a real
+        // fix (WinRT `ToastNotificationManager`) would need.
         let mut severity_flags = if n.urgent { NIIF_ERROR } else { NIIF_INFO };
         if n.is_silent() {
             severity_flags |= NIIF_NOSOUND;
@@ -1143,9 +1125,9 @@ fn win_send_notification(owner: Option<HWND>, n: &Notification) {
     }
 }
 
-// ─── open_url (#23) / open_path (#956) / open_url_result (#1087) ─────────
+// ─── open_url / open_path / open_url_result ──────────────────────────────
 //
-// Both go through `crate::desktop::open_with_default` (issue #1087) — the
+// Both go through `crate::desktop::open_with_default` — the
 // crate-wide opener shared with `tui::services`/`macos::services` — rather
 // than a Win-local `ShellExecuteW` call: it hands `"open"` + `target` to
 // `ShellExecuteW` through the same minimal hand-written FFI declaration on
@@ -1153,7 +1135,7 @@ fn win_send_notification(owner: Option<HWND>, n: &Notification) {
 // that function's doc for why it's a hand-written FFI call rather than the
 // `windows` crate's own `ShellExecuteW` binding.
 
-// ─── reveal_in_file_manager (issue #956) ─────────────────────────────────
+// ─── reveal_in_file_manager ──────────────────────────────────────────────
 
 /// `SHOpenFolderAndSelectItems` — "Reveal in Explorer." Needs two PIDLs:
 /// the *containing folder*'s absolute PIDL, and the *item*'s PIDL
@@ -1224,7 +1206,7 @@ fn win_reveal_in_file_manager(path: &Path) -> ServiceResult<()> {
     }
 }
 
-// ─── beep (issue #956) ────────────────────────────────────────────────────
+// ─── beep ─────────────────────────────────────────────────────────────────
 
 #[cfg(target_os = "windows")]
 fn win_beep() -> ServiceResult<()> {
@@ -1236,7 +1218,7 @@ fn win_beep() -> ServiceResult<()> {
     })
 }
 
-// ─── System theme (quadraui#952) ────────────────────────────────────────
+// ─── System theme ───────────────────────────────────────────────────────
 
 #[cfg(target_os = "windows")]
 fn win_system_theme() -> ServiceResult<SystemTheme> {
@@ -1295,7 +1277,7 @@ fn system_theme_from_ui_colors(
     }
 }
 
-// ─── Displays (issue #959) ──────────────────────────────────────────────
+// ─── Displays ───────────────────────────────────────────────────────────
 
 /// `EnumDisplayMonitors` callback: appends the enumerated `HMONITOR` to
 /// the `Vec<HMONITOR>` `lparam` points at. Collecting handles first and
@@ -1328,7 +1310,7 @@ unsafe extern "system" fn win_collect_monitor(
 
 /// `EnumDisplayMonitors` + `GetMonitorInfoW` for
 /// `bounds`/`work_area`/`primary`, `GetDpiForMonitor` for `scale`
-/// (issue #959) — see [`PlatformServices::displays`]'s doc for the full
+/// — see [`PlatformServices::displays`]'s doc for the full
 /// field-by-field contract.
 #[cfg(target_os = "windows")]
 fn win_displays() -> ServiceResult<Vec<Display>> {
@@ -1386,7 +1368,7 @@ fn win_displays() -> ServiceResult<Vec<Display>> {
     Ok(out)
 }
 
-/// `GetCursorPos` (issue #959) — the global cursor position in
+/// `GetCursorPos` — the global cursor position in
 /// virtual-screen coordinates, the same coordinate space
 /// [`win_displays`]'s `bounds`/`work_area` use (both come from Win32's
 /// one virtual-screen coordinate system).
@@ -1443,7 +1425,7 @@ mod tests {
         assert_eq!(svc.platform_name(), "win-gui");
     }
 
-    // ── system_theme_from_ui_colors (quadraui#952) ──────────────────────
+    // ── system_theme_from_ui_colors ─────────────────────────────────────
 
     #[test]
     fn system_theme_from_ui_colors_black_background_is_dark() {
@@ -1464,7 +1446,7 @@ mod tests {
         assert!(system_theme_from_ui_colors((0, 0, 0), (255, 255, 0), true).high_contrast);
     }
 
-    // ── display_from_monitor_rects (issue #959) ──────────────────────────
+    // ── display_from_monitor_rects ───────────────────────────────────────
 
     #[test]
     fn display_from_monitor_rects_converts_rects_to_bounds() {
@@ -1480,8 +1462,7 @@ mod tests {
     #[test]
     fn display_from_monitor_rects_handles_negative_origin_and_non_primary() {
         // A secondary monitor to the left of the primary — negative `x`,
-        // matching the virtual-desktop coordinate space every monitor
-        // shares (quadraui#959, `Display`'s own doc).
+        // using the virtual-desktop coordinate space every monitor shares.
         let d = display_from_monitor_rects((-1920, 0, 0, 1080), (-1920, 0, 0, 1080), false, 96);
         assert_eq!(d.bounds, Rect::new(-1920.0, 0.0, 1920.0, 1080.0));
         assert!(!d.primary);
@@ -1548,7 +1529,7 @@ mod tests {
         let svc = WinPlatformServices::new();
         assert!(svc.clipboard().read_text().is_none());
         svc.clipboard().write_text("ignored");
-        // #954: `read_image`/`write_image`/`write_html` are the trait's
+        // `read_image`/`write_image`/`write_html` are the trait's
         // own `Unsupported` default (`WinClipboard` never overrides
         // them — see `read_file_list`'s doc for why); `read_file_list`
         // and `clear` are overridden but degrade the same way off
@@ -1578,7 +1559,7 @@ mod tests {
             })
             .is_none());
         svc.open_url("https://example.com");
-        // #1087: `open_url_result` now genuinely overrides the trait's
+        // `open_url_result` now genuinely overrides the trait's
         // `Ok(())` default (`open_url` then always succeed) — off Windows
         // it honestly reports `Unsupported` rather than silently lying
         // about a launch that never happened.
@@ -1587,7 +1568,7 @@ mod tests {
             Err(BackendError::Unsupported)
         );
         assert_eq!(svc.system_theme(), Err(BackendError::Unsupported));
-        // #956: every one of these four *is* fully implemented on real
+        // Every one of these four *is* fully implemented on real
         // Windows (unlike `open_url` above, which stays a fire-and-forget
         // no-op everywhere), but off-Windows they degrade the same honest
         // way the rest of this stub does.
@@ -1599,33 +1580,19 @@ mod tests {
         assert_eq!(svc.open_path(scratch), Err(BackendError::Unsupported));
         assert_eq!(svc.move_to_trash(scratch), Err(BackendError::Unsupported));
         assert_eq!(svc.beep(), Err(BackendError::Unsupported));
-        // #959: `displays`/`cursor_screen_point` are likewise fully
+        // `displays`/`cursor_screen_point` are likewise fully
         // implemented on real Windows but degrade the same honest way
         // off it.
         assert_eq!(svc.displays(), Err(BackendError::Unsupported));
         assert_eq!(svc.cursor_screen_point(), Err(BackendError::Unsupported));
     }
 
-    /// #1087 acceptance bar: `open_url_result`/`open_path` report a real
-    /// failure when `ShellExecuteW` itself fails, instead of the pre-#1087
-    /// capability lie (`open_url` discarded the outcome; `open_url_result`
-    /// fell to the trait's `Ok(())` default and always answered success).
-    ///
-    /// The target is an absolute path under a directory that does not
-    /// exist, with an extension no handler is registered for —
-    /// `ShellExecuteW` answers `SE_ERR_FNF` for it immediately, with no
-    /// network access, no UI, and no live desktop session beyond the one
-    /// `cargo test` already runs under.
-    ///
-    /// This test's first shape used an *unregistered URI scheme*
-    /// (`SE_ERR_NOASSOC`) instead, and that was wrong: modern Windows
-    /// hands an unknown scheme to the shell's "how do you want to open
-    /// this?" flow and `ShellExecuteW` returns **42 — success** — so the
-    /// assertion failed on `ci.yml`'s "Test (win feature, real Windows)"
-    /// step. See `desktop::open_with_default_tests`'
-    /// `unopenable_windows_target` for the full note. Runs only on the
-    /// `windows-latest` CI leg — `cargo test --features win` on
-    /// `ubuntu-latest` never compiles this `#[cfg]` arm at all.
+    /// `open_url_result`/`open_path` report a real failure when
+    /// `ShellExecuteW` itself fails. The target is an absolute path
+    /// under a non-existent directory with an unregistered extension —
+    /// `ShellExecuteW` answers `SE_ERR_FNF` immediately. Runs only on
+    /// `windows-latest` CI — `cargo test --features win` on `ubuntu-latest`
+    /// never compiles this arm.
     #[cfg(target_os = "windows")]
     #[test]
     fn open_url_result_and_open_path_report_a_real_shell_execute_failure() {

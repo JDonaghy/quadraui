@@ -1,23 +1,11 @@
 //! macOS support for [`crate::Terminal`] cell grids.
 //!
-//! Painting moved to the shared [`crate::primitives::terminal::paint`] /
-//! [`crate::primitives::terminal::paint_divider`] (#810, PaintSurface
-//! Phase 2c) — see that fn's doc for the divergence (per-cell
-//! bold/italic/underline styling) resolved while unifying
-//! `gtk::terminal::draw_terminal_cells`, `macos::terminal::draw_terminal_cells`
-//! and `win::terminal::draw_terminal_cells` into one implementation.
-//! macOS gained no new styling capability from this (it never rendered
-//! bold/italic/underline before #810 either — see
-//! [`crate::paint_surface::PaintSurface::surface_draw_text_run_styled`]'s
-//! doc), but keeps the wide-glyph horizontal-scale fix (#500/#703) it
-//! already had.
+//! Painting is implemented in the shared [`crate::primitives::terminal::paint`] /
+//! [`crate::primitives::terminal::paint_divider`] functions — see their docs for
+//! per-cell bold/italic/underline styling details. macOS keeps the wide-glyph
+//! horizontal-scale fix from before unification.
 //!
-//! This module now carries no rasteriser code of its own — both deleted
-//! free functions had zero call sites in `coord-tui`/`vimcode` (`grep -rn
-//! "draw_terminal_cells\|draw_terminal_divider" ~/src/coord-tui/src
-//! ~/src/vimcode/src` — the only hits there are `Backend::draw_terminal`/
-//! `Backend::draw_terminal_divider` trait calls, whose signatures are
-//! unchanged), so neither needed a deprecation shim (CLAUDE.md rule 1).
+//! This module carries no rasteriser code of its own.
 
 #[cfg(test)]
 mod tests {
@@ -88,16 +76,12 @@ mod tests {
         assert_eq!((r, g, b), (magenta.r, magenta.g, magenta.b));
     }
 
-    /// #440 / #500 regression, mirroring `gtk::backend::tests`'s
-    /// `wide_cell_background_spans_two_columns` twin: a double-width
-    /// glyph (CJK) followed by vt100's blank continuation cell must have
-    /// its background span both columns — the continuation cell's own
-    /// (different) background must NOT paint over the second half of the
-    /// wide glyph's cell. Paints via `super::surface::CgSurface` directly
-    /// (rather than through `MacBackend::draw_terminal`) so the test controls
-    /// `char_width` explicitly instead of depending on Menlo's measured
-    /// advance — the same reason `win::multi_section_view`'s embedded
-    /// `Terminal` section body uses that adapter.
+    /// A double-width glyph (CJK) followed by vt100's blank continuation cell must
+    /// have its background span both columns — the continuation cell's own
+    /// (different) background must NOT paint over the second half of the wide glyph's
+    /// cell. This test paints via `super::surface::CgSurface` directly (rather than
+    /// through `MacBackend::draw_terminal`) to control `char_width` explicitly instead
+    /// of depending on Menlo's measured advance.
     #[test]
     fn wide_cell_background_spans_two_columns() {
         const CHAR_W: f32 = 10.0;
@@ -187,7 +171,7 @@ mod tests {
         );
     }
 
-    /// #703: mirrors the GTK twin — both backends share `wide_glyph_x_scale`,
+    /// Mirrors the GTK twin — both backends share `wide_glyph_x_scale`,
     /// so a CJK glyph measuring 15px in an 18px (2 × 9px) box scales
     /// 1.2x on macOS too.
     #[test]
@@ -201,13 +185,13 @@ mod tests {
         assert!((15.0 * scale - cell_w).abs() < 1e-9);
     }
 
-    /// #703: mirrors the GTK twin.
+    /// Mirrors the GTK twin.
     #[test]
     fn exact_fit_wide_glyph_is_not_scaled() {
         assert_eq!(wide_glyph_x_scale(18.0, 18.0), 1.0);
     }
 
-    /// #703: mirrors the GTK twin.
+    /// Mirrors the GTK twin.
     #[test]
     fn over_wide_glyph_is_shrunk_into_box() {
         let scale = wide_glyph_x_scale(24.0, 18.0);
@@ -299,8 +283,7 @@ mod tests {
         );
     }
 
-    /// Rows past the pane bottom are clipped (quadraui#437, ported to
-    /// macOS by #484's `cell_area_h` fix).
+    /// Rows past the pane bottom are clipped.
     ///
     /// A grid taller than the pane — exactly what an un-debounced
     /// interactive-resize frame produces — must stop at the pane bottom

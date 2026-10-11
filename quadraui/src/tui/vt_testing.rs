@@ -1,5 +1,4 @@
-//! In-process TUI conformance observer backed by a real ANSI byte stream
-//! (quadraui#555, epic #480 pillar 2 follow-up).
+//! In-process TUI conformance observer backed by a real ANSI byte stream.
 //!
 //! [`TuiVtDriver`] drives the same [`AppLogic`] path [`super::testing::TuiDriver`]
 //! does — same `setup`/`render`/`handle`, same [`super::run::paint_frame`] /
@@ -13,26 +12,22 @@
 //! models double-width cells, combining characters, and SGR the way a real
 //! terminal emulator does.
 //!
-//! ## What this closes
-//!
-//! [`quadraui::testing::ConformanceDriver`]'s contract only ever promised
-//! "what did the rasteriser ask for" (the paint-time inventory `TestBackend`
-//! reads back). It cannot answer "what would a terminal actually show",
-//! and for a cell-grid backend those two questions can diverge: content the
-//! rasteriser genuinely painted can still be lost in translation to bytes,
-//! or in a real emulator's interpretation of those bytes, in a way a
-//! same-process buffer read never observes. `TuiVtDriver` is a second
-//! [`ConformanceDriver`] implementation over the exact same `AppLogic`
-//! fixtures and the exact same scenario files — see
+//! [`TuiVtDriver`] is a second [`ConformanceDriver`] implementation over the
+//! exact same `AppLogic` fixtures and scenario files — see
 //! `tests/conformance/scenarios/` — so the conformance matrix can run a
-//! scenario against both and report them as distinct rows (see
-//! `docs/TESTING.md` → *TUI: two observers*).
+//! scenario against both. It observes the exact bytes a live terminal would
+//! receive, unlike [`quadraui::testing::ConformanceDriver`] which only reads
+//! back `TestBackend`'s retained [`ratatui::buffer::Buffer`]. For a
+//! cell-grid backend, those two observations can diverge: content the
+//! rasteriser painted can still be lost in translation to bytes, or in a
+//! real emulator's interpretation of those bytes, in a way a same-process
+//! buffer read never observes.
 //!
 //! ## Why no real OS pty
 //!
 //! [`super::testing::TuiDriver`] drives its `AppLogic` fixture with scripted
 //! [`UiEvent`]s, never real keystrokes — there is no ANSI *input* to decode,
-//! only output to observe. `tests/tui_pty_smoke.rs` (#302) needs a real pty
+//! only output to observe. `tests/tui_pty_smoke.rs` needs a real pty
 //! because it spawns an actual example *binary* and must answer that
 //! process's `ESC [ 6 n` cursor-position query the way a real terminal
 //! would, or the process's own `Terminal::new()` fails before it ever
@@ -103,9 +98,9 @@ impl io::Write for VtSink {
 /// Build a [`TuiVtDriver`] that wraps `app` in the full
 /// [`crate::shell_adapter::ShellAdapter`] stack, mirroring exactly what
 /// [`crate::tui::shell_runner::run_with_shell`] does at runtime — the
-/// `vt100`-backed twin of [`super::testing::driver_with_shell`] (issue
-/// #1060), which this mirrors constructor-for-constructor down to the
-/// shared [`crate::shell_adapter::build_shell_adapter`] call. Without this,
+/// `vt100`-backed twin of [`super::testing::driver_with_shell`], which this
+/// mirrors constructor-for-constructor down to the shared
+/// [`crate::shell_adapter::build_shell_adapter`] call. Without this,
 /// a downstream `ShellApp` consumer had no way to reach `TuiVtDriver` at
 /// all: [`crate::shell_adapter::build_shell_adapter`] is `pub(crate)`, so
 /// only an in-crate caller could assemble the `ShellAdapter` this driver
@@ -171,7 +166,7 @@ impl<A: AppLogic> TuiVtDriver<A> {
 
         let mut backend = TuiBackend::new();
         // Seed the viewport from the driver's terminal size BEFORE setup,
-        // mirroring `TuiDriver::new` (quadraui#437).
+        // mirroring `TuiDriver::new`.
         backend.begin_frame(crate::Viewport::new(width as f32, height as f32, 1.0));
         let mut app = app;
         app.setup(&mut backend);
@@ -194,7 +189,7 @@ impl<A: AppLogic> TuiVtDriver<A> {
     /// `TestBackend`'s in-memory buffer.
     ///
     /// Consumes any pending [`crate::Backend::request_full_repaint`]
-    /// request (issue #1037) the same way the live runner's
+    /// request the same way the live runner's
     /// `tui::run::TuiRunner::step`/`pump` frame loop and `TuiDriver::render` do — so a
     /// `request_full_repaint()` call under this driver forces the same
     /// "next frame repaints every cell unconditionally" ANSI byte stream a
@@ -212,7 +207,7 @@ impl<A: AppLogic> TuiVtDriver<A> {
     }
 
     /// Reproduce `ratatui::Terminal::clear()`'s two effects by hand,
-    /// without calling it — issue #1037's review follow-up.
+    /// without calling it.
     ///
     /// `Terminal::clear()` is unsafe to call on this driver's real
     /// `CrosstermBackend`: it unconditionally calls
@@ -226,11 +221,9 @@ impl<A: AppLogic> TuiVtDriver<A> {
     /// same category of call the module doc's "Why no real OS pty" section
     /// already flags for `CrosstermBackend::size()`), unrelated to whatever
     /// `Write` sink the backend wraps. Under `cargo test` there is no
-    /// controlling terminal, so both fail immediately (confirmed: calling
-    /// `terminal.clear()` here errors `ENXIO "No such device or address"`
-    /// from `get_cursor_position`) rather than silently succeeding against
-    /// a fake value — there's no test double to substitute, since the
-    /// query bypasses the sink entirely.
+    /// controlling terminal, so both fail immediately rather than silently
+    /// succeeding against a fake value — there's no test double to
+    /// substitute, since the query bypasses the sink entirely.
     ///
     /// So this reproduces `Terminal::clear()`'s two observable effects
     /// directly, using only backend calls that *write* bytes and never
@@ -273,7 +266,7 @@ impl<A: AppLogic> TuiVtDriver<A> {
 
     /// Feed raw bytes straight into the underlying `vt100::Parser`,
     /// out-of-band from anything [`Self::render`] / [`paint_frame`] ever
-    /// writes (issue #1060).
+    /// writes.
     ///
     /// This is the hook a downstream black-box test needs to reproduce the
     /// condition [`crate::Backend::request_full_repaint`] exists to fix: a
@@ -303,7 +296,7 @@ impl<A: AppLogic> TuiVtDriver<A> {
             match &outcome {
                 EventOutcome::Continue => {}
                 EventOutcome::Redraw => self.render(),
-                // quadraui#832 — see `TuiDriver::dispatch`'s identical arm.
+                // See `TuiDriver::dispatch`'s identical arm.
                 EventOutcome::RedrawAfter(d) => {
                     self.backend.request_frame_in(*d);
                 }
@@ -312,7 +305,7 @@ impl<A: AppLogic> TuiVtDriver<A> {
                     return Reaction::Exit;
                 }
             }
-            // quadraui#832 — see `TuiDriver::dispatch`'s identical merge.
+            // See `TuiDriver::dispatch`'s identical merge.
             result = result.merge(outcome.into());
         }
         result
@@ -718,13 +711,11 @@ mod tests {
         assert!(driver.exited());
     }
 
-    /// Issue #1060 acceptance test: a downstream `ShellApp` consumer (the
-    /// vimcode#1243 scenario this issue blocks — "Ctrl+L forces a full
-    /// repaint") must be able to write this test with only the public API
-    /// this crate exposes. Before [`driver_with_shell`] and
-    /// [`TuiVtDriver::inject_raw`] existed, none of the three pieces below
-    /// were reachable from outside this crate: `build_shell_adapter` was
-    /// `pub(crate)`, `TuiVtDriver::new` demanded an already-built
+    /// A downstream `ShellApp` consumer must be able to write this test with
+    /// only the public API this crate exposes. Before [`driver_with_shell`]
+    /// and [`TuiVtDriver::inject_raw`] existed, none of the three pieces
+    /// below were reachable from outside this crate: `build_shell_adapter`
+    /// was `pub(crate)`, `TuiVtDriver::new` demanded an already-built
     /// `AppLogic` (which `ShellAdapter` is, but nothing could construct
     /// one), and there was no way to inject the out-of-band byte an
     /// incremental diff would skip.
@@ -789,27 +780,24 @@ mod tests {
         );
     }
 
-    /// Issue #1037 (review follow-up): `TuiVtDriver::render` must consume a
-    /// pending [`crate::Backend::request_full_repaint`] request the same
-    /// way `TuiDriver::render` and the live runner's `TuiRunner::step`/`pump`
-    /// frame loop do — `Terminal::clear()` before the next `paint_frame` — mirroring
-    /// `tui::testing::tests::render_actually_clears_stale_content_outside_the_diff_cache`
-    /// one layer down, over the real ANSI byte stream this driver exists to
-    /// observe.
+    /// `TuiVtDriver::render` must consume a pending
+    /// [`crate::Backend::request_full_repaint`] request the same way
+    /// `TuiDriver::render` and the live runner's `TuiRunner::step`/`pump`
+    /// frame loop do — `Terminal::clear()` before the next `paint_frame` —
+    /// observing the effect over the real ANSI byte stream.
     ///
     /// `OneLineApp::render` only ever paints row 0, so row 1 stays outside
     /// ratatui's own diffed content for the life of the driver. We
-    /// simulate the exact kind of external drift `request_full_repaint`'s
-    /// doc names — a PTY writing straight into the shared terminal,
-    /// bypassing `CrosstermBackend`'s diff tracking entirely — by feeding
-    /// an out-of-band ANSI move+print straight into the `vt100::Parser`,
-    /// underneath `paint_frame`. A plain redraw leaves it in place (the
-    /// diff believes row 1 is unchanged, so it never re-sends anything for
-    /// it — the vimcode#58 symptom). Only a `Terminal::clear()` call —
-    /// which for a real `CrosstermBackend` means an actual ANSI
-    /// clear-screen sequence hits the byte stream, not just an in-process
-    /// flag — wipes it, proving the hook is wired end-to-end rather than
-    /// silently swallowed at this layer.
+    /// simulate external drift — a PTY writing straight into the shared
+    /// terminal, bypassing `CrosstermBackend`'s diff tracking entirely — by
+    /// feeding an out-of-band ANSI move+print straight into the
+    /// `vt100::Parser`, underneath `paint_frame`. A plain redraw leaves it
+    /// in place (the diff believes row 1 is unchanged, so it never re-sends
+    /// anything for it). Only a `Terminal::clear()` call — which for a real
+    /// `CrosstermBackend` means an actual ANSI clear-screen sequence hits
+    /// the byte stream, not just an in-process flag — wipes it, proving the
+    /// hook is wired end-to-end rather than silently swallowed at this
+    /// layer.
     #[test]
     fn render_actually_clears_stale_content_outside_the_diff_cache() {
         let mut driver = TuiVtDriver::new(OneLineApp { text: "hi" }, 10, 3);
@@ -817,7 +805,7 @@ mod tests {
         // Simulate a PTY (or any other process) writing directly into the
         // shared terminal, out of band from anything `paint_frame` ever
         // sent: move to row 2 (1-indexed in ANSI), col 1, print "X". Uses
-        // the public `inject_raw` hook (issue #1060) rather than reaching
+        // the public `inject_raw` hook rather than reaching
         // into the private `parser` field, so this test exercises the same
         // seam a downstream consumer would.
         driver.inject_raw(b"\x1b[2;1HX");

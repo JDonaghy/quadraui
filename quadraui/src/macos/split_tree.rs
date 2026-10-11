@@ -1,16 +1,9 @@
 //! macOS (Core Graphics) rasteriser for [`crate::SplitTree`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::split_tree::native_surface_paint::paint`] (#863,
-//! `PaintSurface` Phase 2d slice 6/9, child of #811) — see that fn's
-//! module doc for why the three per-backend copies were found to be
-//! already identical (no divergence). This module now carries
-//! [`mac_split_tree_layout`]; the deprecated `draw_split_tree`
-//! compatibility shim over the shared [`super::surface::CgSurface`]
-//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
-//! and vimcode's `develop`). Divider thickness matches
-//! [`super::split`]'s 4 points, which in turn matches GTK, so a
-//! `SplitTree` and a plain `Split` line up.
+//! This module carries [`mac_split_tree_layout`]. Divider thickness
+//! matches [`super::split`]'s 4 points, which in turn matches GTK, so a
+//! `SplitTree` and a plain `Split` line up. Painting is handled by the
+//! shared [`crate::primitives::split_tree::native_surface_paint::paint`].
 
 use crate::event::Rect as QRect;
 use crate::primitives::layout_metrics::pixel_split_tree_layout;
@@ -23,7 +16,7 @@ use crate::theme::Theme;
 /// geometry (absolute frame), matching [`super::split::mac_split_layout`]
 /// and the GTK / TUI twins. Shares its divider thickness with
 /// `gtk_split_tree_layout` / `win_split_tree_layout` via
-/// [`pixel_split_tree_layout`] (issue #1079).
+/// [`pixel_split_tree_layout`].
 pub fn mac_split_tree_layout(tree: &SplitTree, x: f64, y: f64, w: f64, h: f64) -> SplitTreeLayout {
     let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
     pixel_split_tree_layout(tree, bounds)
@@ -197,7 +190,7 @@ mod tests {
         paint_click_round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494, LESSONS.md:159-181).
+    /// Non-zero-origin regression guard.
     #[test]
     fn paint_click_round_trip_at_nonzero_origin() {
         paint_click_round_trip_at(37.0, 21.0);

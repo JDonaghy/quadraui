@@ -1,29 +1,23 @@
 //! Shared terminal-cell rendering helpers consumed by every rasteriser
 //! that paints [`crate::primitives::terminal::Terminal`] cell grids
-//! (`tui`, `gtk`, `macos` today — `win`'s terminal rasteriser still
-//! carries its own copy, see the note at the bottom of this doc comment).
+//! (`tui`, `gtk`, `macos` today).
 //!
 //! Unconditionally compiled (no feature gate), matching [`crate::theme`]
 //! and [`crate::text_util`]: the logic here has no platform dependency,
 //! only [`crate::primitives::terminal::TerminalCell`] and
 //! [`crate::theme::Theme`].
 //!
-//! # Overlay ladder (#500)
+//! # Overlay ladder
 //!
-//! Before this module, `tui/terminal.rs`, `gtk/terminal.rs`, and
-//! `macos/terminal.rs` each carried their own copy of the same
-//! cursor → find-active → find-match → selection precedence ladder, with
-//! the two find-highlight colours hardcoded as magic RGB literals in
-//! three places instead of one. [`resolve_cell_style`] is now the single
-//! definition; the colours live on [`Theme`] as methods
-//! ([`Theme::find_active_bg`], [`Theme::find_active_fg`],
-//! [`Theme::find_match_bg`]) rather than fields — see the "adding a
-//! field here is a breaking change" note on `Theme` itself and the #620
-//! precedent it documents. A method costs nothing downstream; a new
-//! field would be `error[E0063]: missing field` in `coord-tui`'s
-//! exhaustive palette literals on their very next build.
+//! [`resolve_cell_style`] defines the cursor → find-active → find-match →
+//! selection precedence ladder once for all rasterisers. The find-highlight
+//! colours live on [`Theme`] as methods ([`Theme::find_active_bg`],
+//! [`Theme::find_active_fg`], [`Theme::find_match_bg`]) rather than fields
+//! — see the "adding a field here is a breaking change" note on `Theme`
+//! itself. A method costs nothing downstream; a new field would break
+//! exhaustive palette literals in `coord-tui`.
 //!
-//! # Wide-glyph advance (#500, fix vehicle for #440's macOS half)
+//! # Wide-glyph advance
 //!
 //! [`crate::terminal_engine::TerminalSession::to_terminal`] builds its
 //! cell grid straight from vt100's model: a double-width character
@@ -33,22 +27,19 @@
 //! terminal column to one grid cell like TUI does) must claim that
 //! continuation column as part of the wide glyph's box, or the
 //! continuation column's own (possibly different) background paints
-//! over the glyph's right half. That was #439's original GTK bug; #440
-//! tracked the same defect on macOS, which advanced a flat `char_width`
-//! per column with no wide-glyph awareness at all.
+//! over the glyph's right half.
 //! [`wide_cell_advance`] is the shared classification both rasterisers
 //! now use.
 //!
 //! **TUI does not call this** — its `cells[row][col]` grid already maps
 //! 1:1 to terminal columns, so writing the wide glyph into its column
-//! and the vt100-supplied blank into the next column (exactly what
-//! [`crate::tui::terminal::draw_terminal`] already does) is already
+//! and the vt100-supplied blank into the next column is already
 //! correct with no special-casing: `ratatui::buffer::Buffer`'s own
 //! diff/render logic understands multi-width symbols from the glyph's
 //! own `cell_width()` and skips re-emitting a blank continuation column
 //! it didn't ask for.
 //!
-//! # Wide-glyph scale (#500 GTK-only → shared by #703)
+//! # Wide-glyph scale
 //!
 //! [`wide_cell_advance`] settles the *box* a double-width glyph gets;
 //! it says nothing about how well the glyph fills it. A pixel-based
@@ -58,25 +49,20 @@
 //! colour-emoji fonts overshoot it. [`wide_glyph_x_scale`] is the
 //! horizontal scale factor that stretches or shrinks the glyph to fill
 //! the box exactly, so consecutive wide glyphs pack tightly with no
-//! ragged inter-glyph gap. GTK's `wide_glyph_x_scale` (#439 follow-up)
-//! was the first and, until #703, only implementation; this is that
-//! same function, lifted rather than re-described so `macos` and `win`
-//! stop needing their own copy of the decision. Each backend still owns
-//! *applying* the scale (Cairo's `cr.scale`, Core Text's text-matrix `a`
-//! component via `macos::text::draw_text_scaled_x`, Direct2D's
-//! render-target transform via `win::text::with_horizontal_scale`) —
-//! that part is unavoidably native-handle-shaped and stays put.
+//! ragged inter-glyph gap. Each backend still owns *applying* the scale
+//! (Cairo's `cr.scale`, Core Text's text-matrix `a` component via
+//! `macos::text::draw_text_scaled_x`, Direct2D's render-target transform
+//! via `win::text::with_horizontal_scale`) — that part is unavoidably
+//! native-handle-shaped and stays put.
 //!
-//! # Divider geometry (#703)
+//! # Divider geometry
 //!
-//! `gtk`, `macos`, and `win` each painted a terminal-split divider as a
-//! hardcoded "1 unit wide, from `(x, y)` down to `y + height`"
-//! rectangle — the same three magic numbers typed three times, and
-//! `win`'s free function additionally diverged in signature (`rect:
-//! Rect` instead of `x, y, height`). [`divider_geometry`] is the single
-//! definition of that rectangle; each backend's `draw_terminal_divider`
-//! now only computes it and hands the four numbers to its own paint
-//! primitive (`cr.rectangle` / `CGContextFillRect` / `FillRectangle`).
+//! `gtk`, `macos`, and `win` each paint a terminal-split divider as a
+//! rectangle from `(x, y)` down to `y + height`, 1 unit wide.
+//! [`divider_geometry`] is the single definition of that rectangle; each
+//! backend's `draw_terminal_divider` now only computes it and hands the
+//! four numbers to its own paint primitive (`cr.rectangle` /
+//! `CGContextFillRect` / `FillRectangle`).
 
 use crate::primitives::terminal::{TerminalCell, TerminalCursorShape};
 use crate::text_util::display_width;
@@ -89,7 +75,7 @@ use crate::Rect;
 /// ladder once for every backend.
 ///
 /// Precedence, highest first:
-/// 1. `is_cursor` with [`TerminalCursorShape::Block`] (quadraui#338) —
+/// 1. `is_cursor` with [`TerminalCursorShape::Block`] —
 ///    invert: bg becomes the cell's own fg, fg becomes the cell's own
 ///    bg. `dim` is ignored here — the cursor block is already a strong
 ///    visual overlay, so faint text under it would be contradictory
@@ -166,7 +152,7 @@ const CURSOR_BLINK_HALF_PERIOD_MS: u128 = 530;
 /// [`CURSOR_BLINK_HALF_PERIOD_MS`], so repeated calls across paint
 /// frames produce a real blink with no state threaded through
 /// `Terminal`/`TerminalCell` — the "paint-time toggle driven by the
-/// runtime tick" this primitive's module doc describes (quadraui#338).
+/// runtime tick" this primitive's module doc describes.
 ///
 /// Deliberately impure (reads [`std::time::SystemTime::now`]) — callers
 /// that need a deterministic snapshot for a test should construct a
@@ -230,10 +216,9 @@ pub fn cursor_accent_rect(
 }
 
 /// Blend `fg` 50% toward `bg`, per-channel. Used by [`resolve_cell_style`]
-/// to render SGR 2 (faint/dim) text — quadraui#345. Blending toward the
-/// background (rather than toward black, which is what some terminals do)
-/// keeps faint text legibly faded on light themes too, where darkening
-/// would instead *increase* contrast.
+/// to render SGR 2 (faint/dim) text. Blending toward the background
+/// (rather than toward black) keeps faint text legibly faded on light
+/// themes too, where darkening would instead *increase* contrast.
 fn dim_fg(fg: Color, bg: Color) -> Color {
     Color::rgba(
         ((fg.r as u16 + bg.r as u16) / 2) as u8,
@@ -256,7 +241,6 @@ fn dim_fg(fg: Color, bg: Color) -> Color {
 /// correct for a grapheme cluster — a wide base character followed by
 /// zero-width combining marks still sums to 2, and a narrow base
 /// character with trailing combining marks still sums to 1
-/// (quadraui#337).
 ///
 /// Callers walk a row with an index (`while col < row.len()`), painting
 /// the background across `cell_w` and then stepping `col += cols`, so
@@ -282,10 +266,6 @@ pub fn wide_cell_advance(text: &str, char_width: f64) -> (f64, usize) {
 /// `1.0` (no scaling) when `natural_w` is non-positive (empty /
 /// zero-advance layout) so callers never divide by zero or blow a
 /// degenerate glyph up to infinity.
-///
-/// Originally GTK-only (`gtk::terminal`'s private `wide_glyph_x_scale`,
-/// #439 follow-up); lifted here unchanged so `macos` and `win` can apply
-/// the same decision instead of leaving wide glyphs unscaled (#703).
 pub fn wide_glyph_x_scale(natural_w: f64, cell_w: f64) -> f64 {
     if natural_w <= 0.0 {
         1.0
@@ -301,7 +281,7 @@ pub fn wide_glyph_x_scale(natural_w: f64, cell_w: f64) -> f64 {
 /// Shared by every pixel-based rasteriser's `draw_terminal_divider` free
 /// function (`gtk::terminal`, `macos::terminal`, `win::terminal`) so the
 /// "1 unit wide" invariant is defined once instead of copied into three
-/// near-identical `rectangle` calls (#703). Not used by
+/// near-identical `rectangle` calls. Not used by
 /// `tui::terminal::draw_terminal_divider`, which draws a themed `'│'`
 /// character cell rather than pixel geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -425,11 +405,9 @@ mod tests {
         );
     }
 
-    // ── dim / faint (SGR 2, quadraui#345) ───────────────────────────────
+    // ── dim / faint (SGR 2) ────────────────────────────────────────────
 
-    /// A dim cell's foreground blends 50% toward its own background —
-    /// this is the core regression test for #345: faint text must no
-    /// longer render at full brightness.
+    /// A dim cell's foreground blends 50% toward its own background.
     #[test]
     fn dim_cell_blends_fg_halfway_to_bg() {
         let fg = Color::rgb(200, 200, 200);
@@ -492,7 +470,7 @@ mod tests {
         assert_eq!(resolve_cell_style(&c, &theme), (fg, bg));
     }
 
-    // ── Cursor shape (quadraui#338) ─────────────────────────────────────
+    // ── Cursor shape ────────────────────────────────────────────────────
 
     /// `Underline`/`Bar` cursor cells do NOT invert — unlike `Block`,
     /// they fall through to the rest of the overlay ladder (here: no
@@ -636,7 +614,6 @@ mod tests {
     /// A narrow base character with a trailing combining mark (a
     /// multi-codepoint grapheme cluster) is still one column — the
     /// combining mark must not be counted as extra width
-    /// (quadraui#337).
     #[test]
     fn combining_mark_grapheme_advances_one_column() {
         assert_eq!(wide_cell_advance("e\u{0301}", 10.0), (10.0, 1));
@@ -649,7 +626,7 @@ mod tests {
         assert_eq!(wide_cell_advance("日\u{0301}", 10.0), (20.0, 2));
     }
 
-    // ── wide_glyph_x_scale (#500, lifted from GTK by #703) ─────────────
+    // ── wide_glyph_x_scale ────────────────────────────────────────────
 
     /// A CJK glyph measuring 15px inside an 18px (2 × 9px) box → 1.2×.
     #[test]
@@ -690,7 +667,7 @@ mod tests {
         assert_eq!(wide_glyph_x_scale(-3.0, 18.0), 1.0);
     }
 
-    // ── divider_geometry (#703) ─────────────────────────────────────────
+    // ── divider_geometry ────────────────────────────────────────────────
 
     #[test]
     fn divider_geometry_is_one_unit_wide() {

@@ -1,6 +1,6 @@
 //! Cascading submenus in the GTK backend — example driver.
 //!
-//! GTK twin of `tui_submenu.rs` (#370). Same `SubmenuApp` — pull-right
+//! GTK twin of `tui_submenu.rs`. Same `SubmenuApp` — pull-right
 //! submenus in both a menu-bar dropdown (View → Export → PNG → {Lossless,
 //! Compressed} / SVG, ≥2 levels) and an in-window right-click context menu
 //! (Refactor → Rename / Extract) — driven entirely through the

@@ -1,25 +1,18 @@
 //! macOS rasteriser for [`crate::RichTextPopup`].
 //!
-//! Content painting moved to the shared
-//! [`crate::primitives::rich_text_popup::native_surface_paint::paint`]
-//! (#1077, `PaintSurface` Phase 4 slice 4/8 — GTK is deliberately not
-//! part of this migration, see that fn's module doc). macOS gains
-//! several capabilities its own pre-migration "Scope omissions" doc
-//! (kept below for the historical record) listed as missing: selection
-//! background + inverted fg, a focused-link underline, and
-//! content-area clipping. Bold span styling is still not rendered here
-//! — `CgSurface::surface_draw_text_run_styled` takes the trait's
-//! default, which drops style entirely (see that default's own doc) —
-//! so this is a real gap that stays a gap, not a claimed fix.
+//! Content painting uses the shared
+//! [`crate::primitives::rich_text_popup::native_surface_paint::paint`].
+//! macOS supports selection background with inverted foreground, focused-link
+//! underlines, and content-area clipping. Bold span styling is not rendered
+//! here — `CgSurface::surface_draw_text_run_styled` takes the trait's
+//! default, which drops style entirely (see that default's own doc).
 //!
-//! ## Scope omissions (historical, pre-#1077; superseded above except
-//! ## where noted)
+//! ## Known limitations
 //!
 //! - **Per-line font scale** (markdown heading rows) — needs
-//!   `CTFontCreateCopyWithSymbolicTraits` or per-line CTFont swap. Still
-//!   not supported; see the shared `paint`'s module doc.
-//! - **Bold / italic span attributes** — bold still isn't rendered
-//!   (see above); italic was never supported and remains unsupported.
+//!   `CTFontCreateCopyWithSymbolicTraits` or per-line CTFont swap.
+//! - **Bold / italic span attributes** — bold is not rendered
+//!   (see above); italic is not supported.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
@@ -172,7 +165,7 @@ mod tests {
         );
     }
 
-    /// #1077: selection background is now painted on macOS — pre-migration
+    /// Selection background is now painted on macOS — pre-migration
     /// this backend's own doc listed it as a "Scope omission." Regression:
     /// a selected character's row must contain at least one pixel in the
     /// popup's own foreground colour (the selection-bg fill), which no

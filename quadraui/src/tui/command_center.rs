@@ -59,7 +59,7 @@ pub fn draw_command_center(
     // The paint loop below only draws an element that fits entirely
     // within `area`; drop bounds/hit-regions for anything that would
     // spill past the edge so the returned layout never describes cells
-    // it didn't actually paint (quadraui#649). At `area` widths used in
+    // it didn't actually paint. At `area` widths used in
     // practice this never trips — it only matters when the command
     // center is squeezed narrower than its own content.
     let area_right = area.x as f32 + area.width as f32;
@@ -161,7 +161,6 @@ mod tests {
     /// `CommandCenter::layout`'s `bounds` (absolute frame), so paint + click
     /// must agree at a non-zero origin too, per LESSONS.md's "layout
     /// helpers must return coords in the same frame across backends"
-    /// (quadraui#494).
     fn arrows_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 40, 1);
         let mut buf = Buffer::empty(area);
@@ -195,7 +194,7 @@ mod tests {
 
     /// Shared body for `search_box_paint_and_click_round_trip[_at_nonzero_origin]`
     /// — see `arrows_paint_and_click_round_trip_at` for the non-zero-origin
-    /// rationale (quadraui#494).
+    /// rationale.
     fn search_box_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 40, 1);
         let mut buf = Buffer::empty(area);
@@ -254,10 +253,8 @@ mod tests {
         assert_eq!(layout.hit_test(0.0, 0.0), CommandCenterHit::Outside);
     }
 
-    /// Issue #649: a `width == 0` area used to still get a fully
-    /// populated layout back from `tui_command_center_layout` — nothing
-    /// painted, but every hit region present, so a host caching that
-    /// layout would treat empty cells as clickable.
+    /// When an area has `width == 0`, the layout has no hit regions,
+    /// matching that nothing is painted.
     #[test]
     fn zero_width_area_is_hit_testably_empty() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
@@ -289,11 +286,11 @@ mod tests {
         assert_eq!(layout.hit_test(0.0, 0.0), CommandCenterHit::Outside);
     }
 
-    /// Issue #649: when the command center is squeezed narrower than its
-    /// own content, the search box doesn't fit inside `area` — the paint
-    /// loop must skip it (not spill past the edge into a wider host
-    /// buffer), and the returned layout must not report `search_bounds`
-    /// or hit-test it, matching what was actually painted.
+    /// When the command center is squeezed narrower than its content,
+    /// the search box doesn't fit inside `area` — the paint loop skips it
+    /// (not spilling past the edge into a wider host buffer), and the
+    /// returned layout does not report `search_bounds` or hit-test it,
+    /// matching what was actually painted.
     #[test]
     fn clipped_search_box_does_not_report_search_bounds() {
         // content_width for "Search" is 16 cells (2 arrows * 2 + gap 1 +

@@ -1,6 +1,6 @@
 //! TUI rasteriser for [`crate::primitives::command_line::CommandLine`].
 //!
-//! [`draw_command_line_selection`] (issue #1001) paints
+//! [`draw_command_line_selection`] paints
 //! [`CommandLineLayout::selection_bounds`]'s rect as a per-cell
 //! background highlight; [`draw_command_line`] is unchanged and
 //! delegates to it with `selection: None`.
@@ -14,7 +14,7 @@ use crate::text_util::safe_prefix;
 use crate::theme::Theme;
 
 /// Compute [`CommandLineLayout`] for `cmd` in `area` — one cell per
-/// character column (issue #705).
+/// character column.
 pub fn tui_command_line_layout(cmd: &CommandLine, area: Rect) -> CommandLineLayout {
     let rect = crate::event::Rect::new(
         area.x as f32,
@@ -27,10 +27,8 @@ pub fn tui_command_line_layout(cmd: &CommandLine, area: Rect) -> CommandLineLayo
 
 /// Paint `cmd` into `buf` at `area` and return the [`CommandLineLayout`]
 /// used to place its glyphs — the same value `tui_command_line_layout`
-/// would compute, handed back so callers (and tests) never have to
-/// re-derive it and risk it drifting from what was actually painted
-/// (issue #705 review: the paint/click round-trip test below reads this
-/// back instead of asserting a formula in isolation).
+/// would compute, handed back so callers never have to re-derive it and
+/// risk it drifting from what was actually painted.
 pub fn draw_command_line(
     buf: &mut Buffer,
     area: Rect,
@@ -43,7 +41,7 @@ pub fn draw_command_line(
 /// Paint `cmd` exactly like [`draw_command_line`], additionally
 /// highlighting the cell columns [`CommandLineLayout::selection_bounds`]
 /// resolves for `selection` with `theme.selection` as the cell
-/// background (issue #1001).
+/// background.
 ///
 /// A sibling function, not a new parameter on `draw_command_line` — see
 /// this module's and `crate::primitives::command_line`'s doc comments
@@ -123,10 +121,9 @@ mod tests {
     use super::*;
     use crate::types::WidgetId;
 
-    /// Regression for issue #503: `cursor_offset` is a host-supplied
-    /// byte offset with no guarantee it lands on a char boundary — the
-    /// pre-fix `cmd.text[..offset.min(cmd.text.len())]` slice panicked
-    /// the moment a multibyte character sat left of the cursor.
+    /// `cursor_offset` is a host-supplied byte offset with no guarantee it
+    /// lands on a char boundary; it must be validated to avoid slicing into
+    /// a multibyte character.
     #[test]
     fn draw_command_line_with_multibyte_cursor_does_not_panic() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
@@ -150,21 +147,16 @@ mod tests {
         buf[(x, y)].symbol().chars().next().unwrap_or(' ')
     }
 
-    /// Paint/click round-trip (`docs/TESTING.md` coverage-taxonomy row 1):
-    /// paint via the real `draw_command_line` rasteriser, read back the
-    /// actual painted cell character from the `Buffer`, then hit_test
-    /// that exact painted coordinate and assert it resolves to that
-    /// character's byte offset. Unlike a test that calls
-    /// `tui_command_line_layout` in isolation and checks formula-predicted
-    /// x-positions, this catches `draw_command_line`'s glyph placement
-    /// drifting away from `CommandLine::layout`'s column formula (e.g. a
-    /// future prompt gutter added to one but not the other) — see #705
-    /// review.
+    /// Paint and click round-trip: paint via the real `draw_command_line`
+    /// rasteriser, read back the actual painted cell character from the
+    /// `Buffer`, then `hit_test` that exact painted coordinate and assert it
+    /// resolves to that character's byte offset. This verifies that
+    /// `draw_command_line`'s glyph placement stays in sync with
+    /// `CommandLine::layout`'s column formula.
     ///
-    /// #505: a LOCAL/ABSOLUTE mixup is invisible at `area.x == 0`, so this
-    /// is exercised at a nonzero origin too — `hit_test` should ignore
-    /// clicks left of the bar and map columns starting at `area.x`, not
-    /// `0`.
+    /// Tested at a nonzero origin (`area.x == 5`) to verify that `hit_test`
+    /// correctly ignores clicks left of the bar and maps columns starting at
+    /// `area.x`, not `0`.
     #[test]
     fn tui_command_line_paint_and_click_round_trip_at_nonzero_origin() {
         let area = Rect::new(5, 3, 20, 1);
@@ -198,7 +190,7 @@ mod tests {
     /// `draw_command_line_selection` highlights exactly the selected
     /// cells with `theme.selection` as background, leaves the rest at
     /// `theme.command_line_bg`, and `draw_command_line` (no selection
-    /// argument) stays unaffected (issue #1001).
+    /// argument) stays unaffected.
     #[test]
     fn tui_command_line_selection_highlights_only_selected_cells() {
         let area = Rect::new(5, 3, 20, 1);

@@ -1,7 +1,7 @@
 //! `WorkspaceDemo` `ShellApp` + `quadraui::gtk::shell_runner::run_with_shell`.
 //!
 //! GTK twin of `tui_workspace` — the *same* `ShellApp`, so
-//! `WorkspaceController` (quadraui#596) is exercised through the
+//! `WorkspaceController` is exercised through the
 //! Pango/Cairo tab-bar rasteriser instead of the cell grid, including its
 //! pixel-measured `correct_scroll_offset` write-back. Click a tab to
 //! activate it, click its `×` to close it, `Ctrl+Tab` / `Ctrl+PageDown`

@@ -1,8 +1,7 @@
 //! `PaintSurface` — the low-level drawing-verb trait underneath the
-//! three pixel backends (issue #807, Phase 1 of the `PaintSurface`
-//! milestone; child of #785; `docs/SMELL_AUDIT_2026-07.md` §5).
+//! three pixel backends.
 //!
-//! # The problem this starts to fix
+//! # The problem this solves
 //!
 //! [`crate::Backend`] fuses two different jobs into one trait: "what to
 //! paint" (71 `draw_*`/`*_layout` methods, one per primitive) and "how
@@ -19,31 +18,7 @@
 //!
 //! `PaintSurface` is that shape: ~15 backend-primitive verbs, every one
 //! `Rect`/`Point`-taking rather than a loose bag of `x`/`y`/`w`/`h`
-//! scalars (the shape change that also lets a future phase drop the
-//! `#[allow(clippy::too_many_arguments)]`s scattered across `gtk::*`,
-//! `macos::*` and `win::*` — see this issue's PR description for the
-//! measured before/after; **Phase 1 does not remove any of them itself**,
-//! since no call site is migrated yet — see *Scope* below).
-//!
-//! # Scope — Phase 1 of three
-//!
-//! This phase only:
-//! 1. Defines the trait (this file).
-//! 2. Implements it for [`crate::gtk::backend::GtkBackend`],
-//!    [`crate::macos::backend::MacBackend`] and
-//!    [`crate::win::backend::WinBackend`] — TUI is deliberately excluded
-//!    (see *Why TUI stays out* below).
-//!
-//! It does **not**: migrate any of the 71 `Backend::draw_*`/`*_layout`
-//! methods, or any per-primitive rasteriser module, to call through
-//! `PaintSurface` instead of their own private helpers. Every existing
-//! call site is untouched, so this phase changes zero paint/click
-//! behaviour — it only proves the trait is implementable, honestly,
-//! against what each backend already has. Wiring `Backend`'s `draw_*`
-//! methods (and eventually the ~30 duplicated macOS `fill_rect`/
-//! `color_to_cg` copies) through this trait instead is Phase 2; dropping
-//! the accumulated `too_many_arguments` allows as call sites migrate to
-//! `Rect`-taking signatures is Phase 3.
+//! scalars.
 //!
 //! # Why every method is `surface_`-prefixed
 //!
@@ -56,9 +31,9 @@
 //! ambiguous the moment both traits are in scope together (Rust's method
 //! resolution doesn't prefer one trait over another same-arity-name
 //! sibling), forcing fully-qualified syntax everywhere `Backend` is used
-//! today — a real behaviour-affecting change this phase promises not to
-//! make. The `surface_` prefix sidesteps that entirely: no existing call
-//! site anywhere in the crate needs to change for this trait to exist.
+//! today — a real behaviour-affecting change. The `surface_` prefix
+//! sidesteps that entirely: no existing call site anywhere in the crate
+//! needs to change for this trait to exist.
 //!
 //! # Why TUI stays out
 //!
@@ -68,16 +43,13 @@
 //! this trait would mean either lying about sub-cell precision or
 //! growing every verb an extra "how do I round this to cells" branch,
 //! which is exactly the kind of leaky abstraction `Backend` itself
-//! already avoids by keeping TUI a first-class separate implementation
-//! (see `Backend`'s own module doc, and this issue's description).
+//! already avoids by keeping TUI a first-class separate implementation.
 //!
 //! # Public — the unsealed paint seam
 //!
 //! The bulk of `Backend`'s `draw_*` methods route through
 //! `primitives::<name>::native_surface_paint` helpers that take `&mut dyn
-//! PaintSurface` (see each primitive module's own doc for which ones;
-//! `tab_bar` is the one documented holdout), so this trait is the real
-//! paint seam.
+//! PaintSurface`, so this trait is the real paint seam.
 //!
 //! That seam is `pub`: the ~15 verbs below are this crate's
 //! public paint-primitive surface, exposed off [`crate::Backend`] via
@@ -91,17 +63,8 @@
 //! the shared `native_surface_paint::paint` helpers do that work once,
 //! generically, against `&mut dyn PaintSurface`.
 //!
-//! `Backend` itself stays sealed
-//! (`sealed::Sealed`, still `pub(crate)`) — only this one piece of it is
-//! unsealed.
-//!
-//! Not yet covered: the remaining
-//! `draw_*` methods whose primitives haven't grown a `native_surface_paint`
-//! module yet (`command_center`, `completions`, `editor`, `minimap`,
-//! `spinner`, plus the documented `tab_bar` holdout) still paint directly,
-//! and the *rest* of `Backend` (frame lifecycle, per-primitive `draw_*`/
-//! `*_layout`, focus ring, modal stack) is not split into further public
-//! pieces — only the paint-verb layer is.
+//! `Backend` itself stays sealed (`sealed::Sealed`, still `pub(crate)`) —
+//! only this one piece of it is unsealed.
 
 use crate::backend::ImagePaintResult;
 use crate::{Color, Image, Point, Rect, Viewport};
@@ -171,12 +134,7 @@ pub trait PaintSurface {
     /// current font, in surface-native units.
     fn surface_measure_text(&self, text: &str) -> (f32, f32);
 
-    /// [`Self::surface_measure_text`] with an optional bold weight —
-    /// added alongside [`Self::surface_draw_text_run_styled`] (#810) so a
-    /// caller measuring a segment it's about to paint bold (e.g.
-    /// `primitives::status_bar::native_surface_paint::paint`, #860)
-    /// measures the *same* weight it renders, rather than always the
-    /// regular one.
+    /// [`Self::surface_measure_text`] with an optional bold weight.
     ///
     /// Defaults to ignoring `bold` and forwarding to
     /// [`Self::surface_measure_text`] — correct only for a surface that
@@ -186,11 +144,7 @@ pub trait PaintSurface {
     /// with a Pango bold `AttrList` weight; [`crate::win::backend::WinBackend`]
     /// overrides via `DWrite::measure_text_styled`;
     /// [`crate::macos::backend::MacBackend`] takes the default as-is —
-    /// this backend's pre-#860 `status_bar` rasteriser measured (and
-    /// rendered) every segment at the same weight regardless of `bold`
-    /// (see that module's doc), so the default reproduces its existing
-    /// behaviour exactly rather than granting it new bold-measurement
-    /// capability.
+    /// this backend does not distinguish bold weight in measurement.
     fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
         let _ = bold;
         self.surface_measure_text(text)
@@ -206,7 +160,7 @@ pub trait PaintSurface {
     /// bordered `ListView`/command-center panels — see
     /// `crate::gtk::rounded_rect_path`'s call sites for the current,
     /// per-backend-private equivalents) and the reason none of them
-    /// could move onto this trait before now (issue #1073).
+    /// could move onto this trait before now.
     ///
     /// `radius` is clamped to half of `rect`'s shorter side (and floored
     /// at `0.0`) by every implementation — a radius larger than that
@@ -232,22 +186,14 @@ pub trait PaintSurface {
 
     /// [`Self::surface_fill_rect`] with `color`'s own alpha channel
     /// overridden by `alpha` (`0.0`..=`1.0`, clamped) — the explicit,
-    /// discoverable "fill translucently" entry point every large
-    /// primitive not yet ported onto `PaintSurface` needs (issue
-    /// #1073; see `primitives::chart`'s module doc, "The crosshair" and
-    /// "The grid line color", for two spots that pre-#1073 approximated
-    /// this with a CPU-side [`Color::blend`] against a hardcoded
-    /// destination colour instead of a real alpha composite, because
-    /// this verb didn't exist to reach for).
+    /// discoverable "fill translucently" entry point.
     ///
     /// Provided as a default rather than requiring an override: every
     /// [`Self::surface_fill_rect`] implementation on every one of the
     /// three pixel backends already honours `color.a` with a real,
     /// native alpha blend against whatever is already on the target
     /// (Cairo's `set_source_rgba`, CoreGraphics' `CGContextSetRGBFillColor`,
-    /// Direct2D's `CreateSolidColorBrush` — see `crate::gtk::set_source_rgba`'s
-    /// doc for the one of the three that needed a dedicated fix,
-    /// issue #811, before that was true everywhere), so there is no
+    /// Direct2D's `CreateSolidColorBrush`), so there is no
     /// backend-specific behaviour left to add here beyond overriding
     /// `color`'s own alpha with `alpha`. A caller that already has an
     /// alpha-carrying `Color` can call [`Self::surface_fill_rect`]
@@ -258,8 +204,7 @@ pub trait PaintSurface {
     ///
     /// **One documented exception:** [`crate::gtk::surface::CairoSurface`]
     /// constructed with `translucent_fill: false` (`form`, `sidebar_panel`,
-    /// `split`, `split_tree`'s adapters — see that module's own doc, "a
-    /// deliberate, documented divergence") calls Cairo's opaque-only
+    /// `split`, `split_tree`'s adapters) calls Cairo's opaque-only
     /// `set_source` from *its* [`Self::surface_fill_rect`] override, so
     /// routing this default through one of those four adapters silently
     /// paints fully opaque instead of blending, with no panic. No call
@@ -329,16 +274,9 @@ pub trait PaintSurface {
     fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color);
 
     /// [`Self::surface_draw_text_run`] with optional bold/italic/underline
-    /// styling and horizontal scale — added in #810 (Phase 2c)
-    /// specifically so `primitives::terminal::paint`'s per-cell glyph
-    /// styling (ANSI bold/italic/underline) and wide-glyph advance fix
-    /// (#439/#500/#703: stretch/shrink a CJK/emoji glyph so it fills its
-    /// two-column cell box exactly) don't have to regress just because
-    /// this trait's original ~15 verbs (#807, Phase 1) didn't anticipate
-    /// either.
+    /// styling and horizontal scale.
     ///
-    /// `scale_x` of `1.0` means "natural width, no scaling" — matches
-    /// every caller that doesn't need the wide-glyph fix.
+    /// `scale_x` of `1.0` means "natural width, no scaling".
     ///
     /// Defaults to dropping `bold`/`italic`/`underline`/`scale_x`
     /// entirely and forwarding to [`Self::surface_draw_text_run`] —
@@ -348,13 +286,9 @@ pub trait PaintSurface {
     /// flags (Pango `AttrList`) plus `scale_x` (`cr.scale`);
     /// [`crate::win::backend::WinBackend`] overrides for `bold` only
     /// (`DWrite::draw_text_styled`) plus `scale_x`
-    /// (`with_horizontal_scale`), silently dropping `italic`/`underline`
-    /// (its own pre-#810 documented limitation);
+    /// (`with_horizontal_scale`), silently dropping `italic`/`underline`;
     /// [`crate::macos::backend::MacBackend`] overrides for `scale_x`
-    /// only (`draw_text_scaled_x`), dropping every style flag (its own
-    /// pre-#810 documented "not rendered yet" posture) — so macOS gains
-    /// no new styling capability here, but keeps the wide-glyph fix it
-    /// already had.
+    /// only (`draw_text_scaled_x`), dropping every style flag.
     #[allow(clippy::too_many_arguments)]
     fn surface_draw_text_run_styled(
         &mut self,
@@ -371,31 +305,16 @@ pub trait PaintSurface {
     }
 
     /// [`Self::surface_draw_text_run_styled`] with an explicit
-    /// [`crate::FontRole`] instead of "this surface's current font" —
-    /// the last prerequisite (issue #1073, alongside
-    /// [`Self::surface_fill_rounded_rect`]/[`Self::surface_fill_rect_alpha`])
-    /// blocking the remaining chrome paint code from moving onto this
-    /// trait. Before this verb, a primitive migrated to take
-    /// `&mut dyn PaintSurface` could not paint one label in the chrome
-    /// font and another in the editor font from the same call site —
-    /// the concrete backends resolve that today only by handing a
-    /// *different, backend-specific* adapter to each caller (e.g.
-    /// [`crate::macos::backend::ChromeSurface`] vs `&mut MacBackend`
-    /// itself; [`crate::win::backend::WinBackend`] has an unused
-    /// `chrome_dwrite` `IDWriteTextFormat` sitting idle because nothing
-    /// selects it — see that field's own doc), which only works because
-    /// every existing caller already knows which role it wants at
-    /// construction time, not per draw call.
+    /// [`crate::FontRole`] instead of "this surface's current font".
     ///
     /// Defaults to ignoring `role` and forwarding to
     /// [`Self::surface_draw_text_run_styled`] with `bold`/`underline`
     /// left off and `scale_x` at `1.0` — correct only for a surface that
     /// has exactly one font to offer regardless of which role is asked
     /// for (every primitive-generic adapter: [`crate::gtk::surface::CairoSurface`],
-    /// [`crate::macos::surface::CgSurface`], [`crate::win::surface::D2dSurface`] —
-    /// each is already constructed against one specific, caller-chosen
-    /// font, so "which role" is answered before this verb is ever
-    /// reached). [`crate::gtk::backend::GtkBackend`],
+    /// [`crate::macos::surface::CgSurface`], [`crate::win::surface::D2dSurface`]
+    /// are each constructed against one specific, caller-chosen font).
+    /// [`crate::gtk::backend::GtkBackend`],
     /// [`crate::macos::backend::MacBackend`] and
     /// [`crate::win::backend::WinBackend`] all override this for real —
     /// see each backend's own impl for how it resolves `role` against
@@ -416,7 +335,7 @@ pub trait PaintSurface {
     /// Private-Use-Area range, e.g. a Nerd Font codepoint) at `rect`'s
     /// top-left corner in `color`, resolving through this surface's
     /// icon-glyph fallback family — [`crate::Backend::set_nerd_font_fallback`]
-    /// (issue #929) — rather than whatever font
+    /// — rather than whatever font
     /// [`Self::surface_draw_text_run`] would otherwise use alone.
     ///
     /// Defaults to forwarding straight to [`Self::surface_draw_text_run`]
@@ -555,10 +474,63 @@ pub trait PaintSurface {
     // ─── Images ────────────────────────────────────────────────────────
     /// Paint `image` into `rect`. Phase 1 implementations forward to
     /// [`crate::Backend::draw_image`] — see that method's doc comment
-    /// for the per-backend decode contract (GTK: `gdk_pixbuf`; macOS:
-    /// categorically [`ImagePaintResult::Unsupported`] until a real
-    /// `NSImage` decoder lands, #802; Win-GUI: Direct2D bitmap decode).
+    /// for the per-backend decode contract.
     fn surface_draw_image(&mut self, rect: Rect, image: &Image) -> ImagePaintResult;
+}
+
+/// Find the longest prefix of `text` (snapped to a `char` boundary) whose
+/// measured width, with a trailing `…` appended, fits within `max_width`.
+///
+/// Returns the prefix-plus-ellipsis string and its measured width. If even
+/// a bare `…` does not fit, returns an empty string and width `0.0`. If the
+/// whole of `text` already fits in `max_width`, callers should paint `text`
+/// directly instead of calling this — it always appends `…`.
+///
+/// Binary-searches over `char` count rather than bytes, assuming — as every
+/// text-shaping backend behind [`PaintSurface`] does (Pango on GTK, Core
+/// Text on macOS, DirectWrite on Windows) — that appending characters never
+/// *decreases* measured width.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn fit_text_prefix(
+    surface: &dyn PaintSurface,
+    text: &str,
+    bold: bool,
+    max_width: f32,
+) -> (String, f32) {
+    const ELLIPSIS: char = '…';
+    let (ellipsis_w, _) = surface.surface_measure_text_styled(&ELLIPSIS.to_string(), bold);
+    if ellipsis_w > max_width {
+        return (String::new(), 0.0);
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut lo = 0usize;
+    let mut hi = chars.len();
+    // Invariant: `lo` chars plus the ellipsis is known to fit; `hi` is
+    // known not to (or is the full length, still unproven).
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        let prefix: String = chars[..mid].iter().collect();
+        let candidate = format!("{prefix}{ELLIPSIS}");
+        let (w, _) = surface.surface_measure_text_styled(&candidate, bold);
+        if w <= max_width {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    if lo == 0 {
+        return (ELLIPSIS.to_string(), ellipsis_w);
+    }
+    let prefix: String = chars[..lo].iter().collect();
+    let candidate = format!("{prefix}{ELLIPSIS}");
+    let (w, _) = surface.surface_measure_text_styled(&candidate, bold);
+    (candidate, w)
 }
 
 #[cfg(test)]
@@ -761,5 +733,106 @@ mod tests {
         let rect = Rect::new(1.0, 2.0, 30.0, 40.0);
         surface.surface_stroke_rounded_rect(rect, 6.0, Color::rgb(9, 9, 9), 1.5);
         assert_eq!(surface.strokes, vec![(rect, Color::rgb(9, 9, 9), 1.5)]);
+    }
+
+    /// A deterministic 8px-per-char measurer, so `fit_text_prefix`'s
+    /// binary search can be checked against hand-computed widths.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    #[derive(Default)]
+    struct WidthSurface;
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    impl PaintSurface for WidthSurface {
+        fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> Viewport {
+            Viewport::new(0.0, 0.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            14.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            8.0
+        }
+        fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+            (text.chars().count() as f32 * 8.0, 14.0)
+        }
+        fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+        fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+        fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+        fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+        fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _w: f32) {}
+        fn surface_push_clip(&mut self, _rect: Rect) {}
+        fn surface_pop_clip(&mut self) {}
+        fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+            ImagePaintResult::Unsupported
+        }
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    #[test]
+    fn fit_text_prefix_returns_whole_text_unchanged_budget_irrelevant_when_caller_checks_first() {
+        // `fit_text_prefix` always appends `…`, even when the full text
+        // would fit — callers are expected to check the unclipped width
+        // first and only call this once it doesn't. Documented here so a
+        // future caller doesn't assume otherwise.
+        let surface = WidthSurface;
+        let (fitted, w) = fit_text_prefix(&surface, "ab", false, 100.0);
+        assert_eq!(fitted, "ab…");
+        assert_eq!(w, 3.0 * 8.0);
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    #[test]
+    fn fit_text_prefix_finds_longest_fitting_prefix() {
+        let surface = WidthSurface;
+        // "hello world" is 11 chars * 8px = 88px. A 50px budget fits a
+        // prefix of 5 chars plus the ellipsis (6 * 8 = 48px) but not 6
+        // chars plus ellipsis (7 * 8 = 56px).
+        let (fitted, w) = fit_text_prefix(&surface, "hello world", false, 50.0);
+        assert_eq!(fitted, "hello…");
+        assert_eq!(w, 48.0);
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    #[test]
+    fn fit_text_prefix_with_budget_too_small_for_even_the_ellipsis_returns_empty() {
+        let surface = WidthSurface;
+        let (fitted, w) = fit_text_prefix(&surface, "hello world", false, 4.0);
+        assert_eq!(fitted, "");
+        assert_eq!(w, 0.0);
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    #[test]
+    fn fit_text_prefix_with_budget_for_only_the_ellipsis_returns_bare_ellipsis() {
+        let surface = WidthSurface;
+        let (fitted, w) = fit_text_prefix(&surface, "hello world", false, 8.0);
+        assert_eq!(fitted, "…");
+        assert_eq!(w, 8.0);
     }
 }

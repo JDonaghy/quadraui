@@ -9,30 +9,18 @@
 //!
 //! ## Math
 //!
-//! [`fit_thumb`] is the **one** canonical thumb-sizing/positioning
-//! formula in this crate — every scrollbar geometry type
-//! (`Scrollbar`, `PaletteScrollbar`, `PopupScrollbar`,
-//! `TerminalScrollbar`, `dispatch::SurfaceScrollbar`) computes its
-//! thumb through it, directly or via a thin per-primitive adapter
-//! (e.g. `multi_section_view::compute_thumb_bounds` converts a
-//! row-indexed scroll position into `fit_thumb`'s continuous units,
-//! then [`quantize_thumb`](crate::primitives::multi_section_view::quantize_thumb)
+//! [`fit_thumb`] is the canonical thumb-sizing/positioning formula —
+//! every scrollbar geometry type (`Scrollbar`, `PaletteScrollbar`,
+//! `PopupScrollbar`, `TerminalScrollbar`, `dispatch::SurfaceScrollbar`)
+//! computes its thumb through it, directly or via a thin per-primitive
+//! adapter (e.g. `multi_section_view::compute_thumb_bounds` converts a
+//! row-indexed scroll position into `fit_thumb`'s continuous units, then
+//! [`quantize_thumb`](crate::primitives::multi_section_view::quantize_thumb)
 //! snaps the result to whole cells for TUI).
 //!
-//! This used to document two "accepted" competing formulas — a TUI
-//! cell-precision variant and a GTK-overlay variant with its own
-//! 20-pixel floor. **That is no longer true and was never actually
-//! required**: both were re-derivations of the same proportional
-//! thumb-sizing math, not a real backend-driven divergence. quadraui#820
-//! deleted every stand-alone re-derivation this crate had accumulated
-//! (`compose::sidebar_system`'s panel-drag setup, `multi_section_view`'s
-//! own panel-scrollbar layout, `primitives::rich_text_popup`'s popup
-//! scrollbar, and `tui::multi_section_view::paint_panel_scrollbar`'s
-//! paint-side copy — the last of which had silently drifted from the
-//! hit-tested geometry, dropping divider strips from its total). A
-//! caller may still choose its own `min_thumb_len` value (cells vs.
-//! pixels, 1 vs. 8, etc.) — that is a per-surface *policy knob*
-//! `fit_thumb` takes as a parameter, not a second formula.
+//! A caller may choose its own `min_thumb_len` value (cells vs. pixels,
+//! 1 vs. 8, etc.) — that is a per-surface *policy knob* `fit_thumb`
+//! takes as a parameter.
 
 use crate::event::Rect;
 use crate::types::WidgetId;
@@ -176,15 +164,10 @@ pub enum PressZone {
 }
 
 impl Scrollbar {
-    /// Classify a click at `pos` — the coordinate along this
-    /// scrollbar's [`ScrollAxis`] (`y` for [`ScrollAxis::Vertical`],
-    /// `x` for [`ScrollAxis::Horizontal`]), in the same units as
-    /// [`Self::track`] — against the painted thumb.
-    ///
-    /// This is the three-way branch (`FormController`,
-    /// `TreeController`, `ChatController`) previously re-derived from
-    /// raw `track.y + thumb_start` / `+ thumb_len` arithmetic in each
-    /// controller (quadraui#1089).
+    /// Classify a click at `pos` — the coordinate along this scrollbar's
+    /// [`ScrollAxis`] (`y` for [`ScrollAxis::Vertical`], `x` for
+    /// [`ScrollAxis::Horizontal`]), in the same units as [`Self::track`] —
+    /// against the painted thumb.
     pub fn press_zone(&self, pos: f32) -> PressZone {
         let thumb_start = match self.axis {
             ScrollAxis::Vertical => self.track.y + self.thumb_start,
@@ -216,17 +199,10 @@ impl Scrollbar {
 
 /// State for an in-progress scrollbar thumb drag.
 ///
-/// Shared by every scroll-owning controller — `FormController`,
-/// `TreeController`, `ChatController`'s transcript scrollbar, and
-/// `SidebarSystem`'s row + panel scrollbars each carried an identical
-/// `origin_y` / `origin_offset` / `travel` / `max_offset` struct plus
-/// the same linear-interpolation drag math before quadraui#1089
-/// consolidated them here.
-///
-/// Offsets are `f32` so this type serves both discrete, row-indexed
-/// scroll state (`usize`, round [`Self::offset_at`]'s result) and
-/// continuous pixel-based scroll state (`SidebarSystem`'s panel
-/// scrollbar) without duplicating the struct.
+/// Shared by every scroll-owning controller. Offsets are `f32` so this
+/// type serves both discrete, row-indexed scroll state (`usize`, round
+/// [`Self::offset_at`]'s result) and continuous pixel-based scroll state
+/// without duplicating the struct.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThumbDrag {
     origin_pos: f32,
@@ -285,11 +261,8 @@ impl ThumbDrag {
 
 /// Clamp `current + delta` into `[0, max]`.
 ///
-/// The core arithmetic behind every `scroll_by` / `page_scroll` in this
-/// crate — `FormController`, `TreeController`, and
-/// `ChatController::scroll_transcript_by` each re-derived it
-/// independently before quadraui#1089. `max` is typically
-/// `content_len.saturating_sub(viewport_rows)`.
+/// The core arithmetic behind every `scroll_by` / `page_scroll` operation.
+/// `max` is typically `content_len.saturating_sub(viewport_rows)`.
 pub fn scroll_by_clamped(current: usize, delta: isize, max: usize) -> usize {
     let cur = current as isize;
     let max = max as isize;
@@ -301,10 +274,8 @@ pub fn scroll_by_clamped(current: usize, delta: isize, max: usize) -> usize {
 ///
 /// Returns `0` when there is nothing to scroll to (`content_len == 0`),
 /// otherwise `scroll_offset.min(content_len - 1)` — pinning the start so
-/// the last item is always reachable instead of scrolling clean past the
-/// end into an empty view. This is the "resolved scroll offset" formula
-/// `TreeView`, `ListView`, `Palette`, `Completions`, `Form`, and
-/// `TextDisplay` layouts each re-derived independently before #508.
+/// the last item is always reachable instead of scrolling past the end
+/// into an empty view.
 ///
 /// Callers that render a fixed number of rows per frame (rather than
 /// filling a variable-height viewport item-by-item) usually want
@@ -339,49 +310,16 @@ pub fn visible_window(
     (start, end)
 }
 
-// ── PaintSurface paint (#811, Phase 2d of the PaintSurface milestone) ────
+// This is the one shared implementation of scrollbar painting, written
+// against [`crate::paint_surface::PaintSurface`] instead of any one
+// backend's drawing API.
 //
-// Before this, `gtk::draw_scrollbar` (Cairo), `macos::scrollbar::draw_scrollbar`
-// (Core Graphics) and `win::scrollbar::draw_scrollbar` (Direct2D) each
-// independently painted the same overlay track+thumb geometry with their
-// own drawing API (quadraui#785 child #811, `docs/SMELL_AUDIT_2026-07.md`
-// §5). `paint` below is the one shared implementation, written against
-// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
-// one backend's drawing API.
+// Track and thumb must carry real alpha (`Color::a < 255`), never a
+// fully-opaque colour pre-blended against `theme.background`.
 //
-// Unlike `primitives::chart`'s divergence-heavy unification (#810), the
-// three deleted copies here were already near-identical: same
-// track/thumb alpha thresholds, same axis-based rect placement. The one
-// divergence this issue names as "known, owned elsewhere" —
-// `win::scrollbar` pre-blending its fill against `theme.background`
-// instead of a real alpha blend (quadraui#791) — had **already been
-// fixed**, independently of this issue, before this migration started:
-// the pre-deletion `win/scrollbar.rs` module doc documented the fix
-// landing under #791 directly (a real translucent `ID2D1SolidColorBrush`
-// fill, matching GTK's `cr.set_source_rgba` and macOS's
-// `CGContextSetRGBFillColor` with a real alpha channel). Re-verified
-// while migrating, per this issue's "re-verify before you implement" —
-// reported here rather than silently assumed.
-//
-// What #791 did *not* reach, because the code didn't exist yet:
-// `PaintSurface::surface_fill_rect`'s own GTK implementation (added
-// later, by the #808/#810 migrations that gave `primitives::{chart,form,
-// terminal,text_display}` a shared paint path) called
-// `crate::gtk::set_source` — `cr.set_source_rgb`, which drops `Color::a`
-// outright. Routing `Scrollbar`'s paint through `surface_fill_rect`
-// unchanged would have *reintroduced* an opaque-fill regression on GTK
-// specifically, on the one primitive whose entire visual identity is a
-// translucent overlay. Fixed at the source instead of worked around
-// here: `GtkBackend::surface_fill_rect` now calls the new
-// `crate::gtk::set_source_rgba` (see that fn's doc for why every
-// existing `surface_fill_rect` caller is unaffected — they all already
-// pass opaque colours).
-//
-// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
-// — only *called* once a real pixel backend is compiled in, exercised by
-// each backend's own `Backend::draw_scrollbar`/`draw_terminal` call
-// sites plus this module's own `RecordingSurface` tests on every leg
-// that enables one of the three cfg'd features.
+// `#[allow(dead_code)]`: only called when a real pixel backend is
+// compiled in, exercised by each backend's own `Backend::draw_scrollbar`
+// call site plus tests.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -397,7 +335,7 @@ pub(crate) mod native_surface_paint {
     /// Paint a [`Scrollbar`] onto `surface`: a translucent track with a
     /// brighter translucent thumb on top, both bumping alpha on
     /// hover/drag. See this module's doc for the one known divergence
-    /// (quadraui#791) re-verified (already fixed) while unifying three
+    /// re-verified (already fixed) while unifying three
     /// per-backend copies into this one.
     pub(crate) fn paint(scrollbar: &Scrollbar, surface: &mut dyn PaintSurface, theme: &Theme) {
         let track = scrollbar.track;
@@ -472,7 +410,7 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// #1073: test-only recorder — `paint` never calls this verb
+            /// Test-only recorder — `paint` never calls this verb
             /// (see this module's own doc for why no primitive here has been
             /// migrated onto it yet); this exists only so `RecordingSurface`
             /// satisfies the trait. Records into the same `fills` list as
@@ -517,13 +455,8 @@ pub(crate) mod native_surface_paint {
             )
         }
 
-        /// Regression for quadraui#791, ported to the shared paint path:
-        /// track/thumb must carry real alpha (`Color::a < 255`), never a
+        /// Track and thumb must carry real alpha (`Color::a < 255`), not a
         /// fully-opaque colour pre-blended against `theme.background`.
-        /// This is also the test that catches the GTK-specific
-        /// `surface_fill_rect` alpha-dropping bug this same issue fixed
-        /// (see this module's doc) — RED against a `paint` that routed
-        /// through the pre-fix `surface_fill_rect`/`set_source`.
         #[test]
         fn track_and_thumb_paint_with_real_alpha_not_opaque() {
             let sb = vertical_bar(0.0, 200.0, 50.0);

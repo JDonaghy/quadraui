@@ -1834,12 +1834,8 @@ mod tests {
         let theme = Theme::default();
         // "aaa **bold text** bbb" → plain = "aaa bold text bbb" (17 chars).
         // At width=8: `text_util::wrap_spans` packs greedily up to the
-        // budget ("aaa" + " " + "bold" == 8 cells fits on one row), unlike
-        // the retired `wrap_plain_line`, which always left the character
-        // exactly at the window boundary unused and so wrapped one word
-        // earlier than necessary ("aaa" / "bold" / "text bbb", 3 rows).
-        // The new, budget-filling rows are "aaa bold" / "text bbb" (2
-        // rows) — see issue #821.
+        // budget ("aaa" + " " + "bold" == 8 cells fits on one row).
+        // The result is "aaa bold" / "text bbb" (2 rows).
         let r = render_markdown_to_styled_wrapped("aaa **bold text** bbb", &theme, 8);
         assert_eq!(
             r.lines.len(),
@@ -1876,9 +1872,7 @@ mod tests {
     #[test]
     fn wrapped_cjk_wraps_at_display_width_not_char_count() {
         // 6 CJK characters = 6 chars but 12 display cells. A
-        // `chars().count()`-based wrapper would treat this as fitting
-        // inside a 6-char budget; the display-width-aware wrapper must
-        // wrap after 3 characters (6 cells) — see issue #821.
+        // display-width-aware wrapper must wrap after 3 characters (6 cells).
         let theme = Theme::default();
         let r = render_markdown_to_styled_wrapped("中文中文中文", &theme, 6);
         assert!(
@@ -1898,10 +1892,8 @@ mod tests {
     #[test]
     fn wrapped_mixed_ascii_and_cjk_wraps_by_display_width_not_char_count() {
         // "ab 中文" is 5 *characters* (a, b, space, 中, 文) but 7 *display
-        // cells* (1+1+1+2+2). A per-char accumulator (`chars().count() <=
-        // width`) would see 5 <= 6 and wrongly skip wrapping entirely,
-        // leaving the row 1 cell over budget — see issue #908. The
-        // display-width-aware wrapper must still wrap it into two rows.
+        // cells* (1+1+1+2+2). The display-width-aware wrapper must wrap it
+        // into two rows.
         let theme = Theme::default();
         let input = "ab 中文";
         assert!(
@@ -2057,7 +2049,7 @@ mod tests {
     }
 }
 
-/// Property tests (quadraui#1130): a markdown document is untrusted,
+/// Property tests: a markdown document is untrusted,
 /// foreign input by definition — chat transcripts, README files, AI
 /// output — so these hold over arbitrary strings, not just the
 /// hand-picked fixtures in `mod tests` above.

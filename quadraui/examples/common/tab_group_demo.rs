@@ -322,7 +322,7 @@ impl AppLogic for TabGroupDemo {
             }
 
             // ── Close active tab (Ctrl-W) ──────────────────────────
-            // Keyboard equivalent of clicking a tab's `×` (#828): the
+            // Keyboard equivalent of clicking a tab's `×`: the
             // mouse-only close affordance had no key path at all.
             UiEvent::KeyPressed {
                 key: Key::Char('w'),
@@ -430,7 +430,7 @@ impl AppLogic for TabGroupDemo {
                 // immediately (at the `;`), before any `borrow_mut()` call
                 // inside the block. Keeping the `Ref` alive in the `if let`
                 // scrutinee and then calling `borrow_mut()` in the same block
-                // panics with "RefCell already borrowed" (#375).
+                // panics with "RefCell already borrowed".
                 let pending_pos = *self.tab_drag_pending_pos.borrow();
                 if let Some((sx, sy)) = pending_pos {
                     let dx = (position.x - sx).abs();

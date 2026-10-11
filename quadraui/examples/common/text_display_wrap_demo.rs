@@ -1,18 +1,12 @@
 //! Backend-agnostic `AppLogic` for the `TextDisplay` word-wrap demo
-//! ([`tui_text_display_wrap`] / [`gtk_text_display_wrap`], quadraui#905).
+//! ([`tui_text_display_wrap`] / [`gtk_text_display_wrap`]).
 //!
 //! A single full-viewport [`quadraui::TextDisplay`] with one line that is
-//! deliberately much wider than the demo's viewport. Before #905 that line
-//! was silently cut off at the right edge — the tail word
-//! [`TAIL_MARKER`] never reached any backend's painted output no matter
-//! how tall the viewport was, because `TextDisplay` never wrapped, only
-//! truncated. Since #905, `TextDisplay` always word-wraps an over-long
-//! line onto continuation rows (prefixed with the "↳ " marker — see
-//! [`quadraui::primitives::text_display`]'s `wrap` module), so
-//! [`TAIL_MARKER`] is visible on some later row instead. This demo (and
-//! its `TuiDriver` test in `tests/tui_example_driver.rs`, plus the
-//! `text_display.long_line_wraps_not_truncates` conformance scenario)
-//! exists to make that behaviour visible and to keep it from regressing.
+//! deliberately much wider than the demo's viewport. The line wraps onto
+//! continuation rows (prefixed with the "↳ " marker — see
+//! [`quadraui::primitives::text_display`]'s `wrap` module), so the tail word
+//! [`TAIL_MARKER`] is visible on a later row. This demo demonstrates that
+//! `TextDisplay` word-wraps over-long lines rather than truncating them.
 //!
 //! Controls:
 //! - `q` / `Esc` — quit

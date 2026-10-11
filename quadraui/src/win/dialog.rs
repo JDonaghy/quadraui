@@ -1,25 +1,18 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::Dialog`] (issue #28).
+//! Direct2D / DirectWrite rasteriser for [`crate::Dialog`].
 //!
-//! Content painting moved to the shared
-//! [`crate::primitives::dialog::native_surface_paint::paint`] (#1077,
-//! `PaintSurface` Phase 4 slice 4/8) — see that fn's module doc for the
-//! drift it resolved, several of which were Windows-only gaps this
-//! backend gains here for the first time: per-button border stroke,
-//! `DialogButton::tint`, button-label/text-input vertical centring, and
-//! `DialogTable`'s `column_widths` hint + correctly-sized header
-//! separator.
+//! Content painting uses the shared
+//! [`crate::primitives::dialog::native_surface_paint::paint`] — see that fn's
+//! module doc for the invariants it maintains across backends.
 //!
-//! **Font role**: the caller now passes whichever [`DWrite`] handle it
+//! **Font role**: the caller passes whichever [`DWrite`] handle it
 //! wants the whole dialog painted in — see
 //! [`crate::win::backend::WinBackend::draw_dialog`], which passes
 //! `chrome_dwrite` (falling back to the editor `dwrite` handle if no
 //! live chrome one exists yet), giving `chrome_dwrite` its first real
 //! caller (see that field's own doc).
 //!
-//! `DialogInput::Toolbar` still renders inline here, unchanged — Windows
-//! never delegated to a shared toolbar rasteriser (there is no
-//! `win::toolbar`-via-`PaintSurface` equivalent yet; out of #1077's
-//! scope, see the shared `paint`'s module doc).
+//! `DialogInput::Toolbar` still renders inline here — Windows
+//! has no separate toolbar rasteriser.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod dialog;` and `backend.rs`'s module
@@ -229,7 +222,7 @@ mod tests {
         assert_eq!((corner.r, corner.g, corner.b), (bg.r, bg.g, bg.b));
     }
 
-    /// #1077: `DialogButton::tint` continues to be honoured post-port —
+    /// `DialogButton::tint` continues to be honoured post-port —
     /// Windows already implemented this pre-migration (it was the one
     /// backend that did), and this test pins it against a regression now
     /// that the label paint moved into the shared `paint`.
@@ -275,7 +268,7 @@ mod tests {
         );
     }
 
-    /// #1077: `DialogTable::column_widths` is now honoured on every
+    /// `DialogTable::column_widths` is now honoured on every
     /// backend — pre-migration Windows's table painter never read the
     /// field at all. Regression: a column with an explicit width hint
     /// much wider than its content must place the next column's text

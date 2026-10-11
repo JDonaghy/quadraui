@@ -21,8 +21,7 @@
 //!   to freeze the terminal, run `stty -ixon` or use `Alt+Enter` instead.
 //! - `Enter` — insert a newline in the input.
 //!
-//! When `submit_on_enter == true` (Zed-style: `Enter` sends by default —
-//! #1137):
+//! When `submit_on_enter == true` (Enter sends by default):
 //!
 //! - `Enter` (no modifiers) — submit the current input.
 //! - `Shift+Enter` — insert a newline. `Alt+Enter` is accepted as a
@@ -33,7 +32,7 @@
 //!
 //! - `Esc` — emit [`ChatControllerEvent::Cancelled`]; the app decides
 //!   whether to close the overlay.
-//! - The input soft-wraps long lines to fit the box (#1136), and `↑`/`↓`
+//! - The input soft-wraps long lines to fit the box, and `↑`/`↓`
 //!   move by **visual** row, not logical line — see this module's *Input
 //!   soft-wrap and auto-grow* section on [`ChatController`].
 //! - `↑` (when the cursor is on the first visual row of the whole
@@ -55,7 +54,7 @@
 //! transcript by 3 rows per tick. Backends normalise their native
 //! scroll direction before emitting [`crate::UiEvent::Scroll`].
 //!
-//! # Send / Stop segment (#1137)
+//! # Send / Stop segment
 //!
 //! A clickable segment is painted at the right of the input row —
 //! reusing [`crate::Form`]'s existing `FieldKind::Button` rasteriser so no
@@ -72,7 +71,7 @@
 //! The segment is omitted (and the `TextInput` takes the full row width)
 //! when the row is too narrow to fit both.
 //!
-//! # Persistent hint line (#1137)
+//! # Persistent hint line
 //!
 //! [`set_hint`](Self::set_hint) configures an optional one-row hint
 //! painted directly above the input box. Unlike the `TextInput`
@@ -82,7 +81,7 @@
 //! affordance. `None` (default) omits the row entirely, so the layout is
 //! unchanged for callers that don't opt in.
 //!
-//! # Collapsible turns and per-turn hit regions (#1138)
+//! # Collapsible turns and per-turn hit regions
 //!
 //! Per-turn collapsed/summary state lives on **`ChatController`**, keyed by
 //! transcript index — not as fields on [`ChatTurn`] itself. Both downstream
@@ -164,7 +163,7 @@ pub enum ChatRole {
 /// styled [`MessageRow`]s with per-span fg/bold/italic and per-line heading
 /// scale; otherwise it falls back to concatenating span text (the flat path).
 ///
-/// **Collapsed/summary state (#1138) deliberately lives on
+/// **Collapsed/summary state deliberately lives on
 /// [`ChatController`], not here.** Both downstream consumers construct
 /// `ChatTurn` via exhaustive struct literals (no `..Default::default()`),
 /// so adding fields to this struct is a hard breaking change with no
@@ -208,7 +207,7 @@ pub enum ChatControllerEvent {
     /// show a confirmation dialog, or ignore it.
     Cancelled,
     /// User clicked the Send/Stop segment while [`ChatController::set_busy`]
-    /// was `true` (#1137). Distinct from [`Cancelled`](Self::Cancelled),
+    /// was `true`. Distinct from [`Cancelled`](Self::Cancelled),
     /// which is about closing the overlay — this is about interrupting an
     /// in-flight generation. The app should stop its backend session
     /// continuation (kill the subprocess, cancel the API call, etc.); the
@@ -219,7 +218,7 @@ pub enum ChatControllerEvent {
     KeyPressed { key: String, modifiers: Modifiers },
     /// A click landed on a transcript row belonging to `turn_idx`, at
     /// `row_in_turn` rows into that turn's block (`0` = the role header
-    /// row) (#1138). Also moves [`ChatController::focused_turn`] to
+    /// row). Also moves [`ChatController::focused_turn`] to
     /// `Some(turn_idx)`, so a keyboard `Enter` right after the click acts on
     /// the same turn. The controller does not itself toggle the turn's
     /// collapsed state on click — apps decide what a click means (toggle
@@ -249,11 +248,11 @@ struct ChatLayout {
     scrollbar: Option<Rect>,
     /// Spinner rect within the status strip (rightmost `line_height` px).
     spinner: Option<Rect>,
-    /// Persistent hint row directly above the input box (#1137). `None`
+    /// Persistent hint row directly above the input box. `None`
     /// when [`ChatController::set_hint`] hasn't been called.
     hint: Option<Rect>,
     input: Rect,
-    /// Clickable Send/Stop segment at the right of the input row (#1137).
+    /// Clickable Send/Stop segment at the right of the input row.
     /// `None` when the row is too narrow to fit both it and the
     /// `TextInput`.
     send: Option<Rect>,
@@ -278,7 +277,7 @@ struct ChatLayout {
 ///
 /// Plain-text turns (from [`push_turn`](Self::push_turn) /
 /// [`set_transcript`](Self::set_transcript)) are **word-wrapped** via
-/// [`crate::text_util::word_wrap`] (#474): rows break at whitespace where
+/// [`crate::text_util::word_wrap`]: rows break at whitespace where
 /// possible, and only a single word wider than the column budget falls
 /// back to a mid-word hard break (e.g. with a 10-column budget
 /// `"implementation"` becomes `"implementa"` + `"tion"`).
@@ -288,11 +287,9 @@ struct ChatLayout {
 /// boundaries — [`crate::text_util::wrap_spans`] with
 /// [`crate::text_util::WrapPolicy::Char`]. `Word` wrapping is available
 /// on the same function (markdown rendering uses it — see
-/// [`crate::compose::markdown`]) but is intentionally not used here yet;
-/// switching this call site's policy is a follow-up, not a capability
-/// gap. See issue #821.
+/// [`crate::compose::markdown`]) but is intentionally not used here yet.
 ///
-/// # Input soft-wrap and auto-grow (#1136)
+/// # Input soft-wrap and auto-grow
 ///
 /// The input box's `TextInput` is built from the *wrapped* buffer, not the
 /// raw one: [`build_text_input`](Self::build_text_input) soft-wraps
@@ -363,14 +360,14 @@ pub struct ChatController {
     ///
     /// [`render`]: Self::render
     stuck_to_bottom: bool,
-    /// Keyboard cursor into the transcript (#1138): `Some(turn_idx)` when
+    /// Keyboard cursor into the transcript: `Some(turn_idx)` when
     /// `Tab`/`Shift+Tab` (or a transcript click) has moved focus off the
     /// input and onto a turn, so `Enter` toggles that turn's collapsed
     /// state instead of submitting/inserting a newline. `None` means the
     /// input has focus (the default). See
     /// [`focus_next_turn`](Self::focus_next_turn).
     focused_turn: Option<usize>,
-    /// Per-turn collapsed state (#1138), keyed by transcript index —
+    /// Per-turn collapsed state, keyed by transcript index —
     /// deliberately *not* a field on [`ChatTurn`] itself; see this
     /// struct's *Collapsible turns and per-turn hit regions* doc section
     /// for why. Absence means expanded (the default). Entries are not
@@ -378,7 +375,7 @@ pub struct ChatController {
     /// transcript with turns in a different order — see
     /// [`is_turn_collapsed`](Self::is_turn_collapsed).
     turn_collapsed: HashSet<usize>,
-    /// Per-turn summary-line override (#1138), keyed the same way as
+    /// Per-turn summary-line override, keyed the same way as
     /// `turn_collapsed`. See
     /// [`turn_summary_line`](Self::turn_summary_line).
     turn_summary: HashMap<usize, String>,
@@ -396,9 +393,8 @@ pub struct ChatController {
     /// `backend.line_height()` (same convention as `TreeController`).
     scrollbar_width: Option<f32>,
     /// When `true`, `Enter` submits and `Shift+Enter` (or `Alt+Enter` as a
-    /// fallback) inserts a newline. Default `false` — preserves the
-    /// pre-#1137 behaviour where `Enter` always inserts a newline. See
-    /// [`set_submit_on_enter`](Self::set_submit_on_enter).
+    /// fallback) inserts a newline. Default `false` — `Enter` always inserts
+    /// a newline. See [`set_submit_on_enter`](Self::set_submit_on_enter).
     submit_on_enter: bool,
     /// Persistent hint row painted above the input box, or `None` to omit
     /// it. See [`set_hint`](Self::set_hint).
@@ -498,7 +494,7 @@ impl ChatController {
         self.input_has_focus = focus;
     }
 
-    /// Configure the input area's auto-grow row-count clamp (#1136).
+    /// Configure the input area's auto-grow row-count clamp.
     ///
     /// The input box's painted height is the wrapped visual row count of
     /// the current buffer, clamped to `[min, max]`, plus the fixed 2-row
@@ -520,12 +516,11 @@ impl ChatController {
         self.scrollbar_width = width;
     }
 
-    /// Toggle Zed-style "Enter to send" behaviour (#1137).
+    /// Toggle Zed-style "Enter to send" behaviour.
     ///
     /// `true` — `Enter` submits, `Shift+Enter`/`Alt+Enter` insert a
     /// newline. `false` (default) — `Enter` always inserts a newline;
-    /// submit is `Ctrl+S` / `Alt+Enter` / `Ctrl+Enter`, preserving
-    /// pre-#1137 behaviour for callers that don't opt in.
+    /// submit is `Ctrl+S` / `Alt+Enter` / `Ctrl+Enter`.
     pub fn set_submit_on_enter(&mut self, submit_on_enter: bool) {
         self.submit_on_enter = submit_on_enter;
     }
@@ -536,8 +531,8 @@ impl ChatController {
         self.submit_on_enter
     }
 
-    /// Set (or clear) the persistent hint row painted above the input box
-    /// (#1137). Pass `None` to omit the row (default).
+    /// Set (or clear) the persistent hint row painted above the input box.
+    /// Pass `None` to omit the row (default).
     ///
     /// Unlike the `TextInput` placeholder, this stays visible while
     /// typing — see this struct's *Persistent hint line* doc section.
@@ -621,7 +616,7 @@ impl ChatController {
         self.transcript_scroll_top.set(top);
     }
 
-    // ── Collapsible turns (#1138) ───────────────────────────────────────
+    // ── Collapsible turns ───────────────────────────────────────────────
     //
     // Collapsed/summary state is kept on the controller (`turn_collapsed` /
     // `turn_summary`, keyed by transcript index) rather than as fields on
@@ -700,7 +695,7 @@ impl ChatController {
             .to_string()
     }
 
-    /// The transcript's keyboard focus cursor (#1138): `Some(turn_idx)`
+    /// The transcript's keyboard focus cursor: `Some(turn_idx)`
     /// when `Tab`/`Shift+Tab` has moved focus onto a turn (so `Enter`
     /// toggles its collapsed state instead of acting on the input),
     /// `None` when the input has focus (the default).
@@ -790,7 +785,7 @@ impl ChatController {
             backend.draw_scrollbar(sb_rect, &sb);
         }
 
-        // ── 5. Hint row (#1137) ──────────────────────────────────────────
+        // ── 5. Hint row ──────────────────────────────────────────────────
         if let Some(hint_rect) = layout.hint {
             let hint_text: String = self
                 .hint
@@ -810,7 +805,7 @@ impl ChatController {
         let ti = self.build_text_input(col_budget);
         backend.draw_text_input(layout.input, &ti);
 
-        // ── 7. Send / Stop segment (#1137) ───────────────────────────────
+        // ── 7. Send / Stop segment ───────────────────────────────────────
         if let Some(send_rect) = layout.send {
             backend.draw_form(send_rect, &self.build_send_form());
         }
@@ -904,7 +899,7 @@ impl ChatController {
             self.transcript_scroll_top.get() >= total_rows.saturating_sub(visible_rows);
     }
 
-    // ── Focused-turn cursor (#1138) ─────────────────────────────────────
+    // ── Focused-turn cursor ─────────────────────────────────────────────
 
     /// Advance the transcript's focused-turn cursor one step forward — see
     /// [`focused_turn`](Self::focused_turn)'s doc for the cycle order.
@@ -953,7 +948,7 @@ impl ChatController {
         let lh = backend.line_height().max(1.0);
         let status_h = lh;
 
-        // Send/Stop segment (#1137): reserve a fixed-width column at the
+        // Send/Stop segment: reserve a fixed-width column at the
         // right of the input row when there's room for it alongside a
         // usable `TextInput`.
         let send_w = self.send_segment_width(backend.char_width());
@@ -964,7 +959,7 @@ impl ChatController {
             rect.width
         };
 
-        // Auto-grow (#1136): height tracks the wrapped visual row count of
+        // Auto-grow: height tracks the wrapped visual row count of
         // the current buffer, clamped to [input_min_rows, input_max_rows].
         // TextInput draws a 1-unit border on top and bottom plus content
         // rows. Wraps against `input_row_w`, not the full row width, so
@@ -974,7 +969,7 @@ impl ChatController {
         let input_rows = visual_rows.clamp(self.input_min_rows, self.input_max_rows);
         let input_h = input_rows as f32 * lh + 2.0;
 
-        // Persistent hint row (#1137): a fixed one-row strip directly
+        // Persistent hint row: a fixed one-row strip directly
         // above the input box, present only when `set_hint` was called.
         let hint_h = if self.hint.is_some() { lh } else { 0.0 };
 
@@ -1033,15 +1028,15 @@ impl ChatController {
     }
 
     /// Width of the Send/Stop segment reserved at the right of the input
-    /// row (#1137). 8 columns comfortably fits either "Send" or "Stop"
+    /// row. 8 columns comfortably fits either "Send" or "Stop"
     /// plus padding on every backend's default font.
     fn send_segment_width(&self, char_width: f32) -> f32 {
         const SEND_SEGMENT_COLS: f32 = 8.0;
         SEND_SEGMENT_COLS * char_width.max(1.0)
     }
 
-    /// Build the single-button [`Form`] painted into the Send/Stop segment
-    /// (#1137). Reuses `FieldKind::Button`'s existing cross-backend
+    /// Build the single-button [`Form`] painted into the Send/Stop segment.
+    /// Reuses `FieldKind::Button`'s existing cross-backend
     /// rasteriser — see this struct's *Send / Stop segment* doc section.
     fn build_send_form(&self) -> Form {
         let disabled = !self.busy && self.input_buf.trim().is_empty();
@@ -1098,7 +1093,7 @@ impl ChatController {
 
     /// Same rows as [`Self::build_transcript_rows`], plus — for each
     /// `self.transcript` turn, in order — the row index where that turn's
-    /// block begins (#1138). `turn_starts[i]..turn_starts.get(i + 1)`
+    /// block begins. `turn_starts[i]..turn_starts.get(i + 1)`
     /// (or the end of `rows` for the last turn) is turn `i`'s row range;
     /// `row_idx - turn_starts[i]` is that row's `row_in_turn`.
     ///
@@ -1123,7 +1118,7 @@ impl ChatController {
 
             let collapsed = self.is_turn_collapsed(idx);
 
-            // Role header row (no indent). Collapsed turns (#1138) get a
+            // Role header row (no indent). Collapsed turns get a
             // fold indicator appended so the card reads as expandable.
             let header = if collapsed {
                 format!("{role_label} \u{25b8}")
@@ -1133,7 +1128,7 @@ impl ChatController {
             rows.push(MessageRow::new(header, role_fg, 0.0));
 
             if collapsed {
-                // ── Collapsed path (#1138) ───────────────────────────────
+                // ── Collapsed path ───────────────────────────────────────
                 // Render exactly one summary row instead of the full body.
                 rows.push(MessageRow::new(
                     self.turn_summary_line(idx),
@@ -1189,7 +1184,7 @@ impl ChatController {
     }
 
     /// Soft-wrap `input_buf` to `col_budget` and build the `TextInput` the
-    /// rasterisers paint (#1136) — see this struct's *Input soft-wrap and
+    /// rasterisers paint — see this struct's *Input soft-wrap and
     /// auto-grow* doc section.
     fn build_text_input(&self, col_budget: usize) -> TextInput {
         let rows = wrap_input_rows(&self.input_buf, col_budget);
@@ -1211,7 +1206,7 @@ impl ChatController {
         ti.cursor_line = visual_row;
         ti.cursor_col = visual_col;
         // The placeholder advertises the *live* submit binding: in
-        // `submit_on_enter` mode (#1137) plain `Enter` sends and
+        // `submit_on_enter` mode plain `Enter` sends and
         // `Shift+Enter` breaks the line, so the default hint would tell
         // the user the exact opposite of what the keymap does.
         ti.placeholder = Some(
@@ -1240,14 +1235,8 @@ impl ChatController {
         layout: &ChatLayout,
     ) -> ChatControllerEvent {
         match key {
-            // ── Tab / Shift+Tab / BackTab: cycle the transcript's focused-
-            //    turn cursor (#1138) ───────────────────────────────────────
             // Cycle order: input focus (`None`) → turn 0 → turn 1 → … →
-            // last turn → back to input focus. No-op (stays on input
-            // focus) when the transcript is empty. Runner-level Tab/
-            // Shift+Tab focus cycling (`preprocess_event`, #830) only
-            // intercepts these when `AppLogic::tab_stops` is non-empty, so
-            // apps that don't register tab stops see them here unchanged.
+            // last turn → back to input focus. No-op when the transcript is empty.
             Key::Named(NamedKey::Tab) if !modifiers.ctrl && !modifiers.alt && !modifiers.shift => {
                 self.focus_next_turn();
                 ChatControllerEvent::Consumed
@@ -1263,7 +1252,7 @@ impl ChatController {
 
             // ── Enter while a turn (not the input) has keyboard focus:
             //    toggle its collapsed state instead of submitting/
-            //    inserting a newline (#1138). Excludes `Ctrl+Enter` so the
+            //    inserting a newline. Excludes `Ctrl+Enter` so the
             //    universal submit chord still works even while a turn is
             //    focused.
             Key::Named(NamedKey::Enter)
@@ -1280,17 +1269,11 @@ impl ChatController {
             // this arm's note on `stty -ixon` in the module doc.
             Key::Char('s') if modifiers.ctrl => self.try_submit(),
 
-            // ── Enter: meaning depends on `submit_on_enter` (#1137) ─────
-            //
-            // `Ctrl+Enter` always submits, in both modes (Kitty-protocol
-            // terminals only — see the module doc).
-            //
-            // Default (`submit_on_enter == false`): `Alt+Enter` submits;
-            // plain `Enter` inserts a newline (pre-#1137 behaviour).
-            //
-            // `submit_on_enter == true`: plain `Enter` submits;
-            // `Shift+Enter` inserts a newline, with `Alt+Enter` accepted
-            // as a fallback for terminals that can't report `Shift+Enter`.
+            // `Ctrl+Enter` always submits. `Alt+Enter` submits in default mode
+            // (`submit_on_enter == false`); in `submit_on_enter == true` mode,
+            // `Shift+Enter` inserts a newline, with `Alt+Enter` as a fallback for
+            // terminals that can't report `Shift+Enter`. Plain `Enter` means newline
+            // in default mode, submit in `submit_on_enter == true` mode.
             Key::Named(NamedKey::Enter) if modifiers.ctrl => self.try_submit(),
             Key::Named(NamedKey::Enter)
                 if self.submit_on_enter && (modifiers.shift || modifiers.alt) =>
@@ -1308,8 +1291,7 @@ impl ChatController {
             // ── Cancel: Esc ────────────────────────────────────────────
             Key::Named(NamedKey::Escape) => ChatControllerEvent::Cancelled,
 
-            // ── Newline: plain Enter (no modifiers, `submit_on_enter`
-            //    false — pre-#1137 default behaviour) ────────────────────
+            // Plain `Enter` when `submit_on_enter == false` inserts a newline
             Key::Named(NamedKey::Enter) => {
                 self.input_insert_char('\n');
                 // Typing resets history navigation.
@@ -1349,7 +1331,7 @@ impl ChatController {
             }
 
             // ── Up: history navigation or cursor up (by VISUAL row —
-            //    #1136: a wrapped paragraph's interior rows move the
+            //    A wrapped paragraph's interior rows move the
             //    cursor; history recall only fires on the first visual
             //    row of the whole buffer) ─────────────────────────────
             Key::Named(NamedKey::Up) => {
@@ -1439,7 +1421,7 @@ impl ChatController {
     /// Shared submit path for every submit trigger — `Ctrl+S`, `Alt+Enter`
     /// / `Ctrl+Enter` / plain `Enter` (depending on
     /// [`submit_on_enter`](Self::submit_on_enter)), and a click on the
-    /// Send segment while idle (#1137). Pushes the current input to
+    /// Send segment while idle. Pushes the current input to
     /// history (skipping empty/duplicate entries) and resets history
     /// navigation state; ignores the request when the input is empty.
     fn try_submit(&mut self) -> ChatControllerEvent {
@@ -1518,7 +1500,7 @@ impl ChatController {
         x: f32,
         y: f32,
     ) -> ChatControllerEvent {
-        // Send/Stop segment click? (#1137) — see this struct's *Send / Stop
+        // Send/Stop segment click? — see this struct's *Send / Stop
         // segment* doc section for the idle-vs-busy split.
         if let Some(send_rect) = layout.send {
             if send_rect.contains(Point::new(x, y)) {
@@ -1534,7 +1516,7 @@ impl ChatController {
         }
 
         // Transcript area click? Hit-test against the same rows the last
-        // render painted (#1138) — a hit on a turn's rows emits
+        // render painted — a hit on a turn's rows emits
         // `TurnClicked` so the app can toggle collapse / resolve a
         // `path:line` location; a miss (blank tail below the last row)
         // just absorbs the click.
@@ -1558,7 +1540,7 @@ impl ChatController {
                     };
                     let row_in_turn = row_idx - turn_starts[turn_idx];
                     // Move the keyboard cursor to the clicked turn so mouse
-                    // and keyboard stay in sync (#1138): a following `Enter`
+                    // and keyboard stay in sync: a following `Enter`
                     // acts on the same turn the click just landed on.
                     self.set_focused_turn(Some(turn_idx));
                     ChatControllerEvent::TurnClicked {
@@ -1579,7 +1561,7 @@ impl ChatController {
             let til = backend.text_input_layout(layout.input, &ti);
             // Find the clicked visible line and update the cursor.
             // `line_idx` here is a VISUAL row index (into `rows`), not a
-            // logical line — map it back through `rows` (#1136).
+            // logical line — map it back through `rows`.
             let local_y = y - layout.input.y;
             for (r, hit) in &til.hit_regions {
                 if local_y >= r.y && local_y < r.y + r.height {
@@ -1599,7 +1581,7 @@ impl ChatController {
         ChatControllerEvent::Ignored
     }
 
-    /// Handle a click anywhere in the Send/Stop segment (#1137). The
+    /// Handle a click anywhere in the Send/Stop segment. The
     /// segment always paints a single button filling the whole zone, so
     /// no finer-grained hit-test is needed — any click inside it hits the
     /// button.
@@ -1758,12 +1740,9 @@ fn build_scrollbar(
 
 /// Word-aware soft-wrap of `text` to `col_budget` characters per row.
 ///
-/// Thin wrapper over [`crate::text_util::word_wrap`] (#474) — this used to
-/// be a private hard char-break (splitting `"implementation"` into
-/// `"implementa"` + `"tion"` regardless of word boundaries) with "word-aware
-/// soft-wrap is deferred to a future pass" as a known v1 gap. That gap is
-/// now closed: only a single word wider than `col_budget` still hard-breaks
-/// (there's no other way to fit it), everything else wraps at whitespace.
+/// Uses [`crate::text_util::word_wrap`] to break at whitespace where possible.
+/// Only a single word wider than `col_budget` hard-breaks mid-word (there is
+/// no other way to fit it); everything else wraps at word boundaries.
 fn wrap_text(text: &str, col_budget: usize) -> Vec<String> {
     crate::text_util::word_wrap(text, col_budget)
 }
@@ -1843,7 +1822,7 @@ fn line_col_to_byte(text: &str, target_line: usize, target_col: usize) -> usize 
     text.len()
 }
 
-// ── Input soft-wrap (#1136) ─────────────────────────────────────────────
+// ── Input soft-wrap ─────────────────────────────────────────────────────
 
 /// One soft-wrapped visual row of the chat input buffer.
 ///
@@ -1969,11 +1948,9 @@ mod tests {
     use super::*;
     use crate::testing::RecordingBackend;
 
-    // Tests below drive `ChatController` against `RecordingBackend`
-    // (quadraui#799, replacing a private `MockBackend` copy of the same
-    // shape) — its `draw_text_input`/`text_input_layout` and
-    // `draw_spinner`/`spinner_layout` all return real layouts rather than
-    // panicking, which the click-routing and render tests here depend on.
+    // Tests use `RecordingBackend` for its `draw_text_input`/`text_input_layout`
+    // and `draw_spinner`/`spinner_layout` implementations, which return real layouts
+    // rather than panicking, as required by click-routing and render tests.
 
     fn make_rect() -> Rect {
         Rect::new(0.0, 0.0, 80.0, 24.0)
@@ -2251,7 +2228,7 @@ mod tests {
         assert_eq!(cc.input_text(), "hello\n");
     }
 
-    // ── Keyboard: submit_on_enter mode (#1137) ─────────────────────────
+    // ── Keyboard: submit_on_enter mode ─────────────────────────────────
 
     #[test]
     fn submit_on_enter_defaults_to_false() {
@@ -2815,7 +2792,7 @@ mod tests {
     #[test]
     fn build_transcript_rows_styled_wraps_cjk_at_display_width() {
         // Styled (markdown) turns wrap via `text_util::wrap_spans` with
-        // `WrapPolicy::Char`, budgeting by display width (#821). 6 CJK
+        // `WrapPolicy::Char`, budgeting by display width. 6 CJK
         // characters are 6 chars but 12 display cells — a
         // `chars().count()`-based budget would wrongly let them all
         // through on one row at content_budget=6; the display-width-aware
@@ -2872,11 +2849,8 @@ mod tests {
         assert!(lines[0].is_empty());
     }
 
-    // `wrap_spans`/`WrapPolicy` themselves are unit-tested in
-    // `text_util.rs` (#821) — this module no longer owns a wrap
-    // implementation, only the `WrapPolicy::Char` call site exercised by
-    // `build_transcript_rows_styled_wraps_across_budget` and
-    // `build_transcript_rows_styled_wraps_cjk_at_display_width` below.
+    // `wrap_spans`/`WrapPolicy` are unit-tested in `text_util.rs`; this
+    // module only tests the `WrapPolicy::Char` call site.
 
     // ── Wrap helper ───────────────────────────────────────────────────
 
@@ -2898,7 +2872,7 @@ mod tests {
         assert_eq!(v, vec![String::new()]);
     }
 
-    // ── Input soft-wrap (#1136) ────────────────────────────────────────
+    // ── Input soft-wrap ────────────────────────────────────────────────
 
     #[test]
     fn wrap_line_exact_short_line_not_split() {
@@ -2980,7 +2954,7 @@ mod tests {
         assert_eq!(row_idx, last_row);
     }
 
-    // ── Up/Down move by VISUAL row when wrapped (#1136) ────────────────
+    // ── Up/Down move by VISUAL row when wrapped ────────────────────────
 
     #[test]
     fn up_within_wrapped_paragraph_moves_cursor_not_history() {
@@ -3060,10 +3034,9 @@ mod tests {
         assert_eq!(cursor_byte_to_line_col("ab\ncd", 4), (1, 1));
     }
 
-    /// Regression for issue #503: `cursor_byte_to_line_col` used to
-    /// clamp `cursor` with only `.min(text.len())`, not a char-boundary
-    /// snap — a cursor byte offset landing mid-multibyte-character
-    /// (here, inside "é") panicked `&text[..cursor]`.
+    /// Regression test for multibyte character handling: `cursor_byte_to_line_col`
+    /// must snap a cursor byte offset to a valid char boundary, not panic when
+    /// the offset lands mid-multibyte-character (inside a character like "é").
     #[test]
     fn byte_to_line_col_multibyte_mid_char_offset_does_not_panic() {
         let text = "héllo";
@@ -3136,7 +3109,7 @@ mod tests {
     fn layout_input_at_bottom() {
         let cc = ChatController::new("c");
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
-        // Auto-grow (#1136): empty input wraps to 1 visual row, clamped
+        // Auto-grow: empty input wraps to 1 visual row, clamped
         // to the default input_min_rows=1. lh=1, border=2 → input_h = 3.
         let expected_input_y = make_rect().height - (1.0 * 1.0 + 2.0);
         assert_eq!(layout.input.y, expected_input_y);
@@ -3216,7 +3189,7 @@ mod tests {
         assert!(layout.spinner.is_none());
     }
 
-    // ── Send/Stop segment + hint layout (#1137) ────────────────────────
+    // ── Send/Stop segment + hint layout ────────────────────────────────
 
     #[test]
     fn layout_send_segment_present_when_row_wide_enough() {
@@ -3275,7 +3248,7 @@ mod tests {
         assert!(layout.hint.is_none());
     }
 
-    // ── Send/Stop segment click routing (#1137) ────────────────────────
+    // ── Send/Stop segment click routing ────────────────────────────────
 
     fn click_at(cc: &mut ChatController, rect: Rect, x: f32, y: f32) -> ChatControllerEvent {
         let event = crate::mouse_down(MouseButton::Left, x, y, Modifiers::default());
@@ -3328,7 +3301,7 @@ mod tests {
         assert_eq!(cc.input_text(), "hello");
     }
 
-    // ── Collapsible turns and per-turn hit regions (#1138) ──────────────
+    // ── Collapsible turns and per-turn hit regions ──────────────────────
 
     #[test]
     fn turn_summary_line_defaults_to_first_nonblank_line() {
@@ -3449,8 +3422,8 @@ mod tests {
                 row_in_turn: 0
             }
         );
-        // The click also moves the keyboard cursor onto the clicked turn
-        // (#1138 non-blocking finding) so mouse and keyboard stay in sync.
+        // A click also moves the keyboard cursor onto the clicked turn so
+        // mouse and keyboard interactions stay in sync.
         assert_eq!(cc.focused_turn(), Some(0));
     }
 
@@ -3478,9 +3451,8 @@ mod tests {
 
     #[test]
     fn click_then_enter_toggles_the_clicked_turn_not_a_stale_focus() {
-        // Regression for the #1138 review's mouse/keyboard-sync finding:
-        // clicking turn 1 and then pressing `Enter` must toggle turn 1, even
-        // though `focused_turn` was never touched by `Tab` in this test.
+        // Pressing `Enter` after a mouse click must toggle the clicked turn,
+        // using the focused_turn set by the click.
         let mut cc = ChatController::new("c");
         cc.set_transcript(vec![
             make_turn(ChatRole::User, "Hello"),
@@ -3513,7 +3485,7 @@ mod tests {
         assert_eq!(ev, ChatControllerEvent::Consumed);
     }
 
-    // ── Focused-turn keyboard cursor (#1138) ─────────────────────────────
+    // ── Focused-turn keyboard cursor ─────────────────────────────────────
 
     fn key_event(key: Key, modifiers: Modifiers) -> UiEvent {
         UiEvent::KeyPressed {
@@ -3732,7 +3704,7 @@ mod tests {
         );
     }
 
-    /// TUI: the Send/Stop segment (#1137) paints "Send" while idle and
+    /// TUI: the Send/Stop segment paints "Send" while idle and
     /// "Stop" while busy, and the persistent hint row paints its text —
     /// through the real `TuiBackend::draw_form` / `draw_message_list`
     /// rasterisers, not a mock.
@@ -3789,16 +3761,14 @@ mod tests {
         assert!(busy.contains("Stop"), "Stop label not painted:\n{busy}");
     }
 
-    /// TUI: the input placeholder advertises the binding that is actually
-    /// live, not a hardcoded one (#1137 follow-up).
+    /// TUI: the input placeholder advertises the binding that is actually live.
     ///
     /// `set_submit_on_enter(true)` inverts the meaning of `Enter` and
-    /// `Shift+Enter`, so the default placeholder ("Alt+Enter to send, Enter
-    /// for newline") would instruct the user to do the exact opposite of
-    /// what the keymap does — the worst kind of discoverability bug, since
-    /// the wrong hint is *more* prominent than the right behaviour. Painted
-    /// through the real `TuiBackend::draw_text_input` rasteriser, wide
-    /// enough that the full string fits without truncation.
+    /// `Shift+Enter`, so the placeholder must change to match. The default
+    /// placeholder ("Alt+Enter to send, Enter for newline") would instruct the
+    /// user to do the opposite of what the keymap does. Tested with the real
+    /// `TuiBackend::draw_text_input` rasteriser, wide enough that the full
+    /// string fits without truncation.
     #[cfg(feature = "tui")]
     #[test]
     fn tui_placeholder_tracks_submit_on_enter_mode() {

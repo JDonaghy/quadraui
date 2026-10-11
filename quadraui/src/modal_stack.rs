@@ -13,7 +13,7 @@
 //! scattered across its event handlers — TUI's `mouse.rs` had a chain
 //! of `if engine.picker_open { ... return; }` early-outs, GTK's
 //! `mod.rs` had the same logic duplicated per modal kind. The "drag
-//! leaks through the palette" family of bugs (#192) is the direct
+//! leaks through the palette" family of bugs is the direct
 //! consequence of one backend forgetting to add a new modal to its
 //! own list.
 //!
@@ -59,7 +59,7 @@
 //! a non-focusable float still needs to swallow a click landing on it
 //! (e.g. to dismiss itself) even though it never owns the keyboard.
 //!
-//! # Paint-consistency detection (#455)
+//! # Paint-consistency detection
 //!
 //! Registering a modal in this stack makes it hit-testable, but nothing
 //! *forces* a backend to also paint it — those are two independent code
@@ -107,7 +107,7 @@ pub struct ModalEntry {
     /// explicitly via [`ModalStack::push_focusable`] for a
     /// [`crate::Float`] that shouldn't steal keys (a hint popup).
     pub focusable: bool,
-    /// #455: set by [`ModalStack::mark_painted`] when a backend's
+    /// Set by [`ModalStack::mark_painted`] when a backend's
     /// `draw_*` call for this modal actually runs during the current
     /// frame. Reset to `false` by [`ModalStack::reset_frame_paint`] at
     /// the start of every frame. Not `pub` — entries are only ever
@@ -235,7 +235,7 @@ impl ModalStack {
         None
     }
 
-    // ─── Paint-consistency detection (#455) ─────────────────────────
+    // ─── Paint-consistency detection ────────────────────────────────
 
     /// Record that `id`'s surface was actually drawn this frame. A no-op
     /// if `id` isn't currently registered — some backends draw preview
@@ -263,9 +263,9 @@ impl ModalStack {
     }
 
     /// Ids of modals that are registered (and therefore hit-testable)
-    /// but were not [`Self::mark_painted`] this frame — the #455
-    /// "registered but invisible" defect made detectable. Call from
-    /// `Backend::end_frame`, after `AppLogic::render` has had its
+    /// but were not [`Self::mark_painted`] this frame — a diagnostic for
+    /// detecting the defect where a modal is registered but never painted.
+    /// Call from `Backend::end_frame`, after `AppLogic::render` has had its
     /// chance to paint every open modal.
     ///
     /// Empty whenever every open modal was painted (the healthy case)
@@ -278,28 +278,15 @@ impl ModalStack {
             .collect()
     }
 
-    /// The #455 unpainted-modal diagnostic text for `id`, shared by every
-    /// backend's `end_frame` so the message exists in exactly one place
-    /// (#619) instead of three near-identical `eprintln!` bodies. Callers
+    /// Diagnostic text for a modal that was registered but not painted,
+    /// shared by every backend's `end_frame` so the message exists in
+    /// exactly one place instead of duplicated across backends. Callers
     /// route this through [`crate::diagnostics::emit`] rather than
     /// printing it directly — see that module for why.
     ///
-    /// All three callers are feature-gated backends while this module is
-    /// not, so a build that enables no backend (CI's `cargo check -p
-    /// quadraui --features win` gate — `WinBackend::end_frame` is still a
-    /// `todo!()` stub with no modal-paint check to make) compiles this
-    /// with zero callers and trips `dead_code` under `-D warnings`. Scoped
-    /// by `cfg_attr` to exactly that configuration so the lint keeps
-    /// working wherever a caller is actually compiled. Same reasoning, and
-    /// the same shape, as `diagnostics::emit`.
-    ///
-    /// The gate is **per-profile as well as per-feature (#1118)**: all
-    /// three call sites are additionally `#[cfg(debug_assertions)]`
-    /// (the #455 check is a debug-build-only diagnostic), so *any*
-    /// assertions-off profile compiles this with zero callers no matter
-    /// which backend features are on — which is what `cargo bench` builds,
-    /// and what CI's "Benches build + run, verify-only" steps (`tui` and
-    /// `gtk` jobs) exercise under the workflow-wide `-D warnings`.
+    /// Scoped by `cfg_attr` to avoid dead-code warnings in builds where
+    /// this is not called, since it is only compiled when debug assertions
+    /// are enabled and at least one backend feature is active.
     #[cfg_attr(
         not(all(
             debug_assertions,
@@ -377,10 +364,9 @@ mod tests {
 
     #[test]
     fn pop_by_id_removes_even_when_not_top() {
-        // Stack tolerates out-of-order closes. The "normal" case is
-        // LIFO (close the top one); non-LIFO happens when code paths
-        // race (e.g. an async result closes a picker that's no longer
-        // the topmost modal).
+        // Stack tolerates out-of-order closes: not just LIFO (close the top)
+        // but also non-LIFO when code paths race (e.g. an async result closes
+        // a picker that is no longer the topmost modal).
         let mut s = ModalStack::new();
         s.push(id("a"), rect(0.0, 0.0, 10.0, 10.0));
         s.push(id("b"), rect(0.0, 0.0, 10.0, 10.0));
@@ -427,12 +413,12 @@ mod tests {
         assert!(s.hit_test(pt(5.0, 10.0)).is_none()); // exclusive bottom edge
     }
 
-    // ─── Paint-consistency detection (#455) ─────────────────────────
+    // ─── Paint-consistency detection ────────────────────────────────
 
     #[test]
     fn freshly_pushed_modal_is_unpainted_until_marked() {
-        // The exact vimcode#587 shape: registered (hit-testable) but no
-        // corresponding draw call happened yet.
+        // A modal pushed but not yet marked painted: registered (hit-testable)
+        // but no corresponding draw call has happened yet.
         let mut s = ModalStack::new();
         s.push(id("palette"), rect(0.0, 0.0, 10.0, 10.0));
         assert_eq!(s.unpainted_ids(), vec![id("palette")]);

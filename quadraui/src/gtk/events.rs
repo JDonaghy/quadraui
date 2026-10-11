@@ -106,7 +106,7 @@ pub fn gdk_scroll_to_uievent(dx: f64, dy: f64, x: f64, y: f64) -> UiEvent {
 }
 
 /// Translate a GDK scroll event into [`UiEvent::Scroll`], with an
-/// explicit natural-scroll override (quadraui#418).
+/// explicit natural-scroll override.
 ///
 /// `natural_scroll = false` reproduces [`gdk_scroll_to_uievent`]'s
 /// traditional-direction behavior exactly: wheel-down (positive raw
@@ -145,14 +145,9 @@ pub fn gdk_scroll_to_uievent_with_direction(
 /// `scale` is the surface scale factor (HiDPI multiplier) — typically
 /// `widget.scale_factor() as f32`.
 ///
-/// `Backend::begin_frame(viewport)` keeps `Backend::viewport()` in sync
-/// with the DrawingArea's allocated size every frame, so pure `render`
-/// logic never needed this. But apps with *side effects* on resize
-/// (e.g. `TerminalApp` resizing its PTY — quadraui#437) need an actual
-/// event, not just an updated viewport the next time they happen to
-/// render. `src/gtk/run.rs` wires `DrawingArea::connect_resize` to this
-/// translator so GTK delivers `WindowResized` the same way TUI does via
-/// crossterm's `Resize` event.
+/// Apps with side effects on resize (e.g. resizing a PTY) need an actual
+/// event, not just an updated viewport. `src/gtk/run.rs` wires
+/// `DrawingArea::connect_resize` to this translator.
 pub fn gdk_resize_to_uievent(width: i32, height: i32, scale: f32) -> UiEvent {
     crate::event::window_resized(width as f32, height as f32, scale)
 }
@@ -160,7 +155,7 @@ pub fn gdk_resize_to_uievent(width: i32, height: i32, scale: f32) -> UiEvent {
 /// Translate a `gtk::DropTarget`'s `drop` signal payload (already
 /// resolved from the dragged `gdk::FileList` into real filesystem paths
 /// — see `src/gtk/run.rs`'s `connect_drop` closure) into
-/// [`UiEvent::FilesDropped`] (issue #834). `x`/`y` are the signal's own
+/// [`UiEvent::FilesDropped`]. `x`/`y` are the signal's own
 /// coordinates, already in the same DIP space every other GTK pointer
 /// event uses — unlike Win's `WM_DROPFILES` translator, no
 /// `scale_factor()` division is needed here.
@@ -168,7 +163,7 @@ pub fn gtk_drop_to_uievent(paths: Vec<std::path::PathBuf>, x: f64, y: f64) -> Ui
     crate::event::files_dropped(paths, x as f32, y as f32)
 }
 
-/// Translate a `gio::Application`'s `open` signal payload (issue #957) —
+/// Translate a `gio::Application`'s `open` signal payload —
 /// a slice of `gio::File`s the OS handed the app, either from `argv` at
 /// launch (`ApplicationFlags::HANDLES_OPEN` routes file/URI positional
 /// arguments to `open` instead of `activate`) or forwarded from a second
@@ -302,7 +297,6 @@ pub fn gdk_button_to_quadraui(button: u32) -> MouseButton {
 /// Scroll direction always follows [`gdk_scroll_to_uievent`]'s
 /// traditional (`natural_scroll = false`) convention. Use
 /// [`wire_da_events_with_scroll_direction`] to make it configurable
-/// (quadraui#418).
 pub fn wire_da_events<F>(da: &gtk4::DrawingArea, on_event: F)
 where
     F: Fn(UiEvent) + Clone + 'static,
@@ -311,7 +305,7 @@ where
 }
 
 /// Same as [`wire_da_events`], with an explicit natural-scroll flag
-/// (quadraui#418) passed straight through to
+/// passed straight through to
 /// [`gdk_scroll_to_uievent_with_direction`]. Consumers building their
 /// own `DrawingArea` outside [`crate::gtk::run`] (which reads
 /// [`crate::AppLogic::natural_scroll`] instead) use this to honour
@@ -330,18 +324,9 @@ pub fn wire_da_events_with_scroll_direction<F>(
     let click = GestureClick::builder().button(0).build();
     {
         let on_event = on_event.clone();
-        // Double-click folding used to read GDK's own `n_press` here —
-        // native OS double-click timing, independent of (and
-        // inconsistent with) the `crate::dispatch::DoubleClickDetector`
-        // every other double-click-folding call site in the crate uses
-        // (`gtk::run::dispatch_event` via `GtkBackend::fold_double_click`,
-        // and macOS/Windows/TUI via `crate::runtime::preprocess_event`).
-        // #813 moves this bespoke helper onto the same shared detector so
-        // "what counts as a double-click" has one definition crate-wide,
-        // not two. Each call to this function gets its own detector
-        // instance, scoped to the one `DrawingArea` it wires — this
-        // function has no backend/app to store shared state on the way
-        // `gtk::run` does.
+        // Double-click detection uses a shared `DoubleClickDetector` instance
+        // scoped to this `DrawingArea`, rather than reading GDK's native
+        // `n_press` counter, to align with the detector used elsewhere in the crate.
         let double_click = std::rc::Rc::new(std::cell::RefCell::new(
             crate::dispatch::DoubleClickDetector::with_radius(
                 super::backend::GTK_DOUBLE_CLICK_RADIUS,
@@ -410,12 +395,9 @@ pub fn wire_da_events_with_scroll_direction<F>(
 mod tests {
     use super::*;
 
-    /// Issue #834: `gtk_drop_to_uievent` builds a `FilesDropped` with the
-    /// given paths and position untouched (GTK's drop coordinates are
-    /// already DIPs, no scale conversion). Before this issue no such
-    /// translator existed anywhere in the tree — `grep -rn
-    /// gtk_drop_to_uievent quadraui/src` had zero hits — so this test
-    /// (and the function it exercises) are new together.
+    /// `gtk_drop_to_uievent` builds a `FilesDropped` with the given paths
+    /// and position untouched (GTK's drop coordinates are already DIPs,
+    /// no scale conversion).
     #[test]
     fn drop_to_uievent_carries_paths_and_position() {
         let paths = vec![
@@ -435,9 +417,9 @@ mod tests {
         }
     }
 
-    /// Issue #957: local files go to `files` (via `File::path()`),
-    /// non-local URIs go to `urls` (via `File::uri()`) — GTK's `open`
-    /// signal arrives pre-classified, unlike Win's plain-string `argv`.
+    /// Local files go to `files` (via `File::path()`), non-local URIs go
+    /// to `urls` (via `File::uri()`) — GTK's `open` signal arrives
+    /// pre-classified, unlike Win's plain-string `argv`.
     #[test]
     fn open_to_uievent_splits_local_files_from_uris() {
         let files = vec![

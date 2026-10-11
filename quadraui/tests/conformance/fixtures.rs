@@ -1,4 +1,4 @@
-//! Conformance **fixture registry** (quadraui#491, audit §6.4).
+//! Conformance fixture registry.
 //!
 //! Maps a scenario's `"fixture"` string to an `examples/common/*.rs`
 //! constructor. The registry is written once and is backend-agnostic:

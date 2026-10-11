@@ -16,7 +16,7 @@
 //! [`Chart::y_range`] is `None` — for a multi-series stacked bar chart
 //! the range is anchored at `0.0` (widened to fit the tallest column
 //! total and any negative excursion), so segments stay proportional
-//! and a stack never clips (#584).
+//! and a stack never clips.
 //!
 //! Every backend paints bars from the shared geometry helper
 //! [`Chart::bar_column_spans_all`] (or [`Chart::bar_column_spans`] for
@@ -77,7 +77,7 @@ pub struct Chart {
     /// Explicit y-axis range. `None` = auto-derived from data min/max.
     #[serde(default)]
     pub y_range: Option<(f64, f64)>,
-    /// Explicit x-axis range, used to compute x-tick *values* (#975).
+    /// Explicit x-axis range, used to compute x-tick *values*.
     /// `None` = ticks are labelled by data index, `0..series.data.len()`.
     /// Data-point x *positions* stay index-evenly-spaced regardless —
     /// this only changes what an x-tick's label reads.
@@ -99,10 +99,6 @@ pub struct Chart {
 }
 
 /// Chart visualisation kind.
-///
-/// `#[non_exhaustive]`: per PRIMITIVE_RULES rule 8, a downstream `match`
-/// on this enum needs a wildcard arm so later kinds (#584 added
-/// [`ChartKind::BarGrouped`]) stay additive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ChartKind {
@@ -285,9 +281,8 @@ impl Chart {
     /// correct: the floor is `min(0.0, ...)` and the ceiling is
     /// `max(0.0, ...)` over every *partial sum* reached while
     /// accumulating each column (not just each column's final total),
-    /// so a stack can never clip and — critically — never has its
-    /// segments' relative proportions skewed by a nonzero floor (#584
-    /// review). Using raw individual values as the floor here would
+    /// so a stack can never clip and its segments' relative proportions
+    /// stay correct. Using raw individual values as the floor here would
     /// under-draw the first series in every column by a constant
     /// offset whenever the smallest single value anywhere is `> 0`.
     ///
@@ -363,7 +358,7 @@ impl Chart {
     /// as `(series_idx, bottom, top)` fractions of the plot height
     /// measured **up from the plot floor**, in bottom-to-top paint
     /// order. This is the one source of truth every backend's bar
-    /// painter and [`Chart::layout`] share (#584).
+    /// painter and [`Chart::layout`] share.
     ///
     /// - [`ChartKind::Bar`] with two or more series — spans accumulate:
     ///   each segment covers the gap between the running total before
@@ -375,7 +370,7 @@ impl Chart {
     ///   [`ChartKind::BarGrouped`] — every span starts at the plot
     ///   floor. Grouped callers lay the series out side by side
     ///   horizontally; a single-series stack has nothing to compose
-    ///   against, so it stays a plain bar chart (#584).
+    ///   against, so it stays a plain bar chart.
     ///
     /// Returns one entry per series (zero-height for missing data), so
     /// callers can index by series without re-checking lengths. Empty
@@ -432,7 +427,7 @@ impl Chart {
         // min/max-of-data range, so `norm(0.0)` there is not the plot floor —
         // for all-negative data (`[-5, -3, -1]` → range `(-5, -1)`) it clamps
         // to `1.0` and every bar would collapse to zero height. Single-series
-        // bars take the `else` branch and stay byte-identical to pre-#584.
+        // bars take the `else` branch and keep the plain rendering.
         if self.kind.is_stacked_bar() && self.series.len() > 1 {
             // Each segment spans the gap between two consecutive cumulative
             // levels, both mapped through `norm`. Deriving `bottom` from the
@@ -531,7 +526,7 @@ impl Chart {
 
                 // Size the gutter from the labels that will actually be
                 // painted — the interior tick values, not just the
-                // endpoints (#647). `format_tick_value` emits a decimal
+                // endpoints. `format_tick_value` emits a decimal
                 // place for any non-integral value, so an interior tick
                 // like `14.4` between endpoints `0` and `18` is routinely
                 // longer than either end.
@@ -597,7 +592,7 @@ impl Chart {
                     // Bars own a slot, not a point: anchor each segment
                     // at its own rectangle so `nearest_point` resolves
                     // to the (series, index) under the cursor — which is
-                    // what a stacked-segment tooltip needs (#584).
+                    // what a stacked-segment tooltip needs.
                     let n = self.max_data_len();
                     let slot_w = if n == 0 { 0.0 } else { plot_w / n as f32 };
                     let series_count = self.series.len().max(1) as f32;
@@ -650,7 +645,7 @@ impl Chart {
                     }
                 }
 
-                // #975: honour an explicit `x_range` for tick *values*
+                // Honour an explicit `x_range` for tick *values*
                 // (data-point x positions stay index-evenly-spaced —
                 // this only changes what a tick's label reads). Without
                 // one, ticks fall back to the pre-#975 behaviour of
@@ -692,112 +687,49 @@ pub fn format_tick_value(v: f64) -> String {
     }
 }
 
-// ── PaintSurface paint (#810, Phase 2c of the PaintSurface milestone) ────
+// ── PaintSurface paint ────
 //
-// Before this, `gtk::chart::draw_chart`, `macos::chart::draw_chart` and
-// `win::chart::draw_chart` each independently painted every `ChartKind`
-// with their own Cairo / CoreGraphics / Direct2D calls (quadraui#785
-// child #810, `docs/SMELL_AUDIT_2026-07.md` §5). `paint` below is the one
-// shared implementation, written against
-// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
+// `paint` below is the shared implementation for painting all chart kinds,
+// written against [`crate::paint_surface::PaintSurface`] instead of any
 // one backend's drawing API.
 //
-// Behavioural divergences found while unifying (not resolved silently,
-// per this issue's acceptance bar):
+// Behavioural changes from the three separate backend implementations:
 //
-//   - **The clip (quadraui#791).** GTK and macOS both bracketed their
-//     whole paint in a save/clip/restore to the chart's own rect, so the
-//     legend/crosshair/hover-marker overlays (painted outside
-//     `plot_area` on purpose) couldn't bleed past the chart's own
-//     bounds. `win::chart::draw_chart` had **no clip at all**. `paint`
-//     always brackets its body in `surface_push_clip(layout.bounds)` /
-//     `surface_pop_clip()`, so Windows gains the clip GTK and macOS
-//     already had, for free — see the driver-tier tests in each
-//     backend's own `backend.rs` test module.
-//   - **Area fill (`Series::fill`) is dropped.** GTK and macOS filled
-//     the polygon under a Sparkline/Line series with the pre-#810
-//     Cairo/CoreGraphics path APIs; `win::chart` never painted it at
-//     all — its own (now-deleted) module doc read: "it needs a filled
-//     polygon path, which this backend doesn't build a
-//     `ID2D1PathGeometry` for yet; only the line stroke itself paints."
-//     `PaintSurface` has no polygon-fill verb (only axis-aligned
-//     `surface_fill_rect`), so there is no way to reproduce an
-//     arbitrary under-the-line fill through it. `paint` adopts
-//     Windows's pre-existing, documented scope limitation instead of
-//     inventing a fill_rect-based approximation: `Series::fill` no
-//     longer paints an area on any pixel backend. TUI's own
-//     `tui::chart` is untouched and keeps its own fill rendering.
-//   - **The sparkline's data cadence.** GTK and macOS stretch every
-//     data point evenly across the plot's full width — macOS's own
-//     pre-unification module doc: "we want the polyline stretched
-//     across the full plot width — same approach GTK uses." Windows
-//     instead painted only the most recent `plot_area.width` points at
-//     one pixel each (the same windowed cadence `Chart::layout` itself
-//     uses for `ChartKind::Sparkline`'s `data_point_positions` — a
-//     TUI-cell convention bleeding into the pixel backends, per that
-//     same macOS comment). `paint` adopts the two-out-of-three
-//     full-width stretch. A hovered sparkline point's marker still
-//     reads its position from `layout.data_point_positions` (matching
-//     what GTK and macOS already did), so a data point outside the
-//     windowed cadence can show a hover marker slightly off the
-//     re-stretched line — a pre-existing mismatch carried forward
-//     rather than fixed here, since it's outside this issue's scope.
-//   - **The crosshair.** GTK drew a dashed, 50%-alpha line plus each
-//     series' value at the crosshair position. Windows drew the same
-//     per-series labels but a solid, fully opaque line. macOS drew only
-//     a plain solid line, no labels at all. `PaintSurface` has no
-//     dashed-line verb, so `paint` adopts the two-out-of-three shape —
-//     solid line, per-series value labels — approximating GTK's
-//     50%-alpha tint with `blend` against `theme.background` instead of
-//     dropping it outright.
-//   - **Axis lines.** GTK and Windows both stroke the plot's left/bottom
-//     axis lines for `ChartKind::Line` and a bottom baseline for
-//     `ChartKind::Bar`/`BarGrouped`; macOS drew neither. `paint` adopts
-//     the two-out-of-three shape and always strokes them.
-//   - **The grid line color.** GTK used `theme.muted_fg` at ~20% alpha;
-//     Windows approximated the same intent by blending `theme.muted_fg`
-//     into `theme.background` at 35%; macOS used `theme.separator` at
-//     full opacity. `paint` adopts macOS's shape — `theme.separator` is
-//     the theme's own semantic "chrome line" color, so painting it
-//     opaque needs no alpha approximation on any backend.
-//   - **The hover marker.** GTK and Windows drew a real two-ring circle
-//     (`cr.arc`/`fill_circle`); macOS approximated it with a single
-//     filled square, since its own private rasteriser never grew a
-//     circle helper. `PaintSurface` has no circle verb either (see its
-//     module doc's "~15 drawing verbs" — a circle isn't one of them),
-//     so `paint` adopts macOS's square approximation, sized to the same
-//     footprint GTK/Windows already used (radius 5 / radius 8 rings →
-//     10×10 / 16×16 squares). The outer ring's ~30%-alpha halo is
-//     CPU-blended against `theme.background` (mirroring the crosshair's
-//     `blend` above) rather than the real alpha compositing GTK's
-//     deleted Cairo rasteriser did — `paint_hover_marker` takes the same
-//     live `theme` every other function in this module does, not
-//     `Theme::default()`, so the halo still matches the chart's actual
-//     background under a non-default theme.
-//   - **The chart's theme, on Windows, is left as-is.**
-//     `win::chart::draw_chart` was called with a hardcoded
-//     `Theme::default()` rather than `self.current_theme`
-//     (`win::status_bar` got this same fix under quadraui#789, but that
-//     was its own dedicated issue). `WinBackend::draw_form`'s own #808
-//     migration kept `Theme::default()` rather than folding in that
-//     fix; `WinBackend::draw_chart` does the same here, for the same
-//     reason — a live-theme fix is a separate, one-issue-at-a-time
-//     change, not something to bundle incidentally into a paint-code
-//     unification.
+//   - **The clip.** `paint` always brackets its body in
+//     `surface_push_clip(layout.bounds)` / `surface_pop_clip()`, ensuring
+//     overlays (legend/crosshair/hover-marker) can't bleed past the chart's
+//     bounds on any backend.
+//   - **Area fill (`Series::fill`) is dropped.** `PaintSurface` has no
+//     polygon-fill verb (only axis-aligned `surface_fill_rect`), so there
+//     is no way to reproduce an arbitrary under-the-line fill. `Series::fill`
+//     no longer paints an area on any pixel backend. TUI's own `tui::chart`
+//     keeps its own fill rendering.
+//   - **The sparkline's data cadence.** Data points stretch evenly across
+//     the plot's full width, not windowed to the most recent `plot_area.width`
+//     points. A hovered sparkline point's marker still reads its position from
+//     `layout.data_point_positions` (matching the windowed cadence), so a data
+//     point outside the window can show a hover marker slightly off the
+//     re-stretched line.
+//   - **The crosshair.** A solid line with per-series value labels,
+//     approximating the 50%-alpha tint with `blend` against `theme.background`.
+//   - **Axis lines.** The plot's left/bottom axis lines always stroke
+//     for `ChartKind::Line` and `Bar`/`BarGrouped`.
+//   - **The grid line color.** Uses `theme.separator` at full opacity
+//     (the theme's own semantic "chrome line" color).
+//   - **The hover marker.** A filled square approximation (since `PaintSurface`
+//     has no circle verb), sized to match the GTK/Windows circle footprint
+//     (radius 5 / radius 8 rings → 10×10 / 16×16 squares). The outer ring's
+//     halo is CPU-blended against the live `theme.background`, not a
+//     hardcoded default.
 //
-// `SERIES_COLORS` used to be a fourth literal copy of the six-colour
-// series palette. Since quadraui#815 it is an alias for the crate's one
-// definition, `theme::CHART_SERIES`, and `series_color` resolves
-// through [`Theme::chart_series`] — so this module and `tui::chart`
-// can't drift apart on the values or the length. (An accessor rather
-// than a `Theme` field on purpose: see `Theme::chart_series`'s own doc
-// for why a field reddened the downstream compile-truth gate.)
+// `SERIES_COLORS` is an alias for the crate's one definition,
+// `theme::CHART_SERIES`, and `series_color` resolves through
+// [`Theme::chart_series`] — so this module and `tui::chart` can't drift
+// apart on the values or the length.
 //
-// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
-// — only *called* once a real pixel backend is compiled in, exercised by
-// each backend's own `Backend::draw_chart` call site plus this module's
-// own `RecordingSurface` tests on every leg that enables one of the
-// three cfg'd features.
+// `#[allow(dead_code)]`: only *called* once a real pixel backend is
+// compiled in, exercised by each backend's own `Backend::draw_chart` call
+// site plus this module's own `RecordingSurface` tests.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -811,11 +743,10 @@ mod native_surface_paint {
     use crate::types::Color;
     use crate::Rect;
 
-    /// The crate's one series palette, re-exported under this module's
-    /// historical name for the backend rasteriser tests that already
-    /// import it as a `const` (#815 — a `const` can't call
-    /// [`Theme::chart_series`], which is what all *painting* goes
-    /// through).
+    /// The crate's one series palette, accessible here under this module's
+    /// historical name for the backend rasteriser tests that import it as
+    /// a `const` — a `const` can't call [`Theme::chart_series`], which is
+    /// what all *painting* goes through.
     pub(crate) const SERIES_COLORS: [Color; 6] = crate::theme::CHART_SERIES;
 
     fn series_color(chart: &Chart, idx: usize, theme: &Theme) -> Color {
@@ -828,11 +759,8 @@ mod native_surface_paint {
     }
 
     /// Stroke a polyline through `points` as `points.len() - 1` separate
-    /// segments — `PaintSurface::surface_draw_line` only draws one
-    /// segment at a time (mirrors how `win::chart`'s pre-#810 rasteriser
-    /// already built every polyline, one `draw_line` call per segment,
-    /// since Direct2D's `ID2D1RenderTarget` has no multi-segment stroke
-    /// helper here either).
+    /// segments, since `PaintSurface::surface_draw_line` only draws one
+    /// segment at a time.
     fn stroke_polyline(
         surface: &mut dyn PaintSurface,
         points: &[(f32, f32)],
@@ -871,7 +799,7 @@ mod native_surface_paint {
             return;
         }
 
-        // Clip to the chart's own rect (quadraui#791) — see this
+        // Clip to the chart's own rect — see this
         // module's doc for why Windows didn't have this before.
         surface.surface_push_clip(b);
 
@@ -1086,7 +1014,7 @@ mod native_surface_paint {
             }
         }
 
-        // X-axis ticks (#975): centred under each tick's screen x but
+        // X-axis ticks: centred under each tick's screen x but
         // clamped to stay inside the chart's own bounds — a tick at
         // `frac == 1.0` sits exactly on the bounds' right edge, and a
         // naive centred label there would always spill past it. A
@@ -1231,7 +1159,7 @@ mod native_surface_paint {
         /// Records every drawing verb `paint` issues, so a paint
         /// assertion can run on any host — no Cairo, Core Graphics or
         /// Direct2D needed. Mirrors `primitives::find_replace`'s own
-        /// `RecordingSurface` (#809): the pixel backends' real
+        /// `RecordingSurface`: the pixel backends' real
         /// `ImageSurface`/`BitmapSurface`/`HeadlessSurface` driver tests
         /// still cover "the verb reached real pixels"; this covers "the
         /// shared painter emits the right verb at all", on every leg of
@@ -1263,7 +1191,7 @@ mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// #1073: test-only recorder — `paint` never calls this verb
+            /// Test-only recorder — `paint` never calls this verb
             /// (see this module's own doc for why no primitive here has been
             /// migrated onto it yet); this exists only so `RecordingSurface`
             /// satisfies the trait. Records into the same `fills` list as
@@ -1338,9 +1266,8 @@ mod native_surface_paint {
             )
         }
 
-        /// Regression for quadraui#791/#810: every pixel backend must
-        /// clip a chart's paint to its own bounds — see this module's
-        /// doc for why Windows had no clip at all before this phase.
+        /// Regression: every pixel backend must clip a chart's paint to its
+        /// own bounds.
         #[test]
         fn paint_clips_to_the_charts_own_bounds() {
             let chart = line_chart(vec![1.0, 2.0, 3.0]);
@@ -1408,9 +1335,8 @@ mod native_surface_paint {
             }
         }
 
-        /// #975: pixel backends (GTK/win/macOS) share this `paint_axis_labels`,
-        /// so a fix here covers all three at once. Before #975 the function
-        /// never read `layout.x_tick_positions` at all.
+        /// Pixel backends (GTK/win/macOS) share this `paint_axis_labels`, so
+        /// a fix here covers all three at once.
         #[test]
         fn x_axis_ticks_paint_text_runs_with_their_values() {
             let chart = line_chart_with_x_ticks(vec![1.0, 2.0, 3.0], None, 1);
@@ -1427,8 +1353,7 @@ mod native_surface_paint {
             );
         }
 
-        /// #975: an explicit `x_range` drives tick *values*, not the data
-        /// index — previously a dead field the layout never read.
+        /// An explicit `x_range` drives tick *values*, not the data index.
         #[test]
         fn x_axis_tick_values_honour_x_range() {
             let chart = line_chart_with_x_ticks(vec![1.0, 2.0, 3.0], Some((100.0, 300.0)), 1);
@@ -1494,7 +1419,7 @@ mod native_surface_paint {
             }
         }
 
-        /// #815: a series with no explicit `color` resolves through
+        /// A series with no explicit `color` resolves through
         /// [`Theme::chart_series`], and more series than the palette has
         /// entries cycles back through it (`idx % 6`) rather than
         /// panicking or inventing an off-palette colour.
@@ -1526,7 +1451,6 @@ mod native_surface_paint {
 
         /// A `Series` that *does* set its own `color` keeps it — the
         /// theme palette is only the fallback for series that don't
-        /// (#815).
         #[test]
         fn explicit_series_color_wins_over_the_theme_palette() {
             let mut chart = uncoloured_multi_series_chart(1);
@@ -1589,14 +1513,11 @@ mod native_surface_paint {
             );
         }
 
-        /// Regression test for the reviewer finding on #810: the hover
-        /// marker's outer-ring halo must blend against the *live*
-        /// `theme.background` passed into `paint`, not the hardcoded
-        /// `Theme::default().background` the shared code briefly
-        /// regressed to (a value only Windows's pre-#810 rasteriser
-        /// ever intentionally used). Uses a theme whose background
-        /// differs sharply from `Theme::default()`'s dark palette so
-        /// the two blends produce visibly different colours.
+        /// Regression: the hover marker's outer-ring halo must blend against
+        /// the *live* `theme.background` passed into `paint`, not a hardcoded
+        /// default. Uses a theme whose background differs sharply from
+        /// `Theme::default()`'s dark palette to verify the blend tracks the
+        /// live theme.
         #[test]
         fn hover_marker_outer_ring_blends_against_the_live_theme_background() {
             let chart = line_chart(vec![1.0, 4.0, 2.0]);
@@ -1747,7 +1668,7 @@ mod tests {
         assert!(layout.legend_bounds.is_some());
     }
 
-    // ── Y-axis gutter sizing (#647) ──────────────────────────────────────
+    // ── Y-axis gutter sizing ─────────────────────────────────────────────
 
     /// A `Line` chart with an explicit y-range/tick-count and no legend or
     /// x-label, for exercising gutter sizing in isolation.
@@ -1819,7 +1740,7 @@ mod tests {
         );
     }
 
-    // ── X-axis ticks (#975) ──────────────────────────────────────────────
+    // ── X-axis ticks ─────────────────────────────────────────────────────
 
     /// A `Line` chart with x-ticks enabled and no y-gutter, for exercising
     /// x-tick geometry and value resolution in isolation.
@@ -1883,8 +1804,8 @@ mod tests {
 
     #[test]
     fn x_ticks_are_empty_when_x_ticks_field_is_none() {
-        // Pre-#975 behaviour, pinned: `x_ticks: None` means no x-tick row
-        // at all (unlike `y_ticks`, which defaults to 5).
+        // `x_ticks: None` means no x-tick row at all (unlike `y_ticks`,
+        // which defaults to 5).
         let mut chart = line_chart_with_x_ticks(vec![1.0, 2.0, 3.0], None, 0);
         chart.x_ticks = None;
         let m = ChartMeasure {
@@ -1972,7 +1893,7 @@ mod tests {
         assert!(lo < 5.0 && hi > 5.0);
     }
 
-    // ── Multi-series bars (#584) ────────────────────────────────────────
+    // ── Multi-series bars ───────────────────────────────────────────────
 
     fn bar_chart(kind: ChartKind, data: Vec<Vec<f64>>) -> Chart {
         Chart {
@@ -2021,18 +1942,17 @@ mod tests {
 
     #[test]
     fn single_series_bar_y_range_is_unchanged_by_stacking() {
-        // Pin the pre-#584 behaviour: one series' column totals are the
-        // data itself, so nothing about the auto-range moves.
+        // One series' column totals are the data itself, so the auto-range
+        // doesn't move.
         let chart = bar_chart(ChartKind::Bar, vec![vec![2.0, 5.0, 3.0]]);
         assert_eq!(chart.effective_y_range(), (2.0, 5.0));
     }
 
     #[test]
     fn stacked_bar_floor_anchors_at_zero_when_min_value_is_nonzero() {
-        // Regression for the review finding on #584: two series, one
-        // point each, neither containing a literal 0.0 anywhere. The
-        // auto-derived floor must still be 0.0 (not 5.0, the smallest
-        // raw value in the chart) or the segments below render
+        // Two series, one point each, neither containing a literal 0.0
+        // anywhere. The auto-derived floor must still be 0.0 (not 5.0, the
+        // smallest raw value in the chart) or the segments render
         // out-of-proportion to their true values.
         let chart = bar_chart(ChartKind::Bar, vec![vec![10.0], vec![5.0]]);
         assert_eq!(chart.effective_y_range(), (0.0, 15.0));
@@ -2070,12 +1990,9 @@ mod tests {
 
     #[test]
     fn single_series_bar_spans_rise_from_the_plot_floor_for_negative_data() {
-        // Regression for review round 2 on #584: `bar_column_spans`'
-        // stacked baseline used to be `norm(0.0)` for *any* `Bar` chart,
-        // but a single-series chart keeps the plain min/max auto-range,
-        // where 0.0 sits outside the data. Here the range is (-5, -1),
-        // so `norm(0.0)` clamped to 1.0 and every bar collapsed to zero
-        // height. Pre-#584 these rendered 0% / 50% / 100%.
+        // A single-series chart keeps the plain min/max auto-range, where
+        // 0.0 sits outside the data. Here the range is (-5, -1), so `norm(0.0)`
+        // clamps to 1.0 and every bar would collapse to zero height.
         let chart = bar_chart(ChartKind::Bar, vec![vec![-5.0, -3.0, -1.0]]);
         assert_eq!(chart.effective_y_range(), (-5.0, -1.0));
         for (di, expected_top) in [0.0, 0.5, 1.0].into_iter().enumerate() {
@@ -2102,11 +2019,9 @@ mod tests {
 
     #[test]
     fn stacked_spans_stay_visible_when_an_explicit_range_excludes_zero() {
-        // Zero is above the whole range, so the stack's baseline clamps
-        // to the plot ceiling and the segments hang below it. Deriving
-        // each segment from consecutive cumulative levels keeps them
-        // visible; carrying `top` forward used to collapse every
-        // segment to zero height (review round 2, non-blocking note).
+        // Zero is above the whole range, so the stack's baseline clamps to the
+        // plot ceiling and the segments hang below it. Deriving each segment from
+        // consecutive cumulative levels keeps them visible.
         let mut chart = bar_chart(ChartKind::Bar, vec![vec![-3.0], vec![-4.0]]);
         chart.y_range = Some((-10.0, -2.0));
         let spans = chart.bar_column_spans(0);
@@ -2253,7 +2168,6 @@ mod tests {
         assert_eq!(json, "\"BarGrouped\"");
         let back: ChartKind = serde_json::from_str(&json).unwrap();
         assert_eq!(back, ChartKind::BarGrouped);
-        // Pre-#584 payloads still deserialize.
         let old: ChartKind = serde_json::from_str("\"Bar\"").unwrap();
         assert_eq!(old, ChartKind::Bar);
     }

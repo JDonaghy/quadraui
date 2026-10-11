@@ -1,13 +1,10 @@
-//! `CommandLine` selection-highlight demo (issue #1001).
+//! `CommandLine` selection-highlight demo.
 //!
 //! Exercises [`Backend::draw_command_line_selection`] — the sibling of
 //! [`Backend::draw_command_line`] that paints
 //! [`quadraui::primitives::command_line::CommandLineLayout::selection_bounds`]'s
-//! rect as a highlight. Before #1001, that geometry existed but nothing
-//! painted it (GTK had no visual selection feedback at all; TUI faked one
-//! by hand-inverting cells outside quadraui). Pressing `s` toggles a fixed
-//! selection range on the command text so the highlight is visibly there
-//! on both backends — same `AppLogic`, same call, same highlight.
+//! rect as a highlight. Both backends paint this highlight the same way
+//! when a selection range is set on the command text.
 //!
 //! ## Controls
 //!

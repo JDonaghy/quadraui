@@ -78,7 +78,7 @@ use crate::types::{Color, Modifiers, WidgetId};
 ///
 /// `text` carries the cell's full grapheme cluster (base character plus
 /// any combining marks), mirroring [`TerminalCell::text`] — no longer
-/// `Copy` since `String` isn't (quadraui#337).
+/// `Copy` since `String` isn't.
 #[derive(Clone)]
 struct HistCell {
     text: String,
@@ -88,7 +88,7 @@ struct HistCell {
     italic: bool,
     underline: bool,
     /// SGR 2 (faint/dim) — `vt100::Cell::dim()`, tracked since vt100
-    /// 0.16 (quadraui#345).
+    /// 0.16.
     dim: bool,
 }
 
@@ -310,7 +310,7 @@ fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
 // ── Keyboard → PTY encoding ───────────────────────────────────────────────────
 //
 // Lifted out of `examples/common/terminal_app.rs` into the engine
-// (quadraui#342) so every embedded consumer (vimcode-tui, a future GTK
+// so every embedded consumer (vimcode-tui, a future GTK
 // standalone app, ...) gets the same VT100/xterm key encoding instead of
 // re-implementing or copying it. `TerminalSession::encode_key` is the
 // entry point most callers want — it reads `application_cursor_keys()`
@@ -539,18 +539,7 @@ fn f_key_bytes(n: u8, mod_param: Option<u8>) -> Option<Vec<u8>> {
 // ── TerminalSession ───────────────────────────────────────────────────────────
 
 /// Longest [`TerminalSession::resize`] waits for the child to *begin* its
-/// post-SIGWINCH redraw — i.e. for the **first** byte to arrive (quadraui#437,
-/// blocking #2).
-///
-/// SIGWINCH delivery + the shell's trap/prompt-reprint is normally a few ms,
-/// but under load (a busy machine, a scheduler-starved child) the child can
-/// take noticeably longer just to *start* writing. The settle must not give up
-/// during that initial silence — that was the original bug: an 8 ms idle
-/// window elapsed before the child had reacted at all, so `resize()` returned
-/// having consumed nothing and the redraw was later reparsed at a changed
-/// width (the ghost). This window is therefore generous. If nothing arrives
-/// within it the child is not redrawing (e.g. it ignores SIGWINCH) and
-/// `resize()` returns.
+/// post-SIGWINCH redraw — i.e. for the **first** byte to arrive.
 const RESIZE_SETTLE_FIRST: std::time::Duration = std::time::Duration::from_millis(80);
 
 /// Once the child's redraw is *flowing*, an idle gap this long means it has
@@ -563,27 +552,7 @@ const RESIZE_SETTLE_IDLE: std::time::Duration = std::time::Duration::from_millis
 const RESIZE_SETTLE_MAX: std::time::Duration = std::time::Duration::from_millis(120);
 
 /// Block for the child's post-SIGWINCH redraw and return the chunks it produced,
-/// in arrival order (quadraui#437, blocking #2).
-///
-/// This is the timing policy behind [`TerminalSession::settle_after_resize`],
-/// factored into a free function that takes only the receiver so it can be
-/// unit-tested against a synthetic [`std::sync::mpsc::channel`] — no PTY, no
-/// shell, no flaky dependence on when a particular shell chooses to run a
-/// WINCH trap.
-///
-/// Two phases:
-///
-/// 1. **Wait for the redraw to *start*.** Until the first chunk arrives we wait
-///    up to [`RESIZE_SETTLE_FIRST`]. Treating the initial silence as "settled"
-///    (waiting only [`RESIZE_SETTLE_IDLE`] from the outset) was the bug: under
-///    load the child hasn't reacted to SIGWINCH within a few ms, so the settle
-///    returned having consumed nothing and its redraw was later reparsed at a
-///    changed width — the ghost. If nothing arrives in this window the child is
-///    not redrawing and we return empty.
-/// 2. **Drain the redraw.** Once chunks are flowing we keep consuming until the
-///    channel has been idle for [`RESIZE_SETTLE_IDLE`] (redraw complete).
-///
-/// Total blocking is capped at [`RESIZE_SETTLE_MAX`].
+/// in arrival order.
 fn collect_post_resize_output(rx: &Receiver<Vec<u8>>) -> Vec<Vec<u8>> {
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::Instant;
@@ -621,34 +590,7 @@ fn collect_post_resize_output(rx: &Receiver<Vec<u8>>) -> Vec<Vec<u8>> {
 }
 
 /// Re-wrap a vt100 parser's visible screen to a new size, preserving on-screen
-/// content across a **width** change (quadraui#437).
-///
-/// vt100 0.16's [`vt100::Screen::set_size`] is **non-reflowing**: shrinking the
-/// column count truncates each row's tail and widening pads with blanks, so a
-/// naive shrink→expand drag permanently loses text. This helper restores
-/// logical-line reflow using only vt100's public API — no vendored/patched
-/// crate:
-///
-/// 1. Snapshot the current screen as a formatted byte stream
-///    ([`vt100::Screen::contents_formatted`]). Wrapped rows are emitted as one
-///    continuous run (no interior line break), so a logical line keeps its
-///    structure regardless of where it currently wraps.
-/// 2. Resize the grid.
-/// 3. Replay the snapshot; vt100 re-wraps each logical line at the *new* width.
-///
-/// Gated to genuine **width** changes on the **normal** screen:
-///
-/// - A height-only change keeps the cheap [`vt100::Screen::set_size`] path — no
-///   horizontal content is at risk, and re-wrapping would be wasted work.
-/// - The **alternate** screen is never reflowed. Full-screen apps (vim, htop,
-///   tmux) repaint themselves from scratch on SIGWINCH and their
-///   absolute-positioned output must not be re-wrapped.
-///
-/// **Limitation:** `contents_formatted` covers only the *visible* screen, so a
-/// shrink deep enough to push rows into scrollback cannot restore those rows on
-/// a later expand — the public API exposes no formatted scrollback dump. The
-/// common case (the live prompt / on-screen command output) round-trips
-/// losslessly, which is the regression #437 chased.
+/// content across a **width** change.
 fn reflow_screen<CB: vt100::Callbacks>(parser: &mut vt100::Parser<CB>, rows: u16, cols: u16) {
     let (cur_rows, cur_cols) = parser.screen().size();
     if (rows, cols) == (cur_rows, cur_cols) {
@@ -672,7 +614,7 @@ fn reflow_screen<CB: vt100::Callbacks>(parser: &mut vt100::Parser<CB>, rows: u16
 }
 
 /// [`vt100::Screen::set_size`], plus the repair vt100 0.16.2 forgets to make
-/// when a **width shrink** cuts a double-width glyph in half (quadraui#1130).
+/// when a **width shrink** cuts a double-width glyph in half.
 ///
 /// vt100 stores a wide glyph as two cells: a first half (`Cell::is_wide()`) and
 /// a continuation half (`Cell::is_wide_continuation()`). `Grid::set_size`
@@ -746,7 +688,7 @@ fn set_size_without_orphaning_wide_cells<CB: vt100::Callbacks>(
 /// this at both call sites that construct/resize the parser
 /// ([`TerminalSession::spawn`], [`TerminalSession::resize`]) rather than
 /// trusted. Found by this file's own `vt100_parser_never_panics`
-/// property test (quadraui#1130) before any real caller ever hit it.
+/// property test before any real caller ever hit it.
 const MIN_VT100_ROWS: u16 = 2;
 
 /// Floor for `cols`, for the same reason as [`MIN_VT100_ROWS`] but a
@@ -779,8 +721,8 @@ fn clamp_vt100_size(cols: u16, rows: u16) -> (u16, u16) {
 /// track DECSCUSR (`ESC [ Ps SP q`) at all — that sequence has an
 /// intermediate byte (`SP`, `0x20`) vt100's own `csi_dispatch` doesn't
 /// recognise for any final byte, so it falls through to
-/// [`unhandled_csi`](vt100::Callbacks::unhandled_csi) instead
-/// (quadraui#338). [`TerminalSession`] carries one of these alongside
+/// [`unhandled_csi`](vt100::Callbacks::unhandled_csi) instead.
+/// [`TerminalSession`] carries one of these alongside
 /// its parser and reads both back after each [`poll`](TerminalSession::poll)
 /// via [`TerminalSession::title`]/[`TerminalSession::cursor_shape`]/
 /// [`TerminalSession::cursor_blinking`].
@@ -1209,7 +1151,7 @@ impl TerminalSession {
     /// Feed raw bytes directly into the ingest path [`poll()`](Self::poll)
     /// uses — the private `process_with_capture` helper, including its
     /// `set_scrollback` capture dance for rows that scroll off screen —
-    /// bypassing the PTY reader thread entirely (quadraui#340).
+    /// bypassing the PTY reader thread entirely.
     ///
     /// `poll()` only ever reads from the background thread's channel, which
     /// is fed by a real child process; there is no other way to reach the
@@ -1269,15 +1211,6 @@ impl TerminalSession {
     /// The most recent window title set by the child program via an OSC 0 or
     /// OSC 2 escape sequence (e.g. `vim`, `tmux`, or a shell's own prompt
     /// hook), or `None` if it has never set one.
-    ///
-    /// This is a plain accessor — it does not consume the change. Backends
-    /// that want to react only when the title actually changes (e.g. to set
-    /// a native window title once per change rather than every frame)
-    /// should use [`take_title_changed`](Self::take_title_changed) instead.
-    ///
-    /// Kept as an additive accessor rather than a `UiEvent` variant so
-    /// non-`#[non_exhaustive]` consumers (`coord-tui`, `vimcode`) don't need
-    /// to add a match arm — see issue #339.
     pub fn title(&self) -> Option<&str> {
         self.parser.callbacks().title.as_deref()
     }
@@ -1305,7 +1238,7 @@ impl TerminalSession {
         !self.exited && self.scroll_offset == 0
     }
 
-    // ── Cursor shape (DECSCUSR, quadraui#338) ───────────────────────────────
+    // ── Cursor shape (DECSCUSR) ──────────────────────────────────────────────
 
     /// The child program's most recent DECSCUSR (`ESC [ Ps SP q`) cursor
     /// shape request — `Block` until the child sends one. `vim`/`zsh`
@@ -1384,7 +1317,7 @@ impl TerminalSession {
     /// Send pasted text to the shell — the single paste entry point every
     /// paste source (GTK Ctrl-V/Ctrl-Shift-V, GTK middle-click PRIMARY
     /// selection, TUI crossterm bracketed paste) should call instead of
-    /// hand-rolling the bracketed-paste wrap (quadraui#415). Also the
+    /// hand-rolling the bracketed-paste wrap. Also the
     /// natural entry point for a future supervising process that wants to
     /// inject text programmatically, though nothing wires that up today.
     ///
@@ -1469,19 +1402,6 @@ impl TerminalSession {
 
     /// `true` when the child is currently rendering on the alternate screen
     /// (DEC private mode `1047` / `1049`, or legacy `47`).
-    ///
-    /// Full-TUI applications (`vim`, `tmux`, `less`, `claude`, `htop`) switch
-    /// to the alternate screen on launch and back to the primary screen on
-    /// exit. The engine uses this signal to:
-    ///
-    /// 1. **Suppress scrollback capture** — alt-screen churn must never
-    ///    pollute the shell's scrollback (quadraui #335).
-    /// 2. **Route the wheel** — when the child is on the alt-screen, wheel
-    ///    events forward to the PTY rather than scrolling our local
-    ///    scrollback (quadraui #334). See
-    ///    [`should_forward_wheel`](Self::should_forward_wheel).
-    ///
-    /// Backed by vt100's `Screen::alternate_screen()`.
     pub fn on_alt_screen(&self) -> bool {
         self.parser.screen().alternate_screen()
     }
@@ -1500,19 +1420,6 @@ impl TerminalSession {
 
     /// Whether wheel scroll events should be forwarded to the PTY child
     /// rather than handled locally.
-    ///
-    /// Returns `true` when **either**:
-    ///
-    /// - the child has enabled mouse reporting
-    ///   ([`mouse_reporting_enabled`](Self::mouse_reporting_enabled)), or
-    /// - the child is on the alternate screen
-    ///   ([`on_alt_screen`](Self::on_alt_screen)).
-    ///
-    /// The alt-screen clause is what makes embedded `claude` / `tmux` /
-    /// `less` usable: even when those programs don't request mouse reporting,
-    /// scrolling our local (now-empty, alt-screen-shadowed) scrollback would
-    /// be jarring — forwarding the wheel lets the inner app paginate
-    /// (quadraui #334).
     pub fn should_forward_wheel(&self) -> bool {
         self.mouse_reporting_enabled() || self.on_alt_screen()
     }
@@ -1580,7 +1487,7 @@ impl TerminalSession {
     /// take it.
     ///
     /// This is the forward-vs-scrollback composition every consumer was
-    /// re-deriving by hand (quadraui#365): "is the child on the alt-screen
+    /// re-deriving by hand: "is the child on the alt-screen
     /// or reporting mouse events? If so, let it paginate itself. Otherwise
     /// scroll our own scrollback by `step` rows." Equivalent to:
     ///
@@ -1666,45 +1573,19 @@ impl TerminalSession {
     /// Sends SIGWINCH to the child process so running programs
     /// (e.g. `vim`, `htop`) re-layout their output.
     ///
-    /// # Preserving content across a width change (quadraui#437)
+    /// # Preserving content across a width change
     ///
-    /// upstream vt100 0.16 `set_size` does **not** reflow — it truncates each
+    /// vt100 0.16's `set_size` does **not** reflow — it truncates each
     /// row on a column shrink and pads with blanks on a widen, so a naive
     /// shrink→expand drag loses text permanently. We restore logical-line
     /// reflow via [`reflow_screen`] (public-API snapshot → resize → replay),
     /// gated to genuine width changes on the normal screen. This runs in the
     /// shared engine, so **both** the TUI and GTK backends get it for free.
     ///
-    /// # Closing the shell-redraw-vs-resize race (quadraui#437)
+    /// # Closing the shell-redraw-vs-resize race
     ///
-    /// The corruption #437 also chased ("ghost copies of the prompt / status
-    /// line stuck at wrong columns after a fast resize drag") is a *timing* bug
-    /// in the shared engine, reproduced on **both** the TUI and GTK backends,
-    /// so the fix lives here rather than in a backend paint path:
-    ///
-    /// 1. We set the grid to width `N` and SIGWINCH the shell.
-    /// 2. The shell redraws its prompt/status line for width `N` — those
-    ///    bytes use cursor-relative moves that only make sense on an
-    ///    `N`-wide grid, and they queue in the reader thread's channel.
-    /// 3. A fast drag re-sizes the grid *again* to width `M` **before** those
-    ///    bytes are parsed.
-    /// 4. The width-`N` redraw is then applied to an `M`-wide grid: every
-    ///    relative move lands in the wrong column/row, scattering duplicated
-    ///    prompt fragments that stay stuck until the next resize churns them.
-    ///
-    /// Two guards close this race:
-    ///
-    /// - **Before** re-sizing we drain + process any output *already queued*
-    ///   at the current size, so bytes the shell already emitted are parsed on
-    ///   the grid they were computed for.
-    /// - **After** re-sizing + SIGWINCH we briefly wait for the reader thread
-    ///   to go quiescent (see [`settle_after_resize`](Self::settle_after_resize)),
-    ///   consuming *this* SIGWINCH's redraw at the width it was computed for.
-    ///   The pre-resize drain alone cannot do this: the redraw triggered by
-    ///   this resize has not been written by the child yet when `resize()` is
-    ///   called, so on a rapid multi-step drag the next `resize()` would change
-    ///   the width again before those bytes were parsed. Waiting for
-    ///   quiescence bounds that window deterministically.
+    /// The shared engine also guards against a *timing* bug in the resize
+    /// sequence:
     pub fn resize(&mut self, cols: u16, rows: u16) {
         // See `MIN_VT100_ROWS`/`MIN_VT100_COLS`'s docs — vt100 panics below these.
         let (cols, rows) = clamp_vt100_size(cols, rows);
@@ -1739,31 +1620,7 @@ impl TerminalSession {
 
     /// Consume the child's post-SIGWINCH redraw so a rapid follow-up resize
     /// can't reparse those cursor-relative bytes against a grid whose width has
-    /// since changed (quadraui#437, blocking #2).
-    ///
-    /// This blocks the caller, but only for a **bounded** window, and it runs
-    /// in two phases so it neither gives up too early nor stalls forever:
-    ///
-    /// 1. **Wait for the redraw to start.** Until the first byte arrives we
-    ///    wait up to [`RESIZE_SETTLE_FIRST`]. This is the fix for the original
-    ///    bug — the child needs time just to *react* to SIGWINCH, and treating
-    ///    that initial silence as "settled" (the old single-[`RESIZE_SETTLE_IDLE`]
-    ///    loop) returned before consuming anything, leaving the redraw to be
-    ///    reparsed later at the wrong width. If no byte arrives in this window
-    ///    the child isn't redrawing and we return.
-    /// 2. **Drain the redraw.** Once output is flowing we consume until the
-    ///    reader thread has been idle for [`RESIZE_SETTLE_IDLE`] (redraw done).
-    ///
-    /// The whole thing is capped at [`RESIZE_SETTLE_MAX`] so a continuously
-    /// chatty child (e.g. `yes`) can't stall the UI. Every byte it consumes is
-    /// parsed at the *current* grid width — exactly the width the child
-    /// computed the redraw for.
-    ///
-    /// The blocking/timing policy lives in [`collect_post_resize_output`] (a
-    /// free function so it can be unit-tested against a synthetic channel
-    /// without a real PTY — see the `settle_*` tests); this method only wires it
-    /// to the parser. Chunks are captured then processed in arrival order, so
-    /// vt100 parse time never inflates the idle-gap measurement.
+    /// since changed.
     fn settle_after_resize(&mut self) {
         for chunk in collect_post_resize_output(&self.rx) {
             self.ingest(&chunk);
@@ -1908,10 +1765,6 @@ impl TerminalSession {
     /// Process a data chunk, splitting at `rows`-newline boundaries so
     /// that each sub-chunk causes at most `rows` lines to scroll off
     /// the live screen — the safe maximum for vt100's scrollback read-back.
-    ///
-    /// While the child is on the **alternate screen** (vim / tmux / less /
-    /// claude) `capture_scrolled_rows` is a no-op: alt-screen churn must
-    /// never pollute the shell's scrollback (quadraui #335).
     fn process_with_capture(&mut self, data: &[u8]) {
         let max_nl = self.rows as usize;
         let mut start = 0;
@@ -1991,7 +1844,6 @@ impl TerminalSession {
                                 // a single space rather than storing an
                                 // empty grapheme, so history playback
                                 // still occupies its column
-                                // (quadraui#337).
                                 text: if raw.is_empty() {
                                     " ".to_string()
                                 } else {
@@ -2030,16 +1882,12 @@ impl TerminalSession {
         let scroll_offset = self.scroll_offset;
         let hist_len = self.history.len();
         // Read once per snapshot rather than per cell — the DECSCUSR
-        // state (quadraui#338) applies to at most one cell (the cursor
+        // state applies to at most one cell (the cursor
         // cell, if any), same as `cursor_row`/`cursor_col` above.
         let cur_shape = self.cursor_shape();
         let cur_blinking = self.cursor_blinking();
 
         // Selection coordinates are always in display-row space (0 = visible
-        // top), matching the coordinate system expected by a host's
-        // pixel-to-cell mapping helper.  The gate on `scroll_offset == 0` that
-        // previously existed here was overly conservative: the `display_r`
-        // comparison below is correct at any offset.
         let sel_bounds = self.selection.as_ref().map(normalize_selection);
 
         // Closure: is the cell at (display_r, cu) inside the selection?
@@ -2125,7 +1973,7 @@ impl TerminalSession {
                                         // blank / wide-glyph continuation
                                         // cell normalises to a single
                                         // space so it still occupies its
-                                        // column (quadraui#337).
+                                        // column.
                                         let text = if contents.is_empty() {
                                             " ".to_string()
                                         } else {
@@ -2339,22 +2187,6 @@ fn default_shell_for(platform: ShellPlatform, env_shell: Option<String>) -> Stri
 }
 
 /// Which "run a command string through the shell" convention applies.
-///
-/// Exists only to let [`shell_command_for`] be exercised for **both**
-/// platform branches from a single test binary — `shell_command()` itself
-/// picks the branch via `cfg(target_os = "windows")`, which a non-Windows
-/// CI host can only ever compile one arm of.
-/// `shell_command()` constructs exactly **one** of these two variants per
-/// build target, so in any build without `cfg(test)` the other variant is
-/// genuinely never constructed and `dead_code` fires — `Unix` on Windows,
-/// `Windows` everywhere else. That asymmetry is the entire point of the
-/// type, but CI sets `RUSTFLAGS: -D warnings` workspace-wide, so an
-/// un-allowed variant is a hard *build failure* on the host whose branch
-/// it isn't. Both arms below are therefore load-bearing: quadraui#970's
-/// first CI run was green on ubuntu and red on windows-latest (the
-/// pty-smoke step — the first Windows step that compiles this
-/// `feature = "terminal"` module *without* `cfg(test)`) because only the
-/// `Windows` arm existed. Keep them symmetric.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellPlatform {
     #[cfg_attr(all(not(test), target_os = "windows"), allow(dead_code))]
@@ -2394,7 +2226,7 @@ fn shell_command_for(platform: ShellPlatform, env_shell: Option<String>) -> (Str
 /// `shell_command()` is for launching a single command string through
 /// "the user's shell" — the case vimcode's `:!`, `:r !`, `!{motion}`
 /// filters, and plugin async shells all hardcode as `Command::new("sh")`
-/// today, with no Windows leg (quadraui#970). `default_shell()`'s own
+/// today, with no Windows leg. `default_shell()`'s own
 /// behaviour is unchanged by this function's addition.
 ///
 /// Falls back to `("sh", "-c")` on Unix and `("cmd", "/C")` on Windows
@@ -2429,26 +2261,9 @@ pub fn shell_command() -> (String, String) {
 mod tests {
     use super::*;
 
-    // ── Regression: vt100 0.15.2 alt-screen resize cursor-clamp panic (#397) ─
+    // ── Regression: vt100 0.15.2 alt-screen resize cursor-clamp panic ─
 
     /// Reproduces the exact crash sequence from issue #397:
-    ///
-    ///  1. Cursor is low in a tall grid (row ≥ future height after resize).
-    ///  2. Child enters the alternate screen (`ESC[?1049h`). vt100 DEC-saves the
-    ///     cursor position (`decsc`) — saving row 35.
-    ///  3. The pane is resized to 20 rows. On vt100 0.15.2 `Grid::set_size`
-    ///     clamped the live `pos` but **not** `saved_pos` — so `saved_pos.row`
-    ///     remained 35.
-    ///  4. Child exits the alternate screen (`ESC[?1049l`). vt100 restores the
-    ///     saved cursor (`decrc`) — restoring row 35 onto a 20-row grid.
-    ///  5. Any printable byte → `Grid::drawing_cell(35).unwrap()` → `None` → panic.
-    ///
-    /// vt100 ≥ 0.16 clamps `saved_pos.row` / `saved_pos.col` inside `set_size`,
-    /// so step 5 must **not** panic. The test also asserts the restored cursor row
-    /// is within the new bounds.
-    ///
-    /// **Fails on vt100 0.15.2** (panics at step 5). **Passes on vt100 0.16.x**.
-    /// No wide chars are involved — the trigger is purely cursor position + resize.
     #[test]
     fn vt100_alt_screen_resize_cursor_clamp_no_panic() {
         // 40-row × 80-col grid.  Row indices are 0-based inside vt100.
@@ -2488,18 +2303,6 @@ mod tests {
 
     /// The same #397 crash sequence, driven end-to-end through a **real
     /// `TerminalSession`** rather than a bare `vt100::Parser`.
-    ///
-    /// This is the test that actually covers the code this fix touches:
-    /// `TerminalSession::resize()` (which calls `screen_mut().set_size()` via
-    /// the 0.16 API) and `TerminalSession::poll()` →
-    /// `process_with_capture()` → the `catch_unwind`-guarded
-    /// `parser.process()` call sites. The raw-parser test above proves the
-    /// vt100 bump cures the underlying bug; this one proves the session
-    /// survives the sequence and stays usable — the issue's acceptance bar.
-    ///
-    /// A panic inside `process_with_capture` is caught by `catch_unwind`, so
-    /// a regression there surfaces as a *dead session* (the final "still
-    /// alive" assertion fails) rather than as a test-harness panic.
     #[test]
     #[cfg(unix)]
     fn session_alt_screen_resize_cursor_clamp_no_panic() {
@@ -2546,7 +2349,7 @@ mod tests {
         sess.send_str("exit\n");
     }
 
-    // ── Regression: vt100 0.15.2 wide-char column-boundary panic (#377) ─────
+    // ── Regression: vt100 0.15.2 wide-char column-boundary panic ────────────
 
     /// Feed wide Unicode characters to the vt100 parser such that a 2-cell
     /// glyph straddles or lands exactly at the right column edge.  The
@@ -2609,7 +2412,7 @@ mod tests {
         }
     }
 
-    // ── Regression: vt100 rows<2 / cols<2 grid panics (quadraui#1130) ───────
+    // ── Regression: vt100 rows<2 / cols<2 grid panics ───────────────────────
     //
     // Found by this file's `vt100_parser_never_panics*` property tests: vt100
     // 0.16.2 panics constructing or resizing a grid with `rows < 2`
@@ -2707,7 +2510,7 @@ mod tests {
         sess.send_str("exit\n");
     }
 
-    // ── Regression: destructive resize corrupts content (#437) ──────────────
+    // ── Regression: destructive resize corrupts content ─────────────────────
     //
     // These drive the vendored vt100 parser's `set_size` directly (no PTY),
     // so they're deterministic. Before the reflow patch, shrinking the column
@@ -2743,17 +2546,7 @@ mod tests {
         assert!(lines.iter().any(|l| l == "second line"));
     }
 
-    // ── Reflow round-trip (restored on vt100 0.16 via `reflow_screen`) ──────
-    //
     // These drive `reflow_screen` — the public-API (snapshot → resize → replay)
-    // reflow that replaced the vendored vt100 0.15.2 `Grid::set_size` patch when
-    // develop moved to real vt100 0.16 (#397 deleted the vendored tree). vt100
-    // 0.16's own `set_size` is *non-reflowing*: a bare `screen_mut().set_size()`
-    // truncates every row on a column shrink and pads with blanks on widen, so a
-    // shrink→expand window drag left the shell output permanently truncated.
-    // `reflow_screen` re-wraps logical lines so the round-trip is lossless for
-    // on-screen content. (Scrollback-deep shrinks are out of scope — see the
-    // helper's doc comment.)
 
     #[test]
     fn resize_no_op_when_width_unchanged() {
@@ -2808,16 +2601,6 @@ mod tests {
 
     /// Pinned regression for quadraui#1130: the shrink must not leave a
     /// double-width glyph's first half orphaned at the new final column.
-    ///
-    /// These are the exact inputs proptest shrank the Windows CI failure to
-    /// (`vt100_parser_never_panics_across_a_resize`, run
-    /// 36607044052) — a TAB, 24 spaces and U+3000 IDEOGRAPHIC SPACE on a
-    /// 2×65 grid, narrowed to 2×33 so the glyph straddles column 33, then a
-    /// single space written over it. Before
-    /// `set_size_without_orphaning_wide_cells` this panicked inside vt100 at
-    /// `screen.rs:870` (`Option::unwrap` on the out-of-range continuation
-    /// cell). No PTY, so it runs on every platform — Windows is where it
-    /// actually fired.
     #[test]
     fn reflow_shrink_does_not_orphan_a_wide_glyph_at_the_boundary() {
         let mut p = vt100::Parser::new(2, 65, 0);
@@ -2844,7 +2627,7 @@ mod tests {
                 "row {row} still ends in an orphaned wide first half"
             );
         }
-        // …and writing over it no longer panics (this was the CI failure).
+        // Writing over it must not panic.
         p.process(b"\x1b[1;33H ");
     }
 
@@ -2876,7 +2659,6 @@ mod tests {
 
     /// The scrub is not allowed to move the cursor: it brackets its repair
     /// with DECSC/DECRC precisely so a resize stays invisible to the child.
-    /// quadraui#1130.
     #[test]
     fn reflow_shrink_scrub_restores_the_cursor() {
         let mut p = vt100::Parser::new(4, 65, 0);
@@ -2934,12 +2716,6 @@ mod tests {
     #[test]
     fn resize_multistep_drag_leaves_no_ghost_rows() {
         // A window drag fires many intermediate resizes (shrink then expand).
-        // After it settles back at the start size, the reflowed grid must be
-        // byte-for-byte identical to the pre-drag grid — no duplicated prompt
-        // lines, no orphaned fragments stranded on rows that should be blank
-        // (quadraui#437: the on-screen "stale ~ / > ghost" symptom). Each line
-        // is unique, so any duplication shows up as a repeated needle. Sizes are
-        // chosen so wrapped rows never exceed the grid height — no scroll-off.
         let mut p = vt100::Parser::new(14, 40, 1000);
         for i in 1..=4 {
             p.process(format!("unique_line_{i:02}_content\r\n").as_bytes());
@@ -2967,7 +2743,7 @@ mod tests {
         }
     }
 
-    // ── Regression: shell-redraw-vs-reflow race on fast resize (#437) ───────
+    // ── Regression: shell-redraw-vs-reflow race on fast resize ──────────────
     //
     // A fast resize drag reflows the grid to width N and SIGWINCHes the shell;
     // the shell redraws its prompt for width N (cursor-relative bytes queued in
@@ -3060,7 +2836,6 @@ mod tests {
     #[test]
     fn resize_noop_same_size_is_cheap() {
         // Re-sending the current size must be a no-op (no reflow / SIGWINCH
-        // churn), matching the guard added for the #437 drag fix.
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         let mut sess = match TerminalSession::spawn(80, 24, "/bin/bash", &cwd, 100) {
             Ok(s) => s,
@@ -3073,20 +2848,7 @@ mod tests {
         assert_eq!((sess.cols(), sess.rows()), (100, 30));
     }
 
-    // ── Regression: rapid multi-step resize drag (quadraui#437, blocking #2) ──
-    //
-    // The failure the earlier drain-only fix could NOT catch: a fast drag
-    // fires several `resize()` calls back-to-back with no settle time between
-    // them. Each resize SIGWINCHes the shell; the shell's redraw for that
-    // width is still being written when the *next* resize changes the width
-    // again. If that redraw is parsed at the wrong width, its cursor-relative
-    // moves scatter duplicated prompt/echo fragments that stick across rows.
-    //
-    // `resize()` now waits (bounded) for the reader thread to go quiescent
-    // after each SIGWINCH (`settle_after_resize`), so every redraw is parsed
-    // at the width it was computed for even under a no-pause drag. This test
-    // drives exactly that pattern — many resizes with no sleeps between them —
-    // and asserts a unique sentinel line never ends up duplicated on the grid.
+    // These tests drive the rapid-resize guard: `resize()` waits for the
     #[test]
     fn resize_rapid_multistep_drag_leaves_no_ghosts() {
         use std::thread::sleep;
@@ -3143,8 +2905,7 @@ mod tests {
             sleep(Duration::from_millis(10));
         }
 
-        // The output line must appear at most once — the #437 ghost duplicated
-        // it (and scattered prompt fragments) across many rows.
+        // The output line must appear at most once.
         let screen = sess.screen_text();
         let count = screen.matches(needle).count();
         assert!(
@@ -3401,7 +3162,7 @@ mod tests {
         assert_eq!(shell, "powershell.exe");
     }
 
-    // ── shell_command / shell_command_for (quadraui#970) ──────────────────────
+    // ── shell_command / shell_command_for ─────────────────────────────────────
 
     #[test]
     fn shell_command_for_unix_honours_shell_env_var() {
@@ -3549,8 +3310,6 @@ mod tests {
     }
 
     /// `bracketed_paste_enabled()` reflects the child's DEC private mode
-    /// 2004 (`ESC[?2004h` / `ESC[?2004l`) — the input-readiness signal a
-    /// programmatic driver waits on before injecting input (quadraui #343).
     #[test]
     #[cfg(unix)]
     fn bracketed_paste_enabled_tracks_mode_2004() {
@@ -3579,9 +3338,7 @@ mod tests {
         sess.send_str("exit\n");
     }
 
-    /// [`TerminalSession::title`] tracks OSC 0/OSC 2 window-title requests
-    /// (quadraui #339), and [`TerminalSession::take_title_changed`] is a
-    /// one-shot dirty flag consumed by the read.
+    /// [`TerminalSession::title`] tracks OSC 0/OSC 2 window-title requests,
     #[test]
     #[cfg(unix)]
     fn title_tracks_osc_0_and_take_title_changed_is_one_shot() {
@@ -3867,7 +3624,7 @@ mod tests {
         );
     }
 
-    /// `feed_for_bench` (quadraui#340) must drive the exact same ingest path
+    /// `feed_for_bench` must drive the exact same ingest path
     /// `poll()` uses — a bench shouldn't quietly be measuring a different,
     /// unrepresentative code path.
     ///
@@ -3999,7 +3756,7 @@ mod tests {
     }
 
     /// Wheel events encode the pointer's column/row on the wire just like
-    /// clicks do (quadraui#365 review) — real alt-screen consumers (tmux is
+    /// clicks do — real alt-screen consumers (tmux is
     /// the canonical example) use this to route a wheel notch to the pane
     /// under the cursor, so a caller must never collapse it to `(0, 0)`.
     #[test]
@@ -4081,7 +3838,7 @@ mod tests {
         assert_eq!(bytes, b"\x1b[<1;5;3m");
     }
 
-    // ── Paste → PTY encoding (quadraui#415) ──────────────────────────────────
+    // ── Paste → PTY encoding ─────────────────────────────────────────────────
 
     /// Bracketed-paste mode on: `text` gets wrapped in `ESC[200~` /
     /// `ESC[201~` markers so the child can tell pasted text apart from
@@ -4128,8 +3885,6 @@ mod tests {
         let bytes = encode_paste("", true);
         assert_eq!(bytes, b"\x1b[200~\x1b[201~");
     }
-
-    // ── Keyboard → PTY encoding (moved from examples/common/terminal_app.rs, quadraui#342) ──
 
     // ── Normal-mode key encoding (DECCKM off / app_cursor = false) ───────────
 
@@ -4464,7 +4219,6 @@ mod tests {
     /// `encode_key`/`write_key` read `application_cursor_keys()` off the
     /// live session instead of requiring the caller to thread the flag
     /// through by hand — the whole point of moving this into the engine
-    /// (quadraui#342).
     #[test]
     #[cfg(unix)]
     fn encode_key_reads_app_cursor_from_session() {
@@ -4600,7 +4354,7 @@ mod tests {
         sess.send_str("exit\n");
     }
 
-    // ── `handle_wheel` — forward-vs-scrollback policy (quadraui#365) ─────────
+    // ── `handle_wheel` — forward-vs-scrollback policy ────────────────────────
 
     /// With no mouse reporting and no alt-screen, `handle_wheel` falls back
     /// to local scrollback: returns `false`, and `scroll_offset` moves by
@@ -4658,9 +4412,6 @@ mod tests {
     }
 
     /// Scrollback must NOT grow while the child is on the alternate screen,
-    /// and MUST resume growing after the child returns to the primary screen
-    /// (quadraui #335 — without this, `claude` / `tmux` / `vim`
-    /// frames leak into the shell's scrollback as cold-frame garbage).
     #[test]
     #[cfg(unix)]
     fn scrollback_skipped_on_alt_screen_resumes_on_primary() {
@@ -4717,12 +4468,6 @@ mod tests {
     }
 
     /// `application_cursor_keys()` reflects the child's DECCKM state
-    /// (DEC private mode `?1h` / `?1l`, i.e. "application cursor keys").
-    ///
-    /// Full-TUI programs like vim, neovim, and claude set this mode on entry
-    /// and clear it on exit. The key encoder must honour it so that arrow keys
-    /// are sent as `ESC O A…D` (SS3) instead of `ESC [ A…D` (CSI) while the
-    /// child is in application-cursor mode (quadraui #336).
     #[test]
     #[cfg(unix)]
     fn application_cursor_keys_tracks_decckm() {
@@ -4750,7 +4495,7 @@ mod tests {
         sess.send_str("exit\n");
     }
 
-    // ── DECSCUSR cursor shape / blink (quadraui#338) ────────────────────────
+    // ── DECSCUSR cursor shape / blink ───────────────────────────────────────
 
     /// [`decscusr_shape`] maps every one of the six standard `Ps` values,
     /// plus the `0` == `1` alias, to the right `(shape, blinking)` pair.
@@ -4888,10 +4633,6 @@ mod tests {
     }
 
     /// `cursor_shape()`/`cursor_blinking()` track a real child's DECSCUSR
-    /// requests end to end through the PTY → vt100 →
-    /// `EngineCallbacks::unhandled_csi` path — this is the exact
-    /// sequence `zsh`/`vim` send switching into and back out of insert
-    /// mode (quadraui#338's acceptance criterion).
     #[test]
     #[cfg(unix)]
     fn cursor_shape_tracks_decscusr() {
@@ -5138,7 +4879,7 @@ mod tests {
         sess.send_str("exit\n");
     }
 
-    // ── Grapheme cluster / wide-char cell content (quadraui#337) ───────
+    // ── Grapheme cluster / wide-char cell content ──────────────────────
 
     /// `build_rows()`'s live-screen branch must carry a cell's *full*
     /// grapheme cluster — base character plus any combining marks — not
@@ -5202,16 +4943,7 @@ mod tests {
         sess.send_str("exit\n");
     }
 
-    // ── SGR 2 faint/dim (quadraui#345) ──────────────────────────────────
-    //
-    // vt100 0.15.2 didn't track SGR 2 at all — quadraui#345 was filed
-    // against that gap. This repo is now pinned to vt100 ≥ 0.16 (see
-    // `Cargo.toml`), which added `Cell::dim()`; these tests cover the
-    // plumbing that reads it into `TerminalCell::dim` on both the live
-    // and history paths. The colour-blending consequence of `dim = true`
-    // (fading the resolved foreground toward the background) is covered
-    // separately by `terminal_style::tests` — this file only needs to
-    // prove the flag itself survives `build_rows()`.
+    // SGR 2 faint/dim — vt100 ≥ 0.16 tracks this via `Cell::dim()`.
 
     /// `build_rows()`'s live-screen branch must carry vt100's SGR 2
     /// (faint) attribute into `TerminalCell::dim`. Feeds vt100 directly
@@ -5265,13 +4997,7 @@ mod tests {
         sess.send_str("exit\n");
     }
 
-    /// `capture_scrolled_rows()` (the scrollback-capture path,
-    /// `terminal_engine.rs` history capture — quadraui#337) must also
-    /// preserve a full grapheme cluster rather than truncating to the
-    /// first `char`. A 1-row screen makes a single newline immediately
-    /// scroll that row into `history`, so `process_with_capture` (the
-    /// private entry point `poll()` normally drives) can be called
-    /// directly for a deterministic capture with no PTY/shell timing.
+    /// `capture_scrolled_rows()` must preserve a full grapheme cluster
     #[test]
     #[cfg(unix)]
     fn capture_scrolled_rows_preserves_combining_mark_grapheme() {
@@ -5290,7 +5016,7 @@ mod tests {
     }
 
     /// `capture_scrolled_rows()` must also carry a captured cell's SGR 2
-    /// (faint) attribute into `HistCell::dim` (quadraui#345) — same
+    /// (faint) attribute into `HistCell::dim` — same
     /// technique as the grapheme-cluster capture test above.
     #[test]
     #[cfg(unix)]
@@ -5387,34 +5113,13 @@ mod tests {
     }
 }
 
-/// Property tests for the vt100 parser this engine wraps (quadraui#1130).
+/// Property tests for the vt100 parser this engine wraps.
 /// Everything fed to [`vt100::Parser::process`] is untrusted, foreign
 /// data by construction — it's whatever bytes the child shell/program
 /// running inside the PTY chooses to write, including a hostile or
 /// buggy program deliberately or accidentally emitting malformed escape
 /// sequences — so "never panics" needs to hold over the arbitrary byte
-/// space, not just the hand-picked regression fixtures in `mod tests`
-/// above (e.g. the #377 wide-char column-boundary case).
-///
-/// Deliberately drives a bare `vt100::Parser` rather than a full
-/// [`TerminalSession`] — the latter needs a real PTY-spawned child
-/// process per case, which is far too slow for proptest's
-/// hundreds-of-cases-per-property default and adds nothing: the parser
-/// itself, not the PTY plumbing around it, is what actually walks the
-/// untrusted byte stream.
-///
-/// `rows`/`cols` are bounded below by [`MIN_VT100_ROWS`]/[`MIN_VT100_COLS`],
-/// not `1`: this property test is *how* both upstream vt100 panics (see
-/// those consts' docs) were originally found, by generating grid sizes
-/// with no floor at all. That's now a pinned regression
-/// (`clamp_vt100_size_floors_degenerate_dimensions` /
-/// `vt100_survives_at_the_clamped_floor` on every platform, plus the
-/// `cfg(unix)` PTY pair `spawn_with_a_single_{row,column}_does_not_panic` /
-/// `resize_to_a_single_{row,column}_does_not_panic` in `mod tests` above)
-/// covering the boundary this crate actually controls — where
-/// `TerminalSession` clamps *before* constructing the parser. Re-widening
-/// the range here would just rediscover the same, already-filed upstream
-/// vt100 bugs on every run instead of testing anything this crate can fix.
+/// space, not just hand-picked regression fixtures.
 #[cfg(test)]
 mod proptests {
     use super::{reflow_screen, MIN_VT100_COLS, MIN_VT100_ROWS};
@@ -5423,9 +5128,6 @@ mod proptests {
     proptest! {
         /// No byte sequence, however malformed (a truncated CSI, an
         /// out-of-range SGR parameter, a lone high continuation byte, a
-        /// wide-char glyph landing exactly on a column boundary — the
-        /// #377 regression class), may panic the parser at any
-        /// reasonable terminal size.
         #[test]
         fn vt100_parser_never_panics(
             rows in MIN_VT100_ROWS..60,
@@ -5452,24 +5154,7 @@ mod proptests {
 
         /// A resize mid-stream followed by more arbitrary bytes must not
         /// panic either — this is the exact scenario [`reflow_screen`]'s
-        /// doc comment and the #377 fixtures above both call out as the
-        /// highest-risk path (wide-char cells re-wrapping at a new width).
-        ///
-        /// Drives [`reflow_screen`] — the *crate's* resize entry point,
-        /// the one and only thing [`TerminalSession::resize`] calls — and
-        /// deliberately not `vt100::Screen::set_size` underneath it. The
-        /// bare upstream call is known-broken on a width shrink and this
-        /// crate stopped making it: see
-        /// [`set_size_without_orphaning_wide_cells`], whose repair is what
-        /// this property pins. Asserting the property against raw
-        /// `set_size` would only re-derive that upstream bug on every run,
-        /// the same dead end [`MIN_VT100_ROWS`]'s doc describes for grid
-        /// dimensions.
-        ///
-        /// `alternate` covers both branches of `reflow_screen`'s gate:
-        /// `false` takes the snapshot→resize→replay reflow, `true` the
-        /// plain non-reflow resize a full-screen app gets. Both were
-        /// affected by the orphaned-wide-cell bug.
+        /// doc comment calls out as the highest-risk path (wide-char cells
         #[test]
         fn vt100_parser_never_panics_across_a_resize(
             rows in MIN_VT100_ROWS..60,
@@ -5489,7 +5174,7 @@ mod proptests {
             parser.process(&after);
         }
 
-        /// The orphaned-wide-cell shrink (quadraui#1130) narrowed to its
+        /// The orphaned-wide-cell shrink narrowed to its
         /// essentials and re-randomised: a double-width glyph parked so
         /// that the shrink lands between its two halves, on every
         /// (old width, new width) pair that can straddle it.

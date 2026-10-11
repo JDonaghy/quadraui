@@ -1,22 +1,10 @@
 //! macOS layout helper for [`crate::TextDisplay`].
 //!
-//! Painting moved to the shared [`crate::primitives::text_display::paint`]
-//! (#810, PaintSurface Phase 2c) — see that fn's doc for the divergence
-//! (Windows's bold-span support, dropped since `PaintSurface` has no
-//! weight parameter) resolved while unifying
-//! `gtk::text_display::draw_text_display`,
-//! `macos::text_display::draw_text_display` and
-//! `win::text_display::draw_text_display` into one implementation. This
-//! module now only carries [`mac_text_display_layout`], the pixel-unit
+//! Painting uses the shared [`crate::primitives::text_display::paint`].
+//! This module carries [`mac_text_display_layout`], the pixel-unit
 //! layout query used for both hit-testing
 //! (`MacBackend::text_display_layout`) and painting
 //! (`MacBackend::draw_text_display`, via `Backend::text_display_layout`).
-//!
-//! The deleted `macos::text_display::draw_text_display` free function
-//! had zero call sites in `coord-tui`/`vimcode` (`grep -rn
-//! draw_text_display ~/src/coord-tui/src ~/src/vimcode/src` — both only
-//! call `Backend::draw_text_display`, whose signature is unchanged), so
-//! it needed no deprecation shim (CLAUDE.md rule 1).
 
 use crate::event::Rect as QRect;
 use crate::primitives::text_display::{TextDisplay, TextDisplayLayout, TextDisplayLineMeasure};
@@ -29,11 +17,10 @@ const SCROLLBAR_GUTTER_PT: f32 = 12.0;
 /// Minimum scrollbar thumb length in points.
 const SCROLLBAR_MIN_THUMB_PT: f32 = 8.0;
 
-/// Compute the layout the macOS rasteriser would produce for
+/// Compute the layout the macOS rasteriser produces for
 /// `display` at `rect` with the supplied `line_height` (font's
 /// typographic line height in points). Hosts call this to drive
-/// hit-testing for scrollbar drag interaction without re-deriving
-/// metrics.
+/// hit-testing for scrollbar drag interaction.
 ///
 /// The returned layout's coordinates are **body-local** (y=0 at the
 /// top of the body region). Title-bar painting consumes one
@@ -42,12 +29,11 @@ const SCROLLBAR_MIN_THUMB_PT: f32 = 8.0;
 /// matches the GTK helper's contract.
 ///
 /// `char_width` is the backend's approximate average character width
-/// (`Backend::char_width`) — see quadraui#905: this pure function has no
-/// live `CTFont`/`CGContext` to measure real glyph widths with, so it
-/// approximates the wrap column budget from pixels the same way the
-/// shared `paint` (`MacBackend::draw_text_display`) does, so a click
-/// always resolves against the same row boundaries that were actually
-/// painted.
+/// (`Backend::char_width`). This pure function has no live
+/// `CTFont`/`CGContext` to measure real glyph widths with, so it
+/// approximates the wrap column budget from pixels the same way
+/// `MacBackend::draw_text_display` does, so a click always resolves
+/// against the same row boundaries that were actually painted.
 pub fn mac_text_display_layout(
     display: &TextDisplay,
     rect: QRect,

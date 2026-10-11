@@ -1,15 +1,9 @@
-//! Regression coverage for #619: library diagnostics must never reach the
-//! host's screen.
+//! Library diagnostics are routed to a sink instead of directly to stderr.
 //!
-//! `UnpaintedModalApp` deliberately reproduces the #455 defect class this
-//! bug report is about — it registers a modal in the [`quadraui::Backend`]'s
-//! `ModalStack` (making it hit-testable) but never paints it, which is
-//! exactly the shape of vimcode's `editor_hover` popup: pushed onto the
-//! stack, painted through a path (`draw_rich_text_popup` there) that
-//! doesn't call `mark_painted`. That drives `TuiBackend::end_frame`'s #455
-//! detector every frame — before #619 that meant an `eprintln!` landing
-//! directly on the host's screen, on every single frame the modal stayed
-//! open.
+//! `UnpaintedModalApp` reproduces the unpainted modal defect class:
+//! it registers a modal in the [`quadraui::Backend`]'s `ModalStack`
+//! (making it hit-testable) but never paints it. The detector in
+//! `TuiBackend::end_frame` fires every frame the modal stays open.
 #![cfg(feature = "tui")]
 
 use quadraui::tui::testing::TuiDriver;
@@ -37,7 +31,6 @@ impl AppLogic for UnpaintedModalApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         // Register a modal so it's hit-testable — but never call any
         // `draw_*` for it, so `ModalStack::mark_painted` is never reached.
-        // This is the exact "registered but invisible" shape #455 detects.
         backend.modal_stack_handle().borrow_mut().push(
             WidgetId::new("unpainted_modal"),
             Rect {
@@ -54,10 +47,8 @@ impl AppLogic for UnpaintedModalApp {
     }
 }
 
-/// The headline regression: with no sink installed (the default — and the
-/// state of every host that never opts in), the #455 diagnostic must never
-/// reach the rendered screen, in debug builds (where the detector is
-/// compiled in) same as release.
+/// With no sink installed, the unpainted modal diagnostic must not
+/// reach the rendered screen in either debug or release builds.
 #[test]
 fn unpainted_modal_diagnostic_never_reaches_the_screen() {
     let _guard = sink_test_guard();
@@ -73,10 +64,8 @@ fn unpainted_modal_diagnostic_never_reaches_the_screen() {
     );
 }
 
-/// The detector must still be doing its job — #619 is "route it to a
-/// sink," not "delete it." A host that opts in by installing a sink must
-/// still see the #455 warning; the fix only changes *where* it goes, not
-/// *whether* it exists.
+/// The detector still fires when a sink is installed, routing the
+/// unpainted modal warning to the sink instead of stderr.
 #[test]
 fn unpainted_modal_diagnostic_still_reaches_an_installed_sink() {
     let _guard = sink_test_guard();

@@ -295,7 +295,7 @@ pub enum FindReplaceHit {
 
 impl FindReplacePanel {
     /// Hit-test a click at surface-native `(x, y)` against
-    /// [`Self::hit_regions`] (quadraui#818).
+    /// [`Self::hit_regions`].
     ///
     /// `content_origin` is the absolute position of the panel's content
     /// corner — inside the 1-cell/1px border — the same `(content_x,
@@ -345,7 +345,7 @@ impl FindReplacePanel {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// PaintSurface Phase 2b (#809): shared paint implementation
+// PaintSurface Phase 2b: shared paint implementation
 // ─────────────────────────────────────────────────────────────────────
 //
 // Before this, `gtk::find_replace::draw_find_replace`,
@@ -825,7 +825,7 @@ mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// #1073: test-only recorder — `paint` never calls this verb
+            /// Test-only recorder — `paint` never calls this verb
             /// (see this module's own doc for why no primitive here has been
             /// migrated onto it yet); this exists only so `RecordingSurface`
             /// satisfies the trait. Records into the same `fills` list as
@@ -924,11 +924,8 @@ mod native_surface_paint {
             );
         }
 
-        /// Regression for the divergence this PR found and resolved
-        /// (see the module doc): the selection fill must land *and* the
-        /// selected substring must still be drawn as its own text run,
-        /// so it stays legible rather than getting hidden the way
-        /// Windows's deleted copy hid it.
+        /// Verify that the selection fill renders and selected text remains
+        /// visible, so it is not obscured by the fill rect.
         #[test]
         fn focused_input_selection_fills_and_still_draws_selected_text() {
             let mut panel = sample_panel("needle", 3, Some(0));
@@ -974,11 +971,8 @@ mod native_surface_paint {
             );
         }
 
-        /// Regression for issue #503: `cursor`/`sel_anchor` are char
-        /// offsets, so a multibyte query with a boundary-adjacent or
-        /// out-of-range offset must not panic — twin of the
-        /// per-backend `*_with_multibyte_query_does_not_panic` tests
-        /// this PR deletes in favour of this one shared assertion.
+        /// Verify that multibyte queries with boundary-adjacent or out-of-range
+        /// cursor/selection offsets do not panic, since offsets are character-based.
         #[test]
         fn multibyte_query_with_out_of_range_selection_does_not_panic() {
             let panel = sample_panel("café🎉中文", 3, Some(6));

@@ -1,9 +1,6 @@
 //! `cargo run --example gtk_platform_services --features gtk`
 //!
-//! Manual smoke test for issue #955's GTK `send_notification`: before
-//! this issue `GtkPlatformServices::send_notification` was `fn
-//! send_notification(&self, _n: Notification) {}` — an empty no-op, the
-//! Linux desktop backend had no notifications at all. This fires a real
+//! Manual smoke test for GTK `send_notification`: fires a real
 //! `gio::Notification` (through the window's `gtk4::Application`) with a
 //! tag and one action button, and reports
 //! `UiEvent::NotificationActivated` to stderr when the user clicks the
@@ -11,11 +8,11 @@
 //! that delivers that event today (see that variant's own doc for why
 //! macOS/Win-GUI don't yet).
 //!
-//! Also covers issue #956's four `shell.*`-style methods
+//! Also covers the four `shell.*`-style methods
 //! (`reveal_in_file_manager`, `open_path`, `move_to_trash`, `beep`) —
 //! each has a real, visible side effect (a file manager window opens; the
 //! default app for a file launches; a temp file disappears from disk; a
-//! sound plays), which is exactly why these are manual controls here
+//! sound plays), which is why these are manual controls here
 //! rather than automated `#[cfg(test)]` assertions in `gtk::services`
 //! itself (see that module's own tests for the pieces that *are* safe to
 //! assert on headlessly).
@@ -29,10 +26,10 @@
 //! - `r` — `reveal_in_file_manager` a freshly-written temp file (watch
 //!   for a file-manager window to open with it selected)
 //! - `o` — `open_path` that same temp file with its default handler
-//! - `t` — write a *second* temp file and `move_to_trash` it — check
+//! - `t` — write a second temp file and `move_to_trash` it — check
 //!   your trash/recycle bin afterward
 //! - `b` — `beep`
-//! - `d` — issue #959's `displays`/`cursor_screen_point`: prints every
+//! - `d` — `displays`/`cursor_screen_point`: prints every
 //!   connected display (bounds, work area, scale, primary) and the
 //!   current cursor position to stderr — move the window to a second
 //!   monitor and press `d` again to see the list/cursor position change

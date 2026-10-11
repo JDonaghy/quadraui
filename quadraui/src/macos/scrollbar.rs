@@ -1,16 +1,9 @@
 //! macOS rasteriser for [`crate::Scrollbar`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::scrollbar::native_surface_paint::paint`] (#811,
-//! `PaintSurface` Phase 2d) — see that fn's doc for the one named
-//! divergence (quadraui#791) re-verified (already fixed) while unifying
-//! `gtk::draw_scrollbar`, `macos::scrollbar::draw_scrollbar` and
-//! `win::scrollbar::draw_scrollbar` into one implementation. This module
-//! no longer carries any public rasteriser of its own — the deprecated
-//! `draw_scrollbar` compatibility shim over the shared
-//! [`super::surface::CgSurface`] adapter was removed in issue #1109
-//! (zero uses in coord-tui's `main` and vimcode's `develop`); callers
-//! reach the same paint through [`crate::Backend::draw_scrollbar`].
+//! Painting is implemented in the shared
+//! [`crate::primitives::scrollbar::native_surface_paint::paint`].
+//! This module no longer carries any public rasteriser of its own.
+//! Callers reach the paint through [`crate::Backend::draw_scrollbar`].
 
 #[cfg(test)]
 use crate::primitives::scrollbar::Scrollbar;

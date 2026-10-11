@@ -7,7 +7,7 @@
 //! one #965 deliberately left alone; it's still documented to always
 //! return `None` on TUI (apps should provide an in-canvas picker
 //! instead). See `examples/common/file_dialog_demo.rs` and the paired
-//! `gtk_file_dialog` example (#427, #935) for the GTK counterpart, which
+//! `gtk_file_dialog` example for the GTK counterpart, which
 //! shows a native dialog for all three.
 //!
 //! - `o` open-file dialog (type to filter, Enter confirms a real path)

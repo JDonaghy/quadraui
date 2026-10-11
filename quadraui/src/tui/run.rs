@@ -7,7 +7,7 @@
 //!   setup / teardown.
 //! - Best-effort kitty keyboard-protocol push (REPORT_ALL_KEYS_AS_ESCAPE_CODES
 //!   so Ctrl+Shift+L is unambiguous from Ctrl+L), with the outcome exposed
-//!   via [`crate::backend::BackendCaps::kitty_keyboard`] (quadraui#827) so
+//!   via [`crate::backend::BackendCaps::kitty_keyboard`] so
 //!   an app can tell whether it actually worked instead of finding out by
 //!   a gesture silently never firing.
 //! - `Terminal::new` + `TuiBackend` construction.
@@ -49,7 +49,7 @@ use crate::runtime::{ResizeDebouncer, RESIZE_SETTLE};
 // Re-exported (not just imported) so `tui::testing` — and any other
 // in-crate caller that historically reached `EventOutcome` through this
 // module — keeps working unchanged after the type moved to
-// `crate::runtime` (quadraui#496).
+// `crate::runtime`.
 pub(crate) use crate::runtime::EventOutcome;
 use crate::tui::backend::TuiBackend;
 use crate::tui::color::DepthLimitedBackend;
@@ -58,34 +58,31 @@ use crate::UiEvent;
 /// The concrete backend the live runner paints through: a real
 /// `CrosstermBackend` over stdout, wrapped in [`DepthLimitedBackend`] so
 /// every frame's SGR output is quantised to the terminal's actual colour
-/// depth (quadraui#826) — [`ColorDepth::TrueColor`] making that wrapper a
+/// depth — [`ColorDepth::TrueColor`] making that wrapper a
 /// no-op pass-through for the common truecolor case.
 ///
 /// [`ColorDepth::TrueColor`]: crate::backend::ColorDepth::TrueColor
 type LiveBackend = DepthLimitedBackend<CrosstermBackend<io::Stdout>>;
 
-/// Idle-poll ceiling (quadraui#832) — see
-/// [`crate::runtime::IDLE_POLL_CEILING`]'s doc for the full rationale.
-/// Before #832 this was a fixed 16ms (≈60fps) poll *every* iteration
-/// regardless of whether anything was scheduled; it's now only the upper
-/// bound the loop falls back to when nothing has called
-/// [`Backend::request_frame_in`] (directly, or via
-/// [`crate::runner::Reaction::RedrawAfter`]) — a scheduled frame shortens
-/// the actual `wait_events` timeout to just the remaining time until its
-/// deadline.
+/// Idle-poll ceiling — see [`crate::runtime::IDLE_POLL_CEILING`]'s doc
+/// for the full rationale. This is only the upper bound the loop falls
+/// back to when nothing has called [`Backend::request_frame_in`] (directly,
+/// or via [`crate::runner::Reaction::RedrawAfter`]) — a scheduled frame
+/// shortens the actual `wait_events` timeout to just the remaining time
+/// until its deadline.
 const POLL_TIMEOUT_CEILING: Duration = crate::runtime::IDLE_POLL_CEILING;
 
 /// Runtime configuration for [`run_with`]. `Default` matches [`run`]'s
-/// previously-hardcoded behaviour, so `run_with(app, RunConfig::default())`
-/// and `run(app)` behave identically.
+/// current behaviour, so `run_with(app, RunConfig::default())` and
+/// `run(app)` behave identically.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct RunConfig {
     /// Whether to negotiate mouse reporting with the terminal
     /// (`EnableMouseCapture`/`DisableMouseCapture`).
     ///
-    /// Defaults to `true`. Set to `false` for **`no-mouse` mode**
-    /// (quadraui#828): a host where mouse capture is refused or
+    /// Defaults to `true`. Set to `false` for **`no-mouse` mode**:
+    /// a host where mouse capture is refused or
     /// unavailable (e.g. some multiplexers, restrictive SSH sessions, a
     /// screen reader driving the terminal) never gets the capture escape
     /// sequences at all — instead of getting them and then discarding
@@ -107,7 +104,7 @@ impl Default for RunConfig {
 }
 
 impl RunConfig {
-    /// Convenience constructor for **`no-mouse` mode** (quadraui#828):
+    /// Convenience constructor for **`no-mouse` mode**:
     /// equivalent to `RunConfig { mouse: false, ..Default::default() }`.
     ///
     /// `RunConfig` is `#[non_exhaustive]` so future fields can be added
@@ -148,7 +145,7 @@ pub fn run<A: AppLogic>(app: A) -> io::Result<()> {
 }
 
 /// Like [`run`], but with an explicit [`RunConfig`] — the entry point for
-/// **`no-mouse` mode** ([`RunConfig::no_mouse`], quadraui#828). See
+/// **`no-mouse` mode** ([`RunConfig::no_mouse`]). See
 /// `examples/tui_no_mouse.rs` for a runnable demo and
 /// `tests/tui_pty_smoke.rs`'s `no_mouse` module for the black-box proof
 /// that mouse capture is actually withheld over a real pty.
@@ -181,7 +178,7 @@ pub fn run_with<A: AppLogic>(app: A, config: RunConfig) -> io::Result<()> {
 }
 
 /// Terminal state produced by [`setup_terminal`] — shared by the blocking
-/// [`run_with`] and non-blocking [`TuiRunner`] (issue #1100), so the
+/// [`run_with`] and non-blocking [`TuiRunner`], so the
 /// negotiation (raw mode, alternate screen, mouse capture, bracketed
 /// paste, kitty keyboard protocol, SGR-Pixels mouse mode) can't drift
 /// between the two.
@@ -196,7 +193,7 @@ struct TerminalSetup {
 /// capture, bracketed paste, best-effort kitty keyboard protocol,
 /// best-effort SGR-Pixels mouse mode) and construct the live
 /// [`TuiBackend`] and ratatui [`Terminal`]. Extracted out of [`run_with`]
-/// (issue #1100) — see [`TerminalSetup`]'s doc.
+/// — see [`TerminalSetup`]'s doc.
 fn setup_terminal(config: RunConfig) -> io::Result<TerminalSetup> {
     use ratatui::crossterm::event::{EnableBracketedPaste, EnableMouseCapture};
 
@@ -223,7 +220,7 @@ fn setup_terminal(config: RunConfig) -> io::Result<TerminalSetup> {
     // `run()` and the runner won't double-push.
     let kbd_enhanced = push_keyboard_enhancement(&mut stdout);
 
-    // SGR-Pixels mouse mode (quadraui#1048) — only attempted when mouse
+    // SGR-Pixels mouse mode — only attempted when mouse
     // capture itself is on. Requires *both* the live DECRQM probe saying
     // the terminal supports mode 1016 *and* a real, non-zero pixel cell
     // size — a terminal that would happily report pixel coordinates but
@@ -235,7 +232,7 @@ fn setup_terminal(config: RunConfig) -> io::Result<TerminalSetup> {
     // to a heuristic guess on an ambiguous/absent answer.
     // Skip the live DECRQM round trip entirely on a multiplexer already
     // known not to forward mode 1016 (tmux, `TERM=screen*`/`tmux*`) —
-    // quadraui#1048 review: the cheap heuristic already has a hard-`false`
+    // The cheap heuristic already has a hard-`false`
     // answer for these, so paying the probe's up-to-2s wait (stacked on top
     // of the kitty-keyboard probe's own) buys nothing but startup latency
     // and a second window where a real keystroke could be read and
@@ -257,19 +254,19 @@ fn setup_terminal(config: RunConfig) -> io::Result<TerminalSetup> {
 
     let mut backend = TuiBackend::new();
     // Overwrite `TuiBackend::new()`'s environment-only guess with the live
-    // answer: whether the enhancement flags were actually pushed just now
-    // (quadraui#827). Before this line, `kbd_enhanced` was consulted only
+    // answer: whether the enhancement flags were actually pushed just now.
+    // Before this line, `kbd_enhanced` was consulted only
     // to decide whether to pop the flags on exit below — an app had no way
     // to read it at all, so a gesture built on the assumption the push
     // worked would silently never fire on a terminal where it didn't. See
     // `crate::backend::BackendCaps::kitty_keyboard`'s doc.
     backend.set_kitty_keyboard(kbd_enhanced);
-    // Record the `no-mouse` choice (quadraui#828) so an app can tell —
+    // Record the `no-mouse` choice so an app can tell —
     // via `TuiBackend::mouse_enabled()` — that no mouse events will ever
     // arrive this session, instead of finding out by a mouse gesture
     // silently never firing.
     backend.set_mouse_enabled(config.mouse);
-    // Record the SGR-Pixels negotiation outcome (quadraui#1048) — see
+    // Record the SGR-Pixels negotiation outcome — see
     // `crate::backend::BackendCaps::sgr_pixel_mouse`'s doc. `cell_pixel_size`
     // stays the identity `(1.0, 1.0)` whenever `sgr_pixel_mouse` is `false`,
     // so `TuiBackend::poll_events`/`wait_events` dividing by it is always a
@@ -278,13 +275,12 @@ fn setup_terminal(config: RunConfig) -> io::Result<TerminalSetup> {
     backend.set_cell_pixel_size(cell_pixel_size);
     let crossterm_backend = CrosstermBackend::new(stdout);
     // Quantise every frame's SGR to what this terminal actually supports
-    // (quadraui#826) — `backend.color_depth()` was detected from
+    // — `backend.color_depth()` was detected from
     // `COLORTERM`/`TERM` inside `TuiBackend::new()` above.
     let depth_limited = DepthLimitedBackend::new(crossterm_backend, backend.color_depth());
     let mut terminal = Terminal::new(depth_limited)?;
     terminal.clear()?;
-    // Shared, not owned outright: issue #965's nested dialog loop
-    // (`TuiPlatformServices::show_file_open_dialog` et al.) needs to draw
+    // Shared, not owned outright: nested dialog loops need to draw
     // through this *same* `Terminal` instance — a second, independently
     // constructed one would desync ratatui's diff cache from the
     // physical screen the moment control returns here (see
@@ -323,7 +319,7 @@ fn teardown_terminal(
     }
     if sgr_pixel_mouse {
         // `?1016l` ahead of `DisableMouseCapture`, mirroring the enable
-        // order (quadraui#1048) — this runs on every exit path (including
+        // order — this runs on every exit path (including
         // a panic), so a session that turned pixel mode on always turns
         // it back off.
         let _ = disable_sgr_pixel_mouse(terminal.backend_mut());
@@ -348,14 +344,14 @@ fn teardown_terminal(
 
 // `StepOutcome` — what happened during one non-blocking `step`/`pump` call
 // — is defined once in `crate::runner` and shared by every backend's
-// embedding-friendly runner (issue #1100: `TuiRunner` here,
+// embedding-friendly runner (`TuiRunner` here,
 // `crate::gtk::run::GtkRunner` on GTK), the same way `Reaction` already is;
 // re-exported (not just imported) so existing in-crate callers that reach
 // it through this module keep working.
 pub use crate::runner::StepOutcome;
 
 /// Non-blocking / bounded-wait entry points for a host that owns its own
-/// event loop (issue #1100).
+/// event loop.
 ///
 /// [`run`]/[`run_with`] each own the whole process: they block forever
 /// (subject only to [`Reaction::Exit`]) inside a loop that waits on
@@ -407,9 +403,8 @@ pub struct TuiRunner<A: AppLogic> {
     backend: TuiBackend,
     app: A,
     needs_redraw: bool,
-    // Trailing-edge resize debounce state (quadraui#437, shared utility
-    // extracted in #496 — see `crate::runtime::ResizeDebouncer`). Holds
-    // the most recent viewport from a burst of `WindowResized` events and
+    // Trailing-edge resize debounce state (see `crate::runtime::ResizeDebouncer`).
+    // Holds the most recent viewport from a burst of `WindowResized` events and
     // dispatches a single settled resize once `RESIZE_SETTLE` elapses with
     // no newer one.
     resize_debouncer: ResizeDebouncer,
@@ -446,8 +441,7 @@ impl<A: AppLogic> TuiRunner<A> {
         // (80×24); if `app.setup()` reads `backend.viewport()` to size a
         // side effect (e.g. spawning an embedded PTY at the viewport's
         // cell dimensions) it would otherwise always see 80×24 until the
-        // first `WindowResized` event (quadraui#437, the TUI counterpart
-        // of the original tiny-window bug).
+        // first `WindowResized` event.
         let size = terminal.borrow().size()?;
         backend.begin_frame(crate::Viewport::new(
             size.width as f32,
@@ -511,7 +505,7 @@ impl<A: AppLogic> TuiRunner<A> {
             return Ok(StepOutcome::Exited);
         }
 
-        // Issue #1037: a pending `Backend::request_full_repaint` forces a
+        // A pending `Backend::request_full_repaint` forces a
         // redraw even if nothing else asked for one this iteration — see
         // `Backend::request_full_repaint`'s doc.
         let full_repaint = self.backend.take_full_repaint_requested();
@@ -530,9 +524,7 @@ impl<A: AppLogic> TuiRunner<A> {
         // drains whatever's already queued. `pump` (`block_for:
         // Some(ceiling)`) blocks for up to the nearer of `ceiling`, any
         // pending `Backend::request_frame_in`/`Reaction::RedrawAfter`
-        // deadline, and the still-pending debounced-resize deadline below
-        // — quadraui#832's shortened-timeout logic, unchanged from the
-        // pre-#1100 `run_inner` loop this replaces.
+        // deadline, and the still-pending debounced-resize deadline below.
         let events = match block_for {
             Some(ceiling) => {
                 let mut timeout = self.backend.frame_poll_timeout(ceiling);
@@ -595,15 +587,14 @@ impl<A: AppLogic> TuiRunner<A> {
         Ok(StepOutcome::Continue)
     }
 
-    /// Debounce a `WindowResized` burst the same way the pre-#1100
-    /// `run_inner` loop did (quadraui#437): coalesce to the latest size
+    /// Debounce a `WindowResized` burst: coalesce to the latest size
     /// and defer dispatch until the drag settles (painting stays live
     /// regardless — [`render_frame`] re-reads the real terminal size every
     /// frame). Everything else dispatches through
     /// [`Self::dispatch_and_map`].
     fn handle_native_event(&mut self, event: UiEvent) -> io::Result<Option<StepOutcome>> {
         if let UiEvent::WindowResized { viewport } = event {
-            // quadraui#1048: a font-size change resizes the terminal in
+            // A font-size change resizes the terminal in
             // *pixels* without necessarily changing its row/column count,
             // silently invalidating the cached `TuiBackend::cell_pixel_size`
             // divisor SGR-Pixels mouse scaling depends on — re-query on
@@ -680,25 +671,15 @@ impl<A: AppLogic> Drop for TuiRunner<A> {
 /// this frame, and finalises the frame. Generic over the ratatui backend
 /// `B` so every caller — the live runner (`CrosstermBackend` wrapping real
 /// stdout), the headless `TestBackend` driver, and the headless *vt100*
-/// driver (`CrosstermBackend` wrapping an in-memory ANSI sink,
-/// quadraui#555) — share one paint path.
+/// driver (`CrosstermBackend` wrapping an in-memory ANSI sink)
+/// — share one paint path.
 ///
-/// Used to take an explicit `size: ratatui::layout::Size` parameter so a
-/// caller who already knew its own fixed size (every `ConformanceDriver`
-/// does — it's exactly the `LogicalViewport` it was built with) could avoid
-/// `render_frame`'s `terminal.size()` query, which fails (or silently
-/// returns the wrong dimensions) under `cargo test` — `CrosstermBackend`'s
-/// `size()` queries the process's real controlling terminal (`/dev/tty` on
-/// Unix) regardless of what `Write` sink the backend was actually
-/// constructed with, and `cargo test` has no controlling terminal wired to
-/// the vt100 driver's sink. #1040 removed that parameter: the viewport fed
-/// to `begin_frame` is now derived from `frame.area()` *inside* the
-/// `terminal.draw` closure below, which needs no size query at all — it
-/// reads whatever `Terminal::draw`'s internal `autoresize()` just resized
-/// the buffer to. That's also strictly more correct than a size passed in
-/// by the caller: see the comment above `frame.area()`'s use below for why
-/// a stale caller-supplied size could diverge from the buffer's real
-/// extent and panic.
+/// The viewport fed to `begin_frame` is derived from `frame.area()` inside
+/// the `terminal.draw` closure, which needs no size query — it reads
+/// whatever `Terminal::draw`'s internal `autoresize()` just resized the
+/// buffer to. This is strictly more correct than a size passed in by the
+/// caller: a stale caller-supplied size could diverge from the buffer's
+/// real extent and panic.
 pub(crate) fn paint_frame<A, B>(
     terminal: &mut Terminal<B>,
     backend: &mut TuiBackend,
@@ -708,31 +689,26 @@ where
     A: AppLogic,
     B: ratatui::backend::Backend,
 {
-    // Issue #830: resolve the currently-focused widget's rect (if any)
+    // Resolve the currently-focused widget's rect (if any)
     // from this frame's tab stops *before* entering the frame scope —
     // `AppLogic::tab_stops` is `&self`-only and cheap for an app that
     // already has this on hand from building its `ScreenLayout`. This
     // read is independent of `begin_frame`'s per-frame state (focus
     // tracking isn't touched by it), so it's safe to keep it ahead of
-    // the `terminal.draw` call even though `begin_frame` itself moved
-    // inside that closure below (#1040).
+    // the `terminal.draw` call.
     let focus_ring_rect = crate::runtime::focused_stop_rect(backend, app, A::AreaId::default());
     terminal
         .draw(|frame| {
-            // #1040: derive the layout-sizing viewport from the *actual*
+            // Derive the layout-sizing viewport from the *actual*
             // frame area `Terminal::draw`'s internal `autoresize()` just
-            // computed for this call — not from a size queried before this
-            // closure ran (the pre-#1040 shape: `render_frame` queried
-            // `terminal.size()`, then `paint_frame` fed that stale value
-            // to `begin_frame` before ever calling `terminal.draw`).
-            // Between such a pre-closure query and `terminal.draw` running,
-            // the real terminal can shrink; `autoresize()` reallocates
-            // `frame.buffer_mut()` for the new, smaller size right before
+            // computed for this call. Between such a pre-closure query and
+            // `terminal.draw` running, the real terminal can shrink; `autoresize()`
+            // reallocates `frame.buffer_mut()` for the new, smaller size right before
             // this closure runs, so `frame.area()` is always in sync with
             // the buffer `app.render` is about to paint into. Sizing the
-            // layout pass from a stale, larger size instead produced
-            // #1040's panic: window rects computed against the old size
-            // indexed past the already-shrunk buffer's real extent.
+            // layout pass from a stale, larger size produced panics: window rects
+            // computed against the old size indexed past the already-shrunk buffer's
+            // real extent.
             let frame_area = frame.area();
             backend.begin_frame(crate::Viewport::new(
                 frame_area.width as f32,
@@ -745,7 +721,7 @@ where
                 // whichever surface is repainting.
                 app.render(b, A::AreaId::default());
                 // After app.render: paint the focus-ring convention
-                // (#830) so it overlays on top of the widget's own
+                // so it overlays on top of the widget's own
                 // content, same ordering as the selection-highlight
                 // overlay below.
                 if let Some(rect) = focus_ring_rect {
@@ -763,8 +739,8 @@ where
             // buffer. Done outside enter_frame_scope so the closure lifetime
             // doesn't conflict with the frame borrow.
             backend.apply_selection_highlight(frame.buffer_mut());
-            // Apply the editor cursor position cached by `draw_editor`
-            // (quadraui#466). `Backend::draw_editor` only has the buffer,
+            // Apply the editor cursor position cached by `draw_editor`.
+            // `Backend::draw_editor` only has the buffer,
             // not the `Frame`, so it stashes the position on `TuiBackend`
             // for us to apply here — the one place per frame with access
             // to the real `Frame::set_cursor_position`. `run_with_shell`
@@ -783,12 +759,10 @@ where
 ///
 /// Thin, name-preserving wrapper over [`paint_frame`] for the live runner
 /// (real stdout) and the headless `TestBackend` driver — both call sites
-/// that pre-#1040 needed a pre-`terminal.draw` `terminal.size()` query to
-/// seed `paint_frame`'s (now-removed) `size` parameter. `paint_frame` no
-/// longer needs one (see its doc), so this wrapper's only remaining job is
-/// giving the two live-ish callers a name distinct from the vt100 driver's
-/// direct [`paint_frame`] call — it does not skip anything the direct
-/// caller doesn't also get for free.
+/// that previously needed explicit size handling. `paint_frame` derives
+/// the viewport from `frame.area()` internally, so this wrapper's only
+/// remaining job is giving the two live-ish callers a name distinct from
+/// the vt100 driver's direct [`paint_frame`] call.
 pub(crate) fn render_frame<A, B>(
     terminal: &mut Terminal<B>,
     backend: &mut TuiBackend,
@@ -803,28 +777,22 @@ where
 
 // `EventOutcome` — what the frame loop should do after [`dispatch_event`]
 // handles one event — is defined once in `crate::runtime` and shared by
-// every backend runner (quadraui#496); imported at the top of this file.
+// every backend runner; imported at the top of this file.
 
 /// Dispatch one [`UiEvent`] through the app, applying the shared runner
 /// pre-processing pipeline first.
 ///
 /// The pre-processing itself — ActivityBar keyboard-focus redirect,
-/// Tab/Shift+Tab focus cycling (#830), Ctrl-C copy, Ctrl-V/Ctrl-Shift-V paste,
+/// Tab/Shift+Tab focus cycling, Ctrl-C copy, Ctrl-V/Ctrl-Shift-V paste,
 /// middle-click PRIMARY-selection paste (a no-op on TUI — see
 /// [`crate::backend::Clipboard::read_primary_selection`]'s default),
 /// Ctrl-A select-all, selection-display clearing, `TextSelectionChanged`
-/// — lives in [`crate::runtime::preprocess_event`] (quadraui#813),
+/// — lives in [`crate::runtime::preprocess_event`],
 /// shared with GTK/macOS/Windows; see that function's doc for the exact
 /// priority order and `TuiBackend`'s `PreprocessBackend` impl for TUI's
 /// two documented differences (a lenient Ctrl-C guard, and a no-op
 /// `fold_double_click` — TUI already folds double-clicks upstream, in
 /// [`TuiBackend::apply_dispatch`]/`translate_injected`).
-///
-/// One behavior change from before #813: a `Reaction::Continue` app now
-/// stays `EventOutcome::Continue` after Ctrl-C, matching GTK/macOS/
-/// Windows — this runner used to force `EventOutcome::Redraw`
-/// unconditionally, which #496's original audit found was an
-/// unintentional divergence (see `crate::runtime`'s module doc).
 pub(crate) fn dispatch_event<A: AppLogic>(
     event: UiEvent,
     backend: &mut TuiBackend,
@@ -834,7 +802,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
 }
 
 /// Push kitty keyboard protocol flags (best-effort). Returns whether
-/// the push succeeded; the caller pops on exit only if so, and (quadraui#827)
+/// the push succeeded; the caller pops on exit only if so, and
 /// records this on [`TuiBackend`] via
 /// [`crate::tui::backend::TuiBackend::set_kitty_keyboard`] so an app can
 /// read it before relying on a gesture that needs it.
@@ -867,7 +835,7 @@ fn pop_keyboard_enhancement(backend: &mut LiveBackend) -> io::Result<()> {
 }
 
 /// Resolve this terminal's real per-cell pixel size from a live
-/// `window_size()` query (quadraui#1048), or `None` when it can't be
+/// `window_size()` query, or `None` when it can't be
 /// determined: the query itself fails (always the case on Windows —
 /// crossterm's own doc says pixel size "is not implemented for the Windows
 /// API"), or it succeeds but reports a `0` for any of `rows`/`columns`/
@@ -888,11 +856,11 @@ fn query_cell_pixel_size() -> Option<crate::TerminalCellSize> {
     ))
 }
 
-/// Enable SGR-Pixels mouse mode (`CSI ? 1016 h`, quadraui#1048). Crossterm
-/// has no typed `Command` for mode 1016 (only 1006, via
-/// `EnableMouseCapture`), so this writes the raw DEC private-mode sequence
-/// directly — the same escape-sequence shape [`ratatui::crossterm::event::EnableMouseCapture`]
-/// itself would use for a mode crossterm did model.
+/// Enable SGR-Pixels mouse mode (`CSI ? 1016 h`). Crossterm has no typed
+/// `Command` for mode 1016 (only 1006, via `EnableMouseCapture`), so this
+/// writes the raw DEC private-mode sequence directly — the same escape-sequence
+/// shape [`ratatui::crossterm::event::EnableMouseCapture`] itself would use
+/// for a mode crossterm did model.
 fn enable_sgr_pixel_mouse(w: &mut impl io::Write) -> io::Result<()> {
     w.write_all(b"\x1b[?1016h")?;
     w.flush()
@@ -924,7 +892,7 @@ mod tests {
 
     /// Records `TextCopied` payloads and `TextSelectionChanged` anchor/focus
     /// so tests can assert on them without a real clipboard. Also records
-    /// every event `handle` receives (quadraui#813) so tests can assert an
+    /// every event `handle` receives so tests can assert an
     /// intercepted event never reaches the app at all — the empty-clipboard
     /// half of the Ctrl-V/middle-click paste contract.
     struct SelectionRecorder {
@@ -1052,7 +1020,7 @@ mod tests {
     }
 
     /// `DpiChanged` forces a repaint even when the app's own `handle`
-    /// ignores it (issue #834). `SelectionRecorder`'s catch-all arm
+    /// ignores it. `SelectionRecorder`'s catch-all arm
     /// returns `Reaction::Continue` for any event it doesn't recognise —
     /// exactly the "app has no opinion on this event" shape most
     /// existing examples have for a brand-new variant. Without
@@ -1130,7 +1098,7 @@ mod tests {
         );
     }
 
-    /// quadraui#813: before this, TUI's `dispatch_event` never intercepted
+    /// Before this, TUI's `dispatch_event` never intercepted
     /// Ctrl-V at all (real terminals deliver a paste as crossterm's
     /// bracketed-paste `Event::Paste` → `UiEvent::ClipboardPaste` directly,
     /// a separate translation-layer path this test doesn't exercise). The
@@ -1171,9 +1139,7 @@ mod tests {
     }
 
     /// `cancel_text_selection_drag` ends an in-progress drag without
-    /// clearing the active selection display. This is the #454 pattern:
-    /// the app forwards a click to the PTY and then cancels the speculative
-    /// drag the runner started.
+    /// clearing the active selection display.
     #[test]
     fn cancel_text_selection_drag_does_not_clear_display() {
         use crate::DragTarget;
@@ -1213,14 +1179,11 @@ mod tests {
         );
     }
 
-    // ── Editor cursor-position pipeline (quadraui#466) ─────────────────────────
+    // ── Editor cursor-position pipeline ────────────────────────────────────────
     //
-    // `Backend::draw_editor`'s `EditorPaintResult::cursor_position` used to have
-    // no consumer downstream of `AppLogic::render` — the runner never applied it
-    // to the real ratatui `Frame`. These tests exercise the fix: `render_frame`
-    // takes `TuiBackend`'s cached position (set by the `draw_editor` trait impl)
-    // and calls `Frame::set_cursor_position`, observable via `TestBackend`'s own
-    // cursor state.
+    // `Backend::draw_editor`'s `EditorPaintResult::cursor_position` is applied
+    // to the real ratatui `Frame` by `render_frame`, observable via `TestBackend`'s
+    // own cursor state.
 
     /// Minimal app that paints a single-line `Editor` with a `Bar`-shaped
     /// cursor at a configurable column. `Bar`/`Underline` cursors are the
@@ -1233,9 +1196,8 @@ mod tests {
         /// cursor position doesn't linger from a previous frame.
         show_editor: bool,
         /// Last `Backend::draw_editor` return value, captured verbatim
-        /// (issue #504's `cursor_position` → `cursor_position_native`
-        /// mapping test reads this directly; the terminal-cursor tests
-        /// below go through the higher-level `TuiDriver` handoff instead).
+        /// (the terminal-cursor tests go through the higher-level `TuiDriver`
+        /// handoff).
         last_result: std::cell::RefCell<Option<crate::backend::EditorPaintResult>>,
     }
 
@@ -1356,13 +1318,10 @@ mod tests {
         );
     }
 
-    /// Issue #504: `TuiBackend::draw_editor` must widen the TUI-internal,
+    /// `TuiBackend::draw_editor` must widen the TUI-internal,
     /// already cell-rounded `(u16, u16)` cursor position into the portable
     /// `EditorPaintResult::cursor_position_native` `Point` with the same
-    /// `(x, y)` ordering. (The deprecated `cursor_position` tuple field
-    /// this once also populated, for a vimcode call site that read it
-    /// directly, was removed in issue #1109 — that call site no longer
-    /// exists.)
+    /// `(x, y)` ordering.
     #[test]
     fn draw_editor_result_maps_cell_cursor_to_native_point() {
         let mut driver = TuiDriver::new(EditorCursorApp::new(3), 40, 10);

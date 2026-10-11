@@ -1,18 +1,18 @@
 //! Backend-agnostic app code for the `SidebarPanel` example
 //! ([`tui_sidebar_panel`] / [`gtk_sidebar_panel`]).
 //!
-//! Exercises every #259 gap end-to-end:
+//! Demonstrates a sidebar panel layout with:
 //!
-//! - **Gap 1** (multi-row toolbar): the header toolbar is reserved at
-//!   2 rows so you can verify the bg fills both rows and the button
+//! - **Multi-row toolbar**: the header toolbar is reserved at
+//!   2 rows so the background fills both rows and the button
 //!   row is vertically centred.
-//! - **Gap 2** (`SidebarPanel`): the host hands a single rect to
+//! - **SidebarPanel**: the host hands a single rect to
 //!   `draw_sidebar_panel`, then paints its content list into
 //!   `layout.content_bounds`. No manual carving.
-//! - **Gap 3** (`ToolbarHoverTracker`): hover state for the toolbar
+//! - **ToolbarHoverTracker**: hover state for the toolbar
 //!   buttons is owned by the helper — mouse-move just calls
 //!   `tracker.update(...)`.
-//! - **Gap 4** (icon-only buttons + wide-glyph icons): the toolbar
+//! - **Icon-only buttons with wide-glyph icons**: the toolbar
 //!   includes an icon-only `[ + ]` button alongside icon+label buttons
 //!   and a CJK-test glyph item.
 //!
@@ -118,9 +118,7 @@ impl SidebarPanelApp {
         SidebarPanel {
             id: WidgetId::new("sb:panel"),
             toolbar: Some(self.toolbar()),
-            // Gap 1: explicit 2-row tall toolbar slot. The TUI
-            // rasteriser must fill both rows and centre the button
-            // text — pre-#259 it would only paint row 0.
+            // The toolbar is 2 rows tall; background fills both rows
             toolbar_height: Some(TOOLBAR_ROWS),
         }
     }
@@ -215,7 +213,7 @@ impl AppLogic for SidebarPanelApp {
 
         // The panel itself.
         let panel_rect = Self::panel_rect(backend);
-        // #819: one `InteractionState` in, instead of two positional
+        // One `InteractionState` in, instead of two positional
         // ids. `ToolbarHoverTracker` keeps owning the hover bookkeeping
         // (Gap 3, which is what this example exists to demonstrate);
         // this adapts it into the new call shape.

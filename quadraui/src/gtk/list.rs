@@ -1,10 +1,8 @@
 //! GTK rasteriser for [`crate::ListView`].
 //!
-//! Content painting (background, title, rows, h/v scrollbars) moved to
-//! the shared [`crate::primitives::list::native_surface_paint::paint`]
-//! (#1075, `PaintSurface` Phase 4 slice 2/8) — see that fn's module
-//! doc for what's shared and what stays per-backend. This module still
-//! owns the [`ListView::bordered`] frame itself: a rounded-rectangle
+//! Content painting (background, title, rows, h/v scrollbars) is in
+//! the shared [`crate::primitives::list::native_surface_paint::paint`].
+//! This module owns the [`ListView::bordered`] frame itself: a rounded-rectangle
 //! clip + stroke (3px corner radius) around the shared content paint,
 //! since no `PaintSurface` verb exists for a rounded stroke and GTK's
 //! rounded frame is a real, documented visual divergence from Windows'
@@ -13,7 +11,6 @@
 //!
 //! [`gtk_list_layout`] and the deprecated [`draw_list`] compatibility
 //! shim live over the shared [`super::surface::CairoSurface`] adapter
-//! (#1072).
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -30,7 +27,7 @@ use crate::theme::Theme;
 /// (`PRIMITIVE_RULES.md` rule 5).
 ///
 /// The reservation math itself lives in
-/// [`crate::primitives::layout_metrics::list_layout`] (#712) — shared
+/// [`crate::primitives::layout_metrics::list_layout`] — shared
 /// with `mac_list_layout` so both backends reserve the h-scrollbar row
 /// identically instead of each carrying its own copy that can drift.
 ///
@@ -89,7 +86,7 @@ pub fn gtk_list_layout(
 /// - **Vertical / horizontal scrollbar:** painted via
 ///   [`crate::primitives::scrollbar::native_surface_paint::paint`] when
 ///   [`ListView::show_v_scrollbar`] / an overflowing
-///   [`ListView::max_content_width`] call for one (#1075).
+///   [`ListView::max_content_width`] call for one.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_list(
     cr: &Context,
@@ -158,14 +155,8 @@ pub fn draw_list(
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 //
-// #1075 regression: before the `native_surface_paint` migration,
-// `draw_list` never painted `ListView::show_v_scrollbar`'s track/thumb
-// even though `GtkBackend::list_vscrollbar` already exposed real
-// geometry for hit-testing/dragging (`list.vscrollbar(...)` — see that
-// method's own doc). This test paints through the real `draw_list` into
-// a Cairo `ImageSurface` and probes a pixel inside the resolved track
-// rect — it would have failed (background colour, nothing painted)
-// against the pre-#1075 body.
+// This test paints through `draw_list` into a Cairo `ImageSurface`
+// and probes a pixel inside the resolved v-scrollbar track rect.
 #[cfg(test)]
 mod tests {
     use super::*;

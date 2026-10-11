@@ -112,7 +112,7 @@ impl ActivityNavApp {
             top_items: items,
             bottom_items: vec![],
             // JetBrains-style accent line. See `tui_activity_style` /
-            // `gtk_activity_style` (issue #658) for the VS-Code-style
+            // `gtk_activity_style` for the VS-Code-style
             // alternative (an `ActivityBarStyle::active_bg` row fill,
             // passed to `Backend::draw_activity_bar_with_style`).
             active_accent: Some(Color::rgb(100, 150, 255)),

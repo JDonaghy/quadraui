@@ -6,16 +6,15 @@
 //! a `Vec<UiEvent>` the backend pushes onto its per-frame event queue.
 //!
 //! The key guarantee: **events landing inside an open modal cannot fall
-//! through to widgets behind it**. This is the contract vimcode's
-//! TUI `mouse.rs` enforces inline; centralising it here eliminates the
-//! class of bug where a new modal is added to one backend but forgotten
-//! in another (issue #192 is the motivating case).
+//! through to widgets behind it**. This centralizes modal event handling
+//! across backends, eliminating bugs where modals are added to one backend
+//! but forgotten in another.
 //!
 //! # What's here
 //!
 //! [`dispatch_mouse_down`], [`dispatch_mouse_drag`], [`dispatch_mouse_up`],
-//! [`dispatch_scroll`], and [`dispatch_click`] — the full B.4
-//! event-routing plan this module started as a pilot for.
+//! [`dispatch_scroll`], and [`dispatch_click`] — the full event-routing
+//! pipeline for modal-aware mouse and scroll handling.
 //!
 //! # What's explicitly not here
 //!
@@ -454,31 +453,14 @@ pub struct TextRegion {
 /// Coordinates are clamped to `bounds`. Returns an empty `Vec` when
 /// `anchor == focus` (selection collapsed to a point — plain click).
 ///
-/// # Units (issue #504)
+/// # Units
 ///
 /// `row` is a discrete line/cell-row index (it indexes
-/// [`TextRegion::lines`] and is always integral in every backend's
-/// space) and stays `u16`. `col_start` / `col_end` used to be `u16`
-/// too, silently assuming the caller's x-axis is a whole-cell grid —
-/// true for TUI, but GTK/macOS only get that by pre-quantizing pixel
-/// coordinates into a fake cell grid (`bounds.width / char_width`) and
-/// rounding, which loses the fractional remainder of a viewport that
-/// isn't an exact multiple of the glyph advance. They're `f32` now,
-/// matching every other native-unit span in this crate ([`Point`],
-/// [`crate::event::Rect`]) — callers still pass pre-quantized
-/// cell-space coordinates (the "+1" below is one *unit*, i.e. one
-/// character cell, not one pixel), just without the lossy truncation.
-///
-/// # Downstream impact
-///
-/// This function (and its crate-root re-export,
-/// `quadraui::text_selection_line_range`) is `pub`, so its
-/// `Vec<(u16, u16, u16)>` → `Vec<(u16, f32, f32)>` return-type change is
-/// technically a breaking `pub` API change too. `grep -rn
-/// text_selection_line_range ~/src/coord-tui/src ~/src/vimcode/src`
-/// found no direct call sites — vimcode's `core/engine/terminal_ops.rs`
-/// even documents explicitly why it deliberately avoids this function —
-/// so no consumer migration is needed.
+/// [`TextRegion::lines`] and is always integral) and stays `u16`.
+/// `col_start` and `col_end` are `f32` to match other native-unit
+/// spans in this crate ([`Point`], [`crate::event::Rect`]); callers
+/// pass pre-quantized cell-space coordinates (the "+1" is one *unit*,
+/// i.e. one character cell, not one pixel).
 pub fn text_selection_line_range(
     anchor: Point,
     focus: Point,
@@ -833,7 +815,7 @@ pub fn dispatch_click(
     }]
 }
 
-// ─── One-shot pointer routing (issue #1088) ────────────────────────────────
+// ─── One-shot pointer routing ──────────────────────────────────────────────
 
 /// The `MouseDown` / `MouseMoved` / `MouseUp` routing sequence every
 /// runner (`gtk::run`, `gtk::testing`, `macos::run`, `win::run`,
@@ -850,7 +832,7 @@ pub fn dispatch_click(
 /// regions, exactly as the 7 inlined copies this replaces did (none of
 /// them read the field either).
 ///
-/// # Scroll surfaces (issue #1088)
+/// # Scroll surfaces
 ///
 /// Always passes `&[]` for [`dispatch_click`]'s `scroll_surfaces` — every
 /// one of the 7 copies did the same, because none of the four runners
@@ -913,7 +895,7 @@ pub(crate) fn route_pointer(
 
 // ─── Double-click synthesis ────────────────────────────────────────────────
 //
-// Backend-agnostic: relocated here from `tui::events` (issue #486) so
+// Backend-agnostic: relocated here from `tui::events` so
 // `macos::run` can reuse it without pulling in the `tui` feature. TUI's
 // `TuiBackend` batches translated events and calls
 // [`DoubleClickDetector::process`] on the whole slice each poll; macOS

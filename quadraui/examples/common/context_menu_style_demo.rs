@@ -1,4 +1,4 @@
-//! Backend-agnostic app code for the `MenuStyle` demo (issue #1187).
+//! Backend-agnostic app code for the `MenuStyle` demo.
 //!
 //! Demonstrates the framework-level `MenuStyle { Auto, Native, Custom }`
 //! setting + the single [`ContextMenuController::open`] call that routes
@@ -75,7 +75,7 @@ impl ContextMenuStyleDemo {
     /// from the top-level `UiEvent` match (native path, queued by
     /// `Backend::show_context_menu`) or from `ContextMenuOutcome::Event`
     /// (painted path, returned synchronously by `ContextMenuController::
-    /// handle`) — the "one code path" issue #1187 asks for.
+    /// handle`).
     fn handle_menu_event(&mut self, event: UiEvent) -> Reaction {
         match event {
             UiEvent::ContextMenuItemActivated(id) => {

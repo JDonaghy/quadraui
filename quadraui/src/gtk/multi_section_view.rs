@@ -6,17 +6,13 @@
 //! rasteriser (`draw_tree`, `draw_list`, etc.) using the body bounds
 //! returned by the primitive's [`crate::MultiSectionView::layout`].
 //!
-//! Vertical-only in v1 (per #294 / D-003 in `quadraui/docs/decisions/DECISIONS.md`);
-//! horizontal sections fall through to a no-op.
+//! Vertical-only in v1; horizontal sections fall through to a no-op.
 //!
 //! # Why one source of truth
 //!
-//! The #281 smoke wave surfaced four classes of paint/click drift in the
-//! debug-sidebar GTK port — every one a "paint and click computed
-//! layout from different sources." This rasteriser asks the primitive
-//! for one [`crate::MultiSectionViewLayout`] and consumes it verbatim
-//! for paint; the host's click handler asks the same primitive (with
-//! the same metrics) for the same layout and consumes its
+//! This rasteriser asks the primitive for one [`crate::MultiSectionViewLayout`]
+//! and consumes it verbatim for paint; the host's click handler asks the same
+//! primitive (with the same metrics) for the same layout and consumes its
 //! `hit_test`. Discrepancy is impossible by construction.
 
 use gtk4::cairo::Context;
@@ -36,7 +32,7 @@ use crate::types::StyledText;
 /// with the same metrics so paint and click resolve to the same bounds.
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::msv_metrics`]
-/// (#499) — identical math across every pixel backend.
+/// — identical math across every pixel backend.
 pub fn metrics_for(line_height: f64, allow_resize: bool) -> MsvLayoutMetrics {
     crate::primitives::layout_metrics::msv_metrics(line_height, allow_resize)
 }
@@ -49,7 +45,6 @@ pub fn metrics_for(line_height: f64, allow_resize: bool) -> MsvLayoutMetrics {
 /// metrics, consumed by both paint and hit-test.
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::msv_layout`]
-/// (#499).
 pub fn gtk_msv_layout(
     view: &MultiSectionView,
     bounds: QRect,
@@ -140,9 +135,7 @@ pub fn draw_multi_section_view(
 
     // Panel-level scrollbar (WholePanel mode when content overflows).
     // Thumb geometry comes straight from `view_layout.panel_scrollbar_thumb`
-    // (computed once, via `fit_thumb`, in `MultiSectionView::layout`) —
-    // see `paint_panel_scrollbar`'s doc for why this used to be a third,
-    // disagreeing formula (quadraui#820).
+    // (computed once via `fit_thumb` in `MultiSectionView::layout`).
     if let Some(panel_sb) = view_layout.panel_scrollbar {
         paint_panel_scrollbar(cr, panel_sb, view_layout.panel_scrollbar_thumb, theme);
     }
@@ -150,7 +143,7 @@ pub fn draw_multi_section_view(
 
 // ── Section paint helpers ──────────────────────────────────────────────────
 //
-// #1074 (PaintSurface Phase 4): header/aux/text/empty/scrollbar/divider
+// Header/aux/text/empty/scrollbar/divider
 // chrome painting moved to the shared
 // [`crate::primitives::multi_section_view::native_surface_paint`] — these
 // wrappers just build a [`super::surface::CairoSurface`] adapter and
@@ -159,7 +152,7 @@ pub fn draw_multi_section_view(
 // `draw_message_list`, which take a raw `(&Context, &pango::Layout)` pair,
 // not `&mut dyn PaintSurface`.
 
-/// #1074: GTK's header row painted at an integer-rounded `y`/`height`
+/// GTK's header row painted at an integer-rounded `y`/`height`
 /// pre-port (`by`/`bh` were `.round()`ed; `bx`/`bw` were not) — a
 /// GTK-specific crispness tweak the shared
 /// [`crate::primitives::multi_section_view::native_surface_paint::paint_header`]
@@ -201,8 +194,7 @@ fn paint_aux(cr: &Context, layout: &pango::Layout, bounds: QRect, aux: &SectionA
         translucent_fill: true,
     };
     // `caret_visible: true` — GTK has no caret-blink timer for MSV aux
-    // inputs (unlike macOS's #188), so the caret always paints while
-    // focused, matching this rasteriser's pre-port behaviour exactly.
+    // inputs, so the caret always paints while focused.
     crate::primitives::multi_section_view::native_surface_paint::paint_aux(
         &mut surface,
         bounds,
@@ -267,11 +259,11 @@ fn paint_body(
             draw_form_body(cr, layout, x, y, w, h, f, theme, line_height);
         }
         SectionBody::Chart(c) => {
-            // #810: painting moved to the shared
+            // Painting moved to the shared
             // `crate::primitives::chart::paint`; this raw
             // `(&Context, &pango::Layout)` call site (no live
             // `GtkBackend` on hand) uses the same shared
-            // `super::surface::CairoSurface` adapter (#1072)
+            // `super::surface::CairoSurface` adapter
             // `form::draw_form`'s deprecated shim uses.
             layout.set_text("M");
             let char_width = layout.pixel_size().0 as f64;
@@ -304,9 +296,9 @@ fn paint_body(
     cr.restore().ok();
 }
 
-/// Paint an embedded [`crate::Form`] section body. #808: field-kind
-/// painting goes through the shared [`crate::primitives::form::paint`]
-/// via [`super::surface::CairoSurface`] (this call site has only a raw
+/// Paint an embedded [`crate::Form`] section body. Field-kind painting
+/// goes through the shared [`crate::primitives::form::paint`] via
+/// [`super::surface::CairoSurface`] (this call site has only a raw
 /// `cr`/`layout`, not a live [`super::backend::GtkBackend`]) —
 /// `FieldKind::Toolbar` is painted separately below, same as
 /// `GtkBackend::draw_form`, for the same reason (see that fn's doc).
@@ -435,9 +427,8 @@ fn paint_scrollbar(cr: &Context, gutter: QRect, thumb_bounds: Option<QRect>, the
     // Thumb at the layout-computed position when the body's scroll
     // state was introspectable (`Tree`, `List`). Falls back to a
     // 20%-tall top-anchored thumb for overflowing bodies without
-    // row-based scroll — visual continuity with pre-#9. Per
-    // *Primitive Authoring Rule #6*: thumb position is state-derived
-    // and lives on the layout, not the rasteriser.
+    // row-based scroll. Per *Primitive Authoring Rule #6*: thumb position
+    // is state-derived and lives on the layout, not the rasteriser.
     let mut surface = super::surface::CairoSurface {
         cr,
         layout: None,
@@ -457,17 +448,8 @@ fn paint_scrollbar(cr: &Context, gutter: QRect, thumb_bounds: Option<QRect>, the
 /// (`fit_thumb`) and published as
 /// [`crate::primitives::multi_section_view::MultiSectionViewLayout::panel_scrollbar_thumb`].
 ///
-/// Pre-quadraui#820 this function computed thumb size/position itself
-/// from `(scroll, total_content)` with its own formula that disagreed
-/// with the layout's `fit_thumb`-based one in two ways: the caller
-/// passed `total_content` as *just* the summed section sizes, silently
-/// dropping divider strips (so the painted thumb size drifted from the
-/// hit-tested thumb whenever `allow_resize` was on and dividers were
-/// present); and even with matching totals, a hardcoded `20.0`-pixel
-/// minimum thumb here disagreed with `panel_thumb_min`'s
-/// `metrics.scrollbar_size.max(8.0)` used everywhere else. Mirrors
-/// [`paint_scrollbar`]'s (per-section) pattern of consuming
-/// pre-computed bounds instead of re-deriving them.
+/// Consumes pre-computed bounds instead of re-deriving them,
+/// mirroring [`paint_scrollbar`]'s (per-section) pattern.
 fn paint_panel_scrollbar(cr: &Context, bounds: QRect, thumb_bounds: Option<QRect>, theme: &Theme) {
     let mut surface = super::surface::CairoSurface {
         cr,
@@ -774,17 +756,8 @@ mod tests {
     /// `gtk_scrollbar_column_hits_scrollbar_not_body_when_overflowing`
     /// does for per-section scrollbars.
     ///
-    /// Regression coverage for quadraui#820: pre-fix, GTK's
-    /// `paint_panel_scrollbar` recomputed thumb geometry itself from
-    /// `layout.sections.iter().map(|s| s.resolved_size).sum()` (dropping
-    /// the divider strip from the total) and a hardcoded `20.0`-pixel
-    /// minimum thumb, instead of reusing `panel_scrollbar_thumb` — the
-    /// same geometry `fit_thumb` + `panel_thumb_min` already computed
-    /// for hit-testing. Both formulas' *outputs* were close enough in
-    /// pixel terms on this shape that a numeric magnitude assertion
-    /// (like the TUI regression test's cell-precision one) isn't
-    /// reliable here; what this test locks down instead is that paint
-    /// and hit-test now provably read the same `Rect`.
+    /// Verifies that paint and hit-test both read the same `Rect` from
+    /// `panel_scrollbar_thumb`.
     #[test]
     fn gtk_panel_scrollbar_thumb_paints_at_layout_position() {
         let items = [
@@ -1116,7 +1089,7 @@ mod tests {
         );
     }
 
-    /// `msv_layout` is documented **ABSOLUTE** (issue #505): section
+    /// `msv_layout` is documented **ABSOLUTE**: section
     /// header/body bounds must start at the view's own origin, not
     /// (0, 0) — the case that hides a LOCAL/ABSOLUTE mixup.
     fn header_hit_round_trip_at(x: f32, y: f32) {
@@ -1148,20 +1121,19 @@ mod tests {
         header_hit_round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    /// Non-zero-origin regression guard.
     #[test]
     fn header_hit_round_trip_at_nonzero_origin() {
         header_hit_round_trip_at(7.0, 13.0);
     }
 
-    /// Regression for #1074's drift note: pre-port, GTK's `paint_header`
-    /// never clipped the title paint, unlike Win/macOS — a title wider
-    /// than its title/badge region bled ink straight past the header's
-    /// own right margin. This section has no chevron and no actions, so
-    /// the only thing that can ever legitimately paint in the header's
-    /// last 4px (the margin `push_header_hits`/`paint_header` both
-    /// reserve at the trailing edge, see `right_x`'s initial value) is
-    /// an unclipped title overrunning its bounds.
+    /// GTK's `paint_header` must clip the title paint, unlike pre-port
+    /// behavior where a title wider than its title/badge region bled ink
+    /// straight past the header's own right margin. This section has no
+    /// chevron and no actions, so the only thing that can ever legitimately
+    /// paint in the header's last 4px (the margin `push_header_hits`/`paint_header`
+    /// both reserve at the trailing edge) is an unclipped title overrunning
+    /// its bounds.
     #[test]
     fn gtk_header_clips_long_title_before_right_margin() {
         let section = Section {

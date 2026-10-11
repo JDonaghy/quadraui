@@ -1,20 +1,11 @@
-//! CSS-style generic font family tokens (issue #1023).
+//! CSS-style generic font family tokens.
 //!
 //! [`Backend::set_editor_font`]/[`Backend::set_ui_font`] take a family
-//! string that used to go straight to the native font system unresolved:
-//! a consumer had no portable way to ask for "the monospace font" without
-//! guessing which concrete family exists on which OS (`Menlo` on macOS,
-//! `Monospace` on fontconfig, `Consolas` on Windows, …). vimcode's
-//! `src/app_support.rs` ended up branching on `cfg!(target_os = "macos")`
-//! in otherwise-shared code to work around exactly this gap — the thing
-//! its own platform-neutrality rule forbids.
-//!
-//! [`GenericFamily`] is the fix: the three tokens CSS's `font-family`
-//! property already reserves for this (plus Pango's own
-//! `Monospace`/`Sans` spellings for the first two, since GTK already
-//! resolves those natively via fontconfig) — parsed once here and mapped
-//! to a concrete native font by each pixel backend's own
-//! `set_editor_font`/`set_ui_font`:
+//! string that the pixel backends map to a concrete native font.
+//! [`GenericFamily`] provides the three tokens CSS's `font-family`
+//! property reserves for this (plus Pango's own `Monospace`/`Sans`
+//! spellings for the first two, since GTK resolves those natively via
+//! fontconfig):
 //!
 //! | Backend | mapping |
 //! |---|---|

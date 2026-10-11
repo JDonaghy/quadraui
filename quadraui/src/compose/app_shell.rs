@@ -34,7 +34,6 @@ pub struct PanelDefinition {
     /// `nerd_fonts_enabled` flag is set. A panel that wants a *distinct*
     /// Nerd-Font glyph and ASCII fallback attaches the pair with
     /// [`AppShell::with_panel_icon`] instead of widening this field
-    /// (issue #683).
     ///
     /// **This stays a `String` on purpose.** A Rust struct literal pins
     /// its field's type exactly, and every construction site of this type
@@ -50,7 +49,7 @@ pub struct PanelDefinition {
 }
 
 /// One independently-gated horizontal band stacked in the bottom chrome
-/// of the main content column (issue #997).
+/// of the main content column.
 ///
 /// [`AppShell`] already models a single resizable bottom drawer
 /// ([`AppShell::with_bottom_panel`] / [`BottomPanelController`]) — the
@@ -123,21 +122,17 @@ pub enum AppShellEvent {
 
 /// Layout bounds returned by [`AppShell::render`] and [`AppShell::layout`].
 ///
-/// Bottom-band bounds (issue #997, [`BottomBand`]) are deliberately **not**
-/// a field here: `AppShellLayout` is an all-`pub`-field struct that a real
-/// downstream consumer (vimcode's `render.rs::bare_shell_layout()`) builds
-/// with an exhaustive literal — no `..base`. Rust has no way to grow such a
-/// struct's field list without breaking that call site (see
-/// `quadraui/tests/downstream_struct_literals.rs`'s module doc for the full
-/// explanation and `docs/PRIMITIVE_RULES.md` rule 8). Bottom-band bounds
-/// are exposed additively instead, the same way #833 and #968 grew
-/// `TextInput`/`Editor` without touching their field lists: call
-/// [`AppShell::bottom_band_bounds`] after `layout`/`render` to read them.
+/// Bottom-band bounds are exposed via [`AppShell::bottom_band_bounds`]
+/// rather than as fields here: `AppShellLayout` is an all-`pub`-field
+/// struct that downstream consumers build with exhaustive literals.
+/// Rust cannot grow such a struct's field list without breaking those
+/// call sites. Bottom-band bounds are exposed additively instead, the
+/// same way `TextInput`/`Editor` grew without touching their field lists.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppShellLayout {
     /// The full window/viewport rect this layout was computed against —
     /// the same `area` passed to [`AppShell::layout`] / [`AppShell::render`].
-    /// Lets [`crate::shell::ShellContext::window_edge`] (#406) hit-test the
+    /// Lets [`crate::shell::ShellContext::window_edge`] hit-test the
     /// outer window border for edge-resize without the app having to
     /// separately track `backend.viewport()`.
     pub window_bounds: Rect,
@@ -166,7 +161,7 @@ pub struct AppShell {
     /// header title — see [`Self::sidebar_owner_panel`].
     active_panel: Option<usize>,
     /// Index into `bottom_items` of the bottom item that currently owns
-    /// the sidebar header (issue #1055). `None` (the default, and the
+    /// the sidebar header. `None` (the default, and the
     /// state [`Self::handle_activity_click`]'s `BottomItemClicked` branch
     /// deliberately leaves untouched) means the header is titled from
     /// `active_panel` as before. Set only by [`Self::show_panel`] when
@@ -188,7 +183,7 @@ pub struct AppShell {
     /// `line_height` — VS Code's activity bar is a fixed 48px (matching
     /// `ACTIVITY_ROW_PX`) independent of editor font size, and font-scaled
     /// chrome is the wrong unit for a bar whose contents are fixed-size
-    /// icons (#657).
+    /// icons.
     activity_bar_width_px: Option<f32>,
     position: ShellPosition,
     drag_offset: Option<f32>,
@@ -208,7 +203,7 @@ pub struct AppShell {
     /// larger editor font, it just never shrinks below the floor when the
     /// font gets small — e.g. pinning it above macOS's native
     /// traffic-light cluster height regardless of how far a user shrinks
-    /// `settings.font_size` at runtime (quadraui#1045).
+    /// `settings.font_size` at runtime.
     title_bar_min_px: Option<f32>,
     has_bottom_panel: bool,
     bottom_panel_height_lh: f32,
@@ -218,7 +213,7 @@ pub struct AppShell {
     has_command_line: bool,
     has_status_bar: bool,
     bottom_panel_drag_offset: Option<f32>,
-    /// Independently-gated bottom bands (issue #997), stacked bottom-up
+    /// Independently-gated bottom bands, stacked bottom-up
     /// below the legacy single bottom-panel drawer. Empty by default —
     /// see [`BottomBand`]'s doc for the stacking order and the
     /// backward-compat guarantee.
@@ -261,7 +256,7 @@ pub struct AppShell {
     /// Per-panel Nerd-Font glyph + ASCII fallback pairs, keyed by
     /// [`WidgetId`], registered via [`Self::with_panel_icon`]. Consulted by
     /// [`Self::build_activity_bar`] in preference to widening the panel's
-    /// single [`PanelDefinition::icon`] string (issue #683). Covers both
+    /// single [`PanelDefinition::icon`] string. Covers both
     /// top panels and bottom items.
     icon_overrides: HashMap<WidgetId, Icon>,
 }
@@ -311,7 +306,7 @@ impl AppShell {
 
     /// Attach a distinct Nerd-Font glyph + ASCII fallback pair to one
     /// activity-bar row, overriding the single-string
-    /// [`PanelDefinition::icon`] that panel was registered with (#683).
+    /// [`PanelDefinition::icon`] that panel was registered with.
     ///
     /// `id` may name a top panel or a bottom item; unknown ids are stored
     /// but never consulted, so registration order relative to
@@ -321,9 +316,7 @@ impl AppShell {
     /// Which half actually paints is the backend's decision, driven by its
     /// `nerd_fonts_enabled` flag — `glyph` when the icon font is available,
     /// `fallback` otherwise. Panels that never call this get
-    /// `glyph == fallback == PanelDefinition::icon`, i.e. exactly the
-    /// pre-#683 behaviour.
-    ///
+    /// `glyph == fallback == PanelDefinition::icon`.
     /// ```
     /// # use quadraui::compose::app_shell::{AppShell, PanelDefinition};
     /// # use quadraui::types::{Icon, WidgetId};
@@ -378,7 +371,7 @@ impl AppShell {
     /// `line_height` multiple — so a `with_activity_bar_width(2.4)`-style
     /// call only produces a square 48×48 bar at whatever `line_height`
     /// happens to make `2.4 * lh == 48.0`. Passing `48.0` here keeps the
-    /// bar square regardless of the app's editor font size (#657).
+    /// bar square regardless of the app's editor font size.
     ///
     /// `None` (the default) leaves the existing `line_height`-derived
     /// width in place — this call is additive, not a replacement.
@@ -404,7 +397,7 @@ impl AppShell {
     /// Pin a fixed-pixel floor under the title bar's line-height-derived
     /// height, overriding it only when the multiple would otherwise
     /// resolve smaller — mirroring [`Self::with_activity_bar_width_px`]'s
-    /// pattern (#657), but as a floor rather than a hard override, since
+    /// pattern, but as a floor rather than a hard override, since
     /// unlike the activity bar's fixed-size icons, title-bar chrome (menu
     /// labels, inline window controls) is expected to keep scaling with
     /// the editor font above the floor.
@@ -415,7 +408,6 @@ impl AppShell {
     /// platform constraint it can't otherwise express in line-height
     /// units — e.g. staying clear of macOS's native traffic-light cluster
     /// even after a user shrinks `settings.font_size` at runtime
-    /// (quadraui#1045).
     pub fn with_title_bar_min_px(mut self, min_px: f32) -> Self {
         self.title_bar_min_px = Some(min_px);
         self
@@ -433,12 +425,12 @@ impl AppShell {
         self
     }
 
-    /// Register the ordered list of independently-gated bottom bands
-    /// (issue #997). See [`BottomBand`] for the stacking order and how
-    /// this interacts with [`Self::with_bottom_panel`].
+    /// Register the ordered list of independently-gated bottom bands.
+    /// See [`BottomBand`] for the stacking order and how this interacts
+    /// with [`Self::with_bottom_panel`].
     ///
     /// Replaces any previously-registered list. `Vec::new()` (the
-    /// default) fully restores the pre-#997 single-drawer layout.
+    /// default) restores a single-drawer layout.
     pub fn with_bottom_bands(mut self, bands: Vec<BottomBand>) -> Self {
         self.bottom_bands = bands;
         self
@@ -457,7 +449,7 @@ impl AppShell {
     // ── State accessors ──────────────────────────────────────────────
 
     /// The [`PanelDefinition`] that currently owns the sidebar: the active
-    /// top panel, or (issue #1055) a bottom item that was made the owner
+    /// top panel, or a bottom item that was made the owner
     /// via [`Self::show_panel`]. This is the same definition
     /// [`Self::render`] titles the sidebar header from.
     pub fn active_panel(&self) -> Option<&PanelDefinition> {
@@ -465,13 +457,13 @@ impl AppShell {
     }
 
     /// The id of [`Self::active_panel`] — a top panel's id, or a bottom
-    /// item's id when that bottom item owns the sidebar (issue #1055).
+    /// item's id when that bottom item owns the sidebar.
     pub fn active_panel_id(&self) -> Option<&WidgetId> {
         self.active_panel().map(|p| &p.id)
     }
 
     /// Resolves whichever [`PanelDefinition`] currently owns the sidebar —
-    /// a bottom item when `sidebar_bottom_owner` is `Some` (issue #1055),
+    /// a bottom item when `sidebar_bottom_owner` is `Some`,
     /// otherwise the top panel at `active_panel`. Shared by
     /// [`Self::active_panel`] and [`Self::render`]'s header block so the
     /// two can never disagree.
@@ -590,13 +582,12 @@ impl AppShell {
 
     /// Make `panel_id` the sidebar's owner and reveal the sidebar.
     ///
-    /// Accepts either a top panel's id or, as of issue #1055, a bottom
-    /// item's id (one registered via [`Self::with_bottom_items`] /
-    /// [`Self::add_bottom_item`]) — in the latter case the bottom item
-    /// becomes the sidebar header's title source (see
-    /// [`Self::active_panel`]/[`Self::active_panel_id`]) until `show_panel`
-    /// is called again with a different id. A bottom item's own click
-    /// ([`Self::handle_activity_click`]'s `BottomItemClicked` branch)
+    /// Accepts either a top panel's id or a bottom item's id (one
+    /// registered via [`Self::with_bottom_items`] / [`Self::add_bottom_item`]).
+    /// In the latter case the bottom item becomes the sidebar header's title
+    /// source (see [`Self::active_panel`]/[`Self::active_panel_id`]) until
+    /// `show_panel` is called again with a different id. A bottom item's own
+    /// click ([`Self::handle_activity_click`]'s `BottomItemClicked` branch)
     /// never calls this itself, so an app opts in explicitly from its
     /// `BottomItemClicked` handler.
     ///
@@ -627,7 +618,7 @@ impl AppShell {
         self.sidebar_visible = !self.sidebar_visible;
     }
 
-    /// Runtime toggle for whether the title-bar row is reserved (#532).
+    /// Runtime toggle for whether the title-bar row is reserved.
     ///
     /// Unlike [`Self::with_title_bar`] — a construction-time builder that
     /// permanently commits to reserving the row for the lifetime of the
@@ -637,16 +628,13 @@ impl AppShell {
     /// panel, ...) from `area` and current state on every
     /// `render`/`layout`/`handle` call, so toggling this and calling any
     /// of those next is sufficient — no other field needs to change in
-    /// lockstep, and no fixed offset is cached anywhere that would go
-    /// stale.
+    /// lockstep, and no fixed offset is cached anywhere that would go stale.
     ///
-    /// Motivating case (vimcode#605, issue #532): a menu bar painted into
-    /// the title-bar row that the user can show/hide at runtime
-    /// (`engine.menu_bar_visible`). Always reserving the row would cost
-    /// the editor a row even while the menu is hidden; never reserving it
-    /// would make a shown menu overwrite the activity bar's first row
-    /// (which starts at `y = 0` when `has_title_bar` is `false`).
-    /// Toggling this from the app's own visibility state avoids both.
+    /// A menu bar painted into the title-bar row that the user can show/hide
+    /// at runtime requires this: always reserving the row costs a row even
+    /// while the menu is hidden; never reserving it makes a shown menu
+    /// overwrite the activity bar's first row. Toggling this from the app's
+    /// own visibility state avoids both.
     ///
     /// If [`Self::with_title_bar`] was never called, toggling visible for
     /// the first time reserves the default height (`title_bar_height_lh`,
@@ -688,7 +676,7 @@ impl AppShell {
         );
     }
 
-    // ── Bottom bands (#997) ──────────────────────────────────────────
+    // ── Bottom bands ─────────────────────────────────────────────────
 
     /// The currently-registered bottom bands, in bottom-up stacking order
     /// (see [`BottomBand`]). Includes bands with `visible == false` — use
@@ -823,7 +811,7 @@ impl AppShell {
     /// Unregister a bottom item by ID.
     /// Adjusts `activity_cursor` so keyboard navigation remains consistent
     /// after a dynamic removal (mirrors `remove_panel`'s treatment of
-    /// `active_panel`). Also adjusts `sidebar_bottom_owner` (issue #1055)
+    /// `active_panel`). Also adjusts `sidebar_bottom_owner`
     /// the same way `remove_panel` adjusts `active_panel`: shifted down if
     /// it pointed past the removed item, cleared (falling back to whatever
     /// `active_panel` names) if it pointed at the removed item itself.
@@ -883,11 +871,11 @@ impl AppShell {
                 id: p.id.clone(),
                 icon: self.resolved_icon(p),
                 tooltip: p.tooltip.clone(),
-                // #1055: a top panel only shows as active while it — not a
-                // bottom item — actually owns the sidebar. Without this
-                // guard, showing a bottom item via `show_panel` would leave
-                // the previously-active top panel's row highlighted even
-                // though the header now names the bottom item.
+                // A top panel only shows as active while it — not a bottom
+                // item — actually owns the sidebar. Without this guard,
+                // showing a bottom item via `show_panel` would leave the
+                // previously-active top panel's row highlighted even though
+                // the header now names the bottom item.
                 is_active: self.sidebar_bottom_owner.is_none()
                     && self.active_panel == Some(i)
                     && self.sidebar_visible,
@@ -903,13 +891,9 @@ impl AppShell {
                 id: p.id.clone(),
                 icon: self.resolved_icon(p),
                 tooltip: p.tooltip.clone(),
-                // Deliberately not `self.sidebar_bottom_owner == Some(j)`:
-                // bottom items (gear/bell-style) never painted a persistent
-                // "active" accent even before #1055, and that issue is
-                // scoped to the sidebar header title, not activity-bar
-                // highlighting. `sidebar_owner_panel()` — not this flag —
-                // is what titles the header now that a bottom item can own
-                // it.
+                // Bottom items (gear/bell-style) never paint a persistent
+                // active accent. The `sidebar_owner_panel()` call titles the
+                // header when a bottom item owns it.
                 is_active: false,
                 is_keyboard_selected: focused && self.activity_cursor == np + j,
             })
@@ -919,16 +903,10 @@ impl AppShell {
             id: WidgetId::new("app-shell:activity-bar"),
             top_items,
             bottom_items,
-            // #658: `AppShell` has no `Theme` in scope here to source a
-            // colour from (that wiring is #381's job), so the accent line
-            // is left unset rather than hardcoded. As of #658 the
-            // rasterisers no longer fall back to a theme default, so this
-            // means the built-in shell chrome paints no active-item
-            // indicator until #381 lands. (The VS-Code-style row fill is a
-            // separate `ActivityBarStyle` sidecar passed to
-            // `Backend::draw_activity_bar_with_style`, not a field here —
-            // `AppShell` still calls the plain `draw_activity_bar`, which
-            // never paints a fill.)
+            // `AppShell` has no `Theme` in scope here to source a colour
+            // from, so the accent line is left unset. The built-in shell
+            // chrome paints no active-item indicator for the activity bar
+            // itself (row fill is painted via `Backend::draw_activity_bar_with_style`).
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: focused,
@@ -941,7 +919,7 @@ impl AppShell {
     /// for every chrome region `layout` reports, so a
     /// [`crate::testing::ConformanceDriver::inventory`] caller can assert
     /// `inside`/`left_of`/`above` against shell-level zones without
-    /// hardcoding a coordinate (quadraui#490). Ids are stable,
+    /// hardcoding a coordinate. Ids are stable,
     /// `app-shell:`-prefixed strings — not the panel/content `WidgetId`s
     /// consumers pick — since a shell has exactly one of each of these
     /// regions per frame.
@@ -981,13 +959,9 @@ impl AppShell {
     /// Consumer draws: sidebar panel content, main content area.
     pub fn render(&self, backend: &mut dyn Backend, area: Rect) -> AppShellLayout {
         let lh = backend.line_height();
-        // quadraui#1180: the sidebar header and divider used to be
-        // hardcoded VS-Code-dark literals, unreadable on any other
-        // theme. `Backend::theme()` (added for this issue) reads back
-        // whatever the host last passed to `set_theme` — the same
-        // palette every `draw_*` rasteriser call below already paints
-        // with — so this chrome now tracks the app's actual theme
-        // instead of a fixed dark palette.
+        // `Backend::theme()` reads back whatever the host last passed to
+        // `set_theme` — the same palette every `draw_*` rasteriser call
+        // below already paints with — so this chrome tracks the app's actual theme.
         let theme = backend.theme();
         let layout = self.compute_layout(area, lh);
         Self::register_chrome_zones(backend, &layout);
@@ -1013,13 +987,10 @@ impl AppShell {
         *self.cached_activity_bar_bounds.borrow_mut() = Some(layout.activity_bar_bounds);
 
         if let Some(header_bounds) = layout.sidebar_header_bounds {
-            // #1055: titled from whichever `PanelDefinition` owns the
-            // sidebar — a bottom item when one was made the owner via
-            // `show_panel`, otherwise the active top panel. Before this,
-            // only `self.panels` was ever consulted here, so a bottom item
-            // (a Settings gear, say) could never title its own header —
-            // the sidebar stayed captioned with whatever top panel was
-            // open previously.
+            // Titled from whichever `PanelDefinition` owns the sidebar — a
+            // bottom item when one was made the owner via `show_panel`,
+            // otherwise the active top panel. A bottom item can now title
+            // its own header when it becomes the sidebar owner.
             if let Some(panel) = self.sidebar_owner_panel() {
                 let header_bar = StatusBar {
                     id: WidgetId::new("app-shell:sidebar-header"),
@@ -1041,20 +1012,10 @@ impl AppShell {
         }
 
         if let Some(divider_bounds) = layout.divider_bounds {
-            // #996: one fill over the whole rect, not N stacked one-row
-            // `StatusBar`s. The old per-row loop was exact on a cell grid
-            // (rows abut by construction) but wrong on a pixel backend,
-            // where `draw_status_bar_interactive` used to fill only
-            // `current_line_height` regardless of the row rect's own
-            // height — every row painted short of its own pitch and the
-            // gaps between rows rendered as a dashed line. #1179 fixed
-            // that root cause on every pixel backend (`rect.height` is
-            // honoured now, see `tests/gtk_example_driver.rs`'s
-            // `draw_status_bar_interactive_fills_a_rect_taller_than_line_height_completely`),
-            // but a plain solid fill is still both simpler and strictly
-            // cheaper than N status-bar layouts per frame — there is no
-            // text, no segments, and no interaction beyond the drag zone
-            // `register_chrome_zones` already registered above.
+            // One fill over the whole rect, not N stacked one-row
+            // `StatusBar`s. A plain solid fill is simpler and cheaper than
+            // N status-bar layouts per frame — there is no text, no segments,
+            // and no interaction beyond the drag zone already registered above.
             backend.draw_solid_fill(divider_bounds, theme.separator);
         }
 
@@ -1256,13 +1217,11 @@ impl AppShell {
         let band_h = band_h.max(0.0);
 
         // Split a main-column rect into (content_above, bottom_panel + N
-        // bottom_bands). Bottom bands (#997) are carved first, stacked
+        // bottom_bands). Bottom bands are carved first, stacked
         // bottom-up flush against `main`'s bottom edge in list order (index
         // 0 lowest); the legacy single bottom-panel drawer is then carved
         // from what remains, so it always sits directly above every band —
         // i.e. it behaves as one more, implicit band on top of the list.
-        // With `bottom_bands` empty (the default) this reduces to exactly
-        // the pre-#997 single-drawer carve.
         let carve_bottom_chrome = |main: Rect| -> (Rect, Vec<(WidgetId, Rect)>, Option<Rect>) {
             let mut remaining = main;
             let mut band_bounds = Vec::new();
@@ -1290,6 +1249,14 @@ impl AppShell {
         };
 
         // ── Horizontal carve: activity bar + sidebar + divider + main ──
+        //
+        // Band widths (`ab_w`, `sidebar_w`, `divider_w`, `main_w`) are still
+        // decided by hand — they depend on clamping/min/max rules that are
+        // AppShell's own policy, not a layout concern. Once the widths are
+        // known, turning them into left-to-right x-positions is exactly the
+        // one-dimensional packing `crate::flex::pack_1d` already does for
+        // `Toolbar` and `Form` (same shared engine, see those modules), so
+        // `row_x_positions` delegates to it under the `layout` feature.
 
         let ab_w = self
             .activity_bar_width_px
@@ -1297,16 +1264,20 @@ impl AppShell {
         let divider_w = (lh * 0.25).max(1.0).round().min(4.0);
 
         if !self.sidebar_visible || self.panels.is_empty() {
+            let main_w = (area.width - ab_w).max(0.0);
             let (ab_bounds, main_bounds) = match self.position {
-                ShellPosition::Left => (
-                    Rect::new(area.x, band_y, ab_w, band_h),
-                    Rect::new(area.x + ab_w, band_y, (area.width - ab_w).max(0.0), band_h),
-                ),
-                ShellPosition::Right => {
-                    let ab_x = area.x + area.width - ab_w;
+                ShellPosition::Left => {
+                    let x = row_x_positions(area.x, &[ab_w, main_w]);
                     (
-                        Rect::new(ab_x.max(area.x), band_y, ab_w, band_h),
-                        Rect::new(area.x, band_y, (area.width - ab_w).max(0.0), band_h),
+                        Rect::new(x[0], band_y, ab_w, band_h),
+                        Rect::new(x[1], band_y, main_w, band_h),
+                    )
+                }
+                ShellPosition::Right => {
+                    let x = row_x_positions(area.x, &[main_w, ab_w]);
+                    (
+                        Rect::new(x[1], band_y, ab_w, band_h),
+                        Rect::new(x[0], band_y, main_w, band_h),
                     )
                 }
             };
@@ -1336,19 +1307,19 @@ impl AppShell {
         let sidebar_w = sidebar_w.min(remaining * 0.8);
         let header_h = lh;
 
+        let main_w = (area.width - ab_w - sidebar_w - divider_w).max(0.0);
+
         match self.position {
             ShellPosition::Left => {
-                let ab_bounds = Rect::new(area.x, band_y, ab_w, band_h);
-                let sidebar_x = area.x + ab_w;
+                let x = row_x_positions(area.x, &[ab_w, sidebar_w, divider_w, main_w]);
+                let ab_bounds = Rect::new(x[0], band_y, ab_w, band_h);
+                let sidebar_x = x[1];
                 let header_bounds = Rect::new(sidebar_x, band_y, sidebar_w, header_h);
                 let content_y = band_y + header_h;
                 let content_h = (band_h - header_h).max(0.0);
                 let content_bounds = Rect::new(sidebar_x, content_y, sidebar_w, content_h);
-                let div_x = sidebar_x + sidebar_w;
-                let div_bounds = Rect::new(div_x, band_y, divider_w, band_h);
-                let main_x = div_x + divider_w;
-                let main_w = (area.x + area.width - main_x).max(0.0);
-                let main_bounds = Rect::new(main_x, band_y, main_w, band_h);
+                let div_bounds = Rect::new(x[2], band_y, divider_w, band_h);
+                let main_bounds = Rect::new(x[3], band_y, main_w, band_h);
                 let (main_bounds, bottom_band_bounds, bottom_panel_bounds) =
                     carve_bottom_chrome(main_bounds);
                 *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
@@ -1367,19 +1338,15 @@ impl AppShell {
                 }
             }
             ShellPosition::Right => {
-                let ab_x = area.x + area.width - ab_w;
-                let ab_bounds = Rect::new(ab_x.max(area.x), band_y, ab_w, band_h);
-                let sidebar_x = ab_x - sidebar_w;
-                let header_bounds = Rect::new(sidebar_x.max(area.x), band_y, sidebar_w, header_h);
+                let x = row_x_positions(area.x, &[main_w, divider_w, sidebar_w, ab_w]);
+                let ab_bounds = Rect::new(x[3], band_y, ab_w, band_h);
+                let sidebar_x = x[2];
+                let header_bounds = Rect::new(sidebar_x, band_y, sidebar_w, header_h);
                 let content_y = band_y + header_h;
                 let content_h = (band_h - header_h).max(0.0);
-                let content_bounds =
-                    Rect::new(sidebar_x.max(area.x), content_y, sidebar_w, content_h);
-                let div_x = sidebar_x - divider_w;
-                let div_bounds = Rect::new(div_x.max(area.x), band_y, divider_w, band_h);
-                let main_x = area.x;
-                let main_w = (div_x - area.x).max(0.0);
-                let main_bounds = Rect::new(main_x, band_y, main_w, band_h);
+                let content_bounds = Rect::new(sidebar_x, content_y, sidebar_w, content_h);
+                let div_bounds = Rect::new(x[1], band_y, divider_w, band_h);
+                let main_bounds = Rect::new(x[0], band_y, main_w, band_h);
                 let (main_bounds, bottom_band_bounds, bottom_panel_bounds) =
                     carve_bottom_chrome(main_bounds);
                 *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
@@ -1403,17 +1370,14 @@ impl AppShell {
     fn handle_activity_click(&mut self, clicked_id: &WidgetId) -> AppShellEvent {
         for (i, panel) in self.panels.iter().enumerate() {
             if panel.id == *clicked_id {
-                // A bottom item may currently own the sidebar header (see
-                // `show_panel`, issue #1055). Clicking a top panel through
-                // this real click/keyboard path must reclaim the header
-                // exactly like calling `show_panel(top panel)` would,
-                // otherwise the header (and this panel's `is_active` flag
-                // in `build_activity_bar`) stays stuck on the bottom
-                // item's title/highlight indefinitely. This also keeps
-                // `active_panel` in sync with what's actually visible, so
-                // the toggle-hide branch below doesn't fire on a stale
-                // `active_panel` left over from before the bottom item
-                // took ownership.
+                // A bottom item may currently own the sidebar header.
+                // Clicking a top panel through this real click/keyboard path
+                // must reclaim the header exactly like calling `show_panel(top
+                // panel)` would, otherwise the header (and this panel's
+                // `is_active` flag in `build_activity_bar`) stays stuck on the
+                // bottom item's title/highlight indefinitely. This also keeps
+                // `active_panel` in sync with what's actually visible, so the
+                // toggle-hide branch below doesn't fire on a stale `active_panel`.
                 if self.active_panel == Some(i)
                     && self.sidebar_visible
                     && self.sidebar_bottom_owner.is_none()
@@ -1468,6 +1432,29 @@ impl AppShell {
             self.hovered_activity_idx = None;
         }
     }
+}
+
+/// Compute each chrome band's left edge, left-to-right starting at
+/// `origin`, with no gap between consecutive bands, never shrinking.
+///
+/// With the `layout` feature this runs through [`crate::flex`]'s shared
+/// flexbox engine — the same one `Toolbar` and `Form` pack their rows
+/// through. Without it, the same arithmetic is done by hand.
+#[cfg(feature = "layout")]
+fn row_x_positions(origin: f32, sizes: &[f32]) -> Vec<f32> {
+    crate::flex::pack_1d(crate::flex::FlexDirection::Row, origin, sizes, 0.0, 0.0)
+}
+
+/// Same contract as the `layout`-feature arm above, computed by hand.
+#[cfg(not(feature = "layout"))]
+fn row_x_positions(origin: f32, sizes: &[f32]) -> Vec<f32> {
+    let mut x = origin;
+    let mut xs = Vec::with_capacity(sizes.len());
+    for &s in sizes {
+        xs.push(x);
+        x += s;
+    }
+    xs
 }
 
 fn contains(rect: Rect, point: Point) -> bool {
@@ -1585,7 +1572,7 @@ mod tests {
         assert_eq!(content.width, header.width);
     }
 
-    // ── Activity bar width (#657) ───────────────────────────────────
+    // ── Activity bar width ──────────────────────────────────────────
 
     /// The default activity bar width (3.0 line-heights) tracks
     /// `line_height`, same as every other chrome dimension.
@@ -1605,8 +1592,7 @@ mod tests {
     }
 
     /// `with_activity_bar_width_px` pins the bar to an exact pixel width
-    /// that does not move when `line_height` changes — the fix for a bar
-    /// that's only square by coincidence of the app's editor font size.
+    /// that does not move when `line_height` changes.
     #[test]
     fn with_activity_bar_width_px_is_independent_of_line_height() {
         let s = shell().with_activity_bar_width_px(48.0);
@@ -1626,10 +1612,10 @@ mod tests {
         assert_eq!(s.layout(area(), 20.0).activity_bar_bounds.width, 48.0);
     }
 
-    // ── Title bar min-px floor (#1045) ──────────────────────────────
+    // ── Title bar min-px floor ──────────────────────────────────────
 
     /// With no floor set, the title bar's height is exactly the
-    /// line-height multiple — unchanged pre-#1045 behaviour.
+    /// line-height multiple.
     #[test]
     fn title_bar_height_tracks_line_height_by_default() {
         let s = shell().with_title_bar(1.5);
@@ -1648,10 +1634,8 @@ mod tests {
     }
 
     /// When a small `line_height` would resolve the multiple under the
-    /// floor, the floor wins instead — the #1045 use case: a user shrinks
-    /// `settings.font_size` at runtime and the title bar must not shrink
-    /// past some real platform constraint (e.g. macOS's traffic-light
-    /// cluster height).
+    /// floor, the floor wins instead — the title bar must not shrink past
+    /// real platform constraints such as a traffic-light cluster height.
     #[test]
     fn with_title_bar_min_px_floors_a_height_that_would_otherwise_shrink_below_it() {
         let s = shell().with_title_bar(1.5).with_title_bar_min_px(34.0);
@@ -1761,7 +1745,7 @@ mod tests {
             }
         );
         assert_eq!(s.sidebar_visible(), was_visible);
-        // #1055: the bottom item's own click never touches sidebar
+        // The bottom item's own click never touches sidebar
         // ownership — an app opts in explicitly via `show_panel`.
         assert_eq!(
             s.active_panel_id(),
@@ -1770,7 +1754,7 @@ mod tests {
         );
     }
 
-    /// #1055: `show_panel` accepts a bottom item's id, not just a top
+    /// `show_panel` accepts a bottom item's id, not just a top
     /// panel's — the fix that lets a bottom item (e.g. a Settings gear
     /// added via `with_bottom_items`) title the sidebar header.
     #[test]
@@ -1807,7 +1791,7 @@ mod tests {
         );
     }
 
-    /// #1055 follow-up: clicking a *different* top panel through the real
+    /// Clicking a *different* top panel through the real
     /// activity-bar click path (`handle_activity_click`, not `show_panel`
     /// directly) after a bottom item claimed the sidebar must also reclaim
     /// the header. This is the path `AppShellDemo` and vimcode actually use
@@ -1846,7 +1830,7 @@ mod tests {
         );
     }
 
-    /// #1055 follow-up: the stale-`active_panel` toggle-hide bug. Before the
+    /// The stale-`active_panel` toggle-hide bug. Before the
     /// fix, `active_panel` stayed on the panel that was active *before* a
     /// bottom item took ownership, so re-clicking that panel's icon would
     /// hit the toggle-hide branch (`active_panel == Some(i) && visible`)
@@ -1929,12 +1913,10 @@ mod tests {
         assert_eq!(bar.bottom_items[0].id, WidgetId::new("panel:settings"));
     }
 
-    /// #683 acceptance: the `Icon` pair registered with
-    /// `AppShell::with_panel_icon` survives `build_activity_bar` into
-    /// `ActivityItem::icon`, and the TUI rasteriser picks the right half —
-    /// `glyph` when `nerd_fonts_enabled`, `fallback` otherwise. A rendered-
-    /// output assertion, not just a type-level check on `PanelDefinition`
-    /// / `ActivityItem` in isolation, per this issue's Tests section.
+    /// The `Icon` pair registered with `AppShell::with_panel_icon` survives
+    /// `build_activity_bar` into `ActivityItem::icon`, and the TUI rasteriser
+    /// picks the right half — `glyph` when `nerd_fonts_enabled`, `fallback`
+    /// otherwise. A rendered-output assertion, not just a type-level check.
     #[test]
     #[cfg(feature = "tui")]
     fn with_panel_icon_reaches_the_painted_column_via_the_nerd_fonts_flag() {
@@ -1959,9 +1941,9 @@ mod tests {
         );
     }
 
-    /// #683: a panel with no `with_panel_icon` override paints its single
-    /// `PanelDefinition::icon` string under *both* settings of the
-    /// `nerd_fonts_enabled` flag — the pre-#683 behaviour, preserved so
+    /// A panel with no `with_panel_icon` override paints its single
+    /// `PanelDefinition::icon` string under both settings of the
+    /// `nerd_fonts_enabled` flag — the pre-existing behaviour, preserved so
     /// that leaving the field a `String` is not a silent downgrade.
     #[test]
     #[cfg(feature = "tui")]
@@ -1979,7 +1961,7 @@ mod tests {
         assert!(paint_first_row(&bar, false).contains('E'));
     }
 
-    /// #683: `with_panel_icon` reaches bottom items too, not just top
+    /// `with_panel_icon` reaches bottom items too, not just top
     /// panels — both go through the same `resolved_icon` seam.
     #[test]
     fn with_panel_icon_applies_to_bottom_items() {
@@ -2005,7 +1987,7 @@ mod tests {
             .collect::<String>()
     }
 
-    /// quadraui#1180: `render`'s sidebar header and resize divider used
+    /// `render`'s sidebar header and resize divider used
     /// to paint fixed VS-Code-dark literals (`Color::rgb(37,37,38)` /
     /// `Color::rgb(100,100,110)`) regardless of what theme the app had
     /// configured. This drives a real [`crate::tui::TuiBackend`] with a
@@ -2284,13 +2266,8 @@ mod tests {
 
     // ── Render ───────────────────────────────────────────────────────
 
-    /// #996: the divider used to be painted as N stacked one-row
-    /// `StatusBar`s via `draw_status_bar_interactive` — exact on a cell
-    /// grid, wrong on a pixel backend that doesn't honor the row rect's
-    /// height (see `Backend::draw_solid_fill`'s doc for the full story).
-    /// `render()` must now paint the divider with exactly one
-    /// `draw_solid_fill` call over the whole `divider_bounds`, not a
-    /// loop of `draw_status_bar_interactive` calls.
+    /// The divider must be painted with exactly one `draw_solid_fill` call
+    /// over the whole `divider_bounds`, not a loop of individual row calls.
     #[test]
     fn render_paints_the_divider_with_one_solid_fill_call() {
         let s = shell();
@@ -2950,7 +2927,7 @@ mod tests {
         assert!(matches!(ev, AppShellEvent::BottomPanelResized { .. }));
     }
 
-    // ── Runtime title-bar toggle (#532) ─────────────────────────────
+    // ── Runtime title-bar toggle ────────────────────────────────────
 
     #[test]
     fn title_bar_visible_reflects_construction_state() {
@@ -2978,9 +2955,9 @@ mod tests {
         assert!(s.layout(area(), 1.0).title_bar_bounds.is_none());
     }
 
-    /// The operator's explicit ask on #532: confirm the activity bar and
-    /// main content re-derive their origins from scratch in both states
-    /// rather than assuming a fixed offset cached from construction.
+    /// Confirm that the activity bar and main content re-derive their
+    /// origins from scratch in both states rather than assuming a fixed
+    /// offset.
     #[test]
     fn set_title_bar_visible_shifts_activity_bar_and_main_origin_both_ways() {
         let mut s = full_chrome_shell(); // with_title_bar(1.5)
@@ -3020,7 +2997,7 @@ mod tests {
         );
     }
 
-    // ── Bottom bands (#997) ──────────────────────────────────────────
+    // ── Bottom bands ─────────────────────────────────────────────────
 
     fn band(id: &str, height_lh: f32) -> BottomBand {
         BottomBand::new(WidgetId::new(id), height_lh)
@@ -3028,7 +3005,7 @@ mod tests {
 
     /// With no bands registered, `bottom_band_bounds()` stays empty and the
     /// existing single-drawer layout is unaffected — the whole point of
-    /// making this additive (#997).
+    /// making this additive.
     #[test]
     fn no_bands_by_default_layout_unchanged() {
         let s = full_chrome_shell();

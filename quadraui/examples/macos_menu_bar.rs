@@ -1,12 +1,21 @@
 //! macOS port of `tui_menu_bar.rs` / `gtk_menu_bar.rs`. Same
-//! `MenuBarApp` `AppLogic` impl in `examples/common/menu_bar_app.rs`;
-//! only the runner call differs. Paints an in-window `MenuBar` at the
-//! top with a `StatusBar` at the bottom.
+//! `MenuBarApp` `AppLogic` impl in `examples/common/menu_bar_app.rs`,
+//! with zero macOS-specific code — only the runner call differs.
 //!
-//! Note: this example uses the painted in-window `MenuBar` primitive
-//! (consistent across all backends). Future work in #184 will add a
-//! native `NSMenu` install path for apps that want the system menu bar
-//! at the top of the screen.
+//! On TUI/GTK this paints the in-window `MenuBar` primitive at the top
+//! with a `StatusBar` at the bottom, same as ever. On macOS,
+//! `Backend::draw_menu_bar` installs the real system
+//! `NSMenu` instead — macOS has no Alt-mnemonic convention and a
+//! painted `File Edit View` strip is the one that needs opting into
+//! there, not the other way round. `MenuSystem::handle` routes the
+//! resulting `UiEvent::MenuActivated` to the same `MenuEvent::Activated`
+//! the painted dropdown path produces, so this `AppLogic` needed no
+//! change to pick up the native menu bar — see `macos_native_menu.rs`
+//! for an app that drives `Backend::install_menu_bar` directly instead
+//! (checked-state toggles, submenus wired by hand), and
+//! `macos_context_menu_style.rs` for the general `Backend::set_menu_style`
+//! opt-out mechanism (demonstrated there for the context-menu path,
+//! which this example's menu bar shares the same `MenuStyle` with).
 //!
 //! Click a menu item to activate. `q` or Esc to quit.
 //!

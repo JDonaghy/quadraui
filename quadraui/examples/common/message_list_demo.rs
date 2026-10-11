@@ -1,12 +1,9 @@
 //! `MessageListApp` — minimal visual smoke test for the `MessageList`
-//! primitive's [`MessageList::hit_test`] (quadraui#818).
+//! primitive's [`MessageList::hit_test`].
 //!
 //! Renders a scrollable list of styled rows filling most of the
 //! viewport. Clicking a row reports its index and text in the status
-//! bar — the primitive's first click-routed consumer (before #818,
-//! `MessageList` had no `hit_test` at all, so no consumer could route a
-//! click to a specific row without hand-rolling the same row-height
-//! arithmetic `tui::draw_message_list` / `gtk::draw_message_list` use).
+//! bar using the primitive's hit test to route clicks to specific rows.
 //!
 //! ## Key bindings
 //!
@@ -47,9 +44,8 @@ impl MessageListApp {
         }
     }
 
-    /// Same rect `render` paints the list into — shared so `handle`'s
-    /// click routing can't drift from where the primitive was actually
-    /// painted (quadraui#818, matching every other demo in this module).
+    /// Rect where the list is painted — used by click routing to match
+    /// where the primitive was actually rendered on screen.
     fn list_rect(backend: &dyn Backend) -> Rect {
         let vp = backend.viewport();
         let lh = backend.line_height();
@@ -107,7 +103,7 @@ impl AppLogic for MessageListApp {
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
-            // Click routing (#818): resolve the click through
+            // Click routing: resolve the click through
             // `MessageList::hit_test` — the same geometry `render` just
             // painted from — and report which row was hit.
             UiEvent::MouseDown {

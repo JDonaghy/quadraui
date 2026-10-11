@@ -1,15 +1,11 @@
 //! GTK rasteriser for [`crate::Tooltip`].
 //!
 //! Content painting (background, border chrome, title punch, plain/
-//! styled text) moved to the shared
-//! [`crate::primitives::tooltip::native_surface_paint::paint`] (#1077,
-//! `PaintSurface` Phase 4 slice 4/8) — see that fn's module doc for the
-//! one drift it resolved (styled-line span bold/italic/underline, which
-//! GTK gains here for the first time).
+//! styled text) is shared with [`crate::primitives::tooltip::native_surface_paint::paint`]
+//! — see that fn's module doc for styled-line span bold/italic/underline support.
 //!
-//! [`draw_tooltip`] keeps its pre-#541 signature and renders
-//! `TooltipChrome::default()`; [`draw_tooltip_with_chrome`] takes the
-//! chrome request explicitly. See [`crate::TooltipBorder`] for what each
+//! [`draw_tooltip`] renders `TooltipChrome::default()`; [`draw_tooltip_with_chrome`]
+//! takes the chrome request explicitly. See [`crate::TooltipBorder`] for what each
 //! variant paints.
 
 use gtk4::cairo::Context;
@@ -19,8 +15,7 @@ use crate::primitives::tooltip::{native_surface_paint, Tooltip, TooltipChrome, T
 use crate::theme::Theme;
 
 /// Draw a [`Tooltip`] at its resolved layout position with the default
-/// chrome — a [`crate::TooltipBorder::Full`] box, no title, i.e. exactly
-/// what this rasteriser drew before #541 added a choice.
+/// chrome — a [`crate::TooltipBorder::Full`] box, no title.
 ///
 /// `padding_x` is the horizontal padding (in pixels) from the left
 /// border to the start of text — consumers typically pass the same
@@ -52,7 +47,7 @@ pub fn draw_tooltip(
 }
 
 /// Draw a [`Tooltip`] at its resolved layout position, with the border
-/// and optional title requested by `chrome` (#541).
+/// and optional title requested by `chrome`.
 ///
 /// `padding_x` is the horizontal padding (in pixels) from the left
 /// border to the start of text — consumers typically pass the same
@@ -262,15 +257,9 @@ mod tests {
         }
     }
 
-    /// #541 ask 2: a title punches a background-coloured gap through the
-    /// top stroke so it reads as embedded in the border, not a content
-    /// row. Scans the top edge rather than probing one fixed x — the
-    /// title is horizontally centred, so a single dead-centre sample can
-    /// land on a glyph's own ink instead of the cleared pad around it.
-    /// What the punch guarantees is: somewhere in the interior the top
-    /// edge reads as background (the gap), and near the corners it's
-    /// still the plain stroke (the punch is local to the title, not the
-    /// whole edge).
+    /// A title punches a background-coloured gap through the top stroke so it
+    /// reads as embedded in the border, not a content row. The punch is local to
+    /// the title, not the whole edge, leaving the rest of the top stroke intact.
     #[test]
     fn full_border_title_punches_a_gap_but_leaves_the_rest_of_the_top_edge_stroked() {
         let tooltip = sample_tooltip();
@@ -326,7 +315,7 @@ mod tests {
         }
     }
 
-    /// #1077: styled-line spans now render `bold` through
+    /// Styled-line spans now render `bold` through
     /// `PaintSurface::surface_draw_text_run_styled` — GTK's
     /// pre-migration rasteriser cleared Pango attributes before drawing
     /// each span, silently dropping it. Observed RED before the port

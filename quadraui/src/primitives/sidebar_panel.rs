@@ -241,79 +241,33 @@ impl SidebarPanel {
     }
 }
 
-// ── PaintSurface paint (#862, Phase 2d slice 5/9 of the PaintSurface
-// milestone) ─────────────────────────────────────────────────────────────
+// Shared implementation for all backends, written against
+// [`crate::paint_surface::PaintSurface`] instead of individual
+// backend drawing APIs.
 //
-// Before this, `gtk::draw_sidebar_panel`, `macos::sidebar_panel::draw_sidebar_panel`
-// and `win::sidebar_panel::draw_sidebar_panel` each independently computed
-// this primitive's layout and then delegated painting to their own
-// backend's `toolbar::draw_toolbar` free function (quadraui#785 child
-// #811, `docs/SMELL_AUDIT_2026-07.md` §5). `paint` below is the one
-// shared implementation, written against
-// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
-// one backend's drawing API.
+// `SidebarPanel` paints nothing of its own — its entire visible
+// surface is the optional [`Toolbar`] header; the content region
+// is left to the host. `paint_toolbar_header` below duplicates
+// toolbar rendering logic scoped to what a sidebar panel's header
+// needs. When `Toolbar` gets unified painting, extract a shared
+// helper or consolidate this copy.
 //
-// `SidebarPanel` paints *nothing* of its own — its entire visible surface
-// is the optional [`Toolbar`] header (the content region is always left
-// to the host, unchanged by this migration). That means unifying this
-// primitive's paint necessarily means porting the toolbar-button
-// rendering itself to `PaintSurface`, even though `Toolbar` is not one
-// of this issue's files and hasn't had its own Phase 2d slice yet (it's
-// one of the remaining eight #811 slices, still open, and
-// `gtk::toolbar::draw_toolbar` / `macos::toolbar::draw_toolbar` /
-// `win::toolbar::draw_toolbar` are untouched by this PR — standalone
-// `Backend::draw_toolbar` still calls them directly). `paint_toolbar_header`
-// below is therefore a `PaintSurface`-generic duplicate of that
-// rendering logic, scoped to what a sidebar panel's header needs. When
-// `Toolbar` gets its own Phase 2d slice, that issue should either extract
-// a helper both primitives share or delete this copy in favour of that
-// one — flagged here so it isn't forgotten.
+// Rendering choices made to unify backends:
 //
-// Comparing the three deleted copies surfaced four divergences, reported
-// per this issue's "compare what each backend actually did" instruction
-// rather than silently picked:
+// 1. **Plain rect highlights**, not rounded: `PaintSurface` has no
+//    rounded-rect verb, so this follows the macOS/Win majority
+//    (GTK previously painted 4px-radius rounded-rect pills).
+// 2. **Clip on all backends**: GTK and macOS clipped to toolbar
+//    bounds before drawing; Win did not. This now clips uniformly.
+// 3. **Alpha-channel preserved**: Uses `surface_fill_rect` which
+//    respects `Color::a`, unlike the old GTK path that dropped it.
+// 4. **Default theme on Win**: `WinBackend::draw_sidebar_panel`
+//    passes `Theme::default()`, not live theme — consistent with
+//    how `Panel` chrome is rendered.
 //
-// 1. **Rounded vs. plain highlight/focus-ring rects.** GTK painted the
-//    hover/pressed/active highlight and the keyboard-focus ring as a
-//    4px-radius rounded-rect pill (`gtk::rounded_rect_path`); macOS and
-//    Win already painted plain rectangles (win's own module doc called
-//    this out as a scope gap: "no rounded-rect / stroke-inset helper
-//    exists yet in `win::text`"). `PaintSurface::surface_fill_rect` /
-//    `surface_stroke_rect` have no rounded-rect verb, so the unified
-//    `paint_toolbar_header` necessarily follows the 2-of-3 majority
-//    (macOS/Win's plain rect) — GTK's toolbar-header buttons lose their
-//    rounded corners. A future issue could add a `PaintSurface`
-//    rounded-rect verb if the corner treatment is worth restoring.
-// 2. **Missing clip on Win.** GTK (`cr.clip()`) and macOS
-//    (`CGContextClipToRect`) both clipped painting to the toolbar
-//    bounds before drawing; `win::toolbar::draw_toolbar` never clipped
-//    at all. Nothing documents this as deliberate, so — mirroring how
-//    #811/#859 fixed the analogous GTK alpha-drop omission at the
-//    source rather than reproducing it — `paint_toolbar_header` clips via
-//    `surface_push_clip`/`surface_pop_clip` on every backend, closing
-//    the Win gap instead of carrying it forward.
-// 3. **GTK alpha-drop.** The old `gtk::toolbar::draw_toolbar` filled the
-//    bar background and button highlights via `gtk::set_source`
-//    (`cr.set_source_rgb`), dropping `Color::a` — the exact class of bug
-//    #811 fixed once, at the source, in `GtkBackend::surface_fill_rect`
-//    (now `set_source_rgba`). Routing through `surface_fill_rect` here
-//    inherits that fix automatically; no extra code needed, and no
-//    visible effect today since `Toolbar.bg` / theme colours are always
-//    opaque.
-// 4. **Win never wired a live theme through.** `win::toolbar::draw_toolbar`
-//    (and thus the old `win::sidebar_panel::draw_sidebar_panel`, which
-//    called it) takes no `Theme` parameter at all — it always painted
-//    with `Theme::default()`, matching the same "not wired through yet"
-//    posture `WinBackend::draw_panel` documents for `Panel` chrome (#859).
-//    Preserved as-is: `WinBackend::draw_sidebar_panel` still passes
-//    `Theme::default()` into the shared `paint`, not `self.current_theme`
-//    — fixing this is `win::toolbar`'s own gap, out of scope for #862.
-//
-// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
-// — only *called* once a real pixel backend is compiled in, exercised by
-// each backend's own `Backend::draw_sidebar_panel` call site plus this
-// module's own `RecordingSurface` tests on every leg that enables one of
-// the three cfg'd features.
+// `#[allow(dead_code)]`: only called when a real pixel backend is
+// compiled in, exercised by each backend's `Backend::draw_sidebar_panel`
+// call site plus this module's `RecordingSurface` tests.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -344,24 +298,17 @@ pub(crate) mod native_surface_paint {
         }
     }
 
-    /// Paint a [`SidebarPanel`] into `bounds` on `surface`, returning the
-    /// resolved [`SidebarPanelLayout`] for the caller's click dispatch —
-    /// same contract as [`crate::Backend::draw_sidebar_panel`]:
-    /// `content_bounds` / `toolbar_bounds` are **ABSOLUTE** (shifted by
-    /// `bounds.x`/`bounds.y`), matching every backend's pre-#862
-    /// rasteriser and [`crate::Backend::sidebar_panel_layout`]'s
-    /// documented contract. The content region is never painted — same
-    /// contract as before this migration; the host paints
-    /// `layout.content_bounds` itself.
+    /// Paint a [`SidebarPanel`] into `bounds` on `surface`, returning
+    /// the resolved [`SidebarPanelLayout`]. The `content_bounds` and
+    /// `toolbar_bounds` in the layout are absolute (shifted by
+    /// `bounds.x`/`bounds.y`). The content region is never painted
+    /// — the host paints `layout.content_bounds` itself.
     ///
     /// `hovered_toolbar_id` / `pressed_toolbar_id` tint the matching
-    /// toolbar action button; the primitive itself carries no mouse
-    /// state.
+    /// toolbar action button; the primitive carries no mouse state.
     ///
-    /// A non-positive `bounds.width`/`bounds.height` short-circuits to
-    /// the no-paint layout without touching `surface` at all, matching
-    /// every pre-#862 per-backend copy's `if w <= 0.0 || h <= 0.0 {
-    /// return layout; }` guard.
+    /// Non-positive `bounds.width` or `bounds.height` short-circuits
+    /// without touching `surface`.
     pub(crate) fn paint(
         panel: &SidebarPanel,
         surface: &mut dyn PaintSurface,
@@ -420,8 +367,7 @@ pub(crate) mod native_surface_paint {
         hovered_id: Option<&WidgetId>,
         pressed_id: Option<&WidgetId>,
     ) {
-        // Divergence 2: clip on every backend, closing the pre-#862 Win
-        // gap instead of reproducing it.
+        // Clip to toolbar bounds on all backends.
         surface.surface_push_clip(tb_bounds);
 
         let bar_bg = bar.bg.unwrap_or(theme.header_bg);
@@ -450,10 +396,8 @@ pub(crate) mod native_surface_paint {
                     let is_pressed = *enabled && pressed_id == Some(id);
                     let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
 
-                    // Highlight background: pressed/active > hovered >
-                    // none. Plain rect — see divergence 1 (GTK's
-                    // pre-#862 rounded-rect pill isn't reproducible
-                    // against `PaintSurface`).
+                    // Highlight background: pressed/active > hovered > none.
+                    // Plain rect (no rounded corners).
                     let highlight = if is_pressed || *is_active {
                         Some(theme.selected_bg)
                     } else if is_hovered {
@@ -559,7 +503,7 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// #1073: test-only recorder — `paint` never calls this verb
+            /// Test-only recorder — `paint` never calls this verb
             /// (see this module's own doc for why no primitive here has been
             /// migrated onto it yet); this exists only so `RecordingSurface`
             /// satisfies the trait. Records into the same `fills` list as

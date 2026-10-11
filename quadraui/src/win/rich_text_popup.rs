@@ -1,19 +1,10 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::RichTextPopup`]
-//! (issue #28).
 //!
-//! Content painting moved to the shared
-//! [`crate::primitives::rich_text_popup::native_surface_paint::paint`]
-//! (#1077, `PaintSurface` Phase 4 slice 4/8 — GTK is deliberately not
-//! part of this migration, see that fn's module doc). This backend was
-//! already the richest of the three pre-migration (selection bg, bold,
-//! focused-link underline, link hit regions); the shared `paint` closes
-//! two gaps found while consolidating: content-area clipping (this
-//! rasteriser never clipped an overlong line to the popup's own
-//! border), and the scrollbar's paint geometry (this rasteriser painted
-//! [`crate::primitives::rich_text_popup::RichTextPopupLayout::scrollbar`]'s
-//! bare 1-unit track/thumb verbatim, at fully opaque `theme.muted_fg`,
-//! instead of the wider, translucent bar GTK/macOS both paint — see the
-//! shared `paint`'s module doc for why that's the adopted geometry now).
+//! Content painting is shared with other backends via
+//! [`crate::primitives::rich_text_popup::native_surface_paint::paint`].
+//! This backend implements selection background, bold text, focused-link
+//! underline, and link hit regions. The shared paint function also handles
+//! content-area clipping and scrollbar geometry that match other backends.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod rich_text_popup;` and
@@ -103,7 +94,7 @@ mod tests {
         );
     }
 
-    /// #1077: the scrollbar now paints the same wider,
+    /// The scrollbar now paints the same wider,
     /// [`native_surface_paint::SB_WIDTH`]-wide translucent bar GTK/macOS
     /// paint — pre-migration this rasteriser painted the primitive's
     /// bare 1-unit `layout.scrollbar.track` verbatim, fully opaque.

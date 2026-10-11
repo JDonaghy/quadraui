@@ -1,6 +1,6 @@
 //! `WorkspaceDemo` `ShellApp` + `quadraui::tui::shell_runner::run_with_shell`.
 //!
-//! `WorkspaceController` (quadraui#596) mounted **inside an AppShell
+//! `WorkspaceController` mounted **inside an AppShell
 //! panel**: the controller paints its own tab strip into the sidebar's
 //! content rect, and this app paints the active document's body into the
 //! main content area. Click a tab to activate it, click its `×` to close

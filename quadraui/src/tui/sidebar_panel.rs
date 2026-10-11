@@ -124,8 +124,8 @@ mod tests {
     }
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
-    // must return coords in the same frame across backends"
-    // (quadraui#494). `tui_sidebar_panel_layout` bakes `area.x`/
+    // must return coords in the same frame across backends".
+    // `tui_sidebar_panel_layout` bakes `area.x`/
     // `area.y` straight into `panel.layout`'s returned bounds
     // (absolute frame), so the regression guard is a full
     // paint+hit_test round trip re-run at a non-zero origin.
@@ -145,8 +145,7 @@ mod tests {
         click_in_header_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):
-    /// the same header-click round trip must hold when the panel isn't
+    /// The same header-click round trip must hold when the panel isn't
     /// painted at the screen origin.
     #[test]
     fn click_in_header_resolves_to_toolbar_button_at_nonzero_origin() {

@@ -1,11 +1,9 @@
 //! `FindReplaceApp` — minimal visual smoke test for the `FindReplacePanel`
-//! primitive's [`FindReplacePanel::hit_test`] (quadraui#818).
+//! primitive's [`FindReplacePanel::hit_test`].
 //!
 //! Renders the find/replace overlay anchored at the top-right of a
 //! full-screen "editor" area. Clicking a toggle/nav/close button reports
-//! which [`quadraui::FindReplaceClickTarget`] was hit in the status bar
-//! — the primitive's first click-routed consumer (before #818,
-//! `FindReplacePanel` had no `hit_test` at all).
+//! which [`quadraui::FindReplaceClickTarget`] was hit in the status bar.
 //!
 //! ## Key bindings
 //!
@@ -81,7 +79,7 @@ impl FindReplaceApp {
     /// same absolute coordinates `tui::draw_find_replace` paints at.
     /// Mirrors that function's `x`/`y` derivation exactly — see its own
     /// doc — so click routing can't drift from where the panel is
-    /// actually painted (quadraui#818).
+    /// actually painted.
     fn content_origin(&self, rect: Rect) -> (f32, f32) {
         let editor_left = rect.x;
         let panel_w = (self.panel.panel_width as f32).min((rect.width - 2.0).max(0.0));

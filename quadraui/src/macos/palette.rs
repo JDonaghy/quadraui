@@ -1,28 +1,16 @@
 //! macOS rasteriser for [`crate::Palette`].
 //!
 //! Content painting (background, border, title/query/item rows,
-//! scrollbar, create row, preview pane) moved to the shared
-//! [`crate::primitives::palette::native_surface_paint::paint`] (#1076,
-//! `PaintSurface` Phase 4 slice 3/8) — see that fn's module doc for
-//! what's shared. Notably, this migration upgrades macOS's item rows
-//! from plain-fg-only text (this module's pre-migration "Scope
-//! omissions" below, kept for the historical record) to the same
+//! scrollbar, create row, preview pane) uses the shared
+//! [`crate::primitives::palette::native_surface_paint::paint`]
+//! — see that fn's module doc for what's shared. This provides
 //! match-position highlighting, icon rendering, query cursor, and
-//! `PaletteMode::Input` suppression every other backend now shares.
+//! `PaletteMode::Input` suppression consistent across all backends.
 //!
 //! Mirrors [`crate::gtk::palette::draw_palette`]: bordered box, title
 //! row, query input with cursor, separator, scrollable item list with
 //! selection highlight, optional pinned create-action row, optional
 //! preview pane, optional scrollbar.
-//!
-//! ## Scope omissions (historical, pre-#1076)
-//!
-//! - **Match-position highlighting** — `PaletteItem.match_positions`
-//!   per-character fg highlights were deferred with the unified
-//!   text-attribute pass. Items rendered in plain fg. Fixed by #1076.
-//! - **Preview pane content** — preview lines rendered as plain text;
-//!   syntax-highlighted spans landed with the same pass. Fixed by #1076
-//!   (preview lines now honour each span's own `fg`).
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
@@ -32,10 +20,8 @@ use crate::theme::Theme;
 
 /// Compute the macOS palette layout (used by both paint and host
 /// hit-testing). Thin `f64`-converting wrapper over
-/// [`crate::primitives::palette::native_surface_paint::layout`] (#1076)
-/// — the canonical geometry formula every backend now shares instead of
-/// once-per-backend copies (see that module's doc for the three-way
-/// drift this closes: `query_height`, row flooring, scrollbar width).
+/// [`crate::primitives::palette::native_surface_paint::layout`]
+/// — the canonical geometry formula every backend shares.
 ///
 /// Coordinate frame: all returned bounds (`title_bounds`,
 /// `query_bounds`, `visible_items.bounds`, `create_bounds`,
@@ -45,10 +31,6 @@ use crate::theme::Theme;
 /// calling `PaletteLayout::hit_test`. The `x` / `y` params are kept in
 /// the signature for symmetry with `draw_palette` but do not affect
 /// output.
-///
-/// See `quadraui/docs/decisions/DECISIONS.md` D-007, "Palette: deferred,
-/// not missed" for why `Backend::palette_layout` didn't ship until #818
-/// (resolved before #1076).
 pub fn mac_palette_layout(
     palette: &Palette,
     _x: f64,
@@ -63,7 +45,7 @@ pub fn mac_palette_layout(
 /// Draw a [`Palette`] modal into `(x, y, w, h)` on `ctx`.
 ///
 /// `nerd_fonts_enabled` selects between item icons' Nerd-Font glyph and
-/// ASCII fallback (issue #804), matching every other backend's
+/// ASCII fallback, matching every other backend's
 /// `draw_palette`.
 ///
 /// # Safety
@@ -223,10 +205,9 @@ mod tests {
         );
     }
 
-    /// Regression for issue #503: `query_cursor` is a host-supplied byte
-    /// offset with no guarantee it lands on a char boundary —
-    /// `&palette.query[..query_cursor]` used to panic the moment a
-    /// multibyte character sat left of the cursor.
+    /// Regression: `query_cursor` is a host-supplied byte offset with no
+    /// guarantee it lands on a char boundary — `&palette.query[..query_cursor]`
+    /// must not panic when a multibyte character sits left of the cursor.
     #[test]
     fn draw_palette_with_multibyte_cursor_does_not_panic() {
         let mut p = sample_palette();
@@ -239,17 +220,12 @@ mod tests {
         let _surface = paint_via_backend(&p);
     }
 
-    /// Regression for #1076: pre-migration, macOS's `draw_palette`
-    /// painted every item row in plain `surface_fg` regardless of
-    /// `match_positions` — this module's own "Scope omissions" doc used
-    /// to name it directly. `paint`'s shared `matched_runs` splitter
-    /// (ported from `win::palette`) now highlights matched characters in
-    /// `match_fg` on every backend, including macOS. Scanning for
-    /// `match_fg`-nearest ink (rather than an exact-equality probe at a
-    /// guessed glyph coordinate) mirrors `win::palette`'s own
-    /// `renders_and_highlights_match_positions` test, since real
-    /// CoreText glyph placement inside the row box isn't predictable
-    /// ahead of a live paint pass.
+    /// Regression: item text must highlight match positions. `paint`'s
+    /// shared `matched_runs` splitter highlights matched characters in
+    /// `match_fg` on every backend. Scanning for `match_fg`-nearest ink
+    /// (rather than an exact-equality probe at a guessed glyph coordinate)
+    /// mirrors the Windows implementation, since real CoreText glyph
+    /// placement inside the row box isn't predictable ahead of a live paint.
     #[test]
     fn selected_item_text_highlights_match_positions() {
         let p = sample_palette();
@@ -285,9 +261,8 @@ mod tests {
         );
     }
 
-    /// Regression for #1076: pre-migration, macOS's `draw_palette` never
-    /// rendered `PaletteItem::icon` at all — only GTK did. `paint` now
-    /// paints it via `PaintSurface::surface_draw_icon_glyph` on every
+    /// Regression: item icons must paint left of the label. `paint`
+    /// paints icons via `PaintSurface::surface_draw_icon_glyph` on every
     /// backend.
     #[test]
     fn item_icon_paints_left_of_the_label() {
@@ -331,19 +306,12 @@ mod tests {
         );
     }
 
-    /// Regression for #1076's **query_height** geometry drift: pre-#1076
-    /// `mac_palette_layout` reserved a bare `line_height` for the query
-    /// row; GTK alone reserved `line_height + 1.0`, the `+ 1.0` being the
-    /// separator stroke that sits in the query band's **last pixel**
-    /// (D-007 §2). `native_surface_paint::layout` now uses GTK's formula
-    /// for every backend, so both the separator and the first item row
-    /// sit one pixel lower than the pre-#1076 macOS geometry did.
-    ///
-    /// Paints through the real `MacBackend`/Core Graphics path and pins
-    /// the separator to the reserved pixel — *inside* `query_bounds`, not
-    /// at `query_bounds.y + query_bounds.height`, which is already the
-    /// first item row (painting it there let the first row's fill
-    /// overpaint it; see this same test's Windows twin).
+    /// Regression: separator geometry must match the unified layout formula.
+    /// `native_surface_paint::layout` reserves `line_height + 1.0` for the
+    /// query row, with the separator stroke in its last pixel (inside
+    /// `query_bounds`, not at `query_bounds.y + query_bounds.height`).
+    /// This test paints through the real `MacBackend`/Core Graphics path
+    /// and verifies the separator position.
     #[test]
     fn separator_paints_at_corrected_row_not_drifted_one() {
         let p = sample_palette();
@@ -407,17 +375,13 @@ mod tests {
             .collect()
     }
 
-    /// Regression for #1076's **row-flooring** geometry drift: pre-#1076
-    /// `mac_palette_layout` fed `Palette::layout` the full popup height,
-    /// so its per-row clamp (`height.min(remaining)`) could hand back a
-    /// clipped, partial-height last row whenever the available item-list
-    /// height wasn't an exact multiple of `line_height`. GTK's pre-#1076
-    /// formula floored the row count and fed a reduced `viewport_height`
-    /// instead; `native_surface_paint::layout` now does that for every
-    /// backend. `H` (240) and `line_height` (16) are chosen so the
+    /// Regression: item list must never show a partial last row. The unified
+    /// layout formula floors the row count and feeds a reduced `viewport_height`
+    /// to avoid clipped rows when available height isn't an exact multiple of
+    /// `line_height`. `H` (240) and `line_height` (16) are chosen so the
     /// available item area (203px after title/query/bottom-inset) is
-    /// *not* an exact multiple of 16 — the exact condition that produced
-    /// a partial last row pre-#1076.
+    /// not an exact multiple of 16 — the condition that would produce
+    /// a partial last row.
     #[test]
     fn item_list_never_shows_a_partial_last_row() {
         let mut p = sample_palette();
@@ -451,12 +415,9 @@ mod tests {
         );
     }
 
-    /// Regression for #1076's **scrollbar width** geometry drift:
-    /// pre-#1076 macOS's own `mac_palette_layout` used `(8.0, 8.0)` for
-    /// `(scrollbar_width, min_thumb_len)`; GTK and Windows had already
-    /// agreed on `(6.0, 8.0)`. `native_surface_paint` adopts the
-    /// GTK/Windows majority value for every backend, narrowing macOS's
-    /// scrollbar track from 8px to 6px.
+    /// Regression: scrollbar track width must be 6px, matching GTK and Windows.
+    /// `native_surface_paint` uses the common `(scrollbar_width, min_thumb_len)`
+    /// values of `(6.0, 8.0)` across all backends.
     #[test]
     fn scrollbar_track_width_is_six_px_not_eight() {
         let mut p = sample_palette();
@@ -473,22 +434,13 @@ mod tests {
              not macOS's pre-#1076 8.0px",
         );
 
-        // Driver-tier: paint through the real backend and probe the
-        // columns that tell a 6px track apart from macOS's pre-#1076 8px
-        // one — the two columns immediately left of `sb.track.x` must
-        // still be plain `surface_bg`, because an 8px track starting 2px
-        // further left would have filled them.
-        //
-        // Exact-equality probes against `surface_bg` (the pattern
-        // `macos::tree`'s `paints_vertical_scrollbar_track_when_overflowing`
-        // uses), *not* a colour-distance "is there ink here" threshold:
-        // `native_surface_paint::paint` fills the track with
-        // `theme.scrollbar_track.with_alpha(0.4)`, which over
-        // `theme.surface_bg` lands ~5 levels per channel away from it
-        // (rgb(28,32,44) → ~rgb(33,37,49)). That is a decisive
-        // difference for an equality probe but far below any plausible
-        // ink threshold, so the scan this replaces could never find the
-        // boundary it was looking for.
+        // Paint through the real backend and probe the columns that tell
+        // a 6px track apart from an 8px one — the two columns immediately
+        // left of `sb.track.x` must still be plain `surface_bg`. Use
+        // exact-equality probes against `surface_bg`: `native_surface_paint`
+        // fills the track with `theme.scrollbar_track.with_alpha(0.4)`, which
+        // over `theme.surface_bg` produces a decisive difference for an
+        // equality probe.
         let surface = paint_via_backend(&p);
         let theme = Theme::default();
         // The thumb sits at the top of the track at `scroll_offset == 0`
@@ -542,16 +494,9 @@ mod tests {
     fn layout_returns_local_coords_when_area_offset() {
         // Cross-backend contract: all bounds returned by
         // mac_palette_layout are in palette-local coords (origin
-        // 0, 0), regardless of where the rasteriser paints, matching
-        // `tui_palette_layout` and `gtk_palette_layout`. Hosts
+        // 0, 0), regardless of the palette's area offset. Hosts
         // subtract area.x/area.y from absolute click coords before
         // hit_test.
-        //
-        // Regression for #190: prior to the fix, mac_palette_layout
-        // shifted hit_regions to absolute coords. Latent today (no
-        // `Backend::palette_layout` trait method exposes the layout
-        // to consumers), but ready to bite the moment one is added —
-        // same shape as #44's tree/form click drift.
         let p = sample_palette();
         // Area offset by (40, 80) — palette modals are typically
         // centred / inset within a window.

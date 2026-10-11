@@ -9,14 +9,6 @@
 //! Backend-specific differences (line-height units, pixel vs cell sizes) are
 //! encapsulated in [`crate::Backend`] method calls; the adapter only uses the
 //! trait surface.
-//!
-//! # Note on code sharing
-//!
-//! Previously the TUI and GTK runners each embedded a byte-for-byte copy of
-//! `ShellAdapter` and its `AppLogic` impl. This module is the single canonical
-//! location; the per-backend `run_with_shell` functions merely construct the
-//! adapter (via [`build_shell_adapter`], also shared here — #497) and forward
-//! it to their native runner.
 
 use std::cell::RefCell;
 
@@ -47,7 +39,7 @@ pub(crate) struct ShellAdapter<A: ShellApp> {
     pub(crate) bottom_panel: Option<RefCell<BottomPanelController>>,
     /// Editor font override from `ShellConfig::with_editor_font`
     /// (family, size_pt), applied once in `setup()` via
-    /// `Backend::set_editor_font` (#422). `None` leaves the backend's own
+    /// `Backend::set_editor_font`. `None` leaves the backend's own
     /// default font in place.
     pub(crate) editor_font: Option<(String, f32)>,
 }
@@ -92,7 +84,7 @@ impl<A: ShellApp> ShellAdapter<A> {
     /// Build a [`ShellContext`] for the current dispatch and notify
     /// [`ShellApp::on_shell_event_ctx`] with it, then return
     /// `Reaction::Redraw` — the shape every `AppShellEvent` arm in
-    /// [`Self::handle`] needs (#617).
+    /// [`Self::handle`] needs.
     ///
     /// Built fresh per call (rather than once before the caller's match)
     /// so it picks up any state the caller already applied to
@@ -126,8 +118,7 @@ impl<A: ShellApp> ShellAdapter<A> {
 /// [`crate::gtk::shell_runner::run_with_shell`]) and the headless test
 /// drivers ([`crate::tui::testing::driver_with_shell`],
 /// [`crate::gtk::testing::driver_with_shell`]) all call this so they cannot
-/// drift apart as [`ShellConfig`] grows (#497 — previously each backend
-/// re-inlined an identical copy of this function). It takes only
+/// drift apart as [`ShellConfig`] grows. It takes only
 /// backend-neutral inputs (`ShellConfig` + the app), so a future backend
 /// (macOS, win) adopts it by calling it directly — no per-backend copy
 /// needed.
@@ -144,20 +135,18 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
         .with_position(config.position)
         .with_bottom_bands(config.bottom_bands);
 
-    // #914: replay every `ShellConfig::with_panel_icon` override onto the
-    // built `AppShell`. Before this loop existed, `ShellConfig.panel_icons`
-    // had nowhere to go — `AppShell::with_panel_icon` (#683) is a consuming
+    // Replay every `ShellConfig::with_panel_icon` override onto the
+    // built `AppShell`. `AppShell::with_panel_icon` is a consuming
     // `mut self -> Self` builder, and this is the only place an `AppShell`
-    // is constructed from a `ShellConfig`, so no `ShellApp` consumer could
-    // reach it at all. Covers both `config.panels` and `config.bottom_items`
-    // — `AppShell::with_panel_icon` doesn't distinguish the two, and #683's
-    // own `with_panel_icon_applies_to_bottom_items` test pins that.
+    // is constructed from a `ShellConfig`. Covers both `config.panels` and
+    // `config.bottom_items` — `AppShell::with_panel_icon` does not
+    // distinguish the two.
     for (id, icon) in config.panel_icons {
         shell = shell.with_panel_icon(id, icon);
     }
 
     // Fixed-pixel override wins over the line-height multiple set just
-    // above — see `AppShell::with_activity_bar_width_px` (#657).
+    // above — see `AppShell::with_activity_bar_width_px`.
     if let Some(width_px) = config.activity_bar_width_px {
         shell = shell.with_activity_bar_width_px(width_px);
     }
@@ -168,7 +157,7 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
     // bar started hidden — exactly the case where it matters later: a
     // consumer that reveals the bar at runtime via `set_title_bar_visible`
     // got the `AppShell` struct default (1.5 line-heights) instead of the
-    // height it configured (#547).
+    // height it configured.
     shell = shell.with_title_bar(config.title_bar_height_lh);
     if let Some(min_px) = config.title_bar_min_px {
         shell = shell.with_title_bar_min_px(min_px);
@@ -221,7 +210,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
     type AreaId = ();
 
     fn setup(&mut self, backend: &mut dyn Backend) {
-        // Apply the configured editor font (#422) before anything else so
+        // Apply the configured editor font before anything else so
         // it's in place for the app's own `setup()` and the very first
         // frame. `Backend::set_editor_font` no-ops on backends without a
         // font concept (TUI).
@@ -278,7 +267,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             self.app.render_content(backend, &layout);
         }
 
-        // #997: independently-gated bottom bands render after main content,
+        // Independently-gated bottom bands render after main content,
         // in bottom-up stacking order. No-op for apps that never called
         // `ShellConfig::with_bottom_bands` (empty by default).
         for (id, bounds) in self.shell.bottom_band_bounds() {
@@ -306,7 +295,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         // bottom-panel tab-strip click check further down — both hit-test
         // purely on screen position, so an open modal that overlaps chrome
         // would otherwise have its `MouseDown` / `MouseUp` silently
-        // swallowed by the chrome (issue #411). Consult the backend's
+        // swallowed by the chrome. Consult the backend's
         // `ModalStack` directly — the same source `dispatch_click` /
         // `dispatch_mouse_down` (`crate::dispatch`) used to tag the event's
         // `widget` field — and route straight to the app when the position
@@ -367,7 +356,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             AppShellEvent::Ignored => {}
         }
 
-        // ── Built-in activity-bar keyboard navigation (#409) ──────────────
+        // ── Built-in activity-bar keyboard navigation ─────────────────────
         //
         // `AppShell::build_activity_bar()` (compose/app_shell.rs) already
         // implements the full keyboard-cursor API (select_next/prev,
@@ -482,8 +471,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
 /// `None` for any other event variant.
 ///
 /// Used to consult the backend's [`crate::modal_stack::ModalStack`] before
-/// letting shell chrome (`AppShell::handle`) hit-test the same position —
-/// only these two variants are position-gated by chrome logic today.
+/// letting shell chrome (`AppShell::handle`) hit-test the same position.
 fn mouse_event_position(event: &UiEvent) -> Option<Point> {
     match event {
         UiEvent::MouseDown { position, .. } => Some(*position),
@@ -527,23 +515,10 @@ mod tests {
         }
     }
 
-    /// #547: `title_bar_height_lh` must survive a start-hidden title bar.
+    /// `title_bar_height_lh` must survive a start-hidden title bar.
     ///
-    /// Before the fix, `build_shell_adapter` only called
-    /// `shell.with_title_bar(height)` when `config.has_title_bar` was
-    /// already `true`, so a consumer configuring a 1-line-height bar but
-    /// starting it hidden (the common case: reveal on demand, e.g. a menu
-    /// bar toggled via `Alt` or `:set menu`) had the height silently
-    /// discarded. `set_title_bar_visible(true)` would then reserve the
-    /// `AppShell` struct default of 1.5 line-heights — 2 rows at
-    /// `line_height = 1.0` — instead of the configured 1 row. This test
-    /// must fail before the fix.
-    ///
-    /// #497: this test used to be duplicated verbatim in
-    /// `tui::shell_runner` and `gtk::shell_runner` — one copy per backend
-    /// that inlined `build_shell_adapter`. Now that the function lives
-    /// here once, so does its regression coverage; both backends exercise
-    /// the exact same code path, so one test suffices.
+    /// When the title bar starts hidden, `set_title_bar_visible(true)` must
+    /// respect the configured height rather than fall back to the default.
     #[test]
     fn title_bar_height_lh_survives_start_hidden_then_shown() {
         let mut config = ShellConfig::new("t", Vec::new());
@@ -580,7 +555,7 @@ mod tests {
         assert_eq!(tb.height, 1.0);
     }
 
-    /// #1045: `ShellConfig::with_title_bar_min_px` reaches the built
+    /// `ShellConfig::with_title_bar_min_px` reaches the built
     /// `AppShell` so a floor set on the config actually floors the
     /// resolved title-bar height, not just stores a field nobody reads.
     #[test]
@@ -597,11 +572,8 @@ mod tests {
         assert_eq!(tb.height, 34.0);
     }
 
-    /// #914: `ShellConfig::with_panel_icon` overrides survive
-    /// `build_shell_adapter` into the underlying `AppShell` — for both a
-    /// top panel and a bottom item — closing the gap where the seam #683
-    /// added (`AppShell::with_panel_icon`) was unreachable from any
-    /// `ShellConfig`-based consumer.
+    /// `ShellConfig::with_panel_icon` overrides are applied to the underlying
+    /// `AppShell` for both top panels and bottom items.
     #[test]
     fn build_shell_adapter_replays_panel_icon_overrides() {
         use crate::compose::app_shell::PanelDefinition;
@@ -641,7 +613,7 @@ mod tests {
         );
     }
 
-    /// #997: `ShellConfig::bottom_bands` reaches the built `AppShell` —
+    /// `ShellConfig::bottom_bands` reaches the built `AppShell` —
     /// before this call was added to `build_shell_adapter`, a
     /// `ShellApp`-based consumer had no path to the new N-band layout at
     /// all (only a direct `AppShell::with_bottom_bands` chain, i.e.

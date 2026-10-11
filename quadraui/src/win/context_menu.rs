@@ -1,10 +1,9 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::ContextMenu`] (issue #28).
+//! Direct2D / DirectWrite rasteriser for [`crate::ContextMenu`].
 //!
-//! Content painting moved to the shared
+//! Content painting is delegated to the shared
 //! [`crate::primitives::context_menu::native_surface_paint::paint`]
-//! (#1077, `PaintSurface` Phase 4 slice 4/8) — see that fn's module
-//! doc for the two small drifts it resolved (box corner rounding,
-//! separator stroke weight). This module only builds the
+//! — see that function's module doc for details on box corner
+//! rounding and separator stroke weight. This module builds the
 //! [`crate::win::surface::D2dSurface`] adapter and delegates.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s

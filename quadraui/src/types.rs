@@ -68,7 +68,7 @@ impl Color {
     /// against. Returns `None` on malformed input, same rules as
     /// `from_hex`.
     ///
-    /// Lifted from vimcode's `render::Color::try_from_hex_over` (#775),
+    /// Lifted from vimcode's `render::Color::try_from_hex_over`,
     /// where it exists because VS Code theme JSON commonly expresses
     /// translucent overlay colours (`editor.lineHighlightBackground`,
     /// diff backgrounds, bracket-match highlights) as `#rrggbbaa` meant
@@ -129,14 +129,6 @@ impl Color {
     /// Return this colour with the alpha channel scaled to `alpha`
     /// (clamped to `[0.0, 1.0]`) on the `0..=255` byte scale, leaving
     /// `r`/`g`/`b` untouched.
-    ///
-    /// Consolidates five copy-pasted `with_alpha` helpers (quadraui#1071)
-    /// that used to live in `macos/{multi_section_view,palette,
-    /// rich_text_popup}.rs` and `primitives/{scrollbar,drop_zone}.rs` —
-    /// all four expressions were mathematically equivalent (scaling by
-    /// 255 and clamping to `0.0..=255.0` gives the same rounded byte as
-    /// clamping the input to `0.0..=1.0` first and then scaling), just
-    /// written with the clamp on either side of the multiply.
     pub fn with_alpha(self, alpha: f64) -> Self {
         Self {
             a: (255.0 * alpha.clamp(0.0, 1.0)).round() as u8,
@@ -152,7 +144,6 @@ impl Color {
     /// honour `Color::a`, as a CPU-side alpha pre-mix. Consolidates the
     /// byte-identical `win::text::blend` and
     /// `primitives::chart::native_surface_paint::blend` free functions
-    /// (quadraui#1071).
     pub fn blend(self, over: Self, alpha: f64) -> Self {
         let alpha = alpha.clamp(0.0, 1.0);
         let mix =
@@ -226,12 +217,7 @@ impl StyledText {
     ///
     /// Sums each span's [`crate::text_util::display_width`] — CJK and
     /// wide-emoji glyphs count as 2, combining marks count as 0, so this
-    /// is not the same as `chars().count()`. Before #471, this counted
-    /// `chars()` directly: the #206 unicode-width fix landed only in the
-    /// `tui`-feature-gated rasteriser cell logic and never reached this
-    /// core type, so every layout site measuring a `StyledText` with
-    /// non-ASCII content (TUI `Form`, `MultiSectionView`, GTK
-    /// `sidebar_system`) mis-measured by up to 2x.
+    /// is not the same as `chars().count()`.
     pub fn visible_width(&self) -> usize {
         self.spans
             .iter()
@@ -248,12 +234,9 @@ pub struct Icon {
     pub glyph: String,
     /// ASCII or basic-Unicode fallback used when `glyph` cannot render.
     pub fallback: String,
-    /// Glyph colour. `None` (the default from `Icon::new` / the `From`
-    /// impls) paints the icon in the surrounding row's default foreground,
-    /// byte-identical to pre-#1057 rendering. `Some` matches
-    /// [`crate::TabIcon`]'s always-coloured-glyph behaviour (issue #1057):
-    /// every backend's tree renderer paints both the Nerd Font glyph and
-    /// its ASCII fallback in this colour when set.
+    /// Glyph colour. `None` paints the icon in the surrounding row's
+    /// default foreground. `Some` paints both the Nerd Font glyph and
+    /// its ASCII fallback in this colour.
     #[serde(default)]
     pub color: Option<Color>,
 }
@@ -267,7 +250,7 @@ impl Icon {
         }
     }
 
-    /// Attach a glyph colour (#1057). Painted by tree renderers in place of
+    /// Attach a glyph colour. Painted by tree renderers in place of
     /// the row's default foreground; see the `color` field docs.
     pub fn with_color(mut self, color: Color) -> Self {
         self.color = Some(color);
@@ -275,11 +258,8 @@ impl Icon {
     }
 }
 
-/// Collapse a bare string into an [`Icon`] with `glyph == fallback` — the
-/// common case for a caller that has one glyph and doesn't distinguish a
-/// Nerd Font variant from its plain-text fallback (issue #683). Keeps the
-/// `.into()` idiom working at call sites that previously produced a
-/// `String` for an icon field.
+/// Collapse a bare string into an [`Icon`] with `glyph == fallback` —
+/// the common case when the glyph and plain-text fallback are the same.
 impl From<&str> for Icon {
     fn from(s: &str) -> Self {
         Self::new(s, s)
@@ -435,24 +415,20 @@ pub struct TreeStyle {
     pub chevron_collapsed: String,
     /// Host override for non-header row height, in the backend's native
     /// unit (pixels for GTK / macOS / Win-GUI). `None` (the default)
-    /// keeps today's behaviour: GUI backends derive the row pitch from
+    /// keeps the current behaviour: GUI backends derive the row pitch from
     /// the editor `line_height` (`line_height * 1.4` for leaves and
-    /// branches); TUI rows stay a fixed 1 cell regardless — a terminal
-    /// cell can't be subdivided, so TUI ignores this field entirely.
+    /// branches); TUI rows stay a fixed 1 cell regardless.
     ///
     /// `Some(h)` pins leaf/branch rows to `h`, independent of editor
-    /// font size — e.g. VS Code's fixed 22px `list.rowHeight` (#623).
-    /// Header rows (`Decoration::Header`) are unaffected; they stay
-    /// pitched off `line_height`, since #623 only concerns item rows.
+    /// font size. Header rows (`Decoration::Header`) are unaffected; they
+    /// stay pitched off `line_height`.
     ///
     /// Integral because both GUI rasterisers `.round()` the row pitch
-    /// to whole native units before painting — a fractional override
-    /// could not survive to the frame anyway.
+    /// to whole native units before painting.
     ///
     /// Both `gtk_tree_layout` / `mac_tree_layout` (hit-test) and
     /// `draw_tree` (paint) read this same field, so paint and hit-test
-    /// stay in sync by construction — the measure/paint desync class
-    /// documented in #654 does not reappear here.
+    /// stay in sync by construction.
     #[serde(default)]
     pub row_height: Option<u16>,
 }
@@ -532,10 +508,9 @@ mod tests {
         assert_eq!(Color::from_hex("#zzzzzz"), None);
     }
 
-    /// Regression for issue #503: a multibyte char inside the hex digits
-    /// used to make `s.len()` (byte length) satisfy the `6`/`8` length
-    /// check while `&s[0..2]` etc. sliced mid-character, panicking
-    /// instead of returning `None` as the doc comment promises.
+    /// A multibyte character inside the hex digits used to make `s.len()`
+    /// (byte length) satisfy the `6`/`8` length check while slicing
+    /// mid-character, panicking instead of returning `None`.
     #[test]
     fn from_hex_multibyte_char_returns_none_instead_of_panicking() {
         // "\u{20ac}abc" ('€' + "abc") is 3 + 3 = 6 bytes, matching the RGB
@@ -549,9 +524,8 @@ mod tests {
         assert_eq!(StyledText::plain("").visible_width(), 0);
     }
 
-    /// Regression for issue #471: CJK/emoji glyphs occupy two terminal
-    /// cells each, so `visible_width` must not equal `chars().count()`
-    /// for them.
+    /// CJK/emoji glyphs occupy two terminal cells each, so `visible_width`
+    /// must account for double-width characters, not just count `chars()`.
     #[test]
     fn visible_width_cjk_counts_double_width() {
         let text = StyledText::plain("日本語");

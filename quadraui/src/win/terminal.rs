@@ -1,24 +1,9 @@
 //! Direct2D / DirectWrite support for [`crate::Terminal`] cell grids
-//! (issue #30).
 //!
-//! Painting moved to the shared [`crate::primitives::terminal::paint`] /
-//! [`crate::primitives::terminal::paint_divider`] (#810, PaintSurface
-//! Phase 2c) — see that fn's doc for the divergence (per-cell
-//! bold/italic/underline styling: this backend keeps `bold` via
-//! `DWrite::draw_text_styled`, `italic`/`underline` are still not wired
-//! up) resolved while unifying `gtk::terminal::draw_terminal_cells`,
-//! `macos::terminal::draw_terminal_cells` and
-//! `win::terminal::draw_terminal_cells` into one implementation.
-//!
-//! This module now carries no rasteriser code of its own — both deleted
-//! free functions had zero call sites in `coord-tui`/`vimcode` (`grep -rn
-//! "draw_terminal_cells\|draw_terminal_divider" ~/src/coord-tui/src
-//! ~/src/vimcode/src` — the only hits there are `Backend::draw_terminal`/
-//! `Backend::draw_terminal_divider` trait calls, whose signatures are
-//! unchanged); [`crate::win::multi_section_view`]'s embedded `Terminal`
-//! section body — the one in-tree caller of the old free function
-//! outside `WinBackend` itself — now goes through
-//! [`super::surface::D2dSurface`] instead (see that struct's module doc).
+//! Painting uses shared [`crate::primitives::terminal::paint`] and
+//! [`crate::primitives::terminal::paint_divider`] functions — see those for
+//! per-cell styling details (this backend keeps `bold` via
+//! `DWrite::draw_text_styled`, `italic`/`underline` are not yet wired up).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod terminal;` and `backend.rs`'s
@@ -102,12 +87,9 @@ mod tests {
         assert_eq!((px.r, px.g, px.b), (magenta.r, magenta.g, magenta.b));
     }
 
-    /// #703 regression, mirroring `gtk`/`macos::terminal`'s
-    /// `wide_cell_background_spans_two_columns`: a double-width glyph
-    /// (CJK) followed by vt100's blank continuation cell must have its
-    /// background span both columns — the continuation cell's own
-    /// (different) background must NOT paint over the second half of the
-    /// wide glyph's cell.
+    /// A double-width glyph (CJK) followed by vt100's blank continuation cell
+    /// must have its background span both columns — the continuation cell's own
+    /// background must NOT paint over the second half of the wide glyph's cell.
     #[test]
     fn wide_cell_background_spans_two_columns() {
         let magenta = Color::rgb(200, 30, 200);
@@ -139,7 +121,7 @@ mod tests {
         );
     }
 
-    /// #703: mirrors `gtk::terminal`'s `narrow_wide_glyph_is_stretched_to_fill_two_cells`
+    /// Mirrors `gtk::terminal`'s `narrow_wide_glyph_is_stretched_to_fill_two_cells`
     /// — every backend now shares `wide_glyph_x_scale`, so a CJK glyph
     /// measuring 15px in an 18px (2 × 9px) box scales 1.2x here too.
     #[test]
@@ -153,13 +135,13 @@ mod tests {
         assert!((15.0 * scale - cell_w).abs() < 1e-9);
     }
 
-    /// #703: mirrors `gtk::terminal`'s `exact_fit_wide_glyph_is_not_scaled`.
+    /// Mirrors `gtk::terminal`'s `exact_fit_wide_glyph_is_not_scaled`.
     #[test]
     fn exact_fit_wide_glyph_is_not_scaled() {
         assert_eq!(wide_glyph_x_scale(18.0, 18.0), 1.0);
     }
 
-    /// #703: mirrors `gtk::terminal`'s `over_wide_glyph_is_shrunk_into_box`.
+    /// Mirrors `gtk::terminal`'s `over_wide_glyph_is_shrunk_into_box`.
     #[test]
     fn over_wide_glyph_is_shrunk_into_box() {
         let scale = wide_glyph_x_scale(24.0, 18.0);
@@ -269,7 +251,6 @@ mod tests {
 
     /// Rows past the pane bottom must be clipped, not bled — the
     /// interactive-resize regression `gtk`/`macos` already guard
-    /// (quadraui#437 / #484).
     #[test]
     fn rows_past_the_pane_bottom_are_clipped() {
         let magenta = Color::rgb(200, 30, 200);

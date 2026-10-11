@@ -1,5 +1,5 @@
 //! Guards the `objc2-app-kit` feature list in `Cargo.toml` against the
-//! imports `src/macos/` actually makes (#498 CI fix).
+//! imports `src/macos/` actually makes.
 //!
 //! ## Why this test exists
 //!
@@ -16,9 +16,8 @@
 //! which measures exactly that). The only place a missing feature shows up
 //! is the `macOS` workflow's `macos-latest` runner — which, thanks to that
 //! workflow's `paths:` filter, is a slow, once-per-macOS-touching-PR
-//! signal. #498 burned a full merge-gate round trip on precisely this:
-//! `set_cursor` landed with `use objc2_app_kit::NSCursor` and no
-//! `"NSCursor"` feature, and nothing anywhere caught it until CI.
+//! signal. A missing feature would not be caught until the `macOS`
+//! workflow's `macos-latest` runner, after the merge gate closes.
 //!
 //! This test closes that hole with a plain text check that runs on every
 //! leg, on any OS, in milliseconds: every `objc2_app_kit::` symbol
@@ -41,7 +40,7 @@
 //! by hand, and adding an import to `src/macos/` fails this test until the
 //! author looks the symbol up (`objc2-app-kit`'s `src/generated/mod.rs`
 //! spells the `#[cfg(feature = "…")]` out next to every re-export) and
-//! registers it — which is exactly the checklist step #498 skipped.
+//! registers it — which ensures the feature is actually enabled.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -67,118 +66,92 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     // `NSApplication` itself, so the row below guards it independently.
     ("NSAlertFirstButtonReturn", "NSAlert"),
     ("NSAlertStyle", "NSAlert"),
-    // Issue #952 (`system_theme`) deliberately has **no row** for the
-    // `NSAppearance` feature, even though `Cargo.toml` enables it and
-    // `system_theme` depends on it. `NSApplication::effectiveAppearance`
-    // and `NSAppearance::name` are generated as *inherent* methods gated
-    // on `#[cfg(feature = "NSAppearance")]`, reached through the value
-    // `effectiveAppearance` returns — so `src/macos/` never names an
-    // `objc2_app_kit::NSAppearance*` symbol, and a row here would be
-    // stale by `required_feature_map_has_no_unused_entries`'s definition.
-    // Same shape as the "NSButton"/"NSControl" cfg-on-the-method case the
-    // `NSAlert` comment above describes: inexpressible as a row, so
-    // `quadraui/Cargo.toml` carries the justification instead. Do not
-    // "tidy" `"NSAppearance"` out of the manifest — it is an
-    // `unresolved method` build failure on macos-latest only.
+    // `NSAlertFirstButtonReturn`'s re-export cfg is
+    // `all(feature = "NSAlert", feature = "NSApplication")` — the only
+    // compound one in this list, and this map holds a single feature per
+    // symbol. "NSApplication" is guarded independently by the row for
+    // `NSApplication` itself.
     ("NSApplication", "NSApplication"),
     // Not `NSApplication` — see the module doc.
     ("NSApplicationActivationPolicy", "NSRunningApplication"),
     ("NSApplicationDelegate", "NSApplication"),
-    // Issue #951 (`applicationShouldTerminate:` so Cmd-Q / the app-menu
-    // Quit item run the app's `UiEvent::WindowClose` veto): lives in the
+    // `applicationShouldTerminate:` allows veto of quit actions; lives in the
     // `NSApplication` header, so here the feature *is* the symbol prefix.
     ("NSApplicationTerminateReply", "NSApplication"),
     // Not `NSWindow` — see the module doc.
     ("NSBackingStoreType", "NSGraphics"),
-    // Issue #956 (`shell.beep`): the bare `NSBeep()` C function is
-    // declared in the `NSGraphics` header alongside `NSBackingStoreType`
-    // above — there is no "NSBeep" feature. A prefix heuristic would get
-    // this wrong in the same way it gets `NSBackingStoreType` wrong.
+    // The bare `NSBeep()` C function is declared in the `NSGraphics` header
+    // alongside `NSBackingStoreType` — there is no "NSBeep" feature.
     ("NSBeep", "NSGraphics"),
-    // Issue #952 (`system_theme`): `NSColor::controlAccentColor` — the
-    // feature *is* the symbol's own name here, same shape as `NSAlert`.
+    // `NSColor::controlAccentColor` — the feature *is* the symbol's own name
+    // here, same shape as `NSAlert`.
     ("NSColor", "NSColor"),
-    // #952 review follow-up (`mac_accent_color`): `colorUsingColorSpace:`'s
-    // `NSColorSpace` argument type, used to defensively convert
-    // `controlAccentColor` to sRGB before reading its RGB components —
-    // the feature *is* the symbol's own name here, same shape as
-    // `NSColor`/`NSAlert`.
+    // `colorUsingColorSpace:` takes an `NSColorSpace` argument type, used to
+    // defensively convert `controlAccentColor` to sRGB — the feature *is* the
+    // symbol's own name here, same shape as `NSColor`/`NSAlert`.
     ("NSColorSpace", "NSColorSpace"),
     ("NSControlStateValueOff", "NSCell"),
     ("NSControlStateValueOn", "NSCell"),
     ("NSCursor", "NSCursor"),
-    // Issue #834 (OS file drop): both live in the `NSDragging` header,
-    // not `NSDraggingInfo`'s/`NSDragOperation`'s own names.
+    // Both live in the `NSDragging` header, not `NSDraggingInfo`'s/
+    // `NSDragOperation`'s own names.
     ("NSDragOperation", "NSDragging"),
     ("NSDraggingInfo", "NSDragging"),
     ("NSEvent", "NSEvent"),
-    // Issue #953 (tray click button detection, `NSEventMask` widening a
-    // status-item button's `sendActionOn:` to include right-clicks):
-    // both live in the `NSEvent` header, not features of their own.
+    // Both live in the `NSEvent` header, not features of their own.
     ("NSEventMask", "NSEvent"),
     ("NSEventModifierFlags", "NSEvent"),
     ("NSEventType", "NSEvent"),
     ("NSGraphicsContext", "NSGraphicsContext"),
-    // Issue #953 (tray icon): `TrayService::set_icon` decodes into this
-    // directly (`NSImage::initWithData`/`initWithContentsOfFile`) rather
-    // than going through `super::image`'s `CGImage` path — the feature
-    // is the symbol's own name, same shape as `NSColor`/`NSAlert`.
+    // `TrayService::set_icon` decodes into this directly rather than going
+    // through `super::image`'s `CGImage` path — the feature *is* the symbol's
+    // own name, same shape as `NSColor`/`NSAlert`.
     ("NSImage", "NSImage"),
     ("NSMenu", "NSMenu"),
     ("NSMenuItem", "NSMenuItem"),
     ("NSOpenPanel", "NSOpenPanel"),
-    // Issue #834 (OS file drop): lives in the `NSPasteboard` header.
+    // Lives in the `NSPasteboard` header.
     ("NSPasteboardTypeFileURL", "NSPasteboard"),
     ("NSSavePanel", "NSSavePanel"),
-    // Issue #959 (`PlatformServices::displays`): `NSScreen::screens`/
-    // `frame`/`visibleFrame`/`backingScaleFactor`. Lives in its own
-    // same-named header, same shape as `NSImage`/`NSColor`/`NSAlert`
-    // above.
+    // `NSScreen::screens`/`frame`/`visibleFrame`/`backingScaleFactor` live
+    // in the `NSScreen` header, same shape as `NSImage`/`NSColor`/`NSAlert`.
     ("NSScreen", "NSScreen"),
-    // Issue #953 (tray icon): both live in their own same-named headers,
-    // same shape as `NSImage`/`NSColor`/`NSAlert` above.
-    // `NSVariableStatusItemLength` (the sentinel `statusItemWithLength:`
-    // takes) lives in the `NSStatusBar` header, not a feature of its own
-    // — same shape as `NSFloatingWindowLevel`/`NSNormalWindowLevel`
-    // living in `NSWindow` above.
+    // Both live in their own same-named headers, same shape as `NSImage`/
+    // `NSColor`/`NSAlert` above. `NSVariableStatusItemLength` (the sentinel
+    // `statusItemWithLength:` takes) lives in the `NSStatusBar` header, not a
+    // feature of its own — same shape as `NSFloatingWindowLevel`/
+    // `NSNormalWindowLevel` living in `NSWindow` above.
     ("NSStatusBar", "NSStatusBar"),
     ("NSStatusItem", "NSStatusItem"),
     ("NSVariableStatusItemLength", "NSStatusBar"),
     ("NSView", "NSView"),
     ("NSViewFrameDidChangeNotification", "NSView"),
     ("NSWindow", "NSWindow"),
-    // Issue #947 (client-side titlebar): the traffic-light identifiers
-    // handed to `NSWindow::standardWindowButton:` when measuring the
-    // inset AppKit reserves at the leading edge of a
-    // `FullSizeContentView` window. Lives in the `NSWindow` header, not a
+    // The traffic-light identifiers handed to `NSWindow::standardWindowButton:`
+    // when measuring the inset AppKit reserves at the leading edge of a
+    // `FullSizeContentView` window live in the `NSWindow` header, not a
     // "NSWindowButton" feature of its own — there is no such feature.
     // `standardWindowButton:` itself is additionally cfg'd
     // `all(feature = "NSButton", feature = "NSControl", feature = "NSView")`
-    // because it hands back an `NSButton`; like `NSAlert`'s
-    // `addButtonWithTitle:` above that is a cfg on the *method*, which
-    // this per-symbol map can't express, so quadraui/Cargo.toml comments
-    // it instead. All three were already enabled for #936.
+    // because it hands back an `NSButton`; like `NSAlert`'s `addButtonWithTitle:`
+    // that is a cfg on the *method*, which this per-symbol map can't express,
+    // so quadraui/Cargo.toml comments it instead.
     ("NSWindowButton", "NSWindow"),
-    // Issue #951 (`windowShouldClose:` so the red traffic light / Cmd-W
-    // run the app's `UiEvent::WindowClose` veto): the delegate protocol
-    // is declared in the `NSWindow` header, not a "NSWindowDelegate"
-    // feature of its own — same shape as `NSWindowButton` above.
+    // The delegate protocol is declared in the `NSWindow` header, not a
+    // "NSWindowDelegate" feature of its own — same shape as `NSWindowButton`.
     ("NSWindowDelegate", "NSWindow"),
-    // Issue #834 (HiDPI runtime change): lives in the `NSWindow` header,
-    // same as `NSWindowStyleMask` above.
+    // Lives in the `NSWindow` header, same as `NSWindowStyleMask`.
     ("NSWindowDidChangeBackingPropertiesNotification", "NSWindow"),
     ("NSWindowStyleMask", "NSWindow"),
-    // Issue #950 (window control, `set_always_on_top`): both level
-    // constants live in the `NSWindow` header, not a feature of their
-    // own — same shape as `NSWindowButton`/`NSWindowStyleMask` above.
+    // Both level constants live in the `NSWindow` header, not a feature of
+    // their own — same shape as `NSWindowButton`/`NSWindowStyleMask` above.
     ("NSFloatingWindowLevel", "NSWindow"),
     ("NSNormalWindowLevel", "NSWindow"),
-    // Issue #947 (client-side titlebar): `setTitleVisibility:` hides
-    // AppKit's own title string so the app-drawn band doesn't
-    // double-draw it. `NSWindow` header again, same as the style mask.
+    // `setTitleVisibility:` hides AppKit's own title string so the app-drawn
+    // band doesn't double-draw it; lives in the `NSWindow` header.
     ("NSWindowTitleVisibility", "NSWindow"),
-    // Issue #952 (`system_theme`): `NSWorkspace::accessibilityDisplayShouldIncreaseContrast`
-    // — the feature *is* the symbol's own name here, same shape as `NSColor`/`NSAlert`.
+    // `NSWorkspace::accessibilityDisplayShouldIncreaseContrast` — the feature
+    // *is* the symbol's own name here, same shape as `NSColor`/`NSAlert`.
     ("NSWorkspace", "NSWorkspace"),
 ];
 
@@ -285,12 +258,9 @@ fn enabled_app_kit_features() -> BTreeSet<String> {
         }
     }
     // The `features = [` array is the only quoted content left after the
-    // comment strip, apart from the version requirement — drop that by
-    // shape (leading digit) rather than by literal, so bumping the
-    // dependency doesn't silently leave it in the set. It used to be
-    // spelled `remove("0.2")`, which stopped matching when the manifest
-    // moved to `"0.3"`; harmless, but only because no feature is ever
-    // named after a version.
+    // comment strip, apart from the version requirement — drop that by shape
+    // (leading digit) rather than by literal so dependency bumps don't leave
+    // it in the set.
     features.retain(|f| !f.starts_with(|c: char| c.is_ascii_digit()));
     features
 }

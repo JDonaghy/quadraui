@@ -1,4 +1,4 @@
-//! TUI rasteriser for [`crate::Image`] (#662).
+//! TUI rasteriser for [`crate::Image`].
 //!
 //! TUI has no pixel grid to paint raster image content into, so there is
 //! no ASCII-art decoder here — that would be a second, much larger
@@ -7,7 +7,7 @@
 //! in the target rect, and always reports
 //! [`ImagePaintResult::Unsupported`] — never [`ImagePaintResult::Painted`]
 //! — so a host can tell "TUI painted the fallback text" apart from "GTK
-//! painted real pixels" without inspecting the screen itself (#507).
+//! painted real pixels" without inspecting the screen itself.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

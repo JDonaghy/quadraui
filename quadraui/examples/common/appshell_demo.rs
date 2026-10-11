@@ -5,7 +5,7 @@
 //! divider drag, and panel switching. The consumer renders sidebar
 //! content + main content into the bounds the shell provides.
 //!
-//! Also demonstrates the activity-bar keyboard-cursor hook (#409):
+//! Also demonstrates the activity-bar keyboard-cursor hook:
 //! `Tab` calls [`ShellContext::request_activity_keyboard_focus`] to enter
 //! keyboard-cursor mode; from there `j`/`k` (or arrows) move the cursor,
 //! `l`/`Enter`/`Space` activates the selected panel, and `Esc`/`h`/`Left`
@@ -14,12 +14,11 @@
 //! `request_activity_keyboard_focus()`; a different consumer could bind
 //! `Ctrl+W` instead of `Tab` with no quadraui changes.
 //!
-//! `Ctrl+B` demonstrates the #454 fix: [`ShellContext::shell_mut`] reaches
-//! the real `AppShell` instance quadraui's internal `ShellAdapter` actually
-//! renders, so a consumer-driven binding can call
+//! `Ctrl+B` demonstrates direct access to the real `AppShell` instance:
+//! [`ShellContext::shell_mut`] reaches the actual shell that quadraui's
+//! internal `ShellAdapter` renders, so a consumer-driven binding can call
 //! `ctx.shell_mut().toggle_sidebar()` directly instead of tracking a shadow
-//! `AppShell` that can drift from what's on screen (the class of `Ctrl+B`
-//! bug this issue fixes).
+//! `AppShell` that can drift from what's on screen.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -33,13 +32,10 @@ use quadraui::{
 /// Shared handle onto the activity-bar rect the shell last handed this
 /// app in `render_content`, in the backend's native units.
 ///
-/// Exists for the issue #552 regression tests: they must click the
-/// *n*-th activity-bar row after revealing the title bar, and the row
-/// origin differs per backend (TUI cells vs GTK pixels). Reading the
-/// real painted bounds beats hardcoding a coordinate that would be
-/// silently wrong on one backend — and `driver_with_shell` hands back a
-/// driver over the opaque `ShellAdapter`, so `driver.app()` cannot reach
-/// this `ShellApp` directly.
+/// Used by regression tests to click the *n*-th activity-bar row after
+/// revealing the title bar; the row origin differs per backend (TUI cells
+/// vs GTK pixels). Reading the real painted bounds beats hardcoding a
+/// coordinate that would be silently wrong on one backend.
 #[derive(Clone, Default)]
 pub struct ActivityProbe {
     bounds: Rc<Cell<Option<Rect>>>,
@@ -160,8 +156,7 @@ impl Default for AppShellDemo {
 impl ShellApp for AppShellDemo {
     fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
         let lh = backend.line_height();
-        // Publish the activity bar's real painted bounds for the #552
-        // regression tests (see `ActivityProbe`). Harmless in the demo.
+        // Publish the activity bar's real painted bounds for regression tests.
         self.probe.bounds.set(Some(layout.activity_bar_bounds));
 
         if let Some(content) = layout.sidebar_content_bounds {
@@ -212,7 +207,7 @@ impl ShellApp for AppShellDemo {
                 ..
             } => Reaction::Exit,
             // Tab is this demo's chosen trigger for entering activity-bar
-            // keyboard-cursor mode (#409). The shell runner (not this app)
+            // keyboard-cursor mode. The shell runner (not this app)
             // owns j/k/Enter/Esc navigation from here — see
             // `ShellAdapter::handle`. A different `ShellApp` is free to
             // bind a different key (e.g. `Ctrl+W`) to the same request.
@@ -235,11 +230,10 @@ impl ShellApp for AppShellDemo {
                 self.last_event = "Requested programmatic switch to panel:git".into();
                 Reaction::Redraw
             }
-            // `Ctrl+B` = the #454 fix: `ctx.shell_mut()` reaches the real
-            // `AppShell` `ShellAdapter` renders, so this app can call
-            // `toggle_sidebar()` on it directly — no shadow `AppShell`, no
-            // drift between what this app thinks is visible and what's
-            // actually painted (the class of bug #454 fixes).
+            // `Ctrl+B`: `ctx.shell_mut()` reaches the real `AppShell` the
+            // `ShellAdapter` renders, so this app can call `toggle_sidebar()`
+            // directly without tracking a shadow `AppShell` that could drift from
+            // what's actually painted.
             UiEvent::KeyPressed {
                 key: Key::Char('b'),
                 modifiers: Modifiers { ctrl: true, .. },
@@ -257,15 +251,9 @@ impl ShellApp for AppShellDemo {
                 };
                 Reaction::Redraw
             }
-            // `t` = reveal/hide the title bar at runtime, the way vimcode
-            // toggles its menu bar (`engine.menu_bar_visible`). This is the
-            // transition issue #552 lives in: while the bar is hidden the
-            // activity bar's origin is 0, so a hit-region that wrongly
-            // folded that origin in still lined up. The moment the title
-            // bar is revealed the origin becomes nonzero and the error
-            // appears — which is why static construction tests never saw
-            // it and only a toggle exercises the defect (same trap #547
-            // documented).
+            // `t`: reveal/hide the title bar at runtime. While hidden, the activity
+            // bar origin is 0; revealing it makes the origin nonzero, exposing any
+            // hit-region that wrongly folded the origin in.
             UiEvent::KeyPressed {
                 key: Key::Char('t'),
                 ..
@@ -283,10 +271,9 @@ impl ShellApp for AppShellDemo {
                 };
                 Reaction::Redraw
             }
-            // Pointer moves are `Ignored` by `AppShell` (it updates hover
-            // and passes the event on), so by the time we see one the
-            // shell's hover state is already settled — record it for the
-            // #552 hover regression test.
+            // Pointer moves are `Ignored` by `AppShell` (it updates hover and passes
+            // the event on), so by the time we see one the shell's hover state is
+            // already settled — record it for hover regression tests.
             UiEvent::MouseMoved { .. } => {
                 self.probe.hovered.set(ctx.shell().hovered_activity_idx());
                 Reaction::Continue
@@ -312,17 +299,10 @@ impl ShellApp for AppShellDemo {
     fn on_shell_event_ctx(&mut self, event: &AppShellEvent, ctx: &ShellContext) {
         self.last_event = match event {
             AppShellEvent::PanelChanged { panel_id } => {
-                // #617: `on_shell_event_ctx` receives a `ShellContext`, so
-                // an app can push shell state back on the *same* frame
-                // this notification fires — no intervening `handle`
-                // dispatch required. Reveal the title bar the moment
-                // Source Control becomes active, the same shape vimcode's
-                // menu-bar-reveal path needed (issue #617's downstream
-                // motivation): before this, `ShellAdapter::handle`
-                // returned immediately after this call, so a
-                // `set_title_bar_visible` here would have been skipped
-                // for the frame and only taken effect once some unrelated
-                // later event happened to reach `handle`.
+                // `on_shell_event_ctx` receives a `ShellContext`, so an app can push
+                // shell state back on the same frame this notification fires — no
+                // intervening `handle` dispatch required. Reveal the title bar the
+                // moment Source Control becomes active.
                 if panel_id.as_str() == "panel:git" {
                     ctx.shell_mut().set_title_bar_visible(true);
                 }
@@ -336,15 +316,11 @@ impl ShellApp for AppShellDemo {
                 format!("Bottom panel: {new_height:.0}px")
             }
             AppShellEvent::BottomPanelHidden => "Bottom panel hidden".into(),
-            // #1055: `AppShell` itself never opens the sidebar for a
-            // bottom-item click (a notifications bell shouldn't have to
-            // become the sidebar's owner just because it was clicked) — an
-            // app that *does* want its bottom item to own the sidebar (the
-            // Settings-gear case this issue exists for) opts in explicitly
-            // by calling `show_panel` with the clicked id, exactly like a
-            // top-panel switch. Before #1055 this call silently no-opped
-            // and the header stayed captioned with whatever top panel was
-            // open previously.
+            // `AppShell` itself never opens the sidebar for a bottom-item click
+            // (a notifications bell shouldn't have to become the sidebar's owner
+            // just because it was clicked) — an app that does want its bottom item
+            // to own the sidebar opts in explicitly by calling `show_panel` with
+            // the clicked id, exactly like a top-panel switch.
             AppShellEvent::BottomItemClicked { id } => {
                 ctx.shell_mut().show_panel(id);
                 format!("Bottom: {}", id.as_str())

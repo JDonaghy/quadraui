@@ -1,23 +1,15 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::primitives::toolbar::Toolbar`]
-//! (#730).
+//! Direct2D / DirectWrite rasteriser for [`crate::primitives::toolbar::Toolbar`].
 //!
 //! [`win_toolbar_layout`] stays here: [`Toolbar::layout`] (the D6 layout
 //! API) does every positioning decision via the shared
-//! [`crate::primitives::toolbar::measure_button`] formula (#730), this
+//! [`crate::primitives::toolbar::measure_button`] formula, this
 //! module just supplies the DirectWrite measurer. Content painting
 //! moved to the shared
-//! [`crate::primitives::toolbar::native_surface_paint::paint`] (#1081,
-//! `PaintSurface` Phase 4 slice 5/8), which also **closes this
-//! backend's own square-corner gap** described below under "Scope for
-//! #730" — that scope note is now stale: issue #1073 added
-//! [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]
-//! to every pixel backend (including this one, via
-//! [`super::text::fill_rounded_rect`]), so the hover/pressed/active
-//! highlight now paints a real rounded pill instead of a plain
-//! rectangle. See that verb's own doc, and
-//! `native_surface_paint::paint`'s module doc, for the full drift it
-//! resolved. The focus ring stays a **square** stroke on all three
-//! backends — [`PaintSurface`] has no rounded-stroke verb.
+//! [`crate::primitives::toolbar::native_surface_paint::paint`], which
+//! paints rounded highlight pills via
+//! [`super::text::fill_rounded_rect`]. The focus ring stays a
+//! **square** stroke on all three backends — [`PaintSurface`] has no
+//! rounded-stroke verb.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod toolbar;` and `backend.rs`'s
@@ -56,7 +48,7 @@ use crate::types::WidgetId;
 /// documented contract and `gtk_toolbar_layout` / `mac_toolbar_layout`.
 ///
 /// `dwrite` itself is a [`crate::primitives::layout_metrics::TextMeasure`]
-/// (issue #1078) — no wrapper struct needed; see `win::text::DWrite`'s
+/// — no wrapper struct needed; see `win::text::DWrite`'s
 /// `TextMeasure` impl doc for why the former per-module wrapper
 /// (`win::form`/`win::toolbar`'s each having their own `DWriteMeasure`)
 /// was deleted.
@@ -93,7 +85,7 @@ pub fn draw_toolbar(
 }
 
 /// [`draw_toolbar`], plus [`ToolbarPaintOptions`]: `options.valign`
-/// (issue #260) resolves where button/label text paints within a slot
+/// resolves where button/label text paints within a slot
 /// taller than one line.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_toolbar_with_options(
@@ -185,10 +177,7 @@ mod tests {
             .expect("paint toolbar")
     }
 
-    /// C0 smoke: `draw_toolbar` must actually paint + return a
-    /// click-routable layout rather than panicking or hitting a
-    /// `todo!()` (#730's acceptance bar — "draw_toolbar survives C0 on
-    /// win").
+    /// `draw_toolbar` must paint and return a click-routable layout.
     #[test]
     fn round_trip_click_hits_enabled_button() {
         let bar = sample_bar();
@@ -207,10 +196,8 @@ mod tests {
         );
     }
 
-    /// Non-zero-origin regression guard (issue #494 / LESSONS.md "Layout
-    /// helpers must return coords in the same frame across backends") —
-    /// `Toolbar::layout` bakes `rect.x`/`rect.y` into every item's
-    /// `bounds` (ABSOLUTE frame), matching the GTK/macOS/TUI twins.
+    /// Non-zero-origin layout: `Toolbar::layout` bakes `rect.x`/`rect.y`
+    /// into every item's `bounds` (ABSOLUTE frame), matching the GTK/macOS/TUI twins.
     #[test]
     fn round_trip_click_hits_enabled_button_at_nonzero_origin() {
         let bar = sample_bar();
@@ -310,7 +297,7 @@ mod tests {
         assert_eq!(painted, no_paint);
     }
 
-    /// #1081 regression: pre-migration Windows painted the hover/pressed/
+    /// Pre-migration Windows painted the hover/pressed/
     /// active highlight as a plain rectangle (this module's own doc used
     /// to list "no rounded-rect helper exists yet" as a documented scope
     /// gap) — the shared `native_surface_paint::paint` now fills a real
@@ -372,28 +359,20 @@ mod tests {
             "highlight corner pixel should NOT be filled — rounded corner (quadraui#1081), not square",
         );
 
-        // The inset rect must still be filled solid in the highlight
-        // colour somewhere away from the corners — proves this isn't
-        // just "nothing painted". Deliberately NOT the button's exact
-        // geometric centre: that's also where the "On" label's own text
-        // is centred (`tx = item.x + (item.width - tw) / 2`), and on a
-        // real Windows host DirectWrite's ClearType/greyscale
-        // anti-aliasing blends glyph ink into the surrounding highlight
-        // fill, so the centre pixel is a mix of `theme.foreground` and
-        // `theme.selected_bg` — not pure `theme.selected_bg`
-        // (quadraui#1081 CI fixup: this exact assertion read
-        // `(179, 220, 204)` instead of `theme.selected_bg`'s
-        // `(50, 60, 90)` on windows-latest; the macOS twin in
-        // `macos::toolbar` needed the same fix for CoreText smoothing).
-        // `measure_button`'s `ACTION_H_PAD = 8.0` guarantees the text
-        // always starts at `item.x + 8` regardless of font/glyph metrics
+        // The inset rect must be filled solid in the highlight colour away
+        // from the corners — proves this isn't just "nothing painted". Not the
+        // button's exact geometric centre: that's where the "On" label's text
+        // is centred (`tx = item.x + (item.width - tw) / 2`), and DirectWrite's
+        // ClearType/greyscale anti-aliasing blends glyph ink into the surrounding
+        // highlight fill, so the centre pixel is a mix of `theme.foreground` and
+        // `theme.selected_bg`. `measure_button`'s `ACTION_H_PAD = 8.0` guarantees
+        // the text always starts at `item.x + 8` regardless of font/glyph metrics
         // (`item.width == text_width + 2 * ACTION_H_PAD`, so
-        // `tx == item.x + ACTION_H_PAD`), so the strip
-        // `[item.x + 2, item.x + 8)` — between the inset's left edge and
-        // where the label starts — is always text-free. `+ 5.0` sits in
-        // the middle of that strip; the y stays at mid-height,
-        // comfortably clear of the top/bottom corner arcs (radius 4 on a
-        // 40px-tall bar).
+        // `tx == item.x + ACTION_H_PAD`), so the strip `[item.x + 2, item.x + 8)`
+        // — between the inset's left edge and where the label starts — is always
+        // text-free. `+ 5.0` sits in the middle of that strip; the y stays at
+        // mid-height, comfortably clear of the top/bottom corner arcs (radius 4
+        // on a 40px-tall bar).
         let cx = (item.x + 5.0) as u32;
         let cy = (item.y + item.height / 2.0) as u32;
         let centre = surface.pixel_at(cx, cy);
@@ -407,8 +386,6 @@ mod tests {
             "highlight fill should be solid away from the corners and the label text",
         );
     }
-
-    // ── #260: `ToolbarVAlign` ────────────────────────────────────────────
 
     /// Multi-row paint test (issue #260's test plan): paint the same bar
     /// into the same tall slot once per [`crate::primitives::toolbar::ToolbarVAlign`]

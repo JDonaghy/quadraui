@@ -39,12 +39,12 @@
 //! }
 //! ```
 //!
-//! # Adoption status (#825)
+//! # Adoption status
 //!
 //! No compose-layer consumer today — deliberately *not* folded into
 //! [`crate::compose::workspace::WorkspaceController`]; see that module's
 //! doc for why the two exist side by side rather than one replacing
-//! the other (#596/#469). Kept public: full TUI + GTK demo coverage
+//! the other. Kept public: full TUI + GTK demo coverage
 //! across three example apps (`examples/common/{tab_group_demo,
 //! tab_chrome_demo,wide_tab_bar_demo}.rs`, run via `tui_tabgroup.rs` /
 //! `gtk_tabgroup.rs`) plus `TuiDriver` end-to-end tests in
@@ -107,7 +107,7 @@
 //! The controller calls `backend.draw_drop_overlay` automatically inside
 //! [`render`](TabGroupController::render) whenever a drag is active.
 //!
-//! # Host-owned tab/pane model (#998)
+//! # Host-owned tab/pane model
 //!
 //! Everything above assumes `TabGroupController` owns the panes — it holds
 //! `Vec<Pane>` and mutates it directly. A host that already owns its own
@@ -140,7 +140,7 @@ use crate::primitives::drop_zone::{
     DropZoneHit, DropZoneKind,
 };
 use crate::primitives::split::{Split, SplitDirection};
-// `TabBarHits` is `#[deprecated]` (issue #823) — this compose helper caches
+// `TabBarHits` is `#[deprecated]` — this compose helper caches
 // exactly what `Backend::draw_tab_bar` returns for click/drag dispatch. See
 // that struct's doc for the replacement plan.
 #[allow(deprecated)]
@@ -653,7 +653,7 @@ pub struct PaneDragRect {
     pub tab_slots: Vec<(f32, f32)>,
 }
 
-// ── Host-owned-model adoption (#998) ────────────────────────────────────────────
+// ── Host-owned-model adoption ───────────────────────────────────────────────────
 
 /// Identifies the tab being dragged, from the host's *own* pane/tab model.
 ///
@@ -669,7 +669,7 @@ pub struct TabDragSource {
     pub tab_idx: usize,
 }
 
-/// A position-based drop instruction (#998): the result of resolving a tab
+/// A position-based drop instruction: the result of resolving a tab
 /// drag-and-drop gesture against pane geometry, expressed purely as indices
 /// and a split direction — never as a mutation applied to an owned model.
 ///
@@ -732,7 +732,7 @@ pub enum TabDropInstruction {
 
 /// Resolve a tab drag-and-drop gesture into a [`TabDropInstruction`], using
 /// only caller-supplied geometry and drag-source identity — no
-/// `TabGroupController`, no owned `Vec<Pane>` (#998).
+/// `TabGroupController`, no owned `Vec<Pane>`.
 ///
 /// This is the adoption path for a host that already owns its tab/pane
 /// model (e.g. vimcode's `Engine::editor_groups`, keyed by `GroupId`):
@@ -902,7 +902,7 @@ pub struct TabGroupController {
 
 /// Cached hit-test state for one pane from the last render.
 struct PaneHitCache {
-    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
     hits: TabBarHits,
     strip_bounds: Rect,
     content_bounds: Rect,
@@ -1623,7 +1623,7 @@ impl TabGroupController {
         self.dragging_tab.as_ref()?;
         let groups = self.drop_group_rects();
         let tab_bar_h = self.strip_height();
-        // Routed through `drop_zone_hit_test` (quadraui#818) rather than
+        // Routed through `drop_zone_hit_test` rather than
         // `compute_drop_zone` directly — same geometry, but this is now
         // the primitive's canonical hit-test entry point.
         let zone = match drop_zone_hit_test(x, y, &groups, tab_bar_h) {
@@ -1707,7 +1707,7 @@ impl TabGroupController {
     /// Implemented in terms of [`resolve_tab_drop`] — this method is the
     /// reference translation of a [`TabDropInstruction`] into mutations on
     /// the controller's own owned `Vec<Pane>`. A host with its own model
-    /// (#998) calls `resolve_tab_drop` directly and writes an equivalent
+    /// calls `resolve_tab_drop` directly and writes an equivalent
     /// translation against its own data instead.
     pub fn handle_tab_drop(&mut self, x: f32, y: f32) -> Vec<TabGroupEvent> {
         let Some(drag) = self.dragging_tab.take() else {
@@ -3345,7 +3345,7 @@ mod tests {
         );
     }
 
-    // ── resolve_tab_drop: host-owned-model adoption path (#998) ────────────────
+    // ── resolve_tab_drop: host-owned-model adoption path ───────────────────────
     //
     // These tests call `resolve_tab_drop` directly with hand-built
     // `DropGroupRect`s and a `TabDragSource` — no `TabGroupController`
@@ -3510,7 +3510,7 @@ mod tests {
         // Cross-check: `TabGroupController::handle_tab_drop` (the owned
         // model path) and `resolve_tab_drop` (the host-owned-model path)
         // must reach equivalent conclusions from equivalent inputs, since
-        // the former is implemented in terms of the latter (#998).
+        // the former is implemented in terms of the latter.
         let mut ctrl = make_two_pane();
         ctrl.handle_tab_drag_start(9.0, 0.5); // drag t1 from pane 0
         let events = ctrl.handle_tab_drop(150.0, 5.0); // split right edge of pane 1

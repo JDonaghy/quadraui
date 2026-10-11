@@ -56,7 +56,7 @@
 //! verbatim on every backend, so a host that wants a Nerd-Font glyph with
 //! an ASCII fallback registers the pair in a [`ToolbarIcons`] side table
 //! and calls [`ToolbarIcons::apply`] to bake the right half into the
-//! `Toolbar` it hands to the backend (issue #913).
+//! `Toolbar` it hands to the backend.
 
 use std::borrow::Cow;
 
@@ -128,7 +128,7 @@ pub struct Toolbar {
 }
 
 /// Vertical alignment of button/label text within a toolbar slot taller
-/// than one text row (issue #260).
+/// than one text row.
 ///
 /// On a 1-row slot every variant resolves to the same painted position,
 /// so this is purely a multi-row concern — see each rasteriser's
@@ -140,8 +140,7 @@ pub enum ToolbarVAlign {
     #[default]
     Top,
     /// Text vertically centred. For even heights, the row/offset above
-    /// centre wins (matches the pre-#260 TUI arithmetic this variant
-    /// preserves byte-for-byte).
+    /// centre wins (matches pre-v0.2.0 baseline arithmetic).
     Center,
     /// Text on the bottom row of the slot. Padding above.
     Bottom,
@@ -150,18 +149,10 @@ pub enum ToolbarVAlign {
 /// Per-call paint options for [`Toolbar`] rasterisers that don't have a
 /// home directly on the [`Toolbar`] snapshot itself.
 ///
-/// `Toolbar` is one of the all-`pub`-field paint-time snapshots both
-/// known downstream consumers build with **exhaustive struct
-/// literals** — no `..base`, no `..Default::default()` (six such
-/// literals: four in `coord-tui`, two in `vimcode`; see
-/// `quadraui/tests/downstream_struct_literals.rs` and this file's own
-/// [`ToolbarIcons`] doc for the two previous times this exact class of
-/// struct hit the same wall, #833/#913). Issue #260 originally proposed
-/// `valign` as a new field directly on `Toolbar`; growing its field
-/// list would break every one of those six call sites with `E0063`.
-/// A small, independently-growable options struct — the same escape
-/// hatch [`crate::primitives::editor::EditorPaintOptions`] uses for
-/// `Editor` — sidesteps that, and can gain more fields later for free.
+/// `Toolbar` is an all-`pub`-field paint-time snapshot. To allow adding
+/// fields in the future without breaking exhaustive struct literals in
+/// downstream code, a separate options struct provides independent growth.
+/// This is the same pattern used by [`crate::primitives::editor::EditorPaintOptions`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ToolbarPaintOptions {
     /// Vertical alignment of button/label text within the toolbar's
@@ -181,15 +172,13 @@ pub enum ToolbarButton {
         /// on every backend. TUI rasterises as plain text; GTK can swap
         /// for an Image widget.
         ///
-        /// This field holds *one* string, so a button that needs a
-        /// Nerd-Font glyph **and** a distinct ASCII fallback registers
+        /// This field holds one string, so a button that needs a
+        /// Nerd-Font glyph and a distinct ASCII fallback registers
         /// the pair in a [`ToolbarIcons`] table and lets
         /// [`ToolbarIcons::apply`] write the resolved half into this
-        /// field before the `Toolbar` reaches a backend (issue #913).
-        /// The field's type deliberately stays `Option<String>`: it is
-        /// named by ~67 exhaustive struct literals across `quadraui`,
-        /// `coord-tui` and `vimcode`, the same blast-radius constraint
-        /// issue #683 hit for `PanelDefinition::icon`.
+        /// field before the `Toolbar` reaches a backend.
+        /// The field's type deliberately stays `Option<String>` to allow
+        /// independent future growth without breaking exhaustive struct literals.
         #[serde(default)]
         icon: Option<String>,
         /// Optional parenthesised key hint shown after the label
@@ -224,7 +213,7 @@ pub enum ToolbarButton {
 // ── Nerd-Font icon overrides ─────────────────────────────────────────────────
 
 /// Per-button Nerd-Font glyph + ASCII fallback pairs for a [`Toolbar`],
-/// keyed by the owning [`ToolbarButton::Action`]'s `id` (issue #913).
+/// keyed by the owning [`ToolbarButton::Action`]'s `id`.
 ///
 /// Mirrors [`crate::compose::app_shell::AppShell::with_panel_icon`]'s
 /// override-by-id shape. Register the pairs once, then call
@@ -254,32 +243,18 @@ pub enum ToolbarButton {
 ///     ToolbarButton::Action { icon: Some(i), .. } if i == "\u{f021}"));
 /// ```
 ///
-/// ## Why a side table, not a `Toolbar` field
+/// This separate type lets the host compose the pairs on its own side
+/// without breaking exhaustive struct literals in downstream code.
+/// It allows adding fields independently — the same pattern used by
+/// `TextEditor` for `TextInput`.
 ///
-/// `Toolbar` is an all-`pub`-field paint-time snapshot that both external
-/// consumers used to build with **exhaustive struct literals** (four
-/// sites in `coord-tui`, two in `vimcode` — see
-/// `tests/downstream_struct_literals.rs`) before migrating to its
-/// `new`/`with_*` builder ahead of issue #1251 making it
-/// `#[non_exhaustive]` for real. Growing the field list is still a
-/// breaking change for anyone still on the old literal shape (now a
-/// hard `E0639`, with no deprecation shim available for a struct
-/// literal). Keeping the pairs in a separate type the host composes on
-/// its own side is the same non-breaking escape hatch `TextEditor` uses
-/// for `TextInput` (issue #833).
+/// Resolution happens here rather than inside each rasteriser so that
+/// layout, hit-testing and paint all consume the same already-resolved value.
+/// A wide glyph's measured width and its painted width cannot disagree,
+/// since no code downstream of `apply` sees the unresolved form.
 ///
-/// ## Why resolution happens here and not inside each rasteriser
-///
-/// [`Self::apply`] returns a plain `Toolbar`, so **layout, hit-testing and
-/// paint all consume the one already-resolved value**. A wide glyph's
-/// measured width and its painted width cannot disagree, because no code
-/// downstream of `apply` ever sees the unresolved form — a stronger
-/// guarantee than threading a `nerd_fonts_enabled` flag into every
-/// measure/paint site and relying on each of them to resolve identically.
-///
-/// A small `Vec` rather than a `HashMap` because toolbars carry a handful
-/// of buttons at most, and `Vec<(K, V)>` (unlike `HashMap<K, V>`)
-/// implements `Eq`.
+/// Uses `Vec<(K, V)>` rather than `HashMap<K, V>` because toolbars carry
+/// a handful of buttons at most, and `Vec<(K, V)>` implements `Eq`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolbarIcons {
     entries: Vec<(WidgetId, Icon)>,
@@ -360,8 +335,7 @@ impl ToolbarIcons {
     /// / `Dialog` path.
     ///
     /// With an empty table (or a `bar` whose buttons match no registered
-    /// id) the result equals `bar` field-for-field, so an app that never
-    /// registers anything paints byte-identically to pre-#913 behaviour.
+    /// id) the result equals `bar` field-for-field.
     #[must_use]
     pub fn apply(&self, bar: &Toolbar, nerd_fonts_enabled: bool) -> Toolbar {
         if self.is_empty() {
@@ -433,7 +407,7 @@ impl ToolbarLayout {
     /// [`Toolbar::layout`]'s geometric result whenever the paint loop
     /// skips the widget entirely — a `width == 0` / `height == 0` area,
     /// for instance — so the returned layout never describes cells that
-    /// were never actually drawn (quadraui#649).
+    /// were never actually drawn.
     pub fn empty(bar_bounds: Rect) -> Self {
         ToolbarLayout {
             bar_bounds,
@@ -477,12 +451,10 @@ impl ToolbarItemMeasure {
     }
 }
 
-// ── Shared button-measure formula (#730) ────────────────────────────────────
+// ── Shared button-measure formula ───────────────────────────────────────────
 
 /// Horizontal padding inside each [`ToolbarButton::Action`] button, in
-/// px/DIPs. Shared by every pixel rasteriser via [`measure_button`] — see
-/// that function's doc for why this used to be five separately
-/// maintained copies.
+/// px/DIPs. Shared by every pixel rasteriser via [`measure_button`].
 pub const ACTION_H_PAD: f32 = 8.0;
 
 /// Width of a [`ToolbarButton::Separator`] slot, in px/DIPs. See
@@ -492,7 +464,7 @@ pub const SEPARATOR_PX: f32 = 12.0;
 /// Format an `Action`'s rendered text: `"{icon} {label} ({hint})"`, with
 /// the icon and/or key-hint sections dropped when absent.
 ///
-/// Shared by every pixel rasteriser's paint AND measure paths (#730) so
+/// Shared by every pixel rasteriser's paint AND measure paths so
 /// the text a button paints and the text [`measure_button`] measured
 /// against can never disagree.
 pub fn action_text(label: &str, icon: Option<&str>, key_hint: Option<&str>) -> String {
@@ -512,7 +484,7 @@ pub fn action_text(label: &str, icon: Option<&str>, key_hint: Option<&str>) -> S
 
 /// Resolve the y-offset (px/DIPs) at which text of `content_height`
 /// should paint within a slot starting at `slot_y` with `slot_height`,
-/// per `valign` (issue #260). Shared by every pixel-unit rasteriser via
+/// per `valign`. Shared by every pixel-unit rasteriser via
 /// [`native_surface_paint::paint`] so GTK / macOS / Win-GUI agree
 /// exactly. TUI's cell-grid math is its own
 /// (`tui::toolbar::tui_text_row`) since a cell is already quantized —
@@ -532,27 +504,15 @@ pub fn valign_offset_y(
 
 /// Compute the pixel/DIP width of a single toolbar item via `measure`.
 ///
-/// This is the **single** button-measure formula for every pixel
-/// backend. Before #730 it existed independently in
-/// `gtk::toolbar::measure_item`, `macos::toolbar::measure_item`,
-/// `gtk::sidebar_panel::item_width_px`, `macos::sidebar_panel::item_width_px`,
-/// and inline in
-/// [`crate::primitives::layout_metrics::form_field_measure`]'s `Toolbar`
-/// field arm — five copies that agreed with each other only by luck, not
-/// construction (see `PRIMITIVE_RULES.md`'s primitive-first rule, #713).
-/// `win::toolbar` and every future pixel backend call this instead of
-/// writing a sixth.
-///
+/// This is the shared button-measure formula for every pixel backend.
 /// Each backend supplies `measure` via a thin [`crate::primitives::layout_metrics::TextMeasure`]
 /// adapter over its own live font/context (a `pango::Layout`, a `CTFont`,
 /// DirectWrite metrics, …) — see e.g. `gtk::toolbar`'s `PangoMeasure`,
 /// `macos::toolbar`'s `CtFontMeasure`, `win::toolbar`'s `DWriteMeasure`.
 ///
-/// TUI does **not** call this: its cell-based `[ icon label (hint) ]`
-/// bracket format — with icon-only compaction and double-width-glyph
-/// awareness (`tui::toolbar::tui_item_width`) — is a genuinely different
-/// formula, not a drifted copy of this pixel one, so folding it in here
-/// would be a silent behaviour change rather than a dedup.
+/// TUI does not call this: its cell-based `[ icon label (hint) ]`
+/// bracket format with icon-only compaction and double-width-glyph
+/// awareness follows a different formula.
 pub fn measure_button(
     measure: &dyn crate::primitives::layout_metrics::TextMeasure,
     btn: &ToolbarButton,
@@ -641,11 +601,17 @@ impl Toolbar {
         let bar_bounds = Rect::new(origin_x, origin_y, bar_width, bar_height);
         let mut visible_items: Vec<VisibleToolbarItem> = Vec::with_capacity(self.buttons.len());
 
-        let mut cursor = origin_x;
+        let widths: Vec<f32> = self
+            .buttons
+            .iter()
+            .map(|btn| measure(btn).width.max(0.0))
+            .collect();
+        let cursors = item_cursor_positions(origin_x, bar_height, &widths);
         let right_edge = origin_x + bar_width;
 
         for (i, btn) in self.buttons.iter().enumerate() {
-            let w = measure(btn).width.max(0.0);
+            let w = widths[i];
+            let cursor = cursors[i];
             // Clip width so item doesn't paint past the bar's right edge.
             let visible_w = (right_edge - cursor).max(0.0).min(w);
             let bounds = Rect::new(cursor, origin_y, visible_w, bar_height);
@@ -667,8 +633,6 @@ impl Toolbar {
                 clickable,
                 action_id,
             });
-
-            cursor += w;
         }
 
         ToolbarLayout {
@@ -678,39 +642,46 @@ impl Toolbar {
     }
 }
 
-// ── PaintSurface Phase 4 slice 5/8 (#1081) ─────────────────────────────────
-//
-// `paint` below is the one shared paint implementation, written against
-// [`crate::paint_surface::PaintSurface`] instead of any one backend's
-// API — see `crate::primitives::menu_bar::native_surface_paint` for the
-// same pattern applied one primitive earlier in this issue.
-//
-// Pre-migration, `gtk::toolbar`, `macos::toolbar` and `win::toolbar`
-// agreed on every colour/state-priority decision (see this file's own
-// per-state colouring table, copied verbatim into all three module
-// docs) and on `action_text`/`measure_button`'s shared layout formula —
-// but diverged on the hover/pressed/active highlight's corner
-// treatment:
-//
-// - **GTK** painted a `CORNER_RADIUS`-rounded pill (`rounded_rect_path`
-//   + fill) and a matching rounded-rect focus-ring stroke.
-// - **macOS and Windows** both painted a plain square inset rectangle
-//   for the highlight, and a plain square stroke for the focus ring —
-//   Windows' own module doc explained why: "No rounded-rect / stroke-
-//   inset helper exists yet in `win::text`".
-//
-// That blocker no longer applies: issue #1073 added
-// [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]
-// to every pixel backend specifically to unblock chrome primitives like
-// this one (see that verb's own doc). `paint` below uses it
-// unconditionally for the highlight fill — closing macOS's and
-// Windows' gap onto GTK's nicer pill shape, rather than flattening GTK
-// down to the 2-of-3 majority. The focus ring stays a **square**
-// stroke on all three: [`PaintSurface`] has no rounded-stroke verb
-// (same gap noted in `primitives::context_menu::native_surface_paint`'s
-// module doc), so keeping GTK's rounded ring would need a fill-shaped
-// workaround uglier than just picking the square the other two already
-// used.
+/// Compute each item's left edge given its width, left-to-right, never
+/// shrinking — items past the available width still get a cursor position
+/// (the full cumulative sum), so overflow is clipped by the caller
+/// afterwards rather than by squeezing items to fit.
+///
+/// With the `layout` feature this runs through [`crate::flex`]'s shared
+/// flexbox engine (a `Row` of fixed-width, `flex_shrink: 0.0` leaves) so
+/// `Toolbar` composes with the same engine [`crate::primitives::Form`] and
+/// [`crate::compose::AppShell`] use. Without it, the same arithmetic is
+/// done by hand. Both arms are covered by this module's exact-value tests
+/// (`layout_places_buttons_left_to_right`, `layout_clips_to_bar_width`,
+/// `origin_offset_propagates`) to guarantee they agree bit-for-bit.
+#[cfg(feature = "layout")]
+fn item_cursor_positions(origin_x: f32, bar_height: f32, widths: &[f32]) -> Vec<f32> {
+    crate::flex::pack_1d(
+        crate::flex::FlexDirection::Row,
+        origin_x,
+        widths,
+        0.0,
+        bar_height,
+    )
+}
+
+/// Same contract as the `layout`-feature arm above, computed by hand.
+#[cfg(not(feature = "layout"))]
+fn item_cursor_positions(origin_x: f32, _bar_height: f32, widths: &[f32]) -> Vec<f32> {
+    let mut cursor = origin_x;
+    let mut cursors = Vec::with_capacity(widths.len());
+    for &w in widths {
+        cursors.push(cursor);
+        cursor += w;
+    }
+    cursors
+}
+
+// Shared paint implementation written against
+// [`crate::paint_surface::PaintSurface`] instead of any one backend's API.
+// All pixel backends now use [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]
+// for the highlight fill, providing a consistent pill-shaped appearance.
+// The focus ring is a square stroke on all backends (no rounded-stroke verb exists yet).
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -736,7 +707,7 @@ pub(crate) mod native_surface_paint {
     /// state; see this module's own doc table for the exact
     /// fg/bg-per-state contract every backend shares. `options.valign`
     /// resolves where text paints within a slot taller than one text
-    /// row (issue #260) — see [`valign_offset_y`].
+    /// row — see [`valign_offset_y`].
     pub(crate) fn paint(
         bar: &Toolbar,
         layout: &ToolbarLayout,
@@ -868,13 +839,9 @@ mod tests {
 
     fn cell_measure() -> impl Fn(&ToolbarButton) -> ToolbarItemMeasure {
         // Mirrors what the TUI rasteriser uses: `[ label ]` style cells,
-        // separators 2 cells, labels their *display* width.
-        //
-        // `crate::text_util::display_width`, not `chars().count()` (issue
-        // #913): a char count undercounts every East-Asian-Wide glyph and
-        // emoji by half a cell, which made this helper disagree with the
-        // real `tui::toolbar::tui_item_width` — so a wide-icon layout bug
-        // could have hidden behind a green suite here.
+        // separators 2 cells, labels their display width using
+        // [`crate::text_util::display_width`] to account for East-Asian-Wide
+        // glyphs and emoji which occupy two cells.
         |btn| match btn {
             ToolbarButton::Action {
                 label,
@@ -1086,18 +1053,12 @@ mod tests {
         assert_eq!(bar, back);
     }
 
-    // ── Shared measure formula (#730) ───────────────────────────────────
+    // ── Shared measure formula ──────────────────────────────────────────
 
-    /// Fixed-width stand-in for a real font: `6.0` px per char — the
-    /// same convention `primitives::layout_metrics`'s own `FakeMeasure`
-    /// uses, since a real per-backend measurer (Pango / Core Text /
-    /// DirectWrite) can't run on every CI host. Because `gtk::toolbar`,
-    /// `macos::toolbar`, and `win::toolbar` all measure by calling
-    /// [`measure_button`] through their own thin adapter over this exact
-    /// trait, proving the formula once here is proving it for every
-    /// pixel backend at once — there is no second implementation left to
-    /// drift (the "identical widths across pixel backends" acceptance
-    /// bar for #730).
+    /// Fixed-width stand-in for a real font: `6.0` px per char.
+    /// Because all pixel backends measure by calling [`measure_button`]
+    /// through their own adapter over this trait, testing the formula here
+    /// proves it for every pixel backend at once.
     struct FakeMeasure;
     impl crate::primitives::layout_metrics::TextMeasure for FakeMeasure {
         fn width_of(&self, text: &str) -> f32 {
@@ -1136,7 +1097,7 @@ mod tests {
         assert_eq!(w, 36.0);
     }
 
-    // ── #260: `ToolbarVAlign` / `valign_offset_y` ───────────────────────
+    // ── `ToolbarVAlign` / `valign_offset_y` ────────────────────────
 
     #[test]
     fn valign_offset_y_top_ignores_slot_height() {
@@ -1207,7 +1168,7 @@ mod tests {
         assert_eq!(btn, back);
     }
 
-    // ── #913: Nerd-Font icon overrides + wide-glyph measurement ─────────
+    // ── Nerd-Font icon overrides + wide-glyph measurement ──────────
 
     fn mk_icon_action(id: &str, label: &str, icon: Option<&str>) -> ToolbarButton {
         ToolbarButton::Action {
@@ -1256,8 +1217,8 @@ mod tests {
 
     #[test]
     fn apply_without_overrides_is_byte_identical_to_the_input_bar() {
-        // The flag-off acceptance bar: an app that registers nothing must
-        // paint exactly as it did before #913, on either flag value.
+        // With no registered overrides, the result must be
+        // identical to the input on either flag value.
         let bar = bar_with(vec![
             mk_icon_action("a", "Refine", Some("\u{f021}")),
             ToolbarButton::Separator,
@@ -1328,12 +1289,9 @@ mod tests {
 
     #[test]
     fn a_wide_override_glyph_shifts_the_next_button_by_two_cells() {
-        // The #913 measurement half: a resolved East-Asian-Wide glyph
-        // occupies two terminal cells, so the *second* button's hit
-        // region must start two cells further right than it does with a
-        // one-cell ASCII fallback. Before the `display_width` fix in
-        // `cell_measure` above, both layouts came out identical here and
-        // a real hit-region/paint divergence would have gone unnoticed.
+        // An East-Asian-Wide glyph occupies two terminal cells,
+        // so the second button's hit region must start two cells further
+        // right than it does with a one-cell ASCII fallback.
         let bar = bar_with(vec![
             mk_icon_action("a", "Refresh", None),
             mk_icon_action("b", "Drop", None),

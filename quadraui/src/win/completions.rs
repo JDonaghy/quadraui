@@ -1,4 +1,4 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::Completions`] (issue #28).
+//! Direct2D / DirectWrite rasteriser for [`crate::Completions`].
 //!
 //! Mirrors `gtk::completions`'s structure: the layout is fully resolved
 //! upstream (host calls [`crate::primitives::completions::Completions::layout`]

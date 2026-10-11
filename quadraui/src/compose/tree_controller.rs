@@ -56,12 +56,12 @@ pub enum TreeControllerEvent {
     EditChanged { path: TreePath, text: String },
     /// Right-click on a row, or — if the controller has opted in via
     /// [`TreeController::set_empty_space_context_menu`] — on empty tree
-    /// space below the last row (quadraui#1045 item 4). Consumer should
-    /// build and show a context menu. `path` is empty (`TreePath::new()`,
-    /// i.e. `Vec::new()`) for the empty-space case — there is no row to
-    /// identify, so a consumer distinguishes the two by checking
-    /// `path.is_empty()` and falls back to a container-level menu (e.g.
-    /// the tree's root/cwd) rather than a per-row one.
+    /// space below the last row. Consumer should build and show a context
+    /// menu. `path` is empty (`TreePath::new()`, i.e. `Vec::new()`) for the
+    /// empty-space case — there is no row to identify, so a consumer
+    /// distinguishes the two by checking `path.is_empty()` and falls back
+    /// to a container-level menu (e.g. the tree's root/cwd) rather than a
+    /// per-row one.
     ///
     /// The empty-space case is opt-in (default off) precisely because it
     /// is *not* additive for every existing caller: a caller whose event
@@ -69,7 +69,7 @@ pub enum TreeControllerEvent {
     /// (rather than branching on `path.is_empty()` first) would otherwise
     /// start swallowing an event it used to never see, short-circuiting
     /// before any fallback it already had for empty-space clicks. See
-    /// `TreeController::right_click`'s doc for the previous `Consumed`
+    /// [`TreeController::right_click`]'s doc for the previous `Consumed`
     /// behavior this defaults to preserving.
     ContextMenuRequested { path: TreePath, position: Point },
 }
@@ -196,14 +196,13 @@ impl TreeController {
     }
 
     /// Opt in to [`TreeControllerEvent::ContextMenuRequested`] (with an
-    /// empty `path`) on right-click of empty tree space below the last row
-    /// (quadraui#1045 item 4). Default `false`, so a host that never calls
-    /// this keeps the pre-#1045 behavior of resolving that click to plain
-    /// `Consumed` — this is additive, not a behavior change, for any
-    /// existing caller. Hosts that want a container-level context menu
-    /// (e.g. the tree's root/cwd) for empty-space right-clicks should call
-    /// this with `true` and match on `path.is_empty()` in their
-    /// `ContextMenuRequested` handler.
+    /// empty `path`) on right-click of empty tree space below the last row.
+    /// Default `false`, so a host that never calls this keeps the previous
+    /// behavior of resolving that click to plain `Consumed` — this is
+    /// additive, not a behavior change, for any existing caller. Hosts that
+    /// want a container-level context menu (e.g. the tree's root/cwd) for
+    /// empty-space right-clicks should call this with `true` and match on
+    /// `path.is_empty()` in their `ContextMenuRequested` handler.
     pub fn set_empty_space_context_menu(&mut self, enabled: bool) {
         self.empty_space_context_menu = enabled;
     }
@@ -287,12 +286,17 @@ impl TreeController {
     // ── Render ────────────────────────────────────────────────────────
 
     pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-        let (tree_rect, sb_rect) = self.split_rect(backend, rect);
+        let (tree_rect, sb) = self.split_rect(backend, rect);
         let tree = self.build_tree_view(tree_rect);
         backend.draw_tree(tree_rect, &tree);
-        if let Some(sb_rect) = sb_rect {
-            let sb = self.build_scrollbar(backend, sb_rect);
-            backend.draw_scrollbar(sb_rect, &sb);
+        // When `backend.tree_paints_own_scrollbar()`, `draw_tree` above
+        // already painted the overlay scrollbar itself — `sb` exists only
+        // for hit-testing (`click`/`click_scrollbar`), and painting it
+        // again here would double it.
+        if !backend.tree_paints_own_scrollbar() {
+            if let Some(sb) = sb {
+                backend.draw_scrollbar(sb.track, &sb);
+            }
         }
     }
 
@@ -711,11 +715,11 @@ impl TreeController {
         if !rect.contains(Point::new(x, y)) {
             return TreeControllerEvent::Ignored;
         }
-        let (tree_rect, sb_rect) = self.split_rect(backend, rect);
+        let (tree_rect, sb) = self.split_rect(backend, rect);
 
-        if let Some(sb_rect) = sb_rect {
-            if sb_rect.contains(Point::new(x, y)) {
-                return self.click_scrollbar(backend, tree_rect, sb_rect, x, y);
+        if let Some(sb) = &sb {
+            if sb.track.contains(Point::new(x, y)) {
+                return self.click_scrollbar(backend, tree_rect, sb, x, y);
             }
         }
 
@@ -769,10 +773,7 @@ impl TreeController {
     /// A hit on the blank area below the last row (`TreeViewHit::Empty`)
     /// resolves to plain `Consumed` unless
     /// [`TreeController::set_empty_space_context_menu`] has opted this
-    /// controller in — a host had no portable way to offer a context menu
-    /// there at all (quadraui#1045 item 4: vimcode carried its own
-    /// `route_tree_empty_space_context_menu` shared workaround for exactly
-    /// this gap). Once opted in, this emits the same
+    /// controller in. Once opted in, this emits the same
     /// `ContextMenuRequested` event with an empty `path` instead — see
     /// that variant's own doc for the empty-`path` convention this
     /// establishes. This is opt-in (default off) rather than the
@@ -812,7 +813,7 @@ impl TreeController {
         &mut self,
         backend: &mut dyn Backend,
         tree_rect: Rect,
-        sb_rect: Rect,
+        sb: &Scrollbar,
         _x: f32,
         y: f32,
     ) -> TreeControllerEvent {
@@ -821,8 +822,6 @@ impl TreeController {
         if max_offset == 0 {
             return TreeControllerEvent::Ignored;
         }
-
-        let sb = self.build_scrollbar(backend, sb_rect);
 
         match sb.press_zone(y) {
             PressZone::Thumb => {
@@ -910,9 +909,29 @@ impl TreeController {
         self.rows.len() > self.viewport_rows(backend, tree_rect)
     }
 
-    fn split_rect(&self, backend: &dyn Backend, rect: Rect) -> (Rect, Option<Rect>) {
+    /// Splits `rect` into the tree's drawing area and (optionally) the
+    /// scrollbar geometry to hit-test against, in the current `backend`'s
+    /// coordinate frame.
+    ///
+    /// On backends where [`Backend::tree_paints_own_scrollbar`] is true,
+    /// `draw_tree` already paints an overlay scrollbar over the tree's own
+    /// content, so no column is carved out of `rect` for one — the
+    /// returned [`Scrollbar`] (from [`Backend::tree_vscrollbar`]) exists
+    /// purely so [`Self::click`]/[`Self::click_scrollbar`] can hit-test
+    /// and drag it. On backends without that overlay (TUI), this falls
+    /// back to reserving a column and building the scrollbar's geometry
+    /// itself, same as before that overlay existed.
+    fn split_rect(&self, backend: &dyn Backend, rect: Rect) -> (Rect, Option<Scrollbar>) {
         if !self.show_scrollbar {
             return (rect, None);
+        }
+        if backend.tree_paints_own_scrollbar() {
+            let tree = self.build_tree_view(rect);
+            let sb = backend.tree_vscrollbar(rect, &tree).map(|mut sb| {
+                sb.dragging = self.scroll_drag.is_some();
+                sb
+            });
+            return (rect, sb);
         }
         let track_w = self.scrollbar_track_width(backend);
         if rect.width <= track_w {
@@ -923,7 +942,8 @@ impl TreeController {
             return (rect, None);
         }
         let sb_rect = Rect::new(rect.x + rect.width - track_w, rect.y, track_w, rect.height);
-        (tree_rect, Some(sb_rect))
+        let sb = self.build_scrollbar(backend, sb_rect);
+        (tree_rect, Some(sb))
     }
 
     fn build_scrollbar(&self, backend: &dyn Backend, sb_rect: Rect) -> Scrollbar {
@@ -1129,7 +1149,7 @@ mod tests {
         assert_eq!(tc.scroll_offset(), 0);
     }
 
-    // ── GTK wheel-direction round-trip (quadraui#418) ────────────────
+    // ── GTK wheel-direction round-trip ───────────────────────────────
     //
     // Regression guard tying the real GDK → UiEvent translator to a
     // compose controller's scroll behavior, not just the internal
@@ -1398,9 +1418,9 @@ mod tests {
         tc.set_rows(fake_rows("r", 100));
         tc.set_scrollbar_width(Some(8.0));
         let rect = Rect::new(0.0, 0.0, 80.0, 10.0);
-        let (tree_rect, sb_rect) = tc.split_rect(&RecordingBackend::new(), rect);
-        let sb = sb_rect.expect("scrollbar should be present");
-        assert_eq!(sb.width, 8.0);
+        let (tree_rect, sb) = tc.split_rect(&RecordingBackend::new(), rect);
+        let sb = sb.expect("scrollbar should be present");
+        assert_eq!(sb.track.width, 8.0);
         assert_eq!(tree_rect.width, 72.0);
     }
 
@@ -1409,11 +1429,45 @@ mod tests {
         let mut tc = TreeController::new("t");
         tc.set_rows(fake_rows("r", 100));
         let rect = Rect::new(0.0, 0.0, 80.0, 10.0);
-        let (tree_rect, sb_rect) = tc.split_rect(&RecordingBackend::new(), rect);
-        let sb = sb_rect.expect("scrollbar should be present");
+        let (tree_rect, sb) = tc.split_rect(&RecordingBackend::new(), rect);
+        let sb = sb.expect("scrollbar should be present");
         // RecordingBackend::new().line_height() = 1.0
-        assert_eq!(sb.width, 1.0);
+        assert_eq!(sb.track.width, 1.0);
         assert_eq!(tree_rect.width, 79.0);
+    }
+
+    #[test]
+    fn render_skips_own_paint_when_backend_paints_tree_scrollbar() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("r", 100));
+        let _overlay = crate::testing::TreePaintsOwnScrollbar::set(true);
+        let mut backend = RecordingBackend::new();
+        let rect = Rect::new(0.0, 0.0, 80.0, 10.0);
+        tc.render(&mut backend, rect);
+        assert_eq!(backend.calls, vec!["draw_tree"]);
+    }
+
+    #[test]
+    fn render_paints_its_own_scrollbar_when_backend_does_not() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("r", 100));
+        let mut backend = RecordingBackend::new();
+        assert!(!crate::Backend::tree_paints_own_scrollbar(&backend));
+        let rect = Rect::new(0.0, 0.0, 80.0, 10.0);
+        tc.render(&mut backend, rect);
+        assert_eq!(backend.calls, vec!["draw_tree", "draw_scrollbar"]);
+    }
+
+    #[test]
+    fn split_rect_reserves_no_column_when_backend_paints_own_scrollbar() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("r", 100));
+        let _overlay = crate::testing::TreePaintsOwnScrollbar::set(true);
+        let backend = RecordingBackend::new();
+        let rect = Rect::new(0.0, 0.0, 80.0, 10.0);
+        let (tree_rect, sb) = tc.split_rect(&backend, rect);
+        assert_eq!(tree_rect, rect);
+        assert!(sb.is_some(), "geometry is still returned for hit-testing");
     }
 
     // ── RowToggleExpand ─────────────────────────────────────────────
@@ -1582,10 +1636,10 @@ mod tests {
         );
     }
 
-    // ── Right-click / context menu (quadraui#1045 item 4) ────────────
+    // ── Right-click / context menu ──────────────────────────────────
 
-    /// Right-clicking a real row still resolves the pre-#1045 behaviour:
-    /// `ContextMenuRequested` carrying that row's own (non-empty) path.
+    /// Right-clicking a real row emits `ContextMenuRequested` carrying
+    /// that row's own (non-empty) path.
     #[test]
     fn right_click_on_row_emits_context_menu_requested_with_that_rows_path() {
         let mut tc = TreeController::new("t");
@@ -1613,12 +1667,12 @@ mod tests {
         assert_eq!(tc.selected_path(), Some(&vec![0]));
     }
 
-    /// Right-clicking the blank area below the last row swallows the click
-    /// as plain `Consumed` by default (quadraui#1045 item 4) — this is the
-    /// pre-#1045 behavior, kept as the default so existing callers whose
-    /// `ContextMenuRequested` routing unconditionally intercepts the
-    /// variant (rather than branching on `path.is_empty()`) are unaffected
-    /// unless they explicitly opt in.
+    /// Right-clicking the blank area below the last row is swallowed as
+    /// plain `Consumed` by default — this is the previous behavior, kept
+    /// as the default so existing callers whose `ContextMenuRequested`
+    /// routing unconditionally intercepts the variant (rather than
+    /// branching on `path.is_empty()`) are unaffected unless they
+    /// explicitly opt in.
     #[test]
     fn right_click_on_empty_space_below_last_row_is_consumed_by_default() {
         let mut tc = TreeController::new("t");

@@ -1,5 +1,5 @@
 //! Shared box-drawing junction-glyph logic for [`super::split::draw_split`]
-//! and [`super::split_tree::draw_split_tree`] (quadraui#1067).
+//! and [`super::split_tree::draw_split_tree`].
 //!
 //! Both rasterisers paint a straight run of `'│'`/`'─'` for their own
 //! divider, then call [`upgrade_junctions`] to read back the run's
@@ -96,7 +96,7 @@ fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
 /// neighbours, and every junction glyph in [`connections`] is a superset
 /// of the plain `'│'`/`'─'` a cell may have started as — so a second run's
 /// own upgrade pass can only add connections at a shared cell, never lose
-/// the ones the first run already recorded there (see quadraui#1067).
+/// the ones the first run already recorded there.
 ///
 /// `cells` may extend past the buffer's area — rounding in a caller's
 /// divider geometry routinely puts the last cell of a run one column or
@@ -178,12 +178,11 @@ mod tests {
         }
     }
 
-    /// Regression (quadraui#1067 smoke failure): a caller's rounded
-    /// divider geometry can put run cells one column/row *outside* the
-    /// buffer — `set_cell` silently drops those, so `upgrade_junctions`
-    /// must skip them instead of indexing the buffer out of area (which
-    /// panics: "index outside of buffer"). The last *visible* cell of a
-    /// clipped run stays a plain axis glyph, not a spurious tee.
+    /// A caller's rounded divider geometry can put run cells one column/row
+    /// *outside* the buffer — `set_cell` silently drops those, so
+    /// `upgrade_junctions` must skip them instead of indexing the buffer out
+    /// of area (which panics: "index outside of buffer"). The last *visible*
+    /// cell of a clipped run stays a plain axis glyph, not a spurious tee.
     #[test]
     fn run_clipped_past_the_far_edge_does_not_panic() {
         let fg = Color::White;

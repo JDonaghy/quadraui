@@ -214,18 +214,15 @@ impl DualModePaletteController {
 
     /// Drive the state machine with a mouse `UiEvent` — the click-routing
     /// twin of [`Self::handle`], which only understands keyboard and
-    /// paste events (issue #818: the palette's mouse handling never
-    /// reached the controller at all). Call this from `AppLogic::handle`
+    /// paste events. Call this from `AppLogic::handle`
     /// alongside [`Self::handle`]; a non-mouse event, or a mouse event
     /// that misses every hit region, returns
     /// [`DualModePaletteEvent::Ignored`].
     ///
     /// `rect` must be the same popup rect passed to [`Self::render`] this
     /// frame, and `backend` supplies the same metrics `render` painted
-    /// with — the click is resolved through [`Backend::palette_layout`]
-    /// (added by this issue specifically so this method has a
-    /// hit-testable, paint-matching geometry to call, per
-    /// `docs/decisions/DECISIONS.md` D-007).
+    /// with — the click is resolved through [`Backend::palette_layout`],
+    /// which returns a hit-testable, paint-matching geometry.
     ///
     /// Coordinate frame: `position` is **ABSOLUTE** (surface-native,
     /// matching every other `UiEvent::MouseDown`); `Backend::palette_layout`
@@ -237,8 +234,7 @@ impl DualModePaletteController {
     /// row (mirrors arrow-key selection, does not confirm it — confirming
     /// still requires `Enter`). Title/query/scrollbar/create/preview
     /// clicks are intentionally `Ignored` for now; a future issue can
-    /// extend this match arm by arm without touching the plumbing this
-    /// issue adds.
+    /// extend this match arm by arm without touching the plumbing.
     pub fn handle_mouse(
         &mut self,
         event: &UiEvent,
@@ -853,8 +849,6 @@ mod tests {
         ctrl.set_items(vec![item("x")]);
         assert_eq!(ctrl.selected(), 0);
     }
-
-    // ── #818: mouse routes through the controller ───────────────────────
 
     fn mouse_down(x: f32, y: f32) -> UiEvent {
         UiEvent::MouseDown {

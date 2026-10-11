@@ -1,48 +1,36 @@
 //! `Editor` primitive — code-editor viewport with gutter, syntax-
 //! highlighted text, cursor, selections, diagnostics, and overlays.
 //!
-//! Lifted from vimcode's `render::RenderedWindow` / `RenderedLine` in
-//! Phase C Stage 1 (#276). The data shape mirrors those types
-//! field-for-field (verbatim port). Two rasterisers consume the
+//! The data shape mirrors `vimcode::render::RenderedWindow` /
+//! `RenderedLine` field-for-field. Two rasterisers consume the
 //! primitive: `quadraui::tui::draw_editor` and
 //! `quadraui::gtk::draw_editor`.
 //!
 //! ## Module shape
 //!
-//! Stage 1A landed the *supporting types* (`DiagnosticSeverity`,
-//! `GitLineStatus`, `DiffLine`, `CursorShape`, `SelectionKind`,
-//! `CursorPos`, `EditorSelection`, `EditorCursor`, `Style`,
-//! `StyledSpan`, `DiagnosticMark`, `SpellMark`) and grew
-//! `quadraui::Theme` with ~29 editor-paint fields. Stage 1B (this
-//! commit) adds the `Editor` + `EditorLine` data structs — the
-//! primitive's data layer is now complete; rasterisers land in
-//! Stages 1C (TUI) and 1D (GTK).
+//! Supporting types (`DiagnosticSeverity`, `GitLineStatus`, `DiffLine`,
+//! `CursorShape`, `SelectionKind`, `CursorPos`, `EditorSelection`,
+//! `EditorCursor`, `Style`, `StyledSpan`, `DiagnosticMark`,
+//! `SpellMark`) and `quadraui::Theme` editor-paint fields define the
+//! editor's appearance. The `Editor` + `EditorLine` data structs form
+//! the primitive's data layer; rasterisers consume them.
 //!
-//! ## Former naming clash with `quadraui::StyledSpan` (#822)
+//! ## `EditorStyledSpan` vs `quadraui::types::StyledSpan`
 //!
 //! `quadraui::types::StyledSpan` is owned-text and serde-friendly —
-//! used by Lua-pluggable surfaces that need text the plugin can read.
-//! This module's [`EditorStyledSpan`] is byte-range based (offsets into
-//! the line's `raw_text`) — necessary for the editor paint where
-//! tree-sitter / LSP / search highlighting all produce byte ranges.
-//! Both shapes coexist; this one used to be defined as `StyledSpan` too
-//! (reachable as `quadraui::primitives::editor::StyledSpan`, distinct
-//! from `quadraui::types::StyledSpan` only by module path — ambiguous
-//! to read and to import). It is now defined as `EditorStyledSpan`,
-//! matching the name the crate root already re-exported it under; the
-//! old name survived as a `#[deprecated]` `pub type` alias per
-//! `PRIMITIVE_RULES.md` rule 8 until issue #1251 removed it, once
-//! `vimcode`'s own migration off it had merged.
+//! used by Lua-pluggable surfaces. This module's [`EditorStyledSpan`]
+//! is byte-range based (offsets into the line's `raw_text`) — necessary
+//! for editor paint where tree-sitter / LSP / search highlighting all
+//! produce byte ranges. Both shapes coexist under distinct names.
 //!
-//! ## `EditorSelection::cols_on` (#1082)
+//! ## `EditorSelection::cols_on`
 //!
 //! Selection column-range math (mapping a buffer-coordinate
 //! [`EditorSelection`] onto one [`EditorLine`]'s own segment-local
 //! columns — handling wrapped segments, ghost-text continuation rows,
-//! and diff-padding filler rows) used to be reimplemented once per
-//! backend rasteriser. [`EditorSelection::cols_on`] is now the single
-//! source of truth; every backend calls it and only converts the
-//! returned [`SelectionCols`] to on-screen positions.
+//! and diff-padding filler rows) is now the single source of truth;
+//! every backend calls it and only converts the returned
+//! [`SelectionCols`] to on-screen positions.
 
 use crate::event::Rect;
 use crate::types::{Color, WidgetId};
@@ -176,19 +164,13 @@ pub struct SelectionCols {
 
 impl EditorSelection {
     /// Column range this selection highlights on `line`, or `None` if
-    /// this visual row shows no part of the selection at all — outside
+    /// this visual row shows no part of the selection — outside
     /// `[start_line, end_line]`, a ghost-text continuation row (virtual,
     /// no buffer columns), or a diff-padding filler row (no buffer
     /// content to select).
     ///
-    /// Single source of truth for selection column math, consolidating
-    /// what used to be reimplemented once per backend rasteriser
-    /// (`tui::editor::render_selection`, `gtk::editor::draw_visual_selection`,
-    /// `macos::editor::draw_visual_selection`, and — incompletely, missing
-    /// the ghost/diff-padding/wrapped-segment handling and using an
-    /// exclusive `end_col` where the others use `end_col + 1` —
-    /// `win::editor::paint_selection`; quadraui#1082). Callers only need
-    /// to convert the returned columns to on-screen x positions.
+    /// Single source of truth for selection column math; callers only
+    /// need to convert the returned columns to on-screen x positions.
     pub fn cols_on(&self, line: &EditorLine) -> Option<SelectionCols> {
         if line.is_ghost_continuation || line.diff_status == Some(DiffLine::Padding) {
             return None;
@@ -400,17 +382,11 @@ pub struct EditorLine {
 
 /// Declarative description of one editor viewport (window / pane).
 ///
-/// Mirrors `vimcode::render::RenderedWindow` field-for-field, with the
-/// per-window status-line painted separately by the caller (the status
-/// line was lifted to `quadraui::WindowStatusLine` in Session 241 —
-/// Stage 1 of #276 does not touch that surface).
+/// Mirrors `vimcode::render::RenderedWindow` field-for-field.
 ///
-/// **Adding a field here used to be a breaking change** — see issue
-/// #1251 (the v0.1.0 breaking batch, phase 2), which made this struct
-/// `#[non_exhaustive]` for real once both known consumers had migrated
-/// off exhaustive literals onto [`Editor::new`] plus the `with_*`
-/// builder per field below (besides `id`/`rect`, which `new` already
-/// requires), and a `Default` impl.
+/// **Adding a field here is a breaking change** — this struct is
+/// `#[non_exhaustive]` to require use of [`Editor::new`] plus the
+/// `with_*` builder methods (besides `id`/`rect`) and a `Default` impl.
 ///
 /// # Examples
 ///
@@ -540,36 +516,23 @@ fn default_lightbulb_glyph() -> char {
 /// Per-call paint options for [`Editor::layout`] / rasterisers that don't
 /// have a home directly on the [`Editor`] snapshot itself.
 ///
-/// `Editor`'s other paint-affecting toggles (`cursorline`, `has_git_diff`,
-/// `has_breakpoints`, ...) are plain fields, but both known downstream
-/// consumers build `Editor` with **exhaustive struct literals** — no
-/// `..base`, no `..Default::default()` (`quadraui/tests/
-/// downstream_struct_literals.rs` documents and guards this exact class
-/// of struct; see that file's header, and issues #833/#913 for the two
-/// times this crate already hit it and backed out to a side-channel
-/// instead of growing the struct). Adding a field to `Editor` directly
-/// would break every one of those call sites with `E0063`. A small,
-/// independently-growable options struct with no existing call sites to
-/// break sidesteps that, and can gain more fields later for free.
+/// Adding a field to `Editor` directly would break downstream exhaustive
+/// struct literals with `E0063`. A small, independently-growable options
+/// struct with no existing call sites to break sidesteps that, and can
+/// gain more fields later.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EditorPaintOptions {
     /// Suppress this editor's own vertical scrollbar even though the
-    /// buffer overflows the viewport (#968).
+    /// buffer overflows the viewport.
     ///
-    /// `Editor::layout`'s `has_v_scrollbar` has no awareness of sibling
-    /// primitives — a host running a `Minimap` beside the editor
-    /// (vimcode#723 gave `Minimap` its own `scroll_thumb` overlay,
-    /// VS-Code-style: the slider draws *over* the minimap, which acts as
-    /// the track) has no other way to stop the editor from *also*
-    /// reserving and painting a `v_scrollbar_bounds` column immediately
-    /// next to it, short of narrowing `editor.rect` to near-zero text
-    /// width. Passing `suppress_v_scrollbar: true` avoids that redundant
-    /// side-by-side pair: `has_v_scrollbar` becomes `false`
-    /// unconditionally, so `v_scrollbar_bounds` is `None` and neither
-    /// `EditorLayout::hit_test` nor [`crate::gtk::draw_editor_with_options`]
-    /// reserves or paints that column. Leave at `false` (the default)
-    /// for editors with no minimap, or one that isn't acting as a
-    /// scrollbar.
+    /// A host running a scrollbar-style minimap beside the editor has no
+    /// other way to stop the editor from reserving and painting a
+    /// `v_scrollbar_bounds` column immediately next to it. Passing
+    /// `suppress_v_scrollbar: true` makes `has_v_scrollbar` return `false`,
+    /// so `v_scrollbar_bounds` is `None` and neither `EditorLayout::hit_test`
+    /// nor [`crate::gtk::draw_editor_with_options`] reserves or paints that
+    /// column. Leave at `false` (the default) for editors with no minimap,
+    /// or one that isn't acting as a scrollbar.
     pub suppress_v_scrollbar: bool,
 }
 
@@ -587,8 +550,8 @@ pub enum EditorHit {
     /// fixed-cell grid, but can drift from the actual glyph on
     /// proportional-font or per-span-attributed backends (bold /
     /// italic / `font_scale` spans paint at a different advance than
-    /// `cell_width` — see #420). Callers that need the exact column on
-    /// those backends should discard this field and resolve via
+    /// `cell_width`). Callers that need the exact column on those backends
+    /// should discard this field and resolve via
     /// [`crate::Backend::editor_col_at_x`] instead (falls back to this
     /// same approximation on TUI).
     BufferPos { line: usize, col: usize },
@@ -638,7 +601,7 @@ impl EditorLayout {
     /// [`EditorHit::BufferPos`] is a uniform-monospace approximation —
     /// see that variant's doc and [`Self::col_at_x`] /
     /// [`crate::Backend::editor_col_at_x`] for the text-engine-accurate
-    /// resolution proportional/attributed backends need (#420).
+    /// resolution proportional/attributed backends need.
     pub fn hit_test(&self, x: f32, y: f32) -> EditorHit {
         if x < self.bounds.x
             || x >= self.bounds.x + self.bounds.width
@@ -696,8 +659,7 @@ impl EditorLayout {
     /// advance width. Backends that paint editor text with a real
     /// text-shaping engine and per-span attributes (bold / italic /
     /// `font_scale`) override `Backend::editor_col_at_x` with an exact
-    /// glyph-position inverse of their `draw_editor` instead of relying
-    /// on this approximation (GTK's Pango `xy_to_index` — see #420).
+    /// glyph-position inverse of their `draw_editor` instead.
     ///
     /// The returned column already folds in `self.scroll_left` and the
     /// row's `segment_col_offset` (0 for non-wrapped lines and the
@@ -724,20 +686,16 @@ impl EditorLayout {
     /// Resolve a character column within `editor.lines[view_row]` back to
     /// an absolute `x` — the exact inverse of [`Self::col_at_x`], so
     /// `col_at_x(x_at_col(editor, view_row, c)) == c` holds for any `c`
-    /// reachable from a valid on-screen `x` (i.e. `c >= self.scroll_left +
-    /// segment_col_offset`; smaller columns are off the left edge of the
-    /// viewport and have no `x` to return).
+    /// reachable from a valid on-screen `x`.
     ///
-    /// Like `col_at_x`, this is a uniform-monospace calculation (`self.
-    /// cell_width`) with no tab expansion — correct for TUI's fixed-cell
-    /// grid, and the default [`crate::Backend`] behaviour for any host
-    /// that hasn't overridden the exact-glyph resolution. A host anchoring
-    /// UI at a caret column (a popup, say) on a backend with per-span
-    /// attributes or proportional fonts should resolve the exact pixel
-    /// position through that backend's own text-shaping engine instead of
-    /// this approximation, the same way [`Self::col_at_x`] recommends
-    /// `Backend::editor_col_at_x` for the inverse direction (#420,
-    /// #1042).
+    /// Like `col_at_x`, this is a uniform-monospace calculation
+    /// (`self.cell_width`) with no tab expansion — correct for TUI's
+    /// fixed-cell grid, and the default [`crate::Backend`] behaviour for
+    /// any host that hasn't overridden the exact-glyph resolution. A host
+    /// anchoring UI at a caret column (a popup, say) on a backend with
+    /// per-span attributes or proportional fonts should resolve the exact
+    /// pixel position through that backend's own text-shaping engine
+    /// instead of this approximation.
     pub fn x_at_col(&self, editor: &Editor, view_row: usize, col: usize) -> f32 {
         let segment_col_offset = editor
             .lines
@@ -979,7 +937,7 @@ impl Editor {
 
     /// [`Self::layout`], plus [`EditorPaintOptions`] a host can set to
     /// override otherwise-automatic geometry decisions — currently just
-    /// `suppress_v_scrollbar` (#968).
+    /// `suppress_v_scrollbar`.
     ///
     /// Equivalent to [`Self::layout_with_options_and_v_scrollbar_w`] with
     /// `v_scrollbar_w: None` (a `cell_width`-wide scrollbar column).
@@ -1256,14 +1214,12 @@ mod tests {
         assert_eq!(vsb.width, 1.0);
     }
 
-    /// Regression for #968 (minimap interaction): a host running its own
-    /// scroll affordance beside the editor (e.g. a `Minimap` with
-    /// `scroll_thumb`, vimcode#723) can pass
-    /// `EditorPaintOptions { suppress_v_scrollbar: true, .. }` to stop
-    /// the editor from *also* reserving/painting a redundant vertical
-    /// scrollbar column, even though the buffer still overflows the
-    /// viewport (the condition that would otherwise force one).
-    /// `layout()` (no options) must remain unaffected.
+    /// A host running its own scroll affordance beside the editor (e.g.
+    /// a minimap) can pass `EditorPaintOptions { suppress_v_scrollbar:
+    /// true, .. }` to stop the editor from also reserving/painting a
+    /// redundant vertical scrollbar column, even though the buffer still
+    /// overflows the viewport. `layout()` (no options) must remain
+    /// unaffected.
     #[test]
     fn editor_layout_with_options_suppress_v_scrollbar_overrides_overflow() {
         let ed = make_editor(4, 100, 40);
@@ -1454,7 +1410,7 @@ mod tests {
         assert_eq!(l.visible_lines, 36);
     }
 
-    // ── EditorLayout::col_at_x (#420) ───────────────────────────────
+    // ── EditorLayout::col_at_x ──────────────────────────────────────
 
     fn line_with_segment_offset(segment_col_offset: usize) -> EditorLine {
         EditorLine {
@@ -1529,7 +1485,7 @@ mod tests {
         assert_eq!(l.col_at_x(&ed, 0, l.text_bounds.x), 7);
     }
 
-    // ── EditorLayout::x_at_col (#1042) ──────────────────────────────
+    // ── EditorLayout::x_at_col ──────────────────────────────────────
 
     #[test]
     fn editor_x_at_col_round_trips_with_col_at_x_in_monospace_case() {
@@ -1590,7 +1546,7 @@ mod tests {
         }
     }
 
-    // ── `EditorSelection::cols_on` (#1082) ──────────────────────────────
+    // ── `EditorSelection::cols_on` ──────────────────────────────────────
 
     /// Builds a minimal [`EditorLine`] for `cols_on` tests, varying only
     /// the fields that drive its column math.
@@ -1665,7 +1621,7 @@ mod tests {
     /// A ghost-text continuation row is virtual (no buffer columns) and
     /// must never be selected, even when its `line_idx` falls inside the
     /// selection's buffer-line range (ghost rows repeat the owning
-    /// line's `line_idx`, quadraui#1082).
+    /// line's `line_idx`).
     #[test]
     fn cols_on_ghost_continuation_row_is_none() {
         let line = cols_line(0, "", 0, true, None);

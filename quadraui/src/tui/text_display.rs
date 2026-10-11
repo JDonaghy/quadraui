@@ -1,13 +1,12 @@
 //! TUI rasteriser for [`crate::TextDisplay`].
 //!
-//! Per D6: this function asks the primitive for a
-//! [`crate::TextDisplayLayout`] using a per-line measurer and paints the
-//! resolved `visible_lines` verbatim. Since quadraui#905, a line wider
-//! than the viewport no longer gets silently cut off at the right edge:
-//! it always wraps onto continuation rows prefixed with a visible marker
-//! (one TUI cell is exactly one [`crate::text_util::display_width`]
-//! column, so the column-budget wrap decision is exact here, unlike the
-//! pixel backends' `char_width` approximation).
+//! This function asks the primitive for a [`crate::TextDisplayLayout`]
+//! using a per-line measurer and paints the resolved `visible_lines`
+//! verbatim. A line wider than the viewport wraps onto continuation
+//! rows prefixed with a visible marker (one TUI cell is exactly one
+//! [`crate::text_util::display_width`] column, so the column-budget
+//! wrap decision is exact here, unlike the pixel backends' `char_width`
+//! approximation).
 //!
 //! Each line's spans render with their own `fg` / `bg` (falling back
 //! to the theme defaults). Optional `timestamp` prefix is rendered in
@@ -30,8 +29,7 @@ use crate::types::{Decoration, StyledSpan};
 /// gutter width for its timestamp prefix / the continuation marker via
 /// [`content_budget_cols`] — the single shared formula also used by
 /// [`crate::primitives::text_display::wrap_row_count`] and the pixel
-/// backends' paint path, so none of the three can drift out of step
-/// (see `content_budget_cols`'s doc, quadraui#494/#905).
+/// backends' paint path, so none of the three can drift out of step.
 fn line_rows(line: &TextDisplayLine, line_end: u16) -> Vec<Vec<StyledSpan>> {
     wrap_display_line(line, content_budget_cols(line, line_end as usize))
 }
@@ -150,7 +148,7 @@ pub fn draw_text_display(buf: &mut Buffer, area: Rect, display: &TextDisplay, th
                     }
                 }
             } else {
-                // Continuation-row marker (quadraui#905) — a wrapped row
+                // Continuation-row marker — a wrapped row
                 // must not read as an unrelated new line.
                 for ch in WRAP_CONTINUATION_MARKER.chars() {
                     if col >= line_end {
@@ -362,7 +360,7 @@ mod tests {
     }
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
-    // must return coords in the same frame across backends" (quadraui#494).
+    // must return coords in the same frame across backends".
     // `tui_text_display_layout` is local-frame (it only takes `body`
     // width/height, never `area.x`/`area.y`), but `draw_text_display`
     // paints each row at `body.y + vis.bounds.y` (and the scrollbar gutter
@@ -408,9 +406,8 @@ mod tests {
         scrollbar_thumb_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md): the
-    /// same scrollbar paint + hit_test round trip must hold when the
-    /// display isn't painted at the screen origin.
+    /// Regression guard: the same scrollbar paint + hit_test round trip must
+    /// hold when the display isn't painted at the screen origin.
     #[test]
     fn scrollbar_thumb_paint_and_click_round_trip_at_nonzero_origin() {
         scrollbar_thumb_round_trip_at(7, 13);
@@ -459,7 +456,7 @@ mod tests {
     fn scrollbar_body_width_reduced() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
         // 26-char line in a 5-cell-tall viewport: at a 19-col (20 - 1
-        // scrollbar) budget it wraps onto a second row (quadraui#905)
+        // scrollbar) budget it wraps onto a second row
         // rather than being cut mid-word — this test now asserts the
         // scrollbar gutter still lands in the same column either way.
         let display = TextDisplay {
@@ -575,8 +572,6 @@ mod tests {
         );
     }
 
-    // ── quadraui#905: wrap ──────────────────────────────────────────────
-
     #[test]
     fn wrap_splits_long_line_and_shows_continuation_marker() {
         // 12-col viewport, no scrollbar, no timestamp: gutter reserved
@@ -618,7 +613,7 @@ mod tests {
     #[test]
     fn tui_text_display_layout_row_count_matches_paint_for_wrapped_line() {
         // The pure hit-testing layout must agree with what `draw_text_display`
-        // actually paints (quadraui#494/#905) — a wrapped line occupies more
+        // actually paints — a wrapped line occupies more
         // than one visible row in both.
         let display = TextDisplay {
             id: WidgetId::new("td"),

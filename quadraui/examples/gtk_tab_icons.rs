@@ -1,7 +1,7 @@
 //! `TabIconsDemo` `AppLogic` + `quadraui::gtk::run` example.
 //!
 //! GTK twin of `tui_tab_icons` — the same `AppLogic`, so the icon
-//! sidecar (quadraui#620) is exercised through the Pango/Cairo
+//! sidecar is exercised through the Pango/Cairo
 //! rasteriser instead of the cell grid. `i` toggles the sidecar,
 //! `tab` cycles the active tab, `q` quits.
 //!

@@ -1,15 +1,13 @@
 //! TUI rasteriser for [`crate::MultiSectionView`].
 //!
-//! Per D6: this function asks the primitive for a
-//! [`crate::MultiSectionViewLayout`] using TUI-native metrics (1 cell
-//! per header, 1 cell per scrollbar, 1 cell per divider) and paints
-//! the resolved positions verbatim. Body content is dispatched to the
-//! existing per-primitive rasterisers (`draw_tree`, `draw_list`, etc.)
-//! using the body bounds returned by the layout.
+//! This function asks the primitive for a [`crate::MultiSectionViewLayout`]
+//! using TUI-native metrics (1 cell per header, 1 cell per scrollbar, 1 cell
+//! per divider) and paints the resolved positions verbatim. Body content is
+//! dispatched to the existing per-primitive rasterisers (`draw_tree`,
+//! `draw_list`, etc.) using the body bounds returned by the layout.
 //!
-//! Vertical-only in v1 (per #294 / D-003 in `quadraui/docs/decisions/DECISIONS.md`);
-//! horizontal sections fall through to a no-op until the horizontal
-//! rasteriser ships.
+//! Vertical-only in v1; horizontal sections fall through to a no-op until the
+//! horizontal rasteriser ships.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect as TuiRect;
@@ -40,7 +38,7 @@ pub fn draw_multi_section_view(
     nerd_fonts_enabled: bool,
 ) {
     if area.width == 0 || area.height == 0 || view.axis == Axis::Horizontal {
-        // Horizontal axis is not yet rasterised (#294). Paint nothing
+        // Horizontal axis is not yet rasterised. Paint nothing
         // rather than draw incorrect chrome — the host gets a visibly
         // empty region and surfaces the gap in their tests.
         return;
@@ -106,10 +104,8 @@ pub fn draw_multi_section_view(
     }
 
     // Panel-level scrollbar (WholePanel mode when content overflows).
-    // Thumb geometry comes straight from `layout.panel_scrollbar_thumb`
-    // (computed once, via `fit_thumb`, in `MultiSectionView::layout`) —
-    // see `paint_panel_scrollbar`'s doc for why this used to be a second,
-    // disagreeing formula (quadraui#820).
+    // Thumb geometry comes straight from `layout.panel_scrollbar_thumb`,
+    // computed once via `fit_thumb` in `MultiSectionView::layout`.
     if let Some(panel_sb) = layout.panel_scrollbar {
         paint_panel_scrollbar(buf, panel_sb, layout.panel_scrollbar_thumb, theme);
     }
@@ -487,13 +483,11 @@ fn paint_scrollbar(buf: &mut Buffer, gutter: QRect, thumb_bounds: Option<QRect>,
         set_cell(buf, x, cell_y, '░', track, bg);
     }
 
-    // Thumb at the layout-computed position when the body's scroll
-    // state was introspectable (Tree, List). Falls back to a 1-cell
-    // top-anchored thumb for overflowing body types without row-based
-    // scroll — same shape as pre-#9, here for visual continuity. Per
-    // *Primitive Authoring Rule #6*, the thumb position must reflect
-    // state — that's why the layout owns these bounds, not the
-    // rasteriser.
+    // Thumb at the layout-computed position when the body's scroll state
+    // was introspectable (Tree, List). Falls back to a 1-cell top-anchored
+    // thumb for overflowing body types without row-based scroll. Per
+    // *Primitive Authoring Rule #6*, the thumb position must reflect state —
+    // the layout owns these bounds, not the rasteriser.
     let (thumb_y, thumb_h) = match thumb_bounds {
         Some(t) => (t.y.round() as u16, t.height.round().max(1.0) as u16),
         None => (y_start, 1),
@@ -516,17 +510,8 @@ fn paint_scrollbar(buf: &mut Buffer, gutter: QRect, thumb_bounds: Option<QRect>,
 /// (`fit_thumb` + cell quantisation) and published as
 /// [`MultiSectionViewLayout::panel_scrollbar_thumb`].
 ///
-/// Pre-quadraui#820 this function computed thumb size/position itself
-/// from `(scroll, total_content)` with a `ceil()`-based formula that
-/// disagreed with the layout's `fit_thumb`-based one in two ways: the
-/// caller passed `total_content` as *just* the summed section sizes,
-/// silently dropping divider strips (so painted thumb size drifted from
-/// the hit-tested thumb whenever `allow_resize` was on and dividers
-/// were present); and even with matching totals, `ceil()`-rounding a
-/// fractional cell count is not the same operation as `fit_thumb`'s
-/// `max(min_thumb_len)` floor. Mirrors [`paint_scrollbar`]'s
-/// (per-section) pattern of consuming pre-computed bounds instead of
-/// re-deriving them.
+/// Mirrors [`paint_scrollbar`]'s (per-section) pattern of consuming
+/// pre-computed bounds instead of re-deriving them.
 fn paint_panel_scrollbar(
     buf: &mut Buffer,
     bounds: QRect,
@@ -782,21 +767,13 @@ mod tests {
 
     // ── Paint↔click round-trip harness ─────────────────────────────────────
     //
-    // Per the Session 346 course correction (PLAN.md "🧭 Course
-    // correction"): primitives that promise paint/click consistency
-    // need empirical verification, not just structural design. These
-    // tests paint a `MultiSectionView` into a ratatui `Buffer`, find the
-    // cells the rasteriser actually wrote glyphs into, then hit_test
-    // those exact coordinates against the same `MultiSectionViewLayout`
-    // and assert the hit identifies the painted-into section. If paint
-    // and click ever drift in the TUI rasteriser, one of these fails.
-    //
-    // Pre-`cell_quantum` (Session 343–346 #296), fractional `EqualShare`
-    // distributions caused exactly this drift: paint snapped to integer
-    // rows via `bounds.y.round()`, hit_test consumed the raw fractional
-    // bounds, and clicks at the row paint drew a header on landed in
-    // the previous section's body. Either of these tests would have
-    // caught that pre-merge.
+    // Primitives that promise paint/click consistency need empirical
+    // verification, not just structural design. These tests paint a
+    // `MultiSectionView` into a ratatui `Buffer`, find the cells the
+    // rasteriser actually wrote glyphs into, then hit_test those exact
+    // coordinates against the same `MultiSectionViewLayout` and assert the
+    // hit identifies the painted-into section. If paint and click drift in
+    // the TUI rasteriser, one of these fails.
 
     use super::{draw_multi_section_view, tui_msv_layout};
     use crate::primitives::tree::{TreeRow, TreeView};
@@ -875,14 +852,12 @@ mod tests {
     /// section. Uses a fractional `EqualShare` distribution (4 sections
     /// in 21 cells = 5.25 each) — the worst case for paint/click drift.
     ///
-    /// Run at both the origin and a non-zero `area` origin (quadraui#494 /
-    /// LESSONS.md "Layout helpers must return coords in the same frame
-    /// across backends"). `tui_msv_layout` bakes `area.x`/`area.y`
-    /// straight into the returned bounds (absolute frame), and
-    /// `paint_then_layout` already takes `area` as a parameter, so this
-    /// re-runs the identical logic at a shifted origin. `find_row_with`/
-    /// `row_text` derive their scan range from `buf.area` (not a
-    /// hardcoded rect), so they track the origin too.
+    /// Run at both the origin and a non-zero `area` origin. `tui_msv_layout`
+    /// bakes `area.x`/`area.y` straight into the returned bounds (absolute
+    /// frame), and `paint_then_layout` already takes `area` as a parameter,
+    /// so this re-runs the identical logic at a shifted origin. `find_row_with`/
+    /// `row_text` derive their scan range from `buf.area` (not a hardcoded
+    /// rect), so they track the origin too.
     fn header_clicks_land_in_painted_section_under_fractional_distribution_at(
         origin_x: u16,
         origin_y: u16,
@@ -931,7 +906,7 @@ mod tests {
         header_clicks_land_in_painted_section_under_fractional_distribution_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494).
+    /// Non-zero-origin regression guard.
     #[test]
     fn header_clicks_land_in_painted_section_under_fractional_distribution_at_nonzero_origin() {
         header_clicks_land_in_painted_section_under_fractional_distribution_at(7, 13);
@@ -940,15 +915,10 @@ mod tests {
     /// Round-trip: paint, find each section's body item rows (rows
     /// containing item glyphs but NOT the title), hit_test those
     /// coordinates, assert each lands in the SAME section's `Body`.
-    /// Catches the off-by-one drift that the band-aid #296 smokes
-    /// chased — a body row paints in section N but hit_test returns
-    /// Body{N-1} or Header{N+1}.
     ///
-    /// Run at both the origin and a non-zero `area` origin (quadraui#494 /
-    /// LESSONS.md non-zero-origin regression guard) — see
+    /// Run at both the origin and a non-zero `area` origin. See
     /// `header_clicks_land_in_painted_section_under_fractional_distribution_at`
-    /// for why this needs no coordinate translation beyond passing a
-    /// shifted `area` through.
+    /// for why coordinate translation via a shifted `area` is necessary.
     fn body_clicks_land_in_painted_section_under_fractional_distribution_at(
         origin_x: u16,
         origin_y: u16,
@@ -1017,7 +987,7 @@ mod tests {
         body_clicks_land_in_painted_section_under_fractional_distribution_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494).
+    /// Non-zero-origin regression guard.
     #[test]
     fn body_clicks_land_in_painted_section_under_fractional_distribution_at_nonzero_origin() {
         body_clicks_land_in_painted_section_under_fractional_distribution_at(7, 13);
@@ -1070,12 +1040,9 @@ mod tests {
         }
     }
 
-    /// Painted scrollbar thumb lands at the y range the layout
-    /// computed from `(scroll_offset, content_rows, viewport_rows)` —
-    /// this is the *Primitive Authoring Rule #6* test for
-    /// state-derived paint geometry. Pre-#9 `paint_scrollbar` pinned
-    /// the thumb at `y_start` regardless of state; that bug is
-    /// catchable here in unit-test time.
+    /// Painted scrollbar thumb lands at the y range the layout computed
+    /// from `(scroll_offset, content_rows, viewport_rows)` — this is the
+    /// *Primitive Authoring Rule #6* test for state-derived paint geometry.
     ///
     /// Setup: one section with 20 rows in a 10-cell body, scrolled by
     /// 2 rows. With the snapping arithmetic in `compute_thumb_bounds`,
@@ -1159,18 +1126,13 @@ mod tests {
     /// [`MultiSectionViewLayout::panel_scrollbar_thumb`] exactly, and
     /// that thumb's size accounts for divider strips.
     ///
-    /// Regression coverage for quadraui#820: pre-fix,
-    /// `paint_panel_scrollbar` recomputed its own thumb geometry from
-    /// `layout.sections.iter().map(|s| s.resolved_size).sum()` — which
-    /// silently dropped divider strips — instead of reusing
-    /// `panel_scrollbar_thumb` (itself computed once via `fit_thumb` from
-    /// the *correct* total, sections + dividers). With two 11-row tree
-    /// sections (each `1 (header) + 11 (rows) = 12`) plus one 1-cell
-    /// divider (`allow_resize = true`), the correct total is `25`, not
-    /// `24`. In a 10-row viewport that difference changes the painted
-    /// thumb height: `fit_thumb`'s `raw_len = (10/25)*10 = 4.0` exactly,
-    /// vs. the pre-fix formula's `ceil(10 * (10/24)) = ceil(4.1666) = 5`
-    /// — a visibly taller, wrong thumb.
+    /// Regression coverage: `paint_panel_scrollbar` must reuse the thumb
+    /// geometry from `panel_scrollbar_thumb` (computed once via `fit_thumb`)
+    /// rather than recomputing from section sizes alone. With two 11-row tree
+    /// sections (each `1 (header) + 11 (rows) = 12`) plus one 1-cell divider
+    /// (`allow_resize = true`), the correct total is `25`, not `24`. In a
+    /// 10-row viewport that difference changes the painted thumb height: 4.0
+    /// vs. ceil(4.1666) = 5 — a visibly taller, wrong thumb.
     #[test]
     fn panel_scrollbar_thumb_paints_at_layout_position_with_dividers() {
         let area = TuiRect::new(0, 0, 20, 10);
@@ -2593,13 +2555,10 @@ mod tests {
         );
     }
 
-    // Regression test for #471 (fix iteration 1): `paint_empty_body` centers
-    // the empty-state message using `line.visible_width()` (display-width-
-    // aware), but before the fix painted it via a char-count-strided loop —
-    // so a CJK/emoji message rendered narrower than the centering math
-    // assumed, landing left-of-center instead of centered. Pin that the
-    // painted extent of a CJK message now agrees with `visible_width()`
-    // exactly, so it lands with equal left/right margins.
+    // `paint_empty_body` centers the empty-state message using
+    // `line.visible_width()` (display-width-aware). Pin that the painted
+    // extent of a CJK message agrees with `visible_width()` exactly, so it
+    // lands with equal left/right margins.
     #[test]
     fn empty_body_centers_cjk_message_by_display_width_not_char_count() {
         let area = TuiRect::new(0, 0, 20, 3);

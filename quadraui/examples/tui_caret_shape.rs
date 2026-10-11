@@ -1,4 +1,4 @@
-//! TUI runner for the caret-shape demo (issue #1015).
+//! TUI runner for the caret-shape demo.
 //!
 //! `i`/`r`/`n` exercise `Backend::set_caret_shape`; TUI's implementation
 //! genuinely steers the terminal emulator's hardware caret via DECSCUSR

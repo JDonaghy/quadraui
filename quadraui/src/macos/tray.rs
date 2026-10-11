@@ -1,4 +1,4 @@
-//! Tray / status-bar icon control for macOS (issue #953).
+//! Tray / status-bar icon control for macOS.
 //!
 //! `NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength)`
 //! backs `Backend::tray`'s [`crate::backend::TrayService`] surface (see
@@ -8,32 +8,29 @@
 //! doc for why there is no "not constructed yet" state to report `None`
 //! for the way `Backend::window`/`NSWindow` genuinely has one.
 //!
-//! ## Menu vs. plain click (issue #953's "reuse `ContextMenu`" design note)
+//! ## Menu vs. plain click
 //!
 //! [`set_menu`] reuses [`super::menu_bar_install::build_ns_menu`] — the
 //! same `ContextMenu` → `NSMenu` conversion `Backend::show_context_menu`
-//! uses — and attaches it via `NSStatusItem::setMenu`. AppKit's own
-//! behaviour once a menu is attached that way: **any** click on the
-//! status item (left or right) opens the menu directly, and the
-//! button's own target/action (the `UiEvent::TrayClicked` producer
-//! below) does not fire for that click at all. So once [`set_menu`] has
-//! been called with a non-empty [`ContextMenu`], `TrayClicked` stops
-//! firing and `UiEvent::ContextMenuItemActivated` (selection only — see
-//! below) takes over, mirroring a right-click context menu's own event
-//! vocabulary. This is a native AppKit trade-off (the same shape ships
-//! in Electron/Qt tray implementations), not a quadraui gap.
+//! uses — and attaches it via `NSStatusItem::setMenu`. AppKit's behaviour
+//! once a menu is attached that way: **any** click on the status item
+//! (left or right) opens the menu directly, and the button's own
+//! target/action (the `UiEvent::TrayClicked` producer below) does not fire
+//! for that click at all. So once [`set_menu`] has been called with a
+//! non-empty [`ContextMenu`], `TrayClicked` stops firing and
+//! `UiEvent::ContextMenuItemActivated` (selection only — see below) takes
+//! over, mirroring a right-click context menu's own event vocabulary. This
+//! is a native AppKit trade-off, not a quadraui gap.
 //!
 //! `UiEvent::ContextMenuDismissed` deliberately does **not** fire for a
-//! tray menu, unlike [`super::menu_bar_install::show_context_menu`]:
-//! that function calls `popUpMenuPositioningItem:atLocation:inView:`
-//! itself and can push `ContextMenuDismissed` the instant the call
-//! returns, but `NSStatusItem::setMenu` hands the whole click-track-close
-//! cycle to AppKit with no synchronous call of ours to hang a "closed
-//! now" push off. Wiring `NSMenuDelegate::menuDidClose:` to recover that
-//! signal is a real, nameable follow-up (it would need `QuadraMenuTarget`
-//! to grow a second protocol conformance shared with the menu-bar/
-//! context-menu paths, which don't need it today) rather than something
-//! faked here.
+//! tray menu, unlike [`super::menu_bar_install::show_context_menu`]: that
+//! function calls `popUpMenuPositioningItem:atLocation:inView:` itself and
+//! can push `ContextMenuDismissed` the instant the call returns, but
+//! `NSStatusItem::setMenu` hands the whole click-track-close cycle to
+//! AppKit with no synchronous call of ours to hang a "closed now" push
+//! off. Wiring `NSMenuDelegate::menuDidClose:` to recover that signal is
+//! a follow-up that would need `QuadraMenuTarget` to grow a second protocol
+//! conformance shared with the menu-bar/context-menu paths.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -115,12 +112,10 @@ impl MacTrayState {
     }
 }
 
-/// Obj-C target for the tray status item's plain-click action selector
-/// (issue #953) — the `TrayService` analogue of
-/// [`super::menu_bar_install::QuadraMenuTarget`]. Reads which mouse
-/// button triggered the click off `NSApplication::currentEvent` (the
-/// button control itself carries no button identity — only "the
-/// configured action fired") and pushes `UiEvent::TrayClicked`.
+/// Obj-C target for the tray status item's plain-click action selector,
+/// the `TrayService` analogue of [`super::menu_bar_install::QuadraMenuTarget`].
+/// Reads which mouse button triggered the click off
+/// `NSApplication::currentEvent` and pushes `UiEvent::TrayClicked`.
 struct QuadraTrayTargetIvars {
     events: Rc<RefCell<VecDeque<UiEvent>>>,
 }
@@ -198,7 +193,7 @@ fn mouse_button_from_current_event(mtm: MainThreadMarker) -> MouseButton {
 /// collapse-to-`None`/`Unsupported` posture `super::image::decode_image`
 /// documents for the in-canvas `Image` primitive.
 ///
-/// `pub(crate)` (issue #1142): `macos::run`'s window-creation call site
+/// `pub(crate)`: `macos::run`'s window-creation call site
 /// reuses this same decoder to build the `NSApp.applicationIconImage`
 /// (Dock/app-switcher icon) rather than hand-rolling a second one for
 /// what is exactly the same source-to-`NSImage` conversion the tray icon
@@ -249,10 +244,9 @@ pub(crate) fn set_tooltip(
 }
 
 /// [`crate::backend::TrayService::set_menu`]'s macOS implementation. An
-/// empty `menu.items` detaches any previously-attached menu (see
-/// `TrayService::set_menu`'s doc on why that's not the same as never
-/// calling this method) — click behaviour then reverts to
-/// `UiEvent::TrayClicked` via [`MacTrayState::click_target`].
+/// empty `menu.items` detaches any previously-attached menu — click
+/// behaviour then reverts to `UiEvent::TrayClicked` via
+/// [`MacTrayState::click_target`].
 pub(crate) fn set_menu(
     state: &mut MacTrayState,
     events: Rc<RefCell<VecDeque<UiEvent>>>,

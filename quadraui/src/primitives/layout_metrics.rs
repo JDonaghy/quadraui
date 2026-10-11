@@ -1,4 +1,4 @@
-//! Shared pixel-layout math for rasterisers (#499).
+//! Shared pixel-layout math for rasterisers.
 //!
 //! `gtk::tree::gtk_tree_layout` and `macos::tree::mac_tree_layout` were
 //! byte-identical apart from the function name and one comment; the
@@ -57,18 +57,10 @@ pub trait TextMeasure {
     fn width_of(&self, text: &str) -> f32;
 }
 
-/// Pixel/DIP-unit layout constants every pixel backend (`gtk`, `macos`,
-/// `win`) used to redefine independently, at the same value, under a
-/// different name (issue #1079): `GTK_DIVIDER_PX` / `MAC_DIVIDER_PX` /
-/// `DIVIDER_DIP` were all `4.0`, `TOAST_WIDTH_PX` / `GTK_TOAST_WIDTH_PX` /
-/// `TOAST_WIDTH_DIP` were all `320.0`, and so on for every constant below.
+/// Pixel/DIP-unit layout constants: logical pixels for `gtk`/`macos`,
+/// DIPs for `win` — the same numeric unit convention every backend shares.
 /// One definition here means one place to change a value backends must
-/// agree on, and a `grep -rn 'const <NAME>' src/` that returns exactly one
-/// hit instead of three-to-six near-identical ones.
-///
-/// Values are logical pixels for `gtk`/`macos`, DIPs for `win` — the same
-/// numeric unit convention every backend already shared before this fix,
-/// just previously copy-pasted instead of referenced.
+/// agree on.
 pub mod pixel {
     /// [`crate::Split`] / [`crate::primitives::split_tree::SplitTree`]
     /// divider thickness.
@@ -88,7 +80,7 @@ pub mod pixel {
     /// [`crate::ToastOverlay`] extra width reserved around an action label.
     pub const TOAST_ACTION_PADDING: f32 = 16.0;
     /// [`crate::ToastOverlay`] horizontal gap between two adjacent action
-    /// buttons on the button row (#1185).
+    /// buttons on the button row.
     pub const TOAST_ACTION_GAP: f32 = 8.0;
 
     /// [`crate::ProgressBar`] width of the cancel (`×`) affordance.
@@ -139,7 +131,7 @@ pub mod pixel {
     /// [`crate::TabBar`] non-compact per-tab horizontal padding (left +
     /// right) inside the tab background fill. `gtk::tab_bar::TAB_PAD`,
     /// `macos::tab_bar::TAB_PAD`, and `win::tab_bar::TAB_PAD_DIP` were all
-    /// `14.0` independently (issue #1080).
+    /// `14.0` independently.
     pub const TAB_PAD: f32 = 14.0;
     /// [`crate::TabBar`] gap between a tab's label and its close glyph.
     pub const TAB_INNER_GAP: f32 = 10.0;
@@ -152,8 +144,7 @@ pub mod pixel {
     /// to estimate an average glyph advance for
     /// [`super::pixel_tab_bar_layout`]'s `available_cols` — proportional
     /// fonts have no single "char width", so this is the same estimate
-    /// convention `gtk`/`macos` already used independently before #1080
-    /// (`win` gained one for the first time).
+    /// convention `gtk`/`macos` already used independently.
     pub const TAB_CELL_WIDTH_SAMPLE: &str = "ABCDabcd0123.:_";
 }
 
@@ -164,7 +155,7 @@ pub mod pixel {
 /// at `line_height`. Header rows use `(line_height * 1.2).round()`
 /// pitch, leaves/branches use `(line_height * 1.4).round()` unless
 /// [`crate::types::TreeStyle::row_height`] overrides the non-header
-/// pitch (#623). Chevron end-x is an *estimate*
+/// pitch. Chevron end-x is an *estimate*
 /// (`line_height * 0.65` for the glyph) since exact glyph metrics
 /// aren't available without laying out each chevron per row — every
 /// backend already made this same tradeoff independently.
@@ -203,22 +194,15 @@ pub fn tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLa
 
 /// The non-header row pitch [`tree_layout`] uses for the bulk of a
 /// tree's rows: [`crate::types::TreeStyle::row_height`] when the host
-/// set one, else `(line_height * 1.4).round()` (#623).
+/// set one, else `(line_height * 1.4).round()`.
 ///
 /// [`TreeView::vscrollbar`] takes a single, uniform `row_height` — it
 /// has no way to reproduce `tree_layout`'s header-vs-leaf/branch split
 /// (headers pitch at `line_height * 1.2`) — so this is the pitch every
-/// pixel backend's `tree_vscrollbar` should pass it. Before #1043's fix
-/// round, `gtk`/`macos`/`win`'s `tree_vscrollbar` passed the raw
-/// `line_height` instead, which is ~40% short of what `tree_layout`
-/// actually paints for non-header rows (and silently ignored
-/// `TreeStyle::row_height` entirely) — making "does this tree
-/// overflow its viewport" and the resulting thumb size/position wrong
-/// against what `draw_tree` paints. Using the leaf/branch pitch here
-/// still isn't exact for trees with header rows mixed in (the uniform
-/// `vscrollbar` model can't be), but it matches what `tree_layout`
-/// paints for the overwhelming majority of rows in any real tree,
-/// which raw `line_height` never did.
+/// pixel backend's `tree_vscrollbar` should pass it. Passing the leaf/branch
+/// pitch instead of raw `line_height` matches what `tree_layout` paints for
+/// non-header rows (the overwhelming majority of rows in any real tree),
+/// and respects `TreeStyle::row_height` when set.
 pub fn tree_row_pitch(tree: &TreeView, line_height: f64) -> f64 {
     tree.style
         .row_height
@@ -230,20 +214,11 @@ pub fn tree_row_pitch(tree: &TreeView, line_height: f64) -> f64 {
 // ── List ─────────────────────────────────────────────────────────────
 
 /// Compute the pixel-unit layout for a [`ListView`], including the
-/// horizontal-scrollbar row reservation (#712). Every pixel backend
+/// horizontal-scrollbar row reservation. Every pixel backend
 /// (`gtk_list_layout`, `mac_list_layout`, and any future Direct2D
 /// equivalent) calls this one function so [`crate::Backend::list_layout`]
 /// and the layout a backend actually paints can never disagree about
 /// whether a row is reserved for the h-scrollbar.
-///
-/// Before #712, `gtk_list_layout` had this reservation inline and
-/// `mac_list_layout` had none at all — `macos::list::draw_list`
-/// recomputed a *second*, reduced-height layout only when painting, so
-/// `MacBackend::list_layout` was one row taller than what macOS
-/// actually painted whenever `max_content_width` forced a scrollbar.
-/// This function is that reservation logic, generalised over
-/// `border_inset` so both backends share one implementation instead of
-/// two copies that can drift.
 ///
 /// `char_width` is used only for the h-scrollbar-overflow threshold
 /// check (`ListView::max_content_width` is in character columns); pass
@@ -258,10 +233,7 @@ pub fn tree_row_pitch(tree: &TreeView, line_height: f64) -> f64 {
 /// (see `macos::list`'s module doc "Scope omissions").
 ///
 /// Coordinate frame: **LOCAL** — relative to `(0, 0)`, matching every
-/// other layout_metrics fn. Windows does not yet reserve an
-/// h-scrollbar row at all (`win_list_layout` has no `char_width`
-/// parameter and no overflow check) — a real gap, not drift, tracked
-/// separately from this fix; see `win::list`'s module doc.
+/// other layout_metrics fn.
 pub fn list_layout(
     list: &ListView,
     w: f64,
@@ -323,12 +295,7 @@ pub fn msv_layout(
 ///
 /// `SectionBody::MessageList` measures real content height (one
 /// header line per message plus its wrapped body lines) rather than
-/// returning `0.0`. Before #499 this was GTK-only — macOS's copy of
-/// this match returned `0.0` for `MessageList`, a live layout bug
-/// (macOS MSV sections containing a `MessageList` body collapsed to
-/// zero height / mis-sized dividers). Sharing this function is what
-/// fixes it: there is now exactly one measurement, so macOS gets the
-/// correct height automatically.
+/// returning `0.0`.
 pub fn msv_body_measure(
     body: &SectionBody,
     aux: &Option<SectionAux>,
@@ -394,16 +361,13 @@ pub fn form_row_height(line_height: f64) -> f32 {
 /// `SegmentedControl` / `Toolbar`) start: 6px row inset + label width
 /// + 12px gap.
 ///
-/// `for_toolbar` selects `Toolbar`'s pre-#499 behaviour: when its
-/// label is empty, skip the `+ label_w + 12` entirely and start at
-/// the 6px inset. `ToggleGroup` / `ButtonRow` / `SegmentedControl`
-/// never had that special case — pre-#499 macOS computed the
-/// unconditional `6.0 + label_w + 12.0` for all three even with an
-/// empty label (GTK's still-unmigrated inline copy in
-/// `gtk/backend.rs` does the same) — so `for_toolbar` must be `false`
-/// for those three to keep this shared fn from silently changing
-/// their output. See `quadraui/docs/PRIMITIVE_RULES.md`'s "Shared
-/// pixel-layout math" section.
+/// `for_toolbar` selects `Toolbar`'s behaviour: when its label is empty,
+/// skip the `+ label_w + 12` entirely and start at the 6px inset.
+/// `ToggleGroup` / `ButtonRow` / `SegmentedControl` always compute the
+/// unconditional `6.0 + label_w + 12.0` regardless of label content,
+/// so `for_toolbar` must be `false` for those three to keep this shared fn
+/// from changing their output. See `quadraui/docs/PRIMITIVE_RULES.md`'s
+/// "Shared pixel-layout math" section.
 fn items_start_x(label: &str, measure: &dyn TextMeasure, for_toolbar: bool) -> f32 {
     if for_toolbar && label.is_empty() {
         return 6.0;
@@ -436,10 +400,7 @@ fn validation_message(field: &FormField) -> Option<&str> {
 /// `FieldKind::TextArea`'s multi-row height (`row_h * visible_rows`)
 /// is intentionally **not** special-cased here — no pixel backend
 /// currently paints a real multi-row `TextArea` (see
-/// `macos::form`'s module doc, "Scope omissions"), so folding that in
-/// here would be a silent behavior change beyond #499's scope, not a
-/// dedup. Do that as its own follow-up once a backend actually renders
-/// it.
+/// `macos::form`'s module doc, "Scope omissions").
 ///
 /// When the field carries a non-empty [`ValidationState`] message, the
 /// returned height is `row_h` **plus** one more approximate text line
@@ -514,7 +475,7 @@ fn form_field_measure_inner(
                         _ => field.id.clone(),
                     };
                     // Single button-measure formula shared with every
-                    // pixel rasteriser (#730) — see `measure_button`'s
+                    // pixel rasteriser — see `measure_button`'s
                     // doc.
                     let width = measure_button(measure, btn);
                     FormItemMeasure { id, width }
@@ -529,16 +490,15 @@ fn form_field_measure_inner(
 // ── Toast ────────────────────────────────────────────────────────────
 
 /// Compute the pixel-unit layout for a [`ToastOverlay`] any pixel backend
-/// produces (issue #1079 — `gtk_toast_stack_layout`, `mac_toast_stack_layout`,
-/// `win_toast_stack_layout` were three copies of this exact formula, only
-/// differing in the constant names and how `measure` was obtained).
+/// produces — `gtk_toast_stack_layout`, `mac_toast_stack_layout`,
+/// `win_toast_stack_layout` are copies of this exact formula.
 ///
 /// `(origin_x, origin_y)` is baked into the returned bounds (absolute
 /// frame) — hosts call `layout.hit_test(x, y)` with raw click
 /// coordinates, no localisation needed, matching every other
 /// `*_toast_stack_layout`.
 ///
-/// Height grows with a wrapped body (#1182 — up to
+/// Height grows with a wrapped body (up to
 /// [`crate::primitives::toast::MAX_BODY_LINES`] lines via
 /// [`crate::primitives::toast::wrap_text_lines`]), matching what
 /// `native_surface_paint::paint`'s own copy of this formula actually
@@ -578,7 +538,7 @@ pub fn pixel_toast_stack_layout(
                 .len()
                 .max(1)
             };
-            // Button row (#1185): a separate row below the title/body,
+            // Button row: a separate row below the title/body,
             // added only when the toast has actions.
             let has_actions = !toast.actions.is_empty();
             let button_row_h = if has_actions {
@@ -600,9 +560,7 @@ pub fn pixel_toast_stack_layout(
                 h,
                 pixel::TOAST_PADDING,
                 pixel::TOAST_DISMISS_WIDTH,
-                // Height is a single text row (see the matching call in
-                // `native_surface_paint::paint`'s doc for why this
-                // mustn't reuse `TOAST_DISMISS_WIDTH`, #1185).
+                // Height is a single text row; see `native_surface_paint::paint`'s
                 line_height,
                 &action_widths,
                 line_height,
@@ -621,15 +579,13 @@ pub fn pixel_toast_stack_layout(
 // ── Split / SplitTree ───────────────────────────────────────────────
 
 /// Compute a [`Split`]'s layout at the shared [`pixel::DIVIDER`]
-/// thickness — the twin of every backend's `*_split_layout` (issue
-/// #1079).
+/// thickness.
 pub fn pixel_split_layout(split: &Split, bounds: QRect) -> SplitLayout {
     split.layout(bounds, SplitMeasure::new(pixel::DIVIDER))
 }
 
 /// Compute a [`SplitTree`]'s layout at the shared [`pixel::DIVIDER`]
-/// thickness — the twin of every backend's `*_split_tree_layout` (issue
-/// #1079).
+/// thickness.
 pub fn pixel_split_tree_layout(tree: &SplitTree, bounds: QRect) -> SplitTreeLayout {
     tree.layout(bounds, SplitTreeMeasure::new(pixel::DIVIDER))
 }
@@ -637,7 +593,7 @@ pub fn pixel_split_tree_layout(tree: &SplitTree, bounds: QRect) -> SplitTreeLayo
 // ── Progress ─────────────────────────────────────────────────────────
 
 /// Compute a [`ProgressBar`]'s layout — the twin of every backend's
-/// `*_progress_layout` (issue #1079). `x`/`y`/`w`/`h` are the bar's own
+/// `*_progress_layout`. `x`/`y`/`w`/`h` are the bar's own
 /// bounds; the cancel affordance (when `bar.cancellable`) reserves
 /// [`pixel::PROGRESS_CANCEL_WIDTH`].
 pub fn pixel_progress_layout(
@@ -666,7 +622,7 @@ pub fn pixel_progress_layout(
 // ── PipelineView ─────────────────────────────────────────────────────
 
 /// Compute a [`PipelineView`]'s layout — the twin of every backend's
-/// `*_pipeline_view_layout` (issue #1079).
+/// `*_pipeline_view_layout`.
 ///
 /// Note: the returned layout (incl. `bounds`) is offset down by
 /// [`pixel::PIPELINE_FOCUS_INDICATOR_H`], so `bounds.y` starts below the
@@ -701,7 +657,7 @@ pub fn pixel_pipeline_view_layout(
 // ── Board ────────────────────────────────────────────────────────────
 
 /// Compute a [`BoardModel`]'s layout — the twin of every backend's
-/// `*_board_layout` (issue #1079). The per-column/card geometry
+/// `*_board_layout`. The per-column/card geometry
 /// constants (`BOARD_COL_MIN_PX` etc.) were already shared via
 /// [`crate::primitives::board`] before this issue; this fn just removes
 /// the last bit of drift, the three near-identical wrapper calls.
@@ -728,10 +684,8 @@ pub fn pixel_board_layout(model: &BoardModel, x: f32, y: f32, w: f32, h: f32) ->
 
 // ── Panel ────────────────────────────────────────────────────────────
 
-/// Compute a [`Panel`]'s layout — the twin of every backend's
-/// `*_panel_layout` (issue #1079). `content_padding` is always `0.0`
-/// today — no backend passes a non-zero value (see each backend's now
-/// pre-#1079 `*_panel_layout` history).
+/// Compute a [`Panel`]'s layout. `content_padding` is always `0.0`
+/// today — no backend passes a non-zero value.
 pub fn pixel_panel_layout(
     panel: &Panel,
     x: f32,
@@ -756,7 +710,7 @@ pub fn pixel_panel_layout(
 // ── Chart ────────────────────────────────────────────────────────────
 
 /// Compute a [`Chart`]'s layout — the twin of every backend's
-/// `*_chart_layout` (issue #1079). Pure passthrough to
+/// `*_chart_layout`. Pure passthrough to
 /// [`Chart::layout`]; kept here (rather than inlined at each call site)
 /// so a future backend gets it for free, matching every other fn in
 /// this module.
@@ -783,21 +737,12 @@ pub fn pixel_chart_layout(
 
 // ── DataTable ────────────────────────────────────────────────────────
 
-/// Compute a [`DataTable`]'s layout via `measure` — the twin of every
-/// backend's `*_data_table_layout` (issue #1079).
+/// Compute a [`DataTable`]'s layout via `measure`.
 ///
-/// **The bug this fn fixes:** `GtkBackend::data_table_layout` (the
-/// no-paint, click-routing path) used to measure each column header by
-/// **byte length** (`col.title.len() as f32 * char_width`) instead of a
-/// real text measurement — every other measurer in this crate (real
-/// Pango/CoreText/DirectWrite metrics, or at worst a `chars().count()`
-/// estimate) counts *characters*, not UTF-8 bytes, so a multi-byte
-/// header (e.g. "日付") measured 2–3x too wide. Routing every backend's
-/// column-header measurement through `measure: &dyn TextMeasure` — real
-/// glyph metrics when a live font/context is available, a
-/// character-count estimate otherwise (see each backend's `TextMeasure`
-/// adapter) — makes that class of bug structurally impossible: there is
-/// now exactly one measurement path, and it never sees raw byte counts.
+/// Column headers are measured via `measure: &dyn TextMeasure` for
+/// real glyph metrics when a live font/context is available, or a
+/// character-count estimate otherwise, ensuring consistent column
+/// width computation across all backends.
 pub fn pixel_data_table_layout(
     table: &DataTable,
     w: f32,
@@ -818,9 +763,8 @@ pub fn pixel_data_table_layout(
 
 // ── Minimap ──────────────────────────────────────────────────────────
 
-/// Compute a [`Minimap`]'s layout at an explicit [`MinimapScale`] (issue
-/// #1143) — the twin of every backend's `*_minimap_layout_scaled` (issue
-/// #1079). Every pixel backend shows one buffer line per painted row
+/// Compute a [`Minimap`]'s layout at an explicit [`MinimapScale`].
+/// Every pixel backend shows one buffer line per painted row
 /// ([`pixel::MINIMAP_LINES_PER_ROW`]) — no cross-line colour reduction
 /// (see [`crate::MinimapGrid`]'s doc for why TUI's braille packing
 /// differs).
@@ -838,38 +782,26 @@ pub fn pixel_minimap_layout_scaled(
 
 // ── TabBar ───────────────────────────────────────────────────────────
 
-/// Compute a [`TabBar`]'s pixel-unit layout — the composition every pixel
-/// backend (`gtk`, `macos`, `win`) duplicated independently, once per
-/// paint/no-paint twin (issue #1080: ~9 near-identical copies of this
-/// exact arithmetic across `gtk::tab_bar`, `gtk::backend`,
-/// `macos::tab_bar`, and `win::tab_bar`).
-///
-/// Backends still do their own **text measurement** — Pango / Core Text /
-/// DirectWrite each need to switch fonts mid-tab (italic for a preview
-/// label, a Nerd-Font family swap for an icon glyph), which a single
-/// `&dyn TextMeasure` call can't express — so `tab_name_widths` and
-/// `tab_icon_extras` are that backend-specific pass, precomputed by the
-/// caller and handed in as parallel arrays indexed like `bar.tabs`
-/// (`0.0` for a tab with no icon). Everything else is single-font and
-/// lives here: close-button geometry, bracket framing (#631),
-/// right-segment widths, the "corrected scroll offset" engine-feedback
-/// signal, and `available_cols`.
+/// Compute a [`TabBar`]'s pixel-unit layout. Backends still do their own
+/// **text measurement** — Pango / Core Text / DirectWrite each need to
+/// switch fonts mid-tab (italic for a preview label, a Nerd-Font family
+/// swap for an icon glyph), which a single `&dyn TextMeasure` call can't
+/// express — so `tab_name_widths` and `tab_icon_extras` are that
+/// backend-specific pass, precomputed by the caller and handed in as
+/// parallel arrays indexed like `bar.tabs` (`0.0` for a tab with no icon).
+/// Everything else is single-font and lives here: close-button geometry,
+/// bracket framing, right-segment widths, the "corrected scroll offset"
+/// engine-feedback signal, and `available_cols`.
 ///
 /// `tab_pad` / `tab_inner_gap` / `tab_outer_gap` are the caller-resolved
 /// values for this bar — pass the compact variant when `bar.compact` is
 /// set, matching every backend's existing convention.
 ///
-/// # The #1080 close-button fix
+/// # The close-button fix
 ///
-/// Every backend used to size the close-button hit region as
-/// `tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap` — bundling
-/// in the *trailing* chrome (the tab's own right padding and the gap to
-/// the next tab) that paints nowhere near the × glyph. A click in that
-/// dead space still resolved to [`crate::TabBarHit::TabClose`] instead of
-/// [`crate::TabBarHit::Tab`]. This function reserves only
-/// `tab_inner_gap + close_glyph_w` for the close region and pushes the
-/// trailing chrome into [`TabMeasure::trailing_width`] instead (the same
-/// mechanism #631 already used for bracket framing) — the close box now
+/// The close-button hit region is sized as `tab_inner_gap + close_glyph_w`
+/// and trailing chrome (tab's own right padding and the gap to the next tab)
+/// is pushed into [`TabMeasure::trailing_width`] — the close box now
 /// covers just the glyph plus its leading gap, on every backend, bracket
 /// framing or not.
 ///
@@ -936,7 +868,7 @@ pub fn pixel_tab_bar_layout(
         let total =
             tab_pad + bracket_extra + icon_extra + name_w + close_extra + tab_pad + tab_outer_gap;
         if has_close {
-            // #1080: tight close region — just the glyph and its leading
+            // Tight close region — just the glyph and its leading
             // gap. Everything painted after it (the tab's own trailing
             // pad + outer gap, plus a closing bracket glyph when this is
             // the bracket-framed active tab) is `trailing_width`, not
@@ -992,8 +924,7 @@ mod tests {
 
     #[test]
     fn msv_body_measure_message_list_is_not_zero() {
-        // Regression for the macOS drift #499 fixes: MessageList bodies
-        // must measure real content height, not 0.0.
+        // MessageList bodies must measure real content height, not 0.0.
         let rows = vec![MessageRow::new(
             "line one\nline two",
             Color::rgb(255, 255, 255),
@@ -1107,12 +1038,8 @@ mod tests {
             },
         );
         let m = form_field_measure(&field, 20.0, &FakeMeasure);
-        // `SegmentedControl` (unlike `Toolbar`) has no empty-label
-        // special case: pre-#499 macOS and GTK's still-unmigrated
-        // inline copy both compute the unconditional
-        // `6.0 + label_w + 12.0` even when the label is empty.
-        // Regression guard for the #499 review finding: this used to
-        // silently drop to `6.0`.
+        // `SegmentedControl` (unlike `Toolbar`) has no empty-label special case:
+        // it always computes the unconditional `6.0 + label_w + 12.0`.
         assert_eq!(m.items_start_x, 6.0 + 0.0 + 12.0);
         assert_eq!(m.item_gap, 0.0);
         assert_eq!(m.item_measures[0].id, WidgetId::new("scope__seg_0"));
@@ -1130,8 +1057,7 @@ mod tests {
             focused_index: None,
         };
 
-        // Empty label -> Toolbar's pre-#499 special case: 6px inset,
-        // no +label_w+12 addition.
+        // Empty label → Toolbar's special case: 6px inset, no +label_w+12.
         let empty_label = field_with("tb", "", FieldKind::Toolbar(toolbar.clone()));
         let m = form_field_measure(&empty_label, 20.0, &FakeMeasure);
         assert_eq!(m.items_start_x, 6.0);
@@ -1184,27 +1110,11 @@ mod tests {
         );
     }
 
-    /// Parity guard for issue #710: `GtkBackend::form_layout`,
-    /// `macos::form::mac_form_layout`, and `win::form::win_form_layout`
-    /// all measure every `FieldKind` by calling this one function —
-    /// so this test is the single place that proves the invariant
-    /// their painters rely on: `FormFieldMeasure::height` is always
-    /// exactly one `row_h`, for *every* `FieldKind`, regardless of any
-    /// field-specific content (multiple toggles, a long `TextArea`
-    /// value, a large `visible_rows`).
-    ///
-    /// #710 was exactly a violation of this on GTK: before that fix,
-    /// `GtkBackend::form_layout` had its own inline measurer (not this
-    /// fn) that sized `FieldKind::TextArea` as `row_h * visible_rows`,
-    /// while `gtk::form::draw_form` only ever painted one row per
-    /// field — so the `visible_rows - 1` rows the layout believed
-    /// belonged to the `TextArea` were actually painted with the
-    /// *following* fields, and still hit-tested to the `TextArea`.
-    /// Now that GTK measures via this shared fn too (matching macOS
-    /// and Windows), a future regression that special-cases `TextArea`
-    /// (or any other kind) back to a multi-row height here would be
-    /// caught by every backend at once, instead of silently
-    /// reappearing on just one of them.
+    /// Every backend's form layout measures every `FieldKind` by calling
+    /// this one function, so this test proves the invariant their painters
+    /// rely on: `FormFieldMeasure::height` is always exactly one `row_h`,
+    /// for *every* `FieldKind`, regardless of any field-specific content
+    /// (multiple toggles, a long `TextArea` value, a large `visible_rows`).
     #[test]
     fn form_field_measure_height_is_one_row_for_every_field_kind() {
         use crate::primitives::form::{ButtonRowItem, ToggleGroupItem};
@@ -1331,7 +1241,7 @@ mod tests {
         }
     }
 
-    // ── List (#712) ──────────────────────────────────────────────────
+    // ── List ─────────────────────────────────────────────────────────
 
     fn list_with_max_content_width(n_items: usize, max_content_width: Option<usize>) -> ListView {
         use crate::primitives::list::ListItem;
@@ -1358,13 +1268,12 @@ mod tests {
         }
     }
 
-    /// The single reservation rule #712 exists to unify: when
-    /// `max_content_width` (in chars) exceeds the visible width (chars ×
-    /// `char_width`, in pixels), the bottom `line_height` row is reserved
-    /// for the h-scrollbar and is not available to items — one fewer row
-    /// fits than when no overflow is signalled. Every pixel backend
-    /// shares this exact function, so proving it here proves it for all
-    /// of them at once.
+    /// When `max_content_width` (in chars) exceeds the visible width
+    /// (chars × `char_width`, in pixels), the bottom `line_height` row is
+    /// reserved for the h-scrollbar and is not available to items — one
+    /// fewer row fits than when no overflow is signalled. Every pixel
+    /// backend shares this exact function, so proving it here proves it for
+    /// all of them at once.
     #[test]
     fn list_layout_reserves_hscrollbar_row_when_content_overflows() {
         const LINE_HEIGHT: f64 = 10.0;
@@ -1430,8 +1339,6 @@ mod tests {
         );
     }
 
-    // ── #1043 tree_row_pitch ─────────────────────────────────────────
-
     fn bare_tree() -> TreeView {
         TreeView {
             id: WidgetId::new("t"),
@@ -1454,7 +1361,7 @@ mod tests {
 
     #[test]
     fn tree_row_pitch_honors_tree_style_row_height_override() {
-        // #623: a host-set `TreeStyle::row_height` must win over the
+        // A host-set `TreeStyle::row_height` must win over the
         // `line_height`-derived default, exactly like `tree_layout` does.
         let mut tree = bare_tree();
         tree.style.row_height = Some(42);
@@ -1462,8 +1369,6 @@ mod tests {
         // And it must NOT vary with `line_height` once set.
         assert_eq!(tree_row_pitch(&tree, 100.0), 42.0);
     }
-
-    // ── #1080 pixel_tab_bar_layout ────────────────────────────────────
 
     /// Fixed-width stand-in for a proportional font: every glyph measures
     /// `6.0` px, matching `FakeMeasure` above but named locally so this
@@ -1521,14 +1426,9 @@ mod tests {
         );
     }
 
-    /// The issue #1080 acceptance test: a click in the dead space the old
-    /// per-backend measure used to bundle into the close region — between
-    /// the × glyph and the tab's own right edge (`tab_pad + tab_outer_gap`
-    /// of trailing chrome) — must resolve to `Tab`, not `TabClose`. RED
-    /// before this fix on every backend that called
-    /// `TabMeasure::new(total, tab_inner_gap + close_w + tab_pad +
-    /// tab_outer_gap)` instead of reserving `trailing_width` for that
-    /// chrome.
+    /// A click in the dead space between the × glyph and the tab's right edge
+    /// must resolve to `Tab`, not `TabClose`. This test verifies that the
+    /// close region excludes trailing padding and gap.
     #[test]
     fn pixel_tab_bar_layout_close_region_excludes_trailing_padding() {
         use crate::primitives::tab_bar::TabBarHit;
@@ -1623,9 +1523,7 @@ mod tests {
 
     #[test]
     fn pixel_tab_bar_layout_bracket_chrome_still_excludes_trailing_padding() {
-        // #631 bracket framing must not regress the #1080 tight-close-box
-        // fix: the close region still excludes the trailing pad/gap (now
-        // plus the closing bracket glyph), matching the plain path.
+        // Bracket framing must not regress the close-button fix: the close
         use crate::primitives::tab_bar::{TabBarHit, TabFrame};
 
         let bar = tab_bar_with(vec![closable_tab("main.rs", true)]);

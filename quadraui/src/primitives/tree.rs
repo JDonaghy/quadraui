@@ -312,11 +312,7 @@ impl TreeView {
     }
 
     /// Vertical scrollbar geometry for this tree rendered into `area`, or
-    /// `None` when the tree is empty or all rows fit in the viewport
-    /// (#1043 — before this method, an overflowing tree had no
-    /// host-facing way to ask for a scroll affordance short of
-    /// hand-rolling one per backend, and [`crate::Backend::draw_tree`]
-    /// painted none at all).
+    /// `None` when the tree is empty or all rows fit in the viewport.
     ///
     /// This is the single source of truth shared by any rasteriser that
     /// paints a tree scrollbar and consumers that hit-test the resolved
@@ -338,20 +334,17 @@ impl TreeView {
     /// when the host set one) — so callers must pass that pitch, not raw
     /// `line_height`, or the computed "does this overflow" answer and the
     /// thumb geometry won't match what [`crate::primitives::layout_metrics::tree_layout`]
-    /// (and therefore `draw_tree`) actually paints (#1043).
+    /// (and therefore `draw_tree`) actually paints.
     ///
     /// # Arguments
     ///
     /// - `area` — the tree surface rect, in surface-native units (TUI
     ///   cells, GTK / macOS / Windows pixels).
-    /// - `row_height` — height of one (non-header) row: `1.0` on TUI
-    ///   (which always uses 1 cell/row, ignoring `TreeStyle::row_height`
-    ///   — see `tui_tree_layout`'s doc), or
-    ///   [`crate::primitives::layout_metrics::tree_row_pitch`]'s result on
-    ///   pixel backends. The scrollbar occupies the rightmost column of
+    /// - `row_height` — height of one (non-header) row: `1.0` on TUI,
+    ///   or [`crate::primitives::layout_metrics::tree_row_pitch`]'s result
+    ///   on pixel backends. The scrollbar occupies the rightmost column of
     ///   `area`, and `row_height` also serves as both the column width
-    ///   and the minimum thumb length (same convention as
-    ///   `ListView::vscrollbar`).
+    ///   and the minimum thumb length.
     pub fn vscrollbar(&self, area: Rect, row_height: f32) -> Option<Scrollbar> {
         if row_height <= 0.0 {
             return None;
@@ -381,40 +374,11 @@ impl TreeView {
     }
 }
 
-// ── PaintSurface paint (#1075, PaintSurface Phase 4 slice 2/8) ───────────
-//
-// Before this, `gtk::draw_tree` (Cairo), `macos::tree::draw_tree` (Core
-// Graphics) and `win::tree::draw_tree` (Direct2D) each independently
-// painted the same row/chevron/icon/badge/scrollbar content with their
-// own drawing API. `paint` below is the one shared implementation,
-// written against [`crate::paint_surface::PaintSurface`] instead of
-// any one backend's API — see `crate::primitives::list::native_surface_paint`
-// for the same pattern applied one primitive earlier.
-//
-// What this migration fixes (issue #1075's named drift, plus two
-// smaller ones surfaced while unifying — reported here rather than
-// silently assumed, per this issue's "re-verify before you implement"):
-//
-// - **Missing vertical scrollbar.** `Backend::tree_vscrollbar` already
-//   returns real track/thumb geometry (#1043), but none of the three
-//   `draw_tree`s ever painted it. Fixed via
-//   [`crate::primitives::scrollbar::native_surface_paint::paint`].
-// - **Win never painted `TreeRow::edit`** (inline rename) at all —
-//   rows mid-rename rendered their stale label instead. macOS painted
-//   a reduced fallback (plain text, no caret/selection — see its
-//   pre-migration module doc, "Scope omissions"); GTK alone had the
-//   full caret + selection-highlight + placeholder treatment. `paint`
-//   below carries GTK's full version for all three backends, rather
-//   than picking the lowest common denominator — a caret-less rename
-//   box is a real usability gap, not a style choice worth preserving.
-// - **Error/Warning decoration colour**: `win::tree` alone mapped
-//   `Decoration::Error`/`Warning` to `theme.error_fg`/`warning_fg`;
-//   GTK/macOS's `def_fg` match only special-cased `Muted`, falling
-//   through to plain `foreground` for Error/Warning rows — an
-//   inconsistency with `ListView`, whose per-item decoration → fg
-//   mapping already colours all four decorations identically on every
-//   backend (see `gtk::list::draw_list`'s doc). `paint` adopts Win's
-//   fuller mapping for all three, matching `ListView`'s convention.
+// Shared `PaintSurface` implementation for rendering rows, chevrons,
+// icons, badges, and scrollbars across GTK, macOS, and Windows backends.
+// Every backend gets the full inline-rename treatment for `TreeRow::edit`
+// (caret, selection highlight, placeholder), and `Decoration::Error` /
+// `Warning` map to `theme.error_fg` / `warning_fg`, matching `ListView`.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -585,22 +549,26 @@ pub(crate) mod native_surface_paint {
             let text_right_limit = row_x + row_w - badge_reserve - 4.0;
             let text_start_x = cursor_x;
 
-            // #1183: hard-clip label painting to `text_right_limit` so a
-            // long span can never bleed into the badge's reserved gap.
-            // Before this, only a span's *background fill* was clamped
-            // (`clipped_w` below) — the glyph run itself was always drawn
-            // at its full measured width via `surface_draw_text_run_styled`,
-            // so an over-long label's last glyphs painted straight through
-            // (and often past) the badge with no gap, mirroring the TUI
-            // bug this issue reports. `PaintSurface` has no ellipsize verb
-            // (see `diff_view::native_surface_paint`'s identical note), so
-            // GUI backends hard-clip rather than ellipsize — TUI is the
-            // only backend that can cheaply measure+truncate a column
-            // budget and paint a literal `…` glyph.
-            let clip_w = (text_right_limit - cursor_x).max(0.0);
-            surface.surface_push_clip(Rect::new(cursor_x, row_y, clip_w, row_h));
+            // Reserve `text_right_limit` as the label's budget so
+            // a long span can never bleed into the badge's reserved gap.
+            // A label that doesn't fit the budget is ellipsized —
+            // `fit_text_prefix` binary-searches the longest prefix of the
+            // overflowing span that, with a trailing `…` appended, still
+            // fits — rather than hard-clipped mid-glyph, so GTK/macOS/Win
+            // all show the same VS Code-style truncation TUI already did.
+            let avail = (text_right_limit - cursor_x).max(0.0);
+            let total_w: f32 = row
+                .text
+                .spans
+                .iter()
+                .map(|span| surface.surface_measure_text_styled(&span.text, span.bold).0)
+                .sum();
+            let needs_ellipsis = total_w > avail;
+
+            surface.surface_push_clip(Rect::new(cursor_x, row_y, avail, row_h));
+            let mut remaining = avail;
             for span in &row.text.spans {
-                if cursor_x >= text_right_limit {
+                if remaining <= 0.0 {
                     break;
                 }
                 let span_fg = if let Some(c) = span.fg {
@@ -611,34 +579,47 @@ pub(crate) mod native_surface_paint {
                     def_fg
                 };
                 let (sw, sh) = surface.surface_measure_text_styled(&span.text, span.bold);
+                let (paint_text, paint_w, truncated) = if !needs_ellipsis || sw <= remaining {
+                    (span.text.clone(), sw, false)
+                } else {
+                    let (t, w) = crate::paint_surface::fit_text_prefix(
+                        surface, &span.text, span.bold, remaining,
+                    );
+                    (t, w, true)
+                };
+                if truncated && paint_w <= 0.0 {
+                    // Truncation left no room even for an ellipsis-only
+                    // prefix, so every later span is fully overflowed too.
+                    break;
+                }
                 if let Some(sbg) = span.bg {
-                    let clipped_w = sw.min((text_right_limit - cursor_x).max(0.0));
-                    surface.surface_fill_rect(Rect::new(cursor_x, row_y, clipped_w, row_h), sbg);
+                    surface.surface_fill_rect(Rect::new(cursor_x, row_y, paint_w, row_h), sbg);
                 }
                 let sy = row_y + (row_h - sh) / 2.0;
                 surface.surface_draw_text_run_styled(
-                    Rect::new(cursor_x, sy, sw, sh),
-                    &span.text,
+                    Rect::new(cursor_x, sy, paint_w, sh),
+                    &paint_text,
                     span_fg,
                     span.bold,
                     false,
                     false,
                     1.0,
                 );
-                cursor_x += sw;
+                cursor_x += paint_w;
+                remaining -= paint_w;
+                if paint_text != span.text {
+                    // This span was truncated with an ellipsis — any
+                    // later spans are fully overflowed, so stop here.
+                    break;
+                }
             }
             surface.surface_pop_clip();
 
             if let Some((btext, bw, bfg, bbg)) = badge_info {
                 let bx = row_x + row_w - bw - 4.0;
-                // #1183: gate on `text_right_limit > text_start_x` (is
-                // there room, in principle, to reserve the badge + gap at
-                // all?) rather than the old `bx > cursor_x` — `cursor_x`
-                // reflects the label's *unclamped* measured width, so a
-                // label just barely longer than the row used to hide the
-                // badge outright instead of clamping the label and still
-                // showing it, the mirror image of the overwrite bug this
-                // issue reports.
+                // Check if there is room to reserve the badge and gap:
+                // a label just barely longer than the row must clamp and
+                // still show the badge rather than hiding it outright.
                 if text_right_limit > text_start_x {
                     if bbg != row_bg {
                         surface.surface_fill_rect(Rect::new(bx - 2.0, row_y, bw + 4.0, row_h), bbg);
@@ -650,7 +631,7 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        // ── Vertical scrollbar (#1075 fix: previously never painted) ───
+        // Paint the vertical scrollbar when present.
         if let Some(vsb) = tree.vscrollbar(area, item_height) {
             crate::primitives::scrollbar::native_surface_paint::paint(&vsb, surface, theme);
         }
@@ -731,7 +712,9 @@ pub(crate) mod native_surface_paint {
         use crate::backend::ImagePaintResult;
         use crate::event::{Point, Viewport};
         use crate::primitives::tree::TreeRow;
-        use crate::types::{Badge, Color, SelectionMode, StyledText, TreeStyle, WidgetId};
+        use crate::types::{
+            Badge, Color, SelectionMode, StyledSpan, StyledText, TreeStyle, WidgetId,
+        };
         use crate::Image;
 
         /// Records every fill + text-run call — mirrors
@@ -816,9 +799,9 @@ pub(crate) mod native_surface_paint {
         const LINE_HEIGHT: f32 = 16.0;
         const AREA: Rect = Rect::new(0.0, 0.0, 100.0, 80.0);
 
-        /// #1075 regression: before this migration, none of the three
+        /// Before this migration, none of the three
         /// backends' `draw_tree` painted a vertical scrollbar even
-        /// though `Backend::tree_vscrollbar` (#1043) already exposed
+        /// though `Backend::tree_vscrollbar` already exposed
         /// real geometry for hit-testing. Paints through the shared fn
         /// and asserts a fill lands at the exact track rect
         /// `TreeView::vscrollbar` resolves.
@@ -935,7 +918,7 @@ pub(crate) mod native_surface_paint {
             );
         }
 
-        /// #1075 regression: `win::tree::draw_tree` never painted
+        /// `win::tree::draw_tree` never painted
         /// `TreeRow::edit` at all (see this module's doc). This test
         /// paints a row mid-rename through the shared fn and asserts a
         /// caret bar (a thin, distinctly-sized fill) shows up — it would
@@ -1084,16 +1067,13 @@ pub(crate) mod native_surface_paint {
                 .any(|(_, t, c)| t == "careful" && *c == theme.warning_fg));
         }
 
-        /// #1183 parity check: GUI backends (GTK/Win/macOS all share this
-        /// `paint` fn) must clamp an over-long label before a right-aligned
-        /// badge the same way TUI does — a gap between the label's clip
-        /// boundary and the badge, never the badge painted flush against
-        /// (or on top of) the label. `PaintSurface` has no ellipsize verb
-        /// (see `paint`'s inline #1183 note), so this asserts the hard-clip
-        /// boundary sits strictly left of the badge's start, not a literal
-        /// `…` glyph — that part of the fix is TUI-only.
+        /// GUI backends (GTK/Win/macOS all share this `paint`
+        /// fn) must ellipsize an over-long label before a right-aligned
+        /// badge the same way TUI does — a literal trailing `…` that fits
+        /// within the label's budget, never a mid-glyph hard clip and
+        /// never painted through/past the badge's reserved gap.
         #[test]
-        fn long_label_with_badge_clips_before_badge_leaving_a_gap() {
+        fn long_label_with_badge_ellipsizes_before_badge() {
             let mut row = leaf(0, "BACKEND_SPECULATIVE_EXECUTION_MODULE");
             row.badge = Some(Badge::plain("U"));
             let tree = make_tree(vec![row]);
@@ -1112,31 +1092,65 @@ pub(crate) mod native_surface_paint {
             );
 
             let (badge_bw, _) = surface.surface_measure_text("U");
-            let badge_start_x = AREA.x + AREA.width - badge_bw - 4.0;
+            let row_bounds = layout.visible_rows[0].bounds;
+            let row_x = AREA.x + row_bounds.x;
+            let row_w = row_bounds.width;
+            let text_right_limit = row_x + row_w - (badge_bw + 8.0) - 4.0;
 
-            // `paint` also pushes one whole-`area` clip bracket at the top
-            // of the function (unrelated to this row's label); the label
-            // clip is the narrower, row-scoped one, so pick the tightest
-            // match rather than the first.
-            let label_clip = surface
-                .clips
+            let ellipsized = surface
+                .texts
                 .iter()
-                .filter(|r| (r.y - layout.visible_rows[0].bounds.y).abs() < 0.01)
-                .min_by(|a, b| a.width.partial_cmp(&b.width).unwrap())
-                .expect("expected a clip pushed around the row's label paint");
-
+                .find(|(_, t, _)| t.ends_with('…'))
+                .expect("an over-long label must paint a run ending in an ellipsis");
+            let (rect, text, _color) = ellipsized;
             assert!(
-                label_clip.x + label_clip.width < badge_start_x,
-                "label clip right edge ({}) must sit strictly left of the badge's \
-                 start ({badge_start_x}), leaving a gap — got clip {:?}",
-                label_clip.x + label_clip.width,
-                label_clip
+                text.chars().count() < "BACKEND_SPECULATIVE_EXECUTION_MODULE".chars().count(),
+                "the ellipsized run must be a strict prefix of the full label, got {text:?}"
+            );
+            assert!(
+                rect.x + rect.width <= text_right_limit + 0.01,
+                "the ellipsized run's right edge ({}) must fit within the label's \
+                 budget ({text_right_limit}), leaving the badge's reserved gap intact",
+                rect.x + rect.width
             );
 
             // The badge itself must still be painted (there was room for it).
             assert!(
                 surface.texts.iter().any(|(_, t, _)| t == "U"),
-                "badge text should still paint when the label is clamped, got texts: {:?}",
+                "badge text should still paint when the label is ellipsized, got texts: {:?}",
+                surface.texts
+            );
+        }
+
+        /// A span whose own `text` is simply `""` (a legitimate pattern —
+        /// see `compose::help_layer`'s `StyledSpan::plain("")`) must not be
+        /// mistaken for a span truncated to nothing: its natural zero
+        /// width must not stop later, non-overflowing spans in the same
+        /// row from painting.
+        #[test]
+        fn empty_leading_span_does_not_swallow_later_spans() {
+            let mut row = leaf(0, "placeholder");
+            row.text = StyledText {
+                spans: vec![StyledSpan::plain(""), StyledSpan::plain("ok")],
+            };
+            let tree = make_tree(vec![row]);
+            let layout =
+                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+            );
+
+            assert!(
+                surface.texts.iter().any(|(_, t, _)| t == "ok"),
+                "a span after an empty, non-truncated span must still paint, got texts: {:?}",
                 surface.texts
             );
         }
@@ -1191,14 +1205,12 @@ mod tests {
         assert_eq!(tree, back);
     }
 
-    /// #623: `TreeStyle::row_height` is additive, not a required field.
+    /// `TreeStyle::row_height` is additive, not a required field.
     ///
-    /// A `TreeStyle` serialised before #623 (or hand-written by a Lua
-    /// plugin, per the `types.rs` design invariant that every primitive
-    /// is plugin-constructible from JSON) carries no `row_height` key at
-    /// all. `#[serde(default)]` must decode that as `None` — i.e. "keep
-    /// deriving the row pitch from `line_height`" — rather than failing
-    /// the whole `TreeView` deserialisation with a missing-field error.
+    /// A `TreeStyle` deserialized without a `row_height` key must
+    /// decode it as `None` — "keep deriving the row pitch from
+    /// `line_height`" — rather than failing the whole `TreeView`
+    /// deserialization with a missing-field error.
     #[test]
     fn tree_style_row_height_defaults_to_none_when_absent_from_json() {
         let legacy = r#"{
@@ -1216,7 +1228,7 @@ mod tests {
         assert_eq!(style, TreeStyle::default());
     }
 
-    /// #623: an explicit override survives a serde round-trip, so a host
+    /// An explicit override survives a serde round-trip, so a host
     /// that pins the row pitch keeps it across a save/restore of its UI
     /// state (and across the plugin JSON boundary).
     #[test]
@@ -1381,8 +1393,6 @@ mod tests {
         assert_eq!(layout.visible_rows.len(), 1);
         assert_eq!(layout.visible_rows[0].row_idx, 2);
     }
-
-    // ── #1043 TreeView::vscrollbar ──────────────────────────────────────
 
     mod vscrollbar_tests {
         use super::*;

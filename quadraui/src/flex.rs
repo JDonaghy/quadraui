@@ -214,6 +214,22 @@ impl FlexLayout {
         }
     }
 
+    /// Disable whole-pixel rounding of computed layout values.
+    ///
+    /// `taffy` rounds every final `location`/`size` to the nearest whole
+    /// number by default (CSS's own pixel-snapping behaviour). A caller
+    /// whose own inputs are already final, non-pixel units — terminal
+    /// cells, or sub-pixel coordinates threaded through other hand-rolled
+    /// arithmetic that never rounds intermediate values — wants raw `f32`
+    /// output instead, so this tree's results stay bit-for-bit comparable
+    /// with that other arithmetic. Additive and opt-in: existing callers
+    /// that want CSS-style snapping keep it by simply not calling this.
+    #[must_use]
+    pub fn without_rounding(mut self) -> Self {
+        self.tree.disable_rounding();
+        self
+    }
+
     /// Add a leaf node (no children) with the given style.
     pub fn add_leaf(&mut self, style: Style) -> FlexResult<NodeId> {
         let id = self.tree.new_leaf(style)?;
@@ -296,6 +312,103 @@ impl FlexLayout {
         }
         Ok(())
     }
+}
+
+/// Pack fixed-size, non-shrinking children one after another along
+/// `direction`, starting at `origin`, and return each child's on-axis
+/// position (`x` for [`FlexDirection::Row`]/[`FlexDirection::RowReverse`],
+/// `y` for [`FlexDirection::Column`]/[`FlexDirection::ColumnReverse`]).
+///
+/// `cross` is every child's fixed size on the perpendicular axis (the
+/// shared bar height for a row of toolbar buttons, the shared viewport
+/// width for a column of form fields). `gap` is inserted between
+/// consecutive children only (never before the first or after the
+/// last) — pass `0.0` for primitives with no inter-item spacing.
+///
+/// Children never shrink: a child past the available space still gets
+/// a real cursor position (the full cumulative sum), so overflow is
+/// clipped by the caller afterwards rather than by squeezing children
+/// to fit. This is the one-dimensional packing shape shared by
+/// [`crate::primitives::Toolbar::layout`], [`crate::primitives::Form::layout`]
+/// and [`crate::compose::AppShell`]'s chrome-band split.
+pub(crate) fn pack_1d(
+    direction: FlexDirection,
+    origin: f32,
+    sizes: &[f32],
+    gap: f32,
+    cross: f32,
+) -> Vec<f32> {
+    if sizes.is_empty() {
+        return Vec::new();
+    }
+
+    let is_row = matches!(direction, FlexDirection::Row | FlexDirection::RowReverse);
+
+    let mut flex = FlexLayout::new().without_rounding();
+    let leaves: Vec<NodeId> = sizes
+        .iter()
+        .map(|&s| {
+            let size = if is_row {
+                Size {
+                    width: length(s),
+                    height: length(cross),
+                }
+            } else {
+                Size {
+                    width: length(cross),
+                    height: length(s),
+                }
+            };
+            flex.add_leaf(Style {
+                size,
+                flex_shrink: 0.0,
+                flex_grow: 0.0,
+                ..Default::default()
+            })
+            .expect("pack_1d leaf node")
+        })
+        .collect();
+
+    let gap_size = if is_row {
+        Size {
+            width: length(gap),
+            height: length(0.0),
+        }
+    } else {
+        Size {
+            width: length(0.0),
+            height: length(gap),
+        }
+    };
+    let root = flex
+        .add_container(
+            Style {
+                flex_direction: direction,
+                gap: gap_size,
+                ..Default::default()
+            },
+            &leaves,
+        )
+        .expect("pack_1d container node");
+
+    let total: f32 = sizes.iter().sum::<f32>() + gap * sizes.len().saturating_sub(1) as f32;
+    let available = if is_row {
+        Rect::new(origin, 0.0, total, cross)
+    } else {
+        Rect::new(0.0, origin, cross, total)
+    };
+    let computed = flex.compute(root, available).expect("pack_1d flex layout");
+
+    leaves
+        .iter()
+        .map(|id| {
+            if is_row {
+                computed[id].x
+            } else {
+                computed[id].y
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -537,5 +650,121 @@ mod tests {
             flex.add_container(Style::default(), &[leaf]),
             Err(FlexLayoutError::AlreadyParented(node)) if node == leaf
         ));
+    }
+
+    #[test]
+    fn without_rounding_preserves_fractional_values() {
+        // A width that doesn't divide evenly (33.0 / 3) rounds to whole
+        // pixels by default; `without_rounding` must leave it fractional.
+        let mut flex = FlexLayout::new().without_rounding();
+        let a = flex
+            .add_leaf(Style {
+                size: Size {
+                    width: percent(1.0 / 3.0),
+                    height: percent(1.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        let root = flex
+            .add_container(
+                Style {
+                    flex_direction: FlexDirection::Row,
+                    size: Size {
+                        width: percent(1.0),
+                        height: percent(1.0),
+                    },
+                    ..Default::default()
+                },
+                &[a],
+            )
+            .unwrap();
+
+        let rects = flex.compute(root, Rect::new(0.0, 0.0, 10.0, 1.0)).unwrap();
+        // Not a round pixel value — proves rounding is actually disabled,
+        // without pinning to an exact bit pattern.
+        assert!((rects[&a].width - 10.0 / 3.0).abs() < 0.01);
+        assert_ne!(rects[&a].width, rects[&a].width.round());
+    }
+
+    #[test]
+    fn non_shrinking_fixed_leaves_pack_left_to_right_even_past_container_width() {
+        // Three fixed-length leaves with `flex_shrink: 0.0` in a container
+        // narrower than their combined width must still pack flush
+        // left-to-right by cumulative width, overflowing the container
+        // rather than shrinking — the same semantics a manual
+        // `cursor += w` walk has, which this module's callers rely on
+        // when they clip visibility themselves afterwards.
+        let mut flex = FlexLayout::new().without_rounding();
+        let widths = [6.0_f32, 6.0, 6.0];
+        let leaves: Vec<NodeId> = widths
+            .iter()
+            .map(|&w| {
+                flex.add_leaf(Style {
+                    size: Size {
+                        width: length(w),
+                        height: percent(1.0),
+                    },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                })
+                .unwrap()
+            })
+            .collect();
+        let root = flex
+            .add_container(
+                Style {
+                    flex_direction: FlexDirection::Row,
+                    size: Size {
+                        width: length(9.0),
+                        height: length(1.0),
+                    },
+                    ..Default::default()
+                },
+                &leaves,
+            )
+            .unwrap();
+
+        let rects = flex.compute(root, Rect::new(0.0, 0.0, 9.0, 1.0)).unwrap();
+        assert_eq!(rects[&leaves[0]].x, 0.0);
+        assert_eq!(rects[&leaves[1]].x, 6.0);
+        assert_eq!(rects[&leaves[2]].x, 12.0);
+        for leaf in &leaves {
+            assert_eq!(rects[leaf].width, 6.0);
+        }
+    }
+
+    #[test]
+    fn pack_1d_row_cumulative_positions_with_origin() {
+        let positions = pack_1d(FlexDirection::Row, 5.0, &[10.0, 20.0, 30.0], 0.0, 4.0);
+        assert_eq!(positions, vec![5.0, 15.0, 35.0]);
+    }
+
+    #[test]
+    fn pack_1d_column_cumulative_positions_with_origin() {
+        let positions = pack_1d(FlexDirection::Column, 2.0, &[10.0, 20.0, 30.0], 0.0, 4.0);
+        assert_eq!(positions, vec![2.0, 12.0, 32.0]);
+    }
+
+    #[test]
+    fn pack_1d_inserts_gap_between_children_only() {
+        // Gap must land strictly between consecutive children, never
+        // before the first or after the last.
+        let positions = pack_1d(FlexDirection::Row, 0.0, &[10.0, 10.0, 10.0], 2.0, 4.0);
+        assert_eq!(positions, vec![0.0, 12.0, 24.0]);
+    }
+
+    #[test]
+    fn pack_1d_empty_sizes_returns_empty() {
+        assert_eq!(
+            pack_1d(FlexDirection::Row, 0.0, &[], 0.0, 4.0),
+            Vec::<f32>::new()
+        );
+    }
+
+    #[test]
+    fn pack_1d_single_child_ignores_gap() {
+        let positions = pack_1d(FlexDirection::Row, 3.0, &[7.0], 5.0, 4.0);
+        assert_eq!(positions, vec![3.0]);
     }
 }

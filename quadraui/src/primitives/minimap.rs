@@ -1,8 +1,8 @@
 //! `Minimap` primitive: a code-overview minimap sitting alongside an
-//! editor viewport (vimcode#35).
+//! editor viewport.
 //!
 //! Two backends paint the same [`Minimap`] with different *techniques*,
-//! not different *behaviour* (issue #382):
+//! not different *behaviour*:
 //!
 //! | backend | technique | density |
 //! |---|---|---|
@@ -14,7 +14,7 @@
 //! here, not in either backend, so the two rasterisers never re-derive
 //! or re-reduce data the primitive already resolved.
 //!
-//! [`sample_blocks`] (issue #1012) partitions the buffer into
+//! [`sample_blocks`] partitions the buffer into
 //! [`block_bounds`] blocks and aggregates *every* line in each block's
 //! read budget ([`BLOCK_LINE_SAMPLE_CAP`]) into one output row via a
 //! per-column coverage [`dither_threshold_met`] — not the older
@@ -30,7 +30,7 @@
 //! that shows the *whole* buffer squeezed into the strip, but it means
 //! `Minimap::lines.len()` never exceeds the display's own row budget, so
 //! [`Minimap::layout_with_sizing`]'s `FixedPitch` slide never has more
-//! rows than fit and its window never moves (issue #1044). A host that
+//! rows than fit and its window never moves. A host that
 //! instead wants a VS-Code-proportional **window** onto the buffer — a
 //! fixed scale that slides as the editor scrolls, rather than the whole
 //! file always squeezed in — calls [`sample_window`] (built from
@@ -55,7 +55,7 @@
 //! `develop`) — call `layout_with_sizing` directly:
 //!
 //! - [`MinimapSizing::Fill`] — stretch to fill `bounds.height`, at a pitch
-//!   that is never allowed to exceed [`MAX_ROW_PITCH`] (issue #663): a file
+//!   that is never allowed to exceed [`MAX_ROW_PITCH`]: a file
 //!   short enough that `bounds.height / row_count` would blow past that
 //!   ceiling instead top-aligns and only occupies `row_count * row_h` of
 //!   the strip, leaving the remainder unpainted, rather than stretching to
@@ -77,7 +77,7 @@
 //!   [`Minimap::total_buffer_lines`] (VS Code's `minimap.size:
 //!   proportional`). Every backend uses this — GTK and Win-GUI at
 //!   [`crate::primitives::minimap::ROW_PITCH_PX`] (a font-scaling
-//!   pitch), TUI at exactly `1.0` cell row per row (#992) — and this is
+//!   pitch), TUI at exactly `1.0` cell row per row — and this is
 //!   what makes a minimap row's on-screen size independent of the file's
 //!   length: the same buffer, painted into the same strip, always
 //!   resolves to the same `vline.bounds.height` no matter how many lines
@@ -263,7 +263,7 @@ impl Default for MinimapLayout {
 ///
 /// No rasteriser sizes with `Fill` any more (#992 moved TUI, the last
 /// user, to [`MinimapSizing::FixedPitch`]) — this constant backed only
-/// the now-removed `Minimap::layout` shim's default (issue #1109).
+/// the now-removed `Minimap::layout` shim's default.
 pub const MAX_ROW_PITCH: f32 = 8.0;
 
 /// How [`Minimap::layout_with_sizing`] sizes rows across `bounds.height`
@@ -280,14 +280,14 @@ pub const MAX_ROW_PITCH: f32 = 8.0;
 /// both remove: every backend now sizes with [`Self::FixedPitch`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MinimapSizing {
-    /// Stretch rows to fill `bounds.height`, capped at [`MAX_ROW_PITCH`]
-    /// (#663). A file shorter than the strip at that cap top-aligns
+    /// Stretch rows to fill `bounds.height`, capped at [`MAX_ROW_PITCH`].
+    /// A file shorter than the strip at that cap top-aligns
     /// rather than stretching further; there is no sliding window — every
     /// row is always visible.
     ///
     /// No live rasteriser uses this (see [`Self::FixedPitch`]) — it only
     /// backed the now-removed `Minimap::layout` shim's pre-#667
-    /// behaviour (issue #1109).
+    /// behaviour.
     Fill,
     /// Tile rows top-down at exactly this pitch (in `bounds`'s own
     /// coordinate units), regardless of `row_count`. When the file needs
@@ -296,7 +296,7 @@ pub enum MinimapSizing {
     /// map — see the module docs — instead of shrinking the pitch to
     /// compress everything in.
     FixedPitch(f32),
-    /// VS Code-parity minimap **width** policy (issue #776) — orthogonal
+    /// VS Code-parity minimap **width** policy — orthogonal
     /// to `Fill` / `FixedPitch`, which size row *pitch* (vertical). This
     /// variant sizes the strip's overall width (horizontal) and is
     /// resolved with [`Self::resolve_width`], not consumed here.
@@ -331,7 +331,6 @@ impl MinimapSizing {
     /// Resolve a [`Self::VsCodeParity`] width policy against the pane's
     /// own width and the caller's character metric, in one unit system
     /// (character columns) instead of two backend-specific constant sets
-    /// (issue #776).
     ///
     /// `pane_width` and `char_width` are expected to be the same pair a
     /// [`crate::backend::Backend`] impl already exposes:
@@ -417,7 +416,7 @@ impl Minimap {
             MinimapSizing::Fill => {
                 // Bounded, not stretch-to-fill: see MAX_ROW_PITCH's doc
                 // for why a short file must not blow its pitch up to fill
-                // the whole strip (#663). No sliding window: every row is
+                // the whole strip. No sliding window: every row is
                 // always visible.
                 let row_h = (bounds.height / row_count as f32).min(MAX_ROW_PITCH);
                 (row_h, 0usize, row_count)
@@ -503,7 +502,7 @@ impl Minimap {
     /// does, via `sample_blocks`'s own `target_rows` — always satisfies
     /// `row_count <= rows_shown` here, so this branch never engages for
     /// them; see [`window_start_line`]'s doc for the pre-sample slide that
-    /// closes that gap (issue #1044).
+    /// closes that gap.
     fn slide_window_start_row(&self, row_count: usize, rows_shown: usize) -> usize {
         // `visible_row_start` is caller-supplied and expected to stay in
         // `0..self.lines.len()`; if it's ever out of range, treat that as
@@ -568,7 +567,7 @@ impl Minimap {
 
 /// Ceiling on how many real buffer lines [`sample_blocks`] reads for one
 /// output block's [`block_sample_indices`], regardless of how large the
-/// block itself is (issue #1012).
+/// block itself is.
 ///
 /// A block's size grows with `total_lines / target_rows`, so reading
 /// every line in every block would cost `O(total_lines)` per call again —
@@ -578,24 +577,19 @@ impl Minimap {
 /// `O(target_rows * BLOCK_LINE_SAMPLE_CAP)` — independent of
 /// `total_lines` — while still reading *every* line in any block small
 /// enough to fit under the cap. `8` is the value vimcode's own
-/// `MINIMAP_BLOCK_LINE_SAMPLE_CAP` (vimcode#1085) picked before this
+/// `MINIMAP_BLOCK_LINE_SAMPLE_CAP` picked before this
 /// budget moved here; #1012's point is that it's the primitive's own
 /// decision now, not a constant each consumer reinvents.
 pub const BLOCK_LINE_SAMPLE_CAP: usize = 8;
 
 /// Partition `0..total_lines` into `target_rows.min(total_lines)`
 /// contiguous, non-overlapping blocks — one per output [`MinimapLine`]
-/// [`sample_blocks`] produces (issue #1012).
+/// [`sample_blocks`] produces.
 ///
 /// Returns `bounds` such that block `r` covers `bounds[r]..bounds[r + 1]`;
 /// `bounds.len()` is always the block count plus one. Never upscales: one
 /// line per block when `total_lines <= target_rows`, otherwise stride
-/// `total_lines as f64 / target_rows as f64` between block starts —
-/// exactly the pre-#1012 `sample_lines` point-sampler's own stride
-/// formula (removed in issue #1109), so a block's
-/// *boundary* lands exactly where the old point-sampler's single pick
-/// used to, but [`sample_blocks`] now reads (a capped sample of) every
-/// line inside it rather than just that one boundary line.
+/// `total_lines as f64 / target_rows as f64` between block starts.
 pub fn block_bounds(total_lines: usize, target_rows: usize) -> Vec<usize> {
     if total_lines == 0 || target_rows == 0 {
         return vec![0];
@@ -614,7 +608,7 @@ pub fn block_bounds(total_lines: usize, target_rows: usize) -> Vec<usize> {
 
 /// Buffer line indices [`sample_blocks`] will actually read for one block
 /// spanning `[start, end)` — every line when the block fits under `cap`,
-/// otherwise `cap` lines evenly spaced across the block (issue #1012).
+/// otherwise `cap` lines evenly spaced across the block.
 pub fn block_sample_indices(start: usize, end: usize, cap: usize) -> Vec<usize> {
     let len = end.saturating_sub(start);
     if len == 0 {
@@ -668,7 +662,7 @@ pub fn dither_threshold_met(covered: usize, total: usize, row: usize, col: usize
 
 /// Down-sample real buffer lines `0..total_lines` into at most
 /// `target_rows` [`MinimapLine`]s — the primitive-owned row down-sampler
-/// (issue #1012) that the old `sample_lines` point-sampler (removed in
+/// that the old `sample_lines` point-sampler (removed in
 /// issue #1109) used to only promise, not deliver.
 ///
 /// `line_at` is a **line accessor**, not a materialised slice: this
@@ -728,7 +722,7 @@ pub fn sample_blocks<F: FnMut(usize) -> String>(
 
 /// Slide-window fraction math shared by [`Minimap`]'s own post-sample
 /// `FixedPitch` slide (`slide_window_start_row`) and [`window_start_line`]'s
-/// pre-sample equivalent (issue #1044): given `total` items and a
+/// pre-sample equivalent: given `total` items and a
 /// `window`-sized slice of them the caller can actually show/read at once,
 /// pick where that slice should start so it tracks `position` (out of
 /// `total_at_position` possible positions) — both ends of the range are
@@ -752,7 +746,7 @@ fn slide_start(total: usize, window: usize, position: usize, total_at_position: 
 /// start, so a host wanting VS Code's `minimap.size: "proportional"`
 /// behaviour — a window that slides as the editor scrolls, reaching both
 /// ends of the file — doesn't have to duplicate this fraction-of-buffer
-/// arithmetic itself (issue #1044).
+/// arithmetic itself.
 ///
 /// [`Minimap`]'s own `FixedPitch` slide (`slide_window_start_row`) only
 /// ever sees `Minimap::lines` *after* [`sample_blocks`] has compressed it
@@ -941,7 +935,7 @@ pub fn aggregate_spans(spans: &[MinimapSpan], grid: MinimapGrid) -> Vec<MinimapS
 }
 
 /// Width the minimap reserves alongside the editor. `0.0` when there is
-/// no minimap to draw — the app's on/off setting (vimcode#35) toggles
+/// no minimap to draw — the app's on/off setting toggles
 /// the *presence* of the [`Minimap`], and both backends reclaim the
 /// editor width by calling this with `has_minimap: false`.
 pub fn reserved_width(cols_or_px: f32, has_minimap: bool) -> f32 {
@@ -952,7 +946,7 @@ pub fn reserved_width(cols_or_px: f32, has_minimap: bool) -> f32 {
     }
 }
 
-// ── Render technique: font-scaling vs colour-block (#738) ────────────────
+// ── Render technique: font-scaling vs colour-block ───────────────────────
 //
 // Only the "cell-native braille" technique (TUI) has no font to scale, so
 // it never faces this choice. Every pixel/DIP-unit backend that paints a
@@ -964,7 +958,7 @@ pub fn reserved_width(cols_or_px: f32, has_minimap: bool) -> f32 {
 // existed only in `gtk::minimap`, so Win-GUI (and, eventually, macOS) would
 // each have had to invent their own answer rather than reuse GTK's
 // already-tuned one. `ROW_PITCH_PX` and `COLUMN_CAPACITY` move here for the
-// same reason `primitives::board`'s `BOARD_*_PX` constants did (#736): both
+// same reason `primitives::board`'s `BOARD_*_PX` constants did: both
 // values are backend-agnostic DIP/pixel geometry (a DIP is a pixel at 100%
 // display scale, same convention as every other lifted `*_PX` constant in
 // this crate), and GTK's and Win-GUI's rasterisers want byte-for-byte the
@@ -978,7 +972,7 @@ pub const LEGIBILITY_FLOOR_PX: f64 = 4.0;
 
 /// The fixed row pitch a font-scaling-technique backend (GTK, Win-GUI)
 /// tiles minimap rows at, in device pixels/DIPs — independent of the
-/// file's length (#667). VS Code's default minimap pitch is in the same
+/// file's length. VS Code's default minimap pitch is in the same
 /// ~2px ballpark; below [`LEGIBILITY_FLOOR_PX`], so the default rasteriser
 /// always lands in [`MinimapRenderMode::ColumnBlocks`].
 pub const ROW_PITCH_PX: f64 = 2.0;
@@ -1028,13 +1022,13 @@ pub fn minimap_font_px(line_px: f64) -> f64 {
     line_px.clamp(1.0, 64.0)
 }
 
-// ── Render scale (#1143) ──────────────────────────────────────────────
+// ── Render scale ──────────────────────────────────────────────────────
 //
 // VS Code's `editor.minimap.scale` picks the on-screen size of one
 // character *cell* in `renderCharacters: true` mode — 1 is a bare
 // density dot, 2 (VS Code's own default) is the smallest cell a
 // downsampled glyph tile actually reads back as a recognisable shape
-// rather than a blob. `ROW_PITCH_PX` above is a *fixed* row pitch (#667)
+// rather than a blob. `ROW_PITCH_PX` above is a *fixed* row pitch
 // deliberately picked below `LEGIBILITY_FLOOR_PX` so the default
 // rasteriser lands in `ColumnBlocks` — `MinimapScale` is an orthogonal,
 // opt-in axis on top of it: a backend that wants `Characters` to
@@ -1057,7 +1051,7 @@ pub fn minimap_font_px(line_px: f64) -> f64 {
 
 /// VS Code-parity minimap render scale (`editor.minimap.scale`) — how
 /// large a logical pixel cell one character occupies in
-/// [`MinimapRenderMode::Characters`] (issue #1143).
+/// [`MinimapRenderMode::Characters`].
 ///
 /// Backends read this off [`crate::backend::Backend::minimap_scale`]
 /// (a per-backend paint-time setting, not a field on [`Minimap`] — see
@@ -1110,7 +1104,7 @@ impl MinimapScale {
     }
 }
 
-// ── Character glyph atlas (#1035) ─────────────────────────────────────
+// ── Character glyph atlas ─────────────────────────────────────────────
 //
 // `MinimapRenderMode::Characters` was unreachable: `ROW_PITCH_PX` (2.0)
 // never clears `LEGIBILITY_FLOOR_PX` (4.0), so every GUI rasteriser's
@@ -1528,7 +1522,7 @@ mod tests {
     fn layout_caps_row_pitch_and_top_aligns_short_files() {
         // A 3-line file (lines_per_row=1 -> 3 rows) inside a tall 200px
         // strip. Uncapped, row_h would be 200/3 ~= 66.7px -- a 3-line
-        // file rendering at near-editor scale (#663). Capped, no row's
+        // file rendering at near-editor scale. Capped, no row's
         // pitch may exceed MAX_ROW_PITCH, and the rows top-align, only
         // occupying the strip's top `row_count * row_h` -- the rest of
         // the tall strip stays unpainted rather than stretching to fill.
@@ -1572,14 +1566,14 @@ mod tests {
         assert!(layout.visible_lines.is_empty());
     }
 
-    // ── MinimapSizing::FixedPitch (#667) ────────────────────────────
+    // ── MinimapSizing::FixedPitch ───────────────────────────────────
 
     #[test]
     fn fixed_pitch_row_height_is_independent_of_file_length() {
-        // The core #667 acceptance test: the same strip, at the same
-        // fixed pitch, yields an identical row height for a 3-line file
-        // and a 10,000-line file -- unlike `Fill`, where a short file's
-        // pitch balloons and a long file's pitch shrinks.
+        // The core acceptance test: the same strip, at the same fixed pitch,
+        // yields an identical row height for a 3-line file and a 10,000-line
+        // file -- unlike `Fill`, where a short file's pitch balloons and a long
+        // file's pitch shrinks.
         let bounds = Rect::new(0.0, 0.0, 40.0, 400.0);
         let short = minimap(3, 0, 3);
         let long = minimap(10_000, 0, 10);
@@ -1707,7 +1701,7 @@ mod tests {
         assert_eq!(layout.hit_test(25.0, 15.0), MinimapHit::None);
     }
 
-    // ── block_bounds / block_sample_indices (#1012) ─────────────────────
+    // ── block_bounds / block_sample_indices ─────────────────────────────
 
     #[test]
     fn block_bounds_never_upscales() {
@@ -1747,8 +1741,9 @@ mod tests {
         assert!(block_sample_indices(5, 5, 8).is_empty());
     }
 
-    // ── dither_threshold_met (owned here since #1012; TUI's per-dot use
-    //    in `tui::braille` re-exports this exact function/matrix) ───────
+    // dither_threshold_met uses the BAYER4 matrix (shared by every coverage-
+    // to-boolean decision in this crate) — per-block via [`dither_threshold_met`]
+    // and per-dot via `tui::braille::dither_threshold_met`
 
     #[test]
     fn dither_threshold_met_zero_total_never_fires() {
@@ -1773,7 +1768,7 @@ mod tests {
         }
     }
 
-    // ── sample_blocks (#1012) ────────────────────────────────────────
+    // ── sample_blocks ────────────────────────────────────────────────
 
     #[test]
     fn sample_blocks_empty_or_zero_target_is_empty() {
@@ -1797,18 +1792,13 @@ mod tests {
 
     #[test]
     fn sample_blocks_no_line_in_a_block_is_ever_fully_discarded() {
-        // The #1012 defect, reproduced directly: the old point sampler
-        // for a single 1000-line block (target_rows=1) always picked
-        // buffer line `0` (stride * r == 0 for r == 0) and discarded the
-        // other 999 outright -- if line 0 happened to be blank, the
-        // whole block painted as empty no matter what the other 999
-        // lines contained. Line 0 here *is* blank; every other line
-        // `block_sample_indices` samples (125, 250, ..., 875) carries an
-        // `x` at a column that's a multiple of 4, which BAYER4's own
-        // diagonal always dithers "on" for any nonzero coverage (row 0,
-        // `col & 3 == 0` -> threshold 0) -- so the aggregated block must
-        // show real content the old point sampler would have missed
-        // entirely.
+        // The defect this test covers: the old point sampler for a single
+        // 1000-line block (target_rows=1) always picked buffer line `0` and
+        // discarded the others -- if line 0 happened to be blank, the whole block
+        // painted as empty. Line 0 here is blank; every other line
+        // `block_sample_indices` samples carries an `x` at a column that's a
+        // multiple of 4, which BAYER4's diagonal always dithers "on" for any
+        // nonzero coverage -- so the aggregated block shows real content.
         let total = 1000;
         let lines: Vec<String> = (0..total)
             .map(|i| match i {
@@ -1834,10 +1824,8 @@ mod tests {
 
     #[test]
     fn sample_blocks_respects_the_read_cap_per_block() {
-        // A single huge block (target_rows=1) must call the accessor at
-        // most BLOCK_LINE_SAMPLE_CAP times, not once per real line --
-        // the whole point of capping the read (#1012's perf concern,
-        // vimcode#1096).
+        // A single huge block (target_rows=1) must call the accessor at most
+        // BLOCK_LINE_SAMPLE_CAP times, not once per real line.
         use std::cell::Cell;
         let calls = Cell::new(0usize);
         let total = 10_000;
@@ -1864,7 +1852,7 @@ mod tests {
         }
     }
 
-    // ── window_start_line / sample_window (#1044) ──────────────────
+    // ── window_start_line / sample_window ──────────────────────────
 
     #[test]
     fn window_start_line_whole_buffer_fits_needs_no_slide() {
@@ -2088,7 +2076,7 @@ mod tests {
         assert_eq!(reserved_width(20.0, true), 20.0);
     }
 
-    // ── MinimapSizing::VsCodeParity / resolve_width (#776) ─────────────
+    // ── MinimapSizing::VsCodeParity / resolve_width ────────────────────
 
     #[test]
     fn resolve_width_returns_none_for_fill_and_fixed_pitch() {
@@ -2133,10 +2121,9 @@ mod tests {
 
     #[test]
     fn resolve_width_is_the_same_formula_across_native_units() {
-        // The whole point of #776: one formula, no `if char_width > 1.0`
-        // backend sniff. A cell-native call (char_width == 1.0, pane in
-        // columns) and a pixel call (char_width == 8.0, pane scaled up by
-        // the same factor) must agree once converted back to columns.
+        // One formula works across native units without backend sniff. A
+        // cell-native call (char_width == 1.0, pane in columns) and a pixel call
+        // (char_width == 8.0, pane scaled up) must agree once converted back.
         let sizing = MinimapSizing::VsCodeParity {
             target_cols: 15.0,
             fraction: 0.2,
@@ -2195,7 +2182,7 @@ mod tests {
         assert_eq!(via_fill, via_vscode_parity);
     }
 
-    // ── render-mode threshold (#738, moved from gtk::minimap) ─────────
+    // render_mode threshold (#738)
 
     #[test]
     fn legibility_floor_switches_render_mode_on_both_sides() {
@@ -2215,10 +2202,9 @@ mod tests {
 
     #[test]
     fn default_row_pitch_stays_below_the_legibility_floor() {
-        // The whole point of #738's shared constants: both GTK and Win-GUI
-        // key their default fixed pitch off `ROW_PITCH_PX`, and it must
-        // stay below `LEGIBILITY_FLOOR_PX` so the default rasteriser always
-        // lands in `ColumnBlocks` on either backend.
+        // Both GTK and Win-GUI key their default fixed pitch off `ROW_PITCH_PX`,
+        // and it must stay below `LEGIBILITY_FLOOR_PX` so the default rasteriser
+        // always lands in `ColumnBlocks`.
         assert!(ROW_PITCH_PX < LEGIBILITY_FLOOR_PX);
         assert_eq!(render_mode(ROW_PITCH_PX), MinimapRenderMode::ColumnBlocks);
     }
@@ -2230,12 +2216,12 @@ mod tests {
         assert_eq!(minimap_font_px(10.0), 10.0);
     }
 
-    // ── MinimapScale (#1143) ────────────────────────────────────────────
+    // ── MinimapScale ────────────────────────────────────────────────────
 
     #[test]
     fn minimap_scale_default_is_one_and_matches_row_pitch_px() {
-        // `MinimapScale::default()` must be the pre-#1143 behaviour byte
-        // for byte -- a backend that never opts in must see no change.
+        // `MinimapScale::default()` must be the pre-#1143 behaviour byte for byte
+        // -- a backend that never opts in must see no change.
         assert_eq!(MinimapScale::default(), MinimapScale::One);
         assert_eq!(MinimapScale::One.row_pitch_px(), ROW_PITCH_PX);
         assert_eq!(MinimapScale::One.cell_w_px(), 1.0);
@@ -2346,7 +2332,7 @@ mod tests {
         }
     }
 
-    // ── MinimapCharAtlas (#1035) ────────────────────────────────────────
+    // ── MinimapCharAtlas ────────────────────────────────────────────────
 
     /// Build a sample sheet of `ATLAS_CHAR_COUNT` cells, each `cell_w *
     /// sheet_h`, where every cell is blank (`0`) except the one for
@@ -2532,7 +2518,7 @@ mod tests {
         assert_eq!(atlas.tile('字'), &[255; 8]);
     }
 
-    // ── MinimapAtlasCache (#1035) ───────────────────────────────────────
+    // ── MinimapAtlasCache ───────────────────────────────────────────────
 
     #[test]
     fn atlas_cache_builds_once_for_repeated_same_key_lookups() {

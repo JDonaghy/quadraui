@@ -1,5 +1,5 @@
 //! Direct2D / DirectWrite rasteriser for
-//! [`crate::primitives::text_input::TextInput`] (#733).
+//! [`crate::primitives::text_input::TextInput`].
 //!
 //! Mirrors `win::command_line`'s posture: [`TextInput::layout`] (already
 //! shared in `primitives/`, see that module's doc) resolves every
@@ -16,16 +16,11 @@
 //! rect comes straight from [`crate::primitives::text_input::TextInputLayout::cursor_bounds`],
 //! the exact value `text_input_layout` also hands a host for placing a
 //! caret/IME — this rasteriser does not re-derive a column position from
-//! `char_width` a second time (#733's acceptance bar — "no geometry
-//! re-derived in `win/`").
+//! `char_width` a second time.
 //!
-//! `TextInput` still carries no selection range (#833 put the selection
-//! anchor on the `TextEditor` wrapper, not on the primitive — see that
-//! type's doc), so unlike a full editor there is no selection highlight
-//! to paint here — only the cursor bar, matching `gtk::text_input`'s own
-//! cursor-only contract. Painting a selection range is follow-up work
-//! across all backends, and will take the range as an argument rather
-//! than read it off `TextInput`.
+//! `TextInput` carries no selection range, so unlike a full editor there
+//! is no selection highlight to paint here — only the cursor bar, matching
+//! `gtk::text_input`'s own cursor-only contract.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod text_input;` and `backend.rs`'s
@@ -47,8 +42,7 @@ const CURSOR_W_DIP: f32 = 2.0;
 /// backend's tracked `line_height`/`char_width` — what
 /// [`crate::win::WinBackend::text_input_layout`] calls directly, and what
 /// [`draw_text_input`] paints against. Delegates entirely to
-/// [`TextInput::layout`] — no geometry re-derived here (#733's
-/// acceptance bar).
+/// [`TextInput::layout`].
 pub fn win_text_input_layout(
     ti: &TextInput,
     rect: Rect,
@@ -140,13 +134,10 @@ mod tests {
         ti
     }
 
-    /// C0 smoke: `draw_text_input` must actually paint text + a
-    /// click-routable layout rather than panicking or hitting a
-    /// `todo!()` (#733's acceptance bar — "draw_text_input survives C0
-    /// with text_ok on win"). Also regression-guards the multibyte-cursor
-    /// panic class `win::command_line` fixed under quadraui#503 — a
-    /// `cursor_col` landing mid-`é` must snap via [`TextInput::layout`],
-    /// not slice a line at a non-char-boundary.
+    /// `draw_text_input` must paint text and a click-routable layout,
+    /// and handle multibyte characters correctly so a `cursor_col` landing
+    /// mid-UTF-8 sequence (e.g. mid-`é`) snaps via [`TextInput::layout`]
+    /// rather than slicing a line at a non-char-boundary.
     #[test]
     fn draw_text_input_paints_and_does_not_panic_on_multibyte_cursor() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
@@ -180,10 +171,9 @@ mod tests {
         assert!(painted_any, "expected text_input to paint visible glyphs");
     }
 
-    /// Paint↔click round trip (`docs/TESTING.md` coverage-taxonomy row
-    /// 1) at a non-zero origin — #505's LOCAL/ABSOLUTE mixup regression
-    /// guard, mirrored from `win::command_line` /
-    /// `win::sidebar_panel`'s own nonzero-origin tests.
+    /// Paint↔click round trip at a non-zero origin — regression guard for
+    /// LOCAL/ABSOLUTE coordinate mixups, mirrored from `win::command_line`
+    /// and `win::sidebar_panel`'s own nonzero-origin tests.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         let origin_x = 12.0_f32;
@@ -307,11 +297,10 @@ mod tests {
         assert_eq!(painted, no_paint);
     }
 
-    /// #733 acceptance bar: `win_text_input_layout` must delegate to the
-    /// shared [`TextInput::layout`] rather than re-deriving any geometry
-    /// — asserted by proving the two calls (through the wrapper, and
-    /// directly against the primitive) produce byte-for-byte identical
-    /// layouts for the same inputs.
+    /// `win_text_input_layout` delegates to the shared [`TextInput::layout`]
+    /// rather than re-deriving any geometry — asserted by proving the two
+    /// calls (through the wrapper, and directly against the primitive)
+    /// produce byte-for-byte identical layouts for the same inputs.
     #[test]
     fn win_text_input_layout_delegates_to_shared_primitive_layout() {
         let ti = sample(vec!["hello", "world"], 1, 3);

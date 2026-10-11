@@ -3,7 +3,7 @@
 //! Paints a two-pane (side-by-side) or single-column (unified) diff onto a
 //! [`ratatui::buffer::Buffer`]. Row/pane geometry and the scroll-clamped
 //! visible-line window come from [`DiffView::layout`] — the shared layout
-//! API lifted out of three near-identical backend copies (issue #737).
+//! API lifted out of three near-identical backend copies.
 //! This module only converts the resulting DIP-agnostic `f32` geometry to
 //! cell coordinates and paints; it does not re-derive positions.
 //!
@@ -448,11 +448,6 @@ mod tests {
 
     /// In unified mode, `layout.total_rows` counts hunk headers too, so
     /// scrolling to the last offset exposes the final content row.
-    ///
-    /// This is the regression guard for review finding #1: `total_rows` was
-    /// previously `view.total_rows()` (content only) instead of
-    /// `total_display` (content + headers), making the last N rows
-    /// unreachable.
     #[test]
     fn unified_scroll_reaches_last_row() {
         // 2 hunks × 2 rows = 4 content rows + 2 headers = 6 display lines.

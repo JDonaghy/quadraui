@@ -1,6 +1,6 @@
 //! `TabChromeDemo` `AppLogic` + `quadraui::tui::run` example.
 //!
-//! Active-tab bracket framing (quadraui#631): `Backend::draw_tab_bar_with_chrome`
+//! Active-tab bracket framing: `Backend::draw_tab_bar_with_chrome`
 //! encloses the active tab's label *and* close glyph in `[` / `]`, and
 //! clicks resolve through `Backend::tab_bar_layout_with_chrome`'s
 //! `close_bounds` — never a hand-rolled scan for `×` in the label string.

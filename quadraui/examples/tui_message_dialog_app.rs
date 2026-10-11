@@ -7,7 +7,7 @@
 //! `Dialog` primitive. Contrast with `tui_message_dialog.rs`
 //! (`examples/common/message_dialog_demo.rs`), which exercises
 //! `PlatformServices::show_message_dialog` — the nested-loop-driven
-//! entry point this controller now powers on TUI (issue #965) — rather
+//! entry point this controller now powers on TUI — rather
 //! than the controller directly. The GTK twin
 //! (`gtk_message_dialog_app.rs`) uses the identical `MessageDialogApp`
 //! — only the runner differs.
