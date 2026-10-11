@@ -378,6 +378,10 @@ jobs:
       # somewhere in CI instead of only on a worker's local machine.
       - name: release_decide.py unit tests
         run: python3 scripts/test_release_decide.py
+      # Same rationale as the step above, for `scripts/release.py`'s
+      # `prepare`/`promote` commands (#1501).
+      - name: release.py unit tests
+        run: python3 scripts/test_release.py
       - name: site_gen.py unit tests
         run: python3 tools/test_site_gen.py
       - name: introduction.md / README.md hello-world sync check

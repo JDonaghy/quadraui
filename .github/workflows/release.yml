@@ -15,11 +15,17 @@ name: Release
 # file (`release.yml`) and the `release` environment — renaming either breaks
 # publishing until the crates.io side is updated to match.
 #
-# The `release` environment requires a reviewer's approval and is scoped to
-# the `publish` job only (not `check`), so a no-op push to `main` finishes in
-# a couple of minutes with nobody paged, and a real version bump still
-# queues the publish for a human to approve rather than running it
-# unattended.
+# The `release` environment is scoped to the `publish` job only (not
+# `check`), so a no-op push to `main` finishes in a couple of minutes with
+# nobody paged. By default, though, `environment: release` does NOT gate on
+# a human approval — GitHub only pauses a deployment for required reviewers
+# if the environment has a "required reviewers" protection rule configured,
+# and today it doesn't (only the branch-deployment-policy rule noted below).
+# A real version bump therefore publishes to crates.io fully unattended the
+# moment this job's `check` gate passes — see #1501. Adding a required
+# reviewer so a human approves each publish is an operator action in this
+# repo's Settings -> Environments -> release UI, not something this file
+# can express; it is not configured as of this writing.
 #
 # OPERATOR ACTION REQUIRED before the first `main` promotion under this
 # workflow: the `release` environment's GitHub-side "deployment branches and
