@@ -61,11 +61,10 @@ use crate::{
     Rect as QRect, ResizeEdge, Split, StatusBar, TabBar, TabBarLayout, TabChrome,
     Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, UserPayload, Viewport,
 };
-// `AcceleratorScope`/`KeyBinding` are only referenced by `#[cfg(test)]`
-// code below — `register_accelerator`/`match_keypress` moved their
-// bodies into `crate::backend_core::BackendCore` (#1090), so this file's
-// non-test code no longer names either type directly. Gate the import
-// so a non-test build doesn't flag it as unused.
+// `AcceleratorScope`/`KeyBinding` are only used by `#[cfg(test)]`
+// code below — they're gated to avoid unused import warnings.
+// `register_accelerator`/`match_keypress` moved their bodies
+// into `crate::backend_core::BackendCore`.
 #[cfg(test)]
 use crate::{AcceleratorScope, KeyBinding};
 
@@ -77,32 +76,23 @@ use super::services::GtkPlatformServices;
 /// this mirrors `MAC_DOUBLE_CLICK_RADIUS`/`WIN_DOUBLE_CLICK_RADIUS`
 /// rather than the tighter cell-tuned default
 /// [`crate::dispatch::DoubleClickDetector::new`] otherwise picks.
-///
-/// Before quadraui#813, GTK folded double-clicks from GDK's own
-/// `GestureClick` press-count (`n_press == 2`) in `gtk/run.rs`'s
-/// `connect_pressed` closure — native OS double-click timing, not this
-/// detector. That path also bypassed `dispatch_click` for the second
-/// press entirely, so a double-click landing inside a `TextRegion` never
-/// started/continued the same drag machinery a single click would. #813
-/// moves GTK onto the same shared [`DoubleClickDetector`]-backed
-/// [`Self::fold_double_click`] every other backend already used via
-/// [`crate::runtime::preprocess_event`], closing that gap and giving
-/// every backend one definition of "what counts as a double-click."
+/// Like other backends, GTK uses the shared [`DoubleClickDetector`]-backed
+/// [`Self::fold_double_click`] via [`crate::runtime::preprocess_event`]
+/// to give every backend one definition of "what counts as a double-click."
 pub(crate) const GTK_DOUBLE_CLICK_RADIUS: f32 = 4.0;
 
 /// One piece of text painted this frame, with its on-surface bounds in
 /// backend (pixel) coordinates. Recorded via
-/// [`GtkBackend::record_painted_text`] into [`GtkBackend::painted_text`] —
-/// the map [`super::testing::GtkDriver::find`] scans (quadraui#447, GD-2)
-/// — either as a whole logical label by the trait method that painted it,
-/// or per painted glyph run by [`super::painted_text`] (quadraui#489).
+/// [`GtkBackend::record_painted_text`] into [`GtkBackend::painted_text`].
+/// Either a whole logical label by the trait method that painted it,
+/// or per painted glyph run by [`super::painted_text`].
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PaintedText {
     pub(crate) text: String,
     pub(crate) bounds: QRect,
 }
 
-/// Names one `GtkBackend`'s slot in [`WAKE_CALLBACKS`] (issue #831).
+/// Names one `GtkBackend`'s slot in [`WAKE_CALLBACKS`].
 ///
 /// This is the *entire* payload [`GtkBackend::waker`]'s returned closure
 /// carries across the thread boundary: a plain integer, trivially
@@ -125,7 +115,7 @@ impl WakeId {
 thread_local! {
     /// Wake targets installed by [`GtkBackend::set_wake_callback`], keyed
     /// by [`WakeId`] — the `Rc<dyn Fn()>` that
-    /// `gtk::run::run_with`'s periodic drain closure also is (issue #831).
+    /// `gtk::run::run_with`'s periodic drain closure also is.
     ///
     /// **Thread-local on purpose, and that is the whole soundness
     /// argument.** `waker()` must return a `Send + Sync` closure, but the
@@ -174,7 +164,7 @@ fn wake_callback_for(id: WakeId) -> Option<Rc<dyn Fn()>> {
 ///   click-down on a scrollbar, read each drag-update, cleared on
 ///   mouse-up.
 /// - `core` — registered keybindings + text-selection bookkeeping,
-///   consolidated into [`crate::backend_core::BackendCore`] (#1090).
+///   consolidated into [`crate::backend_core::BackendCore`].
 ///   `apply_accelerators` rewrites matching `KeyPressed` events to
 ///   `UiEvent::Accelerator(id, mods)` before they reach the app.
 /// - `events` — adapter queue between GTK signal callbacks and the
@@ -192,7 +182,7 @@ fn wake_callback_for(id: WakeId) -> Option<Rc<dyn Fn()>> {
 pub struct GtkBackend {
     viewport: Viewport,
     /// Current GDK surface scale factor (HiDPI multiplier), tracked
-    /// independently of `viewport` (issue #834). `run.rs::render_frame`
+    /// independently of `viewport`. `run.rs::render_frame`
     /// seeds every frame's `Viewport::scale` from this rather than a
     /// hardcoded `1.0`, and `gtk::run`'s `notify::scale-factor` handler
     /// (fired on a live monitor/DPI change, not just resize) updates it
@@ -202,7 +192,7 @@ pub struct GtkBackend {
     dpi_scale: f32,
     modal_stack: Rc<std::cell::RefCell<ModalStack>>,
     drag_state: Rc<std::cell::RefCell<DragState>>,
-    /// Accelerator registry + text-selection bookkeeping (#1090) — see
+    /// Accelerator registry + text-selection bookkeeping — see
     /// [`crate::backend_core::BackendCore`]'s module doc. Replaces the
     /// formerly GTK-local `accelerators`/`parsed_accelerators` fields
     /// verbatim, plus (below) the formerly separate `text_selection`
@@ -224,26 +214,26 @@ pub struct GtkBackend {
     current_theme: crate::Theme,
     /// Captured once per frame, mirroring `current_theme` — see
     /// [`crate::Style`]'s module doc for why this is a separate field
-    /// rather than folded into `Theme` (issue #1133).
+    /// rather than folded into `Theme`.
     current_style: crate::Style,
-    /// Decoded/scaled-`Pixbuf` cache for [`Backend::draw_image`] (issue
-    /// #1014) — see [`crate::image_cache`]'s module doc. Keyed on
+    /// Decoded/scaled-`Pixbuf` cache for [`Backend::draw_image`]
+    /// — see [`crate::image_cache`]'s module doc. Keyed on
     /// `(image.source, target size, dpi_scale)`; survives across frames
     /// (unlike `zones`), since the whole point is skipping a re-decode on
     /// a later paint of the same source.
     image_cache: crate::image_cache::ImageCache<gtk4::gdk_pixbuf::Pixbuf>,
     /// Cached glyph atlas for [`Backend::draw_minimap`]'s real-character
-    /// rendering (issue #1035) — see [`crate::primitives::minimap::MinimapAtlasCache`]'s
+    /// rendering — see [`crate::primitives::minimap::MinimapAtlasCache`]'s
     /// module doc. Keyed on `(editor font family, dpi_scale)`; survives
     /// across frames, same lifecycle as `image_cache` above and for the
     /// same reason: the whole point is never re-shaping-and-downsampling
     /// the atlas on a later paint at the same family/scale.
     minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache,
-    /// [`crate::backend::Backend::minimap_scale`]'s backing field (issue
-    /// #1143) — read by [`Backend::draw_minimap`]/[`Backend::minimap_layout`]
+    /// [`crate::backend::Backend::minimap_scale`]'s backing field
+    /// — read by [`Backend::draw_minimap`]/[`Backend::minimap_layout`]
     /// to resolve the row pitch (and, for the atlas, per-column width) a
     /// paint or layout call uses. Defaults to [`crate::primitives::minimap::MinimapScale::One`],
-    /// the pre-#1143 fixed pitch, so a host that never calls
+    /// the fixed pitch, so a host that never calls
     /// [`Backend::set_minimap_scale`] sees no behaviour change.
     minimap_scale: crate::primitives::minimap::MinimapScale,
     /// Per-frame Pango line height in DIPs. Set by the App in its
@@ -262,9 +252,9 @@ pub struct GtkBackend {
     /// Per-frame Pango advance for `ui_font` (the chrome twin of
     /// `current_char_width`), in DIPs — backs [`Backend::list_char_width`].
     /// `draw_list` paints row text in `ui_font`, not the editor font
-    /// `current_char_width` measures (#416/#624), so a consumer sizing
+    /// `current_char_width` measures, so a consumer sizing
     /// list content from `current_char_width` under-fills the row
-    /// whenever the two fonts' advances differ (#912). Refreshed once
+    /// whenever the two fonts' advances differ. Refreshed once
     /// per frame by `gtk::run::render_frame` via
     /// [`Self::refresh_chrome_char_width`], the same way
     /// `current_char_width` is refreshed from the editor font.
@@ -278,7 +268,7 @@ pub struct GtkBackend {
     /// have icon variants. Apps wire this from their own setting
     /// (vimcode reads `engine.settings.use_nerd_fonts`); kubeui has
     /// its own toggle. Mirrors the `TuiBackend` field of the same
-    /// name (#268).
+    /// name.
     ///
     /// Defaults to `true` on this backend — unlike TUI,
     /// where a wrong `true` paints tofu for a terminal with no Nerd
@@ -302,7 +292,7 @@ pub struct GtkBackend {
     /// closure reads it (via [`Self::editor_font_pango_string`]) every
     /// frame to build the shared editor `pango::Layout`, so painted
     /// glyphs and the `current_line_height` / `current_char_width`
-    /// metrics resolved from the same font never drift apart (#422).
+    /// metrics resolved from the same font never drift apart.
     editor_font_family: String,
     /// Editor font size in points, paired with `editor_font_family`.
     /// Defaults to `11.0` (the historical hardcoded value).
@@ -311,26 +301,23 @@ pub struct GtkBackend {
     /// [`Backend::register_zone`]. Cleared at the start of each frame by
     /// [`Self::begin_frame`]. Parallels `TuiBackend::zones`. Read by
     /// [`super::testing::GtkDriver::inventory`] to populate
-    /// [`crate::testing::FrameInventory::zones`] (quadraui#490).
+    /// [`crate::testing::FrameInventory::zones`].
     pub(crate) zones: Vec<ZoneRec>,
     /// The `(text, bounds)` map painted this frame — recorded by trait
-    /// methods that already compute a label's on-surface rect (e.g.
-    /// [`Self::draw_status_bar`]) so [`super::testing::GtkDriver::find`]
-    /// can locate a control without hardcoded coordinates (quadraui#447,
-    /// GD-2). Cleared at the start of each frame by [`Self::begin_frame`];
-    /// mirrors `text_regions`' lifecycle. Coverage is incremental — only
-    /// widgets whose trait method has been updated to call
-    /// [`Self::record_painted_text`] appear here; see that method's docs.
+    /// methods that compute a label's on-surface rect so
+    /// [`super::testing::GtkDriver::find`] can locate a control without
+    /// hardcoded coordinates. Cleared at the start of each frame by
+    /// [`Self::begin_frame`]; mirrors `text_regions`' lifecycle. Coverage
+    /// is incremental — only widgets whose trait method has been updated
+    /// to call [`Self::record_painted_text`] appear here; see that method's docs.
     ///
-    /// Since quadraui#489 this is *also* fed, per painted glyph run, by
-    /// [`super::painted_text::show_layout`] — the choke point every GTK
-    /// rasteriser routes its Pango painting through — so every
-    /// text-bearing primitive reports in, not just the three whose trait
-    /// methods hand-roll a `record_painted_text` call. Those hand-rolled
-    /// (logical, hit-test-aligned) records land here *first*, ahead of
-    /// the frame's glyph runs, so `find_bounds` keeps resolving them to
-    /// the label rect a click needs. Requires
-    /// [`Self::set_painted_text_recording`].
+    /// Also fed, per painted glyph run, by [`super::painted_text::show_layout`]
+    /// — the choke point every GTK rasteriser routes its Pango painting through
+    /// — so every text-bearing primitive reports in, not just those whose trait
+    /// methods hand-roll a `record_painted_text` call. Hand-rolled (logical,
+    /// hit-test-aligned) records land here first, ahead of the frame's glyph runs,
+    /// so `find_bounds` keeps resolving them to the label rect a click needs.
+    /// Requires [`Self::set_painted_text_recording`].
     pub(crate) painted_text: Vec<PaintedText>,
     /// Whether the per-glyph-run recording described on
     /// [`Self::painted_text`] is active. Off by default: a live app never
@@ -349,7 +336,7 @@ pub struct GtkBackend {
     /// [`Self::set_window`]. `None` until the runner finishes constructing
     /// the window (and in unit tests, which never call `set_window`).
     /// Backs [`Backend::begin_window_drag`] / [`Backend::toggle_window_maximize`]
-    /// — the CSD titlebar drag/maximize escape hatch (#400).
+    /// — the CSD titlebar drag/maximize escape hatch.
     window: Option<gtk4::ApplicationWindow>,
     /// Raw GDK context (device, button, x, y, timestamp) of the most
     /// recent primary-button press, stashed by `gtk/run.rs`'s
@@ -359,29 +346,25 @@ pub struct GtkBackend {
     /// device/timestamp the gesture requires — GDK ignores synthesized
     /// values on some compositors.
     pending_window_press: Option<(gdk::Device, i32, f64, f64, u32)>,
-    /// Armed-but-not-yet-started window-drag request (#400 double-click
-    /// fix; extracted to the backend-neutral [`WindowDragArm`] by #498).
-    /// Set by [`Backend::begin_window_drag`] from
-    /// [`Self::pending_window_press`]; consumed by
-    /// [`Self::try_commit_window_drag`], which `gtk/run.rs`'s motion
-    /// controller calls on every pointer move — it only actually commits
-    /// (and calls the native `begin_move`) once the pointer has moved
-    /// past the drag threshold since the arming press.
+    /// Armed-but-not-yet-started window-drag request. Set by
+    /// [`Backend::begin_window_drag`] from [`Self::pending_window_press`];
+    /// consumed by [`Self::try_commit_window_drag`], which `gtk/run.rs`'s
+    /// motion controller calls on every pointer move — it only actually commits
+    /// (and calls the native `begin_move`) once the pointer has moved past the
+    /// drag threshold since the arming press.
     ///
     /// This split exists because calling `gdk4::Toplevel::begin_move`
     /// synchronously on the very first press — before it's known whether
     /// a second press is coming — starts an interactive move grab that
     /// swallows the second press, so a double-click on a CSD titlebar
-    /// never reaches the app as `UiEvent::DoubleClick`. Native
-    /// `gtk4::WindowHandle` avoids this by deferring its own move-start
-    /// to `GestureDrag`'s `drag-begin` signal, which itself only fires
-    /// past the drag threshold — this mirrors that behaviour instead of
-    /// starting the grab on the raw press. See [`WindowDragArm`]'s doc
+    /// never reaches the app as `UiEvent::DoubleClick`. This defers the
+    /// move-start to a threshold-gated signal, mirroring native
+    /// `gtk4::WindowHandle` behaviour. See [`WindowDragArm`]'s doc
     /// for the generalised rationale.
     armed_window_drag: WindowDragArm<(gdk::Device, i32, f64, f64, u32)>,
     /// Clone of the Pango layout `draw_menu_bar` actually painted with,
     /// stashed at the end of the frame's `enter_frame_scope` call.
-    /// `menu_bar_layout` (#407) is invoked from click-time hit-testing
+    /// `menu_bar_layout` is invoked from click-time hit-testing
     /// (e.g. `MenuSystem::handle`), which runs *outside* any frame
     /// scope — `current_frame_refs()` is always `None` there. Without
     /// this cache the click-time measurement fell all the way back to
@@ -397,8 +380,8 @@ pub struct GtkBackend {
     last_menu_bar_pango_layout: Option<pango::Layout>,
     /// Clone of the Pango layout `draw_editor` actually painted with,
     /// stashed at the end of the frame's `draw_editor` call. Mirrors
-    /// [`Self::last_menu_bar_pango_layout`] (#407) for the same reason:
-    /// `editor_col_at_x` (#420) is invoked from click-time hit-testing,
+    /// [`Self::last_menu_bar_pango_layout`] for the same reason:
+    /// `editor_col_at_x` is invoked from click-time hit-testing,
     /// which runs *outside* any frame scope — `current_frame_refs()` is
     /// `None` there, so falling back to `pango_ctx` would resolve
     /// against the wrong (UI, not editor) font and silently mis-place
@@ -410,7 +393,7 @@ pub struct GtkBackend {
     /// call, per tab-bar `WidgetId`. Cleared at the start of every frame
     /// by [`Self::begin_frame`] (same lifecycle as `zones`) so a tab bar
     /// that stops painting doesn't leave a stale entry that would resolve
-    /// a tab no longer on screen. Parallels `TuiBackend::tab_bar_layouts`.
+    /// a tab no longer on screen.
     ///
     /// `TabBarLayout`'s own `visible_tabs`/`close_bounds` rects are
     /// bar-relative (origin at the bar's own top-left) — the same
@@ -418,10 +401,10 @@ pub struct GtkBackend {
     /// params paint against. [`Self::cached_tab_bar_layout`] hands back
     /// the paired rect so callers can shift into absolute screen-space
     /// coordinates. Read by [`super::testing::GtkDriver::tab_center`] /
-    /// [`super::testing::GtkDriver::tab_close_center`] (quadraui#594).
+    /// [`super::testing::GtkDriver::tab_close_center`].
     tab_bar_layouts: HashMap<WidgetId, (QRect, TabBarLayout)>,
     /// Monotonically increasing counter bumped once per [`Self::begin_frame`]
-    /// call. Backs the #417 dirty-row repaint fast path: a `TermPaintCache`
+    /// call. Backs a dirty-row repaint fast path: a `TermPaintCache`
     /// entry is only reused when it was written during the *immediately
     /// preceding* frame (`painted_frame + 1 == frame_counter`). Any gap
     /// (the terminal pane went unpainted for a frame — e.g. a tab switch
@@ -431,32 +414,32 @@ pub struct GtkBackend {
     frame_counter: u64,
     /// Per-terminal-id cache of the most recently painted `Terminal`
     /// snapshot and the pixel geometry it was painted at — see
-    /// [`Self::draw_terminal`] and `TermPaintCache`'s own docs (#417).
+    /// [`Self::draw_terminal`] and `TermPaintCache`'s own docs.
     term_paint_cache: HashMap<WidgetId, TermPaintCache>,
     /// Folds a `MouseDown` into `DoubleClick` when it lands within
     /// [`GTK_DOUBLE_CLICK_RADIUS`]/400ms of the previous click at the
     /// same button — the shared mechanism every backend's
-    /// `dispatch_event` now uses via [`Self::fold_double_click`]
-    /// (quadraui#813). Mirrors `MacBackend::double_click`/
+    /// `dispatch_event` now uses via [`Self::fold_double_click`].
+    /// Mirrors `MacBackend::double_click`/
     /// `WinBackend::double_click`.
     double_click: DoubleClickDetector,
     /// Whether [`Self::fold_double_click`] is armed. Defaults to `true`
     /// (real double-click folding, matching the live GTK app and
     /// `TuiBackend`'s own default). [`super::testing::GtkDriver::set_double_click_folding`]
-    /// (quadraui#813) turns it off so a test that dispatches two
+    /// turns it off so a test that dispatches two
     /// deliberate single clicks at the same spot in immediate succession
     /// — no real GDK press-count or wall-clock gap between them — gets
     /// two `MouseDown`s, not a coin-flip on `DoubleClickDetector`'s
     /// 400ms window. Mirrors `TuiBackend::double_click_folding` exactly.
     double_click_folding: bool,
-    /// Single owner of keyboard focus (issue #830) — see
+    /// Single owner of keyboard focus — see
     /// [`crate::focus`]'s module doc. Mutated only by the shared
     /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
     /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
     /// read elsewhere via [`Backend::focus_manager`].
     focus: crate::focus::FocusManager,
-    /// Thread-safe inbox for [`crate::UiEvent::User`] payloads (issue
-    /// #831) — see [`crate::runtime::UserEventQueue`]'s doc. [`Self::waker`]
+    /// Thread-safe inbox for [`crate::UiEvent::User`] payloads
+    /// — see [`crate::runtime::UserEventQueue`]'s doc. [`Self::waker`]
     /// clones this `Arc` into the closure it hands out; [`Self::poll_events`]
     /// drains it into `UiEvent::User` alongside `events`, on the GTK main
     /// thread, same as any other queued event.
@@ -473,7 +456,7 @@ pub struct GtkBackend {
     wake_id: WakeId,
 }
 
-/// Releases this backend's [`WAKE_CALLBACKS`] slot (issue #831), so the
+/// Releases this backend's [`WAKE_CALLBACKS`] slot, so the
 /// installed `Rc<dyn Fn()>` — and everything it captures, which for
 /// `gtk::run::run_with` is the whole app/backend graph — doesn't outlive
 /// the backend it was installed for.
@@ -493,7 +476,7 @@ impl Drop for GtkBackend {
 }
 
 /// Cached state from the most recent successful [`GtkBackend::draw_terminal`]
-/// paint for one terminal id (#417).
+/// paint for one terminal id.
 ///
 /// GTK retains the previous frame's pixels for anything a draw call
 /// doesn't touch (see the ghosting note on [`GtkBackend::draw_terminal`]
@@ -513,7 +496,7 @@ impl Drop for GtkBackend {
 /// cells (`selected` / `is_cursor` / `is_find_match` overlays — see
 /// `primitives/terminal.rs`'s module doc). Without this, selecting text
 /// then toggling light/dark would leave the old theme's selection colour
-/// on screen until some unrelated event forced a full repaint (#417 review).
+/// on screen until some unrelated event forced a full repaint.
 #[derive(Debug, Clone)]
 struct TermPaintCache {
     term: TerminalPrim,
@@ -577,7 +560,7 @@ impl GtkBackend {
         super::app_font::ensure_codicon_registered();
 
         let events = Rc::new(std::cell::RefCell::new(VecDeque::new()));
-        // #955: share the same queue with `GtkPlatformServices` so a
+        // Share the same queue with `GtkPlatformServices` so a
         // notification-action activation can push
         // `UiEvent::NotificationActivated` onto it — see
         // `gtk::services`'s module doc.
@@ -634,7 +617,7 @@ impl GtkBackend {
     }
 
     /// Install the closure [`Backend::waker`]'s returned handle invokes on
-    /// the GTK main thread (issue #831). `gtk::run::run_with` calls this
+    /// the GTK main thread. `gtk::run::run_with` calls this
     /// once, right after building the periodic event-drain closure it also
     /// registers as a `glib::timeout_add_local` source — the same closure,
     /// reused, so a background-thread wake and the ordinary 33ms poll
@@ -662,7 +645,7 @@ impl GtkBackend {
     /// right after the window is constructed. Backs
     /// [`Backend::begin_window_drag`] / [`Backend::toggle_window_maximize`],
     /// and hands the same window to [`GtkPlatformServices::set_window`] so
-    /// file dialogs (#427) open parented to it.
+    /// file dialogs open parented to it.
     pub fn set_window(&mut self, window: gtk4::ApplicationWindow) {
         self.services.set_window(window.clone());
         self.window = Some(window);
@@ -676,7 +659,7 @@ impl GtkBackend {
         self.dpi_scale
     }
 
-    /// Update the tracked GDK scale factor (issue #834) — called from
+    /// Update the tracked GDK scale factor — called from
     /// `gtk::run`'s `notify::scale-factor` handler and its debounced
     /// resize handler (both of which observe `DrawingArea::scale_factor()`)
     /// before dispatching the corresponding `UiEvent`. Does not itself
@@ -694,7 +677,7 @@ impl GtkBackend {
     /// clones it into every closure that calls `backend.borrow_mut()`,
     /// so those closures can no-op instead of double-borrowing the
     /// backend while `AppLogic::handle` (further up the call stack) is
-    /// blocked inside the dialog pump (#427).
+    /// blocked inside the dialog pump.
     pub(crate) fn pump_depth(&self) -> crate::desktop::ModalPumpDepth {
         self.services.pump_depth()
     }
@@ -702,7 +685,7 @@ impl GtkBackend {
     /// Seed this backend's clipboard with deterministic in-memory
     /// contents, so a test can drive the Ctrl-V / Ctrl-Shift-V and
     /// middle-click paste paths without depending on the host's real
-    /// clipboard state (quadraui#415). Test-only.
+    /// clipboard state. Test-only.
     #[cfg(test)]
     pub(crate) fn install_test_clipboard(
         &self,
@@ -732,9 +715,8 @@ impl GtkBackend {
 
     /// Screen-space origin `(x, y)` of the press that armed the current
     /// window-drag request, if one is armed. Test-only: `gtk/run.rs`'s
-    /// motion controller no longer measures the distance itself (#498)
-    /// — it just calls [`Self::try_commit_window_drag`] every move and
-    /// lets [`WindowDragArm::commit_if_past_threshold`] do the threshold
+    /// motion controller calls [`Self::try_commit_window_drag`] every move
+    /// and lets [`WindowDragArm::commit_if_past_threshold`] do the threshold
     /// check.
     #[cfg(test)]
     pub(crate) fn armed_window_drag_origin(&self) -> Option<(f64, f64)> {
@@ -747,27 +729,24 @@ impl GtkBackend {
     /// the drag threshold, the press was a plain click (or the first half
     /// of a double-click) and must not leave stale state around to be
     /// accidentally committed by an unrelated later hover-motion event
-    /// (#400).
     pub(crate) fn discard_armed_window_drag(&mut self) {
         self.armed_window_drag.discard();
     }
 
-    /// Threshold-gated commit of an armed window-drag request (#400;
-    /// threshold check extracted to [`WindowDragArm::commit_if_past_threshold`]
-    /// by #498). Called by `gtk/run.rs`'s motion controller on every
-    /// pointer move while a request is armed; `WindowDragArm` handles
-    /// "still under threshold, stay armed" internally, so this is a
-    /// plain no-op (returns `false`) on every call until the pointer
-    /// actually crosses [`Self::window_drag_threshold_px`] from the
-    /// arming press — see [`Self::armed_window_drag`] for why the commit
-    /// is deferred at all instead of running synchronously from
+    /// Threshold-gated commit of an armed window-drag request. Called by
+    /// `gtk/run.rs`'s motion controller on every pointer move while a request
+    /// is armed; `WindowDragArm` handles "still under threshold, stay armed"
+    /// internally, so this is a plain no-op (returns `false`) on every call
+    /// until the pointer actually crosses [`Self::window_drag_threshold_px`]
+    /// from the arming press — see [`Self::armed_window_drag`] for why the
+    /// commit is deferred at all instead of running synchronously from
     /// `Backend::begin_window_drag`.
     ///
     /// On a successful threshold-cross, calls `gdk4::Toplevel::begin_move`
     /// with the *originating* press's device/button/timestamp (GDK
-    /// ignores synthesized values on some compositors) and returns
-    /// `true`. Returns `false` (no-op) if no window is set, nothing is
-    /// armed, or the armed request is still under threshold.
+    /// ignores synthesized values on some compositors) and returns `true`.
+    /// Returns `false` (no-op) if no window is set, nothing is armed,
+    /// or the armed request is still under threshold.
     pub(crate) fn try_commit_window_drag(&mut self, x: f64, y: f64) -> bool {
         let Some(window) = self.window.as_ref() else {
             self.armed_window_drag.discard();
@@ -780,13 +759,11 @@ impl GtkBackend {
         else {
             return false;
         };
-        // `ApplicationWindow` implements `Native` directly (gtk4-rs
-        // `@implements Native` on both `Window` and `ApplicationWindow`),
-        // so `.surface()` is reachable without an upcast. `surface()`
-        // returns `None` when the window isn't realized yet (gtk4 0.11,
-        // #796); when it is, only an actual toplevel surface implements
-        // the `Toplevel` interface `begin_move` lives on — downcast can
-        // fail if the surface isn't a toplevel.
+        // `ApplicationWindow` implements `Native` directly, so `.surface()`
+        // is reachable without an upcast. `surface()` returns `None` when
+        // the window isn't realized yet; when it is, only an actual toplevel
+        // surface implements the `Toplevel` interface `begin_move` lives on.
+        // Downcast can fail if the surface isn't a toplevel.
         match window
             .surface()
             .and_then(|s| s.downcast::<gdk::Toplevel>().ok())
@@ -800,7 +777,7 @@ impl GtkBackend {
     }
 
     /// Pixel distance the pointer must travel from an armed press before
-    /// [`Self::armed_window_drag`] is committed (#400). Reads GTK's own
+    /// [`Self::armed_window_drag`] is committed. Reads GTK's own
     /// `gtk-dnd-drag-threshold` setting (the same threshold `GestureDrag`
     /// uses natively) so the titlebar drag feels identical to any other
     /// GTK drag gesture; falls back to GTK's documented default (8px) when
@@ -821,7 +798,7 @@ impl GtkBackend {
     /// (`impl Into<String>` vs. `&str`) — kept so existing direct
     /// `GtkBackend` call sites (`gtk/run.rs`, tests) don't need a
     /// `.to_string()`. Callers holding only `&mut dyn Backend` use the
-    /// trait method instead; both write the same field (#624).
+    /// trait method instead; both write the same field.
     pub fn set_ui_font(&mut self, ui_font: impl Into<String>) {
         self.ui_font = resolve_generic_families_gtk(&ui_font.into());
     }
@@ -830,14 +807,12 @@ impl GtkBackend {
     /// <size>"`). Defaults to `"Monospace 11"` until
     /// [`Backend::set_editor_font`] overrides it. `gtk/run.rs`'s draw
     /// closure reads this every frame to build the shared editor
-    /// `pango::Layout` (#422).
+    /// `pango::Layout`.
     ///
-    /// Public since #971: a consumer that paints its editor content
-    /// itself (bespoke Cairo, not [`Backend::draw_editor`]) can read this
-    /// to build its *own* paint-time layout from the exact same family/
-    /// size [`Self::editor_pango_layout`] resolves for click-time
-    /// measurement — one field backing both, instead of a second copy of
-    /// the app's font setting living only in the consumer's click path.
+    /// Public since consumers may paint editor content themselves (bespoke
+    /// Cairo, not [`Backend::draw_editor`]) and need this to build their own
+    /// paint-time layout from the exact same family/size [`Self::editor_pango_layout`]
+    /// resolves for click-time measurement.
     pub fn editor_font_pango_string(&self) -> String {
         format!("{} {}", self.editor_font_family, self.editor_font_size_pt)
     }
@@ -848,7 +823,7 @@ impl GtkBackend {
     /// [`Self::editor_font_pango_string`] — from the stable widget Pango
     /// context ([`Self::set_pango_context`]).
     ///
-    /// #971: this is the entry point a GTK consumer needs to map a click
+    /// This is the entry point a GTK consumer needs to map a click
     /// x-coordinate to an editor column (via [`crate::gtk::editor_col_at_x`])
     /// without constructing a second, private `GtkBackend` purely to
     /// mimic the real one's font — pass the *same* `GtkBackend` the
@@ -889,11 +864,8 @@ impl GtkBackend {
     /// Use this to gate hover triggers, focus-stealing animations, and
     /// other behaviours that should pause while a modal is up.
     ///
-    /// API surface for issue #248 (Stage 5+ — migrate dialog /
-    /// context-menu / completion popup onto `ModalStack`). Today only
-    /// the picker pushes onto the stack, so this returns true only
-    /// when a picker is open. Each modal migrated by #248 makes
-    /// `is_modal_open()` correctly cover that modal type.
+    /// Today only the picker pushes onto the stack; as additional modal
+    /// types are migrated, this method will correctly cover them.
     #[allow(dead_code)]
     pub fn is_modal_open(&self) -> bool {
         !self.modal_stack.borrow().is_empty()
@@ -953,19 +925,13 @@ impl GtkBackend {
         &self.current_style
     }
 
-    /// Issue #1016: push the app's chosen theme into GTK's own
+    /// Push the app's chosen theme into GTK's own
     /// `gtk-application-prefer-dark-theme` setting, so native GTK chrome
     /// that this crate doesn't rasterise itself (the file dialog, as of
-    /// this writing — see the issue's "Small surface" note) follows the
-    /// app's colours instead of the desktop default. This is the *push*
-    /// direction; [`crate::gtk::services`]'s `system_theme` (#952) is the
-    /// complementary *read* direction (OS → app), and landing one does
+    /// this writing) follows the app's colours instead of the desktop default.
+    /// This is the *push* direction; [`crate::gtk::services`]'s `system_theme`
+    /// is the complementary *read* direction (OS → app), and landing one does
     /// not cover the other.
-    ///
-    /// Two vimcode call sites (`App::new`, and its colourscheme-change
-    /// handler) used to reach for `gtk4::Settings` directly to do exactly
-    /// this by hand; this method is what lets them delete that and rely
-    /// on `Backend::set_theme` instead.
     ///
     /// Uses the parented window's own display when one is attached,
     /// falling back to [`gtk4::gdk::Display::default`] otherwise — the
@@ -1024,7 +990,7 @@ impl GtkBackend {
 
     /// Re-measure and cache `ui_font`'s real Pango advance into
     /// `current_chrome_char_width`, backing [`Backend::list_char_width`]
-    /// — the chrome twin of [`Self::set_current_char_width`] (#912).
+    /// — the chrome twin of [`Self::set_current_char_width`].
     ///
     /// Takes a live `layout` (the same shared per-frame layout every
     /// `draw_*` method borrows via `current_frame_refs`) because Pango
@@ -1125,7 +1091,7 @@ impl GtkBackend {
         let layout_ptr = layout as *const pango::Layout as *const ();
         let prev_cr = self.current_cr_ptr.replace(cr_ptr);
         let prev_layout = self.current_layout_ptr.replace(layout_ptr);
-        // Paint-time text recording (quadraui#489) is scoped to exactly
+        // Paint-time text recording is scoped to exactly
         // this paint pass: install the sink before the rasterisers run,
         // drain it after. See `painted_text`'s docs for why the drain
         // happens here (after the frame) rather than per `draw_*` call.
@@ -1146,7 +1112,7 @@ impl GtkBackend {
     }
 
     /// Enable/disable the per-glyph-run painted-text recording that backs
-    /// [`super::testing::GtkDriver::find`] (quadraui#489). Off by default
+    /// [`super::testing::GtkDriver::find`]. Off by default
     /// — see [`Self::painted_text`].
     pub(crate) fn set_painted_text_recording(&mut self, enabled: bool) {
         self.painted_text_recording = enabled;
@@ -1165,7 +1131,7 @@ impl GtkBackend {
     /// bar didn't paint this frame. See [`Self::tab_bar_layouts`]'s docs
     /// for the coordinate-space contract. Read by
     /// [`super::testing::GtkDriver::tab_center`] /
-    /// [`super::testing::GtkDriver::tab_close_center`] (quadraui#594).
+    /// [`super::testing::GtkDriver::tab_close_center`].
     pub(crate) fn cached_tab_bar_layout(&self, id: &WidgetId) -> Option<(QRect, &TabBarLayout)> {
         self.tab_bar_layouts
             .get(id)
@@ -1184,7 +1150,7 @@ impl GtkBackend {
     /// instead of a char-cell estimate that drifts with the host's UI
     /// font. Same "cache at paint, hit-test at click" pattern the rest of
     /// the backend uses.
-    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
     fn cached_tab_bar_hits(&self, rect: QRect, bar: &TabBar) -> Option<crate::TabBarHits> {
         let (cached_rect, layout) = self.tab_bar_layouts.get(&bar.id)?;
         if *cached_rect != rect {
@@ -1199,18 +1165,16 @@ impl GtkBackend {
         }
         let mut hits = crate::backend::tab_bar_hits_from_layout(layout, bar);
         // `TabBarLayout` is bar-relative; `TabBarHits` are target-surface
-        // coordinates (issue #552), exactly as the measured path below.
+        // coordinates, exactly as the measured path below.
         crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
         Some(hits)
     }
 
     /// [`TabBarLayout`] most recently *painted* for `bar` at `rect`, or
-    /// `None` on the same staleness conditions as
-    /// [`Self::cached_tab_bar_hits`] — see that method's doc for the "no
-    /// Pango handle" fallback this backs. Issue #919's counterpart:
-    /// `TabBarLayout` is already bar-relative, so unlike
-    /// `cached_tab_bar_hits` there is no `TabBarHits` conversion or
-    /// `rect.x` shift to apply.
+    /// `None` on the same staleness conditions as [`Self::cached_tab_bar_hits`]
+    /// — see that method's doc for the "no Pango handle" fallback this backs.
+    /// `TabBarLayout` is already bar-relative, so unlike `cached_tab_bar_hits`
+    /// there is no `TabBarHits` conversion or `rect.x` shift to apply.
     fn cached_tab_bar_layout_matching(&self, rect: QRect, bar: &TabBar) -> Option<TabBarLayout> {
         let (cached_rect, layout) = self.tab_bar_layouts.get(&bar.id)?;
         if *cached_rect != rect {
@@ -1251,7 +1215,7 @@ impl GtkBackend {
     //
     // The region registry + active-selection state machine, plus the
     // accelerator registry alongside it, live in
-    // [`crate::backend_core::BackendCore`] (#1090) — every method below
+    // [`crate::backend_core::BackendCore`] — every method below
     // is a thin delegation, kept as inherent methods (rather than
     // inlining `self.core.text_selection.foo()` at every call site) so
     // `gtk/run.rs` and this file's own tests don't need to know the field
@@ -1261,19 +1225,16 @@ impl GtkBackend {
     // [`crate::backend_core::BackendCore::extract_selection_text_pixel`]
     // with Win-GUI and macOS).
 
-    /// Every `TextRegion` registered so far this frame. Test-only since
-    /// #1088: `gtk::run`/`GtkDriver` used to read this (and
-    /// `track_focused_text_region` below) as two separate accessor calls
-    /// before a `dispatch_click` call they built inline; both now go
-    /// through [`Self::text_selection_state_mut`] instead, so nothing
-    /// outside this file's own tests needs the narrower accessor anymore.
+    /// Every `TextRegion` registered so far this frame. Test-only:
+    /// direct text-region access is no longer needed outside this file's tests,
+    /// as [`Self::text_selection_state_mut`] provides the needed mutable access.
     #[cfg(test)]
     pub(crate) fn text_regions(&self) -> &[TextRegion] {
         &self.core.text_selection.text_regions
     }
 
     /// Mutable access to the whole [`crate::text_selection::TextSelectionState`]
-    /// — the shape [`crate::dispatch::route_pointer`] (issue #1088) needs
+    /// — the shape [`crate::dispatch::route_pointer`] needs
     /// to both read `text_regions` and call `track_focused_text_region`
     /// without two separate accessor calls.
     pub(crate) fn text_selection_state_mut(
@@ -1323,9 +1284,7 @@ impl GtkBackend {
     /// [`crate::Backend::cancel_text_selection_drag`] so apps hosting an
     /// embedded terminal can abort a speculative drag (started by
     /// `apply_dispatch` before the app forwards the click to a PTY) while
-    /// keeping any previously finalised selection on screen. See
-    /// `TuiBackend::cancel_text_selection_drag_impl` for the TUI twin this
-    /// mirrors.
+    /// keeping any previously finalised selection on screen.
     pub(crate) fn cancel_text_selection_drag_impl(&mut self) {
         let mut drag = self.drag_state.borrow_mut();
         self.core.cancel_text_selection_drag(&mut drag);
@@ -1346,7 +1305,7 @@ impl GtkBackend {
     ///    a `find`-driven click wants.
     /// 2. [`Self::enter_frame_scope`], draining the per-glyph-run sink
     ///    [`super::painted_text`] fills for *every* text-bearing
-    ///    rasteriser (quadraui#489). This is the coverage path; the
+    ///    rasteriser. This is the coverage path; the
     ///    logical records above stay ahead of it in the map.
     ///
     /// Skips blank `text` so alignment pads and placeholder segments
@@ -1367,7 +1326,7 @@ impl GtkBackend {
     ///
     /// The row/column → pixel-rect resolution is
     /// [`crate::backend_core::BackendCore::selection_highlight_rects`] —
-    /// shared with `MacBackend`/`WinBackend`'s twins (#1090); only the
+    /// shared with `MacBackend`/`WinBackend`'s twins; only the
     /// actual `cr.rectangle`/`cr.fill()` Cairo calls below are GTK-specific
     /// real toolkit code. No-op when there is no active selection or the
     /// region id is not registered this frame.
@@ -1434,7 +1393,7 @@ impl GtkBackend {
         self.core.select_all_text_region()
     }
 
-    // ── Double-click folding (#813) ───────────────────────────────────────
+    // ── Double-click folding ──────────────────────────────────────────────
 
     /// Fold a `MouseDown` into `DoubleClick` if it lands within
     /// [`GTK_DOUBLE_CLICK_RADIUS`]/400ms of the previous click at the same
@@ -1455,7 +1414,7 @@ impl GtkBackend {
     /// Toggle whether [`Self::fold_double_click`] folds a `MouseDown` into
     /// `DoubleClick`. Driver-facing knob for
     /// [`super::testing::GtkDriver::set_double_click_folding`]
-    /// (quadraui#813) — mirrors `TuiBackend::set_double_click_folding`.
+    /// — mirrors `TuiBackend::set_double_click_folding`.
     pub(crate) fn set_double_click_folding(&mut self, enabled: bool) {
         self.double_click_folding = enabled;
     }
@@ -1463,7 +1422,7 @@ impl GtkBackend {
     // ── Accelerators ────────────────────────────────────────────────────────
     //
     // The registry itself lives in [`crate::backend_core::BackendCore`]
-    // (#1090) — see that type's doc. Both methods below are thin
+    // — see that type's doc. Both methods below are thin
     // delegations, kept as inherent methods (rather than requiring every
     // call site to spell `self.core.foo()`) since the GTK key callback
     // (synchronous dispatch) and this file's own tests call
@@ -1491,10 +1450,8 @@ impl GtkBackend {
     }
 
     /// Shared body of [`Backend::draw_status_bar_interactive`] /
-    /// [`Backend::draw_status_bar_interactive_scaled`] (issue #1045 item
-    /// 2). `font_scale` multiplies the chrome font's point size for this
-    /// paint only — `1.0` is the unscaled case, byte-for-byte the
-    /// pre-#1045 body of `draw_status_bar_interactive`.
+    /// [`Backend::draw_status_bar_interactive_scaled`]. `font_scale` multiplies
+    /// the chrome font's point size for this paint only — `1.0` is the unscaled case.
     fn status_bar_paint_scaled(
         &mut self,
         rect: QRect,
@@ -1534,12 +1491,8 @@ impl GtkBackend {
             None
         };
         let theme = self.current_theme;
-        // #1179: was `self.current_line_height`, so a caller that hands
-        // this a `rect` taller than the current line height got a
-        // background fill short of `rect.height`, leaving an unpainted
-        // strip. `paint` fills exactly the height it's given — pass the
-        // rect's own height, matching `WinBackend`'s already-correct call
-        // and `MacBackend`'s #1179 fix.
+        // Use the rect's height for the background fill, matching other backends.
+        // This ensures the fill exactly matches the provided rect.
         let line_height = rect.height;
         let bar_layout = crate::primitives::status_bar::native_surface_paint::paint(
             bar,
@@ -1556,27 +1509,14 @@ impl GtkBackend {
             self.ui_font = saved;
         }
         // Record each visible segment's label into the painted-text map
-        // GtkDriver::find scans (quadraui#447, GD-2) — resolve the text
-        // from `bar` via the segment's side + index, since
-        // `VisibleStatusSegment` carries the resolved bounds but not the
-        // label itself.
+        // that GtkDriver::find scans — resolve the text from `bar` via the
+        // segment's side + index, since `VisibleStatusSegment` carries the
+        // resolved bounds but not the label itself.
         //
-        // `seg.bounds` (from `StatusBar::layout`, shared with
-        // `TuiBackend`/`GtkBackend::status_bar_layout`) is bar-local:
-        // `x` relative to this bar's own left edge, `y` always `0`
-        // relative to its own top — never offset by the `rect` this
-        // particular bar was painted into (`bar.layout` never even
-        // receives `rect.x`/`rect.y`). `painted_text`'s contract is
-        // *absolute* surface coordinates (what `find`/`click_text`
-        // hand straight to `Self::click`), so translate by `rect`'s
-        // origin here, mirroring `Self::draw_data_table`'s
-        // `rect.x + rc.x` / absolute `row_y` (defined earlier in this
-        // impl). Without this, every
-        // status bar painted at a nonzero `rect.y` (e.g. one row among
-        // several, as `panel_app`'s per-line content rendering does)
-        // recorded its text at `y = 0` — the top of the surface — so a
-        // multi-row caller's `find()` could locate the right text but
-        // return the wrong row's y (quadraui#488).
+        // `seg.bounds` (from `StatusBar::layout`) is bar-local:
+        // `x` relative to this bar's own left edge, `y` always `0` relative to
+        // its own top. Translate by `rect`'s origin to get absolute surface
+        // coordinates, matching `Self::draw_data_table`'s convention.
         for seg in &bar_layout.visible_segments {
             let text = match seg.side {
                 crate::primitives::status_bar::StatusSegmentSide::Left => {
@@ -1602,44 +1542,15 @@ impl GtkBackend {
 
 /// Measure the true (fractional) monospace advance width for `layout`'s
 /// current font, in device pixels — the single place this repo derives
-/// `Backend::char_width()`'s seed value from Pango, so `gtk/run.rs` and
-/// `gtk/menu_overlay.rs` cannot report different numbers for the same
-/// font (quadraui#910).
+/// `Backend::char_width()`'s seed value from Pango, so all paths
+/// report consistent values for the same font.
 ///
 /// `pango::Layout::pixel_size()` rounds to whole pixels. That's fine for
 /// a single line's height, but wrong for `char_width()`: every consumer
 /// divides a pixel width by it to recover a column count
 /// (`available_width / char_width()`), and a monospace advance is not
 /// always integral (8.4px, 9.6px, …). Rounding one glyph before that
-/// division would lose a column's width across a realistic pane, in
-/// proportion to pane width.
-///
-/// **Measured status for #910 (read before trusting this as "the fix"):**
-/// the reported symptom is a ~6-8% empty right margin vs. the ratatui
-/// backend. `measure_char_width_px_matches_pixel_size_for_the_real_editor_font`
-/// below prints `layout.pixel_size().0`, `layout.size().0 as f64 /
-/// pango::SCALE as f64` (single glyph) and this function's 100-glyph
-/// average for the actual runtime font — `gtk/run.rs`'s hardcoded
-/// `"Monospace 11"`, which resolves via fontconfig to DejaVu Sans Mono on
-/// this build host — at every commonly-configured editor size (9-16pt).
-/// All three agree exactly (the advance is already integral) at every
-/// size tested. That means for the font this repo actually ships with,
-/// this function returns **the same number** `pixel_size()` did before
-/// this change — this refactor does not alter `char_width()`'s value for
-/// the real editor font, and on its own does not explain the #910
-/// symptom. Per #910's own "confirm before fixing" instruction, that
-/// result is evidence the whole-pixel-rounding theory is not the (or not
-/// the whole) cause, and #910 may need reopening against a different
-/// root cause rather than being considered closed by this change.
-///
-/// The change still ships because it is strictly more correct and
-/// strictly cheaper to keep than to special-case away: it removes a
-/// latent bug (a font/DPI combination that *does* produce a fractional
-/// advance would have silently lost columns) and it collapses two
-/// duplicated measurement call sites (`gtk/run.rs`, `gtk/menu_overlay.rs`)
-/// into one, so they can no longer disagree with each other. It is a
-/// defensive correctness fix, not a confirmed fix for the reported
-/// symptom.
+/// division would lose a column's width across a realistic pane.
 ///
 /// Mutates `layout`'s text and width; every current call site only holds
 /// the layout to derive per-frame metrics before painting overwrites its
@@ -1707,7 +1618,7 @@ impl crate::runtime::PreprocessBackend for GtkBackend {
 }
 
 /// Map a portable [`ResizeEdge`] to GDK's native `SurfaceEdge`, the
-/// argument `gdk4::Toplevel::begin_resize` requires (#406). 1:1 mapping —
+/// argument `gdk4::Toplevel::begin_resize` requires. 1:1 mapping —
 /// `ResizeEdge` was deliberately named to mirror `SurfaceEdge`'s variants.
 fn resize_edge_to_surface_edge(edge: ResizeEdge) -> gdk::SurfaceEdge {
     match edge {
@@ -1723,7 +1634,7 @@ fn resize_edge_to_surface_edge(edge: ResizeEdge) -> gdk::SurfaceEdge {
 }
 
 /// Map a [`PointerShape`] to the GTK/CSS cursor name `WidgetExt::
-/// set_cursor_from_name` expects (#406). Names are the standard CSS Basic
+/// set_cursor_from_name` expects. Names are the standard CSS Basic
 /// UI cursor keywords GTK's cursor theme lookup understands.
 fn pointer_shape_cursor_name(shape: PointerShape) -> &'static str {
     match shape {
@@ -1740,7 +1651,7 @@ fn pointer_shape_cursor_name(shape: PointerShape) -> &'static str {
 }
 
 /// Whether `theme` reads as a dark theme, for
-/// [`GtkBackend::push_native_theme_preference`] (#1016). `crate::Theme`
+/// [`GtkBackend::push_native_theme_preference`]. `crate::Theme`
 /// has no `is_light`/`is_dark` of its own (see that struct's doc on why
 /// new fields are avoided), so this derives it from `background`'s
 /// perceptual luminance — the same ITU-R BT.601 luma formula and 50%
@@ -1756,7 +1667,7 @@ fn theme_prefers_dark(theme: crate::Theme) -> bool {
 /// Rewrite any `system-ui` generic family token in `desc` (a bare family
 /// name, or a Pango-style `"family[,family...] [size]"` description —
 /// [`Backend::set_editor_font`]/[`Backend::set_ui_font`]'s shapes) to
-/// `"Sans"`, leaving everything else untouched (issue #1023).
+/// `"Sans"`, leaving everything else untouched.
 ///
 /// GTK is nearly a no-op backend for generic family resolution: Pango
 /// resolves `monospace`/`sans-serif` (fontconfig's own generic alias
@@ -1801,7 +1712,7 @@ impl Backend for GtkBackend {
 
     fn begin_frame(&mut self, viewport: Viewport) {
         self.viewport = viewport;
-        // #417: bump once per frame so `TermPaintCache::painted_frame`
+        // Bump once per frame so `TermPaintCache::painted_frame`
         // can detect a terminal that went unpainted for a frame (see its
         // docs) — must happen before any `draw_terminal` call this frame.
         self.frame_counter = self.frame_counter.wrapping_add(1);
@@ -1821,7 +1732,7 @@ impl Backend for GtkBackend {
         // `zones` — a bar that stops painting must stop resolving
         // `tab_center`/`tab_close_center` too.
         self.tab_bar_layouts.clear();
-        // #455: clear last frame's modal paint marks so this frame has
+        // Clear last frame's modal paint marks so this frame has
         // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
         self.modal_stack.borrow_mut().reset_frame_paint();
     }
@@ -1843,10 +1754,10 @@ impl Backend for GtkBackend {
         // returns; this method exists for parity with backends that need
         // an explicit flush.
         //
-        // #455: in debug builds, warn about any modal that's registered
+        // In debug builds, warn about any modal that's registered
         // in the ModalStack (and therefore hit-testable) but that this
         // frame's `AppLogic::render` never painted — the "registered but
-        // invisible" defect class (vimcode#587) made detectable instead
+        // invisible" defect class made detectable instead
         // of silently shipping.
         #[cfg(debug_assertions)]
         for id in self.modal_stack.borrow().unpainted_ids() {
@@ -1857,9 +1768,8 @@ impl Backend for GtkBackend {
     fn set_theme(&mut self, theme: crate::Theme) {
         self.set_current_theme(theme);
         self.push_native_theme_preference(theme);
-        // Issue #1091: keep the native-dialog CSS provider (sidebar,
-        // scrollbars, popover content on quadraui's own `gtk4::FileDialog`
-        // fallback) in sync with every theme change — see
+        // Keep the native-dialog CSS provider (sidebar, scrollbars, popover
+        // content) in sync with every theme change — see
         // `GtkPlatformServices::set_theme`'s doc.
         self.services.set_theme(&theme);
     }
@@ -1893,7 +1803,7 @@ impl Backend for GtkBackend {
         self.ui_font = resolve_generic_families_gtk(font_desc);
     }
 
-    /// GTK's platform-native convention (issue #1156): `"Monospace"`/
+    /// GTK's platform-native convention: `"Monospace"`/
     /// `"Sans"`, the same fontconfig generic aliases
     /// [`resolve_generic_families_gtk`] already resolves
     /// [`crate::GenericFamily::Monospace`]/[`crate::GenericFamily::SansSerif`]
@@ -1916,7 +1826,7 @@ impl Backend for GtkBackend {
 
     /// Overrides [`crate::gtk::NERD_FONT_FALLBACK_FAMILY`] for every
     /// subsequent `with_nerd_font_fallback`/`chrome_font_description`/
-    /// `tab_bar::tab_icon_font` call in this process (issue #929). Process-
+    /// `tab_bar::tab_icon_font` call in this process. Process-
     /// wide rather than a field on `self` — see
     /// `crate::gtk::current_nerd_font_fallback_family`'s doc for why.
     fn set_nerd_font_fallback(&mut self, family: &str) {
@@ -1924,24 +1834,21 @@ impl Backend for GtkBackend {
     }
 
     /// Registers `bytes` as a Fontconfig application font, and on macOS
-    /// also with Core Text directly (issue #1367 — GTK4-on-macOS's
-    /// default Pango font map never consults Fontconfig) — see
+    /// also with Core Text directly — see
     /// `crate::gtk::app_font::register_font_from_memory`'s module doc for
     /// why this needs a process-private temp file (Fontconfig has no
-    /// in-memory registration entry point) and why that is still nothing
-    /// like a system-wide font install (issue #1013). GTK previously
-    /// took the trait's no-op default here while declaring
-    /// `app_font_registration: true` regardless — a lying capability
-    /// this method closes.
+    /// in-memory registration entry point). GTK previously took the trait's
+    /// no-op default here while declaring `app_font_registration: true`
+    /// regardless — this method closes that gap.
     fn register_font_from_memory(&mut self, bytes: &[u8]) -> Option<Vec<String>> {
         super::app_font::register_font_from_memory(bytes)
     }
 
     /// Answers via Fontconfig's own match/substitution algorithm, and on
-    /// macOS also via Core Text directly (issue #1367) — see
+    /// macOS also via Core Text directly — see
     /// `crate::gtk::app_font::has_font_family`'s doc for why neither
-    /// backend's plain match/create call can be used directly (issue
-    /// #1024) and why macOS needs both consulted.
+    /// backend's plain match/create call can be used directly and why
+    /// macOS needs both consulted.
     fn has_font_family(&self, family: &str) -> Option<bool> {
         Some(super::app_font::has_font_family(family))
     }
@@ -1951,13 +1858,9 @@ impl Backend for GtkBackend {
         // signal-callback producers; until then this is always empty.
         let mut out: Vec<UiEvent> = self.events.borrow_mut().drain(..).collect();
         self.apply_accelerators(&mut out);
-        // Issue #831: fold in any `UiEvent::User` payloads a background
-        // thread queued via `waker()` since the last drain. Unconditional,
-        // matching `TuiBackend::poll_events` — `gtk::run::run_with`'s
-        // periodic 33ms timer already calls this every tick regardless of
-        // whether `events` had anything in it, and `waker()`'s
-        // `MainContext::invoke` nudge (see that method's doc) runs this
-        // same drain out-of-band the moment a background thread wakes.
+        // Fold in any `UiEvent::User` payloads queued via `waker()`.
+        // This drain is called every tick regardless of whether `events`
+        // had anything in it.
         self.user_events.drain_into(&mut out);
         out
     }
@@ -1986,28 +1889,22 @@ impl Backend for GtkBackend {
     /// poll alone: `gtk::run::run_with`'s periodic drain only fires every
     /// 33ms, and — more importantly — `glib::MainContext::iteration`
     /// genuinely blocks between GLib main-loop wakeups with no fixed
-    /// ceiling when the loop has nothing else scheduled, unlike TUI's
-    /// `wait_events(timeout)` which always returns within `timeout`
-    /// regardless. `glib::MainContext::invoke` is GLib's own
-    /// purpose-built thread-safe "run this on the loop's owning thread,
-    /// waking it if it's currently blocked" primitive — precisely the
-    /// piece #831 found missing crate-wide.
+    /// ceiling when the loop has nothing else scheduled.
+    /// `glib::MainContext::invoke` is GLib's purpose-built thread-safe
+    /// "run this on the loop's owning thread, waking it if blocked" primitive.
     ///
     /// The invoked closure can't reach `Rc<RefCell<GtkBackend>>`/
     /// `Rc<RefCell<App>>` directly (neither is `Send`, and `waker()` only
-    /// has `&self` in any case — it has no handle to the app at all). It
-    /// instead calls back into the `Rc<dyn Fn()>` `gtk::run::run_with`
-    /// also hands to its periodic timer — see [`Self::set_wake_callback`]'s
-    /// doc for why they share one closure.
+    /// has `&self` in any case). It instead calls back into the `Rc<dyn Fn()>`
+    /// that `gtk::run::run_with` hands to its periodic timer — see
+    /// [`Self::set_wake_callback`]'s doc for why they share one closure.
     ///
     /// The returned closure carries only `Send + Sync` state: the payload
     /// queue's `Arc`, the `MainContext` handle, and a bare [`WakeId`]
     /// integer. The `!Send` wake target itself stays parked in the GTK
     /// main thread's [`WAKE_CALLBACKS`] map and is looked up by id *after*
     /// `invoke` has already put us back on that thread — so no `Rc` ever
-    /// crosses a thread boundary, and there is no `unsafe impl Send`
-    /// wrapper (nor its unanswerable "which thread drops it?" question)
-    /// anywhere in this path. See [`WAKE_CALLBACKS`]'s doc for the full
+    /// crosses a thread boundary. See [`WAKE_CALLBACKS`]'s doc for the full
     /// argument, including why a lookup miss costs latency rather than the
     /// event.
     fn waker(&self) -> Arc<dyn Fn(UserPayload) + Send + Sync> {
@@ -2025,7 +1922,7 @@ impl Backend for GtkBackend {
     }
 
     /// See [`Backend::request_frame_in`]'s doc for the cross-backend
-    /// contract (quadraui#832). Unlike [`Self::waker`] — which runs on a
+    /// contract. Unlike [`Self::waker`] — which runs on a
     /// background thread and so must hop onto the GTK main thread via
     /// `glib::MainContext::invoke` before it can touch anything — this
     /// method already runs on the GTK main thread — called synchronously
@@ -2060,7 +1957,7 @@ impl Backend for GtkBackend {
         self.core.unregister_accelerator(id);
     }
 
-    /// #1187: persists via `self.core`, same one-liner delegation as the
+    /// Persists via `self.core`, same one-liner delegation as the
     /// accelerator methods above.
     fn menu_style(&self) -> crate::backend::MenuStyle {
         self.core.menu_style()
@@ -2071,10 +1968,9 @@ impl Backend for GtkBackend {
     }
 
     fn modal_stack_handle(&self) -> Rc<std::cell::RefCell<ModalStack>> {
-        // Trait-level entry point for quadraui#699 — delegates to the
-        // inherent `GtkBackend::modal_stack_handle` (same clone), which
-        // predates the trait method and stays the primary spelling for
-        // `GtkBackend`-typed callers (`gtk/run.rs`, tests).
+        // Trait-level entry point — delegates to the inherent
+        // `GtkBackend::modal_stack_handle` (same clone), which is the
+        // primary spelling for `GtkBackend`-typed callers.
         self.modal_stack.clone()
     }
 
@@ -2090,9 +1986,8 @@ impl Backend for GtkBackend {
         let theme = self.current_theme;
         let stroke_width = self.current_style.focus_ring_width;
         self.surface_stroke_rect(rect, theme.accent_fg, stroke_width);
-        // #492 C0 contract §5b: a chrome-only paint (no text of its own)
-        // is only "observable" via a registered zone — mirrors
-        // `draw_terminal_divider`'s identical registration.
+        // A chrome-only paint (no text of its own) is only "observable"
+        // via a registered zone.
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
 
@@ -2100,7 +1995,7 @@ impl Backend for GtkBackend {
         &self.services
     }
 
-    /// #1101: `GtkBackend` implements [`PaintSurface`] directly (see this
+    /// `GtkBackend` implements [`PaintSurface`] directly (see this
     /// module's own `impl PaintSurface for GtkBackend` block below), so
     /// this always answers `Some(self)` — never the `None` default
     /// `Backend::paint_surface` falls back to.
@@ -2108,7 +2003,7 @@ impl Backend for GtkBackend {
         Some(self)
     }
 
-    /// quadraui#492: honest per-method, not aspirational.
+    /// Honest per-method, not aspirational.
     ///
     /// - `mouse` / `scroll` / `drag`: `gtk::run` attaches a `GestureClick`,
     ///   an `EventControllerScroll` (`BOTH_AXES`) and an
@@ -2126,14 +2021,14 @@ impl Backend for GtkBackend {
     /// - `pointer_cursor`: `set_cursor` is overridden.
     /// - `ime`: not declared — no backend positions an IME composition
     ///   window yet (see [`crate::backend::BackendCaps::ime`]).
-    /// - `file_dialogs` / `folder_dialogs` (quadraui#935): `GtkPlatformServices`
+    /// - `file_dialogs` / `folder_dialogs`: `GtkPlatformServices`
     ///   uses real `gtk4::FileDialog` pickers, including `select_folder`
     ///   for the directory chooser (`src/gtk/services.rs`), not a stub.
     /// - `native_dialogs`: `GtkPlatformServices::show_message_dialog` uses
     ///   a real `gtk4::AlertDialog` (`src/gtk/services.rs`), pumped
     ///   through the same `pump_until_ready` + `pump_depth` guard the
-    ///   file dialogs use (quadraui#666).
-    /// - `notifications` (quadraui#955): `GtkPlatformServices::send_notification`
+    ///   file dialogs use.
+    /// - `notifications`: `GtkPlatformServices::send_notification`
     ///   sends a real `gio::Notification` through the window's owning
     ///   `gtk4::Application` (`src/gtk/services.rs`), and activation routes
     ///   back through a `GAction` into [`crate::UiEvent::NotificationActivated`].
@@ -2150,21 +2045,18 @@ impl Backend for GtkBackend {
             folder_dialogs: true,
             native_dialogs: true,
             notifications: true,
-            // `app_font_registration` (#929, honoured for real in #1013):
-            // `register_font_from_memory` is overridden above (via
-            // `crate::gtk::app_font`, `FcConfigAppFontAddFile` +
-            // `pango_fc_font_map_config_changed`) and `set_nerd_font_fallback`
-            // is overridden below — both halves of the capability, not
-            // just the fallback half GTK used to lean on alone.
+            // `app_font_registration`: `register_font_from_memory` and
+            // `set_nerd_font_fallback` are both overridden — both halves
+            // of the capability.
             app_font_registration: true,
-            // `generic_font_families` (issue #1023): `set_editor_font`/
+            // `generic_font_families`: `set_editor_font`/
             // `set_ui_font` are both overridden below and now resolve
             // CSS/Pango generic tokens (`monospace`/`sans-serif`/
             // `system-ui`) via `resolve_generic_families_gtk` before
             // storing them — fontconfig already resolves the first two
             // natively, and `system-ui` is rewritten onto `Sans`.
             generic_font_families: true,
-            // `window` (issue #950) is overridden below and returns
+            // `window` is overridden below and returns
             // `Some` once `set_window` has stashed a real
             // `gtk4::ApplicationWindow` — see `impl WindowControl for
             // GtkBackend`'s doc for which methods that surface actually
@@ -2178,17 +2070,14 @@ impl Backend for GtkBackend {
     }
 
     fn begin_window_drag(&mut self) -> bool {
-        // #400 double-click fix: this does NOT call `gdk4::Toplevel::begin_move`
-        // synchronously. Doing so on the very first press — before it's known
-        // whether a second press is coming — starts an interactive move grab
-        // that swallows the second press, so a double-click on a CSD titlebar
+        // Do NOT call `gdk4::Toplevel::begin_move` synchronously.
+        // Doing so on the very first press — before it's known whether
+        // a second press is coming — starts an interactive move grab that
+        // swallows the second press, so a double-click on a CSD titlebar
         // never reaches the app. Instead this arms `Self::armed_window_drag`;
-        // `gtk/run.rs`'s motion controller commits it (via
-        // `try_commit_window_drag`, which does the actual `begin_move` —
-        // see there for the downcast rationale) once the pointer has moved
-        // past the drag threshold, mirroring how native `gtk4::WindowHandle`
-        // defers its own move-start to `GestureDrag`'s threshold-gated
-        // `drag-begin` signal rather than the raw press.
+        // `gtk/run.rs`'s motion controller commits it once the pointer has
+        // moved past the drag threshold, mirroring how native `gtk4::WindowHandle`
+        // defers its own move-start to a threshold-gated signal.
         if self.window.is_none() {
             return false;
         }
@@ -2213,13 +2102,10 @@ impl Backend for GtkBackend {
     }
 
     fn begin_window_resize(&mut self, edge: ResizeEdge) -> bool {
-        // #406, mirrors `begin_window_drag`'s no-window / no-pending-press
-        // guards, but calls `gdk4::Toplevel::begin_resize` directly instead
-        // of arming a deferred request: edges have no competing
-        // double-click gesture to protect against (double-click-to-
-        // maximize only applies to the empty titlebar band), so there's no
-        // need to defer past a movement threshold the way
-        // `try_commit_window_drag` does for the move gesture.
+        // Mirrors `begin_window_drag`'s no-window / no-pending-press guards,
+        // but calls `gdk4::Toplevel::begin_resize` directly instead of
+        // arming a deferred request: edges have no competing double-click
+        // gesture to protect against.
         let Some(window) = self.window.as_ref() else {
             return false;
         };
@@ -2246,7 +2132,7 @@ impl Backend for GtkBackend {
     }
 
     fn set_cursor(&mut self, shape: PointerShape) -> bool {
-        // #406: GTK CSS cursor names inherit from the window down to the
+        // GTK CSS cursor names inherit from the window down to the
         // (cursor-less-by-default) content `DrawingArea`, so setting it on
         // the stored top-level window is enough to change the pointer
         // glyph anywhere over the content area.
@@ -2257,7 +2143,7 @@ impl Backend for GtkBackend {
         true
     }
 
-    // ─── Window control (issue #950) ────────────────────────────────────
+    // ─── Window control ─────────────────────────────────────────────────
     fn window(&mut self) -> Option<&mut dyn crate::backend::WindowControl> {
         self.window.as_ref()?;
         Some(self)
@@ -2279,9 +2165,9 @@ impl Backend for GtkBackend {
         self.current_char_width as f32
     }
 
-    /// Forwards to [`Self::set_current_line_height`] (issue #1086) — the
+    /// Forwards to [`Self::set_current_line_height`] — the
     /// `Backend`-trait-object-reachable twin of that inherent method,
-    /// which `vimcode`'s click-drift guard (#540/#819) needs to re-apply
+    /// which `vimcode`'s click-drift guard needs to re-apply
     /// metrics through `&mut dyn Backend` without a GTK-typed supertrait.
     fn set_current_line_height(&mut self, line_height: f32) {
         GtkBackend::set_current_line_height(self, line_height as f64);
@@ -2294,21 +2180,21 @@ impl Backend for GtkBackend {
     }
 
     /// `current_chrome_char_width`, not `current_char_width` —
-    /// [`Self::draw_list`] paints row text with `ui_font` (#416/#624),
+    /// [`Self::draw_list`] paints row text with `ui_font`,
     /// and `current_chrome_char_width` is that font's real Pango
     /// advance, refreshed every frame by [`Self::refresh_chrome_char_width`]
     /// the same way `current_char_width` is refreshed from the editor
-    /// font. See the field's doc for why the two can disagree (#912).
+    /// font. See the field's doc for why the two can disagree.
     fn list_char_width(&self) -> f32 {
         self.current_chrome_char_width as f32
     }
 
     /// Real Pango measurement against a fresh `pango::Layout` built from
-    /// `role`'s `FontDescription` (quadraui#1132) — `crate::gtk::
+    /// `role`'s `FontDescription` — `crate::gtk::
     /// chrome_font_description(&self.ui_font)` for [`crate::FontRole::Chrome`],
     /// [`Self::editor_font_pango_string`] for [`crate::FontRole::Editor`],
     /// the same two descriptions [`Self::surface_draw_text_run_with_role`]
-    /// already resolves per role (#1073). Built against the stable
+    /// already resolves per role. Built against the stable
     /// widget-realized `pango_ctx`, not the per-frame `cr`/`layout` pair
     /// from [`Self::current_frame_refs`] — same "works outside a frame
     /// too" posture as [`Self::data_table_layout`]'s own `pango_ctx` use,
@@ -2345,10 +2231,7 @@ impl Backend for GtkBackend {
 
     /// GTK's `ScrolledWindow` overlay scrollbar draws on top of the
     /// content edge. CSS requests 4px but GTK may allocate slightly
-    /// more; 8px is a safe reserve so text never renders behind it
-    /// (matches vimcode's pre-#776 hardcoded guess in
-    /// `render.rs::render_viewport_cols`, now sourced from the backend
-    /// instead of a caller-side constant).
+    /// more; 8px is a safe reserve so text never renders behind it.
     fn scrollbar_reserve(&self) -> f32 {
         8.0
     }
@@ -2365,7 +2248,7 @@ impl Backend for GtkBackend {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_tree called outside enter_frame_scope");
-        // #624: row labels, badges and chevrons are chrome, not editor
+        // Row labels, badges and chevrons are chrome, not editor
         // content — save the editor font on the shared layout, paint the
         // tree in `ui_font`, then restore so later draws in this frame
         // aren't left painting chrome-sized text. `gtk::draw_tree` itself
@@ -2393,7 +2276,7 @@ impl Backend for GtkBackend {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_list called outside enter_frame_scope");
-        // #416: row labels and icon glyphs (`Icon::glyph`) are chrome, not
+        // Row labels and icon glyphs (`Icon::glyph`) are chrome, not
         // editor content — mirrors `Self::draw_tree`'s save/swap/restore
         // above. Before this, `draw_list` painted with whatever font the
         // shared layout happened to carry into the frame (typically the
@@ -2453,10 +2336,7 @@ impl Backend for GtkBackend {
         layout.set_font_description(saved_font.as_ref());
 
         // Record header + visible body + footer cell text into the
-        // painted-text map `GtkDriver::find`/`find_bounds`/`painted_texts`
-        // scan (mirrors `Self::draw_status_bar` above) — DataTable
-        // previously recorded nothing, so a test had no way to assert
-        // cell content short of raw pixel reads (#516). Bounds are
+        // painted-text map that GtkDriver::find scans. Bounds are
         // derived from `table_layout` + the declarative `table`, not by
         // re-deriving Cairo/Pango geometry, so they can't drift from
         // what was actually drawn.
@@ -2541,16 +2421,11 @@ impl Backend for GtkBackend {
         table_layout
     }
 
-    /// Issue #1079: this used to measure each column header by **byte
-    /// length** (`col.title.len() as f32 * char_width`) — a multi-byte
-    /// header (e.g. "日付") measured 2–3x too wide, since `str::len()`
-    /// counts UTF-8 bytes, not characters. Now routes through
-    /// [`crate::primitives::layout_metrics::pixel_data_table_layout`]
-    /// with a real `pango::Layout` measurer built from the widget-realized
-    /// `pango_ctx` (falling back to `PangoTextMeasure`'s `chars().count()`
-    /// estimate only when no context exists yet) — same "in-frame gets
-    /// real metrics, otherwise a character estimate" posture as
-    /// `Self::status_bar_layout`/`Self::form_layout`/`Self::toast_stack_layout`.
+    /// Column headers are now measured via `pango::Layout` instead of
+    /// byte length (which counted UTF-8 bytes rather than characters).
+    /// Routes through [`crate::primitives::layout_metrics::pixel_data_table_layout`]
+    /// with a real Pango measurer built from the widget-realized `pango_ctx`
+    /// (falling back to a character estimate only when no context exists yet).
     fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
         let char_w = self.current_char_width as f32;
         let pango_layout = self.chrome_measure_layout();
@@ -2609,7 +2484,7 @@ impl Backend for GtkBackend {
         )
     }
 
-    /// #808: shared field-kind painting lives in
+    /// Shared field-kind painting lives in
     /// [`crate::primitives::form::paint`] now — see that fn's doc for why
     /// `FieldKind::Toolbar` is the one variant painted here instead,
     /// after `paint` releases its exclusive borrow of `self`.
@@ -2666,7 +2541,7 @@ impl Backend for GtkBackend {
     }
 
     fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
-        // #455: see `modal_stack.rs`'s "Paint-consistency detection" docs —
+        // See `modal_stack.rs`'s "Paint-consistency detection" docs —
         // records that this palette's surface was actually painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&palette.id);
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
@@ -2769,16 +2644,13 @@ impl Backend for GtkBackend {
     // ignored — kept for forward compatibility when the GTK
     // rasterisers are updated to consume it. Behaviour is unchanged.
 
-    // Phase B.5b Stage 9: trait extended with `&Layout` parameter
-    // per `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §6.2. Three of the five
-    // primitives (status_bar, tab_bar, text_display) have
-    // quadraui-side rasterisers that already accept a `crate::Theme`,
-    // so the trait impls below route through them. The remaining two
-    // (activity_bar, terminal) only have the in-tree `quadraui_gtk::*`
-    // shims that take the legacy `render::Theme`; until those are
-    // lifted into quadraui itself (#223 lift sequence), the trait
-    // impls stay as stubs and the GTK call sites continue to use the
-    // legacy shims directly.
+    // Trait extended with `&Layout` parameter. Three of the five
+    // primitives (status_bar, tab_bar, text_display) have quadraui-side
+    // rasterisers that accept `crate::Theme`; the trait impls route through
+    // them. The remaining two (activity_bar, terminal) have only in-tree
+    // `quadraui_gtk::*` shims that take the legacy `render::Theme`; until
+    // those are lifted into quadraui itself, the trait impls stay as stubs.
+    // The GTK call sites continue to use the legacy shims directly.
 
     fn draw_status_bar_interactive(
         &mut self,
@@ -2789,10 +2661,8 @@ impl Backend for GtkBackend {
         self.status_bar_paint_scaled(rect, bar, interaction, 1.0)
     }
 
-    /// Issue #1045 item 2: same paint as [`Self::draw_status_bar_interactive`],
-    /// scaling only this call's chrome font size — see
-    /// [`crate::Backend::draw_status_bar_interactive_scaled`]'s doc for the
-    /// full rationale. Both this and the unscaled method above funnel
+    /// Same paint as [`Self::draw_status_bar_interactive`],
+    /// scaling only this call's chrome font size. Both methods funnel
     /// through [`Self::status_bar_paint_scaled`] so a fix to one applies to
     /// both; `1.0` there is exactly this call with no scaling applied.
     fn draw_status_bar_interactive_scaled(
@@ -2806,11 +2676,8 @@ impl Backend for GtkBackend {
     }
 
     // `status_bar_paint_scaled` — the shared body both methods above
-    // funnel through — is defined in the earlier inherent `impl
-    // GtkBackend` block (issue #1045 item 2), not here: a trait impl
-    // block may only contain that trait's own items, so a private helper
-    // has to live in a separate `impl GtkBackend` block rather than
-    // splitting this one in half.
+    // funnel through — is defined in the inherent `impl GtkBackend` block.
+    // A trait impl block may only contain that trait's own items.
 
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar(
@@ -2824,8 +2691,7 @@ impl Backend for GtkBackend {
         self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
     }
 
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::draw_tab_bar`] above.
+    /// Counterpart to [`Self::draw_tab_bar`] that returns [`TabBarLayout`] instead.
     fn draw_tab_bar_layout(
         &mut self,
         rect: QRect,
@@ -2847,7 +2713,7 @@ impl Backend for GtkBackend {
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_tab_bar called outside enter_frame_scope");
-        // #624: tab labels/segments are chrome, not editor content —
+        // Tab labels/segments are chrome, not editor content —
         // `gtk::draw_tab_bar_icons`'s own doc contract is "caller sets the
         // desired UI font on `layout` before calling", so set `ui_font`
         // here and restore the editor font afterward so later draws in
@@ -2869,7 +2735,7 @@ impl Backend for GtkBackend {
         );
         pango_layout.set_font_description(saved_font.as_ref());
         // Cache the resolved layout for this bar's WidgetId —
-        // `GtkDriver::tab_center`/`tab_close_center` (quadraui#594)
+        // `GtkDriver::tab_center`/`tab_close_center`
         // resolve against this, since a driver sitting outside the app
         // has no other way to reach a specific tab's geometry (every tab
         // paints the same close glyph, so `find` can't disambiguate tab
@@ -2879,11 +2745,7 @@ impl Backend for GtkBackend {
         hits
     }
 
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::draw_tab_bar_icons`] above. Same paint call — the icon
-    /// reservation, hover glyph, and cache-write are identical — but
-    /// hands back the `TabBarLayout` half of the pair instead of the
-    /// deprecated `TabBarHits` half.
+    /// Counterpart to [`Self::draw_tab_bar_icons`] that returns [`TabBarLayout`] instead.
     fn draw_tab_bar_icons_layout(
         &mut self,
         rect: QRect,
@@ -2951,10 +2813,7 @@ impl Backend for GtkBackend {
         hits
     }
 
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::draw_tab_bar_with_chrome`] above — overridden (rather than
-    /// the trait default) because GTK, like TUI, honours
-    /// [`crate::TabFrame::Brackets`].
+    /// Counterpart to [`Self::draw_tab_bar_with_chrome`] that returns [`TabBarLayout`] instead.
     fn draw_tab_bar_with_chrome_layout(
         &mut self,
         rect: QRect,
@@ -3056,7 +2915,7 @@ impl Backend for GtkBackend {
         let lh = self.current_line_height as f32;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-        // #624: measure with `ui_font`, matching `draw_status_bar`'s paint
+        // Measure with `ui_font`, matching `draw_status_bar`'s paint
         // font — a no-paint caller (hit-testing without repainting) must
         // resolve the same segment widths the paint path produced.
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
@@ -3064,7 +2923,7 @@ impl Backend for GtkBackend {
         if let Some(pl) = &pango_layout {
             pl.set_font_description(Some(&ui_font_desc));
         }
-        // #1155: `layout_padded` (not plain `layout`) so this no-paint
+        // `layout_padded` (not plain `layout`) so this no-paint
         // twin agrees with the shared `native_surface_paint::paint`'s
         // outer edge inset + per-segment padding — see that fn's doc.
         let result = bar.layout_padded(
@@ -3123,7 +2982,7 @@ impl Backend for GtkBackend {
             }
         }
 
-        // #624: tab labels/segments are chrome, painted with `ui_font` by
+        // Tab labels/segments are chrome, painted with `ui_font` by
         // `gtk::draw_tab_bar_icons` (via `GtkBackend::draw_tab_bar_icons`,
         // which sets `ui_font` on the shared layout before calling in).
         // This no-paint twin must measure with the same font the paint
@@ -3136,7 +2995,7 @@ impl Backend for GtkBackend {
             pl.set_font_description(Some(&ui_font_desc));
         }
 
-        // Icon reservation (#620), measured with the same Nerd-Font swap
+        // Icon reservation, measured with the same Nerd-Font swap
         // `gtk::draw_tab_bar_icons` paints with — the no-paint twin has to
         // reserve exactly what the paint does, or every click lands left
         // of the glyph the user sees. Measuring leaves the shared pango
@@ -3176,9 +3035,7 @@ impl Backend for GtkBackend {
             .map(|t| self.pango_str_width(&pango_layout, &t.label, char_w))
             .collect();
 
-        // Issue #1080: single shared composition (close-button geometry,
-        // right-segment widths, corrected scroll offset, available_cols)
-        // instead of this function's own hand-rolled copy.
+        // Single shared composition with `resolve_tab_bar_layout_icons` for close-button
         let measure = PangoTextMeasure {
             layout: &pango_layout,
             char_w,
@@ -3198,8 +3055,7 @@ impl Backend for GtkBackend {
             );
 
         let mut hits = tab_bar_hits_from_layout(&layout, bar);
-        // Match `draw_tab_bar` (gtk/tab_bar.rs), which shifts by the same
-        // origin: `TabBarHits` are target-surface coordinates. Issue #552.
+        // `TabBarHits` are target-surface coordinates; shift by rect.x to match.
         crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
         hits.correct_scroll_offset = corrected_scroll_offset;
         hits.available_cols = available_cols;
@@ -3211,15 +3067,7 @@ impl Backend for GtkBackend {
         hits
     }
 
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::tab_bar_layout_icons`] above. Same measurer, same
-    /// "no Pango handle → fall back to the last painted geometry"
-    /// posture (via [`Self::cached_tab_bar_layout_matching`] instead of
-    /// [`Self::cached_tab_bar_hits`]) — but returns the resolved
-    /// [`TabBarLayout`] itself rather than narrowing it to `TabBarHits`,
-    /// so there is no `rect.x` shift or `correct_scroll_offset`
-    /// recomputation to apply (see
-    /// [`crate::Backend::resolve_tab_bar_layout`]'s doc for why).
+    /// Counterpart to [`Self::tab_bar_layout_icons`] that returns [`TabBarLayout`] instead.
     fn resolve_tab_bar_layout_icons(
         &self,
         rect: QRect,
@@ -3273,7 +3121,7 @@ impl Backend for GtkBackend {
             .map(|t| self.pango_str_width(&pango_layout, &t.label, char_w))
             .collect();
 
-        // Issue #1080: single shared composition — see `tab_bar_layout_icons`.
+        // Single shared composition with `tab_bar_layout_icons` for close-button
         let measure = PangoTextMeasure {
             layout: &pango_layout,
             char_w,
@@ -3335,13 +3183,10 @@ impl Backend for GtkBackend {
             .iter()
             .map(|t| self.pango_str_width(&pango_layout, &t.label, char_w))
             .collect();
-        // No icon sidecar on this path (icons + chrome together go through
-        // `draw_tab_bar_icons_with_chrome`'s own `TabBarLayout`-caching, not
-        // this no-paint twin) — a zero-width reservation per tab reproduces
-        // the pre-#1080 behaviour exactly.
+        // No icon sidecar on this path: zero-width icon reservation per tab.
         let icon_extras = vec![0.0_f32; bar.tabs.len()];
 
-        // Issue #1080: single shared composition — see `tab_bar_layout_icons`.
+        // Single shared composition with `resolve_tab_bar_layout_with_chrome`.
         let measure = PangoTextMeasure {
             layout: &pango_layout,
             char_w,
@@ -3372,10 +3217,7 @@ impl Backend for GtkBackend {
         hits
     }
 
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::tab_bar_layout_with_chrome`] above — overridden (rather
-    /// than the trait default) for the same reason
-    /// [`Self::draw_tab_bar_with_chrome_layout`] is.
+    /// Counterpart to [`Self::tab_bar_layout_with_chrome`] that returns [`TabBarLayout`] instead.
     fn resolve_tab_bar_layout_with_chrome(
         &self,
         rect: QRect,
@@ -3449,7 +3291,7 @@ impl Backend for GtkBackend {
         };
         let cell_area_w = (rect.width as f64 - sb_width).max(0.0);
 
-        // #417: dirty-row fast path. Reuse the previous frame's cache
+        // Dirty-row fast path. Reuse the previous frame's cache
         // entry for this terminal id only when every geometry input that
         // affects row alignment is unchanged, the theme hasn't changed
         // (a same-content row can still need repainting if a
@@ -3516,7 +3358,7 @@ impl Backend for GtkBackend {
             }
             None => {
                 // Clear the entire terminal pane to the terminal background before
-                // painting cells (quadraui#437). `primitives::terminal::paint` only
+                // painting cells. `primitives::terminal::paint` only
                 // fills each *live* cell's own background, so without this any pixel
                 // the current grid doesn't cover — a sub-cell sliver, the strip below
                 // the last row, or (critically) a region GTK didn't re-clear on an
@@ -3527,7 +3369,7 @@ impl Backend for GtkBackend {
                 // bespoke renderer does the same full-pane fill first; the trait doc
                 // on `primitives::terminal::paint` delegates this to the caller, and
                 // the GTK backend is that caller. Filling with `theme.background`
-                // (quadraui#1184) rather than a hardcoded `rgb(30, 30, 30)` keeps
+                // rather than a hardcoded `rgb(30, 30, 30)` keeps
                 // this blank-area fill consistent with whatever palette the app
                 // built — a light theme no longer shows a dark terminal pane
                 // through every uncovered pixel.
@@ -3569,21 +3411,12 @@ impl Backend for GtkBackend {
             crate::primitives::scrollbar::native_surface_paint::paint(&sb, self, &theme);
         }
 
-        // #492/#810: before #810, `draw_terminal_cells` painted glyphs
-        // straight through `pangocairo::functions::show_layout`,
-        // bypassing the `painted_text` tracking every other primitive's
-        // rasteriser routes through — so a terminal's cell content never
-        // reached `FrameInventory::text_runs()`. `primitives::terminal::
-        // paint` now reaches glyphs via `surface_draw_text_run_styled`,
-        // whose `GtkBackend` override goes through
-        // `super::painted_text::show_layout` like every other verb, so
-        // that gap is closed as an incidental side effect of unifying
-        // this primitive. This zone registration is kept anyway — it's
-        // a real, if now-redundant, attribution the C0 paint smoke
-        // already relies on.
+        // Terminal cell glyphs now reach painted-text tracking via
+        // `surface_draw_text_run_styled`, closing the gap that existed before
+        // `primitives::terminal::paint` unified all backend implementations.
         self.register_zone(term.id.clone(), rect);
 
-        // #417: remember this frame's snapshot and geometry so the next
+        // Remember this frame's snapshot and geometry so the next
         // `draw_terminal` call for this id can attempt the fast path.
         self.term_paint_cache.insert(
             term.id.clone(),
@@ -3600,12 +3433,12 @@ impl Backend for GtkBackend {
         );
     }
 
-    /// #810: shared divider painting lives in
+    /// Shared divider painting lives in
     /// [`crate::primitives::terminal::paint_divider`] now.
     fn draw_terminal_divider(&mut self, rect: QRect) {
         let theme = self.current_theme;
         crate::primitives::terminal::paint_divider(self, rect.x, rect.y, rect.height, &theme);
-        // #492: the primitive takes no `WidgetId` of its own (there is at
+        // The primitive takes no `WidgetId` of its own (there is at
         // most one divider on screen at a time), so register a fixed
         // chrome id — on a pixel backend this paints strokes only, so
         // without a zone the frame is indistinguishable from one where
@@ -3614,18 +3447,18 @@ impl Backend for GtkBackend {
         self.register_zone(WidgetId::new("chrome:terminal-divider"), rect);
     }
 
-    /// #996: a pixel backend can honor `rect` exactly, unlike the old
+    /// A pixel backend can honor `rect` exactly, unlike the old
     /// per-row `StatusBar` hack this replaces — see
     /// `Backend::draw_solid_fill`'s doc for why that hack produced a
     /// dashed divider here specifically.
     fn draw_solid_fill(&mut self, rect: QRect, color: Color) {
         self.surface_fill_rect(rect, color);
-        // #492: chrome-only paint (no text of its own) — see
+        // Chrome-only paint (no text of its own) — see
         // `TuiBackend::draw_solid_fill`'s identical registration for why.
         self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
     }
 
-    /// #810: shared text-display painting lives in
+    /// Shared text-display painting lives in
     /// [`crate::primitives::text_display::paint`] now — see that fn's
     /// doc for the divergence (Windows's bold-span support) resolved
     /// while unifying `gtk::text_display::draw_text_display`,
@@ -3796,9 +3629,9 @@ impl Backend for GtkBackend {
         );
         pango_layout.set_attributes(None);
         pango_layout.set_font_description(saved_font.as_ref());
-        // #542: register the tooltip's own surface — see the matching
+        // Register the tooltip's own surface — see the matching
         // comment on `TuiBackend::draw_tooltip`. GTK already painted a
-        // full 4-sided box here before TUI did (#541); this just makes
+        // full 4-sided box here before TUI did; this just makes
         // that box observable to a structural-parity assertion.
         self.register_zone(tooltip.id.clone(), layout_arg.bounds);
     }
@@ -3808,25 +3641,16 @@ impl Backend for GtkBackend {
         menu: &crate::ContextMenu,
         layout_arg: &crate::ContextMenuLayout,
     ) -> Vec<(QRect, crate::WidgetId)> {
-        // #455: see draw_palette for why this happens before the frame borrow.
+        // See draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&menu.id);
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_context_menu called outside enter_frame_scope");
-        // #637: dropdown items are chrome, not editor content — same
-        // save/swap/restore as `Self::draw_menu_bar` (the bar above this
-        // dropdown), so the two agree within a single frame instead of
-        // the bar painting in `ui_font` while the dropdown under it paints
-        // in whatever font the shared layout happened to carry in.
-        //
-        // Row pitch (`line_height` below) stays the editor line height,
-        // matching every other #624 chrome primitive (`draw_status_bar`,
-        // `draw_tab_bar`, `draw_tree`) — that half of the fix is a
-        // pre-existing, deliberately deferred gap across all of them, not
-        // introduced here. It also isn't reachable from this call site:
-        // the row heights baked into `layout_arg` are computed upstream in
-        // `compose::menu_system`, outside this issue's file list.
+        // Dropdown items are chrome, not editor content — save/swap/restore like
+        // `Self::draw_menu_bar`, so the bar and dropdown agree within a single frame.
+        // Calls the shared paint directly so this live backend path honours
+        // `Self::set_style` overrides.
         let saved_font = pango_layout.font_description();
         pango_layout.set_font_description(Some(&ui_font_desc));
         // Calls the shared paint directly (rather than through
@@ -3857,7 +3681,7 @@ impl Backend for GtkBackend {
         dialog: &crate::Dialog,
         dialog_layout: &crate::DialogLayout,
     ) -> Vec<QRect> {
-        // #455: see draw_palette for why this happens before the frame borrow.
+        // See draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let line_height = self.current_line_height;
         let theme = self.current_theme;
@@ -3913,7 +3737,7 @@ impl Backend for GtkBackend {
         float: &crate::primitives::float::Float,
         layout: &crate::primitives::float::FloatLayout,
     ) {
-        // #455: see draw_palette for why this happens before the frame borrow.
+        // See draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&float.id);
         let theme = self.current_theme;
         crate::primitives::float::native_surface_paint::paint(float, layout, self, &theme);
@@ -3937,7 +3761,7 @@ impl Backend for GtkBackend {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_multi_section_view called outside enter_frame_scope");
-        // #416: section headers and `Tree`/`List` body rows (icon glyphs
+        // Section headers and `Tree`/`List` body rows (icon glyphs
         // included) are sidebar chrome, not editor content — same
         // save/swap/restore `Self::draw_tree`/`Self::draw_list` use.
         // `SectionBody::Terminal`/`Custom` are host-painted no-ops here
@@ -3977,7 +3801,7 @@ impl Backend for GtkBackend {
     }
 
     fn tree_vscrollbar(&self, rect: QRect, tree: &TreeView) -> Option<crate::Scrollbar> {
-        // GTK tree vertical-scrollbar rasteriser not yet implemented (#1043).
+        // GTK tree vertical-scrollbar rasteriser not yet implemented.
         // Delegate to the primitive's geometry method, but using the same
         // per-row pitch `Self::tree_layout` (via `layout_metrics::tree_layout`)
         // actually paints — not the raw `line_height`. Unlike `ListView`
@@ -3991,16 +3815,8 @@ impl Backend for GtkBackend {
     }
 
     /// Delegates to [`crate::primitives::layout_metrics::form_field_measure`]
-    /// (#499) — the shared per-field-kind measurer `macos::form::mac_form_layout`
-    /// and `win::form::win_form_layout` already use. Migrated off the
-    /// inline duplicate once #683 (the concurrent work that had fenced
-    /// this file) landed; see issue #710 for why the migration matters:
-    /// the old inline measurer sized `FieldKind::TextArea` as
-    /// `row_h * visible_rows` while `gtk::form::draw_form` only ever
-    /// painted one row, so clicks on the rows below a `TextArea` hit
-    /// the `TextArea`'s hit region instead of the field actually
-    /// painted there. The shared fn deliberately does not special-case
-    /// `TextArea` (see its doc comment), so it now measures one row —
+    /// — the shared measurer that `macos::form::mac_form_layout` and
+    /// `win::form::win_form_layout` already use. Measures one row per field,
     /// matching what GTK paints.
     fn form_layout(&self, rect: QRect, form: &Form) -> crate::primitives::form::FormLayout {
         let row_h = crate::primitives::layout_metrics::form_row_height(self.current_line_height);
@@ -4077,15 +3893,8 @@ impl Backend for GtkBackend {
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout
             .or_else(|| self.last_editor_pango_layout.clone())
-            // #971: previously fell back to a bare `pango::Layout::new`
-            // off `pango_ctx` — that context carries whatever font it was
-            // initialized with (historically the UI chrome font, not the
-            // editor font), so a `GtkBackend` that had never painted an
-            // editor (no frame, no `last_editor_pango_layout` yet) would
-            // silently resolve clicks against the wrong glyph widths.
-            // `editor_pango_layout()` builds from the same `pango_ctx` but
-            // applies the live editor font first, so this last resort
-            // still tracks `Backend::set_editor_font`.
+            // Applies the live editor font, so clicks resolve against the correct
+            // glyph widths even when no editor frame has been painted yet.
             .or_else(|| self.editor_pango_layout());
         let Some(pango_layout) = pango_layout else {
             return layout.col_at_x(editor, view_row, x);
@@ -4221,7 +4030,7 @@ impl Backend for GtkBackend {
     ) {
         let theme = self.current_theme;
         crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, self, &theme);
-        // #492: a scrollbar strokes/fills only — no text — so on this
+        // A scrollbar strokes/fills only — no text — so on this
         // pixel backend it would otherwise be indistinguishable from the
         // no-op default. Register the primitive's own id at its own
         // track bounds (not `_rect`, which the primitive ignores).
@@ -4231,7 +4040,7 @@ impl Backend for GtkBackend {
     fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
         let theme = self.current_theme;
         crate::primitives::drop_zone::native_surface_paint::paint(overlay, self, &theme);
-        // #492: `DropOverlay` carries no `WidgetId` (there is at most one
+        // `DropOverlay` carries no `WidgetId` (there is at most one
         // overlay active at a time), so register a fixed chrome id at
         // whichever sub-rect it actually drew — otherwise this frame is
         // indistinguishable from one where the no-op default silently
@@ -4250,13 +4059,9 @@ impl Backend for GtkBackend {
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_menu_bar called outside enter_frame_scope");
-        // #624: menu bar item labels are chrome — save the editor font on
-        // the shared layout, paint in `ui_font`, then restore. Note this
-        // means the `layout.clone()` stashed below (a GObject alias, not a
-        // snapshot) no longer carries `ui_font` by the time it's read back
-        // out — `menu_bar_layout` below re-applies `ui_font` itself for
-        // that reason rather than trusting the cached layout's current
-        // font state.
+        // Menu bar item labels are chrome — save the editor font on the shared
+        // layout, paint in `ui_font`, then restore. The `layout.clone()` stashed
+        // below no longer carries `ui_font` by the time it's read back out.
         let saved_font = layout.font_description();
         layout.set_font_description(Some(&ui_font_desc));
         let result = crate::gtk::draw_menu_bar(
@@ -4295,7 +4100,7 @@ impl Backend for GtkBackend {
         let pango_layout = frame_layout
             .or_else(|| self.last_menu_bar_pango_layout.clone())
             .or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-        // #624: menu items are chrome, measured in `ui_font` to match
+        // Menu items are chrome, measured in `ui_font` to match
         // `draw_menu_bar`'s paint font. Forced explicitly rather than
         // trusted from whichever layout object was resolved above —
         // `last_menu_bar_pango_layout` is a GObject alias of the shared
@@ -4329,7 +4134,7 @@ impl Backend for GtkBackend {
             rect.height as f64,
         );
         crate::primitives::split::native_surface_paint::paint(&layout, self, &theme);
-        // #492: `Split` paints a divider only — no text of its own — so a
+        // `Split` paints a divider only — no text of its own — so a
         // registered zone is the only way this frame is attributable to
         // the primitive rather than indistinguishable from the trait's
         // no-op default (C0 paint smoke, contract §5b).
@@ -4361,7 +4166,7 @@ impl Backend for GtkBackend {
             rect.height as f64,
         );
         crate::primitives::split_tree::native_surface_paint::paint(&layout, self, &theme);
-        // #492: dividers only, and `SplitTree` (unlike `Split`) carries no
+        // Dividers only, and `SplitTree` (unlike `Split`) carries no
         // id of its own — register a fixed chrome id, same pattern as
         // `draw_terminal_divider` / `draw_drop_overlay`.
         self.register_zone(WidgetId::new("chrome:split-tree"), rect);
@@ -4431,11 +4236,8 @@ impl Backend for GtkBackend {
         rect: QRect,
         stack: &crate::primitives::toast::ToastOverlay,
     ) -> crate::primitives::toast::ToastStackLayout {
-        // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
-        // each require an active frame internally — see
-        // `Self::surface_fill_rect` — so this method needs no separate
-        // cr/pango fetch of its own, matching `Self::draw_status_bar`'s
-        // #860 shape.
+        // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc) each require
+        // an active frame internally, so this method needs no separate cr/pango fetch.
         let theme = self.current_theme;
         let style = self.style();
         let line_height = self.current_line_height as f32;
@@ -4452,19 +4254,9 @@ impl Backend for GtkBackend {
         )
     }
 
-    /// #1085: paint via the shared
-    /// [`crate::primitives::pipeline_view::native_surface_paint::paint`]
-    /// — see that fn's doc for the seven named divergences found while
-    /// unifying `gtk::pipeline_view::draw_pipeline_view`,
-    /// `macos::pipeline_view::draw_pipeline_view` and
-    /// `win::pipeline_view::draw_pipeline_view` into one implementation.
-    /// Every text run `paint` draws goes through
-    /// [`Self::surface_draw_text_run`], which is already recorded into
-    /// the painted-text map [`super::testing::GtkDriver::find`] scans
-    /// (quadraui#489's per-glyph-run sink — see
-    /// [`Self::enter_frame_scope`]'s doc) — this method no longer needs
-    /// its own manual `record_painted_text` calls the way the pre-#1085
-    /// bespoke rasteriser did.
+    /// Paint via the shared [`crate::primitives::pipeline_view::native_surface_paint::paint`].
+    /// Every text run goes through [`Self::surface_draw_text_run`], which is already
+    /// recorded into the painted-text map for testing.
     fn draw_pipeline_view(
         &mut self,
         rect: QRect,
@@ -4488,13 +4280,7 @@ impl Backend for GtkBackend {
         )
     }
 
-    /// #1085: paint via the shared
-    /// [`crate::primitives::progress::native_surface_paint::paint`] —
-    /// see that fn's doc for the one named divergence (Windows
-    /// previously ignored the host's theme entirely) found while
-    /// unifying `gtk::progress::draw_progress`,
-    /// `macos::progress::draw_progress` and `win::progress::draw_progress`
-    /// into one implementation.
+    /// Paint via the shared [`crate::primitives::progress::native_surface_paint::paint`].
     fn draw_progress(
         &mut self,
         rect: QRect,
@@ -4567,17 +4353,8 @@ impl Backend for GtkBackend {
         rect: QRect,
         stack: &crate::primitives::toast::ToastOverlay,
     ) -> crate::primitives::toast::ToastStackLayout {
-        // Layout-only path (from click handlers, outside `enter_frame_scope`)
-        // still measures via a real `pango::Layout` built from the
-        // widget-realized `pango_ctx` when one exists — falling back to
-        // `PangoTextMeasure`'s `chars().count()` estimate only when it
-        // doesn't (mirrors `Self::status_bar_layout`/`Self::form_layout`).
-        // Issue #1079: this used to be its own inline duplicate of
-        // `gtk_toast_stack_layout`'s formula, measuring the action label
-        // by **byte length** (`a.label.len()`) instead of a real/estimated
-        // character measurement — the same class of bug
-        // `data_table_layout` had. Sharing `pixel_toast_stack_layout`
-        // fixes both at once.
+        // Layout-only path measures via a real `pango::Layout` when available,
+        // falling back to `PangoTextMeasure`'s character count estimate otherwise.
         let char_w = self.current_char_width as f32;
         let pango_layout = self.chrome_measure_layout();
         let measure = PangoTextMeasure {
@@ -4606,15 +4383,8 @@ impl Backend for GtkBackend {
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_command_center called outside enter_frame_scope");
-        // #637: the back/forward arrows and search label are chrome, not
-        // editor content — same save/swap/restore as the other #624
-        // chrome primitives, so the command centre agrees with the menu
-        // bar / status bar above and below it in the same frame.
-        //
-        // `line_height` (used only for vertical text centring here) stays
-        // the editor line height, matching #624's deliberately deferred
-        // pitch gap for every other chrome primitive — see the comment on
-        // `Self::draw_context_menu`.
+        // The back/forward arrows and search label are chrome, not editor content.
+        // Save/swap/restore the font like other chrome primitives for consistency.
         let saved_font = pango_layout.font_description();
         pango_layout.set_font_description(Some(&ui_font_desc));
         let layout = crate::gtk::draw_command_center(
@@ -4637,7 +4407,7 @@ impl Backend for GtkBackend {
         rect: QRect,
         cc: &crate::primitives::command_center::CommandCenter,
     ) -> crate::primitives::command_center::CommandCenterLayout {
-        // #732: search-box width comes from the shared char-width formula
+        // Search-box width comes from the shared char-width formula
         // (`CommandCenterMeasure::from_char_width`) rather than an inline
         // copy — this no-paint query has no live Pango layout on hand
         // (unlike `draw_command_center`'s `gtk_command_center_layout`,
@@ -4656,11 +4426,7 @@ impl Backend for GtkBackend {
         )
     }
 
-    /// #810: shared chart painting lives in
-    /// [`crate::primitives::chart::paint`] now — see that fn's doc for
-    /// the divergences (the quadraui#791 clip, most notably) resolved
-    /// while unifying `gtk::chart::draw_chart`, `macos::chart::draw_chart`
-    /// and `win::chart::draw_chart` into one implementation.
+    /// Shared chart painting lives in [`crate::primitives::chart::paint`] now.
     fn draw_chart(
         &mut self,
         rect: QRect,
@@ -4703,7 +4469,7 @@ impl Backend for GtkBackend {
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_toolbar_with_options called outside enter_frame_scope");
-        // #416: action labels and `Toolbar::Action` icon glyphs are chrome,
+        // Action labels and `Toolbar::Action` icon glyphs are chrome,
         // not editor content — mirrors `Self::draw_list`/`Self::draw_tree`'s
         // save/swap/restore. Before this, the toolbar painted with
         // whatever font the shared layout happened to carry into the frame
@@ -4738,13 +4504,9 @@ impl Backend for GtkBackend {
         let char_w = self.current_char_width;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-        // #416: measure with `ui_font`, matching `Self::draw_toolbar`'s
-        // paint font — same #624 contract `status_bar_layout` documents.
-        // A no-paint caller (hit-testing without repainting, which is
-        // exactly what `AppLogic::handle` does on every mouse event) must
-        // resolve the same button widths the paint path produced, or the
-        // button the user visibly clicked is not the one the hit test
-        // reports.
+        // Measure with `ui_font`, matching `Self::draw_toolbar`'s paint font.
+        // Hit-testing without repainting must resolve the same button widths the
+        // paint path produced.
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
         if let Some(pl) = &pango_layout {
@@ -4776,7 +4538,7 @@ impl Backend for GtkBackend {
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        // #416 / #862: `SidebarPanel` composes a `Toolbar` header — its
+        // `SidebarPanel` composes a `Toolbar` header — its
         // icon glyphs are chrome, not editor content — so the same
         // save/swap/restore `Self::draw_toolbar` does has to happen here
         // too (the shared `native_surface_paint::paint` below measures
@@ -4818,7 +4580,7 @@ impl Backend for GtkBackend {
         let line_h = self.current_line_height;
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-        // #416: the panel's header is a `Toolbar`, so its measured button
+        // The panel's header is a `Toolbar`, so its measured button
         // widths must come from the same `ui_font`
         // `Self::draw_sidebar_panel` now paints with — see
         // `Self::toolbar_layout` above.
@@ -4843,7 +4605,7 @@ impl Backend for GtkBackend {
         result
     }
 
-    /// #866: paint via the shared
+    /// Paint via the shared
     /// [`crate::primitives::diff_view::native_surface_paint::paint`] —
     /// see that fn's doc for the two named divergences (row/header text
     /// vertical alignment; header-label ellipsize vs. hard-clip) found
@@ -4869,7 +4631,7 @@ impl Backend for GtkBackend {
         )
     }
 
-    /// #1085: paint via the shared
+    /// Paint via the shared
     /// [`crate::primitives::board::native_surface_paint::paint`] — see
     /// that fn's doc for the four named divergences (column-header
     /// overflow; card-title wrapping; rounded vs. straight card borders;
@@ -4906,20 +4668,9 @@ impl Backend for GtkBackend {
     ) -> crate::backend::MinimapPaintResult {
         let theme = self.current_theme;
         let dpi_scale = self.dpi_scale as f64;
-        // `super::minimap::draw_minimap_cached`, not the re-exported
-        // public `crate::gtk::draw_minimap` -- issue #1035's glyph atlas
-        // cache lives in a crate-internal sibling function, the same
-        // split `draw_image`/`draw_image_cached` established for #1014
-        // (see that field's doc for why the public one couldn't just
-        // grow a cache parameter without breaking whatever external code
-        // already calls it directly).
-        //
-        // Read the raw pointers directly (rather than through
-        // `current_frame_refs`, which borrows all of `self` immutably
-        // for the lifetime of its return value) so `cr`/`pango_layout`
-        // don't collide with the `&mut self.minimap_atlas_cache` borrow
-        // this method also needs -- same reasoning as `draw_image`'s own
-        // `cr_ptr` read (#1014).
+        // Uses `super::minimap::draw_minimap_cached` for the glyph atlas cache.
+        // Reads raw pointers directly so `cr`/`pango_layout` don't collide with
+        // the `&mut self.minimap_atlas_cache` borrow this method also needs.
         let cr_ptr = self.current_cr_ptr.get();
         let layout_ptr = self.current_layout_ptr.get();
         assert!(
@@ -4962,22 +4713,12 @@ impl Backend for GtkBackend {
             !cr_ptr.is_null(),
             "GtkBackend::draw_image called outside enter_frame_scope"
         );
-        // SAFETY: `enter_frame_scope` set `current_cr_ptr` from a real,
-        // live `&Context` and won't return until the scope ends — the
-        // same invariant `current_frame_refs` relies on. Read the raw
-        // pointer directly here (rather than through
-        // `current_frame_refs`, which borrows all of `self` immutably
-        // for the lifetime of its return value) so `cr` doesn't collide
-        // with the `&mut self.image_cache` borrow this method also needs
-        // (issue #1014's decode cache).
+        // SAFETY: `enter_frame_scope` set `current_cr_ptr` from a real, live `&Context`
+        // and won't return until the scope ends. Read the raw pointer directly to avoid
+        // colliding with the `&mut self.image_cache` borrow this method also needs.
         let cr = unsafe { &*(cr_ptr as *const Context) };
         let dpi_scale = self.dpi_scale;
-        // `super::image::draw_image_cached`, not the re-exported public
-        // `crate::gtk::draw_image` (issue #1014's decode cache lives in a
-        // crate-internal sibling function — see `gtk::image`'s module
-        // docs for why the public one couldn't just grow a cache
-        // parameter without breaking whatever external code already
-        // calls it directly).
+        // Uses `super::image::draw_image_cached` for the decode cache.
         let result =
             super::image::draw_image_cached(cr, rect, image, &mut self.image_cache, dpi_scale);
         self.register_zone(image.id.clone(), rect);
@@ -5008,7 +4749,7 @@ impl Backend for GtkBackend {
     }
 }
 
-/// GTK's `WindowControl` surface (issue #950). Backed by `gtk4::Window`'s
+/// GTK's `WindowControl` surface. Backed by `gtk4::Window`'s
 /// own methods wherever GTK4 exposes one; everything GTK4 structurally
 /// can't do reports [`BackendError::Unsupported`] honestly rather than
 /// silently no-op'ing — see each method's doc for which bucket it's in.
@@ -5091,22 +4832,20 @@ impl crate::backend::WindowControl for GtkBackend {
         Ok(())
     }
 
-    /// `gtk4::Window::is_maximized` (issue #1022).
+    /// `gtk4::Window::is_maximized`.
     fn is_maximized(&self) -> crate::backend::ServiceResult<bool> {
         let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
         Ok(window.is_maximized())
     }
 
-    /// **Not available on GTK4/Wayland** — see this trait method's own
-    /// doc comment (`WindowControl::set_always_on_top`) for the
-    /// X11-only-via-`gdk_x11` background quadraui#950 documents.
+    /// **Not available on GTK4/Wayland** — see this trait method's own doc comment
+    /// for the X11-only-via-`gdk_x11` background.
     fn set_always_on_top(&mut self, _on_top: bool) -> crate::backend::ServiceResult<()> {
         Err(BackendError::Unsupported)
     }
 
-    /// `gtk4::Window::set_decorated` (issue #1022) — backs vimcode's
-    /// client-side-decoration path (its #552): turning this off lets the
-    /// app paint its own titlebar without GTK's native one underneath it.
+    /// `gtk4::Window::set_decorated` — backs vimcode's client-side-decoration path:
+    /// turning this off lets the app paint its own titlebar without GTK's native one.
     fn set_decorated(&mut self, decorated: bool) -> crate::backend::ServiceResult<()> {
         let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
         window.set_decorated(decorated);
@@ -5361,31 +5100,10 @@ impl PaintSurface for EditorSurface<'_> {
     }
 }
 
-// ─── PaintSurface (#807, Phase 1) ───────────────────────────────────────────
-//
-// The ~15-verb drawing surface underneath `Backend::draw_*`, extracted from
-// helpers this backend already had privately: `set_source`/`cr.rectangle`/
-// `super::painted_text::show_layout`. Phase 1 is a pure extraction — every
-// verb below either forwards to the identically-named `Backend` method
-// (frame lifecycle, measurement, image) or does exactly what the private
-// helpers already did, so no `draw_*` call site's behaviour changes. See
-// `paint_surface`'s module doc for the full scope note and why these
-// methods are `surface_`-prefixed instead of colliding with `Backend`'s.
-//
-// The default is inverted now: every text verb below forces `ui_font`
-// (chrome) explicitly rather than trusting the ambient per-frame layout
-// font, so this impl is no longer the "exactly what the private helpers
-// already did" pure extraction the paragraph above describes for the
-// font-role-bearing verbs specifically — see each verb's own doc below
-// for what changed and why.
-//
-// `Self::status_bar_paint_scaled` relies on that inversion: it stopped
-// swapping a font description onto the shared layout for its unscaled
-// (`font_scale == 1.0`) case specifically because every text verb below
-// already resolves `self.ui_font` fresh on every call rather than
-// trusting whatever font the layout carries in. Touching one side of
-// that coupling without the other silently reintroduces drift — see
-// `status_bar_paint_scaled`'s own doc for the matching pointer back here.
+// PaintSurface implementation: extracted from private helpers.
+// Every text verb forces `ui_font` (chrome) explicitly rather than trusting
+// the ambient per-frame layout font. `Self::status_bar_paint_scaled` relies
+// on this: every text verb resolves `self.ui_font` fresh on every call.
 impl PaintSurface for GtkBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
@@ -5438,7 +5156,7 @@ impl PaintSurface for GtkBackend {
         (w as f32, h as f32)
     }
 
-    /// #860: overrides the default (which drops `bold`) — a bold Pango
+    /// Overrides the default (which drops `bold`) — a bold Pango
     /// `AttrList` weight, matching what `gtk::status_bar::draw_status_bar`
     /// measured before its paint moved to
     /// `primitives::status_bar::native_surface_paint::paint`. Also
@@ -5470,7 +5188,7 @@ impl PaintSurface for GtkBackend {
             .current_frame_refs()
             .expect("GtkBackend::surface_fill_rect called outside enter_frame_scope");
         // `set_source_rgba`, not `set_source` — see that fn's doc
-        // (issue #811) for why a translucent fill must honour `color.a`
+        // for why a translucent fill must honour `color.a`
         // here to match macOS/Windows's `PaintSurface::surface_fill_rect`.
         crate::gtk::set_source_rgba(cr, color);
         cr.rectangle(
@@ -5482,7 +5200,7 @@ impl PaintSurface for GtkBackend {
         cr.fill().ok();
     }
 
-    /// #1073: `crate::gtk::rounded_rect_path` was already private plumbing
+    /// `crate::gtk::rounded_rect_path` was already private plumbing
     /// for the context menu / `ListView` / command-center rasterisers —
     /// this is the first `PaintSurface` verb to expose it. `radius` is
     /// clamped to half of `rect`'s shorter side, matching this trait
@@ -5573,7 +5291,7 @@ impl PaintSurface for GtkBackend {
         layout.set_font_description(saved.as_ref());
     }
 
-    /// #810: overrides the default (which drops styling) — Pango's
+    /// Overrides the default (which drops styling) — Pango's
     /// `AttrList` can apply all three, matching what
     /// `gtk::terminal::draw_terminal_cells` did per-cell before its
     /// paint moved to `primitives::terminal::paint`. Also forces
@@ -5626,7 +5344,7 @@ impl PaintSurface for GtkBackend {
         layout.set_font_description(saved.as_ref());
     }
 
-    /// #1073: overrides the default (which ignores `role`) — this is the
+    /// Overrides the default (which ignores `role`) — this is the
     /// one real backend where chrome and editor text already resolve to
     /// two genuinely different `pango::FontDescription`s
     /// (`crate::gtk::chrome_font_description(&self.ui_font)` vs
@@ -5670,7 +5388,7 @@ impl PaintSurface for GtkBackend {
         layout.set_font_description(saved.as_ref());
     }
 
-    /// #1073: overrides the default (which assumes the current font
+    /// Overrides the default (which assumes the current font
     /// already resolves the fallback family) — `GtkBackend`'s per-frame
     /// editor `pango::Layout` (built fresh every frame by
     /// `gtk/run.rs::render_frame` from `editor_font_pango_string`, with
@@ -5808,14 +5526,9 @@ mod tests {
         );
     }
 
-    // ── issue #1013: register_font_from_memory / app_font_registration ──
-
-    /// `GtkBackend` used to declare `app_font_registration: true` while
-    /// `register_font_from_memory` was still the trait's no-op default —
-    /// exactly the "declared true, defaulted method" lie this issue
-    /// exists to close. Pins the declaration now that both
-    /// `register_font_from_memory` and `set_nerd_font_fallback` are
-    /// overridden above.
+    /// `GtkBackend` declares `app_font_registration: true` and
+    /// overrides both `register_font_from_memory` and
+    /// `set_nerd_font_fallback` above.
     #[test]
     fn gtk_backend_declares_app_font_registration_capability() {
         let b = GtkBackend::new();
@@ -5826,7 +5539,9 @@ mod tests {
         );
     }
 
-    // ── issue #1131: tray honesty ────────────────────────────────────────
+    // `GtkBackend` has no `fn tray` override, so both halves of the
+    // trait default apply: `tray()` returns `None` and
+    // `backend_caps().tray` is `false`.
 
     /// There is no `gtk/tray.rs` and `GtkBackend` has no `fn tray`
     /// override, so both halves of the trait default apply: `tray()`
@@ -5926,7 +5641,7 @@ mod tests {
         assert_eq!(h2.borrow().len(), 1);
     }
 
-    /// #790: pins the GTK column of the shared `hscrollbar_track` helper
+    /// Pins the GTK column of the shared `hscrollbar_track` helper
     /// as the reference behaviour the macOS `list_hscrollbar` copy had
     /// silently dropped — a `bordered` list insets the track by one char
     /// width on each side (and moves it up one row) so the thumb sits
@@ -5997,7 +5712,7 @@ mod tests {
         assert_eq!(q.borrow().len(), 1);
     }
 
-    // ── Background-thread wake (issue #831) ─────────────────────────────
+    // ── Background-thread wake ──────────────────────────────────────────
 
     /// A payload pushed from a background thread through the closure
     /// `Backend::waker()` hands out lands in `poll_events()`'s output as a
@@ -6088,7 +5803,7 @@ mod tests {
         waker(crate::UserPayload::new(1_i32));
     }
 
-    /// quadraui#832: `request_frame_in` must be callable — before or
+    /// `request_frame_in` must be callable — before or
     /// after `set_wake_callback` — without panicking. `glib::source::
     /// timeout_add_local_once` only *schedules* the one-shot timer; it
     /// returns immediately without running the main loop, so this is
@@ -6122,21 +5837,12 @@ mod tests {
         with_owned_main_context(|| Backend::request_frame_in(&backend, Duration::from_millis(50)));
     }
 
-    /// The blocking finding from #831's review round, pinned as a test.
-    ///
-    /// A `waker()` handle is `Send + Sync`, so the *last* handle to it can
-    /// die on a background thread — an ordinary occurrence (a worker
-    /// finishing after the app has begun tearing down). Nothing in that
-    /// drop may touch the `!Send` `Rc<dyn Fn()>` wake target, because
-    /// decrementing `Rc`'s non-atomic refcount from two threads at once is
-    /// a real data race, not a lint. The strong count seen from this (the
-    /// installing) thread is the direct observable: it must be untouched
-    /// by anything the background thread did.
-    ///
-    /// It also must not *block*: an earlier revision forwarded the drop to
-    /// the GTK main loop and waited for it, which hung forever whenever no
-    /// live main loop was there to dispatch the forwarded drop. `join()`
-    /// returning at all is that half of the assertion.
+    /// A `waker()` handle is `Send + Sync`, so the last handle can
+    /// die on a background thread. Nothing in that drop may touch the
+    /// `!Send` `Rc<dyn Fn()>` wake target, because decrementing
+    /// `Rc`'s non-atomic refcount from two threads at once is a data
+    /// race. The strong count must be untouched by anything the
+    /// background thread did, and the drop must not block.
     #[test]
     fn dropping_the_last_waker_handle_off_thread_never_touches_the_wake_callback() {
         let backend = GtkBackend::new();
@@ -6203,7 +5909,7 @@ mod tests {
         assert!(super::wake_callback_for(wake_id).is_none());
     }
 
-    /// #776: GTK reserves room for its `ScrolledWindow` overlay
+    /// GTK reserves room for its `ScrolledWindow` overlay
     /// scrollbar so a caller's content viewport width
     /// (`rect.width - backend.scrollbar_reserve()`) never renders text
     /// behind the overlay — see the trait default (0.0) that TUI relies
@@ -6214,7 +5920,7 @@ mod tests {
         assert_eq!(Backend::scrollbar_reserve(&backend), 8.0);
     }
 
-    /// #400: with no window set (the state of every unit test and every
+    /// With no window set (the state of every unit test and every
     /// backend before `gtk::run::activate` calls `set_window`),
     /// `begin_window_drag` must no-op rather than panic.
     #[test]
@@ -6223,7 +5929,7 @@ mod tests {
         assert!(!Backend::begin_window_drag(&mut backend));
     }
 
-    /// #400: `begin_window_drag` also no-ops when a window is present but
+    /// `begin_window_drag` also no-ops when a window is present but
     /// no press was ever stashed (e.g. called from a non-mouse-driven
     /// path) — there's no real device/timestamp to hand GDK.
     #[test]
@@ -6233,20 +5939,19 @@ mod tests {
         assert!(!Backend::begin_window_drag(&mut backend));
     }
 
-    /// #400 double-click fix: `armed_window_drag_origin` must be `None`
-    /// when nothing has been armed (the state of every unit test and
-    /// every fresh backend).
+    /// `armed_window_drag_origin` must be `None` when nothing has been
+    /// armed (the state of every unit test and every fresh backend).
     #[test]
     fn gtk_backend_armed_window_drag_origin_none_when_unarmed() {
         let backend = GtkBackend::new();
         assert!(backend.armed_window_drag_origin().is_none());
     }
 
-    /// #400 double-click fix: `discard_armed_window_drag` clears a
-    /// simulated armed request, and the origin reads back `None`
-    /// afterwards — this is what `gtk/run.rs`'s `connect_released` relies
-    /// on to stop a plain click (or the first half of a double-click)
-    /// from being committed by a later, unrelated hover-motion event.
+    /// `discard_armed_window_drag` clears an armed request, and the
+    /// origin reads back `None` afterwards — this is what
+    /// `gtk/run.rs`'s `connect_released` relies on to stop a plain
+    /// click (or the first half of a double-click) from being committed
+    /// by a later, unrelated hover-motion event.
     #[test]
     fn gtk_backend_discard_armed_window_drag_clears_state() {
         let mut backend = GtkBackend::new();
@@ -6259,18 +5964,17 @@ mod tests {
         assert!(backend.armed_window_drag_origin().is_none());
     }
 
-    /// #400 double-click fix: `try_commit_window_drag` must no-op
-    /// (rather than panic) with no window set, mirroring
-    /// `begin_window_drag`'s no-window no-op.
+    /// `try_commit_window_drag` must no-op (rather than panic) with no
+    /// window set, mirroring `begin_window_drag`'s no-window no-op.
     #[test]
     fn gtk_backend_try_commit_window_drag_false_without_window() {
         let mut backend = GtkBackend::new();
         assert!(!backend.try_commit_window_drag(0.0, 0.0));
     }
 
-    /// #400 double-click fix: `try_commit_window_drag` must no-op when
-    /// a window is present but nothing is armed (e.g. `connect_motion`
-    /// fires before any title-bar press ever called `begin_window_drag`).
+    /// `try_commit_window_drag` must no-op when a window is present but
+    /// nothing is armed (e.g. `connect_motion` fires before any
+    /// title-bar press ever called `begin_window_drag`).
     #[test]
     fn gtk_backend_try_commit_window_drag_false_without_armed_request() {
         let mut backend = GtkBackend::new();
@@ -6278,16 +5982,16 @@ mod tests {
         assert!(!backend.try_commit_window_drag(0.0, 0.0));
     }
 
-    /// #400 double-click fix: `window_drag_threshold_px` must fall back
-    /// to GTK's documented default (8px) rather than panic when no
-    /// window/display is available yet (every unit test).
+    /// `window_drag_threshold_px` must fall back to GTK's documented
+    /// default (8px) rather than panic when no window/display is
+    /// available yet (every unit test).
     #[test]
     fn gtk_backend_window_drag_threshold_px_defaults_without_window() {
         let backend = GtkBackend::new();
         assert_eq!(backend.window_drag_threshold_px(), 8.0);
     }
 
-    /// #400: with no window set, `toggle_window_maximize` must no-op
+    /// With no window set, `toggle_window_maximize` must no-op
     /// rather than panic.
     #[test]
     fn gtk_backend_toggle_window_maximize_false_without_window() {
@@ -6295,7 +5999,7 @@ mod tests {
         assert!(!Backend::toggle_window_maximize(&mut backend));
     }
 
-    /// #1022: `is_maximized`/`set_decorated` guard on `self.window` the
+    /// `is_maximized`/`set_decorated` guard on `self.window` the
     /// same way every other `WindowControl` method here does — no real
     /// `gtk4::Window` exists in a headless unit test, so both must report
     /// `Unsupported` rather than panic.
@@ -6317,7 +6021,7 @@ mod tests {
         ));
     }
 
-    /// #406: with no window set (every unit test), `begin_window_resize`
+    /// With no window set (every unit test), `begin_window_resize`
     /// must no-op rather than panic, mirroring `begin_window_drag`'s
     /// no-window guard.
     #[test]
@@ -6329,7 +6033,7 @@ mod tests {
         ));
     }
 
-    /// #406: `begin_window_resize` also no-ops when a window is present but
+    /// `begin_window_resize` also no-ops when a window is present but
     /// no press was ever stashed — there's no real device/timestamp to hand
     /// GDK, same rationale as `begin_window_drag`'s equivalent guard.
     #[test]
@@ -6342,7 +6046,7 @@ mod tests {
         ));
     }
 
-    /// #406: with no window set, `set_cursor` must no-op rather than panic.
+    /// With no window set, `set_cursor` must no-op rather than panic.
     #[test]
     fn gtk_backend_set_cursor_false_without_window() {
         let mut backend = GtkBackend::new();
@@ -6353,16 +6057,15 @@ mod tests {
         ));
     }
 
-    /// #406: `ResizeEdge` maps 1:1 onto `gdk4::SurfaceEdge` — exercise
+    /// `ResizeEdge` maps 1:1 onto `gdk4::SurfaceEdge` — exercise
     /// every variant so an accidental swap (e.g. `NorthEast` <->
     /// `SouthWest`) fails loudly instead of silently resizing the wrong
     /// corner on a real compositor.
     #[test]
     fn resize_edge_to_surface_edge_maps_every_variant() {
-        // Iterates the shared enum-walk scaffold (`desktop::ALL_RESIZE_EDGES`,
-        // #498) instead of hand-listing all 8 variants, so a 9th
-        // `ResizeEdge` variant added there is automatically exercised
-        // here too.
+        // Iterates the shared enum-walk scaffold (`desktop::ALL_RESIZE_EDGES`)
+        // instead of hand-listing all 8 variants, so a new `ResizeEdge`
+        // variant added there is automatically exercised here too.
         let expected = [
             gdk::SurfaceEdge::North,
             gdk::SurfaceEdge::South,
@@ -6378,11 +6081,11 @@ mod tests {
         }
     }
 
-    /// #406: `PointerShape` -> GTK cursor-name mapping covers every
+    /// `PointerShape` -> GTK cursor-name mapping covers every
     /// variant with the expected CSS Basic UI keyword.
     #[test]
     fn pointer_shape_cursor_name_maps_every_variant() {
-        // Iterates `desktop::all_pointer_shapes()` (#498) instead of
+        // Iterates `desktop::all_pointer_shapes()` instead of
         // hand-listing all 9 `Default` + `Resize(edge)` combinations.
         let expected = [
             "default",
@@ -6403,7 +6106,7 @@ mod tests {
         }
     }
 
-    /// The registry itself now lives in `BackendCore` (#1090) — its
+    /// The registry itself now lives in `BackendCore` — its
     /// `len()`s aren't reachable from here anymore, so this observes the
     /// same round trip behaviourally: registering makes the binding
     /// match, unregistering makes it stop matching.
@@ -6464,10 +6167,10 @@ mod tests {
         assert_eq!(p_cst.key, "t");
     }
 
-    /// Regression test for B5b.2: the lookup used by the GTK key handler
-    /// must return distinct ids for `<C-t>` vs `<C-S-t>`. Previously the
-    /// inputs were swapped at runtime — Ctrl+T fired the maximize action
-    /// and Ctrl+Shift+T fired the open action.
+    /// Regression test: the lookup used by the GTK key handler must
+    /// return distinct ids for `<C-t>` vs `<C-S-t>`. Previously the
+    /// inputs were swapped at runtime — Ctrl+T fired the maximize
+    /// action and Ctrl+Shift+T fired the open action.
     #[test]
     fn gtk_backend_match_keypress_distinguishes_ctrl_vs_ctrl_shift() {
         let mut backend = GtkBackend::new();
@@ -6526,17 +6229,13 @@ mod tests {
         );
     }
 
-    /// Regression for issue #710: a `FieldKind::TextArea` must measure
-    /// exactly one row — matching what `gtk::form::draw_form` actually
-    /// paints — so a click on the field painted immediately below it
-    /// hits that field, not the `TextArea`'s hit region.
-    ///
-    /// Before the fix, `GtkBackend::form_layout` had its own inline
-    /// measurer sizing `TextArea` as `row_h * visible_rows`, while the
-    /// painter only ever advanced one `row_h` per field regardless of
-    /// kind. The `visible_rows - 1` rows the layout believed belonged
-    /// to the `TextArea` were actually painted with the *following*
-    /// field, but still hit-tested to the `TextArea`.
+    /// A `FieldKind::TextArea` must measure exactly one row — matching
+    /// what `gtk::form::draw_form` actually paints — so a click on the
+    /// field painted immediately below it hits that field, not the
+    /// `TextArea`'s hit region. The layout measurer and painter must
+    /// track each other: before the fix, `GtkBackend::form_layout` sized
+    /// `TextArea` as `row_h * visible_rows`, while the painter only ever
+    /// advanced one `row_h` per field, causing a mismatch.
     #[test]
     fn gtk_form_layout_textarea_does_not_swallow_the_next_fields_row() {
         use crate::primitives::form::{FieldKind, Form, FormField, FormHit};
@@ -6986,13 +6685,11 @@ mod tests {
 
     /// `apply_selection_highlight`'s real Cairo paint, checked against a
     /// headless `ImageSurface` — the pixel-level counterpart to
-    /// `gtk_selection_highlight_geometry_single_row`'s pure-math version,
-    /// and GTK's twin of `macos::backend::tests::mac_apply_selection_highlight_paints_over_the_background`
-    /// (#1090: this method now resolves its rects via
-    /// `BackendCore::selection_highlight_rects` and its colour via
-    /// `Theme::text_selection_highlight`, rather than a hard-coded Cairo
-    /// literal — this test is what proves that consolidation painted the
-    /// exact same pixels as before).
+    /// `gtk_selection_highlight_geometry_single_row`'s pure-math version.
+    /// This test verifies that the method resolves rects via
+    /// `BackendCore::selection_highlight_rects` and colour via
+    /// `Theme::text_selection_highlight`, painting the same pixels as
+    /// before that refactoring.
     #[test]
     fn gtk_apply_selection_highlight_paints_over_the_background() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
@@ -7069,16 +6766,9 @@ mod tests {
         (data[off + 2], data[off + 1], data[off])
     }
 
-    /// #407 established that `menu_bar_layout` must prefer the
-    /// frame-scoped Pango layout (the one `draw_menu_bar` actually
-    /// painted with) over the stable widget-realized `pango_ctx`, back
-    /// when menu items painted in whatever font that resolved layout
-    /// happened to carry — i.e. the editor font, which was exactly the
-    /// #624 bug (chrome tracking editor font size). #624 fixes that by
-    /// having `menu_bar_layout` force `ui_font` onto whichever layout it
-    /// resolves, so the *resolved object's own* font no longer reaches
-    /// the measurement at all. This updates #407's regression test to the
-    /// new invariant: outside vs. inside a frame scope with a
+    /// `menu_bar_layout` must force `ui_font` onto whichever layout it
+    /// resolves, so the resolved object's own font no longer reaches the
+    /// measurement. Outside vs. inside a frame scope with a
     /// wildly-different editor font (`"Sans 8"` vs. `"Sans 40"`) must
     /// measure *identically*, because both paths measure `ui_font`
     /// (`"Sans 11"` by default), not whatever the resolved layout's own
@@ -7090,7 +6780,7 @@ mod tests {
         let surface = ImageSurface::create(Format::ARgb32, 400, 40).expect("create ImageSurface");
         let cr = Context::new(&surface).expect("Context::new");
 
-        // pango 0.22 (gtk4 0.11 bump, #796) tightened
+        // pango 0.22 (gtk4 0.11 bump) tightened
         // `Context::set_font_description` from `Option<&FontDescription>`
         // to `&FontDescription` — every call site below through this test
         // module drops the now-redundant `Some(...)` wrapper.
@@ -7138,7 +6828,7 @@ mod tests {
         );
     }
 
-    /// quadraui#910: `measure_char_width_px` must preserve the true
+    /// `measure_char_width_px` must preserve the true
     /// fractional glyph advance instead of `pixel_size()`'s whole-pixel
     /// rounding. As `measure_char_width_px_matches_pixel_size_for_the_real_editor_font`
     /// below demonstrates (automated, not hand-checked), the real editor
@@ -7186,10 +6876,9 @@ mod tests {
              width / 100: via_fn={via_fn}, raw={raw}"
         );
 
-        // The actual #910 regression bar: the result must carry a real
-        // fractional part. `layout.pixel_size()` — the old, buggy call —
+        // The result must carry a real fractional part. `layout.pixel_size()`
         // always returns a whole number, so this fails immediately if
-        // `measure_char_width_px` reverts to it.
+        // `measure_char_width_px` uses it.
         assert!(
             (via_fn - via_fn.round()).abs() > 0.05,
             "letter-spacing should force a non-integral advance that \
@@ -7197,12 +6886,10 @@ mod tests {
         );
     }
 
-    /// The concrete "Done when" bar from #910, exercised end-to-end
-    /// against a plain (unmodified) layout: a pane exactly as wide as a
-    /// known-length line of monospace glyphs must report that many
-    /// columns through `px_to_cols` — the same formula
-    /// `available_width / char_width()` every consumer uses — not fewer,
-    /// which is the empty-right-margin symptom the issue describes.
+    /// A pane exactly as wide as a known-length line of monospace
+    /// glyphs must report that many columns through `px_to_cols` —
+    /// the same formula `available_width / char_width()` every consumer
+    /// uses — not fewer, which is the empty-right-margin symptom.
     #[test]
     fn char_width_and_px_to_cols_agree_with_what_pango_actually_painted() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
@@ -7231,27 +6918,14 @@ mod tests {
         );
     }
 
-    /// quadraui#910's "confirm the diagnosis before fixing it" instruction,
-    /// run automatically instead of by hand: for the actual runtime editor
-    /// font — `gtk/run.rs`'s hardcoded `"Monospace N"`, which fontconfig
-    /// resolves to DejaVu Sans Mono on this build host — print and compare
-    /// `layout.pixel_size().0` (old, buggy), a single glyph's raw Pango-unit
-    /// width, and a 100-glyph run's average, at every commonly configured
-    /// editor size.
-    ///
-    /// Result (also visible via `--nocapture`): **all three agree exactly,
-    /// at every size 9-16pt.** The advance for this font is already
-    /// integral, so `measure_char_width_px` returns the same number
-    /// `pixel_size()` always did — this change does not alter
-    /// `char_width()`'s value for the font this repo actually ships with.
-    /// Per #910's own instruction, that is evidence the whole-pixel-
-    /// rounding theory does not explain the reported ~6-8% empty right
-    /// margin by itself, and #910 likely needs a different root cause
-    /// investigated rather than being considered resolved by this PR (see
-    /// `measure_char_width_px`'s doc comment for the full reasoning). This
-    /// test exists so that judgment is re-checked automatically — on a
-    /// host/font/DPI combination where the three numbers *do* disagree,
-    /// it fails loudly rather than silently passing.
+    /// For the actual runtime editor font — `gtk/run.rs`'s hardcoded
+    /// `"Monospace N"`, which fontconfig resolves to DejaVu Sans Mono
+    /// on this build host — compare `layout.pixel_size().0` (old, buggy),
+    /// a single glyph's raw Pango-unit width, and a 100-glyph run's
+    /// average, at every commonly configured editor size. The test
+    /// confirms the advance for this font is already integral at all
+    /// sizes 9-16pt, so this change does not alter the value in
+    /// practice.
     #[test]
     fn measure_char_width_px_matches_pixel_size_for_the_real_editor_font() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
@@ -7296,18 +6970,13 @@ mod tests {
         }
     }
 
-    /// #407 (manual smoke-test failure on iteration 1): the real bug is
-    /// that click-time hit-testing calls `menu_bar_layout` from
-    /// `MenuSystem::handle` — **outside** any `enter_frame_scope` — so
-    /// `current_frame_refs()` is always `None` at click time. #624
-    /// changes *what* both paint and click-time measurement track (from
-    /// the editor font to the stable `ui_font`), but the underlying
-    /// paint↔click agreement #407 guarded is exactly as load-bearing:
-    /// whatever `draw_menu_bar` actually painted with, `menu_bar_layout`
-    /// must measure identically at click time, even with a wildly
-    /// different *editor* font live in between (proving click-time
-    /// measurement tracks `ui_font`, not whatever the editor font
-    /// happens to be at click time).
+    /// `menu_bar_layout` is called from `MenuSystem::handle` outside any
+    /// `enter_frame_scope`, so `current_frame_refs()` is always `None`
+    /// at click time. The invariant is: whatever `draw_menu_bar` actually
+    /// painted with, `menu_bar_layout` must measure identically at click
+    /// time, even with a wildly different *editor* font live in between
+    /// (proving click-time measurement tracks `ui_font`, not the editor
+    /// font at click time).
     #[test]
     fn gtk_backend_menu_bar_layout_matches_last_paint_outside_frame_scope() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
@@ -7358,9 +7027,9 @@ mod tests {
              actually painted: painted={painted_width}, click_time={click_time_width}"
         );
 
-        // Positive control (#624 acceptance): `ui_font` is not inert —
-        // changing it alone must visibly change the measured width, even
-        // though the giant editor font above did not.
+        // Positive control: `ui_font` is not inert — changing it alone must
+        // visibly change the measured width, even though the giant editor
+        // font above did not.
         Backend::set_ui_font(&mut backend, "Sans 40");
         let ui_font_changed_width = backend.menu_bar_layout(rect, &bar).visible_items[0]
             .bounds
@@ -7372,7 +7041,7 @@ mod tests {
         );
     }
 
-    /// #422: a fresh backend must resolve to the historical hardcoded
+    /// A fresh backend must resolve to the historical hardcoded
     /// default ("Monospace 11") so `gtk/run.rs` reading
     /// `editor_font_pango_string()` reproduces today's behaviour for apps
     /// that never call `set_editor_font`.
@@ -7382,7 +7051,7 @@ mod tests {
         assert_eq!(backend.editor_font_pango_string(), "Monospace 11");
     }
 
-    /// #422: `Backend::set_editor_font` must update the string
+    /// `Backend::set_editor_font` must update the string
     /// `gtk/run.rs`'s draw closure reads every frame, so an app-supplied
     /// family/size takes effect on the next repaint.
     #[test]
@@ -7392,9 +7061,8 @@ mod tests {
         assert_eq!(backend.editor_font_pango_string(), "DejaVu Sans Mono 16");
     }
 
-    /// #422: setting the editor font must not perturb the separate UI
-    /// chrome font (`ui_font` / `set_ui_font`) — the two are independent
-    /// knobs, and conflating them was explicitly out of scope for #422.
+    /// Setting the editor font must not perturb the separate UI chrome
+    /// font (`ui_font` / `set_ui_font`) — the two are independent knobs.
     #[test]
     fn gtk_backend_set_editor_font_does_not_affect_ui_font() {
         let mut backend = GtkBackend::new();
@@ -7404,9 +7072,9 @@ mod tests {
         assert_eq!(backend.editor_font_pango_string(), "Fira Code 13");
     }
 
-    /// Issue #1156: `default_fonts()` reports GTK's fontconfig-alias
-    /// platform convention (`Monospace`/`Sans`, 14pt/13pt), matching
-    /// this crate's VS-Code-alignment table — not this instance's own
+    /// `default_fonts()` reports GTK's fontconfig-alias platform
+    /// convention (`Monospace`/`Sans`, 14pt/13pt), matching this crate's
+    /// VS-Code-alignment table — not this instance's own
     /// `editor_font_family`/`ui_font` state, which stays at its own
     /// separate 11pt un-set default.
     #[test]
@@ -7435,10 +7103,9 @@ mod tests {
         assert_eq!(defaults.ui_size_pt, 13.0);
     }
 
-    /// Issue #1023: `monospace`/`sans-serif` (and Pango's own
-    /// `Monospace`/`Sans` aliases) already resolve correctly via
-    /// fontconfig — GTK stores them unchanged, matching the issue's
-    /// mapping table ("fontconfig aliases — already generic").
+    /// `monospace`/`sans-serif` (and Pango's own `Monospace`/`Sans`
+    /// aliases) already resolve correctly via fontconfig — GTK stores them
+    /// unchanged.
     #[test]
     fn gtk_backend_passes_through_tokens_fontconfig_already_understands() {
         let mut backend = GtkBackend::new();
@@ -7455,10 +7122,10 @@ mod tests {
         assert_eq!(backend.ui_font, "Sans 11");
     }
 
-    /// Issue #1023: `system-ui` has no fontconfig alias, so GTK rewrites
-    /// it to `"Sans"` — the concrete family fontconfig's own
-    /// `sans-serif` alias already resolves to — both via the trait
-    /// methods and the ergonomic inherent `set_ui_font` sibling.
+    /// `system-ui` has no fontconfig alias, so GTK rewrites it to `"Sans"`
+    /// — the concrete family fontconfig's own `sans-serif` alias already
+    /// resolves to — both via the trait methods and the ergonomic
+    /// inherent `set_ui_font` sibling.
     #[test]
     fn gtk_backend_resolves_system_ui_to_sans() {
         let mut backend = GtkBackend::new();
@@ -7472,10 +7139,10 @@ mod tests {
         assert_eq!(backend.ui_font, "Sans 13");
     }
 
-    /// Issue #1023: `system-ui` embedded later in a Pango-style
-    /// comma-separated fallback list is rewritten in place — Pango
-    /// already resolves the rest of the list itself, this backend only
-    /// needs to translate the one token fontconfig has no alias for.
+    /// `system-ui` embedded later in a Pango-style comma-separated
+    /// fallback list is rewritten in place — Pango already resolves the
+    /// rest of the list itself, this backend only needs to translate the
+    /// one token fontconfig has no alias for.
     #[test]
     fn gtk_backend_resolves_system_ui_within_a_comma_list() {
         let mut backend = GtkBackend::new();
@@ -7483,27 +7150,23 @@ mod tests {
         assert_eq!(backend.ui_font, "Cantarell,Sans,Sans 12");
     }
 
-    /// #971: a GTK consumer that paints its editor content itself
-    /// (bespoke Cairo, not [`Backend::draw_editor`]) must be able to
-    /// resolve `Backend::editor_col_at_x` off a single `GtkBackend` it
-    /// owns — no `enter_frame_scope`, no prior `draw_editor` call to
-    /// populate `last_editor_pango_layout`, and critically no *second*
-    /// `GtkBackend` built purely to mimic the real one's font (the
-    /// vimcode `src/gtk/click.rs` workaround this issue removes). That
-    /// third fallback used to build a bare `pango::Layout` straight off
-    /// `pango_ctx`, ignoring the editor font entirely — this test drives
-    /// it directly (no frame scope is ever entered) and proves the
-    /// result tracks `Backend::set_editor_font` at two different sizes,
-    /// not a font baked in once at setup.
+    /// A GTK consumer that paints its editor content itself (bespoke
+    /// Cairo, not [`Backend::draw_editor`]) must be able to resolve
+    /// `Backend::editor_col_at_x` off a single `GtkBackend` it owns —
+    /// no `enter_frame_scope`, no prior `draw_editor` call to populate
+    /// `last_editor_pango_layout`. The fallback builds a bare
+    /// `pango::Layout` straight off `pango_ctx`, so the result must track
+    /// `Backend::set_editor_font` at two different sizes, not a font
+    /// baked in once at setup.
     #[test]
     fn gtk_backend_editor_col_at_x_tracks_set_editor_font_without_a_frame() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
         let surface = ImageSurface::create(Format::ARgb32, 400, 40).expect("create ImageSurface");
         let cr = Context::new(&surface).expect("Context::new");
-        // The only click-time setup a #971 consumer needs: the stable
-        // widget Pango context, exactly as `gtk::run::activate` seeds it
-        // on `DrawingArea` realize via `set_pango_context`.
+        // The only click-time setup a consumer needs: the stable widget
+        // Pango context, exactly as `gtk::run::activate` seeds it on
+        // `DrawingArea` realize via `set_pango_context`.
         let stable_ctx = pangocairo::functions::create_context(&cr);
         let mut backend = GtkBackend::new();
         backend.set_pango_context(stable_ctx);
@@ -7666,11 +7329,11 @@ mod tests {
         );
     }
 
-    /// Issue #1045 item 2: `draw_status_bar_interactive_scaled` paints
-    /// narrower text at a smaller `font_scale`, and an unscaled paint
-    /// immediately after a scaled one must come back to exactly its own
-    /// pre-scaled width — proving the per-call scale doesn't leak into
-    /// the backend's ambient `ui_font` for later paints this frame.
+    /// `draw_status_bar_interactive_scaled` paints narrower text at a
+    /// smaller `font_scale`, and an unscaled paint immediately after a
+    /// scaled one must come back to exactly its own pre-scaled width —
+    /// proving the per-call scale doesn't leak into the backend's ambient
+    /// `ui_font` for later paints this frame.
     #[test]
     fn gtk_backend_draw_status_bar_interactive_scaled_shrinks_without_perturbing_later_unscaled_paints(
     ) {
@@ -7732,14 +7395,11 @@ mod tests {
         );
     }
 
-    /// #860 review follow-up: driver-tier proof that
-    /// `GtkBackend::surface_measure_text_styled`'s bold override actually
-    /// does something against a real `pango::Layout`, not just the
-    /// primitive-tier `RecordingSurface` test's synthetic `BOLD_BONUS_PX`
-    /// (which by construction would pass even if this override were a
-    /// no-op). Paints the same text through the real
-    /// `Backend::draw_status_bar` path once bold, once not, and asserts
-    /// the bold segment's resolved (painted) width is strictly wider.
+    /// Driver-tier proof that `GtkBackend::surface_measure_text_styled`'s
+    /// bold override actually does something against a real `pango::Layout`.
+    /// Paints the same text through the real `Backend::draw_status_bar`
+    /// path once bold, once not, and asserts the bold segment's resolved
+    /// (painted) width is strictly wider.
     #[test]
     fn gtk_backend_draw_status_bar_bold_segment_measures_wider() {
         let (surface, font, _) = ui_font_test_surface_and_contexts();
@@ -7779,28 +7439,14 @@ mod tests {
         );
     }
 
-    /// #860 review follow-up: driver-tier proof for the #791 zero/
-    /// negative-size guard in `primitives::status_bar::native_surface_paint::paint`.
-    ///
-    /// A literal `width = 0.0` can't tell this test anything on GTK:
-    /// `cr.rectangle(x, y, 0.0, h)` traces a zero-area path, so
-    /// `cr.clip()` already suppresses every subsequent fill regardless of
-    /// whether `paint`'s early-return guard runs at all — reverting the
-    /// guard wouldn't turn a `width = 0.0` version of this test red. A
-    /// *negative* width doesn't have that property: Cairo's
-    /// `rectangle()` walks `move_to(x, y)` → `rel_line_to(width, 0)` →
-    /// `rel_line_to(0, height)` → `rel_line_to(-width, 0)` →
-    /// `close_path()`, so a negative width just mirrors the rectangle
-    /// leftward into a *real*, positive-area path: `cr.clip()` clips to
-    /// that mirrored area instead of clipping everything away, and a
-    /// subsequent `cr.fill()` paints it. That is exactly the shape of
-    /// regression `paint`'s `width <= 0.0 || line_height <= 0.0` guard
-    /// exists to prevent — without it (observed red against a reverted
-    /// guard, confirmed by commenting out the early return locally), a
-    /// transient negative width (e.g. an `available - margin` computation
-    /// before clamping) would paint a real, visible rectangle instead of
-    /// leaving `surface` untouched. Uses the same sentinel-fill technique
-    /// as `gtk_backend_draw_chart_hover_marker_does_not_escape_chart_rect`.
+    /// Driver-tier proof for the zero/negative-size guard in
+    /// `primitives::status_bar::native_surface_paint::paint`. A literal
+    /// `width = 0.0` can't tell whether the guard runs because Cairo's
+    /// `cr.clip()` already suppresses every subsequent fill for zero-area
+    /// paths. A *negative* width doesn't have that property: Cairo's
+    /// `rectangle()` traces a real path mirrored leftward, which `cr.clip()`
+    /// clips to instead, and a subsequent `cr.fill()` paints it. That is
+    /// exactly the regression the guard exists to prevent.
     #[test]
     fn gtk_backend_draw_status_bar_negative_width_does_not_paint() {
         let canvas_w = 40;
@@ -7868,13 +7514,11 @@ mod tests {
         }
     }
 
-    /// Issue #1179: `rect` taller than `current_line_height` must be
-    /// filled in full, not just up to `current_line_height` — the same
-    /// regression class `MacBackend`'s #1179 fix pins, applied to GTK.
-    /// Uses an empty-segments bar so the fill falls back to
-    /// `theme.background` (see `native_surface_paint::paint`'s doc);
-    /// the sentinel colour must not survive anywhere in the rect,
-    /// including rows below the old `current_line_height` cutoff.
+    /// A `rect` taller than `current_line_height` must be filled in full,
+    /// not just up to `current_line_height`. Uses an empty-segments bar so
+    /// the fill falls back to `theme.background`; the sentinel colour must
+    /// not survive anywhere in the rect, including rows below the old
+    /// `current_line_height` cutoff.
     #[test]
     fn gtk_backend_draw_status_bar_fills_the_whole_rect_height_not_just_line_height() {
         let canvas_w = 40;
@@ -7926,8 +7570,8 @@ mod tests {
         surface.flush();
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
-        // Bottom row — well below where `current_line_height` (6.0)
-        // alone would have stopped filling, pre-#1179.
+        // Bottom row — well below where `current_line_height` (6.0) would have
+        // stopped filling before this fix.
         let bottom_row = canvas_h - 2;
         for x in 0..canvas_w {
             assert_eq!(
@@ -8302,14 +7946,12 @@ mod tests {
         }
     }
 
-    /// #1043 regression: `tree_vscrollbar` used to pass the raw
-    /// `line_height` (16px default) as `TreeView::vscrollbar`'s
-    /// `row_height`, not the `line_height * 1.4` pitch `tree_layout`
-    /// actually paints for non-header rows. With `current_line_height`
-    /// left at its 16px default, 15 rows painted at the real 22.4px→22px
-    /// pitch only fit 13 into a 300px-tall viewport (300/22 = 13), so an
-    /// overflow scrollbar must appear — the old raw-`line_height` math
-    /// (300/16 = 18) would have wrongly reported "everything fits".
+    /// `tree_vscrollbar` passes `line_height * 1.4` pitch (the actual row
+    /// height `tree_layout` paints) as `TreeView::vscrollbar`'s
+    /// `row_height`, not the raw `line_height`. With `current_line_height`
+    /// at 16px default, 15 rows painted at the real 22.4px→22px pitch fit
+    /// 13 into a 300px-tall viewport (300/22 = 13), so an overflow
+    /// scrollbar must appear.
     #[test]
     fn gtk_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
         let backend = GtkBackend::new();
@@ -8327,7 +7969,7 @@ mod tests {
         );
     }
 
-    /// #1043 / #623: a host-set `TreeStyle::row_height` must be honored
+    /// A host-set `TreeStyle::row_height` must be honored
     /// by `tree_vscrollbar`, exactly as `tree_layout`/`draw_tree` honor
     /// it — not silently ignored in favor of `line_height`.
     #[test]
@@ -8342,15 +7984,11 @@ mod tests {
         assert_eq!(sb.track.width, 50.0);
     }
 
-    /// #416: `draw_list` previously painted item labels and icon glyphs
-    /// with whatever font the frame's editor-content layout happened to
-    /// carry — unlike `draw_tree`/`draw_status_bar`/`draw_tab_bar`
-    /// (#624), it never swapped the shared layout onto `ui_font` at all.
-    /// Same shape as `gtk_backend_draw_tree_uses_ui_font_not_editor_font`
-    /// above: paint the same single-item list under two wildly different
-    /// "editor" font sizes with `ui_font` left at its default — the
-    /// painted extent must be identical — then change `ui_font` alone as
-    /// a positive control and see the extent move.
+    /// `draw_list` paints item labels and icon glyphs with `ui_font`, not
+    /// the editor-content layout's font. Paint the same single-item list
+    /// under two wildly different "editor" font sizes with `ui_font` left
+    /// at its default — the painted extent must be identical — then change
+    /// `ui_font` alone as a positive control and see the extent move.
     #[test]
     fn gtk_backend_draw_list_uses_ui_font_not_editor_font() {
         let small_editor_font = pango::FontDescription::from_string("Sans 8");
@@ -8435,24 +8073,18 @@ mod tests {
         );
     }
 
-    /// #912 acceptance: a consumer that budgets `ListView` row text from
+    /// A consumer that budgets `ListView` row text from
     /// [`Backend::char_width`] under-fills the row, because `draw_list`
-    /// (the test just above) paints in `ui_font`, not the editor font
-    /// `char_width` measures. [`Backend::list_char_width`] exists so a
-    /// consumer has a metric that actually agrees with what got painted
-    /// — this ties the two together mechanically, through the real
-    /// per-frame `gtk::run::render_frame` path (not a hand-rolled
-    /// `enter_frame_scope`, so `GtkBackend::refresh_chrome_char_width`
-    /// actually runs), so they can never silently diverge again.
-    ///
-    /// Renders a real English-prose row label (proportional fonts don't
-    /// wrap a synthetic `"MMMM…"` run the same way they wrap prose — the
-    /// issue's own measured numbers are for prose, not a fixed glyph)
-    /// with the editor font forced to a size wildly different from the
-    /// `"Sans 11"` chrome default, then compares the label's actual
-    /// painted width (from the `#489` per-glyph-run recorder, i.e. what
-    /// `GtkDriver::find_bounds` would also see) against both
-    /// `list_char_width() * chars` and `char_width() * chars`.
+    /// paints in `ui_font`, not the editor font `char_width` measures.
+    /// [`Backend::list_char_width`] exists so a consumer has a metric that
+    /// agrees with what got painted. This test ties the two together
+    /// mechanically, through the real per-frame `gtk::run::render_frame`
+    /// path, so they can never silently diverge. Renders a real
+    /// English-prose row label (proportional fonts don't wrap a synthetic
+    /// `"MMMM…"` run the same way they wrap prose) with the editor font
+    /// forced to a size wildly different from the `"Sans 11"` chrome
+    /// default, then compares the label's actual painted width against
+    /// both `list_char_width() * chars` and `char_width() * chars`.
     #[test]
     fn list_char_width_matches_what_draw_list_actually_paints() {
         use crate::runner::{AppLogic, Reaction};
@@ -8504,7 +8136,7 @@ mod tests {
         // below vacuously true. A 40pt/11pt size gap is guaranteed to
         // produce different advances regardless of which family either
         // alias resolves to, while `draw_list`'s painted width — which
-        // paints in `ui_font`, not the editor font (#416) — must stay
+        // paints in `ui_font`, not the editor font — must stay
         // exactly where it was.
         Backend::set_editor_font(&mut backend, "Monospace", 40.0);
         let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
@@ -8535,13 +8167,12 @@ mod tests {
              anything — editor_cw={editor_cw}, list_cw={list_cw}"
         );
 
-        // The actual #912 conformance check: `list_char_width()` — the
-        // font `draw_list` really painted with — must predict the row's
-        // painted width at least as well as the *editor* font's
-        // `char_width()` does. This is what regresses if `draw_list`'s
-        // font ever changes without `list_char_width()` following it (or
-        // vice versa): the naive `char_width()` budget would silently
-        // start winning again.
+        // `list_char_width()` — the font `draw_list` really painted with —
+        // must predict the row's painted width at least as well as the
+        // *editor* font's `char_width()` does. This is what regresses if
+        // `draw_list`'s font ever changes without `list_char_width()`
+        // following it (or vice versa): the naive `char_width()` budget would
+        // silently start winning again.
         let list_predicted = list_cw * chars;
         let editor_predicted = editor_cw * chars;
         let list_err = (bounds.width - list_predicted).abs();
@@ -8557,17 +8188,13 @@ mod tests {
         );
     }
 
-    /// #637: `draw_context_menu` painted dropdown item labels with
-    /// whatever font the frame's editor-content layout happened to
-    /// carry — unlike `draw_menu_bar` (the bar directly above it, fixed
-    /// by #624), it never swapped the shared layout onto `ui_font` at
-    /// all, so the bar and the dropdown under it visibly disagreed in
-    /// the same frame. Same shape as
-    /// `gtk_backend_draw_tree_uses_ui_font_not_editor_font` above: paint
-    /// a single-item dropdown under two wildly different "editor" font
-    /// sizes with `ui_font` left at its default — the painted glyph
-    /// extent must be identical — then change `ui_font` alone as a
-    /// positive control and see the extent move.
+    /// `draw_context_menu` paints dropdown item labels with `ui_font`, not
+    /// the editor-content layout's font, so the bar and the dropdown under
+    /// it visibly agree in the same frame. Paint a single-item dropdown
+    /// under two wildly different "editor" font sizes with `ui_font` left
+    /// at its default — the painted glyph extent must be identical — then
+    /// change `ui_font` alone as a positive control and see the extent
+    /// move.
     #[test]
     fn gtk_backend_draw_context_menu_uses_ui_font_not_editor_font() {
         let small_editor_font = pango::FontDescription::from_string("Sans 8");
@@ -8655,7 +8282,7 @@ mod tests {
         );
     }
 
-    /// #637: `draw_command_center` painted its arrows/search label with
+    /// `draw_command_center` painted its arrows/search label with
     /// whatever font the frame's editor-content layout happened to
     /// carry, same gap as `draw_context_menu` above. Unlike the pixel-scan
     /// tests above, `gtk_command_center_layout` measures the search
@@ -8710,20 +8337,13 @@ mod tests {
         );
     }
 
-    /// #732: `GtkBackend::command_center_layout` (the no-paint query
-    /// path, unlike the Pango-measured `draw_command_center`) must
-    /// delegate straight to `CommandCenterMeasure::from_char_width`
-    /// rather than keeping a private reimplementation of its formula —
-    /// that private-copy drift is exactly what #732 fixed. Asserting the
-    /// two agree here, and asserting the same thing for
+    /// `GtkBackend::command_center_layout` (the no-paint query path) must
+    /// delegate straight to `CommandCenterMeasure::from_char_width` rather
+    /// than keeping a private reimplementation of its formula. This test
+    /// verifies the two agree, and asserts the same for
     /// `win::command_center::win_command_center_layout` against the
-    /// identical shared constructor (see that module's own
-    /// `win_command_center_layout_delegates_to_shared_char_width_formula`
-    /// test), is what makes gtk and win compute the same command-center
-    /// layout for the same char width even though the two can't run in
-    /// one process on this Linux host (`win`'s rasterisers are
-    /// `target_os = "windows"`-gated — see `quadraui/CLAUDE.md`'s Win-GUI
-    /// section).
+    /// identical shared constructor, so gtk and win compute the same
+    /// command-center layout for the same char width.
     #[test]
     fn command_center_layout_delegates_to_shared_char_width_formula() {
         let mut backend = GtkBackend::new();
@@ -8766,13 +8386,11 @@ mod tests {
         }
     }
 
-    /// #416 review follow-up: `draw_toolbar` painted `ToolbarButton::Action`
-    /// text with whatever font the shared layout happened to carry into the
-    /// frame (typically the editor font) — the one rasteriser this review
-    /// found the original #416 fix skipped. Same shape as
-    /// `gtk_backend_draw_list_uses_ui_font_not_editor_font` above: painted
-    /// width must be editor-font-size independent, then move when `ui_font`
-    /// itself changes.
+    /// `draw_toolbar` paints `ToolbarButton::Action` text with the UI font,
+    /// not the editor font that may be live on the shared layout. Painted
+    /// width must be independent of the editor font size, then move when
+    /// `ui_font` itself changes. Same shape as
+    /// `gtk_backend_draw_list_uses_ui_font_not_editor_font` above.
     #[test]
     fn gtk_backend_draw_toolbar_uses_ui_font_not_editor_font() {
         let (surface, small_editor_font, large_editor_font) = ui_font_test_surface_and_contexts();
@@ -8812,17 +8430,13 @@ mod tests {
         );
     }
 
-    /// #416 regression guard: moving `draw_toolbar`'s paint onto
-    /// `ui_font` without moving `toolbar_layout`'s *measurement* with it
-    /// splits paint from hit-test. `AppLogic::handle` hit-tests by
-    /// calling `Backend::toolbar_layout` between frames — outside any
-    /// `enter_frame_scope` — so the two must resolve identical button
-    /// bounds or the button the user visibly clicked is not the one the
-    /// hit test reports (which is exactly how
-    /// `gtk_example_driver::toolbar_clicking_filter_toggles_it_without_keyboard_focus`
-    /// failed). Deliberately measured with the *editor* font live on
-    /// both the frame layout and the stable `pango_ctx`, so a regression
-    /// that drops either swap shows up as a width mismatch here.
+    /// Regression test: `draw_toolbar` paints with `ui_font` but
+    /// `toolbar_layout` measures with the editor font outside frame scope.
+    /// These must resolve identical button bounds, since hit-testing calls
+    /// `Backend::toolbar_layout` between frames outside any
+    /// `enter_frame_scope`. Deliberately measured with the editor font on
+    /// both the frame layout and the stable `pango_ctx` so a regression
+    /// that drops either swap shows up as a width mismatch.
     #[test]
     fn gtk_backend_toolbar_layout_matches_draw_toolbar_bounds_outside_frame() {
         let (surface, editor_font, _) = ui_font_test_surface_and_contexts();
@@ -8859,7 +8473,7 @@ mod tests {
         );
     }
 
-    /// `data_table_layout` is documented **LOCAL** (issue #505):
+    /// `data_table_layout` is documented **LOCAL**:
     /// `GtkBackend`'s impl never reads `rect.x`/`rect.y` at all — it
     /// only forwards `rect.width`/`rect.height` to `DataTable::layout`
     /// — so a non-zero origin must produce byte-identical column/row
@@ -8906,17 +8520,11 @@ mod tests {
         );
     }
 
-    /// Issue #1079 regression: a multi-byte column header must measure by
+    /// Regression test: a multi-byte column header must measure by
     /// **character count**, not UTF-8 byte length, on the click-routing
-    /// path's no-live-Pango-context fallback measurer. Before this fix,
-    /// `GtkBackend::data_table_layout` computed
-    /// `col.title.len() as f32 * char_width` directly — `"日付"` is 2
-    /// characters but 6 UTF-8 bytes, so a `Content`-width column came out
-    /// ~3x too wide. RED before #1079 (the resolved width matched the
-    /// byte-length formula), GREEN after (it matches
-    /// `PangoTextMeasure`'s `chars().count()`-based no-context estimate,
-    /// the same fallback `Self::form_layout`/`Self::status_bar_layout`
-    /// already used).
+    /// path's no-live-Pango-context fallback measurer. `"日付"` is 2
+    /// characters but 6 UTF-8 bytes; the measurer must match
+    /// `PangoTextMeasure`'s `chars().count()`-based no-context estimate.
     #[test]
     fn gtk_backend_data_table_layout_measures_multibyte_header_by_char_count() {
         use crate::primitives::data_table::{Column, ColumnWidth, DataRow};
@@ -8983,13 +8591,11 @@ mod tests {
         );
     }
 
-    /// Issue #1132, no-`pango_ctx` fallback branch: before a widget
-    /// realizes, `measure_text` must still pick the *role*-appropriate
-    /// cached advance (`current_chrome_char_width` for
+    /// Before a widget realizes, `measure_text` must pick the
+    /// *role*-appropriate cached advance (`current_chrome_char_width` for
     /// [`crate::FontRole::Chrome`], `current_char_width` for
-    /// [`crate::FontRole::Editor`]) rather than the same one for both —
-    /// the same #912 mismatch hazard [`Backend::list_char_width`]'s own
-    /// doc describes, generalised to this new method.
+    /// [`crate::FontRole::Editor`]) rather than the same one for both.
+    /// The same mismatch hazard [`Backend::list_char_width`]'s doc describes.
     #[test]
     fn measure_text_fallback_picks_the_role_appropriate_char_width() {
         use crate::{Backend, FontRole};
@@ -9008,7 +8614,7 @@ mod tests {
         assert_eq!(editor_h, 16.0);
     }
 
-    /// `form_layout` is documented **LOCAL** (issue #505): `GtkBackend`'s
+    /// `form_layout` is documented **LOCAL**: `GtkBackend`'s
     /// impl calls `form.layout(rect.width, rect.height, ..)` — `rect.x`/
     /// `rect.y` are never read — so a non-zero origin must produce
     /// byte-identical hit-region geometry to the zero-origin case.
@@ -9042,12 +8648,10 @@ mod tests {
         );
     }
 
-    /// Issue #506: `list_layout` is documented **LOCAL** — `GtkBackend`'s
-    /// impl calls `gtk_list_layout(rect.width, rect.height, ..)`, never
-    /// reading `rect.x`/`rect.y` — so a non-zero origin must produce
-    /// byte-identical geometry to the zero-origin case, and it must
-    /// equal the exact `gtk_list_layout` helper `draw_list` uses
-    /// internally (`PRIMITIVE_RULES.md` rule 5).
+    /// `list_layout` is documented **LOCAL** — `GtkBackend`'s impl ignores
+    /// `rect.x`/`rect.y` and calls `gtk_list_layout(rect.width, rect.height, ..)`.
+    /// A non-zero origin must produce byte-identical geometry to the zero-origin
+    /// case and match the exact `gtk_list_layout` helper `draw_list` uses.
     #[test]
     fn gtk_backend_list_layout_ignores_rect_origin_and_matches_helper() {
         let list = ListView {
@@ -9093,7 +8697,7 @@ mod tests {
         );
     }
 
-    /// #712: the h-scrollbar row reservation must actually shrink the
+    /// The h-scrollbar row reservation must actually shrink the
     /// returned layout — not just avoid crashing — and `Backend::list_layout`
     /// must still equal the exact helper `draw_list` uses internally once
     /// that reservation is active. Companion to
@@ -9154,10 +8758,9 @@ mod tests {
         );
     }
 
-    /// Issue #506: `board_layout` is documented **ABSOLUTE** — bounds are
-    /// shifted by `rect.x`/`rect.y`, matching `BoardLayout::hit_test`'s
-    /// contract. Also proves `board_layout` and `draw_board` agree
-    /// byte-for-byte, since both route through `gtk_board_layout`.
+    /// `board_layout` is documented **ABSOLUTE** — bounds are shifted by
+    /// `rect.x`/`rect.y`, matching `BoardLayout::hit_test`'s contract.
+    /// Both `board_layout` and `draw_board` route through `gtk_board_layout`.
     #[test]
     fn gtk_backend_board_layout_is_absolute_and_matches_helper() {
         let model = crate::primitives::board::BoardModel {
@@ -9200,15 +8803,12 @@ mod tests {
         );
     }
 
-    /// Issue #506 review fix: `terminal_layout`'s default body must
-    /// reserve the same scrollbar gutter width `draw_terminal` reserves
-    /// before iterating cells (`cell_area_w = (rect.width -
-    /// sb_width).max(0.0)`, this file's `draw_terminal`), or a click on
-    /// the gutter resolves to `TerminalHit::Cell` when the paint path
-    /// shows a scrollbar there, not a cell — "paint and no-paint
-    /// silently disagree" (rule 5). Pins the formula, then proves it
-    /// against a real Cairo paint: the last (gutter) column must not
-    /// show the painted cell colour.
+    /// `terminal_layout`'s default body must reserve the same scrollbar
+    /// gutter width `draw_terminal` reserves before iterating cells
+    /// (`cell_area_w = (rect.width - sb_width).max(0.0)`). Otherwise a click
+    /// on the gutter resolves to `TerminalHit::Cell` when the paint path shows
+    /// a scrollbar there. The last (gutter) column must not show the painted
+    /// cell colour — this test proves that against real Cairo paint.
     #[test]
     fn gtk_backend_terminal_layout_reserves_scrollbar_gutter_matching_draw_terminal() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
@@ -9332,19 +8932,13 @@ mod tests {
         }
     }
 
-    /// Issue #506 review fix: `diff_view_layout` is claimed to be
-    /// "verified byte-for-byte against each backend's real paint
-    /// formula" — this test (and its unified-mode sibling below) makes
-    /// that claim true for GTK. Since #866, painting goes through
-    /// `Backend::draw_diff_view` (the shared
-    /// `primitives::diff_view::native_surface_paint::paint`), not the
-    /// deprecated `gtk::draw_diff_view` free-function shim — routing
-    /// through the real trait method here avoids tripping the `-D
-    /// warnings`-denied `deprecated` lint (CLAUDE.md rule 3), matching
-    /// `gtk_backend_editor_layout_matches_draw_editor_gutter_and_text_geometry`'s
-    /// own `enter_frame_scope` shape. This compares the no-paint default
-    /// body against the exact value the real paint path produced, in
-    /// `SideBySide` mode with a header row reserved.
+    /// `diff_view_layout` is verified byte-for-byte against the real paint
+    /// formula. Since #866, painting goes through `Backend::draw_diff_view`
+    /// (the shared `primitives::diff_view::native_surface_paint::paint`),
+    /// not a deprecated free-function shim. This routes through the real
+    /// trait method, compares the no-paint default body against the exact
+    /// value the real paint path produced, in `SideBySide` mode with a
+    /// header row reserved.
     #[test]
     fn gtk_diff_view_layout_matches_draw_diff_view_side_by_side_with_header() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
@@ -9405,16 +8999,11 @@ mod tests {
         );
     }
 
-    /// Issue #506 review fix: `editor_layout`'s default body
-    /// (`editor.layout(rect, char_width, line_height)`) must match the
-    /// gutter/text geometry `gtk::draw_editor` actually paints with —
-    /// `gutter_width = editor.gutter_char_width * char_width` and
-    /// `text_x_offset = rect.x + gutter_width - h_scroll_offset`
-    /// (`src/gtk/editor.rs`). Note `gtk::draw_editor` paints at
-    /// `editor.rect`, not the `rect` argument `Backend::draw_editor`
-    /// receives (it discards that argument — `let _ = rect;`), so this
-    /// test sets `editor.rect == rect` to hold the two in sync, exactly
-    /// the invariant callers must maintain (see `editor_layout`'s doc).
+    /// `editor_layout`'s default body must match the gutter/text geometry
+    /// the paint path actually uses: `gutter_width = editor.gutter_char_width
+    /// * char_width` and `text_x_offset = rect.x + gutter_width -
+    /// h_scroll_offset`. The paint path uses `editor.rect`, not the `rect`
+    /// argument, so callers must keep `editor.rect == rect` in sync.
     #[test]
     fn gtk_backend_editor_layout_matches_draw_editor_gutter_and_text_geometry() {
         let mut backend = GtkBackend::new();
@@ -9539,13 +9128,10 @@ mod tests {
         assert_eq!((vsb.x, vsb.width), (186.0, 14.0));
     }
 
-    /// #416 review follow-up: `SidebarPanel` composes a `Toolbar` header
-    /// internally — its button text is measured/drawn via
-    /// `PaintSurface::surface_measure_text`/`surface_draw_text_run`
-    /// (`crate::primitives::sidebar_panel::native_surface_paint::paint`,
-    /// #862), which just uses whatever font is live on the shared
-    /// `pango_layout` — so the same editor-font leak the previous test
-    /// guards against propagates here too unless
+    /// `SidebarPanel` composes a `Toolbar` header internally — its button
+    /// text is measured/drawn via `PaintSurface` methods that use whatever
+    /// font is live on the shared `pango_layout`. The same editor-font leak
+    /// the previous test guards against propagates here too unless
     /// `GtkBackend::draw_sidebar_panel` does its own save/swap/restore.
     #[test]
     fn gtk_backend_draw_sidebar_panel_toolbar_uses_ui_font_not_editor_font() {
@@ -9720,7 +9306,7 @@ mod tests {
         );
     }
 
-    /// #620: the icon-aware pair must agree the same way — and must
+    /// The icon-aware pair must agree the same way — and must
     /// actually differ from the icon-less pair, or the "reservation" is
     /// a no-op nobody would notice until a user clicked a decorated tab.
     #[test]
@@ -9781,17 +9367,11 @@ mod tests {
         );
     }
 
-    /// Issue #1080 regression: `tab_bar_layout_with_chrome` — the one
-    /// no-paint twin the reviewer caught discarding `pixel_tab_bar_layout`'s
-    /// third tuple element as `_available_cols` instead of assigning it —
-    /// must actually populate `TabBarHits::available_cols` with the shared
-    /// helper's estimate, not leave it at `tab_bar_hits_from_layout`'s old
-    /// `bar_width`-in-pixels placeholder. RED before the fix: with an
-    /// 80px-wide bar the placeholder is 80 (raw pixel width truncated to
-    /// `usize`), which happens to be nonzero, so a bare `> 0` assertion
-    /// would not have caught the bug — this compares against the known-good
-    /// value from `tab_bar_layout` (equivalent inputs: no icons, default
-    /// chrome) instead.
+    /// `tab_bar_layout_with_chrome` must actually populate
+    /// `TabBarHits::available_cols` with the shared helper's estimate, not
+    /// leave it at the old bar-width-in-pixels placeholder. This compares
+    /// against the known-good value from `tab_bar_layout` with equivalent
+    /// inputs (no icons, default chrome).
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn gtk_backend_tab_bar_layout_with_chrome_populates_available_cols() {
@@ -10213,14 +9793,10 @@ mod tests {
         );
     }
 
-    /// Regression test for quadraui#1184: the full-pane blank-area clear
-    /// in `draw_terminal` used to hardcode `Color::rgb(30, 30, 30)` (the
-    /// vt100 default cell background) regardless of the active theme, so
-    /// a light theme's terminal pane still showed a dark rectangle
-    /// wherever the cell grid didn't cover the full rect. Set a light
-    /// theme and a grid shorter than the rect (row 1 is blank) — the
-    /// uncovered area must be filled with `theme.background`, not the
-    /// old dark literal.
+    /// The full-pane blank-area clear in `draw_terminal` must use the
+    /// active theme's background, not a hardcoded dark colour. A light
+    /// theme's terminal pane must show the correct colour wherever the cell
+    /// grid doesn't cover the full rect.
     #[test]
     fn draw_terminal_blank_area_fill_uses_theme_background() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
@@ -10371,7 +9947,7 @@ mod tests {
         backend.surface_end_frame();
     }
 
-    // ── Style (#1133) ─────────────────────────────────────────────────
+    // ── Style ─────────────────────────────────────────────────────────
 
     /// `Backend::draw_focus_ring` reads `Style::focus_ring_width`, not a
     /// hardcoded literal — proven by painting the same rect at two very
@@ -10780,7 +10356,7 @@ mod tests {
              chrome={chrome_ink}, editor={editor_ink}"
         );
 
-        // #1073: italic must not panic even though this backend paints it
+        // Italic must not panic even though this backend paints it
         // via the same `pango::AttrList` recipe `surface_draw_text_run_styled`
         // already uses.
         let italic_surface =
@@ -11204,16 +10780,11 @@ mod tests {
         );
     }
 
-    /// Regression for quadraui#791/#810: before #791, GTK's `draw_chart`
-    /// had no clip, so overlay elements painted outside `plot_area` on
-    /// purpose (legend, crosshair, hover marker) could bleed past the
-    /// chart's *own* rect onto whatever is painted beside it. #810
-    /// unified all three backends' `draw_chart` onto one shared
-    /// `primitives::chart::paint`, which is what now owns this clip for
-    /// every pixel backend — this is the "driver-tier" proof for GTK;
-    /// `win::backend::tests` carries the equivalent proof for Windows,
-    /// which never had this clip at all before #810 (see that module's
-    /// twin test's doc for the RED-before-this-PR detail).
+    /// Before unification, GTK's `draw_chart` had no clip, so overlay
+    /// elements painted outside `plot_area` (legend, crosshair, hover
+    /// marker) could bleed past the chart's rect. The unified
+    /// `primitives::chart::paint` now owns this clip for every backend.
+    /// This is the driver-tier proof for GTK.
     #[test]
     fn gtk_backend_draw_chart_hover_marker_does_not_escape_chart_rect() {
         // origin=1.0 at index 0 → top edge; 0.0 at index 1 → bottom
@@ -11394,11 +10965,11 @@ mod tests {
         );
     }
 
-    // ── theme_prefers_dark (#1016) ───────────────────────────────────────
+    // ── theme_prefers_dark ───────────────────────────────────────────────
     //
     // Pure luma mapping, unit-tested without a live GTK display —
     // mirrors `gtk::services::system_theme_from_gtk_settings_reports_*`'s
-    // posture for the read-direction counterpart (#952). The actual
+    // posture for the read-direction counterpart. The actual
     // `gtk4::Settings::set_gtk_application_prefer_dark_theme` push in
     // `push_native_theme_preference` needs a live display connection and
     // isn't covered by an automated test here — see this issue's

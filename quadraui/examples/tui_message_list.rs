@@ -1,4 +1,4 @@
-//! `MessageList` `AppLogic` + `quadraui::tui::run` example (quadraui#818).
+//! `MessageList` `AppLogic` + `quadraui::tui::run` example.
 //!
 //! Click a row to see it reported in the status bar —
 //! `MessageList::hit_test`'s first driver-tested consumer.

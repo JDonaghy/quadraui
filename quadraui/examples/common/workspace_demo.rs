@@ -1,24 +1,22 @@
 //! [`WorkspaceController`] demo — an open-N-view-one document set living
-//! **inside a panel**, not in the shell's chrome (quadraui#596).
+//! **inside a panel**, not in the shell's chrome.
 //!
-//! This is the shape #596 split out of #469: the controller renders its
-//! own tab strip into whatever rect the host hands it, so a consumer can
-//! put one inside a single `AppShell` sidebar panel and paint the active
-//! document's body somewhere else entirely. No shell-level tab-strip slot
-//! is involved — that half stays in #469.
+//! The controller renders its own tab strip into whatever rect the host
+//! hands it, so a consumer can put one inside a single `AppShell` sidebar
+//! panel and paint the active document's body somewhere else entirely. No
+//! shell-level tab-strip slot is involved.
 //!
 //! The workspace is mounted into [`AppShellLayout::sidebar_content_bounds`]
 //! (the panel's rect) and the active document's "body" is painted into
-//! [`AppShellLayout::main_content_bounds`], which is exactly the split the
-//! controller's no-content-ownership design buys: `WorkspaceDoc` is an
-//! opaque id plus a label, and this app paints the body itself from its
-//! own state — something
+//! [`AppShellLayout::main_content_bounds`]. The controller owns no content:
+//! `WorkspaceDoc` is an opaque id plus a label, and this app paints the
+//! body itself from its own state — something
 //! [`TabGroupController`](quadraui::TabGroupController)'s
 //! `Box<dyn BackendWidget>` (`Send + 'static`) content could not do.
 //!
 //! Controls:
 //! - click a tab            activate that document (and promote it, if preview)
-//! - middle-click a tab     close that document (quadraui#597)
+//! - middle-click a tab     close that document
 //! - click a tab's `×`      close that document
 //! - `Ctrl+Tab`             next document (wraps, never promotes)
 //! - `Ctrl+Shift+Tab`       previous document (wraps)
@@ -28,11 +26,11 @@
 //! - `m`                    promote ("mark permanent"/pin) the active document
 //! - `q` / `Esc`            quit
 //!
-//! `p` demonstrates the preview tier (quadraui#597): each press replaces
-//! the previous preview tab in place rather than accumulating tabs, and
-//! the preview tab paints italic (`TabItem::is_preview`). `m` and
-//! clicking the preview tab both promote it — the six-trigger table lives
-//! on [`quadraui::compose::workspace`]'s module doc.
+//! `p` demonstrates the preview tier: each press replaces the previous
+//! preview tab in place rather than accumulating tabs, and the preview tab
+//! paints italic (`TabItem::is_preview`). `m` and clicking the preview tab
+//! both promote it — the six-trigger table lives on
+//! [`quadraui::compose::workspace`]'s module doc.
 
 use std::cell::RefCell;
 
@@ -151,7 +149,7 @@ impl WorkspaceDemo {
 
     /// `p`: open the next backlog document as the workspace's single
     /// **preview** — each press replaces whatever was previewed before,
-    /// so the tab count only grows the first time (quadraui#597).
+    /// so the tab count only grows the first time.
     fn open_next_preview_doc(&mut self) -> Reaction {
         let Some((id, label)) = BACKLOG.get(self.next_preview_backlog).copied() else {
             self.last_event = "preview backlog exhausted".to_string();

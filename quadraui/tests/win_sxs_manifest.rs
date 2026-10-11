@@ -1,5 +1,5 @@
 //! Guards `build.rs`'s embedded Common-Controls v6 side-by-side manifest
-//! against the comctl32 APIs `src/win/` actually calls (#744 CI fix).
+//! against the comctl32 APIs `src/win/` actually calls.
 //!
 //! ## Why this test exists
 //!
@@ -20,12 +20,10 @@
 //!
 //! That failure is invisible on every Linux machine in this fleet.
 //! `cargo check -p quadraui --features win` and `cargo test -p quadraui
-//! --features win` (the two `ubuntu-latest` win steps in `ci.yml`) compile
-//! the `cfg(target_os = "windows")` arms only as `todo!()` fallbacks —
-//! there is no import table and no loader involved. It is a *link*-time
-//! import that only a real Windows host ever tries to resolve, which is
-//! why #744 shipped green on Linux and red on `windows-latest` with a
-//! `process didn't exit successfully` and zero captured output.
+//! --features win` compile the `cfg(target_os = "windows")` arms only as
+//! `todo!()` fallbacks — there is no import table and no loader involved.
+//! It is a *link*-time import that only a real Windows host ever tries to
+//! resolve.
 //!
 //! This test closes that hole the same way `macos_appkit_features.rs`
 //! closes the `objc2-app-kit` one: a plain text check that runs on every
@@ -47,7 +45,7 @@ use std::path::{Path, PathBuf};
 /// blanket match would make this test fire on imports that need no
 /// manifest at all. Add an entry when a new v6-only call lands.
 const V6_ONLY_APIS: &[&str] = &[
-    // Vista-era task dialogs (#744) — `src/win/services.rs`'s
+    // Vista-era task dialogs — `src/win/services.rs`'s
     // `show_message_dialog`.
     "TaskDialogIndirect",
     "TaskDialog",

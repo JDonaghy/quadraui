@@ -11,18 +11,15 @@
 //! controls, action menus, diff toolbars, etc. Non-clickable labels (e.g.
 //! "2 of 5" in a diff toolbar) set `id = None`.
 //!
-//! Scope in A.6c: the primitive defines declarative state + events for
-//! plugin readiness, but vimcode's click path still resolves through the
-//! existing engine-side `TabBarClickTarget` enum. `TabBarEvent` exists
-//! for a later stage where plugin-defined tab bars use event-driven clicks.
+//! The primitive defines declarative state + events; backends resolve clicks
+//! through [`crate::backend::tab_bar_hits_from_layout`].
 //!
-//! # `PaintSurface` migration status — NOT migrated (issue #1081)
+//! # `PaintSurface` migration status — NOT migrated
 //!
 //! **`TabBar` paint is still per-backend.** There is deliberately no
 //! `native_surface_paint` module in this file, unlike
 //! [`crate::primitives::menu_bar`], [`crate::primitives::toolbar`] and
-//! [`crate::primitives::activity_bar`] — the three primitives that
-//! `PaintSurface` Phase 4 slice 5/8 (#1081) *did* move. `gtk::tab_bar`,
+//! [`crate::primitives::activity_bar`]. `gtk::tab_bar`,
 //! `macos::tab_bar` and `win::tab_bar` each still carry a full Cairo /
 //! Core Graphics / Direct2D paint loop, and the three copies have
 //! already drifted:
@@ -37,15 +34,10 @@
 //!
 //! ## Why it was held back rather than landed with the other three
 //!
-//! The other three primitives already shared one layout derivation
-//! across every pixel backend, so slicing their paint out was purely a
-//! paint change. `TabBar` does not: GTK and Windows resolve geometry
-//! through the shared
-//! [`crate::primitives::layout_metrics::pixel_tab_bar_layout`] (#1080),
+//! GTK and Windows resolve geometry through the shared
+//! [`crate::primitives::layout_metrics::pixel_tab_bar_layout`],
 //! but macOS still resolves it in two bespoke, macOS-only builders
-//! (`macos::tab_bar::mac_tab_bar_layout_icons` →
-//! `TabBarHits`, `macos::tab_bar::mac_tab_bar_native_layout_icons` →
-//! [`TabBarLayout`]) that use a **different `close_bounds` convention**:
+//! that use a **different `close_bounds` convention**:
 //! macOS sizes the close box as `close_glyph_w + 2 * CLOSE_PAD` centred
 //! on the glyph, while `pixel_tab_bar_layout` sizes it as
 //! `tab_inner_gap + close_glyph_w` starting one inner gap *before* the
@@ -55,24 +47,18 @@
 //! the per-backend branching the migration exists to delete.
 //!
 //! Unifying that convention changes macOS's close-button **hit**
-//! geometry, which is `TabBarHits`/`TabBarLayout` output both unpinned
-//! downstream consumers route real clicks through (see `CLAUDE.md`'s
-//! *Downstream consumers*). That is a layout change, not a paint change,
-//! so it belongs to #1080's lane. **#1081 must stay open (or be
-//! re-scoped to the three landed primitives with a follow-up filed for
-//! `TabBar`) — it must not be closed as complete.** The prerequisite is:
-//! move `macos::tab_bar` onto `pixel_tab_bar_layout` so all three pixel
-//! backends share one `close_bounds` convention; only then can this
-//! module grow a `native_surface_paint` module and the three backend
-//! paint loops collapse into it.
+//! geometry. **A layout change belongs to a separate effort from
+//! the paint migration.** The prerequisite is: move `macos::tab_bar`
+//! onto `pixel_tab_bar_layout` so all three pixel backends share one
+//! `close_bounds` convention; only then can this module grow a
+//! `native_surface_paint` module and the three backend paint loops
+//! collapse into it.
 //!
 //! # Backend contract
 //!
 //! **`TabBar` has measurement-dependent state and a non-trivial backend
 //! contract.** Skipping any step makes the active tab land off-screen
-//! after layout changes (window resize, new file open, scroll-to). This
-//! is the bug class we hit hardest in vimcode (issue #158, 5 commits to
-//! find the right architecture).
+//! after layout changes (window resize, new file open, scroll-to).
 //!
 //! Per paint, the backend MUST:
 //!
@@ -196,7 +182,7 @@ fn default_true() -> bool {
 /// glyph and is independent of the tab's active/inactive foreground, so
 /// the icon keeps its identity colour even on an inactive tab.
 ///
-/// # Why icons ride *beside* the bar, not inside [`TabItem`] (#620)
+/// # Why icons ride *beside* the bar, not inside [`TabItem`]
 ///
 /// Icons are supplied as a **sidecar slice** parallel to [`TabBar::tabs`]
 /// — see [`Backend::draw_tab_bar_icons`] — rather than as a
@@ -280,11 +266,6 @@ pub struct TabItem {
 impl Default for TabItem {
     /// Matches the per-field `#[serde(default...)]` values above —
     /// notably `is_closable: true`, not derived-`Default`'s `false`.
-    ///
-    /// Added under #620 so a caller can write
-    /// `TabItem { label, ..Default::default() }` instead of listing
-    /// every field; that also means any *future* field addition here
-    /// costs `..Default::default()` callers nothing.
     fn default() -> Self {
         Self {
             label: String::new(),
@@ -386,12 +367,10 @@ impl TabBar {
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
 //
-// Per Decision D6 in `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §9: primitives return
-// fully-resolved `Layout` structs; backends rasterise verbatim. A backend
-// that fails to consume a field (e.g. doesn't iterate `visible_tabs`)
-// produces visibly broken output on its own platform — not silent
-// divergence on the next one. Tab-bar layout is the reference
-// implementation of this pattern (closes #179).
+// Primitives return fully-resolved `Layout` structs; backends rasterise verbatim.
+// A backend that fails to consume a field (e.g. doesn't iterate `visible_tabs`)
+// produces visibly broken output on its own platform — not silent divergence on
+// the next one. Tab-bar layout is the reference implementation of this pattern.
 //
 // All coordinates are in the backend's native unit (char cells for TUI,
 // pixels for GTK / Win-GUI / macOS). The primitive is unit-agnostic: the
@@ -415,8 +394,8 @@ pub struct TabMeasure {
     /// [`TabChrome::active_frame`] — that counts toward `total_width` but
     /// must be excluded from the close region so [`TabBarLayout`]'s
     /// `close_bounds` still lands on the glyph itself, not the chrome
-    /// wrapping it. `0.0` (the default via [`Self::new`]) reproduces the
-    /// pre-#631 behaviour where the close region is flush against the
+    /// wrapping it. Defaults to `0.0` (see [`Self::new`]), reproducing
+    /// the behaviour where the close region is flush against the
     /// tab's right edge.
     pub trailing_width: f32,
 }
@@ -435,7 +414,7 @@ impl TabMeasure {
     /// Reserve `trailing_width` of `total_width` for chrome painted after
     /// the close-button hit region (e.g. a closing-bracket glyph), so
     /// [`TabBarLayout`]'s `close_bounds` lands before it instead of
-    /// overlapping it. Added for #631 ([`TabChrome::active_frame`]).
+    /// overlapping it.
     pub fn with_trailing(mut self, trailing_width: f32) -> Self {
         self.trailing_width = trailing_width;
         self
@@ -556,7 +535,7 @@ impl TabBarLayout {
     /// Backends that cache a `TabBarLayout` per `WidgetId` at paint time
     /// add the cached bar rect's own `(x, y)` origin to this to get an
     /// absolute screen point — see `TuiDriver::tab_center` /
-    /// `GtkDriver::tab_center` (quadraui#594), which every tab bar needs
+    /// `GtkDriver::tab_center`, which every tab bar needs
     /// since every tab paints the same label-independent chrome and
     /// `find()` can't disambiguate tab 3's target from tab 0's the way it
     /// can for uniquely-labeled text.
@@ -586,28 +565,18 @@ impl TabBarLayout {
     }
 }
 
-/// Active-tab framing vocabulary (#631): which decoration, if any, should
+/// Active-tab framing vocabulary: which decoration, if any, should
 /// enclose the active tab's full content — label *and* close glyph.
 ///
-/// Before this existed, "enclosing" decoration was whatever a backend's
-/// active-tab background fill happened to cover; a consumer that wanted an
-/// explicit bracket-style frame (`[title ×]`) had no declarative way to ask
-/// for it, because [`TabBar::layout`]'s close region is always flush
-/// against the tab's right edge — there's no way for chrome painted
-/// *after* the close glyph to exist without [`TabMeasure::trailing_width`]
-/// telling `close_bounds` to stop short of it. `coord-tui`'s
-/// `doc_tab_label` baked `[`/`]` directly into `TabItem::label` and found
-/// the close glyph by scanning the string for exactly this reason (see
-/// that function's doc comment).
-///
-/// `#[non_exhaustive]`: brand new this PR, so marking it costs no consumer
-/// anything today, and a future frame style (e.g. a stroked border) is
-/// additive rather than breaking.
+/// The close region is always flush against the tab's right edge unless
+/// [`TabMeasure::trailing_width`] reserves space for chrome painted
+/// *after* the close glyph. `#[non_exhaustive]`: a future frame style
+/// (e.g. a stroked border) is additive rather than breaking.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TabFrame {
     /// No enclosing decoration beyond the tab's ordinary active
-    /// background — the pre-#631 behaviour on every backend.
+    /// background.
     #[default]
     None,
     /// Encloses the active tab's full content — icon, label, and close
@@ -617,32 +586,28 @@ pub enum TabFrame {
     Brackets,
 }
 
-/// Per-bar chrome request (#631): which active-tab frame a backend should
+/// Per-bar chrome request: which active-tab frame a backend should
 /// paint. Passed alongside a [`TabBar`] to
 /// [`crate::Backend::draw_tab_bar_with_chrome`] /
 /// [`crate::Backend::tab_bar_layout_with_chrome`].
 ///
-/// A separate sidecar value rather than a field on [`TabBar`] itself, for
-/// the same reason [`crate::TooltipChrome`] sits beside [`crate::Tooltip`]
-/// instead of inside it: `TabBar` is a plain, non-`#[non_exhaustive]`
-/// struct built with exhaustive literals throughout this repo and by
-/// downstream consumers, so a new required field would be a hard break for
-/// every one of them (`PRIMITIVE_RULES.md` rule 8). Threading the
-/// vocabulary through a new value + new trait methods (both given default
-/// bodies that ignore chrome and delegate to the plain `draw_tab_bar` /
-/// `tab_bar_layout`) means #631 adds no required field and breaks no
-/// existing `Backend` implementor or call site.
+/// A separate sidecar value rather than a field on [`TabBar`] itself,
+/// to avoid requiring a new field on the plain struct `TabBar` which
+/// is built with exhaustive literals throughout this repo. Threading
+/// the vocabulary through a new value + new trait methods (both given
+/// default bodies that ignore chrome and delegate to the plain
+/// `draw_tab_bar` / `tab_bar_layout`) adds no required field and breaks
+/// no existing `Backend` implementor or call site.
 ///
-/// `#[non_exhaustive]`: brand new this PR, so marking it costs no consumer
-/// anything today, and a future chrome knob (e.g. a frame colour override)
-/// is additive. Construct with [`TabChrome::new`] /
-/// [`TabChrome::default`] and [`TabChrome::with_active_frame`]; the field
-/// stays `pub` for reading.
+/// `#[non_exhaustive]`: a future chrome knob (e.g. a frame colour
+/// override) is additive. Construct with [`TabChrome::new`] /
+/// [`TabChrome::default`] and [`TabChrome::with_active_frame`]; the
+/// field stays `pub` for reading.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TabChrome {
     /// Which frame to paint around the active tab. Defaults to
-    /// [`TabFrame::None`] — no change from pre-#631 behaviour.
+    /// [`TabFrame::None`].
     #[serde(default)]
     pub active_frame: TabFrame,
 }
@@ -663,63 +628,29 @@ impl TabChrome {
 /// Per-frame interaction-state output from a tab-bar rasteriser. All
 /// positions are in target-surface coordinates.
 ///
-/// Apps consume this to dispatch clicks. Tabs before the
-/// scroll offset get sentinel entries so indices in `slot_positions`
-/// / `close_bounds` line up with `bar.tabs`.
+/// Apps consume this to dispatch clicks. Tabs before the scroll offset
+/// get sentinel entries so indices in `slot_positions` / `close_bounds`
+/// line up with `bar.tabs`.
 ///
-/// # Legacy `f64` coordinates (issue #504)
+/// # Legacy `f64` coordinates
 ///
-/// Every other hit/layout struct in this crate (`TabBarLayout`,
-/// `ActivityBarRowHit`, `StatusBarLayout`, …) uses `f32` — the crate's
-/// native-unit convention (`Point`, `Rect`). This one still uses `f64`
-/// pairs and `available_cols: usize` in **character columns** (a TUI-only
-/// concept even GTK/macOS fake by measuring a Pango sample string),
-/// because it predates that convention and [`TabBarLayout`] — the
-/// intended f32-native replacement — didn't exist yet.
+/// Every other hit/layout struct in this crate uses `f32`; this one uses
+/// `f64` pairs and `available_cols: usize` in character columns (a
+/// TUI-only concept even GTK/macOS fake by measuring a Pango sample
+/// string), for compatibility with existing downstream code.
 ///
-/// It stays this way rather than being fixed in place because `vimcode`
-/// (`src/core/engine/mod.rs`, `src/core/engine/terminal_ops.rs`,
-/// `src/gtk/mod.rs`) destructures these fields directly as `f64`, and
-/// CLAUDE.md's downstream-consumers policy forbids a hard break — a type
-/// change here needs the same two-PR deprecate-then-remove protocol that
-/// retired `crate::backend::EditorPaintResult`'s deprecated
-/// `cursor_position` field (issue #1109), except across six `Backend`
-/// trait methods (`draw_tab_bar`, `draw_tab_bar_icons`,
-/// `draw_tab_bar_with_chrome`, `tab_bar_layout`, `tab_bar_layout_icons`,
-/// `tab_bar_layout_with_chrome`) and four backends, two of which
-/// (`macos::tab_bar`, `win::tab_bar`) construct this struct directly with
-/// no intermediate `TabBarLayout` to source native `f32` coordinates
-/// from. That is real, separate follow-up work, not something this PR's
-/// pass over `EditorPaintResult`/`ActivityBarRowHit` could fold in.
+/// # Deprecated
 ///
-/// The one piece of this struct's *legacy-ness* this crate can and does
-/// fix without breaking anyone: the converter that constructs it was
-/// renamed to [`crate::backend::tab_bar_hits_from_layout`] — the old
-/// `tab_bar_layout_to_hits` alias was removed in issue #1109 (zero uses
-/// in coord-tui's `main` and vimcode's `develop`).
-///
-/// # Deprecated (issue #823)
-///
-/// The struct itself carries `#[deprecated]`, per CLAUDE.md rule 8's
-/// deprecate-then-remove protocol. Marking it deprecated does not
-/// change what `draw_tab_bar` / `tab_bar_layout` (or their icon/chrome
-/// twins) return — that six-method, four-backend signature change is
-/// still the "real, separate follow-up work" described above, tracked
-/// as a coordinated pair of PRs (this repo + a linked `vimcode` issue for
-/// its consumer migration) once the replacement rasterisers exist. What
-/// the deprecation does do: mark the type deprecated so every remaining
+/// The struct itself carries `#[deprecated]`. Marking it deprecated does
+/// not change what `draw_tab_bar` / `tab_bar_layout` (or their icon/chrome
+/// twins) return — that signature change is tracked separately. What
+/// the deprecation does: mark the type deprecated so every remaining
 /// dependency on its `f64` shape is visible at the type level, and name
 /// [`TabBarLayout`] — already real, already f32/`Rect`/[`TabBarHit`]-based,
 /// already what every in-tree rasteriser computes *before* narrowing to
-/// this struct — as the eventual replacement return type.
-///
-/// Issue #1251 (the v0.1.0 breaking batch's phase 2) removed every other
-/// item #1109 had left deprecated pending a lagging consumer migration —
-/// this is the one exception, and deliberately: its blocker isn't a
-/// consumer that still builds the type, it's the six-method/four-backend
-/// signature swap above, which is unstarted. Removal target: the PR that
-/// lands that swap (tracked in #823), not before v0.2.0 — i.e. not in
-/// the upcoming v0.1.0 tag.
+/// this struct — as the eventual replacement return type. Removal target:
+/// once the replacement rasterisers exist and the six-method/four-backend
+/// signature swap lands.
 #[deprecated(
     since = "0.0.1",
     note = "f64-tuple pre-D6 hit struct; the eventual replacement is `TabBarLayout` (`Rect` + `TabBarHit`) — issue #823; removal target: the #823 six-method/four-backend signature swap, not before v0.2.0"
@@ -1641,8 +1572,6 @@ mod tests {
         assert!(layout.scroll_left.is_none());
         assert!(layout.scroll_right.is_none());
     }
-
-    // ─── quadraui#594 ────────────────────────────────────────────────────
 
     #[test]
     fn tab_bar_layout_tab_center_and_tab_close_center() {

@@ -1,4 +1,4 @@
-//! `CommandLine` selection-highlight demo, TUI backend (issue #1001).
+//! `CommandLine` selection-highlight demo, TUI backend.
 //!
 //! See `examples/common/command_line_selection_demo.rs` for the shared
 //! `AppLogic`. See `gtk_command_line_selection.rs` for the GTK twin.

@@ -86,8 +86,8 @@ mod tests {
     }
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
-    // must return coords in the same frame across backends"
-    // (quadraui#494). `tui_spinner_layout` bakes `area.x`/`area.y`
+    // must return coords in the same frame across backends".
+    // `tui_spinner_layout` bakes `area.x`/`area.y`
     // straight into `spinner.layout`'s returned bounds (absolute
     // frame), so the regression guard is a full paint+hit_test round
     // trip re-run at a non-zero origin.
@@ -109,8 +109,7 @@ mod tests {
         glyph_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):
-    /// the same glyph paint + hit_test round trip must hold when the
+    /// The same glyph paint + hit_test round trip must hold when the
     /// spinner isn't painted at the screen origin.
     #[test]
     fn glyph_paint_and_hit_round_trip_at_nonzero_origin() {

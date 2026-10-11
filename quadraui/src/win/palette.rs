@@ -1,16 +1,11 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::Palette`] (issue #28).
+//! Direct2D / DirectWrite rasteriser for [`crate::Palette`].
 //!
 //! Content painting (background, border, title/query/item rows,
-//! scrollbar, create row, preview pane) moved to the shared
-//! [`crate::primitives::palette::native_surface_paint::paint`] (#1076,
-//! `PaintSurface` Phase 4 slice 3/8) — see that fn's module doc for
-//! what's shared, including the three-way geometry drift it fixes and
-//! the per-backend feature gaps it closes. Windows already had
-//! match-position highlighting (its own `matched_runs`/
-//! `draw_matched_text` run-splitter, ported into the shared `paint` for
-//! every backend to use); it gains icon rendering, a query cursor, and
-//! `PaletteMode::Input` handling for the first time (it already had
-//! this last one; kept).
+//! scrollbar, create row, preview pane) uses the shared
+//! [`crate::primitives::palette::native_surface_paint::paint`]
+//! function — see that fn's module doc for what's shared, including
+//! geometry handling and per-backend feature coverage. Windows gains
+//! icon rendering, a query cursor, and `PaletteMode::Input` handling.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod palette;` and `backend.rs`'s
@@ -24,11 +19,11 @@ use crate::primitives::palette::{native_surface_paint, Palette, PaletteLayout};
 
 /// Compute a [`Palette`]'s layout at `(rect.x, rect.y)` without
 /// painting. Thin wrapper over
-/// [`crate::primitives::palette::native_surface_paint::layout`] (#1076)
+/// [`crate::primitives::palette::native_surface_paint::layout`]
 /// — the canonical geometry formula every backend now shares. See that
 /// fn's doc for the three-way drift this closes (`query_height`, row
 /// flooring, scrollbar width). `Palette::layout` keeps the selected row
-/// visible internally (see #711) — no backend-side scroll clamp needed
+/// visible internally — no backend-side scroll clamp needed
 /// here.
 pub fn win_palette_layout(rect: Rect, palette: &Palette, line_height: f32) -> PaletteLayout {
     native_surface_paint::layout(rect.width, rect.height, palette, line_height).0
@@ -40,7 +35,7 @@ pub fn win_palette_layout(rect: Rect, palette: &Palette, line_height: f32) -> Pa
 /// [`crate::Backend::draw_palette`]'s signature.
 ///
 /// `nerd_fonts_enabled` selects between item icons' Nerd-Font glyph and
-/// ASCII fallback (issue #804), matching every other backend's
+/// ASCII fallback, matching every other backend's
 /// `draw_palette`. Colours come from `Theme::default()` rather than a
 /// live `WinBackend` theme field — same convention `win::status_bar`
 /// and every other pre-`PaintSurface` Win-GUI rasteriser use.
@@ -162,9 +157,6 @@ mod tests {
         );
     }
 
-    /// Regression for #1076: pre-migration, `win::palette::draw_palette`
-    /// never painted a query cursor at all (this module's own doc used
-    /// to name it directly, contrasting with GTK/macOS's block cursor).
     /// The shared `paint` now fills a cursor block in `query_fg` on
     /// every backend, including Windows.
     #[test]
@@ -189,8 +181,7 @@ mod tests {
         // solidly, since real fonts leave leading above ascenders and
         // below descenders), so scan for the column with the highest
         // fraction of query_fg-near pixels and require it to be nearly
-        // fully covered. Plain "> op" text alone (the pre-#1076
-        // behaviour) never produces a column this solid.
+        // fully covered.
         let dist2 = |px: Color, c: Color| {
             let dr = px.r as i32 - c.r as i32;
             let dg = px.g as i32 - c.g as i32;
@@ -213,22 +204,17 @@ mod tests {
         );
     }
 
-    /// Regression for #1076's **query_height** geometry drift: pre-#1076
-    /// `win_palette_layout` reserved a bare `line_height` for the query
-    /// row (and `win::draw_palette` painted no query/list separator at
-    /// all); GTK alone reserved `line_height + 1.0`, the `+ 1.0` being
-    /// the separator stroke that sits in the query band's **last pixel**
-    /// (D-007 §2). `native_surface_paint::layout` now uses GTK's formula
-    /// for every backend, so Windows gains the separator *and* its first
-    /// item row moves one pixel down, from `title_h + line_height` to
-    /// `title_h + line_height + 1.0`.
+    /// The query row height uses a formula that reserves space for a
+    /// separator pixel at the bottom: `line_height + 1.0`. The separator
+    /// stroke sits in the query band's last pixel, and the first item row
+    /// moves down by 1.0 pixel accordingly.
     ///
     /// Paints through the real Direct2D `HeadlessSurface` and pins all
     /// three rows: the reserved separator pixel carries border ink, the
     /// query text row above it does not, and the first item row below it
     /// carries the selected row's fill — i.e. the separator neither
     /// climbs into the text row nor steals (and get overpainted by) the
-    /// first item row, which is exactly what it used to do.
+    /// first item row.
     #[test]
     fn separator_paints_at_corrected_row_not_drifted_one() {
         let surface = HeadlessSurface::new(300, 200).expect("create surface");
@@ -254,7 +240,7 @@ mod tests {
 
         let title_h = line_height; // native_surface_paint::layout: title_h = line_height
         let sep_y = (qb.y + qb.height - 1.0) as u32; // corrected: the reserved pixel
-        let first_row_y = (qb.y + qb.height) as u32; // pre-#1076: this was sep_y
+        let first_row_y = (qb.y + qb.height) as u32; // This was sep_y
         assert_eq!(sep_y, (title_h + line_height) as u32);
         assert_eq!(first_row_y, (title_h + line_height + 1.0) as u32);
         assert_eq!(
@@ -264,8 +250,7 @@ mod tests {
         );
 
         // `p`'s row 0 is the selected one, so the first item row paints
-        // `selected_bg` — the fill that used to swallow a separator
-        // painted at `first_row_y`.
+        // `selected_bg` — the fill that must not overwrite the separator.
         let probe_x = 150_u32;
         let is_border = |y: u32| {
             let px = surface.pixel_at(probe_x, y);
@@ -293,17 +278,13 @@ mod tests {
         );
     }
 
-    /// Regression for #1076's **row-flooring** geometry drift: pre-#1076
-    /// `win_palette_layout` fed `Palette::layout` the full popup height,
-    /// so its per-row clamp (`height.min(remaining)`) could hand back a
-    /// clipped, partial-height last row whenever the available item-list
-    /// height wasn't an exact multiple of `line_height`. GTK's pre-#1076
-    /// formula floored the row count and fed a reduced `viewport_height`
-    /// instead; `native_surface_paint::layout` now does that for every
-    /// backend. The rect height (200) and `line_height` (18) are chosen
-    /// so the available item area (159px after title/query/bottom-inset)
-    /// is *not* an exact multiple of 18 — the exact condition that
-    /// produced a partial last row pre-#1076.
+    /// The item list flooring: when available item-list height is not an
+    /// exact multiple of `line_height`, the row count is floored and a
+    /// reduced `viewport_height` is used to prevent partial-height last
+    /// rows. The rect height (200) and `line_height` (18) are chosen so
+    /// the available item area (159px after title/query/bottom-inset) is
+    /// not an exact multiple of 18 — the condition that produces a partial
+    /// last row without flooring.
     #[test]
     fn item_list_never_shows_a_partial_last_row() {
         let surface = HeadlessSurface::new(300, 200).expect("create surface");

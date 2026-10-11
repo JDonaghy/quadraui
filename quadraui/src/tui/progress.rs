@@ -131,7 +131,7 @@ mod tests {
 
     // Shared bodies parametrized over the area's origin — LESSONS.md
     // "Layout helpers must return coords in the same frame across
-    // backends" (quadraui#494). `tui_progress_layout` bakes `area.x`/
+    // backends". `tui_progress_layout` bakes `area.x`/
     // `area.y` straight into `bar.layout`'s returned bounds (absolute
     // frame), so the regression guard is a full paint+hit_test round
     // trip re-run at a non-zero origin, not a relative-coords check.
@@ -159,8 +159,7 @@ mod tests {
         determinate_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):
-    /// the same fill+hit_test round trip must hold when the bar isn't
+    /// The same fill+hit_test round trip must hold when the bar isn't
     /// painted at the screen origin.
     #[test]
     fn determinate_fill_paint_and_click_round_trip_at_nonzero_origin() {
@@ -187,7 +186,7 @@ mod tests {
         cancel_button_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md).
+    /// Non-zero-origin round-trip invariant: the same fill+hit_test must hold at any origin.
     #[test]
     fn cancel_button_paint_and_click_round_trip_at_nonzero_origin() {
         cancel_button_round_trip_at(7, 13);

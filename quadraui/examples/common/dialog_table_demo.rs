@@ -7,12 +7,11 @@
 //!
 //! The demo exercises:
 //! - [`DialogTable`] with headers and multi-row data
-//! - Generic layout using `backend.measure()` (quadraui#817) so the dialog
+//! - Generic layout using `backend.measure()` so the dialog
 //!   renders at the right scale on both TUI (1.0 = one cell) and GTK (real
 //!   pixel line height / char width, not an approximation of either).
-//! - [`Dialog::measure_generic`] (quadraui#419) for deriving the
-//!   `DialogMeasure` itself — this demo used to hand-roll the same
-//!   char-cell arithmetic inline; it now dogfoods the library helper.
+//! - [`Dialog::measure_generic`] for deriving the
+//!   `DialogMeasure` — this dogfoods the library helper.
 //! - The `draw_dialog` table rendering path (column separators + header row)
 
 use quadraui::{
@@ -60,25 +59,24 @@ impl DialogTableDemo {
     }
 
     /// Compute a [`DialogMeasure`] from `backend.measure()` via
-    /// [`Dialog::measure_generic`] (quadraui#419), then overrides
+    /// [`Dialog::measure_generic`], then overrides
     /// `button_width` with a real per-label measurement via
-    /// [`crate::Backend::measure_text`] (quadraui#1132).
+    /// [`crate::Backend::measure_text`].
     ///
     /// `line_height` is 1.0 on TUI (one character cell) and the pixel line
     /// height on GTK/macOS. `char_width` is likewise the real glyph width
     /// on pixel backends — [`crate::Backend::measure`]'s [`crate::Metrics`]
-    /// is the one source of truth, same as pre-#419. `measure_generic`
-    /// itself still sizes `button_width` as a flat `char_width * 8.0`
-    /// guess (its own doc: "does not measure … buttons' rendered pixel
-    /// width beyond the char-cell approximation … callers with real text
-    /// measurement available should prefer measuring directly") — right
-    /// for this dialog's one `"Close"` button on TUI's fixed grid, but a
-    /// proportional chrome font on GTK/macOS/Win has no single
-    /// `char_width` to multiply by 8. This method is that "measure
-    /// directly" caller: the real button-label width in the chrome font,
-    /// plus the same two-char-width padding `measure_generic` already
-    /// budgets. `border_chrome_inset` is `0.0`: both this repo's TUI and
-    /// GTK `draw_dialog` paint the border *inside* `DialogLayout::bounds`,
+    /// is the one source of truth. `measure_generic` itself still sizes
+    /// `button_width` as a flat `char_width * 8.0` guess (its own doc: "does
+    /// not measure … buttons' rendered pixel width beyond the char-cell
+    /// approximation … callers with real text measurement available should
+    /// prefer measuring directly") — right for this dialog's one `"Close"`
+    /// button on TUI's fixed grid, but a proportional chrome font on
+    /// GTK/macOS/Win has no single `char_width` to multiply by 8. This method
+    /// is that "measure directly" caller: the real button-label width in the
+    /// chrome font, plus the same two-char-width padding `measure_generic`
+    /// already budgets. `border_chrome_inset` is `0.0`: both this repo's TUI
+    /// and GTK `draw_dialog` paint the border *inside* `DialogLayout::bounds`,
     /// so no extra inset is needed.
     fn measure(&self, backend: &dyn Backend) -> DialogMeasure {
         let m = backend.measure();
@@ -150,13 +148,11 @@ mod measure_tests {
         RecordingBackend::with_viewport(Viewport::new(800.0, 600.0, 1.0), 20.0, 9.0)
     }
 
-    /// Pre-#817 this file approximated `char_width` as `line_height *
-    /// 0.6` instead of asking the backend. Reproduced here only to prove
-    /// the two formulas coincide on TUI metrics -- the switch to
-    /// `backend.measure().char_width` does not move
-    /// `DialogTableDemo`'s TUI layout (the layout every
-    /// `dialog_table_*` driver test in `tests/tui_example_driver.rs`
-    /// actually paints and asserts against).
+    /// Pre-computed helper that approximates `char_width` as `line_height *
+    /// 0.6` instead of asking the backend. Used here only to verify
+    /// the two formulas coincide on TUI metrics — the switch to
+    /// `backend.measure().char_width` does not change
+    /// `DialogTableDemo`'s TUI layout.
     fn pre_817_char_width_approximation(line_height: f32) -> f32 {
         if line_height > 1.0 {
             line_height * 0.6
@@ -171,7 +167,7 @@ mod measure_tests {
         let demo = DialogTableDemo::new();
         let m = demo.measure(&backend);
         let legacy_char_w = pre_817_char_width_approximation(backend.line_height);
-        // quadraui#1132: `button_width` is no longer the flat `char_width *
+        // `button_width` is no longer the flat `char_width *
         // 8.0` guess -- it's "Close".len() (5) char-widths of real
         // measurement plus 2 char-widths of padding, which coincide with
         // the old 8-char-width approximation only because `measure_text`
@@ -183,8 +179,7 @@ mod measure_tests {
     }
 
     /// On a pixel backend the pre-#817 approximation and the real
-    /// `char_width` diverge (12.0 guessed vs. 9.0 real) -- this is the
-    /// duplicated-font-metric-knowledge bug #817 exists to remove.
+    /// `char_width` diverge (12.0 guessed vs. 9.0 real).
     /// Asserts `measure()` now reports the real value.
     #[test]
     fn measure_uses_real_char_width_not_the_pre_817_approximation_on_pixel_metrics() {
@@ -196,7 +191,7 @@ mod measure_tests {
             legacy_char_w, backend.char_width,
             "test setup should pick metrics where the approximation is wrong"
         );
-        // quadraui#1132: real "Close"-label measurement (5 char-widths) +
+        // Real "Close"-label measurement (5 char-widths) +
         // 2 char-widths of padding, not a flat 8 -- see the TUI test's doc
         // above for why these are both still char_width-proportional on
         // `RecordingBackend` specifically.
@@ -208,12 +203,9 @@ mod measure_tests {
         );
     }
 
-    /// quadraui#1132's actual point: `button_width` must track each
-    /// button's *own* label length through [`Backend::measure_text`]
-    /// instead of a dialog-shape-independent flat guess -- a dialog with
-    /// a much longer button label must get a wider button box, which the
-    /// pre-#1132 `char_width * 8.0` formula could never reflect (every
-    /// dialog got the same width regardless of its label).
+    /// `button_width` must track each button's *own* label length through
+    /// [`Backend::measure_text`] instead of a flat guess — a dialog with
+    /// a much longer button label must get a wider button box.
     #[test]
     fn measure_button_width_tracks_the_actual_label_length() {
         let backend = pixel_shaped();

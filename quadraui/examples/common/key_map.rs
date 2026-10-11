@@ -1,73 +1,45 @@
-//! Ordered, scope-aware key binding table (#473).
+//! Ordered, scope-aware key binding table.
 //!
-//! # Demoted to `examples/` (#825)
+//! This type was removed from the public library API. It's kept here as a
+//! copy-paste recipe: if an app wants scope-aware key resolution, copy this
+//! file directly. If a real consumer shows up, it can be promoted back to
+//! `compose::key_map` — the design doesn't need to change, only its address.
 //!
-//! This was `quadraui::compose::key_map::{KeyMap, KeyContext}` — public
-//! library API — until #825's adopt-or-demote pass found **zero
-//! constructors anywhere**: not in `~/src/coord-tui` or `~/src/vimcode`
-//! (per #825's own audit, which is what named this type in the first
-//! place), and not even in this crate's own examples or tests beyond
-//! its own unit-test module. `Backend::register_accelerator` resolves
-//! `Global`-scope bindings natively; nothing in-tree ever needed the
-//! `Widget`/`Mode`-scope resolution this type exists to provide, so
-//! there was no live call site to prove the shape against. Per
-//! `docs/PRIMITIVE_RULES.md` rule 8 ("zero hits in both plus no
-//! in-tree use ⇒ remove it outright"), it came out of the crate rather
-//! than being frozen by the upcoming `v0.1.0` tag. It's kept here,
-//! working, as a copy-paste recipe: if an app wants scope-aware key
-//! resolution, copy this file in directly. If a real consumer shows up,
-//! promote it back to `compose::key_map` — the design doesn't need to
-//! change, only its address.
-//!
-//! The 12 tests below moved with it, but an example's `#[cfg(test)]`
-//! block is inert under plain `cargo test --workspace` — `[[example]]`
-//! targets default to `test = false`, so this module is compiled and
-//! linked when pulled in via `mod common;` yet its tests never run that
-//! way. `tests/key_map_recipe.rs` is what actually keeps them "fully
-//! tested": a `[[test]]` target (default `test = true`) that
-//! `#[path]`-includes this file, the same trick
-//! `tests/tui_example_driver.rs` uses for every other `examples/common/`
-//! module. That is the file `cargo test --workspace` runs; this one, on
-//! its own, is not exercised by CI.
+//! Tests for this module are in `tests/key_map_recipe.rs` (a `[[test]]` target
+//! that includes this file), not in this example's `#[cfg(test)]` block
+//! (which is inert under `cargo test --workspace` since `[[example]]` targets
+//! default to `test = false`).
 //!
 //! [`Backend::register_accelerator`](quadraui::Backend::register_accelerator)
 //! only resolves `AcceleratorScope::Global` bindings — the backend doesn't
 //! know which widget has focus or which app-defined mode is active, so
-//! `TuiBackend::apply_accelerators` explicitly
-//! skips `Widget`/`Mode`-scoped entries and leaves them as raw
-//! `KeyPressed` events. Consumers that want those scopes have
-//! historically hand-rolled the guard themselves — repeating a predicate
-//! like `!pty_active && !any_blocking_modal_active() && …` across every
-//! `Key::Char` match arm instead of declaring the scope once.
+//! `TuiBackend::apply_accelerators` explicitly skips `Widget`/`Mode`-scoped
+//! entries and leaves them as raw `KeyPressed` events.
 //!
-//! [`KeyMap`] is that missing resolver. Apps declare an ordered table of
-//! `(scope, binding, action id)` once; at each `KeyPressed` event they
-//! call [`KeyMap::resolve`] with a [`KeyContext`] describing *this
-//! frame's* focus/mode/blocked state, and get back the one
-//! `AcceleratorId` (if any) that should fire — no per-arm guard
-//! clauses, no scope logic duplicated at every call site.
+//! [`KeyMap`] resolves these scoped bindings. Apps declare an ordered table of
+//! `(scope, binding, action id)` once; at each `KeyPressed` event they call
+//! [`KeyMap::resolve`] with a [`KeyContext`] describing the current
+//! focus/mode/blocked state, and get back the one `AcceleratorId` (if any)
+//! that should fire.
 //!
 //! # Ordering = priority
 //!
 //! Entries are tried in registration order; the first entry whose key +
-//! modifiers match **and** whose scope is currently active wins. This is
-//! the "fallthrough" the table provides: register the narrow, specific
-//! binding first (e.g. `Widget(palette_id)` → `"palette.close"` for
-//! `Escape`) and the broad fallback after (e.g. `Global` → `"app.blur"`
-//! for the same `Escape`). When the palette has focus the first entry's
-//! scope is active and wins; otherwise resolution falls through to the
-//! next entry that matches the key.
+//! modifiers match **and** whose scope is currently active wins. Register
+//! narrow, specific bindings first (e.g. `Widget(palette_id)` → `"palette.close"`)
+//! and broad fallbacks after (e.g. `Global` → `"app.blur"`). When the palette
+//! has focus the first entry's scope is active and wins; otherwise resolution
+//! falls through to the next entry that matches the key.
 //!
 //! # Relationship to `Accelerator` / `Backend::register_accelerator`
 //!
-//! `KeyMap` is backend-agnostic and doesn't require registering anything
-//! with a `Backend` — it resolves directly against raw `Key` +
-//! `Modifiers`, so it works identically whether the native `KeyPressed`
-//! event came through unmodified or already had `Global` accelerators
-//! peeled off upstream by the backend. [`KeyMap::bind_accelerator`] lets
-//! apps build the table straight from the same `Accelerator` values they
-//! already declare for `register_accelerator`, so the two paths share one
-//! source of truth instead of two.
+//! `KeyMap` is backend-agnostic and doesn't require registering anything with
+//! a `Backend` — it resolves directly against raw `Key` + `Modifiers`, so it
+//! works identically whether the native `KeyPressed` event came through
+//! unmodified or already had `Global` accelerators peeled off upstream by the
+//! backend. [`KeyMap::bind_accelerator`] lets apps build the table straight
+//! from the same `Accelerator` values they already declare for
+//! `register_accelerator`, so the two paths share one source of truth.
 
 #![allow(dead_code)]
 

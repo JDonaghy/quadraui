@@ -1,28 +1,24 @@
 //! Backend-agnostic app code for the shell + `MenuSystem` regression demo
 //! ([`tui_shell_menu`] / [`gtk_shell_menu`]).
 //!
-//! Reproduces issue #411: under `run_with_shell`, an app-level modal that
-//! visually overlaps `AppShell` chrome (activity bar, sidebar, dividers,
-//! bottom-panel grip) must still receive its `MouseDown` — the chrome must
-//! not swallow it via pure position-based hit-testing just because the
-//! click's on-screen coordinates happen to land inside a chrome region.
+//! When an app-level modal visually overlaps `AppShell` chrome (activity bar,
+//! sidebar, dividers, bottom-panel grip), it must still receive its `MouseDown`:
+//! the chrome must not swallow it via pure position-based hit-testing just
+//! because the click's on-screen coordinates land inside a chrome region.
 //!
 //! The menu bar lives in the shell's title-bar band (`ShellConfig::
 //! with_title_bar`) — a plain click on "File" reaches the app normally,
 //! since `AppShell::handle` doesn't intercept title-bar clicks. But the
 //! "File" menu's *dropdown* opens directly below the bar, at the same x
 //! as the leftmost bar item — which puts it squarely over the activity
-//! bar strip underneath, exactly like vimcode's `MenuSystem` dropdown
-//! overlapping its activity bar (vimcode#552, the bug that motivated this
-//! issue). Before the #411 fix, clicking a dropdown item whose position
-//! fell inside the activity bar's bounds silently did nothing —
-//! `AppShell::handle` consumed the `MouseDown` as an activity-bar click
-//! before the app ever saw it.
+//! bar strip underneath. Clicking a dropdown item whose position falls
+//! inside the activity bar's bounds must still activate it, not be consumed
+//! as an activity-bar click.
 //!
 //! Controls:
 //! - click "File" (or Alt+F)    opens the dropdown over the activity bar
 //! - click a dropdown item      activates it, even items drawn over the
-//!   activity bar strip — this is the #411 regression check
+//!   activity bar strip
 //! - click an activity bar icon  switches panels (when no dropdown is open)
 //! - q / Esc                     quit (when no dropdown is open)
 

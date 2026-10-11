@@ -1,21 +1,11 @@
 //! Direct2D rasteriser for [`crate::primitives::split_tree::SplitTree`]
-//! (issue #740).
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::split_tree::native_surface_paint::paint`] (#863,
-//! `PaintSurface` Phase 2d slice 6/9, child of #811) — see that fn's
-//! module doc for why the three per-backend copies were found to be
-//! already identical (no divergence). This module now carries
-//! [`win_split_tree_layout`]; the deprecated `draw_split_tree`
-//! compatibility shim over the shared [`super::surface::D2dSurface`]
-//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
-//! and vimcode's `develop`). No geometry is re-derived:
-//! [`win_split_tree_layout`] delegates to
-//! [`crate::primitives::layout_metrics::pixel_split_tree_layout`] (issue
-//! #1079), the shared divider thickness
-//! [`crate::primitives::layout_metrics::pixel::DIVIDER`] `super::split`
-//! also uses, so a `SplitTree` and a plain `Split` line up, same as the
-//! gtk/macos twins.
+//! This module carries [`win_split_tree_layout`]; painting is handled by the shared
+//! [`crate::primitives::split_tree::native_surface_paint::paint`]. Geometry is not
+//! re-derived: [`win_split_tree_layout`] delegates to
+//! [`crate::primitives::layout_metrics::pixel_split_tree_layout`], which uses the
+//! same divider thickness as `super::split`, so a `SplitTree` and a plain `Split`
+//! line up across backends.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod split_tree;` and `backend.rs`'s
@@ -63,9 +53,7 @@ mod tests {
 
     /// Paint `tree` via the shared
     /// [`crate::primitives::split_tree::native_surface_paint::paint`]
-    /// through a [`super::super::surface::D2dSurface`] over `target` — the same
-    /// adapter the now-removed `draw_split_tree` shim used (issue
-    /// #1109), exercised here directly.
+    /// through a [`super::super::surface::D2dSurface`] over `target`.
     fn paint(target: &ID2D1RenderTarget, layout: &SplitTreeLayout) {
         let mut raw = super::super::surface::D2dSurface {
             target,
@@ -154,9 +142,8 @@ mod tests {
         );
     }
 
-    /// `win_split_tree_layout` (no-paint) must produce byte-identical
-    /// layout to what `draw_split_tree` used to paint — same tree, same
-    /// rect.
+    /// `win_split_tree_layout` must produce byte-identical layout to what the
+    /// paint function would produce.
     #[test]
     fn no_paint_layout_matches_paint_layout() {
         let tree = two_pane();
@@ -197,7 +184,7 @@ mod tests {
         assert!((layout.dividers[0].position - 48.0).abs() < 0.001);
     }
 
-    /// `split_tree_layout` is documented **ABSOLUTE** (issue #505): leaf
+    /// `split_tree_layout` is documented **ABSOLUTE**: leaf
     /// bounds are shifted by the origin.
     #[test]
     fn non_zero_origin_shifts_leaves() {

@@ -7,9 +7,7 @@
 //! through [`crate::UiEvent`] (e.g. `TreeEvent`, `FormEvent`) or is
 //! app-constructed from the primitive's own hit-test result (e.g.
 //! `PaletteEvent`) — most primitives resolve interaction purely through
-//! their `*Hit` type instead (see quadraui#509's disposition pass in
-//! `docs/decisions/DECISIONS.md` for why the per-primitive `*Event` enums that
-//! nothing ever constructed were removed).
+//! their `*Hit` type instead.
 
 pub mod activity_bar;
 pub mod board;

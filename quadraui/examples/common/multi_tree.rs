@@ -132,7 +132,7 @@ impl AppLogic for DebugSidebar {
         let sidebar = Self::sidebar_rect(backend);
         let status = Self::status_rect(backend);
         self.sidebar.render(backend, sidebar);
-        // #819: one `InteractionState` in, instead of two positional
+        // One `InteractionState` in, instead of two positional
         // ids. `StatusBarInteraction` keeps owning the press/release
         // state machine; this adapts its ids into the new call shape.
         let layout = backend.draw_status_bar_interactive(

@@ -1,4 +1,4 @@
-//! GTK runner for the editor-font-override demo (#422).
+//! GTK runner for the editor-font-override demo.
 //!
 //! Proves `ShellConfig::with_editor_font()` / `Backend::set_editor_font`:
 //! the editor renders at a large custom font instead of the runner's

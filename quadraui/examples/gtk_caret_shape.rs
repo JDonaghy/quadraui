@@ -1,4 +1,4 @@
-//! GTK runner for the caret-shape demo (issue #1015).
+//! GTK runner for the caret-shape demo.
 //!
 //! Same `AppLogic` as `tui_caret_shape`, proving the
 //! `Backend::set_caret_shape` dispatch is backend-generic even though

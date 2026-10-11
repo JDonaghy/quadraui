@@ -4,10 +4,9 @@
 //! text measurement to size each item. Content painting (background,
 //! active/disabled colouring, label text, Alt-key underline) moved to
 //! the shared [`crate::primitives::menu_bar::native_surface_paint::paint`]
-//! (#1081, `PaintSurface` Phase 4 slice 5/8) — see that fn's module
-//! doc for the underline-mechanism drift it resolved (GTK's Pango
-//! per-character `AttrList` underline vs. Windows' manual rectangle vs.
-//! macOS having no underline at all).
+//! — see that fn's module doc for the underline-mechanism drift it
+//! resolved (GTK's Pango per-character `AttrList` underline vs.
+//! Windows' manual rectangle vs. macOS having no underline at all).
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -48,12 +47,10 @@ pub fn gtk_menu_bar_layout(
 /// larger value (e.g. the titlebar DA height) when the bar shares a
 /// row with taller widgets like a command centre.
 ///
-/// Menu item labels are chrome, not editor content — per #624, the
-/// caller is responsible for setting `pango_layout`'s font description
-/// to the desired UI font (`GtkBackend::ui_font`) before calling and
-/// restoring whatever it was afterward (`GtkBackend::draw_menu_bar`
-/// does this). This rasteriser has no separate "editor font" concept of
-/// its own; it measures and paints with whatever font is current on
+/// Menu item labels are chrome, not editor content — the caller is
+/// responsible for setting `pango_layout`'s font description to the
+/// desired UI font before calling and restoring it afterward. This
+/// rasteriser measures and paints with whatever font is current on
 /// `pango_layout`.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_menu_bar(
@@ -165,7 +162,7 @@ mod tests {
     /// item's own painted position still resolves to that item.
     ///
     /// This is the LESSONS.md "layout helpers must return coords in the
-    /// same frame across backends" regression shape (quadraui#494):
+    /// same frame across backends" regression shape:
     /// `vi.bounds.x` is already absolute (the bar's `layout()` seeds its
     /// cursor at `bounds.x = origin_x`), so `draw_menu_bar` must paint at
     /// `vi.bounds.x` directly, not `origin_x + vi.bounds.x` — the bug this
@@ -238,16 +235,10 @@ mod tests {
         paint_and_click_round_trip_at(0.0, 0.0);
     }
 
-    /// quadraui#625/#1081: the Alt-key underline logic itself
-    /// (`alt_char_index`/`display_text`) now lives in and is tested by
-    /// `crate::primitives::menu_bar::native_surface_paint::tests` — see
-    /// that module for the "no implicit fallback" and multi-byte-label
-    /// coverage this file used to carry directly against
-    /// `alt_char_byte_range`. This test instead pins that `draw_menu_bar`
-    /// actually *paints* the underline it computes: a real regression
-    /// guard for #1081, since pre-migration `gtk::menu_bar` was the only
-    /// one of the three backends where this worked at all (macOS had no
-    /// underline; this is what the shared path now gives every backend).
+    /// Regression guard: `draw_menu_bar` paints the Alt-key underline
+    /// beneath the activation character. The underline logic itself lives
+    /// in `crate::primitives::menu_bar::native_surface_paint` and is
+    /// tested there.
     #[test]
     fn draw_menu_bar_paints_alt_underline_beneath_activation_char() {
         let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
@@ -305,8 +296,7 @@ mod tests {
         );
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):
-    /// same round trip, painted at a shifted bar origin.
+    /// Regression guard: the same round trip works with a shifted bar origin.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         paint_and_click_round_trip_at(7.0, 13.0);

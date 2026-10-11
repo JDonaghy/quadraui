@@ -1,16 +1,13 @@
 //! GTK rasteriser for [`crate::Minimap`]: fixed row pitch, per-column
-//! colour blocks (#667; supersedes the file-length-dependent font scaling
-//! from #382).
-//!
-//! Rows tile at a fixed [`crate::primitives::minimap::ROW_PITCH_PX`], independent of the file's
-//! length ([`crate::MinimapSizing::FixedPitch`]) — see
+//! colour blocks. Rows tile at a fixed [`crate::primitives::minimap::ROW_PITCH_PX`],
+//! independent of the file's length ([`crate::MinimapSizing::FixedPitch`]) — see
 //! `Minimap::layout`'s module docs for the slide behaviour when a file
 //! needs more rows than the strip holds at that pitch. At that pitch,
 //! [`is_legible`] is false, so painting lands in
 //! [`MinimapRenderMode::ColumnBlocks`]: one 1px-wide block per non-blank
 //! character column, coloured by whichever aggregated span covers it,
 //! rather than one bar per line — this is what preserves the indent
-//! silhouette VS Code's `renderCharacters: false` mode reads as (#667).
+//! silhouette VS Code's `renderCharacters: false` mode reads as.
 //! [`MinimapRenderMode::Characters`] — real glyphs painted through Pango
 //! at a scaled-down **absolute** size (`FontDescription::set_absolute_size`)
 //! — is kept for pitches at or above
@@ -23,37 +20,35 @@
 //! Both branches bound their per-row cost to [`COLUMN_CAPACITY`] columns:
 //! `ColumnBlocks`' walk stops there, and `Characters` truncates the text
 //! it hands to Pango there too, so a pathologically long line costs no
-//! more to paint or shape than a short one (#667 pt. 3).
+//! more to paint or shape than a short one.
 //!
 //! Colour lookups (both branches) walk `syntax_spans` once per paint via
 //! [`SpanCursor`], not once per row — `aggregate_spans` documents its
 //! output as sorted by `(line_idx, start_col)`, and `visible_lines` is
 //! itself always ascending in `start_line_idx`, so a single merge-walk
-//! is O(rows + spans) total rather than the old O(rows * spans) rescan
-//! (#667 pt. 4).
+//! is O(rows + spans) total rather than a per-row rescan.
 //!
-//! #738: the legibility/render-mode thresholds (`is_legible`,
+//! The legibility/render-mode thresholds (`is_legible`,
 //! `render_mode`, `minimap_font_px`), the shared `ROW_PITCH_PX` /
 //! `COLUMN_CAPACITY` geometry constants, and the span-lookup helpers
-//! (`SpanCursor`, `color_at_column`, `truncate_to_columns`) used to be
-//! defined in this module. They now live in
+//! (`SpanCursor`, `color_at_column`, `truncate_to_columns`) now live in
 //! [`crate::primitives::minimap`] so `win::minimap` (and, eventually, a
 //! macOS rasteriser) consume the exact same decision logic instead of
 //! growing an independent interpretation of either threshold — this
 //! module only imports them.
 //!
-//! # Glyph atlas (#1035)
+//! # Glyph atlas
 //!
 //! `render_mode`/`LEGIBILITY_FLOOR_PX` say a *shaped* font at
 //! `ROW_PITCH_PX` is unreadable — true, and still what [`draw_minimap`]
 //! (this module's public, uncached entry point, kept for source
 //! compatibility) does: it stays on `render_mode`'s pitch gate, so it
 //! still always lands in [`MinimapRenderMode::ColumnBlocks`], exactly as
-//! before #1035. [`draw_minimap_cached`] — what [`crate::gtk::backend::GtkBackend::draw_minimap`]
+//! before. [`draw_minimap_cached`] — what [`crate::gtk::backend::GtkBackend::draw_minimap`]
 //! actually calls — takes a different path: it never shapes at the
 //! target pitch at all. It builds a [`MinimapCharAtlas`] once per
 //! `(font family, scale)` (cached in a [`MinimapAtlasCache`] owned by
-//! `GtkBackend`, matching #1014's `image_cache` pattern) by shaping each
+//! `GtkBackend`, matching the `image_cache` pattern) by shaping each
 //! ASCII character once, *large*, via [`render_char_sample_sheet`], then
 //! box-filter-downsampling every cell to a device-pixel tile — the
 //! technique [`crate::primitives::minimap`]'s "Character glyph atlas"
@@ -76,25 +71,19 @@ use crate::primitives::minimap::{
 use crate::theme::Theme;
 
 /// Compute the GTK pixel-unit layout for a [`Minimap`] without painting, at
-/// [`MinimapScale::One`] — the pre-#1143 fixed pitch. Kept exactly as-is
-/// for source compatibility with any caller reaching this free function
-/// directly (mirrors [`draw_minimap`]'s own pre-#1035 shim doc); every real
-/// paint path goes through [`GtkBackend::minimap_layout`]'s
+/// [`MinimapScale::One`] — the pre-scaling fixed pitch. Kept for
+/// source compatibility with any caller reaching this free function
+/// directly; every real paint path goes through [`GtkBackend::minimap_layout`]'s
 /// [`gtk_minimap_layout_scaled`] instead, so it can honor
-/// [`crate::backend::Backend::minimap_scale`] (issue #1143).
-///
-/// [`GtkBackend::minimap_layout`]: crate::gtk::backend::GtkBackend
+/// [`crate::backend::Backend::minimap_scale`].
 pub fn gtk_minimap_layout(minimap: &Minimap, x: f64, y: f64, w: f64, h: f64) -> MinimapLayout {
     gtk_minimap_layout_scaled(minimap, x, y, w, h, MinimapScale::One)
 }
 
-/// [`gtk_minimap_layout`], but at an explicit [`MinimapScale`] (issue
-/// #1143) — what [`GtkBackend::minimap_layout`] actually calls. Shares
+/// [`gtk_minimap_layout`], but at an explicit [`MinimapScale`]
+/// — what [`GtkBackend::minimap_layout`] actually calls. Shares
 /// its `lines_per_row`/sizing formula with `mac_minimap_layout_scaled` /
-/// `win_minimap_layout_scaled` via [`pixel_minimap_layout_scaled`] (issue
-/// #1079).
-///
-/// [`GtkBackend::minimap_layout`]: crate::gtk::backend::GtkBackend
+/// `win_minimap_layout_scaled` via [`pixel_minimap_layout_scaled`].
 pub(crate) fn gtk_minimap_layout_scaled(
     minimap: &Minimap,
     x: f64,
@@ -113,15 +102,14 @@ pub(crate) fn gtk_minimap_layout_scaled(
 /// Shared skeleton for [`draw_minimap`]/[`draw_minimap_cached`]: computes
 /// the layout, paints the background and viewport highlight, clips to
 /// the strip, then calls `paint_row` once per visible row via one
-/// [`SpanCursor`] merge-walk (#667 pt. 4). Returns early (no clip, no
+/// [`SpanCursor`] merge-walk. Returns early (no clip, no
 /// callback invocations) when the layout has nothing to paint.
 ///
-/// `paint_row` gets each row's own pitch (`vline.bounds.height`, post-cap
-/// — see [`draw_minimap`]'s old comment on why this beats recomputing `h
-/// / visible_lines.len()`), even though every row shares one pitch under
+/// `paint_row` gets each row's own pitch (`vline.bounds.height`, post-cap),
+/// even though every row shares one pitch under
 /// [`MinimapSizing::FixedPitch`], so a caller never has to special-case
 /// "read it off the first row instead" — plus `scale`'s own
-/// [`MinimapScale::cell_w_px`] (issue #1143), so a row's per-column paint
+/// [`MinimapScale::cell_w_px`], so a row's per-column paint
 /// walk steps by the right cell width without re-deriving it from `scale`
 /// itself.
 #[allow(clippy::too_many_arguments)]
@@ -157,15 +145,15 @@ fn paint_minimap_rows(
     // Clip all row painting to the strip: a legible pitch can still shape
     // a line longer than `w`, and below-floor colour blocks are already
     // width-bounded but glyphs are not -- without this, text bled across
-    // whatever the host painted beside the minimap (#663).
+    // whatever the host painted beside the minimap.
     cr.save().ok();
     cr.rectangle(x, y, w, h);
     cr.clip();
 
-    // One merge-walk over `syntax_spans` for the whole paint, not one
-    // linear rescan per row (#667 pt. 4) -- `visible_lines` is always
-    // ascending in `start_line_idx` (see `Minimap::layout`), matching
-    // `SpanCursor`'s own non-decreasing-query requirement.
+    // One merge-walk over `syntax_spans` for the whole paint, not a per-row
+    // rescan -- `visible_lines` is always ascending in `start_line_idx`
+    // (see `Minimap::layout`), matching `SpanCursor`'s own
+    // non-decreasing-query requirement.
     let mut spans = SpanCursor::new(&minimap.syntax_spans);
 
     for vline in &layout.visible_lines {
@@ -191,16 +179,15 @@ fn paint_minimap_rows(
 /// Draw a [`Minimap`] onto `cr`. Returns the layout for host click
 /// dispatch (`layout.hit_test(x, y)` -> [`crate::MinimapHit`]).
 ///
-/// This is the pre-#1035 shim, kept exactly as it always behaved (still
-/// gated on [`render_mode`]'s legibility floor, so it still always lands
-/// in [`MinimapRenderMode::ColumnBlocks`] at the default `ROW_PITCH_PX`)
-/// — for source compatibility with any caller reaching this free
-/// function directly rather than through [`crate::backend::Backend::draw_minimap`],
-/// mirroring `gtk::image::draw_image`'s relationship to
-/// `draw_image_cached` (#1014). [`crate::gtk::backend::GtkBackend::draw_minimap`]
-/// — the path every real app takes — calls [`draw_minimap_cached`]
-/// instead, which is where #1035's glyph atlas actually lives. See the
-/// module docs' "Glyph atlas" section.
+/// This is kept exactly as it always behaved (still gated on [`render_mode`]'s
+/// legibility floor, so it still always lands in [`MinimapRenderMode::ColumnBlocks`]
+/// at the default `ROW_PITCH_PX`) — for source compatibility with any caller
+/// reaching this free function directly rather than through
+/// [`crate::backend::Backend::draw_minimap`], mirroring
+/// `gtk::image::draw_image`'s relationship to `draw_image_cached`.
+/// [`crate::gtk::backend::GtkBackend::draw_minimap`] — the path every real
+/// app takes — calls [`draw_minimap_cached`] instead, which is where the
+/// glyph atlas actually lives. See the module docs' "Glyph atlas" section.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_minimap(
     cr: &Context,
@@ -251,22 +238,22 @@ pub fn draw_minimap(
 }
 
 /// Draw a [`Minimap`] using a cached [`MinimapCharAtlas`] for real
-/// character shapes (#1035), instead of [`draw_minimap`]'s legibility-gated
+/// character shapes, instead of [`draw_minimap`]'s legibility-gated
 /// font scaling. `atlas_cache` should be a field the caller keeps alive
 /// across frames — [`crate::gtk::backend::GtkBackend`] owns one, the same
-/// way it owns `image_cache` for #1014. `dpi_scale` sizes each glyph tile
-/// to real device pixels (issue's "Scale / HiDPI" section): a `mm_scale`
-/// cell at `dpi_scale` 2.0 gets twice the real device pixels of glyph
-/// detail a `dpi_scale` 1.0 cell of the same logical size does.
+/// way it owns `image_cache`. `dpi_scale` sizes each glyph tile
+/// to real device pixels: a `mm_scale` cell at `dpi_scale` 2.0 gets twice
+/// the real device pixels of glyph detail a `dpi_scale` 1.0 cell of the
+/// same logical size does.
 ///
-/// `mm_scale` (issue #1143) is the *logical* cell size — [`MinimapScale::One`]
-/// is a 1x2 px cell (pre-#1143: a density dot, since the atlas tile is too
+/// `mm_scale` is the *logical* cell size — [`MinimapScale::One`]
+/// is a 1x2 px cell (pre-scaling: a density dot, since the atlas tile is too
 /// small to carry a shape even at HiDPI), [`MinimapScale::Two`] a 2x4 px
 /// cell (VS Code parity: large enough for the downsampled tile to read
 /// back as a recognisable glyph). `dpi_scale` is an orthogonal axis — real
 /// device-pixel crispness at whatever logical cell size `mm_scale` picked
 /// — so a `mm_scale: Two` cell at `dpi_scale` 1.0 already paints
-/// recognisable shapes; before #1143 the only way to reach a 2x4-pixel
+/// recognisable shapes; before scaling the only way to reach a 2x4-pixel
 /// tile was a `dpi_scale` of 2.0, conflating "the user asked for bigger
 /// minimap glyphs" with "the display has more physical pixels per DIP".
 ///
@@ -393,26 +380,20 @@ fn render_char_sample_sheet(family: &str) -> Option<Vec<u8>> {
         cr.move_to(i as f64 * CHAR_SAMPLE_CELL_W, 0.0);
         // Deliberately the plain, non-recording `show_layout` — this
         // paints into a private, throwaway sample sheet surface, never
-        // the real widget. `super::painted_text::show_layout` records
-        // to a **thread-local** sink (`crate::testing::text_run_sink_active`),
-        // not one scoped to this `Context`, so calling the recording
-        // wrapper here would append these 95 sample glyphs' bounds (from
-        // this function's own private surface) to `GtkBackend::painted_text`
-        // whenever a `GtkDriver`-based test happens to take an atlas
-        // cache miss during its frame — polluting `GtkDriver::find`/
-        // `screen_contains` with meaningless bounds. See quadraui#1035
-        // review.
+        // the real widget. The recording wrapper would record to a
+        // **thread-local** sink, not one scoped to this `Context`, so
+        // calling it here would append these 95 sample glyphs' bounds
+        // (from this function's own private surface) to the shared sink,
+        // polluting any caller's text-run tracking.
         pangocairo::functions::show_layout(&cr, &pango_layout);
     }
     // `ImageSurface::data()` needs exclusive access to the surface (it
     // hands back a mutable-capable view), and both `pango_layout` and
     // `cr` still hold their own reference to it -- drop them first, the
     // same ordering `blit_alpha_tile` already follows for its own tile
-    // surface. Without this, `.data()` always returns `Err` (the surface
+    // surface. Without this, `.data()` returns `Err` (the surface
     // has more than one live reference), `.ok()?` turns that into a
-    // silent `None`, and every real paint quietly took the
-    // `MinimapCharAtlas::filled` fallback instead of a real glyph atlas —
-    // #1035's atlas was never actually reachable before this fix.
+    // silent `None`, and the paint falls back to a zero-sized tile.
     drop(pango_layout);
     drop(cr);
     surface.flush();
@@ -436,11 +417,10 @@ fn render_char_sample_sheet(family: &str) -> Option<Vec<u8>> {
 /// Paint one row using `atlas`'s pre-downsampled alpha tiles: blit a
 /// tile per non-blank character, tinted by whichever span covers it — no
 /// shaping, matching [`paint_row_blocks`]'s own column-capacity bound
-/// (#667 pt. 3) and whitespace skip, but painting real glyph shapes
-/// instead of solid blocks. `cell_w` (issue #1143's [`MinimapScale::cell_w_px`])
-/// is the logical column advance — `col as f64 * cell_w`, not a bare
-/// `col as f64` — so a wider [`MinimapScale::Two`] cell doesn't overlap
-/// its neighbour.
+/// and whitespace skip, but painting real glyph shapes instead of solid
+/// blocks. `cell_w` (the [`MinimapScale::cell_w_px`]) is the logical
+/// column advance — `col as f64 * cell_w`, not a bare `col as f64` — so a
+/// wider [`MinimapScale::Two`] cell doesn't overlap its neighbour.
 #[allow(clippy::too_many_arguments)]
 fn paint_row_atlas(
     cr: &Context,
@@ -541,8 +521,8 @@ fn paint_row_glyphs(
     pango_layout.set_ellipsize(pango::EllipsizeMode::End);
 
     // Never shape more than the strip's column capacity worth of a line
-    // (#667 pt. 3) -- a pathologically long line must cost no more to
-    // shape than a short one, mirroring `paint_row_blocks`' own walk cap.
+    // — a pathologically long line must cost no more to shape than a
+    // short one, mirroring `paint_row_blocks`' own walk cap.
     let truncated = truncate_to_columns(text, COLUMN_CAPACITY);
     pango_layout.set_text(truncated);
 
@@ -573,12 +553,11 @@ fn paint_row_glyphs(
 /// Paint one `cell_w`-wide block per non-blank character column of
 /// `text`, each coloured by whichever span covers it — VS Code's
 /// `renderCharacters: false` look, which (unlike a single per-line bar)
-/// preserves the line's indent and internal-gap silhouette (#667 pt. 2).
+/// preserves the line's indent and internal-gap silhouette.
 /// Stops after [`COLUMN_CAPACITY`] columns, so a pathologically long
 /// line costs no more to paint than a short one. `cell_w` is
-/// [`MinimapScale::cell_w_px`] (issue #1143) — `1.0` at the pre-#1143
-/// default [`MinimapScale::One`], matching this function's original
-/// hardcoded block width byte for byte.
+/// [`MinimapScale::cell_w_px`] — `1.0` at [`MinimapScale::One`],
+/// matching this function's original hardcoded block width.
 fn paint_row_blocks(
     cr: &Context,
     vline: &VisibleMinimapLine,
@@ -663,14 +642,13 @@ mod tests {
         (cr, layout)
     }
 
-    // ── fixed pitch, not file-length-dependent (#667) ────────────────
+    // ── fixed pitch, not file-length-dependent ───────────────────────
 
     #[test]
     fn row_pitch_is_independent_of_the_strip_height() {
-        // Inverts the old #382/#663 contract on purpose: the same
-        // buffer painted into strips of two very different heights must
-        // now resolve to the *same* row pitch. See `Minimap::layout`'s
-        // module docs for why (`MinimapSizing::FixedPitch`).
+        // The same buffer painted into strips of two very different
+        // heights must resolve to the *same* row pitch under
+        // [`MinimapSizing::FixedPitch`]. See `Minimap::layout`'s module docs.
         let lines: Vec<&str> = vec!["fn main() {}"; 8];
         let mm = minimap_from(lines, 8);
 
@@ -709,8 +687,7 @@ mod tests {
     #[test]
     fn short_file_in_a_tall_strip_does_not_stretch() {
         // A 3-line file at the fixed pitch occupies 6px of a 200px
-        // strip -- it must not stretch to fill it (the pre-#667 `Fill`
-        // behaviour, now GTK-inapplicable).
+        // strip -- it must not stretch to fill it.
         let mm = minimap_from(vec!["//! Placeholder module"; 3], 3);
         let layout = gtk_minimap_layout(&mm, 0.0, 0.0, 200.0, 200.0);
         assert_eq!(layout.visible_lines.len(), 3);
@@ -725,14 +702,13 @@ mod tests {
     //
     // `is_legible`/`render_mode`'s own threshold behaviour is covered by
     // `primitives::minimap::tests::legibility_floor_switches_render_mode_on_both_sides`
-    // (#738) — this module keeps only the paint-level regression that a
+    // — this module keeps only the paint-level regression that a
     // real Cairo/Pango pass actually respects that threshold.
 
     #[test]
     fn default_fixed_pitch_stays_below_the_floor_and_never_shapes_text() {
         // ROW_PITCH_PX (2px) is below LEGIBILITY_FLOOR_PX (4px), so the
-        // default GTK minimap always lands in ColumnBlocks -- and,
-        // unlike pre-#667, that no longer changes with strip height.
+        // default GTK minimap always lands in ColumnBlocks.
         let mm = minimap_from(vec!["fn main() {}"; 4], 4);
         let (cr, layout) = surface_and_layout();
 
@@ -749,10 +725,8 @@ mod tests {
 
     #[test]
     fn characters_branch_truncates_to_the_column_capacity_before_shaping() {
-        // The Characters branch is unreachable through the default fixed
-        // pitch today, but it must still bound its shaping cost (#667 pt.
-        // 3) -- exercised directly since `draw_minimap` can't reach it
-        // via `ROW_PITCH_PX` alone.
+        // The Characters branch must bound its shaping cost by the column
+        // capacity even though it's unreachable at the default fixed pitch.
         let long_line = "y".repeat(10_000);
         let (cr, pango_layout) = surface_and_layout();
         let vline = VisibleMinimapLine {
@@ -776,17 +750,16 @@ mod tests {
         );
     }
 
-    // ── glyph atlas (#1035) ─────────────────────────────────────────────
+    // ── glyph atlas ─────────────────────────────────────────────────────
 
     /// Paint `mm` through [`draw_minimap_cached`] into a fresh surface and
-    /// return the raw pixel bytes -- used to compare two paints for
-    /// pixel-level identity/difference.
+    /// return the raw pixel bytes.
     fn paint_cached_pixels(mm: &Minimap, w: i32, h: i32) -> Vec<u8> {
         paint_cached_pixels_at_scale(mm, w, h, MinimapScale::One, &Theme::default())
     }
 
     /// [`paint_cached_pixels`], but at an explicit [`MinimapScale`] and
-    /// [`Theme`] (issue #1143).
+    /// [`Theme`].
     fn paint_cached_pixels_at_scale(
         mm: &Minimap,
         w: i32,
@@ -820,12 +793,9 @@ mod tests {
 
     #[test]
     fn atlas_mode_differentiates_content_column_blocks_would_make_identical() {
-        // #1035's own acceptance bar: two rows of equal length, both
-        // entirely non-blank, must paint *different* alpha patterns
-        // under real character shapes -- `ColumnBlocks` would paint an
-        // identical run of solid columns for both (every column non-blank
-        // either way), which is exactly the information this issue is
-        // about not throwing away.
+        // Two rows of equal length, both entirely non-blank, must paint
+        // *different* alpha patterns under real character shapes — solid
+        // columns would paint identically for both.
         let code_line = "fn main() {";
         let comment_line = "///////////";
         assert_eq!(
@@ -846,18 +816,12 @@ mod tests {
 
     #[test]
     fn render_char_sample_sheet_does_not_pollute_the_text_run_sink() {
-        // Regression guard for the #1035 review finding: the sample
-        // sheet `render_char_sample_sheet` shapes each ASCII glyph into
-        // is a private, throwaway surface (never real screen content),
-        // but `crate::testing`'s text-run sink is a **thread-local**, not
-        // scoped to any particular `Context` -- so if this function ever
-        // goes back to painting through the recording-aware
-        // `painted_text::show_layout` instead of the plain
-        // `pangocairo::functions::show_layout`, every atlas cache miss
-        // during a `GtkDriver`-based test (guaranteed on a fresh
-        // backend's first paint) would silently append all 95 sample
-        // glyphs' bogus bounds to the shared sink that backs
-        // `GtkDriver::find`/`screen_contains`.
+        // The sample sheet shapes each ASCII glyph into a private,
+        // throwaway surface (never real screen content), but the
+        // text-run sink is **thread-local**, not scoped to any
+        // particular `Context` — the recording wrapper must never be
+        // called here, else every atlas cache miss during a test would
+        // append bogus bounds to the shared sink.
         let previous = crate::testing::install_text_run_sink();
         let _ = render_char_sample_sheet("sans-serif");
         let recorded = crate::testing::take_text_run_sink(previous);
@@ -923,11 +887,10 @@ mod tests {
         assert_eq!(pixel(&data, stride, layout.bounds.x as i32 + 4, 0), fg);
     }
 
-    /// #1143's own acceptance bar: at [`MinimapScale::Two`] (a 2px wide x
-    /// 4px tall cell), a row of real code paints *shapes* -- non-uniform
-    /// pixel values across a character's own cell, not `ColumnBlocks`'
-    /// solid, uniformly-coloured block -- and a blank (whitespace) column
-    /// stays fully background throughout its cell.
+    /// At [`MinimapScale::Two`] (a 2px wide x 4px tall cell), a row of
+    /// real code paints *shapes* — non-uniform pixel values across a
+    /// character's own cell, not solid, uniformly-coloured blocks — and
+    /// blank (whitespace) columns stay fully background throughout their cells.
     #[test]
     fn scale_two_atlas_mode_paints_a_shape_and_leaves_blank_columns_empty() {
         let line = "fn main()";
@@ -963,10 +926,8 @@ mod tests {
         }
 
         // The first character's own cell ('f', column 0) must show a
-        // *shape* -- at least two pixels inside the cell with different
-        // colours -- rather than a solid, uniformly-filled block (what
-        // `ColumnBlocks` paints, and what pre-#1143 GTK's own 1x2 cell
-        // was too small to ever show).
+        // *shape* — at least two pixels inside the cell with different
+        // colours — rather than a solid, uniformly-filled block.
         let mut cell_pixels = Vec::new();
         for dx in 0..cell_w {
             for y in 0..row_h {
@@ -984,7 +945,6 @@ mod tests {
     /// string ([`draw_minimap_cached`]'s own `family_key`), precisely so
     /// reusing one cache across a [`MinimapScale`] change doesn't
     /// silently keep serving a wrong-sized tile from the previous scale
-    /// (issue #1143).
     #[test]
     fn atlas_cache_key_includes_minimap_scale_so_a_scale_change_rebuilds() {
         let mm = minimap_from(vec!["fn main() {}"], 1);
@@ -1063,8 +1023,6 @@ mod tests {
     fn layout_first_vline(mm: &Minimap, w: f64, h: f64) -> VisibleMinimapLine {
         gtk_minimap_layout(mm, 0.0, 0.0, w, h).visible_lines[0]
     }
-
-    // ── per-column colour blocks (#667 pt. 2) ─────────────────────────
 
     #[test]
     fn column_blocks_skip_indentation_and_internal_gaps() {
@@ -1163,17 +1121,15 @@ mod tests {
 
     // `color_at_column`/`SpanCursor`'s own behaviour is covered by
     // `primitives::minimap::tests::color_at_column_*` /
-    // `span_cursor_matches_a_full_linear_scan_per_row` (#738) — nothing
+    // `span_cursor_matches_a_full_linear_scan_per_row` — nothing
     // GTK-specific left to re-test here.
 
     // ── paint/click round trip ────────────────────────────────────────
 
     /// Shared body for `paint_and_click_round_trip_returns_seek_for_the_clicked_fraction`
-    /// — `minimap_layout` is documented **ABSOLUTE**
-    /// (`docs/PRIMITIVE_RULES.md` "Coordinate frames for `*_layout`
-    /// methods", issue #505), so `hit_test` must be called with
-    /// coordinates shifted by the same `x`/`y` origin the strip was
-    /// painted at.
+    /// — `minimap_layout` returns coordinates in absolute frame
+    /// (see `docs/PRIMITIVE_RULES.md`), so `hit_test` must be called with
+    /// coordinates shifted by the same `x`/`y` origin the strip was painted at.
     fn paint_and_click_round_trip_at(x: f64, y: f64) {
         let mm = minimap_from(vec!["x"; 8], 8);
         let (cr, pango_layout) = surface_and_layout();
@@ -1202,9 +1158,7 @@ mod tests {
         paint_and_click_round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md
-    /// "Layout helpers must return coords in the same frame across
-    /// backends"): `(x, y) = (0, 0)` is exactly the case where a
+    /// Regression guard: `(x, y) = (0, 0)` is exactly the case where a
     /// LOCAL/ABSOLUTE mixup in `gtk_minimap_layout` would be invisible.
     #[test]
     fn paint_and_click_round_trip_returns_seek_for_the_clicked_fraction_at_nonzero_origin() {
@@ -1237,7 +1191,7 @@ mod tests {
         assert!(layout.visible_lines.is_empty());
     }
 
-    // ── strip clipping (#663) ───────────────────────────────────────────
+    // ── strip clipping ──────────────────────────────────────────────────
 
     /// Read an RGB triple from an ARgb32 surface at pixel (x, y).
     ///
@@ -1250,12 +1204,10 @@ mod tests {
 
     #[test]
     fn wide_line_blocks_never_paint_right_of_bounds() {
-        // Pre-#663 there was no `cr.clip()` and no Pango layout width, so
-        // a line wider than the strip painted straight across whatever
-        // sat beside it (in vimcode's case, the neighbouring editor
-        // pane). Paint a pathologically long line into a strip embedded
-        // in a wider white canvas and assert nothing right of the strip
-        // is touched.
+        // Without `cr.clip()` and Pango layout width, a line wider than
+        // the strip paints across whatever sat beside it. Paint a
+        // pathologically long line into a strip embedded in a wider white
+        // canvas and assert nothing right of the strip is touched.
         const STRIP_W: i32 = 40;
         const CANVAS_W: i32 = 200;
         const H: i32 = 40;

@@ -6,7 +6,7 @@
 //! draw text with an optional insert cursor; alignment can be flipped
 //! for right-aligned count displays.
 //!
-//! [`CommandLineLayout`] (issue #705) closes the character-offset hit-test
+//! [`CommandLineLayout`] closes the character-offset hit-test
 //! gap that made the command line mouse-selectable on TUI (via a
 //! terminal-only inverted-cell read-back trick) and structurally unable to
 //! be on GTK. `CommandLine::layout` resolves click/selection geometry the
@@ -67,24 +67,19 @@ impl CommandLineMeasure {
 
     /// Build from the backend's own [`crate::backend::Metrics`]
     /// (`backend.measure()`) instead of reading `backend.char_width()`
-    /// by hand (quadraui#817).
+    /// by hand.
     pub fn from_metrics(m: &crate::backend::Metrics) -> Self {
         Self::new(m.char_width)
     }
 }
 
-/// Fully-resolved layout for a `CommandLine` (issue #705).
+/// Fully-resolved layout for a `CommandLine`.
 ///
-/// Gives every backend the character-offset hit test the TUI rasteriser
-/// used to get "for free" by reading back inverted terminal cells after
-/// painting — a trick with no pixel-backend equivalent, which is exactly
-/// why the GTK command line was structurally unable to support mouse
-/// selection. [`Self::hit_test`] maps a click x-coordinate to a **byte
-/// offset** into [`CommandLine::text`] (matching [`CommandLine::cursor_offset`]'s
-/// contract, so the result can be fed straight back into the primitive),
-/// and [`Self::selection_bounds`] turns a `(start, end)` byte-offset pair
-/// into a paintable rect so a host can render a drag-selection highlight
-/// without re-deriving glyph metrics.
+/// Provides character-offset hit testing and selection bounds for all backends.
+/// [`Self::hit_test`] maps a click x-coordinate to a **byte offset** into
+/// [`CommandLine::text`] (matching [`CommandLine::cursor_offset`]'s contract),
+/// and [`Self::selection_bounds`] turns a `(start, end)` byte-offset pair into a
+/// paintable rect so a host can render a drag-selection highlight.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CommandLineLayout {
     /// Bounds this layout was computed for (matches the `rect` argument).
@@ -105,15 +100,12 @@ pub struct CommandLineLayout {
 }
 
 impl CommandLineLayout {
-    /// Map an absolute x-coordinate to a byte offset into the source
-    /// `text`, clamped to `[0, text.len()]`. Points left of the first
-    /// character return `0`; points at or right of the last column return
-    /// `text.len()`.
+    /// Map an absolute x-coordinate to a byte offset into the source `text`,
+    /// clamped to `[0, text.len()]`. Points left of the first character return `0`;
+    /// points at or right of the last column return `text.len()`.
     ///
     /// Coordinate frame: **ABSOLUTE** — `x` is compared directly against
-    /// `text_origin_x`, which already carries `bounds.x` and any
-    /// right-align shift (issue #505 convention, matching
-    /// [`crate::primitives::text_input::TextInputLayout`]).
+    /// `text_origin_x`, which already carries `bounds.x` and any right-align shift.
     pub fn hit_test(&self, x: f32) -> usize {
         let last = self.char_byte_offsets.last().copied().unwrap_or(0);
         if self.char_width <= 0.0 || self.char_byte_offsets.len() <= 1 {
@@ -141,14 +133,7 @@ impl CommandLineLayout {
         )
     }
 
-    /// Rect spanning the selection `[start, end)` (byte offsets, either
-    /// order — mirrors the drag-selection state a host tracks, which can
-    /// run in either direction). A host paints this as a highlight behind
-    /// the selected text; this is the "enough geometry for a selection
-    /// range to be painted back" piece of #705 — it replaces the
-    /// TUI-only inverted-cell pass without quadraui needing to own
-    /// selection *state* (that stays host-side, same as today).
-    ///
+    /// Rect spanning the selection `[start, end)` (byte offsets, either order).
     /// Returns `None` for an empty/zero-width selection.
     pub fn selection_bounds(&self, sel: (usize, usize)) -> Option<Rect> {
         let (lo, hi) = if sel.0 <= sel.1 { sel } else { (sel.1, sel.0) };
@@ -203,47 +188,11 @@ impl CommandLine {
     }
 }
 
-/// Shared [`PaintSurface`](crate::paint_surface::PaintSurface)-backed
-/// paint for [`CommandLine`] (`PaintSurface` Phase 4 6/8, #1083) —
-/// replaces the three per-backend copies `gtk::command_line::draw_command_line_selection`,
-/// `macos::command_line::draw_command_line` and
-/// `win::command_line::draw_command_line` used to carry independently.
-///
-/// # Divergences the three pre-#1083 copies had, closed here
-///
-/// - **Selection highlight.** Only the GTK copy
-///   (`gtk::command_line::draw_command_line_selection`, #1001) ever
-///   painted [`CommandLineLayout::selection_bounds`]'s rect — macOS's and
-///   Windows's `Backend::draw_command_line_selection` both silently
-///   ignored the `selection` argument and forwarded to the plain
-///   `draw_command_line`, each with a doc comment admitting "no visual
-///   highlight yet ... issue #1001 scoped the paint work to GTK/Cairo and
-///   TUI/ratatui." [`paint`] below always paints the highlight (a no-op
-///   when `selection` is `None` or empty), so all three backends now
-///   agree.
-/// - **Insert-cursor x-position.** GTK measured a real glyph-prefix width
-///   against its own paint `pango::Layout` and anchored at `x +
-///   prefix_width`, ignoring any right-align shift — a bug the macOS
-///   module doc calls out explicitly ("only ever visible for a
-///   right-aligned command line that also carries a cursor ... the bug
-///   has never bitten"). macOS instead anchored at `text_x +
-///   prefix_width` (right-align-correct); Windows already used the
-///   shared [`CommandLineLayout::char_bounds`] fixed-advance column,
-///   independent of any per-backend glyph measurement. [`paint`] adopts
-///   Windows's approach uniformly (`layout.char_bounds(offset)`) — it
-///   agrees with every existing left-aligned call site (the only shape
-///   any live caller uses today) and is simply correct for the
-///   right-aligned case none of them exercised.
-/// - **Zero-size guard.** macOS and Windows both short-circuited a
-///   non-positive `rect.width`/`rect.height` to a no-paint layout; GTK
-///   had no equivalent guard (relying on Cairo's own no-op fill/clip for
-///   a degenerate rect). [`paint`] applies the guard uniformly, matching
-///   `primitives::status_bar::native_surface_paint::paint`'s precedent
-///   for the same shape (#860).
-/// - **Clipping.** Only macOS clipped painting to `rect` before this;
-///   [`paint`] pushes/pops a clip on every backend, so an over-long or
-///   right-aligned string that overflows the bar can no longer bleed
-///   past its edges on GTK/Windows.
+/// Shared [`PaintSurface`](crate::paint_surface::PaintSurface)-backed paint
+/// for [`CommandLine`]. Unifies selection highlight rendering across backends:
+/// all backends now paint [`CommandLineLayout::selection_bounds`]'s rect,
+/// clipped to the command bar bounds, with insert-cursor positioning via
+/// [`CommandLineLayout::char_bounds`].
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -256,10 +205,7 @@ pub(crate) mod native_surface_paint {
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
-    /// Insert-cursor width in surface-native units (px/DIP/pt) — matches
-    /// every pre-#1083 per-backend copy's 2-unit bar
-    /// (`gtk::command_line`'s hardcoded `2.0`, `macos::command_line::CURSOR_W`,
-    /// `win::command_line::CURSOR_W_DIP`).
+    /// Insert-cursor width in surface-native units (px/DIP/pt): 2.0.
     const CURSOR_WIDTH: f32 = 2.0;
 
     /// Paint a [`CommandLine`] into `rect` on `surface`, highlighting
@@ -296,12 +242,8 @@ pub(crate) mod native_surface_paint {
         }
 
         if !cmd.text.is_empty() {
-            // `layout.text_origin_x` already carries `rect.x` and any
-            // right-align shift (issue #505 convention: absolute, not
-            // rect-local) — paint starting there, bounded to the
-            // remainder of the bar so an over-long or right-aligned
-            // string can't paint past `rect`'s far edge (the clip above
-            // additionally stops it bleeding past every edge).
+            // `layout.text_origin_x` is an absolute coordinate carrying `rect.x` and any
+            // right-align shift; paint starting there, bounded to the remainder of the bar.
             let text_rect = Rect::new(
                 layout.text_origin_x,
                 rect.y,
@@ -437,13 +379,7 @@ pub(crate) mod native_surface_paint {
             assert_eq!(surface.fills.len(), 1);
         }
 
-        /// Closes the divergence documented on [`paint`]'s own doc: only
-        /// `gtk::command_line` used to paint a selection highlight —
-        /// macOS and Windows both dropped the `selection` argument
-        /// entirely. This is the RED-before-the-port case: on the old
-        /// `macos::command_line::draw_command_line`/`win::command_line::draw_command_line`
-        /// (which never took a `selection` argument at all), there was no
-        /// way to even ask for this, let alone assert it painted.
+        /// Selection highlight painting: unifies behavior across backends.
         #[test]
         fn selection_paints_highlight_before_text() {
             let cmd = sample(":wq!", None, false);
@@ -535,9 +471,8 @@ pub(crate) mod native_surface_paint {
             assert_eq!(surface.clip_pops, 1);
         }
 
-        /// Multibyte regression (#503's class of bug): a `cursor_offset`
-        /// landing mid-character must not panic — `char_bounds` snaps via
-        /// `column_for_byte_offset`, not a raw string slice.
+        /// A `cursor_offset` landing mid-character must not panic: `char_bounds`
+        /// snaps via `column_for_byte_offset`, not a raw string slice.
         #[test]
         fn multibyte_cursor_offset_does_not_panic() {
             let text = ":éditer";
@@ -583,7 +518,7 @@ mod tests {
         assert!(!cmd.right_align);
     }
 
-    // ── CommandLineLayout (issue #705) ──────────────────────────────────
+    // ── CommandLineLayout ───────────────────────────────────────────────
 
     fn cmd(text: &str, right_align: bool) -> CommandLine {
         CommandLine {
@@ -605,7 +540,7 @@ mod tests {
 
     #[test]
     fn hit_test_at_nonzero_origin() {
-        // #505: a LOCAL/ABSOLUTE mixup is invisible at rect.x == 0, so this
+        // A LOCAL/ABSOLUTE mixup is invisible at rect.x == 0, so this
         // primitive-level test uses a nonzero origin too.
         let c = cmd(":wq", false);
         let layout = c.layout(
@@ -620,8 +555,7 @@ mod tests {
 
     #[test]
     fn hit_test_accounts_for_multibyte_chars() {
-        // ":éditer" — 'é' is 2 bytes; byte offsets after it must skip a byte,
-        // not walk one-per-column, or this reproduces the #503 class of bug.
+        // ":éditer" — 'é' is 2 bytes; byte offsets after it must skip a byte per
         let c = cmd(":éditer", false);
         let layout = c.layout(Rect::new(0.0, 0.0, 20.0, 1.0), CommandLineMeasure::new(1.0));
         // Columns: ':' (0) 'é' (1) 'd' (2) 'i' (3) ...

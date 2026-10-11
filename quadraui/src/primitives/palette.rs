@@ -213,7 +213,6 @@ impl PaletteItemMeasure {
 
     /// Build from the backend's own [`crate::backend::Metrics`]
     /// (`backend.measure()`) — one result row is one text row
-    /// (quadraui#817).
     pub fn from_metrics(m: &crate::backend::Metrics) -> Self {
         Self::new(m.line_height)
     }
@@ -306,16 +305,9 @@ impl Palette {
     ///
     /// This is selection-visibility *policy*, not rendering — pure
     /// arithmetic over `scroll_offset` / `selected_idx` / `items.len()`
-    /// with no native dependency. It used to be copy-pasted verbatim
-    /// into `gtk`, `tui`, and `win`'s palette rasterisers (each computing
-    /// its own `visible_rows` from backend-native metrics and calling
-    /// this same four-branch clamp); `macos` had no copy at all, so
-    /// moving the selection past the bottom of the window scrolled it
-    /// out of view instead of following it. See #711. [`Palette::layout`]
-    /// now calls this internally so every backend gets it for free;
-    /// backends that don't (yet) route through `layout` — like `tui`,
-    /// see its `draw_palette` doc — can call it directly with their own
-    /// `visible_rows`.
+    /// with no native dependency. [`Palette::layout`] calls this
+    /// internally so every backend gets it for free; backends can also
+    /// call it directly with their own `visible_rows`.
     pub fn resolved_scroll_offset(&self, visible_rows: usize) -> usize {
         let total = self.items.len();
         let max_offset = total.saturating_sub(visible_rows);
@@ -510,105 +502,73 @@ impl Palette {
     }
 }
 
-// ── PaintSurface paint (#1076, PaintSurface Phase 4 slice 3/8) ───────────
+// ── PaintSurface paint ──────────────────────────────────────────
 //
-// Before this, `gtk::draw_palette` (Cairo), `macos::palette::draw_palette`
+// `gtk::draw_palette` (Cairo), `macos::palette::draw_palette`
 // (Core Graphics) and `win::palette::draw_palette` (Direct2D) each
 // independently painted the same title/query/item/scrollbar/preview
-// content with their own drawing API, and — worse — each independently
+// content with their own drawing API, and each independently
 // re-derived the *geometry* those verbs used, which had drifted three
-// ways (issue #1076):
+// ways:
 //
-// - **`query_height`**: GTK reserved `line_height + 1.0` (baking the
-//   query/list separator stroke into the layout call, per D-007's
-//   "Palette: deferred, not missed" §2 fix); macOS/Windows both passed
-//   plain `line_height`, so their `PaletteLayout::query_bounds` was 1px
-//   short of where the separator (and hence the first item row) should
-//   start — the exact class of bug D-007 fixed for GTK alone.
-// - **Row flooring**: GTK computed `visible_rows` by flooring available
-//   height / `line_height` and fed `Palette::layout` a *reduced*
-//   `viewport_height` so the item list never shows a partial last row;
-//   macOS/Windows fed `Palette::layout` the full popup height, so
-//   `Palette::layout`'s own per-row clamp (`height.min(remaining)`)
-//   could hand back a clipped, partial-height last row.
+// - **`query_height`**: GTK reserved `line_height + 1.0` for the
+//   query/list separator stroke; macOS/Windows both passed plain
+//   `line_height`, making their separator 1px short of the correct
+//   row start.
+// - **Row flooring**: GTK computed `visible_rows` by flooring and fed
+//   `Palette::layout` a reduced `viewport_height` so the item list
+//   never shows a partial last row; macOS/Windows fed the full popup
+//   height, allowing a clipped, partial-height last row.
 // - **Scrollbar width**: GTK/Windows agreed on `(6.0, 8.0)`
 //   (`scrollbar_width`, `min_thumb_len`); macOS alone used `(8.0, 8.0)`.
 // - **Title row reservation**: GTK/macOS both always reserved
-//   `line_height` for the title row regardless of whether `Palette.title`
-//   was empty; `win::palette::win_palette_layout` special-cased
-//   `title_h = 0.0` when `palette.title.is_empty()`, dropping the title
-//   row (and shifting everything below it up by one row) for empty-title
-//   popups. `layout` below always reserves `line_height` for the title —
-//   GTK/macOS's 2-vs-1 majority — so Windows's empty-title popups now
-//   carry an always-blank title row rather than omitting it. Low
-//   real-world impact (`Palette.title` is essentially always populated
-//   in practice), but named here for the same "don't silently pick one"
-//   reason as the three geometry drifts above.
+//   `line_height` for the title row; `win_palette_layout` special-cased
+//   `title_h = 0.0` when `palette.title.is_empty()`. `layout` below
+//   always reserves `line_height` for the title, so empty-title popups
+//   now carry a blank title row.
 //
-// `layout` below is the one shared geometry function (GTK's own
-// pre-#1076 formula, since it already matched two of the three fixes
-// above); `gtk_palette_layout`/`mac_palette_layout`/`win_palette_layout`
+// `layout` below is the shared geometry function; backend wrappers
 // become thin unit-converting wrappers over it, so no per-backend
-// geometry copy is left to drift again.
+// geometry copy can drift again.
 //
-// `paint` below is the one shared paint implementation, written against
+// `paint` below is the shared paint implementation, written against
 // [`crate::paint_surface::PaintSurface`] instead of any one backend's
-// API — see `crate::primitives::tree::native_surface_paint` for the same
-// pattern applied one primitive earlier. Feature gaps found while
-// unifying (adopted the richer/majority behaviour rather than silently
-// picking one, per that migration's convention):
+// API. Feature gaps found while unifying (adopting richer/majority
+// behaviour):
 //
 // - **Match-position highlighting** (`PaletteItem::match_positions`):
-//   GTK had it (per-character Pango `AttrColor` spans — one shaped text
-//   run for the whole label, with per-glyph colour attributes layered on
-//   top); Windows had it (its own `matched_runs`/`draw_matched_text`
-//   run-splitter, ported below, which instead paints each
-//   highlighted/non-highlighted run as a *separate*
-//   `surface_draw_text_run` call); macOS had none at all (its module
-//   doc's "Scope omissions" — items rendered in plain fg). `paint`
-//   carries Windows's run-splitter for every backend now, which means
-//   GTK's item labels move from one Pango-shaped run to N adjacent runs
-//   at match/non-match boundaries — a subtle text-shaping change (glyph
-//   advance/kerning at those boundaries can differ fractionally from
-//   whole-string shaping) rather than a pure colour change. Likely
-//   visually negligible for the short, mostly-ASCII labels palettes
-//   render, but not covered by a shaping-sensitive test in either
-//   direction — flagging it here rather than silently.
+//   GTK had it (per-character Pango `AttrColor` spans); Windows had
+//   its own `matched_runs`/`draw_matched_text` run-splitter, ported
+//   below; macOS had none. `paint` carries the run-splitter for every
+//   backend, moving GTK's item labels from one Pango-shaped run to N
+//   adjacent runs at match/non-match boundaries — a subtle text-shaping
+//   change, likely visually negligible for short ASCII labels but not
+//   covered by a shaping-sensitive test.
 
-// - **Icon rendering** (`PaletteItem::icon`): GTK painted it (with the
-//   Nerd-Font-fallback swap #416 documents); macOS/Windows never did.
-//   `paint` paints it for every backend via
-//   [`crate::paint_surface::PaintSurface::surface_draw_icon_glyph`],
-//   which already carries the fallback swap per-backend where needed.
+// - **Icon rendering** (`PaletteItem::icon`): GTK painted it; macOS/Windows
+//   never did. `paint` paints it for every backend via
+//   [`crate::paint_surface::PaintSurface::surface_draw_icon_glyph`].
 // - **Query cursor**: GTK/macOS both painted a filled cursor block
 //   (inverting the character underneath, terminal-style); Windows drew
-//   no cursor at all. `paint` carries the block-cursor treatment for
-//   every backend.
+//   no cursor. `paint` carries the block-cursor treatment for every
+//   backend.
 // - **`PaletteMode::Input` suppression**: GTK and Windows both hide the
-//   item list in `Input` mode; macOS did not (its module doc did not
-//   mention `PaletteMode` at all — items rendered regardless of mode).
-//   `paint` suppresses the item list for every backend.
+//   item list in `Input` mode; macOS did not. `paint` suppresses the
+//   item list for every backend.
 // - **Preview line colour**: GTK painted each preview line span in its
 //   own `span.fg` (falling back to `fg`); macOS/Windows always painted
-//   preview lines in a single flat colour, ignoring `StyledText::spans`'
-//   per-span colour entirely. `paint` carries GTK's per-span treatment.
+//   preview lines in a single flat colour. `paint` carries GTK's
+//   per-span treatment.
 // - **Scrollbar colour**: GTK and Windows both painted the track as
-//   `theme.surface_bg * 0.7` and the thumb in flat `theme.border_fg`
-//   (both fully opaque); macOS alone used
-//   `theme.scrollbar_track.with_alpha(0.4)` /
+//   `theme.surface_bg * 0.7` and the thumb in flat `theme.border_fg`;
+//   macOS used `theme.scrollbar_track.with_alpha(0.4)` /
 //   `theme.scrollbar_thumb.with_alpha(0.8)`. `paint` adopts macOS's
-//   scheme — the minority, not majority, pick — because it is the only
-//   one of the three that uses the theme's dedicated
-//   `scrollbar_track`/`scrollbar_thumb` fields at all; GTK/Windows's
-//   `surface_bg`/`border_fg` reuse looks like an accident of not having
-//   those fields available at the time they were written, not a
-//   deliberate design choice worth preserving. Net visible effect on
-//   GTK/Windows: the thumb goes from `border_fg` (blue-ish,
-//   `rgb(120,160,200)` in the default theme) to `scrollbar_thumb`
-//   (neutral grey, `rgb(110,115,130)`) at 0.8 alpha. Not pinned by a
-//   test either direction (no consumer currently themes the scrollbar
-//   distinctly from its default), but called out here per this
-//   migration's own "pick one, document why" rule.
+//   scheme because it is the only one that uses the theme's dedicated
+//   `scrollbar_track`/`scrollbar_thumb` fields; GTK/Windows's reuse
+//   looks like an accident of not having those fields available when
+//   they were written. Net visible effect: the thumb goes from
+//   `border_fg` (blue-ish, `rgb(120,160,200)`) to `scrollbar_thumb`
+//   (neutral grey, `rgb(110,115,130)`) at 0.8 alpha.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -627,8 +587,7 @@ pub(crate) mod native_surface_paint {
 
     /// Scrollbar track width, shared by [`layout`] and [`paint`] so the
     /// two can't disagree on it — the `(6.0, 8.0)` pair GTK and Windows
-    /// already agreed on pre-#1076 (see this module's doc for why
-    /// macOS's pre-#1076 `(8.0, 8.0)` lost the tie).
+    /// already agreed on (macOS's `(8.0, 8.0)` was the minority choice).
     pub(crate) const SB_W: f32 = 6.0;
     /// Minimum scrollbar thumb length, shared by [`layout`] and [`paint`].
     pub(crate) const MIN_THUMB_LEN: f32 = 8.0;
@@ -638,20 +597,16 @@ pub(crate) mod native_surface_paint {
     const BOTTOM_INSET: f32 = 4.0;
 
     /// Compute the shared [`Palette`] layout — the one geometry `paint`
-    /// paints from and every backend's `Backend::palette_layout` (#818)
-    /// exposes for hit-testing, so paint/hit-test/backend can't drift
-    /// three ways again (see this module's doc for the drift #1076
-    /// found and fixed here).
+    /// paints from and every backend's `Backend::palette_layout` exposes
+    /// for hit-testing, so paint/hit-test/backend can't drift three ways.
     ///
     /// Returns the layout alongside `rows_h` (the item area's full row
     /// capacity in `surface`-native units, already floored to a whole
     /// number of rows) — `paint` needs it for the scrollbar-track /
-    /// preview-pane / create-row positions that sit below the last
-    /// item, which aren't otherwise exposed as a single [`PaletteLayout`]
-    /// field.
+    /// preview-pane / create-row positions that sit below the last item.
     ///
     /// Coordinate frame: **LOCAL** — `(0, 0)` is the popup's own
-    /// top-left corner, matching [`Palette::layout`]'s native contract.
+    /// top-left corner.
     pub(crate) fn layout(
         w: f32,
         h: f32,
@@ -680,10 +635,6 @@ pub(crate) mod native_surface_paint {
 
     /// Split `text` into contiguous `(run, highlighted)` chunks based on
     /// `match_positions` (byte offsets, one per highlighted character).
-    /// Ported from `win::palette`'s pre-#1076 `matched_runs` — the
-    /// DirectWrite-shaped answer to GTK's per-character Pango
-    /// `AttrColor` spans, and the only one of the three pre-#1076
-    /// implementations that had match highlighting at all outside GTK.
     fn matched_runs(text: &str, match_positions: &[usize]) -> Vec<(String, bool)> {
         if match_positions.is_empty() {
             return vec![(text.to_string(), false)];
@@ -856,16 +807,12 @@ pub(crate) mod native_surface_paint {
         //
         // The separator lives in the **last pixel of `query_bounds`**, not
         // at `query_bounds.y + query_bounds.height`. That extra pixel is
-        // exactly what [`layout`]'s `query_h = line_height + 1.0` reserves
-        // it (GTK's pre-#1076 formula, D-007 §2): the query *text* occupies
-        // `line_height`, the stroke occupies the `+ 1.0`, and
-        // `query_bounds.y + query_bounds.height` is therefore already the
-        // first **item** row. Painting at `+ height` instead stole that
-        // row's top pixel and — because item rows are painted after the
-        // separator — was silently overwritten by the first row's
-        // selection fill whenever row 0 was the selected one, so the
-        // separator vanished entirely (quadraui#1076 CI: Windows
-        // `separator_paints_at_corrected_row_not_drifted_one`).
+        // exactly what [`layout`]'s `query_h = line_height + 1.0` reserves:
+        // the query *text* occupies `line_height`, the stroke occupies the
+        // `+ 1.0`, and `query_bounds.y + query_bounds.height` is already the
+        // first **item** row. Painting at `+ height` instead steals that
+        // row's top pixel, which is then overwritten by the first row's
+        // selection fill when row 0 is selected.
         if palette.show_query && palette.mode != PaletteMode::Input {
             if let Some(qb) = palette_layout.query_bounds {
                 let sep_y = area.y + qb.y + (qb.height - 1.0).max(0.0);
@@ -1226,8 +1173,7 @@ pub(crate) mod native_surface_paint {
             (surface, palette_layout)
         }
 
-        /// The query band reserves `line_height + 1.0` (GTK's pre-#1076
-        /// formula, adopted for every backend by #1076) — `line_height`
+        /// The query band reserves `line_height + 1.0` — `line_height`
         /// for the text, `+ 1.0` for the query/list separator stroke — so
         /// `query_bounds.y + query_bounds.height` is already the first
         /// *item* row, not the separator's row.
@@ -1240,16 +1186,12 @@ pub(crate) mod native_surface_paint {
             assert_eq!(qb.y + qb.height, LINE_HEIGHT * 2.0 + 1.0);
         }
 
-        /// Regression for the quadraui#1076 CI failure on `windows-latest`
-        /// (`win::palette::tests::separator_paints_at_corrected_row_not_drifted_one`):
-        /// `paint` used to stroke the separator at
-        /// `query_bounds.y + query_bounds.height`, i.e. on the **first item
-        /// row's top pixel** rather than in the pixel the query band
-        /// reserves for it. Because item rows are painted *after* the
-        /// separator, the first row's selection fill then overpainted it
-        /// and the separator disappeared entirely whenever row 0 was
-        /// selected — invisible to GTK/macOS's own tests only because
-        /// their fixtures don't select row 0.
+        /// Regression test: `paint` must stroke the separator at
+        /// `query_bounds.y + query_bounds.height - 1.0` (in the pixel the
+        /// query band reserves), not at `query_bounds.y + query_bounds.height`
+        /// (the first item row's top pixel). Because item rows paint *after*
+        /// the separator, painting on the item row's top pixel causes the
+        /// first row's selection fill to overpaint it when row 0 is selected.
         #[test]
         fn separator_sits_in_the_reserved_query_pixel_not_the_item_row() {
             let p = sample();
@@ -1514,8 +1456,6 @@ mod tests {
         assert_eq!(layout.visible_items[0].bounds.y, 1.0);
     }
 
-    // ── #711: selection-visibility guard lives in the primitive ─────────
-
     #[test]
     fn resolved_scroll_offset_scrolls_forward_past_bottom() {
         // selected_idx (15) is past the bottom of a 9-row window that
@@ -1551,14 +1491,8 @@ mod tests {
 
     #[test]
     fn palette_layout_keeps_selection_visible_past_bottom() {
-        // Regression for #711: `mac_palette_layout` fed `scroll_offset`
-        // straight into `Palette::layout` with no visibility guard, so
-        // moving the selection past the bottom of the window scrolled
-        // it out of view instead of following it. The guard now lives
-        // in `Palette::layout` itself, so every backend that calls it
-        // (gtk, win, macos) gets correct behaviour with no backend-side
-        // code — this test exercises the primitive directly, once, for
-        // all of them.
+        // When `scroll_offset` is stale (not yet adjusted to keep
+        // `selected_idx` visible), `Palette::layout` corrects it.
         let items: Vec<_> = (0..20)
             .map(|i| make_palette_item(&format!("i{i}")))
             .collect();

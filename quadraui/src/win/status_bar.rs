@@ -1,31 +1,20 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::StatusBar`] (issue #25).
+//! Direct2D / DirectWrite rasteriser for [`crate::StatusBar`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::status_bar::native_surface_paint::paint`] (#860,
-//! `PaintSurface` Phase 2d slice 3/9) — see that fn's doc for the named
-//! divergences (bold-aware measurement: GTK/Win measured a segment's own
-//! `bold` weight, macOS ignored it; GTK's missing zero-size guard, now
-//! applying the already-fixed quadraui#791 shape uniformly) found while
-//! unifying `gtk::draw_status_bar`, `macos::status_bar::draw_status_bar`
-//! and `win::status_bar::draw_status_bar` into one implementation. This
-//! module now only carries [`win_status_bar_layout`] (pure layout, still
-//! needed by `WinBackend::status_bar_layout` for no-paint hit-test
-//! queries); the deprecated `draw_status_bar` compatibility shim over
-//! the shared [`super::surface::D2dSurface`] adapter was removed in
-//! issue #1109 (zero uses in coord-tui's `main` and vimcode's
-//! `develop`). `MIN_GAP_DIP` stays put — it's still
-//! [`win_status_bar_layout`]'s own measurer constant, untouched by this
-//! migration.
+//! Painting is implemented in the shared
+//! [`crate::primitives::status_bar::native_surface_paint::paint`].
+//! This module now only carries [`win_status_bar_layout`] (pure layout,
+//! still needed by `WinBackend::status_bar_layout` for no-paint hit-test
+//! queries). `MIN_GAP_DIP` stays as [`win_status_bar_layout`]'s own
+//! measurer constant.
 //!
 //! [`win_status_bar_layout`] is pure geometry generic over
 //! [`StatusMeasure`] — no Direct2D/DirectWrite type in its signature —
 //! so it compiles and runs everywhere, including a plain `cargo test
-//! --features win` on Linux. `super::mod`'s `mod status_bar;` is no
-//! longer whole-module gated; see `backend.rs`'s module docs.
+//! --features win` on Linux.
 //!
 //! # Theme
 //!
-//! Takes the live theme as a `&Theme` parameter (quadraui#789) — the
+//! Takes the live theme as a `&Theme` parameter — the
 //! caller ([`crate::win::WinBackend::draw_status_bar`]) passes
 //! `&self.current_theme`, the same field `Backend::set_theme` writes.
 //! Callers that don't have segment-level colours to fall back on (the
@@ -79,7 +68,7 @@ pub fn win_status_bar_layout(
     rect: Rect,
     bar: &StatusBar,
 ) -> StatusBarLayout {
-    // #1155: `layout_padded` (not plain `layout`) so this no-paint twin
+    // `layout_padded` (not plain `layout`) so this no-paint twin
     // agrees with the shared `native_surface_paint::paint`'s outer edge
     // inset + per-segment padding — see that fn's doc.
     bar.layout_padded(
@@ -92,17 +81,11 @@ pub fn win_status_bar_layout(
     )
 }
 
-// #1155: pins `win_status_bar_layout`'s outer-edge-inset + per-segment
-// padding numerically, the same way `gtk::testing`'s
-// `find_locates_status_bar_segment_by_text` and
-// `primitives::status_bar`'s own unit tests do — see this issue's
-// non-blocking review note that Windows had no test asserting the actual
-// inset numbers, relying entirely on the shared `layout_padded` unit
-// tests. Unlike the `#[cfg(target_os = "windows")]`-gated `mod tests`
-// below (which needs a real `DWrite`), this measures through a trivial
-// fake `StatusMeasure` — `win_status_bar_layout` is pure geometry (see
-// this module's doc, "Issue #1078") — so it runs on every host, including
-// this Linux sandbox's `cargo test --features win`.
+// Tests [`win_status_bar_layout`]'s outer-edge-inset + per-segment
+// padding: the function is pure geometry, so these tests run on every
+// host through a trivial fake [`StatusMeasure`], unlike the
+// `#[cfg(target_os = "windows")]`-gated `mod tests` below which needs
+// a real `DWrite`.
 #[cfg(test)]
 mod layout_padding_tests {
     use super::{win_status_bar_layout, StatusMeasure, MIN_GAP_DIP};
@@ -137,7 +120,7 @@ mod layout_padding_tests {
     }
 
     /// A lone left segment must start `PIXEL_EDGE_INSET` in from the
-    /// bar's own left edge (issue #1155), not flush at x=0.
+    /// bar's own left edge, not flush at x=0.
     #[test]
     fn lone_left_segment_starts_after_edge_inset() {
         let measure = FixedWidthMeasure { px_per_char: 8.0 };
@@ -159,7 +142,7 @@ mod layout_padding_tests {
     }
 
     /// A lone right segment must end `PIXEL_EDGE_INSET` short of the
-    /// bar's own right edge (issue #1155), not flush against it.
+    /// bar's own right edge, not flush against it.
     #[test]
     fn lone_right_segment_ends_before_edge_inset() {
         let measure = FixedWidthMeasure { px_per_char: 8.0 };
@@ -242,9 +225,8 @@ mod layout_padding_tests {
     }
 }
 
-// #1078: every test below paints through a real `DWrite`/`HeadlessSurface`
-// — gated the same way the whole module used to be, rather than
-// pretending they run on Linux.
+// Tests that paint through a real `DWrite`/`HeadlessSurface`,
+// gated to Windows only.
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
@@ -279,7 +261,7 @@ mod tests {
     /// [`crate::primitives::status_bar::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s headless
     /// target — the same adapter the now-removed `draw_status_bar` shim
-    /// used (issue #1109), exercised here directly.
+    /// used, exercised here directly.
     fn paint(
         surface: &HeadlessSurface,
         dwrite: &DWrite,
@@ -309,10 +291,9 @@ mod tests {
             // `HeadlessSurface::paint`'s closure returns `()` (it just
             // drives Direct2D's `BeginDraw`/`EndDraw` bracket) — the
             // layout `paint` computed during painting is discarded, so
-            // recompute it via the same measurer
-            // (`win_status_bar_layout`), matching this file's pre-#860
-            // test shape. `hovered_id`/`pressed_id` never affect layout
-            // (only which segment gets tinted), so this is exact.
+            // recompute it via the same measurer (`win_status_bar_layout`).
+            // `hovered_id`/`pressed_id` never affect layout (only which segment
+            // gets tinted), so this is exact.
             .map(|_| win_status_bar_layout(dwrite, rect, bar))
             .expect("paint status bar")
     }
@@ -351,9 +332,8 @@ mod tests {
 
         let layout = paint(&surface, &dwrite, rect, &bar, None, None);
 
-        // Since issue #1155 the left segment starts at bar-local
-        // x=`PIXEL_EDGE_INSET`, not at x=0 — its fill colour must be
-        // visible somewhere across its own bounds.
+        // The left segment starts at bar-local x=`PIXEL_EDGE_INSET`, not at
+        // x=0 — its fill colour must be visible somewhere across its own bounds.
         let mid_y = (H / 2.0) as u32;
         let left_vs = layout
             .visible_segments
@@ -371,11 +351,9 @@ mod tests {
             "left segment's bg should be painted at its own bounds"
         );
 
-        // Hit-test the left segment at its own painted centre rather than
-        // a hardcoded `x = 1.0`: issue #1155 reserves `PIXEL_EDGE_INSET`
-        // between the bar's left edge and its left-most segment, so x=1.0
-        // now lands in that inset (correctly `Empty`), which made this a
-        // stale assertion rather than a real regression.
+        // Hit-test the left segment at its own painted centre: the bar reserves
+        // `PIXEL_EDGE_INSET` between the bar's left edge and its left-most
+        // segment, so x=1.0 lands in that inset and would resolve to `Empty`.
         let left_cx = left_vs.bounds.x + left_vs.bounds.width / 2.0;
         let left_hit = layout.hit_test(left_cx, H / 2.0);
         assert_eq!(
@@ -383,9 +361,8 @@ mod tests {
             StatusBarHit::Segment(WidgetId::new("status:mode"))
         );
 
-        // …and the reserved outer inset itself is *not* clickable — the
-        // positive half of the same #1155 claim, pinned here on the paint
-        // path (the pure-layout twin is `layout_padding_tests` above).
+        // The reserved outer inset itself is *not* clickable: the bar reserves
+        // `PIXEL_EDGE_INSET` between the bar's left edge and its left-most
         assert_eq!(
             layout.hit_test(PIXEL_EDGE_INSET / 2.0, H / 2.0),
             StatusBarHit::Empty,
@@ -420,9 +397,9 @@ mod tests {
     }
 
     /// A click outside every segment's bounds (the gap) resolves to
-    /// `Empty`, and `win_status_bar_layout` (no-paint) must produce byte-
-    /// identical `hit_regions` to what `paint` used to paint — same
-    /// measurer, same bar, same rect.
+    /// `Empty`. The no-paint [`win_status_bar_layout`] must produce the
+    /// same hit-test regions as the paint path, since both use the same
+    /// measurer, bar, and rect.
     #[test]
     fn no_paint_layout_matches_paint_layout() {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
@@ -436,14 +413,12 @@ mod tests {
         assert_eq!(painted, no_paint);
     }
 
-    /// Regression for quadraui#791, ported to the shared paint path: a bar
-    /// narrower than its segments' measured text used to let that text
-    /// overflow the bar's own rect (segments never priority-drop on the
-    /// left, and the right side always keeps at least its highest-
-    /// priority segment "even if it alone overflows" — see
-    /// `StatusBar::layout`'s doc). Paint a status bar inset in a larger
-    /// canvas, deliberately narrower than its segment text, and assert
-    /// every pixel outside the bar's own rect stays untouched.
+    /// A bar narrower than its segments' measured text must not let that
+    /// text overflow the bar's own rect: segments never priority-drop on the
+    /// left, and the right side always keeps at least its highest-priority
+    /// segment (see `StatusBar::layout`'s doc). Paint a status bar inset in
+    /// a larger canvas, deliberately narrower than its segment text, and
+    /// assert every pixel outside the bar's own rect stays untouched.
     #[test]
     fn paint_does_not_escape_rect_bounds() {
         let canvas_w = 240u32;

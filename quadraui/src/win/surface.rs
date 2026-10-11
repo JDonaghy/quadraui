@@ -1,54 +1,28 @@
 //! The one shared [`PaintSurface`] adapter over a bare
-//! `&ID2D1RenderTarget`, consolidating the 10 private per-file `Raw*Surface`
-//! copies that #811's Phase 2d slices each left behind (issue #1072).
-//! Every one of those copies differed from its neighbours only in struct
-//! name and `unreachable!` panic strings — like the macOS side of the
-//! same issue, Windows has **no fill-translucency divergence to
-//! preserve**: all 10 old adapters filled through
-//! [`super::text::fill_rect`], which already honours `color.a` with a
-//! real translucent `ID2D1SolidColorBrush` (the quadraui#791 fix,
-//! predating this issue — several of the old adapters' doc comments call
-//! this out explicitly). So this module needs only one axis of variation:
+//! `&ID2D1RenderTarget`.
 //!
-//! - **`dwrite` presence.** [`crate::Scrollbar`], [`crate::DropOverlay`],
-//!   [`crate::Split`] and [`crate::SplitTree`] paint with `target` alone
-//!   (no text); [`crate::Form`], `crate::primitives::sidebar_panel`,
-//!   [`crate::StatusBar`], [`crate::primitives::diff_view::DiffView`],
-//!   [`crate::ToastOverlay`] and [`crate::Panel`] paint text too and need a
-//!   live [`DWrite`]. [`D2dSurface::dwrite`] is `Option` so one struct
-//!   covers both — [`Self::dwrite_or_panic`] panics only if a text verb
-//!   is reached with `dwrite: None`, exactly mirroring what the old
-//!   per-file `unreachable!("... has no text measurement")` arms already
-//!   guaranteed (those primitives' `paint` fns never call a text verb).
+//! This adapter varies on one axis: **`dwrite` presence.**
+//! [`crate::Scrollbar`], [`crate::DropOverlay`],
+//! [`crate::Split`] and [`crate::SplitTree`] paint with `target` alone
+//! (no text); [`crate::Form`], `crate::primitives::sidebar_panel`,
+//! [`crate::StatusBar`], [`crate::primitives::diff_view::DiffView`],
+//! [`crate::ToastOverlay`] and [`crate::Panel`] paint text too and need a
+//! live [`DWrite`]. [`D2dSurface::dwrite`] is `Option` so one struct
+//! covers both — [`Self::dwrite_or_panic`] panics only if a text verb
+//! is reached with `dwrite: None`, exactly mirroring what the primitives'
+//! `paint` fns guarantee: they never call a text verb without text measurement.
 //!
-//! Every other verb (`surface_stroke_rect`, `surface_draw_text_run`,
+//! All other verbs (`surface_stroke_rect`, `surface_draw_text_run`,
 //! `surface_draw_line`, `surface_push_clip`/`surface_pop_clip`,
-//! `surface_draw_image`) was already byte-identical across every adapter
-//! that implemented it for real (the rest `unreachable!()`d because their
-//! primitive's `paint` never calls it) — this module implements all of
-//! them unconditionally; the primitives that never call a given verb
-//! simply never reach that code, so this is not a behaviour change.
+//! `surface_draw_image`) are implemented unconditionally; primitives that
+//! never call a given verb simply never reach that code.
 //!
-//! `surface_measure_text_styled`/`surface_draw_text_run_styled` (bold +
-//! `scale_x`-aware) were previously overridden only by `win::status_bar`
-//! (bold only, no `scale_x` — status bar segments never scale) and
-//! `win::form` (bold *and* `scale_x`, needed by
-//! `win::multi_section_view`'s embedded-`Terminal` section body); every
-//! other adapter took the trait default (drop `bold`/`scale_x`, forward
-//! to the plain verb). `win::form`'s version strictly generalises
-//! `win::status_bar`'s: at `scale_x == 1.0` (every status-bar call) its
-//! `with_horizontal_scale` branch is skipped and it falls through to the
-//! exact same `dwrite.draw_text_styled(...)` call `win::status_bar`'s own
-//! override made — so implementing that one version unconditionally here
-//! reproduces both call sites' behaviour exactly, and is inert (never
-//! reached) for the primitives that used the default.
+//! `surface_measure_text_styled`/`surface_draw_text_run_styled` handle bold
+//! and `scale_x` scaling (needed by `win::multi_section_view`'s embedded
+//! Terminal section body); at `scale_x == 1.0` the scaling branch is skipped.
 //!
 //! `surface_draw_image` returns [`ImagePaintResult::Unsupported`]
-//! uniformly (matching `win::form`'s and `win::toast`'s old adapters,
-//! the only two of the 10 that didn't `unreachable!()` here); no
-//! primitive that uses this adapter ever paints an image, so this is a
-//! strictly safer default than the panic the other eight copies carried,
-//! not a behaviour change for any live call site.
+//! uniformly; no primitive that uses this adapter ever paints an image.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -119,7 +93,7 @@ impl PaintSurface for D2dSurface<'_> {
         let _ = fill_rect(self.target, rect, color);
     }
 
-    /// #1073: `super::text::fill_rounded_rect`'s `ID2D1RenderTarget`
+    /// `super::text::fill_rounded_rect`'s `ID2D1RenderTarget`
     /// twin of [`Self::surface_fill_rect`] above.
     fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
         let _ = fill_rounded_rect(self.target, rect, radius, color);

@@ -4,7 +4,7 @@
 //! Demonstrates all four chart kinds: sparkline, line, stacked bar and
 //! grouped bar. The two bar views share one three-series dataset, so
 //! switching between them shows the same data composed (stacked) vs.
-//! compared (grouped) — see quadraui#584.
+//! compared (grouped).
 //!
 //! Controls:
 //! - space           add a data point to the sparkline
@@ -124,16 +124,10 @@ impl ChartApp {
             ],
             x_label: Some("Endpoint".into()),
             y_label: None,
-            // Auto-derived: the ceiling is the largest column total in
-            // stacked mode and the largest single value when grouped.
-            // The `Failed` series' zero at index 1 is here to exercise
-            // the "zero series doesn't shift/clip the rest" case (see
-            // `tests/tui_example_driver.rs`'s stacked-bar test) — it is
-            // no longer *required* for correct proportions the way it
-            // was pre-fix: `Chart::effective_y_range` now anchors a
-            // multi-series stack's floor at 0.0 regardless of whether
-            // any raw value in the chart happens to be exactly 0.0
-            // (#584 review).
+            // The y-range is auto-derived: the ceiling is the largest
+            // column total in stacked mode and the largest single value
+            // when grouped. The `Failed` series' zero at index 1 exercises
+            // the case where a zero series doesn't shift or clip the rest.
             y_range: None,
             x_range: None,
             show_legend: true,
@@ -145,7 +139,7 @@ impl ChartApp {
 
     fn status_bar(&self) -> StatusBar {
         // `ChartKind` is `#[non_exhaustive]`, so a consumer match needs
-        // a wildcard arm — future kinds stay additive (quadraui#584).
+        // a wildcard arm — future kinds stay additive.
         let kind_label = match self.active_kind {
             ChartKind::Sparkline => "Sparkline",
             ChartKind::Line => "Line",

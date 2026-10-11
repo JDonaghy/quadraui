@@ -1,13 +1,10 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::TreeView`] (issue #26).
+//! Direct2D / DirectWrite rasteriser for [`crate::TreeView`].
 //!
 //! Content painting (background, rows, chevron/icon/badge/text or
-//! inline-edit, vertical scrollbar) moved to the shared
-//! [`crate::primitives::tree::native_surface_paint::paint`] (#1075,
-//! `PaintSurface` Phase 4 slice 2/8) — see that fn's module doc for
-//! what's shared. Notably: this rasteriser previously never painted
-//! `TreeRow::edit` at all (see *Scope for #26* below — inherited from
-//! before this migration, kept for the historical record); it now
-//! shares GTK's full caret + selection-highlight + placeholder
+//! inline-edit, vertical scrollbar) is shared with other backends via
+//! [`crate::primitives::tree::native_surface_paint::paint`] — see that
+//! fn's module doc for what's shared. This rasteriser now paints
+//! `TreeRow::edit` with full caret + selection-highlight + placeholder
 //! treatment like every other backend.
 //!
 //! [`TreeView::layout`] (the D6 layout API) does every positioning and
@@ -27,22 +24,13 @@
 //! ([`crate::win::WinBackend::draw_tree`]) passes `&self.current_theme`,
 //! the same field `Backend::set_theme` writes.
 //!
-//! # Scope for #26 (historical)
-//!
-//! Inline row editing ([`TreeRow::edit`]) was not painted prior to
-//! #1075 — rows with `edit: Some(_)` rendered their normal (stale)
-//! label instead. Fixed by the migration above.
-//!
-//! Nerd-Font icon glyphs: `WinBackend` now tracks a `nerd_fonts_enabled`
-//! flag the same way `TuiBackend`/`GtkBackend`/`MacBackend` do (#804),
-//! and this rasteriser picks [`crate::types::Icon::glyph`] vs
-//! [`crate::types::Icon::fallback`] the same way theirs do. `draw_tree`
-//! is the only Win-GUI rasteriser wired to the flag so far —
-//! `win::activity_bar` still always paints `fallback` (see that
-//! module's doc); extending the rest of the icon-bearing Win-GUI
-//! rasterisers is separate, unstarted scope. The chosen glyph paints in
-//! [`crate::types::Icon::color`] when set (#1057), else the row's
-//! `def_fg`.
+//! `WinBackend` tracks a `nerd_fonts_enabled` flag the same way
+//! `TuiBackend`/`GtkBackend`/`MacBackend` do, and this rasteriser picks
+//! [`crate::types::Icon::glyph`] vs [`crate::types::Icon::fallback`] the
+//! same way theirs do. `draw_tree` is the only Win-GUI rasteriser wired
+//! to the flag so far — `win::activity_bar` still always paints `fallback`
+//! (see that module's doc). The chosen glyph paints in
+//! [`crate::types::Icon::color`] when set, else the row's `def_fg`.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -58,13 +46,13 @@ use crate::theme::Theme;
 /// no-paint hit-test call always agrees with what the last paint drew.
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::tree_layout`]
-/// (#499, adopted for `win/` by #701) — the row-pitch/chevron math is
-/// identical across every pixel backend, so it lives there once instead
-/// of once per backend. `chevron_end_x` is a **layout estimate**
-/// (`line_height * 0.65` for the glyph width), not a real
-/// `DWrite::measure_text` call — same shortcut `gtk::tree::gtk_tree_layout`
-/// / `macos::tree::mac_tree_layout` take, since exact glyph metrics
-/// aren't available without laying out each chevron per row.
+/// — the row-pitch/chevron math is identical across every pixel backend,
+/// so it lives there once instead of once per backend. `chevron_end_x` is
+/// a **layout estimate** (`line_height * 0.65` for the glyph width), not a
+/// real `DWrite::measure_text` call — same shortcut
+/// `gtk::tree::gtk_tree_layout` / `macos::tree::mac_tree_layout` take,
+/// since exact glyph metrics aren't available without laying out each
+/// chevron per row.
 pub fn win_tree_layout(tree: &TreeView, rect: Rect, line_height: f32) -> TreeViewLayout {
     crate::primitives::layout_metrics::tree_layout(tree, rect, line_height as f64)
 }
@@ -96,7 +84,7 @@ pub fn win_tree_layout(tree: &TreeView, rect: Rect, line_height: f32) -> TreeVie
 ///   `muted_fg` / the row's own background.
 ///
 /// `nerd_fonts_enabled` picks `row.icon.glyph` when `true` and
-/// `row.icon.fallback` when `false` (#804) — pass `WinBackend`'s own
+/// `row.icon.fallback` when `false` — pass `WinBackend`'s own
 /// flag (set via [`crate::Backend::set_nerd_fonts`]), same convention
 /// as the TUI/GTK/macOS `draw_tree` rasterisers.
 pub fn draw_tree(
@@ -332,19 +320,13 @@ mod tests {
         assert_eq!(painted, no_paint);
     }
 
-    /// #804: `nerd_fonts_enabled` selects `row.icon.glyph` vs
-    /// `row.icon.fallback` — previously `WinBackend` had no such flag at
-    /// all and `draw_tree` always painted `fallback`. Uses two ASCII
-    /// strings of clearly different width (`"WWWW"` vs `"E"`) rather
-    /// than a real Nerd Font codepoint, so the assertion holds headless
-    /// without a Nerd Font installed — same reasoning as
-    /// `gtk::activity_bar::nerd_fonts_flag_selects_glyph_or_fallback` /
-    /// `macos::tree::nerd_fonts_flag_selects_glyph_or_fallback`.
+    /// `nerd_fonts_enabled` selects `row.icon.glyph` vs
+    /// `row.icon.fallback`. Uses two ASCII strings of clearly different
+    /// width (`"WWWW"` vs `"E"`) rather than a real Nerd Font codepoint,
+    /// so the assertion holds headless without a Nerd Font installed.
     /// Measures the painted icon's pixel bounding-box width via
-    /// foreground-vs-background scanning — asserted on pixels, not
-    /// screen text, per quadraui#555. This test was observed RED
-    /// against the pre-fix `draw_tree` (both widths equal to the
-    /// `"E"` fallback's).
+    /// foreground-vs-background scanning — asserted on pixels, not screen
+    /// text.
     #[test]
     fn nerd_fonts_flag_selects_glyph_or_fallback() {
         let row = TreeRow {
@@ -407,14 +389,13 @@ mod tests {
         );
     }
 
-    /// #1057: a row with `Icon::color` set paints its icon glyph in that
-    /// colour; a row without one paints it in the default row fg,
-    /// unchanged from pre-#1057 rendering. Empty row text (as in
-    /// `nerd_fonts_flag_selects_glyph_or_fallback` above) means the icon
-    /// glyph is the only ink in the row, so the most-inked pixel on the
-    /// row's mid-line is unambiguously the icon. This test passes
-    /// `&Theme::default()` explicitly and reads its expected colours
-    /// from the same instance, so it stays correct regardless of what
+    /// A row with `Icon::color` set paints its icon glyph in that colour;
+    /// a row without one paints it in the default row fg. Empty row text
+    /// (as in `nerd_fonts_flag_selects_glyph_or_fallback` above) means the
+    /// icon glyph is the only ink in the row, so the most-inked pixel on
+    /// the row's mid-line is unambiguously the icon. This test passes
+    /// `&Theme::default()` explicitly and reads its expected colours from
+    /// the same instance, so it stays correct regardless of what
     /// `draw_tree`'s caller wires through in production.
     #[test]
     fn icon_color_paints_icon_glyph_in_that_color_else_default_fg() {
@@ -488,25 +469,18 @@ mod tests {
         );
     }
 
-    /// #1075 regression: before this migration, `win::tree::draw_tree`
-    /// never painted `TreeRow::edit` at all — a row mid-rename rendered
-    /// its stale label instead of any edit-state affordance (see this
-    /// module's pre-migration doc, "Scope for #26"). This test paints a
-    /// row with `edit: Some(_)` and asserts its interior contains
-    /// painted (non-background) pixels distinct from the plain label it
-    /// would have shown pre-fix — observed RED against the pre-#1075
-    /// body (which painted `"old-name"`, not the edit state, at that
-    /// same probed position once `edit.text` differs from the label).
+    /// `win::tree::draw_tree` now paints `TreeRow::edit` with full
+    /// edit-state affordance. This test paints a row with `edit: Some(_)`
+    /// and asserts its interior contains painted (non-background) pixels
+    /// distinct from the plain label — the row's `text` is a single narrow
+    /// glyph ("x"), while its `edit.text` is a much wider string, so the
+    /// rightmost painted column tells the two apart.
     #[test]
     fn paints_row_being_edited() {
-        // Differential design, not a bare "something is painted" check:
-        // a bare presence check would also pass against the pre-#1075
-        // body, which ignored `row.edit` and painted the row's *label*
-        // regardless — this row's `text` is a single narrow glyph
+        // Differential design: the row's `text` is a single narrow glyph
         // ("x"), while its `edit.text` is a much wider string, so the
-        // rightmost painted column tells the two apart. Pre-fix, both
-        // trees below paint identically (the label "x"); post-fix, the
-        // edited tree paints substantially further right.
+        // rightmost painted column tells the two apart. The edited tree
+        // paints substantially further right than the label alone.
         let rightmost_painted_x = |edit: Option<crate::primitives::tree::TreeRowEditState>| -> u32 {
             let row = TreeRow {
                 path: vec![0],
@@ -568,9 +542,9 @@ mod tests {
         );
     }
 
-    /// #1075 regression: before this migration, `draw_tree` never
+    /// Before this migration, `draw_tree` never
     /// painted a vertical scrollbar even though `Backend::tree_vscrollbar`
-    /// (#1043) already returned real geometry for hit-testing.
+    /// already returned real geometry for hit-testing.
     #[test]
     fn paints_vertical_scrollbar_track_when_overflowing() {
         let tree = make_tree((0..40).map(|i| leaf(i, &format!("row-{i}"))).collect());

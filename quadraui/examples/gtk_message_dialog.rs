@@ -1,7 +1,7 @@
 //! MessageDialogDemo `AppLogic` + `quadraui::gtk::run` example.
 //!
 //! Manual smoke test for the GTK `PlatformServices::show_message_dialog`
-//! implementation (#666): opens a real native `gtk4::AlertDialog`,
+//! implementation: opens a real native `gtk4::AlertDialog`,
 //! parented to this window, pumped through the same nested-mainloop
 //! adapter `gtk_file_dialog` uses. See
 //! `examples/common/message_dialog_demo.rs` for details, and

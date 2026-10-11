@@ -14,7 +14,7 @@ use crate::primitives::toast::{
 };
 use crate::theme::Theme;
 
-/// Max toast width (#1182): was a fixed `40.0` too narrow for a title
+/// Max toast width: was a fixed `40.0` too narrow for a title
 /// with an action button (e.g. vimcode's "Install Markdown Language
 /// Server?" + "Install"), which got cut off mid-word. Now a per-content
 /// floor/ceiling — see [`tui_toast_width`] — with this as the ceiling.
@@ -27,17 +27,16 @@ const TUI_TOAST_GAP: f32 = 1.0;
 const TUI_DISMISS_WIDTH: f32 = 3.0;
 const TUI_ACTION_PADDING: f32 = 2.0;
 /// Horizontal gap (cells) between two adjacent action buttons on the
-/// button row (#1185).
+/// button row.
 const TUI_ACTION_GAP: f32 = 1.0;
-/// Rows reserved for the top+bottom border (#1182 — TUI toasts previously
-/// had no border at all).
+/// Rows reserved for the top+bottom border.
 const TUI_BORDER_ROWS: f32 = 2.0;
 /// Columns reserved for the left+right border. Drawn in the 1-cell
 /// padding columns every toast already reserved before text/dismiss, so
 /// this doesn't change the box's overall width formula.
 const TUI_BORDER_COLS: f32 = 2.0;
 /// Toast-local inset from the box edge for the dismiss/action rows —
-/// keeps both clear of the 1-cell border (#1185).
+/// keeps both clear of the 1-cell border.
 const TUI_INSET: f32 = 1.0;
 
 /// Per-action button width in cells: label length plus
@@ -46,14 +45,14 @@ fn tui_action_width(action: &crate::primitives::toast::ToastButton) -> f32 {
     action.label.chars().count() as f32 + TUI_ACTION_PADDING
 }
 
-/// Resolve a toast's box width from its content (#1182, extended #1185):
-/// wide enough for the whole title plus its dismiss button, *and* wide
-/// enough for the action row (if any) to fit without its buttons
-/// overlapping — clamped to a sensible [`TUI_TOAST_MAX_WIDTH`] ceiling
-/// and [`TUI_TOAST_MIN_WIDTH`] floor, and never wider than the viewport
+/// Resolve a toast's box width from its content: wide enough for
+/// the whole title plus its dismiss button, *and* wide enough for
+/// the action row (if any) to fit without its buttons overlapping —
+/// clamped to a sensible [`TUI_TOAST_MAX_WIDTH`] ceiling and
+/// [`TUI_TOAST_MIN_WIDTH`] floor, and never wider than the viewport
 /// allows. The body doesn't drive width — it wraps instead (see
-/// [`tui_body_lines`]) — so a very long body alone doesn't blow the box
-/// out sideways.
+/// [`tui_body_lines`]) — so a very long body alone doesn't blow the
+/// box out sideways.
 fn tui_toast_width(toast: &Toast, viewport_width: f32) -> f32 {
     let title_needed = toast.title.chars().count() as f32 + TUI_BORDER_COLS + TUI_DISMISS_WIDTH;
     let action_widths: Vec<f32> = toast.actions.iter().map(tui_action_width).collect();
@@ -73,7 +72,7 @@ fn tui_toast_width(toast: &Toast, viewport_width: f32) -> f32 {
 /// Word-wrap `toast`'s body to fit a box of `width` columns (already
 /// resolved by [`tui_toast_width`]), capped at [`MAX_BODY_LINES`] —
 /// shared by the measure closure (for height) and the paint routine (for
-/// the actual text), so they always agree (#1182).
+/// the actual text), so they always agree.
 fn tui_body_lines(toast: &Toast, width: f32) -> Vec<String> {
     if toast.body.is_empty() {
         return Vec::new();
@@ -87,7 +86,6 @@ fn tui_body_lines(toast: &Toast, width: f32) -> Vec<String> {
 fn toast_height(toast: &Toast, width: f32) -> f32 {
     let body_lines = tui_body_lines(toast, width).len();
     // 1 title row + wrapped body rows + 1 button row (if the toast has
-    // actions, #1185) + top/bottom border rows.
     let button_row = if toast.actions.is_empty() { 0.0 } else { 1.0 };
     1.0 + body_lines as f32 + button_row + TUI_BORDER_ROWS
 }
@@ -193,11 +191,9 @@ fn paint_toast(
         }
     }
 
-    // Border (#1182 — previously absent, so an Info toast's `surface_bg`
-    // fill could blend into a light theme). Top/bottom rows get a full
-    // box-drawing line; the left/right columns of the interior rows
-    // reuse the 1-cell padding every toast already reserved before
-    // text/dismiss, so this doesn't change the box's width.
+    // Border drawn with box-drawing characters on top/bottom rows;
+    // left/right columns reuse the 1-cell padding every toast already
+    // reserves before text/dismiss, so this doesn't change the box's width.
     let bottom_y = by + bh.saturating_sub(1);
     if bh >= 2 && bw >= 2 {
         for dx in 0..bw {
@@ -236,8 +232,8 @@ fn paint_toast(
 
     // Title on the first interior row (below the top border),
     // left-aligned with 1-cell padding, truncated/ellipsized to the
-    // space left of the dismiss button — never drawn under it (#1182).
-    // #1185: the action row moved to its own line at the bottom, so the
+    // space left of the dismiss button — never drawn under it.
+    // The action row moved to its own line at the bottom, so the
     // title only needs to dodge dismiss now.
     let title_y = by + 1;
     let text_end = vt
@@ -254,10 +250,8 @@ fn paint_toast(
         set_cell(buf, col, title_y, ch, fg, bg);
     }
 
-    // Body wraps across up to `MAX_BODY_LINES` rows below the title
-    // (#1182 — previously a single unwrapped row that ran past the box).
+    // Body wraps across up to `MAX_BODY_LINES` rows below the title.
     // Body rows have no action/dismiss to avoid, so they use the full
-    // interior width (up to the right border column).
     if !toast.body.is_empty() {
         let body_text_end = bx + bw.saturating_sub(1);
         for (i, line) in tui_body_lines(toast, vt.bounds.width).iter().enumerate() {
@@ -271,14 +265,13 @@ fn paint_toast(
         }
     }
 
-    // Dismiss × near the top-right (#1185 — was a full-height trailing
-    // column before this; now a single-row square near the title row).
+    // Dismiss × near the top-right: a single-row square near the title row.
     let dismiss_focused = matches!(focus, Some(f) if f.target == ToastFocusTarget::Dismiss);
     if let Some(db) = vt.dismiss_bounds {
         let dx = db.x.round() as u16 + (db.width as u16).saturating_sub(1) / 2;
         let dy = db.y.round() as u16;
         if in_area(dx, dy) {
-            // #1185: visible focus indicator — invert fg/bg on the
+            // Visible focus indicator — invert fg/bg on the
             // dismiss cell when it's the controller's focus target.
             let (dfg, dbg) = if dismiss_focused {
                 (bg, ratatui_color(theme.link_fg))
@@ -289,10 +282,7 @@ fn paint_toast(
         }
     }
 
-    // Action buttons on their own row at the bottom-right (#1185 — was
-    // inline with the title, at most one, before this). The action
-    // marked `primary` fills its row with `theme.accent_bg`; the rest
-    // paint plain text in `theme.link_fg` (secondary/ghost-button look).
+    // Action buttons on their own row at the bottom-right. The action
     for (i, (ab, action)) in vt.action_rects.iter().zip(toast.actions.iter()).enumerate() {
         let ay = ab.y.round() as u16;
         let ax0 = ab.x.round() as u16;
@@ -304,7 +294,7 @@ fn paint_toast(
             (bg_color, theme.link_fg)
         };
         if action_focused {
-            // #1185: visible focus indicator — invert to a
+            // Visible focus indicator — invert to a
             // `theme.link_fg` filled row, same treatment as dismiss.
             row_fg = row_bg;
             row_bg = theme.link_fg;
@@ -365,13 +355,11 @@ mod tests {
     }
 
     /// Shared body for `single_toast_paint_and_click_round_trip`, run at
-    /// both the origin and a non-zero `area` origin (quadraui#494 /
-    /// LESSONS.md "Layout helpers must return coords in the same frame
-    /// across backends"). `tui_toast_stack_layout` bakes `area.x`/`area.y`
-    /// straight into the returned bounds (absolute frame, matching
-    /// `tui_menu_bar_layout`/`tui_panel_layout`), so both the painted
-    /// glyph position AND the `hit_test` coordinates must shift together
-    /// with the origin.
+    /// both the origin and a non-zero `area` origin. `tui_toast_stack_layout`
+    /// bakes `area.x`/`area.y` straight into the returned bounds (absolute
+    /// frame, matching `tui_menu_bar_layout`/`tui_panel_layout`), so both the
+    /// painted glyph position AND the `hit_test` coordinates must shift
+    /// together with the origin.
     fn single_toast_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 60, 20);
         let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 60, origin_y + 20));
@@ -382,7 +370,7 @@ mod tests {
         let vt = &layout.visible_toasts[0];
 
         // Title should be painted inside the toast bounds, on the first
-        // interior row below the top border (#1182).
+        // interior row below the top border.
         let tx = vt.bounds.x.round() as u16 + 1;
         let ty = vt.bounds.y.round() as u16 + 1;
         assert_eq!(cell_char(&buf, tx, ty), 'H');
@@ -397,7 +385,7 @@ mod tests {
         single_toast_paint_and_click_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494): same round trip,
+    /// Non-zero-origin regression guard: same round trip,
     /// painted at a shifted `area` origin.
     #[test]
     fn single_toast_paint_and_click_round_trip_at_nonzero_origin() {
@@ -406,7 +394,7 @@ mod tests {
 
     /// Shared body for `dismiss_glyph_paint_and_click_round_trip` —
     /// see [`single_toast_paint_and_click_round_trip_at`] for the
-    /// quadraui#494 non-zero-origin rationale.
+    /// coordinate-frame rationale.
     fn dismiss_glyph_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 60, 20);
         let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 60, origin_y + 20));
@@ -417,7 +405,6 @@ mod tests {
         let db = vt.dismiss_bounds.expect("dismiss bounds present");
         let dx = db.x.round() as u16 + (db.width as u16).saturating_sub(1) / 2;
         // Dismiss glyph paints on its own inset row near the top-right
-        // (#1185).
         let dy = db.y.round() as u16;
         assert_eq!(cell_char(&buf, dx, dy), '×');
 
@@ -437,7 +424,7 @@ mod tests {
 
     /// Shared body for `action_button_paint_and_click_round_trip` —
     /// see [`single_toast_paint_and_click_round_trip_at`] for the
-    /// quadraui#494 non-zero-origin rationale.
+    /// coordinate-frame rationale.
     fn action_button_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 60, 20);
         let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 60, origin_y + 20));
@@ -456,7 +443,7 @@ mod tests {
         let ax0 = ab.x.round() as u16;
         let aw = ab.width.round() as u16;
         let ax = ax0 + (aw.saturating_sub("Retry".chars().count() as u16)) / 2;
-        // Action label paints on its own row at the bottom-right (#1185).
+        // Action label paints on its own row at the bottom-right.
         let ay = ab.y.round() as u16;
         assert_eq!(cell_char(&buf, ax, ay), 'R');
 
@@ -486,18 +473,12 @@ mod tests {
         let vt = &layout.visible_toasts[0];
         let bx = vt.bounds.x.round() as u16 + 1;
         // Body paints below the title row, which itself sits below the
-        // top border (#1182): bounds.y (border) + 1 (title) + 1 (body).
+        // top border: bounds.y (border) + 1 (title) + 1 (body).
         let body_y = vt.bounds.y.round() as u16 + 2;
         assert_eq!(cell_char(&buf, bx, body_y), 'B');
     }
 
-    /// Acceptance regression for #1182/#1185 (vimcode's "Install Markdown
-    /// Language Server?" prompt): the box widens to fit the whole title
-    /// plus its dismiss button instead of the old fixed 40-col width
-    /// that cut the title off mid-word, the title never overlaps the
-    /// dismiss column, the action row sits on its own line below the
-    /// title/body (never inline with it), and the box has a visible
-    /// border.
+    /// Acceptance regression: the box widens to fit the whole title
     #[test]
     fn long_title_with_action_widens_box_and_avoids_overlap() {
         let area = Rect::new(0, 0, 90, 20);
@@ -538,7 +519,7 @@ mod tests {
         assert!(ab.y > db.y);
         assert!(ab.y > vt.bounds.y + 1.0);
 
-        // Border corners are visible (previously no border existed).
+        // Border corners are visible.
         let by = vt.bounds.y.round() as u16;
         let bottom_y = by + vt.bounds.height.round() as u16 - 1;
         assert_eq!(cell_char(&buf, bx, by), '┌');
@@ -553,7 +534,7 @@ mod tests {
         );
     }
 
-    /// #1185: two actions produce two distinct, side-by-side button
+    /// Two actions produce two distinct, side-by-side button
     /// rects on the same row, with the primary action's row filled with
     /// `theme.accent_bg`.
     #[test]
@@ -591,7 +572,7 @@ mod tests {
         assert_eq!(cell.bg, ratatui_color(theme.accent_bg));
     }
 
-    /// #1185: the controller's `ToastFocus` gets a visible focus
+    /// The controller's `ToastFocus` gets a visible focus
     /// indicator (inverted colours) on the dismiss cell.
     #[test]
     fn focused_dismiss_paints_inverted() {

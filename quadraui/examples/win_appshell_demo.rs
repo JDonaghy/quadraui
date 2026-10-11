@@ -1,7 +1,4 @@
-//! Win-GUI runner for AppShell demo — proves `run_with_shell()` works on
-//! the Win-GUI backend (quadraui#707, the Windows analogue of #465). Same
-//! `AppShellDemo` `ShellApp` impl `tui_appshell_demo.rs` / `gtk_appshell_demo.rs`
-//! / `macos_appshell_demo.rs` already share; only the runner call differs.
+//! Win-GUI runner for AppShell demo.
 //!
 //! Windows-only at runtime, but compiles on every host under plain
 //! `cargo build --example win_appshell_demo --features win` — same

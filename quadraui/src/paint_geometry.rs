@@ -1,4 +1,4 @@
-//! Host-independent paint-geometry helpers (#857).
+//! Host-independent paint-geometry helpers.
 //!
 //! # Why this module exists
 //!
@@ -6,10 +6,10 @@
 //! (see that arm's comment in `lib.rs`) — the whole module, not per-item the
 //! way `src/win/` is. So a `cfg(test)` unit test written *inside*
 //! `src/macos/` only compiles and runs on `macos-latest`, the one runner in
-//! the fleet. #850 and #857 red-lined CI overnight on exactly that: pure
-//! rect/inset arithmetic — "which rect gets `selected_bg` behind it", "where
-//! does the translucent-blue selection highlight land" — happened to live
-//! behind that gate and so had zero coverage anywhere except a real Mac.
+//! the fleet. Pure rect/inset arithmetic — "which rect gets `selected_bg`
+//! behind it", "where does the translucent-blue selection highlight land"
+//! — happened to live behind that gate and so had zero coverage anywhere
+//! except a real Mac.
 //!
 //! `src/win/msg.rs` solved the equivalent problem for Windows: pull the part
 //! of the platform-specific paint/bootstrap code that is plain arithmetic
@@ -39,11 +39,10 @@
 //! antialiased glyph touches. That is genuinely host-specific (a different
 //! font rasteriser could shift the answer), so the *pixel* assertion can't
 //! move. The *decision* those two tests are actually guarding — "does this
-//! item get a `selected_bg` pill at all" — is not host-specific, and is
-//! exactly the class of bug #808 was: the shared `native_surface_paint::
-//! paint` painter, ported from the Windows copy, never called *any* fill
-//! for an on-toggle/selected-segment. [`selected_item_fill`] below is that
-//! decision, extracted so it runs on every host; `native_surface_paint::
+//! item get a `selected_bg` pill at all" — is not host-specific: the shared
+//! `native_surface_paint::paint` painter, ported from the Windows copy,
+//! never called *any* fill for an on-toggle/selected-segment. [`selected_item_fill`]
+//! below is that decision, extracted so it runs on every host; `native_surface_paint::
 //! paint`'s `ToggleGroup`/`SegmentedControl` arms call it directly instead
 //! of re-deciding inline. Layered coverage, cheapest tier first:
 //! [`selected_item_fill`]'s own tests (this module, every host, no
@@ -78,17 +77,6 @@ pub(crate) const FORM_PILL_INSET_Y: f32 = 2.0;
 /// and bottom so consecutive items keep a visible gap between their
 /// highlights.
 ///
-/// Ports `macos::form::draw_form`'s pre-#808 `iy + 2.0` / `ih - 4.0` fill —
-/// the one selected-state affordance the three deleted per-backend copies
-/// disagreed about (macOS painted it, GTK painted nothing, Windows painted
-/// `hover_bg` at full row height; #808's `fix(quadraui): restore the
-/// selected-state pill the shared Form painter dropped` unified all three
-/// on this shape). `macos::form`'s `toggle_group_on_item_paints_selected_bg`
-/// and `segmented_control_selected_paints_selected_bg` assert this same
-/// shape against real painted pixels, but only on the `macos-latest` CI
-/// leg (#857) — the tests in this module's own `mod tests` cover the
-/// underlying rect arithmetic everywhere else.
-///
 /// Degenerate rows (height <= `2 * FORM_PILL_INSET_Y`) fall back to the
 /// un-inset rect rather than producing a negative height.
 #[allow(dead_code)]
@@ -114,13 +102,10 @@ pub(crate) fn form_selection_pill(r: Rect) -> Rect {
 /// `Some((pill, selected_bg))` for a selected one, where `pill` is
 /// [`form_selection_pill`]'s inset of `rect`.
 ///
-/// This is the module doc's `#808` regression class made unit-testable:
 /// `native_surface_paint::paint`'s `ToggleGroup`/`SegmentedControl` arms
-/// call this directly rather than inlining `if selected { fill }`, so a
-/// future edit to *this* function — the one place both field kinds
-/// decide whether to paint their selection affordance — is covered on
-/// every host, not only wherever a pixel-backend's own probe happens to
-/// exist.
+/// call this directly rather than inlining `if selected { fill }`, so the
+/// selection affordance decision is covered on every host, not only
+/// wherever a pixel-backend's own probe happens to exist.
 #[allow(dead_code)]
 pub(crate) fn selected_item_fill(
     rect: Rect,
@@ -266,16 +251,12 @@ mod tests {
         assert!(text_selection_highlight_rects(region_bounds, &[], 8.0, 16.0).is_empty());
     }
 
-    /// The #808 regression itself, host-independent: a selected item
-    /// (an on `ToggleGroup` toggle, or the chosen `SegmentedControl`
-    /// segment — `selected_item_fill` doesn't distinguish the two, the
-    /// caller already reduced both to one `selected: bool`) must produce
-    /// a fill, not silently paint nothing. `macos::form`'s
-    /// `toggle_group_on_item_paints_selected_bg` /
+    /// A selected item (an on `ToggleGroup` toggle, or the chosen
+    /// `SegmentedControl` segment) must produce a fill, not silently paint
+    /// nothing. `macos::form`'s `toggle_group_on_item_paints_selected_bg` /
     /// `segmented_control_selected_paints_selected_bg` assert this same
-    /// decision against real painted pixels (macOS-only, see this
-    /// module's doc); this is the same assertion with no rasteriser in
-    /// the loop, so it runs on every host.
+    /// decision against real painted pixels (macOS-only); this is the same
+    /// assertion with no rasteriser in the loop, so it runs on every host.
     #[test]
     fn selected_item_fill_paints_the_inset_pill_when_selected() {
         let rect = Rect::new(10.0, 20.0, 30.0, 20.0);
@@ -287,13 +268,10 @@ mod tests {
     }
 
     /// An unselected item paints nothing at all — not a zero-size rect,
-    /// not a differently-coloured rect, no fill call. This is the exact
-    /// shape of the #808 bug: the shared painter, ported from the
-    /// Windows copy, dropped the fill entirely for the selected case; a
-    /// test asserting only "the off item doesn't get `selected_bg`"
-    /// wouldn't catch a painter that fills every item unconditionally,
-    /// so this asserts `None` — no call at all — rather than probing for
-    /// an absence of one particular colour.
+    /// not a differently-coloured rect, no fill call. This asserts `None`
+    /// — no call at all — rather than probing for an absence of one
+    /// particular colour, to catch a painter that fills every item
+    /// unconditionally.
     #[test]
     fn selected_item_fill_paints_nothing_when_not_selected() {
         let rect = Rect::new(10.0, 20.0, 30.0, 20.0);

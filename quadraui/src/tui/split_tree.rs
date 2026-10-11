@@ -8,7 +8,7 @@
 //! perpendicular divider (a nested `:vsplit` inside a `:split`, or a run
 //! ending on a status-bar row), the shared cell is upgraded to a
 //! box-drawing junction glyph (`┼ ├ ┤ ┬ ┴`) — see
-//! [`super::split_junction`] (quadraui#1067).
+//! [`super::split_junction`].
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -61,13 +61,12 @@ pub fn draw_split_tree(
     // inner run already there. Painting every run's plain glyph first,
     // then upgrading every run's junctions in a second pass over the
     // now-complete buffer, makes the result independent of that
-    // traversal order (quadraui#1067).
+    // traversal order.
     let mut runs: Vec<(Vec<(u16, u16)>, bool)> = Vec::with_capacity(layout.dividers.len());
 
     for div in &layout.dividers {
-        // #452-class fix: paint at the exact same truncated cell
-        // `SplitTreeLayout::hit_test_divider_cell` compares against —
-        // one conversion, called from both paint and hit-test.
+        // Paint at the exact same truncated cell as `SplitTreeLayout::hit_test_divider_cell`
+        // compares against — one conversion, called from both paint and hit-test.
         let axis_cell = div.cell_position();
         let cross_start = div.cross_start.round() as u16;
         let cross_len = div.cross_size.round() as u16;
@@ -124,8 +123,8 @@ mod tests {
     }
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
-    // must return coords in the same frame across backends"
-    // (quadraui#494). `tui_split_tree_layout` bakes `area.x`/`area.y`
+    // must return coords in the same frame across backends".
+    // `tui_split_tree_layout` bakes `area.x`/`area.y`
     // straight into `tree.layout`'s returned bounds (absolute frame),
     // so the regression guard is a full paint+hit_test round trip
     // re-run at a non-zero origin.
@@ -301,7 +300,7 @@ mod tests {
         );
     }
 
-    /// quadraui#1067: a genuine 4-way crossing (`┼`) — two inner
+    /// A genuine 4-way crossing (`┼`) — two inner
     /// `Horizontal` (side-by-side) splits stacked by an outer
     /// `Vertical` split, with matching ratios so both inner dividers
     /// land on the same column. The outer divider's row then has an
@@ -343,17 +342,15 @@ mod tests {
     }
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
-    // must return coords in the same frame across backends"
-    // (quadraui#494). This is a genuine paint→hit_test round trip (it
+    // must return coords in the same frame across backends".
+    // This is a genuine paint→hit_test round trip (it
     // reads the actually-painted column back out of the buffer), so it
     // gets the same non-zero-origin treatment as the other round trips
     // in this file.
     fn fractional_ratio_round_trip_at(origin_x: u16, origin_y: u16) {
-        // A ratio chosen so the divider position is NOT cell-aligned —
-        // this is the vimcode #452 regression case: paint must truncate
-        // (`as u16`) the same way `SplitTreeDivider::cell_position()`
-        // does, not round — otherwise a click on the visually-painted
-        // divider misses.
+        // A ratio chosen so the divider position is NOT cell-aligned — paint must truncate
+        // (`as u16`) the same way `SplitTreeDivider::cell_position()` does, not round —
+        // otherwise a click on the visually-painted divider misses.
         let area = Rect::new(origin_x, origin_y, 101, 10); // available = 100
         let mut buf = Buffer::empty(area);
         let tree = two_pane(SplitDirection::Horizontal, 0.207); // position = origin_x + 20.7

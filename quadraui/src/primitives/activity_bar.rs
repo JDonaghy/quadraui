@@ -71,12 +71,8 @@ pub struct ActivityBar {
     pub bottom_items: Vec<ActivityItem>,
     /// Colour of the left-edge accent bar on active items.
     /// `None` = no accent rendering. Every rasteriser honours this
-    /// literally as of #658 — there is no theme fallback, so `None`
-    /// genuinely paints zero accent pixels (previously the GTK/TUI/macOS
-    /// rasterisers silently fell back to `theme.accent_fg`, which
-    /// contradicted this doc; see
-    /// `active_bg_fills_row_with_zero_accent_pixels_when_accent_is_none`
-    /// in `crate::gtk::activity_bar::tests`). See [`ActivityBarStyle`] for
+    /// literally — there is no theme fallback, so `None`
+    /// genuinely paints zero accent pixels. See [`ActivityBarStyle`] for
     /// the independent VS-Code-style row-fill knob.
     #[serde(default)]
     pub active_accent: Option<Color>,
@@ -111,7 +107,7 @@ pub struct ActivityItem {
     pub id: WidgetId,
     /// Icon to render — `glyph` for a Nerd Font / icon-font variant,
     /// `fallback` for ASCII/basic-Unicode. Which one paints is decided by
-    /// the backend's `nerd_fonts_enabled` flag (issue #683), not by this
+    /// the backend's `nerd_fonts_enabled` flag, not by this
     /// primitive. TUI paints a single cell (`glyph.chars().next()` /
     /// `fallback.chars().next()`); GTK can render wider strings when the
     /// font supports them.
@@ -133,42 +129,30 @@ pub struct ActivityItem {
 }
 
 /// Per-frame style overrides for
-/// [`crate::Backend::draw_activity_bar_with_style`] (#658) — currently just
+/// [`crate::Backend::draw_activity_bar_with_style`] — currently just
 /// the active-item row-fill colour, VS Code style (no line, a soft chip on
 /// the row itself).
 ///
 /// This is a **sidecar** passed alongside an [`ActivityBar`] rather than a
 /// field on it. `ActivityBar` is a plain, non-`#[non_exhaustive]`,
 /// all-`pub`-field struct constructed via *exhaustive* literals both
-/// in-tree and downstream (`vimcode`'s `src/render.rs`), so adding a
-/// required field to it is an `error[E0063]: missing fields` break for
-/// every one of those call sites the instant it lands — Rust offers no
-/// shim that keeps an exhaustive literal compiling across an added field
-/// (`Default` + `..Default::default()` only helps literals that already
-/// spread, and `#[non_exhaustive]` retrofitted onto `ActivityBar` now would
-/// swap that break for `E0639: cannot construct non-exhaustive struct
-/// outside its crate` — strictly worse, since it would break *every*
-/// existing exhaustive `ActivityBar { .. }` literal, not just ones missing
-/// the new field). Threading the row-fill colour through this separate
-/// value sidesteps the break entirely — mirrors [`crate::TooltipChrome`]
-/// (#541) and [`crate::TabChrome`] (#631), which solve the identical
-/// problem for `Tooltip` and `TabBar`. See those types' module docs for the
-/// full reasoning.
+/// in-tree and downstream, so adding a required field to it would break
+/// every exhaustive literal call site. Threading the row-fill colour
+/// through this separate value sidesteps the break entirely — mirrors
+/// [`crate::TooltipChrome`] and [`crate::TabChrome`], which solve the
+/// identical problem for `Tooltip` and `TabBar`.
 ///
 /// [`crate::Backend::draw_activity_bar`] keeps its exact signature and
 /// behaviour (delegates to the new method with
 /// `ActivityBarStyle::default()`, i.e. no fill), so existing `Backend`
 /// implementors and callers are untouched.
 ///
-/// `#[non_exhaustive]`: brand new this PR, so marking it costs no consumer
-/// anything today (nobody has an exhaustive literal of it yet), and it
-/// means a future style knob (e.g. a corner radius for the fill) is
-/// additive rather than the very breaking change this type exists to
-/// avoid. Construct with [`ActivityBarStyle::new`] /
-/// [`ActivityBarStyle::default`] and the `with_*` builders; the field
-/// stays `pub` for reading.
+/// `#[non_exhaustive]`: means a future style knob (e.g. a corner radius
+/// for the fill) is additive rather than breaking. Construct with
+/// [`ActivityBarStyle::new`] / [`ActivityBarStyle::default`] and the
+/// `with_*` builders; the field stays `pub` for reading.
 // `Eq` dropped from the derive (was `PartialEq, Eq`): `icon_size_px`
-// (#1157) is an `Option<f32>`, and `f32` has no `Eq` impl (NaN isn't
+// is an `Option<f32>`, and `f32` has no `Eq` impl (NaN isn't
 // reflexive) — the same reason no other float-carrying `Copy` chrome
 // style type in this crate (e.g. `TabChrome`) derives `Eq` either.
 #[non_exhaustive]
@@ -182,7 +166,7 @@ pub struct ActivityBarStyle {
     #[serde(default)]
     pub active_bg: Option<Color>,
 
-    /// Icon glyph size, in device-independent pixels (issue #1157). `None`
+    /// Icon glyph size, in device-independent pixels. `None`
     /// (the default) resolves to [`DEFAULT_ACTIVITY_ICON_SIZE_PX`] via
     /// [`Self::resolved_icon_size_px`] — VS-Code parity (~24px) regardless
     /// of whatever size the app's editor or chrome font happens to be set
@@ -190,7 +174,7 @@ pub struct ActivityBarStyle {
     ///
     /// Before this field existed, macOS painted the icon glyph at
     /// whatever font the backend's `draw_activity_bar` passed in — first
-    /// the *editor* font, then (post-#1003) the *chrome* font — so icon
+    /// the *editor* font, then the *chrome* font — so icon
     /// size tracked a font size never meant to govern it; GTK independently
     /// hardcoded a fixed 18pt (≈24px @ 96dpi) size for the same reason.
     /// This field generalises GTK's already-correct fixed size into a
@@ -216,7 +200,7 @@ impl ActivityBarStyle {
 
     /// Set the icon glyph size, in device-independent pixels. See
     /// [`Self::icon_size_px`]'s doc for how each pixel backend interprets
-    /// this value (issue #1157).
+    /// this value.
     pub fn with_icon_size_px(mut self, size_px: f32) -> Self {
         self.icon_size_px = Some(size_px);
         self
@@ -232,18 +216,16 @@ impl ActivityBarStyle {
 /// size regardless of the app's editor or chrome font size. This is the
 /// default an [`ActivityBarStyle`] with no explicit
 /// [`ActivityBarStyle::icon_size_px`] resolves to via
-/// [`ActivityBarStyle::resolved_icon_size_px`] (issue #1157).
+/// [`ActivityBarStyle::resolved_icon_size_px`].
 ///
 /// The unit is device-independent pixels, not any one backend's native
 /// font-size unit — GTK's Pango and Win-GUI's DirectWrite both size fonts
 /// in *points* under the legacy 96/72 dpi convention (`pt = px * 72.0 /
-/// 96.0`, the same ratio `crate::gtk::activity_bar::ICON_FONT_DESC`'s own
-/// doc already documents for its pre-#1157 hardcoded 18pt/24px pair), while
-/// Core Text's *points* on macOS are already device-independent pixels
-/// 1:1 (no 96/72 rescale) — each backend's `activity_bar` module doc spells
-/// out its own conversion at the call site that applies it. TUI is
-/// unaffected: it always paints one glyph per cell, independent of any
-/// font size.
+/// 96.0`), while Core Text's *points* on macOS are already
+/// device-independent pixels 1:1 (no 96/72 rescale) — each backend's
+/// `activity_bar` module doc spells out its own conversion at the call
+/// site. TUI is unaffected: it always paints one glyph per cell,
+/// independent of any font size.
 pub const DEFAULT_ACTIVITY_ICON_SIZE_PX: f32 = 24.0;
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
@@ -287,7 +269,7 @@ pub enum ActivityBarHit {
 /// vimcode's GTK activity bar with `connect_query_tooltip`) read
 /// from this list rather than re-resolving via the layout.
 ///
-/// # Coordinate space — **relative to the bar** (issue #552)
+/// # Coordinate space — **relative to the bar**
 ///
 /// `y_start` / `y_end` are measured from the **top edge of the `rect`
 /// passed to [`Backend::draw_activity_bar`]**, i.e. the first row always
@@ -302,37 +284,9 @@ pub enum ActivityBarHit {
 /// let hit_top = hit.y_start as f32 + activity_bar_bounds.y;
 /// ```
 ///
-/// This is the space every backend already agreed on except the TUI's
-/// `draw_activity_bar`, which leaked its absolute paint `y` into the
-/// returned regions. Because `AppShell` adds the origin a second time,
-/// TUI hits were shifted down by `activity_bar_bounds.y` — invisible
-/// while the title bar was hidden (origin `0`), a one-row off-by-one for
-/// clicks *and* hover the moment `set_title_bar_visible(true)` revealed
-/// it. See issue #552; the height half of the same seam was #547.
-///
-/// Rasterisers: keep the absolute value for *painting*, but push the
-/// bar-relative offset here. Pinned across TUI/GTK by
-/// `tui::activity_bar::tests::hit_regions_are_bar_relative_not_absolute`
-/// / `hit_regions_do_not_move_when_the_bar_does`, plus the
-/// `activity_click_*_parity` / `activity_hover_*_parity` cross-backend
-/// tests in `tests/cross_backend_parity.rs`.
-///
-/// [`Backend::draw_activity_bar`]: crate::Backend::draw_activity_bar
-/// [`TabBarHits`]: crate::TabBarHits
-///
-/// # `f32`, not `f64` (issue #504)
-///
-/// `y_start` / `y_end` are `f32`, matching every other native-unit span
-/// in the crate (`Point`, `Rect`, `TabBarLayout`'s bounds) — this used to
-/// be `f64`, a mismatch with the all-`f32` [`ActivityBarLayout`] sitting
-/// right next to it. Free change: no downstream (`coord-tui`, `vimcode`)
-/// call site reads these fields (only an unrelated doc comment in
-/// vimcode's `shell_app.rs`), confirmed via `grep -rn ActivityBarRowHit
-/// ~/src/coord-tui/src ~/src/vimcode/src`. GTK/macOS/Win rasterisers
-/// narrow their internal `f64` pixel math to this field's `f32` on
-/// return — consistent with how every other native-unit field in this
-/// crate is produced, and not a new precision concern this change
-/// introduced.
+/// Coordinates here are bar-relative offsets, not absolute paint `y`
+/// values. Each backend's `activity_bar` module doc spells out its
+/// conversion. Callers add the bar origin before hit-testing.
 #[derive(Debug, Clone)]
 pub struct ActivityBarRowHit {
     /// Top edge of the row, **relative to the bar's `rect.y`** (first
@@ -354,15 +308,9 @@ pub struct ActivityBarLayout {
     /// All visible items — **bottom-pinned first** (in order), then
     /// top-pinned (in order). That is the order [`ActivityBar::layout`]
     /// appends them in, because bottom items are placed first (they win
-    /// on collision, see that method's "Collision policy"). It is *not*
-    /// visual top-to-bottom order.
-    ///
-    /// This matters because backends `enumerate()` this list to derive
-    /// the flat index they compare against `hovered_idx`, and
-    /// `AppShell` derives that same index by position in the returned
-    /// `ActivityBarRowHit` list — so the two agree, but neither is
-    /// "the n-th icon from the top". Corrected while fixing #552; the
-    /// doc previously claimed top-first, which no caller could rely on.
+    /// on collision). Backends `enumerate()` this list to derive the flat
+    /// index they compare against `hovered_idx`, so callers must preserve
+    /// this order to agree with hit-testing.
     pub visible_items: Vec<VisibleActivityItem>,
     pub hit_regions: Vec<(Rect, ActivityBarHit)>,
 }
@@ -500,13 +448,6 @@ pub enum ActivityBarEvent {
 /// This is `pub(crate)` because external consumers receive the already-normalised
 /// string from [`ActivityBarEvent::KeyPressed::key`] — they have no reason to call
 /// the conversion helper directly.
-///
-/// `cfg`-gated: `crate::tui::backend`, `crate::gtk::run`, `crate::macos::run`
-/// (#465), and `crate::win::run` (#707) call this. #540 originally left `win`
-/// out of this gate because nothing under it called this helper yet — #707's
-/// `win::run::dispatch_event` is that first caller, so `win` joins the list
-/// here too (otherwise a `win`-only build would trip `-D warnings`' dead-code
-/// lint the same way #540 describes for the other three).
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -557,7 +498,7 @@ pub(crate) fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
     }
 }
 
-// ── PaintSurface Phase 4 slice 5/8 (#1081) ─────────────────────────────────
+// ── PaintSurface Phase 4 slice 5/8 ─────────────────────────────────────────
 //
 // `paint` below is the one shared paint implementation, written against
 // [`crate::paint_surface::PaintSurface`] instead of any one backend's
@@ -566,7 +507,7 @@ pub(crate) fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
 //
 // Pre-migration, `gtk::activity_bar`, `macos::activity_bar` and
 // `win::activity_bar` agreed on background, right-edge separator (except
-// where noted), active-row fill / accent-line (#658), hover tint, and
+// where noted), active-row fill / accent-line, hover tint, and
 // per-state foreground colouring — but diverged in ways deeper than a
 // cosmetic corner radius:
 //
@@ -628,7 +569,7 @@ pub(crate) mod native_surface_paint {
     /// `hovered_idx` indexes into `layout.visible_items` (bottom-pinned
     /// items first, then top — see [`ActivityBar::layout`]'s doc).
     /// `nerd_fonts_enabled` selects `item.icon.glyph` vs
-    /// `item.icon.fallback` (issue #683).
+    /// `item.icon.fallback`.
     pub(crate) fn paint(
         bar: &ActivityBar,
         layout: &ActivityBarLayout,
@@ -657,7 +598,7 @@ pub(crate) mod native_surface_paint {
             };
             let is_hovered = hovered_idx == Some(flat_idx);
 
-            // Active-row fill (VS Code style, #658) — lowest priority,
+            // Active-row fill (VS Code style) — lowest priority,
             // painted first so hover/selection tints below still win.
             if item.is_active {
                 if let Some(bg) = style.active_bg {
@@ -672,8 +613,7 @@ pub(crate) mod native_surface_paint {
                 surface.surface_fill_rect(Rect::new(0.0, y, width, row_h), hover_bg);
             }
 
-            // Keyboard-selection highlight — closes macOS's pre-#1081
-            // gap (see module doc).
+            // Keyboard-selection highlight.
             if item.is_keyboard_selected {
                 let sel_bg = bar
                     .selection_bg
@@ -682,7 +622,7 @@ pub(crate) mod native_surface_paint {
             }
 
             // Left-edge accent line — only when the bar opts in via
-            // `active_accent`; `None` paints zero accent pixels (#658).
+            // `active_accent`; `None` paints zero accent pixels.
             if item.is_active {
                 if let Some(accent) = bar.active_accent {
                     surface.surface_fill_rect(Rect::new(0.0, y, 2.0, row_h), accent);
@@ -763,7 +703,7 @@ mod tests {
         assert_eq!(bar, back);
     }
 
-    /// #658: `ActivityBarStyle` round-trips, and a payload with no
+    /// `ActivityBarStyle` round-trips, and a payload with no
     /// `active_bg` key at all (as if serialized before the type existed)
     /// still deserializes, defaulting the field to `None`. It's a sidecar
     /// rather than a field on `ActivityBar` itself specifically so that no
@@ -782,9 +722,8 @@ mod tests {
         assert_eq!(defaulted.active_bg, None);
     }
 
-    /// #1157: `icon_size_px` round-trips, defaults to `None` for
-    /// pre-#1157 payloads (mirrors the `active_bg` test above), and
-    /// `resolved_icon_size_px` falls back to
+    /// `icon_size_px` round-trips, defaults to `None` for
+    /// pre-existing payloads, and `resolved_icon_size_px` falls back to
     /// [`DEFAULT_ACTIVITY_ICON_SIZE_PX`] when unset.
     #[test]
     fn activity_bar_style_icon_size_roundtrips_and_defaults() {

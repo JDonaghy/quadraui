@@ -1,14 +1,14 @@
-//! Tier-3 pty black-box smoke tests for TUI examples (#302).
+//! Tier-3 pty black-box smoke tests for TUI examples.
 //!
-//! [`quadraui::tui::testing::TuiDriver`] (`tests/tui_example_driver.rs`,
-//! #300) renders into ratatui's in-memory `TestBackend` — it never touches a
+//! [`quadraui::tui::testing::TuiDriver`] (`tests/tui_example_driver.rs`)
+//! renders into ratatui's in-memory `TestBackend` — it never touches a
 //! real TTY, so terminal-protocol bugs are invisible to it: raw-mode / alt-
 //! screen setup, real ANSI escape-sequence emission and parsing, SGR mouse
-//! decoding (e.g. #293's class — mouse motion leaking an SGR sequence into a
-//! focused input). This file closes that gap by spawning the *actual*
-//! example binary in a real pseudo-terminal (`portable-pty`, the same crate
-//! `terminal_engine.rs` uses for the embedded-terminal primitive) and
-//! parsing its emitted byte stream with `vt100` into a screen model.
+//! decoding (e.g. SGR-sequence leaking into a focused input). This file
+//! closes that gap by spawning the *actual* example binary in a real
+//! pseudo-terminal (`portable-pty`, the same crate `terminal_engine.rs`
+//! uses for the embedded-terminal primitive) and parsing its emitted byte
+//! stream with `vt100` into a screen model.
 //!
 //! Deliberately thin — 2 representative examples, not broad coverage. The
 //! deterministic in-process `TuiDriver` remains the primary tool; see the
@@ -42,13 +42,11 @@ struct PtyExample {
     _master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     parser: Arc<Mutex<vt100::Parser>>,
-    // Every byte the child has written so far, verbatim — `vt100::Parser`
-    // is a *screen model*, and deliberately abstracts away exactly the
-    // thing quadraui#826's SGR-depth fixtures need to observe: the raw
-    // escape-sequence bytes (`38;2;…` truecolor vs `38;5;…` indexed) a
-    // real terminal receives. `screen_text()`/`wait_for` stay the
-    // content-only assertions every other test here already used; the raw
-    // log is additive, read via `raw_contains`/`wait_for_raw`.
+    // `vt100::Parser` is a screen model and deliberately abstracts away
+    // the raw escape-sequence bytes a real terminal receives (`38;2;…`
+    // truecolor vs `38;5;…` indexed). `screen_text()`/`wait_for` stay the
+    // content-only assertions every other test here uses; the raw log is
+    // additive, read via `raw_contains`/`wait_for_raw`.
     raw: Arc<Mutex<Vec<u8>>>,
 }
 
@@ -69,9 +67,8 @@ const ESC_SETTLE: Duration = Duration::from_secs(10);
 impl PtyExample {
     /// Spawns `cargo run --quiet --example <name> --features tui` inside a
     /// freshly opened PTY sized `cols`x`rows`, with `TERM=xterm-256color`
-    /// and no `COLORTERM` — every pre-#826 caller's environment, and
-    /// (quadraui#826) the exact environment the issue's acceptance
-    /// criteria name for the indexed-SGR fixture.
+    /// and no `COLORTERM` — a baseline environment that detects indexed-color
+    /// support.
     fn spawn(name: &str, cols: u16, rows: u16) -> Self {
         Self::spawn_with_env(name, cols, rows, &[("TERM", "xterm-256color")])
     }
@@ -79,7 +76,7 @@ impl PtyExample {
     /// Same as [`Self::spawn`], but with `extra_env` applied *after* the
     /// `TERM=xterm-256color` default — so a caller can override `TERM`
     /// and/or add `COLORTERM` to exercise a different
-    /// [`quadraui::ColorDepth`] detection outcome (quadraui#826).
+    /// [`quadraui::ColorDepth`] detection outcome.
     fn spawn_with_env(name: &str, cols: u16, rows: u16, extra_env: &[(&str, &str)]) -> Self {
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -222,7 +219,7 @@ impl PtyExample {
     }
 
     /// Whether the raw byte stream observed so far contains `needle`
-    /// verbatim — for asserting on exact SGR escape sequences (quadraui#826),
+    /// verbatim — for asserting on exact SGR escape sequences,
     /// which `screen_text()` can't see (it's `vt100`'s parsed *content*,
     /// not the bytes that produced it).
     ///
@@ -319,32 +316,21 @@ fn tui_pipeline_keyboard_and_quit_roundtrip() {
     );
 }
 
-// ─── tui_chat: SGR mouse-motion round-trip (#293 class) ───────────────────
-
-/// Substring of `tui_chat`'s status strip, used by both `tui_chat` fixtures
-/// below purely as a "the example booted and painted a full frame" gate
-/// before they start writing escape sequences at it.
-///
-/// Factored into one constant deliberately: it is a copy of a *demo's*
-/// user-facing string (`examples/common/chat_demo.rs`'s `set_status`), so it
-/// goes stale whenever that demo's wording is reworded — as it did in #1137,
-/// when `submit_on_enter` changed the advertised binding from "Ctrl+Enter or
-/// Alt+Enter to send" to "Enter to send" and turned both fixtures red. One
-/// constant means the next rewording is a one-line fix with an obvious
-/// pointer to its source, rather than two identical strings buried 100 lines
-/// apart. Keep it to the part of the status that is unique to the status
-/// strip — "Enter to send" alone also appears in the hint line (#1137) and
-/// the input placeholder, so matching that would no longer prove the status
-/// strip itself painted.
+/// Substring of `tui_chat`'s status strip. Factored into one constant
+/// because it is a copy of a *demo's* user-facing string
+/// (`examples/common/chat_demo.rs`'s `set_status`), so it goes stale
+/// whenever that demo is reworded. One constant means the next rewording is
+/// a one-line fix with an obvious pointer to its source. Keep it to the
+/// part unique to the status strip — "Enter to send" also appears in the
+/// hint line and input placeholder, so matching that would no longer prove
+/// the status strip itself painted.
 const CHAT_STATUS_SENTINEL: &str = "Enter to send, q to quit";
 
-/// Sends a raw SGR mouse-motion report (`ESC [ < 35 ; x ; y M` — motion, no
-/// button, per xterm's SGR encoding) directly to the pty's stdin, mid-way
-/// through composing an input. This is exactly the byte-for-byte shape #293
-/// reported leaking into a focused `TextInput` as literal text. Confirms the
-/// escape sequence decodes to a mouse event (or is otherwise consumed) and
-/// never spills its bytes into the transcript, and that typing still works
-/// normally afterwards.
+/// Sends a raw SGR mouse-motion report (`ESC [ < 35 ; x ; y M` — motion,
+/// no button, per xterm's SGR encoding) directly to the pty's stdin,
+/// mid-way through composing an input. Confirms the escape sequence decodes
+/// to a mouse event (or is otherwise consumed) and never spills its bytes
+/// into the transcript, and that typing still works normally afterwards.
 #[test]
 fn tui_chat_sgr_mouse_motion_does_not_leak_into_input() {
     let mut ex = PtyExample::spawn("tui_chat", 100, 30);
@@ -356,9 +342,8 @@ fn tui_chat_sgr_mouse_motion_does_not_leak_into_input() {
     );
 
     // A pure-motion SGR mouse report: Cb=35 (32 motion + 3 no-button),
-    // column 10, row 5. No real mouse is involved — this is what the
-    // terminal emits while the cursor merely moves over a mouse-tracking
-    // pane, the exact shape #293 was filed against.
+    // column 10, row 5. This is what the terminal emits while the cursor
+    // merely moves over a mouse-tracking pane.
     ex.send(b"\x1b[<35;10;5M");
     // Give the parser a moment to process before sampling the screen.
     std::thread::sleep(Duration::from_millis(200));
@@ -385,49 +370,34 @@ fn tui_chat_sgr_mouse_motion_does_not_leak_into_input() {
 }
 
 /// A real Escape keypress landing in the *same* pty write() as an
-/// adjacent SGR mouse-motion report — the exact race #293's root cause
-/// documents (see `recover_leaked_sgr_mouse_fragments`'s doc in
-/// `src/tui/backend.rs`): crossterm's reader can split `ESC [ < …
-/// (M|m)` right after the leading `ESC`, decode that lone byte as a
-/// standalone Escape, and then leak the report's tail as literal
-/// characters. Three byte orderings a real terminal's write scheduling
-/// could plausibly produce, all coalesced into one `write()` so the
-/// race actually has a chance to fire: motion-then-Escape,
-/// Escape-then-motion, and Escape sandwiched between two motions (a
-/// continuous any-motion stream with a keystroke landing mid-burst).
-/// Escape must still clear the input in every case, and no fragment of
-/// the SGR report may leak into the transcript.
+/// adjacent SGR mouse-motion report — testing the race where crossterm's
+/// reader can split `ESC [ < … (M|m)` right after the leading `ESC`,
+/// decode that lone byte as a standalone Escape, and then leak the
+/// report's tail as literal characters. Three byte orderings a real
+/// terminal's write scheduling could produce: motion-then-Escape,
+/// Escape-then-motion, and Escape sandwiched between two motions.
+/// Escape must clear the input in every case, and no fragment of the SGR
+/// report may leak into the transcript.
 ///
 /// **`#[cfg(unix)]` — deliberately, for the same transport reason as the
 /// `sgr_color_depth` module below, and this gate must not be removed.**
 /// This fixture works by controlling the exact *byte* boundaries the
-/// terminal-input reader sees ("all coalesced into one `write()` so the
-/// race actually has a chance to fire"), and that lever only exists where
-/// crossterm parses a byte stream — i.e. its Unix event source, whose
-/// `parse_event(buffer, input_available)` is the very function that
-/// resolves a lone `ESC` to a standalone Escape when no further bytes are
-/// already buffered. That is #293's whole mechanism.
+/// terminal-input reader sees, and that lever only exists where crossterm
+/// parses a byte stream — i.e. its Unix event source.
 ///
 /// On Windows crossterm never parses bytes at all: `event::source::windows`
-/// reads `INPUT_RECORD`s through the console API (`read_single_input_event`
-/// → `handle_key_event`/`handle_mouse_event`), so there is no buffer, no
-/// `input_available`, and structurally no split-ESC race to reproduce.
-/// Worse, the bytes this test writes never reach the child as bytes:
-/// `portable-pty`'s Windows backend is ConPTY, so conhost's own VT *input*
-/// state machine parses `\x1b`/`\x1b[<…M` on the master side and hands the
-/// child whatever records *it* decides they mean — its escape
-/// disambiguation, its mouse translation, its flush-at-end-of-string
-/// timing. A failure here on windows-latest therefore reports on conhost's
-/// input parser, not on quadraui's recovery path, and no change to
-/// `recover_leaked_sgr_mouse_fragments` could move it either way. (Which is
-/// exactly what happened: this fixture failed on windows-latest while both
-/// content-level pty tests above passed on the same runner.)
+/// reads `INPUT_RECORD`s through the console API, so there is no buffer
+/// and no split-ESC race to reproduce. The bytes this test writes never
+/// reach the child as bytes: `portable-pty`'s Windows backend is ConPTY,
+/// so conhost's own VT *input* state machine parses the escape sequences
+/// and hands the child whatever records *it* decides they mean. A failure
+/// here on Windows reports on conhost's input parser, not on quadraui's
+/// recovery path.
 ///
 /// What Windows keeps: the recovery logic itself, unit-tested end-to-end
 /// over real `UiEvent` batches in `src/tui/backend.rs`'s
-/// `recover_leaked_sgr_mouse_fragments` tests (pure-motion, click down/up,
-/// drag, non-matching runs, multiple leaks per batch) — platform-independent,
-/// and run by the same windows-latest job — plus both pty tests above.
+/// `recover_leaked_sgr_mouse_fragments` tests, plus both content-level pty
+/// tests above — all run by the same windows-latest job.
 #[cfg(unix)]
 #[test]
 fn tui_chat_escape_glued_to_sgr_motion_in_one_write_does_not_leak() {
@@ -495,57 +465,38 @@ fn tui_chat_escape_glued_to_sgr_motion_in_one_write_does_not_leak() {
     }
 }
 
-// ─── tui_pipeline: colour-depth SGR quantisation (quadraui#826) ───────────
+// ─── tui_pipeline: colour-depth SGR quantisation ──────────────────────────
 
-/// Byte-exact SGR-family fixtures for #826's colour-depth quantisation.
+/// Byte-exact SGR-family fixtures for colour-depth quantisation.
 ///
 /// **`#[cfg(unix)]` — deliberately, and this gate must not be removed.**
-/// Every assertion in here reads the *raw escape-sequence bytes* that
-/// arrive on the pty master, and that observation channel is only
-/// faithful on Unix. There, `openpty(3)` is a kernel byte pipe: whatever
-/// crossterm writes to the slave fd arrives at the master verbatim, so
-/// the master genuinely sees "the bytes a real terminal would receive
-/// from our app".
+/// Every assertion reads the *raw escape-sequence bytes* that arrive on
+/// the pty master, and that observation channel is only faithful on Unix.
+/// There, `openpty(3)` is a kernel byte pipe: whatever crossterm writes to
+/// the slave fd arrives at the master verbatim.
 ///
 /// On Windows there is no such device. `portable-pty`'s Windows backend
-/// is ConPTY (`CreatePseudoConsole` — see `portable-pty`'s
-/// `src/win/psuedocon.rs`), which puts a *whole conhost terminal
+/// is ConPTY (`CreatePseudoConsole`), which puts a *whole conhost terminal
 /// emulator* between the child and the master handle: the child's bytes
 /// are parsed into conhost's own text buffer, and what the master then
 /// reads is conhost's re-serialised repaint of that buffer, not the
 /// child's output. Its VT renderer re-encodes attributes on its own
-/// terms — separate `38;…m` / `48;…m` sequences rather than crossterm's
-/// combined `SetColors` form, its own palette normalisation, its own
-/// redraw batching — so a byte-exact match on any of the three constants
-/// below can never hold there.
+/// terms — separate sequences, its own palette normalisation — so a
+/// byte-exact match on the SGR constants below can never hold there.
 ///
-/// That this is a property of the *transport*, not of #826's colour
-/// logic, is provable from the CI failure that added this gate: the
-/// `..._is_byte_identical_to_before` fixture, whose expected bytes are
-/// the ones quadraui emitted *before* #826 existed, failed on
-/// windows-latest too. There was never a Windows run in which those
-/// bytes were observable to regress from.
-///
-/// What Windows keeps: `detect_color_depth`'s full decision table
-/// (`src/tui/caps.rs`), `DepthLimitedBackend`'s per-cell quantisation
-/// including the pipeline theme pair end-to-end through a real
-/// `RtBackend::draw` (`src/tui/color.rs`), and the two content-level pty
-/// fixtures above — all platform-independent, all run by the same
-/// windows-latest job. Only the SGR *byte encoding* — crossterm's job,
+/// What Windows keeps: `detect_color_depth`'s full decision table,
+/// `DepthLimitedBackend`'s per-cell quantisation including the pipeline
+/// theme pair end-to-end through a real `RtBackend::draw`, and the two
+/// content-level pty fixtures above — all platform-independent, all run
+/// by windows-latest. Only the SGR *byte encoding* — crossterm's job,
 /// not quadraui's — goes unobserved there.
 ///
-/// Within this module, all three fixtures assert on the exact combined
+/// Within this module, all fixtures assert on the exact combined
 /// `SetColors` sequence `draw_pipeline_view` paints stage names with:
-/// `Theme::default()`'s `(foreground, surface_bg)` pair, `(220,220,220)`
-/// / `(28,32,44)`. They drive the real `tui::run` event loop (not a
-/// unit-tested `quantize()` call) — `screen_text()`/`vt100::Color` can't
-/// tell a `38;2;…` byte sequence from a `38;5;…` one, since `vt100`
-/// resolves both down to a colour, not an SGR family. The four quantised
-/// numbers (`253`/`234` for `Indexed256`, `7`/`0` for `Ansi16`) are
-/// pinned independently in `src/tui/color.rs`'s
-/// `theme_default_pipeline_colors_quantise_to_the_values_the_pty_fixture_expects`
-/// unit test — if quadraui's own palette math ever drifts, that much
-/// faster in-process test catches it before this pty test would.
+/// `Theme::default()`'s `(foreground, surface_bg)` pair. They drive the
+/// real `tui::run` event loop. The quantised numbers are pinned
+/// independently in `src/tui/color.rs`'s unit test — if quadraui's own
+/// palette math drifts, that much faster in-process test catches it.
 #[cfg(unix)]
 mod sgr_color_depth {
     use super::*;
@@ -565,14 +516,10 @@ mod sgr_color_depth {
     /// `rgb_to_ansi16(28,32,44) == Black` (SGR index 0).
     const ANSI16_PIPELINE_SGR: &[u8] = b"\x1b[38;5;7;48;5;0m";
 
-    /// Acceptance item 2: `TERM=xterm-256color` with no `COLORTERM` set — the
-    /// common case (plain SSH, tmux without passthrough) #826 was filed
-    /// against — must emit indexed SGR, never truecolor. This is exactly
-    /// `PtyExample::spawn`'s default environment (unchanged by #826, since it
-    /// was already the right fixture environment), so this test is the RED
-    /// case from the issue turned GREEN: before #826's `DepthLimitedBackend`
-    /// wrapper existed, this assertion would have failed against the
-    /// unconditional-truecolor `38;2;…` output.
+    /// Acceptance item 2: `TERM=xterm-256color` with no `COLORTERM` set
+    /// — the common case — must emit indexed SGR, never truecolor. This is
+    /// exactly `PtyExample::spawn`'s default environment, so this test
+    /// verifies the indexed-color path works.
     #[test]
     fn tui_pipeline_under_256color_term_emits_indexed_sgr_not_truecolor() {
         let mut ex = PtyExample::spawn("tui_pipeline", 100, 30);
@@ -604,9 +551,9 @@ mod sgr_color_depth {
     }
 
     /// Acceptance item 4: a truecolor terminal (`COLORTERM=truecolor`) must
-    /// stay byte-identical to pre-#826 output — the `DepthLimitedBackend`
-    /// wrapper's `ColorDepth::TrueColor` arm is a pure pass-through, so this
-    /// asserts the exact 24-bit SGR sequence still appears, unchanged.
+    /// stay byte-identical to the pre-depth-limited output — the
+    /// `DepthLimitedBackend` wrapper's `ColorDepth::TrueColor` arm is a
+    /// pure pass-through.
     #[test]
     fn tui_pipeline_with_colorterm_truecolor_is_byte_identical_to_before() {
         let mut ex = PtyExample::spawn_with_env(
@@ -673,42 +620,26 @@ mod sgr_color_depth {
     }
 }
 
-// ─── tui_pipeline: kitty keyboard protocol detection (quadraui#827) ───────
+// ─── tui_pipeline: kitty keyboard protocol detection ──────────────────────
 
-/// Byte-level fixtures for #827's `BackendCaps::kitty_keyboard` detection.
+/// Byte-level fixtures for kitty keyboard protocol detection.
 ///
 /// **`#[cfg(unix)]` — deliberately, for the same transport reason as
 /// `sgr_color_depth` above, and this gate must not be removed.** Both
 /// fixtures below assert on the exact raw bytes `PushKeyboardEnhancementFlags`
-/// writes (`ESC[>11u` — `DISAMBIGUATE_ESCAPE_CODES | REPORT_EVENT_TYPES |
-/// REPORT_ALL_KEYS_AS_ESCAPE_CODES` = `1 | 2 | 8` = `11`), and ConPTY's
-/// re-serialising terminal emulator sits between the child and the master
-/// handle on Windows exactly as `sgr_color_depth`'s doc describes — a
-/// byte-exact match there proves nothing about quadraui's own logic.
-/// `ratatui::crossterm`'s Windows `supports_keyboard_enhancement()` is a
-/// separate, unconditional `Ok(false)` in any case — see
-/// `docs/KITTY_KEYBOARD_PROTOCOL.md`'s degrade table for that row.
+/// writes (`ESC[>11u`), and ConPTY's re-serialising terminal emulator sits
+/// between the child and the master handle on Windows exactly as
+/// `sgr_color_depth`'s doc describes — a byte-exact match there proves
+/// nothing about quadraui's own logic.
 ///
 /// **What these fixtures actually exercise.** This harness's simulated
-/// terminal (the background reader thread in [`PtyExample::spawn`]) only
-/// ever answers the cursor-position query (`ESC[6n`); it never answers the
-/// kitty-protocol query (`ESC[?u ESC[c`) crossterm's
-/// `supports_keyboard_enhancement()` sends. That means the *live* probe
-/// always times out here (`Err`, after ~2s) — these fixtures observe
-/// `crate::tui::caps::probe_kitty_keyboard`'s **fallback to the
-/// environment heuristic**, not a real terminal answering the live query.
-/// That fallback path is exactly what a tmux session without passthrough,
-/// a mosh link, or a serial console hits too — see
-/// `docs/KITTY_KEYBOARD_PROTOCOL.md` for the full table and which rows
-/// remain genuinely untested (no real kitty/WezTerm/foot binary, no tmux,
-/// no mosh, no macOS/Windows host, is available to this fixture).
-///
-/// **Observed RED before the fix.** Before #827, `push_keyboard_enhancement`
-/// resolved an unanswered live query straight to `false`
-/// (`supports_keyboard_enhancement().unwrap_or(false)`, no environment
-/// fallback at all) — so `tui_pipeline_under_kitty_term_pushes_enhancement_flags`
-/// below would have failed even under `TERM=xterm-kitty`, the exact
-/// environment its own name promises the protocol is pushed for.
+/// terminal only ever answers the cursor-position query (`ESC[6n`); it
+/// never answers the kitty-protocol query (`ESC[?u ESC[c`) crossterm
+/// sends. That means the *live* probe always times out here — these
+/// fixtures observe `crate::tui::caps::probe_kitty_keyboard`'s **fallback
+/// to the environment heuristic**, not a real terminal answering the live
+/// query. That fallback path is exactly what a tmux session without
+/// passthrough, a mosh link, or a serial console hits too.
 #[cfg(unix)]
 mod kitty_keyboard_protocol {
     use super::*;
@@ -784,7 +715,7 @@ mod kitty_keyboard_protocol {
     }
 }
 
-// ─── tui_no_mouse: `RunConfig { mouse: false, .. }` withholds capture (#828) ──
+// ─── tui_no_mouse: `RunConfig { mouse: false, .. }` withholds capture ──
 
 /// Byte-level proof that **`no-mouse` mode** (`RunConfig::no_mouse()`,
 /// `src/tui/run.rs`) actually withholds the mouse-capture escape sequences
@@ -826,7 +757,7 @@ mod no_mouse {
     /// `RunConfig::no_mouse()` must never emit the mouse-capture escape
     /// sequence at all, and the app must stay fully operable by keyboard —
     /// the `[`/`]` keyboard-resize path `SplitApp` documents as the Tier-1
-    /// equivalent of dragging the divider (quadraui#828).
+    /// equivalent of dragging the divider.
     #[test]
     fn tui_no_mouse_never_negotiates_mouse_capture_and_stays_keyboard_operable() {
         let mut ex = PtyExample::spawn("tui_no_mouse", 100, 30);
@@ -909,7 +840,7 @@ mod no_mouse {
     }
 }
 
-// ─── tui_embedded: `TuiRunner::step`/`pump` non-blocking entry points (#1100) ──
+// ─── tui_embedded: `TuiRunner::step`/`pump` non-blocking entry points ──
 
 /// Black-box proof that a host driving `TuiRunner::pump` in its *own* loop
 /// (`examples/tui_embedded.rs`, instead of handing the process over to

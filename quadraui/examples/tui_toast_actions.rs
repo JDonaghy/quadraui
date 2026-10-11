@@ -1,4 +1,4 @@
-//! Toast-actions `AppLogic` + `quadraui::tui::run` example (#1185).
+//! Toast-actions `AppLogic` + `quadraui::tui::run` example.
 //!
 //! A VS Code-style two-action toast ("Install" primary + "Don't ask
 //! again" secondary) driven by `ToastStackController` for keyboard

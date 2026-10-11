@@ -1,10 +1,6 @@
-//! The one shared [`PaintSurface`] adapter over a bare Cairo context,
-//! consolidating the 10 private per-file `Raw*Surface` copies that #811's
-//! Phase 2d slices each left behind (issue #1072). Every one of those
-//! copies differed from its neighbours only in struct name, `unreachable!`
-//! panic strings, and — in two respects called out below — genuine
-//! per-primitive behaviour this module preserves exactly rather than
-//! silently picking one:
+//! The shared [`PaintSurface`] adapter over a bare Cairo context.
+//! Every primitive that uses this adapter is listed below, grouped by
+//! two characteristics that vary per-primitive:
 //!
 //! 1. **`layout` presence.** [`crate::Scrollbar`], [`crate::DropOverlay`],
 //!    [`crate::Split`] and [`crate::SplitTree`] paint with `cr` alone (no
@@ -13,47 +9,24 @@
 //!    [`crate::ToastOverlay`] and [`crate::Panel`] paint text too and need a
 //!    live `pango::Layout`. [`CairoSurface::layout`] is `Option` so one
 //!    struct covers both — [`Self::layout_or_panic`] panics only if a text
-//!    verb is reached with `layout: None`, exactly mirroring what the old
-//!    per-file `unreachable!("... has no text measurement")` arms already
-//!    guaranteed (those primitives' `paint` fns never call a text verb).
-//! 2. **Fill translucency.** `gtk::scrollbar`, `gtk::drop_overlay`,
-//!    `gtk::status_bar`, `gtk::diff_view`, `gtk::toast` and `gtk::panel`'s
-//!    old adapters filled with `set_source_rgba` (honouring `color.a` —
-//!    the quadraui#791 fix); `gtk::form`, `gtk::sidebar_panel`,
-//!    `gtk::split` and `gtk::split_tree`'s old adapters filled with
-//!    `set_source` (opaque-only — `gtk::split`'s own doc calls this out
-//!    as a **deliberate, documented divergence** from the live
-//!    `GtkBackend::surface_fill_rect` path, kept so the deprecated
-//!    `draw_split`/`draw_split_tree` shims reproduce their pre-migration
-//!    behaviour byte-for-byte for any external caller still holding a
-//!    direct reference). [`CairoSurface::translucent_fill`] carries that
-//!    choice per call site instead of baking it into the type.
+//!    verb is reached with `layout: None`.
+//! 2. **Fill translucency.** [`crate::Scrollbar`], `gtk::drop_overlay`,
+//!    `gtk::status_bar`, `gtk::diff_view`, `gtk::toast` and `gtk::panel`
+//!    fill with `set_source_rgba` (honouring `color.a`); [`crate::Form`],
+//!    `gtk::sidebar_panel`, [`crate::Split`] and [`crate::SplitTree`] fill
+//!    with `set_source` (opaque-only). [`CairoSurface::translucent_fill`]
+//!    carries that choice per call site.
 //!
 //! Every other verb (`surface_stroke_rect`, `surface_draw_text_run`,
 //! `surface_draw_line`, `surface_push_clip`/`surface_pop_clip`,
-//! `surface_draw_image`) was already byte-identical across every adapter
-//! that implemented it for real (the rest `unreachable!()`d because their
-//! primitive's `paint` never calls it) — this module implements all of
-//! them unconditionally; the primitives that never call a given verb
-//! simply never reach that code, so this is not a behaviour change.
+//! `surface_draw_image`) is implemented unconditionally; primitives that
+//! never call a given verb simply never reach that code.
 //! `surface_draw_text_run_styled`/`surface_measure_text_styled` (bold-aware
-//! Pango `AttrList`) were previously overridden only by
-//! `gtk::status_bar`'s adapter (every other adapter took the trait
-//! default, which drops `bold`); implementing them here unconditionally
-//! is likewise inert for every primitive besides `StatusBar` — no other
-//! `native_surface_paint::paint` calls either styled verb (see
-//! `crate::paint_surface::PaintSurface`'s own doc for the cross-backend
-//! survey; only `primitives::terminal` and `primitives::status_bar` call
-//! them, and `terminal` paints through a live `GtkBackend`, never through
-//! this adapter).
+//! Pango `AttrList`) are implemented here unconditionally; only `StatusBar`
+//! uses them, making this inert for other primitives.
 //!
 //! `surface_draw_image` returns [`ImagePaintResult::Unsupported`]
-//! uniformly rather than `unreachable!()` — `gtk::form`'s old adapter
-//! already did this (matching `GtkBackend::draw_image`'s own contract for
-//! an unsupported decode path); no primitive that uses this adapter ever
-//! paints an image, so this is a strictly safer default than the panic
-//! the other nine copies carried, not a behaviour change for any live
-//! call site.
+//! uniformly; no primitive that uses this adapter ever paints an image.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -145,7 +118,7 @@ impl PaintSurface for CairoSurface<'_> {
         self.cr.fill().ok();
     }
 
-    /// #1073: same clamp/fill recipe as `GtkBackend`'s own override,
+    /// Same clamp/fill recipe as `GtkBackend`'s own override,
     /// honouring [`Self::translucent_fill`] the same way
     /// [`Self::surface_fill_rect`] above does.
     fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
@@ -292,7 +265,7 @@ mod tests {
         (data[off + 2], data[off + 1], data[off])
     }
 
-    /// #1073: `CairoSurface::surface_fill_rounded_rect` must reach the
+    /// `CairoSurface::surface_fill_rounded_rect` must reach the
     /// same real rounded-corner Cairo path `GtkBackend`'s own override
     /// does (`gtk_backend_paint_surface_fill_rounded_rect_clips_the_corners`'s
     /// twin, at the adapter level) — proven by a corner staying

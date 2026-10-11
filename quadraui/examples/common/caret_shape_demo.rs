@@ -1,4 +1,4 @@
-//! Hardware-caret demo (issue #1015) — exercises `Backend::set_caret_shape`
+//! Hardware-caret demo — exercises `Backend::set_caret_shape`
 //! from app code instead of a consumer hand-rolling DECSCUSR itself (the
 //! rule-6 violation this method closes off; see vimcode's old
 //! `shell_app.rs` `execute!(SetCursorStyle …)` call site).

@@ -1,5 +1,4 @@
-//! `Dialog` demo — adapted from
-//! `quadraui/examples/common/modal_occlusion_demo.rs`.
+//! `Dialog` demo.
 //!
 //! The smallest app that makes the **click-through-a-modal** bug class
 //! visible as painted text: a scrollable list of rows sits behind a

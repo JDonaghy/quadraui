@@ -4,15 +4,9 @@
 //! `features = ["tui"]` and call these `draw_*` functions to paint
 //! primitives into a [`ratatui::buffer::Buffer`].
 //!
-//! Per D6 (see `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §9): primitives own
-//! layout, backends rasterise. Each rasteriser takes a pre-computed
-//! `*Layout` from the primitive's `.layout()` method along with the
-//! primitive itself and a [`crate::Theme`] for default colours.
-//!
-//! This module is the destination of issue #223 — the per-primitive
-//! rasterisers are being lifted out of vimcode (`src/tui_main/quadraui_tui.rs`)
-//! and kubeui (private `draw_status_bar` in `kubeui/src/main.rs`) one
-//! primitive at a time. StatusBar is the pilot.
+//! Primitives own layout, backends rasterise. Each rasteriser takes a
+//! pre-computed `*Layout` from the primitive's `.layout()` method along
+//! with the primitive itself and a [`crate::Theme`] for default colours.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -68,7 +62,7 @@ mod tab_bar;
 mod terminal;
 pub mod testing;
 pub mod text;
-// vt100/ANSI-byte-stream conformance observer (quadraui#555) — needs
+// vt100/ANSI-byte-stream conformance observer — needs
 // `vt100` itself, which only `terminal` pulls in (`terminal = ["dep:vt100",
 // ...]` in Cargo.toml), so this is gated on both features, same as
 // `tests/tui_pty_smoke.rs`.
@@ -198,9 +192,7 @@ fn qc(c: Color) -> RatatuiColor {
 ///
 /// Strides by each character's [`char_cell_width`] (via [`set_cell_wide`]
 /// for double-width glyphs) rather than one buffer column per `char`, so
-/// the painted extent agrees with [`StyledText::visible_width`] — see
-/// #471, where the two fell out of sync after `visible_width` became
-/// display-width-aware but this loop stayed char-count-strided.
+/// the painted extent agrees with [`StyledText::visible_width`].
 #[allow(clippy::too_many_arguments)]
 fn draw_styled_text(
     buf: &mut Buffer,
@@ -267,7 +259,7 @@ fn set_cell_styled(
 /// Used by [`tab_bar::draw_tab_bar`] so a double-width glyph in the
 /// filename portion of an active tab's label still gets the accent
 /// underline / preview-italic modifier that [`set_cell_styled`] applies
-/// to narrow glyphs (#554).
+/// to narrow glyphs.
 #[allow(clippy::too_many_arguments)]
 fn set_cell_wide_styled(
     buf: &mut Buffer,
@@ -302,14 +294,10 @@ fn set_cell_wide_styled(
 mod tests {
     use super::*;
 
-    // Regression tests for #508: `set_cell` and its siblings guarded the
-    // right/bottom edge of `buf.area` but not the left/top edge. Every TUI
-    // primitive funnels through these helpers, so any painter that
-    // under-runs a sub-rect's origin (x < area.x or y < area.y — e.g. a
-    // nested panel painting one column before its own left edge) hit
-    // ratatui's `buf[(x, y)]` index panic. `Buffer::empty` with a
-    // non-zero-origin `Rect` reproduces a sub-rect the way a nested
-    // primitive would see it.
+    // Guards the left and top edge of `buf.area`: coordinates below the
+    // sub-rect's origin (x < area.x or y < area.y) must not panic.
+    // `Buffer::empty` with a non-zero-origin `Rect` reproduces a sub-rect
+    // the way a nested primitive would see it.
 
     #[test]
     fn set_cell_guards_left_and_top_edge() {
@@ -441,16 +429,10 @@ mod tests {
         assert_eq!(buf[(6, 6)].symbol(), "中");
     }
 
-    // Regression test for #471 (fix iteration 1): `StyledText::visible_width`
-    // became display-width-aware (CJK/emoji count double), but
-    // `draw_styled_text` kept striding one buffer column per `char` — so a
-    // CJK label's *painted* extent (half its measured width) no longer
-    // matched what layout code reserved for it via `visible_width()`,
-    // producing a gap between painted labels and the controls positioned
-    // after them. `draw_styled_text` now strides by `char_cell_width`
-    // (mirroring `set_cell_wide`'s callers elsewhere in this file), so its
-    // return value — the column layout code implicitly relies on matching
-    // `visible_width()` — agrees with `visible_width()` end-to-end.
+    // `StyledText::visible_width` is display-width-aware (CJK/emoji count
+    // double). `draw_styled_text` strides by `char_cell_width` to match,
+    // so its return value — the column layout code relies on — agrees with
+    // `visible_width()`.
     #[test]
     fn draw_styled_text_strides_by_display_width_for_cjk() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));

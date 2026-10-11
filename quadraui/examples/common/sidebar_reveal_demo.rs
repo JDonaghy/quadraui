@@ -1,4 +1,4 @@
-//! Minimal `SidebarSystem` demo for `SidebarSystem::reveal` (#595) — a
+//! Minimal `SidebarSystem` demo for `SidebarSystem::reveal` — a
 //! *programmatic* selection (no click, no arrow key) that must select
 //! the target row, expand its section if collapsed, and scroll it into
 //! view.
@@ -17,7 +17,7 @@
 //! Controls:
 //! - `↑` / `↓`     move selection (interactive nav — already scrolls)
 //! - `z`           toggle collapse of the section
-//! - `g`           reveal (#595): select + expand + scroll the
+//! - `g`           reveal: select + expand + scroll the
 //!   section's last row into view, without going through interactive
 //!   nav — simulates a caller restoring a saved selection or jumping
 //!   to a search hit
@@ -138,7 +138,7 @@ impl AppLogic for SidebarRevealDemo {
             | SidebarEvent::Consumed
             | SidebarEvent::ScrollChanged { .. } => Reaction::Redraw,
             SidebarEvent::Ignored => match event {
-                // #595: toggle collapse of the section — lets `g` (below)
+                // Toggle collapse of the section — lets `g` (below)
                 // exercise "reveal on a collapsed section expands it
                 // first, then scrolls".
                 UiEvent::KeyPressed {
@@ -151,7 +151,7 @@ impl AppLogic for SidebarRevealDemo {
                         format!("{}→0", if collapsed { "collapsed" } else { "expanded" });
                     Reaction::Redraw
                 }
-                // #595: `reveal` — a *programmatic* selection (no click,
+                // `reveal` — a *programmatic* selection (no click,
                 // no arrow key) of the section's last row. Proves
                 // `reveal` selects the row, expands the section if it
                 // was collapsed via `z`, and scrolls it into view.

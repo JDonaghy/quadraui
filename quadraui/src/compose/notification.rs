@@ -1,17 +1,15 @@
 //! `notify_or_toast` — send a system [`Notification`] where the backend
 //! has one, degrade to the in-canvas [`Toast`] primitive where it
-//! doesn't (issue #955).
+//! doesn't.
 //!
 //! [`BackendCaps::notifications`] is `true` only on backends with a real
 //! native facility behind [`PlatformServices::send_notification`] (GTK
 //! today; see `gtk::services`'s module doc). Every other backend —
 //! notably TUI, which has no OS notification-area concept at all — would
-//! otherwise silently drop the notification (GTK's own pre-#955
-//! `send_notification` was exactly that empty no-op, the gap this issue
-//! closes). This helper is the single place that branches on the
-//! capability, so app code calls one function instead of repeating the
-//! `if backend.backend_caps().notifications { .. } else { .. }` check at
-//! every call site.
+//! otherwise silently drop the notification. This helper is the single
+//! place that branches on the capability, so app code calls one function
+//! instead of repeating the `if backend.backend_caps().notifications { .. }`
+//! check at every call site.
 
 use crate::backend::{Backend, Notification};
 use crate::primitives::toast::{Toast, ToastButton, ToastSeverity};
@@ -36,11 +34,9 @@ use crate::types::WidgetId;
 /// [`WidgetId`] — falling back to the title when there is no tag, so two
 /// untagged notifications with different titles still get distinct
 /// toast ids. Every one of [`Notification::actions`] survives into
-/// [`Toast::actions`] (#1185 — before the toast primitive supported
-/// more than one action button, only the first of `Notification`'s
-/// `Vec` made it across; now the shapes match 1:1, none marked
+/// [`Toast::actions`]. The shapes match 1:1, none marked
 /// [`ToastButton::primary`] since `Notification` carries no such
-/// distinction). `icon` and `silent` have no [`Toast`] equivalent
+/// distinction. `icon` and `silent` have no [`Toast`] equivalent
 /// and are dropped — a toast is always silent (no OS notification sound
 /// to suppress) and paints with the app's own chrome, not a
 /// caller-supplied icon.
@@ -143,7 +139,7 @@ mod tests {
         assert_eq!(untagged.id, WidgetId::new("untagged title"));
     }
 
-    /// #1185: every `Notification::actions` entry survives into
+    /// Every `Notification::actions` entry survives into
     /// `Toast::actions`, not just the first — the toast primitive
     /// dropped its one-action limit alongside this issue's multi-action
     /// support.

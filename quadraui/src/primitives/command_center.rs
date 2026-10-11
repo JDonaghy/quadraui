@@ -79,7 +79,7 @@ impl CommandCenterLayout {
     /// [`CommandCenter::layout`]'s geometric result whenever the paint
     /// loop skips the widget entirely — a `width == 0` / `height == 0`
     /// area, for instance — so the returned layout never describes cells
-    /// that were never actually drawn (quadraui#649).
+    /// that were never actually drawn.
     pub fn empty(bounds: Rect) -> Self {
         CommandCenterLayout {
             bounds,
@@ -128,17 +128,15 @@ impl CommandCenterMeasure {
     /// Search-box width is `search_label.len() as f32 * char_width +
     /// 16.0`, floored at `280.0`, or `0.0` when `search_label` is empty
     /// (hides the search box — see [`CommandCenter::search_label`]'s
-    /// doc). This is the formula `GtkBackend::command_center_layout`
-    /// used to inline directly before quadraui#732 lifted it here, so
-    /// `win::command_center` (and any future char-width-only backend)
-    /// shares the exact same computation instead of writing a second
-    /// copy that only agrees with the first by luck.
+    /// doc). This formula is shared by all backends that measure search
+    /// width from a plain `char_width` average, so they all compute the
+    /// same value for identical inputs.
     ///
     /// Distinct from `gtk_command_center_layout` / `mac_command_center_layout`
     /// (the *pixel-exact* measurement path used when painting, which lays
     /// the label out against a live Pango/Core Text font and reads back
-    /// its real width) — this constructor is deliberately the cheaper
-    /// approximation for callers without one.
+    /// its real width) — this constructor is the cheaper approximation
+    /// for callers without one.
     pub fn from_char_width(search_label: &str, char_width: f32, height: f32) -> Self {
         let search_box_width = if search_label.is_empty() {
             0.0
@@ -211,7 +209,7 @@ impl CommandCenter {
 mod tests {
     use super::*;
 
-    // ── Shared char-width measure formula (#732) ───────────────────────
+    // ── Shared char-width measure formula ──────────────────────────────
 
     #[test]
     fn from_char_width_empty_label_hides_search_box() {
@@ -239,20 +237,9 @@ mod tests {
         assert_eq!(m.search_box_width, 40.0 * 8.0 + 16.0);
     }
 
-    /// Any backend that measures search width from a plain `char_width`
-    /// average (rather than a live per-glyph font layout) computes this
-    /// exact value for identical inputs — because they all call through
-    /// this one constructor rather than keeping a private copy of the
-    /// formula. This is what makes
-    /// `gtk::backend::GtkBackend::command_center_layout` and
-    /// `win::command_center::win_command_center_layout` agree on the
-    /// search-box width for the same char width (#732's acceptance bar):
-    /// each delegates straight to `from_char_width` (see their own
-    /// call-site tests: `gtk::backend::tests::
-    /// command_center_layout_delegates_to_shared_char_width_formula` and
-    /// `win::command_center::tests::
-    /// win_command_center_layout_delegates_to_shared_char_width_formula`),
-    /// so proving the formula once here proves it for both.
+    /// All backends that measure search width from a plain `char_width`
+    /// average compute this value for identical inputs through this single
+    /// constructor, ensuring they agree on the search-box width.
     #[test]
     fn from_char_width_is_deterministic_for_the_same_inputs() {
         let label = "project-name";

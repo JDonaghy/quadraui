@@ -29,34 +29,17 @@
 //! - [`WorkspaceController`] — open-N-view-one document set (ordered
 //!   opaque ids, one active) rendered through the `TabBar` primitive.
 //!   Unlike [`TabGroupController`] it owns no content, so the host can
-//!   paint a body that borrows app state (#596).
+//!   paint a body that borrows app state.
 //! - [`notify_or_toast`] — send a [`crate::backend::Notification`]
 //!   natively where the backend supports it, degrade to the in-canvas
-//!   `Toast` primitive where it doesn't (issue #955).
+//!   `Toast` primitive where it doesn't.
 //! - [`SidebarPanelBody`] — background fill + optional header/search
 //!   chrome + body widget + scrollbar-gutter reservation for a sidebar
-//!   panel, composed from existing `Backend` methods (issue #1041).
+//!   panel, composed from existing `Backend` methods.
 //! - [`ToastStackController`] — keyboard-focus cursor for the non-modal
 //!   [`crate::primitives::toast::ToastOverlay`]: Tab/Shift+Tab/Left/Right
 //!   cycle a focused toast's buttons, Up/Down move between toasts, Enter
-//!   activates, Escape dismisses (issue #1185).
-//!
-//! # Adopt-or-demote pass (#825, before the `v0.1.0` tag)
-//!
-//! `KeyMap`/`KeyContext` (#473) had zero constructors anywhere —
-//! neither consumer, nor this crate's own examples/tests beyond its
-//! own unit-test module — so it was demoted out of this module to
-//! `examples/common/key_map.rs` as a copy-paste recipe rather than
-//! frozen as public API by the upcoming tag. See that file's module
-//! doc for the full disposition. The other #825 candidates stay here,
-//! each for a stated reason: [`FocusRing`] is the prerequisite shape
-//! for #788's focus manager; [`FolderPickerController`] and
-//! [`TabGroupController`] already carry full TUI+GTK demo + driver-test
-//! coverage and a documented migration target (`FolderPickerController`'s
-//! own module doc names the vimcode call site it was extracted from);
-//! [`BottomPanelController`] is already load-bearing — it's what
-//! `ShellConfig::bottom_panel` / `AppShell::with_bottom_panel` construct
-//! (`shell.rs`/`shell_adapter.rs`), not a standalone unused type.
+//!   activates, Escape dismisses.
 
 pub mod app_shell;
 pub mod bottom_panel;

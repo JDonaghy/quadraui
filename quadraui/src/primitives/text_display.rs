@@ -1,20 +1,14 @@
 //! `TextDisplay` primitive: a scrollable, append-only viewer for streamed
 //! text. Distinct from `Terminal` (which is VT100-aware with cursor and
-//! attributes) and from `TextEditor` (deferred to A.9 — full editor with
-//! cursor, selection, undo). `TextDisplay` is the right primitive for
-//! log tails, command output, debug console, kubectl logs streams.
+//! attributes) and from `TextEditor` (full editor with cursor, selection,
+//! undo). `TextDisplay` is the right primitive for log tails, command
+//! output, debug console, kubectl logs streams.
 //!
-//! The primitive itself is a `Vec<TextDisplayLine>` plus scroll + auto-
-//! scroll state. Backends are expected to render efficiently — for
-//! high-volume streams (≥10k lines/sec target per #144) backends may
-//! diff only the appended slice rather than re-rasterising the whole
-//! viewport. The primitive's append-only API (`append_line`, no
-//! mid-buffer mutation) is what makes that diff cheap.
-//!
-//! **Status:** A.8 ships the primitive types only. Backend draw
-//! functions and optimised partial-repaint paths land when the first
-//! consumer (kubectl logs viewer #145, LSP trace viewer, etc.) needs
-//! them.
+//! The primitive itself is a `Vec<TextDisplayLine>` plus scroll and
+//! auto-scroll state. Backends are expected to render efficiently — for
+//! high-volume streams, backends may diff only the appended slice rather
+//! than re-rasterising the whole viewport. The primitive's append-only API
+//! (`append_line`, no mid-buffer mutation) is what makes that diff cheap.
 //!
 //! # Backend contract
 //!
@@ -34,8 +28,7 @@
 //! **Performance**: for high-volume streams, backends may diff only the
 //! newly-appended lines (the primitive is append-only — `append_line` /
 //! `clear` / cap-eviction are the only mutations) and repaint just the
-//! affected rows. Reference implementations land with the first
-//! consumer.
+//! affected rows.
 
 use crate::event::Rect;
 use crate::types::{Decoration, Modifiers, StyledSpan, StyledText, WidgetId};
@@ -104,24 +97,22 @@ fn default_auto_scroll() -> bool {
     true
 }
 
-/// Backend-shared line-wrapping math for [`TextDisplay`] (quadraui#905).
+/// Backend-shared line-wrapping math for [`TextDisplay`].
 ///
 /// Every rasteriser — `tui`, and the shared [`native_surface_paint::paint`]
 /// behind `gtk`/`macos`/`win` — computes its wrap decisions here rather
 /// than per-backend, so paint and the pure hit-testing layout helpers can
 /// never disagree about how many rows a line occupies (see
-/// [`wrap::wrap_row_count`]'s doc, and quadraui#494).
+/// [`wrap::wrap_row_count`]'s doc).
 ///
 /// **Why the whole module is `cfg`-gated to the rasteriser features.**
 /// These helpers exist *only* to serve rasterisers. A default-feature
 /// `quadraui` build (no `tui`/`gtk`/`win`/`macos`) compiles the primitive
-/// types but no backend, so nothing calls them — and `cargo check
-/// -p quadraui --all-targets` under `RUSTFLAGS="-D warnings"` turns that
-/// into five hard `dead_code` errors, not warnings. Gating the module is
-/// the same fix (and the same reasoning) that [`wrap::px_to_cols`] already
-/// carries one level narrower. The gate must stay a superset of every
-/// backend that calls into here: adding a new rasteriser feature means
-/// adding it to this list.
+/// types but no backend, so nothing calls them — and `cargo check`
+/// with warnings-as-errors turns that into hard `dead_code` errors.
+/// Gating the module prevents those errors. The gate must stay a superset
+/// of every backend that calls into here: adding a new rasteriser feature
+/// means adding it to this list.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -132,7 +123,7 @@ mod wrap {
     use super::{StyledSpan, TextDisplayLine};
 
     /// Glyph prefixed to every continuation row of a wrapped
-    /// [`super::TextDisplay`] line (quadraui#905). Without it, a wrapped
+    /// [`super::TextDisplay`] line. Without it, a wrapped
     /// row and a genuinely new line are visually identical, so a reader
     /// can't tell "this continues" from "this is unrelated."
     /// U+21B3 (DOWNWARDS ARROW WITH TIP RIGHTWARDS) plus a separating
@@ -183,11 +174,7 @@ mod wrap {
     /// (actual pixel-backend painting), and TUI's `line_rows`
     /// (`crate::tui::text_display`, actual cell painting) — goes through
     /// this function instead of re-deriving `col_budget.saturating_sub(gutter)`
-    /// locally. Before this helper existed the same three-line formula was
-    /// duplicated verbatim at all three call sites, which is exactly the
-    /// kind of drift that caused #494's paint/layout row-count mismatch:
-    /// a future edit to the formula in only one copy would silently
-    /// reintroduce it. A single function can't drift from itself.
+    /// locally. A single function ensures all callers use the same formula.
     ///
     /// Reserving the wider of the two gutters for *every* row (including
     /// row 0, which never draws a marker, and continuation rows, which
@@ -205,14 +192,13 @@ mod wrap {
     }
 
     /// Number of visual rows `line` occupies at `col_budget` display cells.
-    /// `TextDisplay` always wraps over-long lines (quadraui#905) — this is
+    /// `TextDisplay` always wraps over-long lines — this is
     /// not a caller-toggleable option (see the module doc: the primitive is
     /// documented exclusively for prose/log content, which has no fixed-
     /// column use case; that's what `DataTable` is for). Shared by every
     /// backend's `measure_line` closure (paint) *and* its pure layout
     /// counterpart (hit-testing), so the two can never disagree about row
-    /// counts — see quadraui#494 (layout/paint parity) and #905 (this
-    /// function's reason for existing).
+    /// counts.
     pub(crate) fn wrap_row_count(line: &TextDisplayLine, col_budget: usize) -> usize {
         wrap_display_line(line, content_budget_cols(line, col_budget))
             .len()
@@ -375,7 +361,7 @@ impl TextDisplayLineMeasure {
 
     /// Build from the backend's own [`crate::backend::Metrics`]
     /// (`backend.measure()`) for the common uniform-height case — one
-    /// display line is one text row (quadraui#817). Wrap-enabled
+    /// display line is one text row. Wrap-enabled
     /// backends that vary height per line still use [`Self::new`]
     /// directly.
     pub fn from_metrics(m: &crate::backend::Metrics) -> Self {
@@ -671,43 +657,30 @@ impl TextDisplay {
     }
 }
 
-// ── PaintSurface paint (#810, Phase 2c of the PaintSurface milestone) ────
+// ── PaintSurface paint (unified pixel backend implementation) ────
 //
 // Before this, `gtk::text_display::draw_text_display`,
 // `macos::text_display::draw_text_display` and
 // `win::text_display::draw_text_display` each independently painted the
 // optional title row, per-line spans/timestamp, and scrollbar gutter +
 // thumb with their own Cairo / CoreGraphics / Direct2D calls — the three
-// were already near-identical (macOS's own module doc: "Mirror of
-// `gtk::text_display::draw_text_display`"; Windows's: "Mirrors
-// `macos::text_display::draw_text_display`"). `paint` below is the one
-// shared implementation, written against
-// [`crate::paint_surface::PaintSurface`] (#807, Phase 1).
+// were already near-identical. `paint` below is the one shared
+// implementation, written against
+// [`crate::paint_surface::PaintSurface`].
 //
 // Each backend keeps its own `*_text_display_layout` free function
 // (`gtk_text_display_layout`/`mac_text_display_layout`/
 // `win_text_display_layout`) — unlike `paint`, that helper is pure
 // `TextDisplay::layout`/`layout_with_scrollbar` math with zero
-// Cairo/CoreGraphics/Direct2D dependency, so it was already
-// backend-agnostic; unifying it into a fourth shared function is a
-// natural follow-on but outside this issue's stated scope ("move …
-// paint"), so it's left as three near-identical copies for now, the
-// same call made for `*_chart_layout` in #810's chart migration.
+// Cairo/CoreGraphics/Direct2D dependency, so it remains backend-agnostic
+// but is left as three near-identical copies to keep their scope bounded.
 //
-// Behavioural divergence found while unifying (not resolved silently,
-// per this issue's acceptance bar): **bold span text, on Windows only.**
-// `win::text_display::draw_text_display` measured/drew each span with
-// `DWrite::measure_text_styled`/`draw_text_styled(.., span.bold)`; GTK
-// and macOS never read `StyledSpan::bold` at all — Pango/Core Text
-// bold-weight selection was never wired into either rasteriser.
-// `PaintSurface::surface_measure_text`/`surface_draw_text_run` carry no
-// bold parameter (see that trait's module doc's "~15 drawing verbs" —
-// weight selection isn't one of them), so there is no way to preserve
-// Windows's behaviour through this trait. `paint` adopts the
-// two-out-of-three shape: `StyledSpan::bold` is not painted specially on
-// any pixel backend. TUI's own `tui::text_display` is untouched.
+// **Behavioural difference:** Bold span text is not painted specially on
+// any pixel backend. The `PaintSurface` trait carries no bold parameter,
+// so `StyledSpan::bold` cannot be preserved through this trait.
+// TUI's own `tui::text_display` is untouched.
 //
-// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
+// `#[allow(dead_code)]`: see `primitives::form`'s identical note
 // — only *called* once a real pixel backend is compiled in, exercised by
 // each backend's own `Backend::draw_text_display` call site plus this
 // module's own `RecordingSurface` tests on every leg that enables one of
@@ -730,18 +703,14 @@ mod native_surface_paint {
 
     /// Paint a [`TextDisplay`] into `rect` on `surface`.
     ///
-    /// Mirrors every deleted per-backend `draw_text_display`: fills
-    /// `rect` with [`Theme::background`], paints an optional title row
-    /// (shrinking the body by one `line_height`), then each visible
+    /// Fills `rect` with [`Theme::background`], paints an optional title
+    /// row (shrinking the body by one `line_height`), then each visible
     /// line's optional timestamp + spans (span `bg` filled before its
     /// text, per-line `Decoration` resolving a fallback `fg`), then an
     /// optional scrollbar gutter + thumb at the trailing edge.
     ///
     /// `line_height` and the resulting layout math are identical to
-    /// what `gtk_text_display_layout`/`mac_text_display_layout`/
-    /// `win_text_display_layout` already compute — see this module's
-    /// doc for why those three stay separate, pure-math copies rather
-    /// than also being unified here.
+    /// what the per-backend `*_text_display_layout` functions compute.
     ///
     /// `char_width` is the backend's approximate average character width
     /// (`Backend::char_width`), used to convert `rect`'s pixel width into
@@ -751,7 +720,7 @@ mod native_surface_paint {
     /// the correct choice: the pure `*_text_display_layout` hit-testing
     /// helpers have no live surface to measure with, so paint must use
     /// the same approximation they do or a click could resolve to a
-    /// different row than what's on screen (quadraui#494/#905).
+    /// different row than what's on screen.
     pub(crate) fn paint(
         display: &TextDisplay,
         rect: Rect,
@@ -821,27 +790,22 @@ mod native_surface_paint {
                 _ => theme.foreground,
             };
 
-            // Word-wrap onto continuation rows (quadraui#905) — every
+            // Word-wrap onto continuation rows — every
             // `TextDisplay` line wraps rather than being cut off. Same
             // gutter math as `wrap_row_count` (and TUI's `line_rows`) via
             // `content_budget_cols` — see its doc for why that sharing
-            // matters (#494).
+            // matters.
             let rows = wrap_display_line(line, content_budget_cols(line, col_budget));
 
             for (row_i, row_spans) in rows.iter().enumerate() {
                 let row_y = row0_y + row_i as f32 * line_height;
                 // `break` here only exits *this line's* wrapped-row loop,
-                // not the outer `for vis in &layout.visible_lines` loop —
-                // deliberately, since #905 made a single visible line
-                // capable of spanning multiple rows. The old single-row
-                // code could `break` the outer loop directly because
-                // hitting the bottom on one line meant every later line
-                // was also below it; that's no longer true in the
-                // abstract (though `TextDisplay::layout`'s own visible-line
-                // selection already stops handing back lines that start
-                // past the bottom, via the `row0_y` check above, so this
-                // rarely does more than confirm there is no next line to
-                // skip to).
+                // not the outer `for vis in &layout.visible_lines` loop.
+                // A single visible line can span multiple rows, so a line
+                // hitting the bottom does not mean every later line is also
+                // below it. `TextDisplay::layout`'s visible-line selection
+                // already stops handing back lines that start past the
+                // bottom via the `row0_y` check above.
                 if row_y + line_height > body_y + body_h {
                     break;
                 }
@@ -926,7 +890,7 @@ mod native_surface_paint {
 
         /// Records every drawing verb `paint` issues — mirrors
         /// `primitives::chart`/`primitives::find_replace`'s own
-        /// `RecordingSurface` (#810/#809).
+        /// `RecordingSurface`.
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
@@ -951,7 +915,7 @@ mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// #1073: test-only recorder — `paint` never calls this verb
+            /// Test-only recorder — `paint` never calls this verb
             /// (see this module's own doc for why no primitive here has been
             /// migrated onto it yet); this exists only so `RecordingSurface`
             /// satisfies the trait. Records into the same `fills` list as
@@ -1131,7 +1095,7 @@ mod native_surface_paint {
             );
         }
 
-        // ── quadraui#905: wrap paint behaviour ──────────────────────────
+        // wrap paint behaviour
 
         #[test]
         fn wrap_splits_long_line_across_multiple_rows_with_continuation_marker() {
@@ -1536,8 +1500,7 @@ mod tests {
         assert_eq!(layout.visible_lines[2].bounds.height, 1.0);
     }
 
-    // quadraui#905's wrap-helper unit tests live in `wrap::tests`, next to
-    // the helpers themselves — both are gated on the rasteriser features
-    // (see the `wrap` module doc), so they can't sit in this ungated
-    // `mod tests`.
+    // wrap-helper unit tests live in `wrap::tests`, next to the helpers
+    // themselves — both are gated on the rasteriser features (see the
+    // `wrap` module doc), so they can't sit in this ungated `mod tests`.
 }

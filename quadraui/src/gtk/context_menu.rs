@@ -1,11 +1,10 @@
 //! GTK rasteriser for [`crate::ContextMenu`].
 //!
 //! Content painting (background, separators, selection highlight,
-//! labels + shortcut text, border) moved to the shared
+//! labels + shortcut text, border) is handled by the shared
 //! [`crate::primitives::context_menu::native_surface_paint::paint`]
-//! (#1077, `PaintSurface` Phase 4 slice 4/8) — see that fn's module
-//! doc for the two small drifts it resolved (box corner rounding,
-//! separator stroke weight).
+//! function — see that function's module doc for details on box corner
+//! rounding and separator stroke weight.
 //!
 //! Returns per-clickable-item hit rectangles `(x, y, w, h, WidgetId)`
 //! so the caller's click handler can resolve mouse events without
@@ -107,7 +106,7 @@ mod tests {
         assert_eq!(hit, ContextMenuHit::Item(WidgetId::new("cut")));
     }
 
-    // ── Submenu ▶ affordance (#371 — GTK parity with tui::context_menu) ──
+    // Submenu ▶ affordance — GTK parity with tui::context_menu
 
     /// Sample a pixel's RGB from an ARGB32 Cairo image surface buffer.
     fn probe_pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {

@@ -1,6 +1,6 @@
 //! Backend-agnostic app code for the macOS native NSMenu smoke
 //! ([`macos_native_menu`]). Demonstrates the new
-//! `Backend::install_menu_bar` path (#184): the menu lives in the
+//! `Backend::install_menu_bar` path: the menu lives in the
 //! system menu bar at the top of the screen, ⌘-shortcuts dispatch
 //! through AppKit's native machinery, and checked-state toggles
 //! reflect live in the menu.

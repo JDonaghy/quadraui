@@ -1,6 +1,6 @@
 //! SidebarSystem-based search panel — manual smoke test for Form
-//! sections with ToggleGroup/ButtonRow items (#105, #112) and
-//! Header-decorated tree rows (#110).
+//! sections with ToggleGroup/ButtonRow items and
+//! Header-decorated tree rows.
 //!
 //! Structure:
 //! - Section 0 (Form): query TextInput + toggle flags (Aa, .*, W)

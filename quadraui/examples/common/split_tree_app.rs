@@ -1,7 +1,7 @@
 //! Backend-agnostic app code for the split-tree example
 //! ([`tui_split_tree`] / [`gtk_split_tree`]).
 //!
-//! [`SplitTreeApp`] demonstrates [`quadraui::SplitTree`] (issue #435):
+//! [`SplitTreeApp`] demonstrates [`quadraui::SplitTree`]:
 //! a 3-way nested split — `Split(Horizontal, Split(Vertical, A, B), C)`
 //! — with all dividers draggable through the shared
 //! [`quadraui::DragTarget::SplitDivider`] dispatch path (the same

@@ -1,10 +1,9 @@
 //! Shared `U+2800`-block braille dot packing, used by every TUI
 //! rasteriser that needs sub-cell resolution: [`super::chart`]'s line
-//! charts and [`super::minimap`]'s density view (#382).
+//! charts and [`super::minimap`]'s density view.
 //!
-//! Lifted out of `tui/chart.rs` rather than duplicated: getting the bit
-//! order wrong transposes the whole image in a way that still looks
-//! plausible, so there must be exactly one copy of it (#382 review note).
+//! There must be exactly one copy of this bit-order logic: getting it
+//! wrong transposes the whole image in a way that still looks plausible.
 
 /// Braille dot offsets: `(row_in_cell, col_in_cell) -> bit index`.
 /// Standard Unicode braille ordering — a terminal cell is 2 dots wide
@@ -135,7 +134,7 @@ mod tests {
         assert_eq!(pack_braille_cell(|r, c| (r, c) == (3, 1)), '\u{2880}');
     }
 
-    // ── dither_threshold_met (issue #1007) ─────────────────────────────
+    // ── dither_threshold_met ───────────────────────────────────────────
 
     #[test]
     fn zero_coverage_never_meets_the_threshold() {

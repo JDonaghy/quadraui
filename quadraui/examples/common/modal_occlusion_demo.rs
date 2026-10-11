@@ -1,12 +1,16 @@
 //! Backend-agnostic app code for the modal-occlusion demo
 //! ([`tui_modal_occlusion`] / [`gtk_modal_occlusion`]).
 //!
-//! [`ModalOcclusionDemo`] is the smallest app that makes the **#455 bug
-//! class** — "a click lands inside an open modal but still reaches the
-//! widget behind it" — visible as painted text, so a coordinate-free
-//! conformance scenario can assert it on every backend
-//! (`tests/conformance/scenarios/modal/dialog.blocks_click_through.scn.json`,
-//! quadraui#491).
+//! [`ModalOcclusionDemo`] exercises the modal arbitration contract:
+//! a click landing inside an open modal reaches only that modal,
+//! not the widget behind it. [`crate::ModalStack`] plus
+//! `dispatch_click` tag a `MouseDown` that lands inside the topmost
+//! modal's bounds with that modal's [`WidgetId`]. The app routes
+//! purely on the event's shape:
+//!
+//! - `MouseDown { widget: Some(DIALOG_ID), .. }` → the click is the
+//!   dialog's; ask [`DialogLayout::hit_test`] which button (if any).
+//! - `MouseDown { widget: None, .. }` → base layer; hit-test the rows.
 //!
 //! Layout:
 //!
@@ -16,24 +20,6 @@
 //! - A `Open dialog` button on the last row.
 //! - When open, a centred [`Dialog`] titled `Confirm delete` whose body
 //!   reads `Really delete?`. It covers rows in the middle of the list.
-//!
-//! ## The contract this demo exercises
-//!
-//! **This app has no `if dialog_open { return }` guard anywhere.** Modal
-//! arbitration is quadraui's job: [`crate::ModalStack`] plus
-//! `dispatch_click` tag a `MouseDown` that lands inside the topmost
-//! modal's bounds with that modal's [`WidgetId`]. So the app routes
-//! purely on the event's shape:
-//!
-//! - `MouseDown { widget: Some(DIALOG_ID), .. }` → the click is the
-//!   dialog's; ask [`DialogLayout::hit_test`] which button (if any).
-//! - `MouseDown { widget: None, .. }` → base layer; hit-test the rows.
-//!
-//! If a backend forgets to route mouse-downs through the modal stack,
-//! the click arrives as `widget: None`, the row list selects the row
-//! under the dialog, and `selected: …` changes — which is exactly what
-//! the scenario asserts must *not* happen. That is the bug made
-//! executable rather than described.
 //!
 //! Controls:
 //! - click a row              select it
@@ -107,15 +93,13 @@ impl ModalOcclusionDemo {
     /// and `handle` so paint and hit-test can never disagree — the
     /// `docs/LESSONS.md` "one layout fn, two callers" rule.
     fn dialog_layout(&self, backend: &dyn Backend) -> DialogLayout {
-        // quadraui#817: real backend metrics via `measure()` instead of
-        // approximating char width from `line_height` (the pre-#817
-        // pattern `dialog_table_demo` also carried, both fixed together).
+        // Measure text for each label to size buttons to their content.
         let m = backend.measure();
         let lh = m.line_height;
         let char_w = m.char_width;
         let viewport = backend.viewport();
         let dialog = self.dialog();
-        // quadraui#1132: real per-label measurement via `Backend::
+        // Real per-label measurement via `Backend::
         // measure_text` instead of a flat `char_w * 10.0` guess wide
         // enough for both "OK" and "Cancel" on TUI's fixed grid but
         // meaningless once the chrome font is proportional -- see

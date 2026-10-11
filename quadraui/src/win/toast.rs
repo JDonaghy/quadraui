@@ -1,31 +1,12 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::ToastOverlay`] (issue #29).
+//! Direct2D / DirectWrite rasteriser for [`crate::ToastOverlay`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::toast::native_surface_paint::paint`] (#861,
-//! `PaintSurface` Phase 2d slice 4/9) — see that fn's doc for the named
-//! divergences found while unifying `gtk::toast::draw_toast_stack`,
-//! `macos::toast::draw_toast_stack` and `win::toast::draw_toast_stack`
-//! into one implementation:
+//! Painting is implemented in the shared
+//! [`crate::primitives::toast::native_surface_paint::paint`] — see that fn's doc
+//! for layout details.
 //!
-//! - This module's `draw_toast_stack` never took a `theme: &Theme`
-//!   parameter — every call painted with `Theme::default()`, unlike its
-//!   `gtk`/`macos` counterparts. The shared `paint` requires a live theme
-//!   (matching those two), so [`WinBackend::draw_toast_stack`] now passes
-//!   `&self.current_theme` — fixing the quadraui#789-class gap this
-//!   module was missed by.
-//! - This module's dismiss `×`/action label were drawn flush against
-//!   their sub-region's left edge (`DWrite`'s default alignment); the
-//!   shared `paint` centres them horizontally, matching what `gtk`/`macos`
-//!   already did.
-//!
-//! This module now only carries [`win_toast_stack_layout`] (pure layout,
-//! still needed by `WinBackend::toast_stack_layout` for no-paint
-//! hit-test queries); the deprecated `draw_toast_stack` compatibility
-//! shim over the shared [`super::surface::D2dSurface`] adapter was
-//! removed in issue #1109 (zero uses in coord-tui's `main` and
-//! vimcode's `develop`).
-//!
-//! [`win_toast_stack_layout`] is pure geometry generic over
+//! This module carries [`win_toast_stack_layout`] (pure layout computation,
+//! still needed by `WinBackend::toast_stack_layout` for no-paint hit-test
+//! queries). [`win_toast_stack_layout`] is pure geometry generic over
 //! [`crate::primitives::layout_metrics::TextMeasure`] — no Direct2D/
 //! DirectWrite type in its signature — so it compiles and runs
 //! everywhere, including a plain `cargo test --features win` on Linux.
@@ -44,13 +25,10 @@ use crate::theme::Theme;
 /// of the shared paint's internal layout computation. Both use the
 /// identical per-toast measurer shape, so a no-paint hit-test call always
 /// agrees with what the last paint drew. Pure geometry over [`TextMeasure`]
-/// (issue #1078) — `measure` may be a live `&DWrite` (when painting) or
-/// [`super::backend`]'s nominal measurer (no surface yet); independent of
-/// [`crate::paint_surface::PaintSurface::surface_measure_text`] — same
-/// "no-paint layout stays put" posture as `WinBackend::status_bar_layout`
-/// (#860). Shares its geometry with `gtk_toast_stack_layout` /
-/// `mac_toast_stack_layout` via [`pixel_toast_stack_layout`] (issue
-/// #1079).
+/// — `measure` may be a live `&DWrite` (when painting) or
+/// [`super::backend`]'s nominal measurer (no surface yet). Shares its
+/// geometry with `gtk_toast_stack_layout` / `mac_toast_stack_layout` via
+/// [`pixel_toast_stack_layout`].
 pub fn win_toast_stack_layout(
     measure: &dyn TextMeasure,
     rect: Rect,
@@ -68,8 +46,8 @@ pub fn win_toast_stack_layout(
     )
 }
 
-// #1078: every test below paints through a real `DWrite`/`HeadlessSurface`
-// — gated the same way the whole module used to be.
+// Tests paint through a real `DWrite`/`HeadlessSurface` — gated the same way
+// the whole module used to be.
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
@@ -116,7 +94,6 @@ mod tests {
     /// action, and body to the matching `ToastHit`. Exercises the shared
     /// paint through [`super::super::surface::D2dSurface`] directly —
     /// the same adapter the now-removed `draw_toast_stack` shim used
-    /// (issue #1109).
     #[test]
     fn paint_and_hit_test_round_trip() {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
@@ -175,8 +152,7 @@ mod tests {
     }
 
     /// `win_toast_stack_layout` (no-paint) must produce byte-identical
-    /// layout to what the shared paint used to lay out — same stack,
-    /// same rect, same line height.
+    /// layout to what the shared paint lays out — same stack, same rect, same line height.
     #[test]
     fn no_paint_layout_matches_paint_layout() {
         let stack = stack_br(vec![colored_toast("t1", "Saved")]);
@@ -210,9 +186,7 @@ mod tests {
         assert_eq!(painted, no_paint);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md
-    /// "Layout helpers must return coords in the same frame across
-    /// backends"): `rect`'s own `(x, y)` must be honoured as the
+    /// Non-zero-origin invariant: `rect`'s own `(x, y)` must be honoured as the
     /// overlay's absolute origin, not silently treated as `(0, 0)`.
     #[test]
     fn paint_and_hit_test_round_trip_at_nonzero_origin() {

@@ -5,7 +5,7 @@
 //! Where a divider's ends (or an interior crossing) meet an already
 //! painted perpendicular divider, the run is upgraded to the matching
 //! box-drawing junction glyph (`┼ ├ ┤ ┬ ┴`) — see
-//! [`super::split_junction`] (quadraui#1067).
+//! [`super::split_junction`].
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -99,8 +99,8 @@ mod tests {
     }
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
-    // must return coords in the same frame across backends"
-    // (quadraui#494). `tui_split_layout` bakes `area.x`/`area.y`
+    // must return coords in the same frame across backends".
+    // `tui_split_layout` bakes `area.x`/`area.y`
     // straight into `split.layout`'s returned bounds (absolute frame),
     // so the regression guard is a full paint+hit_test round trip
     // re-run at a non-zero origin.
@@ -131,7 +131,7 @@ mod tests {
         horizontal_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md).
+    /// Regression guard: non-zero-origin cases must be handled correctly.
     #[test]
     fn horizontal_paint_and_click_round_trip_at_nonzero_origin() {
         horizontal_round_trip_at(7, 13);
@@ -163,7 +163,7 @@ mod tests {
         vertical_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md).
+    /// Regression guard: non-zero-origin cases must be handled correctly.
     #[test]
     fn vertical_paint_and_click_round_trip_at_nonzero_origin() {
         vertical_round_trip_at(7, 13);
@@ -179,7 +179,7 @@ mod tests {
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
-    /// quadraui#1067: an app that manually nests two independent
+    /// An app that manually nests two independent
     /// `draw_split` calls (rather than a `SplitTree`) still gets a
     /// junction glyph where the second, full-extent divider crosses the
     /// first, shorter one already sitting in the buffer — this is the

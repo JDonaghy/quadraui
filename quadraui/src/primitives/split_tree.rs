@@ -3,18 +3,14 @@
 //! to arbitrary nesting — vimcode's editor-group splits and in-group
 //! vim window splits (`GroupLayout` / `WindowLayout` in
 //! `vimcode/src/core/window.rs`) are both instances of this shape
-//! (issue #435).
 //!
 //! # Relationship to `Split`
 //!
 //! [`crate::Split`] stays the primitive for a single two-pane boundary
 //! — most consumers (sidebar/editor, diff view) only ever need one.
 //! `SplitTree` is for hosts that need arbitrary nesting with per-node
-//! ratio state addressed by a stable pre-order index. Per
-//! `docs/decisions/DECISIONS.md`'s "one primitive per UX concept, not per
-//! algebraic reduction" principle this is a distinct primitive, not a
-//! `Split` with a recursion flag — leaf identity, ratio mutation by
-//! index, and parent lookup have no analogue in `Split`.
+//! ratio state addressed by a stable pre-order index. Leaf identity,
+//! ratio mutation by index, and parent lookup have no analogue in `Split`.
 //!
 //! # `SplitDirection` note for vimcode adopters
 //!
@@ -32,19 +28,12 @@
 //! rects. Backends draw only the divider lines, using the same visual
 //! convention as `Split` (see `tui::draw_split_tree` / `gtk::draw_split_tree`).
 //!
-//! # One source of truth (avoiding the vimcode drift bug class)
+//! # One source of truth
 //!
-//! vimcode's `GroupLayout` computes leaf rects and divider geometry via
-//! two *separate* recursive functions (`calculate_group_rects` and
-//! `dividers`) that each re-derive the same split math independently —
-//! a latent second-source-of-truth risk. [`SplitTree::layout`] computes
-//! both in a single recursive pass so they structurally cannot diverge.
-//!
-//! Similarly, vimcode issue #582/#452 was a paint/click drift bug: the
-//! renderer truncated a divider's float position with `as u16` while a
-//! hand-rolled click handler used `.round()`, landing them on different
-//! cells. [`SplitTreeDivider::cell_position`] is the single conversion
-//! both a TUI rasteriser's paint call and [`SplitTreeLayout::hit_test_divider_cell`]
+//! [`SplitTree::layout`] computes both leaf rects and divider geometry
+//! in a single recursive pass so they structurally cannot diverge.
+//! [`SplitTreeDivider::cell_position`] is the single conversion both a
+//! TUI rasteriser's paint call and [`SplitTreeLayout::hit_test_divider_cell`]
 //! must use — see their doc comments.
 
 use crate::event::{Point, Rect};
@@ -464,10 +453,8 @@ impl SplitTreeDivider {
     /// TUI-native cell coordinate this divider paints at. Truncates
     /// toward zero — the same conversion ratatui-backed rasterisers use
     /// for cell coordinates (`as u16`). Call this from BOTH paint and
-    /// hit-test so they can never diverge: this is the structural fix
-    /// for the bug class where an independently hand-rolled click
-    /// handler used `.round()` while the renderer used `as u16`
-    /// truncation, landing one cell apart (vimcode #582 / #452).
+    /// hit-test so they can never diverge: this is the conversion
+    /// both a paint and hit-test path must use.
     pub fn cell_position(&self) -> u16 {
         self.position.max(0.0) as u16
     }
@@ -547,45 +534,19 @@ impl SplitTreeLayout {
     }
 }
 
-// ── PaintSurface paint (#863, Phase 2d slice 6/9 of the PaintSurface
-// milestone, child of #811) ────────────────────────────────────────────
+// ── PaintSurface shared implementation ────────────────────────────────────
 //
-// Before this, `gtk::draw_split_tree` (Cairo), `macos::split_tree::draw_split_tree`
-// (Core Graphics) and `win::split_tree::draw_split_tree` (Direct2D) each
-// independently painted the same divider-only chrome with their own
-// drawing API (quadraui#785 child #811, `docs/SMELL_AUDIT_2026-07.md`
-// §5). `paint` below is the one shared implementation, written against
-// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of
-// any one backend's drawing API.
+// Backend paint implementations (GTK, macOS, Windows) now share a single
+// `paint` function written against [`crate::paint_surface::PaintSurface`]
+// instead of each backend's native drawing API. Geometry (leaf rects +
+// divider placement) was already shared via [`SplitTree::layout`]; this
+// unifies the paint half (walking `layout.dividers` and filling each
+// divider's rect). The `paint` function takes an already-resolved
+// [`SplitTreeLayout`], matching the pattern used by callers that compute
+// the layout once and reuse it for both paint and hit-test.
 //
-// Unlike `primitives::scrollbar`'s translucent-overlay identity (#811
-// slice 1) or `primitives::chart`'s divergence-heavy unification (#810),
-// the three deleted copies here were already exactly identical: same
-// divider-rect placement per `SplitDirection` (swap axis vs. cross for
-// `Horizontal`/`Vertical`), same opaque `theme.separator` fill colour,
-// no hover/drag state and no alpha manipulation of any kind — GTK filled
-// every divider rect in one `cr.fill()` call after accumulating them via
-// `cr.rectangle`, while macOS and Windows filled one rect at a time, but
-// non-overlapping same-colour opaque fills are pixel-identical either
-// way. Re-verified while migrating, per this issue's "re-verify before
-// you implement" — reported here rather than silently assumed. **No
-// divergence found.**
-//
-// Unlike `draw_scrollbar`/`draw_panel`, geometry (leaf rects + divider
-// placement) was ALREADY the single shared [`SplitTree::layout`] before
-// this issue — only the *paint* half (walking `layout.dividers` and
-// filling each divider's rect) was triplicated. `paint` therefore takes
-// an already-resolved [`SplitTreeLayout`] (the same convention as
-// `primitives::panel::native_surface_paint::paint`), not the raw
-// `SplitTree` + bounds — callers compute the layout once and reuse it
-// for both paint and hit-test, exactly as `SplitTreeDivider::cell_position`'s
-// doc already requires.
-//
-// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
-// — only *called* once a real pixel backend is compiled in, exercised
-// by each backend's own `Backend::draw_split_tree` call site plus this
-// module's own `RecordingSurface` tests on every leg that enables one
-// of the three cfg'd features.
+// `#[allow(dead_code)]`: only called when a pixel backend is compiled in,
+// exercised by each backend's own `Backend::draw_split_tree` call site.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -656,7 +617,7 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// #1073: test-only recorder — `paint` never calls this verb
+            /// Test-only recorder — `paint` never calls this verb
             /// (see this module's own doc for why no primitive here has been
             /// migrated onto it yet); this exists only so `RecordingSurface`
             /// satisfies the trait. Records into the same `fills` list as

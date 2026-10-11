@@ -1,6 +1,6 @@
 //! Backend-agnostic app code for the macOS right-click context-menu
 //! smoke ([`macos_right_click_demo`]). Demonstrates the new
-//! `Backend::show_context_menu` path (#185): on
+//! `Backend::show_context_menu` path: on
 //! `MouseDown { button: Right }` the app builds a `ContextMenu` and
 //! calls `backend.show_context_menu(&menu, position)`. On macOS the
 //! menu appears as a native AppKit pop-up with system fonts, accent

@@ -1,4 +1,4 @@
-//! GTK rasteriser for [`crate::Completions`] (#285).
+//! GTK rasteriser for [`crate::Completions`].
 //!
 //! Verbatim port of vimcode's `src/gtk/draw::draw_completion_popup`
 //! body. Paints a Cairo-rendered autocomplete popup: full-bounds

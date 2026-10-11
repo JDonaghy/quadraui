@@ -1,7 +1,7 @@
 //! Minimap `AppLogic` + `quadraui::gtk::run` example.
 //!
 //! Code-overview minimap demo, painted through `GtkBackend::draw_minimap`
-//! — real character shapes from a cached glyph atlas (issue #1035), not
+//! — real character shapes from a cached glyph atlas, not
 //! per-column colour blocks (`crate::gtk::minimap::draw_minimap`, the
 //! uncached free function, still paints the older #667 colour-block look,
 //! but the app path here doesn't call it). Up/Down to scroll, click the

@@ -174,12 +174,10 @@ impl MenuSystem {
     }
 
     /// Process an event. Call from `handle()` before other UI routing.
-    /// Process an event. Call from `handle()` before other UI routing.
     ///
-    /// A thin dispatcher over the per-event-shape handlers below
-    /// (#1113: split the god fn) — each `handle_*` owns one gesture's
-    /// full state-machine transition so this stays a readable table of
-    /// "what shape → which handler" instead of one 360-line match arm.
+    /// A thin dispatcher over the per-event-shape handlers below.
+    /// Each `handle_*` owns one gesture's full state-machine transition
+    /// so this stays a readable table of "what shape → which handler".
     pub fn handle(
         &mut self,
         event: &UiEvent,
@@ -1023,7 +1021,7 @@ mod tests {
         ) -> crate::StatusBarLayout {
             unimplemented!()
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn draw_tab_bar(
             &mut self,
             _r: Rect,
@@ -1032,7 +1030,7 @@ mod tests {
         ) -> crate::TabBarHits {
             unimplemented!()
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn draw_tab_bar_icons(
             &mut self,
             _r: Rect,
@@ -1095,7 +1093,7 @@ mod tests {
                 resolved_right_start: 0,
             }
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarHits {
             crate::TabBarHits::default()
         }
@@ -1128,7 +1126,7 @@ mod tests {
                 resolved_scroll_offset: 0,
             }
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn tab_bar_layout_icons(
             &self,
             _r: Rect,
@@ -1890,7 +1888,7 @@ mod tests {
         );
     }
 
-    // ── MouseUp outside-click dismiss (#429) ───────────────────────────────
+    // ── MouseUp outside-click dismiss ──────────────────────────────────────
 
     fn mouse_up_ev(position: crate::event::Point) -> UiEvent {
         UiEvent::MouseUp {

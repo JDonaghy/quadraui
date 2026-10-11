@@ -56,12 +56,12 @@ pub enum TreeControllerEvent {
     EditChanged { path: TreePath, text: String },
     /// Right-click on a row, or — if the controller has opted in via
     /// [`TreeController::set_empty_space_context_menu`] — on empty tree
-    /// space below the last row (quadraui#1045 item 4). Consumer should
-    /// build and show a context menu. `path` is empty (`TreePath::new()`,
-    /// i.e. `Vec::new()`) for the empty-space case — there is no row to
-    /// identify, so a consumer distinguishes the two by checking
-    /// `path.is_empty()` and falls back to a container-level menu (e.g.
-    /// the tree's root/cwd) rather than a per-row one.
+    /// space below the last row. Consumer should build and show a context
+    /// menu. `path` is empty (`TreePath::new()`, i.e. `Vec::new()`) for the
+    /// empty-space case — there is no row to identify, so a consumer
+    /// distinguishes the two by checking `path.is_empty()` and falls back
+    /// to a container-level menu (e.g. the tree's root/cwd) rather than a
+    /// per-row one.
     ///
     /// The empty-space case is opt-in (default off) precisely because it
     /// is *not* additive for every existing caller: a caller whose event
@@ -69,7 +69,7 @@ pub enum TreeControllerEvent {
     /// (rather than branching on `path.is_empty()` first) would otherwise
     /// start swallowing an event it used to never see, short-circuiting
     /// before any fallback it already had for empty-space clicks. See
-    /// `TreeController::right_click`'s doc for the previous `Consumed`
+    /// [`TreeController::right_click`]'s doc for the previous `Consumed`
     /// behavior this defaults to preserving.
     ContextMenuRequested { path: TreePath, position: Point },
 }
@@ -196,14 +196,13 @@ impl TreeController {
     }
 
     /// Opt in to [`TreeControllerEvent::ContextMenuRequested`] (with an
-    /// empty `path`) on right-click of empty tree space below the last row
-    /// (quadraui#1045 item 4). Default `false`, so a host that never calls
-    /// this keeps the pre-#1045 behavior of resolving that click to plain
-    /// `Consumed` — this is additive, not a behavior change, for any
-    /// existing caller. Hosts that want a container-level context menu
-    /// (e.g. the tree's root/cwd) for empty-space right-clicks should call
-    /// this with `true` and match on `path.is_empty()` in their
-    /// `ContextMenuRequested` handler.
+    /// empty `path`) on right-click of empty tree space below the last row.
+    /// Default `false`, so a host that never calls this keeps the previous
+    /// behavior of resolving that click to plain `Consumed` — this is
+    /// additive, not a behavior change, for any existing caller. Hosts that
+    /// want a container-level context menu (e.g. the tree's root/cwd) for
+    /// empty-space right-clicks should call this with `true` and match on
+    /// `path.is_empty()` in their `ContextMenuRequested` handler.
     pub fn set_empty_space_context_menu(&mut self, enabled: bool) {
         self.empty_space_context_menu = enabled;
     }
@@ -769,10 +768,7 @@ impl TreeController {
     /// A hit on the blank area below the last row (`TreeViewHit::Empty`)
     /// resolves to plain `Consumed` unless
     /// [`TreeController::set_empty_space_context_menu`] has opted this
-    /// controller in — a host had no portable way to offer a context menu
-    /// there at all (quadraui#1045 item 4: vimcode carried its own
-    /// `route_tree_empty_space_context_menu` shared workaround for exactly
-    /// this gap). Once opted in, this emits the same
+    /// controller in. Once opted in, this emits the same
     /// `ContextMenuRequested` event with an empty `path` instead — see
     /// that variant's own doc for the empty-`path` convention this
     /// establishes. This is opt-in (default off) rather than the
@@ -1129,7 +1125,7 @@ mod tests {
         assert_eq!(tc.scroll_offset(), 0);
     }
 
-    // ── GTK wheel-direction round-trip (quadraui#418) ────────────────
+    // ── GTK wheel-direction round-trip ───────────────────────────────
     //
     // Regression guard tying the real GDK → UiEvent translator to a
     // compose controller's scroll behavior, not just the internal
@@ -1582,10 +1578,10 @@ mod tests {
         );
     }
 
-    // ── Right-click / context menu (quadraui#1045 item 4) ────────────
+    // ── Right-click / context menu ──────────────────────────────────
 
-    /// Right-clicking a real row still resolves the pre-#1045 behaviour:
-    /// `ContextMenuRequested` carrying that row's own (non-empty) path.
+    /// Right-clicking a real row emits `ContextMenuRequested` carrying
+    /// that row's own (non-empty) path.
     #[test]
     fn right_click_on_row_emits_context_menu_requested_with_that_rows_path() {
         let mut tc = TreeController::new("t");
@@ -1613,12 +1609,12 @@ mod tests {
         assert_eq!(tc.selected_path(), Some(&vec![0]));
     }
 
-    /// Right-clicking the blank area below the last row swallows the click
-    /// as plain `Consumed` by default (quadraui#1045 item 4) — this is the
-    /// pre-#1045 behavior, kept as the default so existing callers whose
-    /// `ContextMenuRequested` routing unconditionally intercepts the
-    /// variant (rather than branching on `path.is_empty()`) are unaffected
-    /// unless they explicitly opt in.
+    /// Right-clicking the blank area below the last row is swallowed as
+    /// plain `Consumed` by default — this is the previous behavior, kept
+    /// as the default so existing callers whose `ContextMenuRequested`
+    /// routing unconditionally intercepts the variant (rather than
+    /// branching on `path.is_empty()`) are unaffected unless they
+    /// explicitly opt in.
     #[test]
     fn right_click_on_empty_space_below_last_row_is_consumed_by_default() {
         let mut tc = TreeController::new("t");

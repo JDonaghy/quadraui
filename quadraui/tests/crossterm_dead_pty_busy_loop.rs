@@ -194,28 +194,12 @@ fn repeated_wait_events_calls_stay_bounded_after_stdin_hangs_up() {
     }
 }
 
-/// Black-box proof that [`TuiRunner`] itself — not just [`TuiBackend`] in
-/// isolation, see the two tests above for that half — turns a hung-up
-/// input fd into a clean [`StepOutcome::Exited`] rather than hanging
-/// `pump` forever.
-///
-/// Deliberately keeps the master alive through [`TuiRunner::new`]'s real
-/// terminal negotiation (raw mode, alternate screen, kitty-keyboard
-/// push — all real escape-sequence round trips against the pty this test
-/// constructs, both fds of it redirected into this very process) and
-/// only closes it *after* that call returns successfully, with nothing
-/// else running concurrently in this single-threaded test body to race
-/// it. Single-threaded and sequential like this, the master closing
-/// strictly before the next `pump` call even begins is the simplest
-/// possible repro — this test is about `TuiRunner` turning a hangup
-/// into `StepOutcome::Exited`, not about the in-flight-hangup race
-/// itself (quadraui#1295's `wait_events`-slicing window, closed by
-/// quadraui#1301's `wait_for_stdin_ready` — see
-/// `tests/pty_master_closed_during_wait.rs` for a test that races that
-/// window directly, concurrently, against a real blocked call). Closing
-/// the master only after `new` has fully returned, before this function's
-/// own first `pump` call even begins, puts the hangup unambiguously
-/// *before* that first call rather than during one.
+/// Proof that [`TuiRunner`] — not just [`TuiBackend`] in isolation —
+/// turns a hung-up input fd into a clean [`StepOutcome::Exited`] rather
+/// than hanging forever. This test keeps the master alive through
+/// [`TuiRunner::new`]'s real terminal negotiation, then closes it before
+/// the first `pump` call so the hangup happens unambiguously before that
+/// call rather than during one.
 #[test]
 #[ignore = "mutates this process's fd 0 and fd 1 — see module doc"]
 fn tui_runner_exits_once_its_pty_master_closes_under_it() {

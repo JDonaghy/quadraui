@@ -1,12 +1,10 @@
 //! Backend-agnostic app code for the tooltip example
 //! ([`tui_tooltip`] / [`gtk_tooltip`]).
 //!
-//! Demonstrates the `TooltipChrome` border/title vocabulary (#541): a
+//! Demonstrates the `TooltipChrome` border/title vocabulary: a
 //! consumer picks `border` (`Sides` bars-only, `Full` closed box, `None`
 //! no chrome) and an optional `title` embedded in `Full`'s top border row,
-//! instead of each backend hardcoding its own answer — the gap
-//! JDonaghy/vimcode#635 hit when its migrated help popup lost its border
-//! and title with no way to ask for them back. `TooltipDemo` cycles
+//! instead of each backend hardcoding its own answer. `TooltipDemo` cycles
 //! through the settings so a human (or a `TuiDriver` test) can see all
 //! three border modes and the title toggle render identically in shape
 //! on both backends.

@@ -151,7 +151,7 @@ pub fn compute_drop_zone(
 }
 
 /// Hit-test classification for a cursor position against a set of
-/// [`DropGroupRect`]s (quadraui#818).
+/// [`DropGroupRect`]s.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DropZoneHit {
     /// Cursor is over a live drop zone.
@@ -161,8 +161,8 @@ pub enum DropZoneHit {
 }
 
 /// Hit-test a cursor position against `groups`, following this
-/// primitive's `Empty`-variant convention on top of [`compute_drop_zone`]
-/// (quadraui#818). Identical arguments and behaviour to
+/// primitive's `Empty`-variant convention on top of [`compute_drop_zone`].
+/// Identical arguments and behaviour to
 /// [`compute_drop_zone`] — this only wraps its `Option` result in a
 /// [`DropZoneHit`] so `DropZone`, like every other primitive, has a
 /// `hit_test` entry point with a named miss case instead of `None`.
@@ -215,7 +215,7 @@ impl DropOverlay {
     /// rasteriser (`gtk::drop_overlay`, `macos::drop_overlay`,
     /// `win::drop_overlay`) so they agree on a value by construction
     /// rather than by three separately-copied literals — see
-    /// `PRIMITIVE_RULES.md`'s primitive-first rule (#713).
+    /// `PRIMITIVE_RULES.md`'s primitive-first rule.
     pub const HIGHLIGHT_ALPHA: f32 = 0.15;
 
     /// Minimum insertion-bar thickness (px on GTK/macOS, DIPs on
@@ -304,55 +304,18 @@ pub fn drop_zone_overlay(
     }
 }
 
-// ── PaintSurface paint (#865, Phase 2d slice 8/9 of the PaintSurface
-// milestone, #811 / #785) ───────────────────────────────────────────────
+// Shared implementation of drop overlay painting, factored from
+// GTK, macOS, and Windows backends to use [`crate::paint_surface::PaintSurface`].
 //
-// Before this, `gtk::draw_drop_overlay` (Cairo), `macos::drop_overlay::
-// draw_drop_overlay` (Core Graphics) and `win::drop_overlay::
-// draw_drop_overlay` (Direct2D) each independently painted the same
-// highlight-rect + insertion-bar geometry with their own drawing API.
-// `paint` below is the one shared implementation, written against
-// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of
-// any one backend's drawing API — same shape as `scrollbar`'s #811
-// slice 1/9 migration (commit `2a47547`).
+// Windows's pre-migration implementation CPU-premixed the tint against
+// `theme.background` before an opaque fill. This shared implementation
+// uses `PaintSurface::surface_fill_rect`, which paints a real alpha blend
+// on all backends, fixing Windows's drop-overlay highlight to match
+// GTK/macOS's real-blend behaviour.
 //
-// ## The one divergence this migration found (re-verified, reported here
-// rather than silently resolved — CLAUDE.md's "re-verify before you
-// implement")
-//
-// GTK's `cr.set_source_rgba` and macOS's `CGContextSetRGBFillColor` both
-// painted the highlight tint as a *real* alpha-blended fill straight onto
-// whatever the frame already had underneath. Windows's pre-migration
-// `win::drop_overlay::draw_drop_overlay` did not: its render target is
-// created with `D2D1_ALPHA_MODE_IGNORE`/`UNKNOWN`, so that module's
-// author CPU-premixed the tint against `theme.background` via
-// `win::text::blend` before an opaque fill — a real behavioural
-// difference from GTK/macOS (a halo of `theme.background` rather than a
-// blend of *actual* content) whenever a drop overlay paints over
-// anything other than bare theme background (an editor, a terminal, a
-// panel header).
-//
-// That is the same class of bug quadraui#791 fixed for
-// `win::scrollbar::draw_scrollbar` — but unlike scrollbar's migration
-// (slice 1/9), where the win side had *already* been fixed independently
-// before the migration started, drop_overlay's win-side premix was still
-// live going into this slice. `PaintSurface::surface_fill_rect` itself
-// — the shared verb this `paint` fn calls — has painted a real alpha
-// blend on every one of the three pixel backends since #791 (Windows)
-// and slice 1/9 (GTK's `cr.set_source_rgba` fix; macOS's
-// `CGContextSetRGBFillColor` already did). Routing this primitive's
-// paint through the (already-correct) shared verb therefore *fixes*
-// Windows's drop-overlay highlight to match GTK/macOS's real-blend
-// behaviour, rather than reproducing the old CPU-premix — the opposite
-// direction of slice 1/9's GTK fix, landing at the same shared verb. See
-// `win::drop_overlay`'s module doc for how the deprecated shim's test
-// suite pins the corrected behaviour.
-//
-// `#[allow(dead_code)]`: see `primitives::scrollbar`'s identical note —
-// only *called* once a real pixel backend is compiled in, exercised by
-// each backend's own `Backend::draw_drop_overlay` call sites plus this
-// module's own `RecordingSurface` tests on every leg that enables one of
-// the three cfg'd features.
+// `#[allow(dead_code)]`: only called once a real pixel backend is compiled in,
+// exercised by each backend's own `Backend::draw_drop_overlay` call sites plus
+// this module's own `RecordingSurface` tests.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -430,7 +393,7 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// #1073: test-only recorder — `paint` never calls this verb
+            /// Test-only recorder — `paint` never calls this verb
             /// (see this module's own doc for why no primitive here has been
             /// migrated onto it yet); this exists only so `RecordingSurface`
             /// satisfies the trait. Records into the same `fills` list as
@@ -644,8 +607,6 @@ mod tests {
         let groups = vec![group(0.0, 0.0, 100.0, 80.0, &[])];
         assert!(compute_drop_zone(200.0, 200.0, &groups, 20.0).is_none());
     }
-
-    // ── #818: hit_test ───────────────────────────────────────────────────
 
     #[test]
     fn hit_test_returns_zone_for_center_drop() {

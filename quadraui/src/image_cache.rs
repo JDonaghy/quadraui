@@ -1,39 +1,25 @@
 //! Small fixed-capacity LRU cache for decoded/rasterised images, shared by
-//! every pixel backend's `Backend::draw_image` (issue #1014).
+//! every pixel backend's `Backend::draw_image`.
 //!
 //! # Why
 //!
 //! `Image` deliberately carries no cache itself (see
 //! [`crate::primitives::image`]'s module docs) — decoding is a backend
-//! concern, and each backend's `draw_image` used to decode `image.source`
-//! from scratch on *every* paint call. For a large vector source (a 1024²
-//! app-icon SVG, vimcode's motivating case) that measured at
-//! **+16.5ms/frame** on GTK's `gdk_pixbuf` loader — expensive enough that
-//! vimcode's own host code pre-rasterised the icon itself with toolkit
-//! types (`gdk_pixbuf`, directly in `src/gtk/util.rs`) just to work
-//! around it, behind a `#[cfg(feature = "gui")]` fork in otherwise
-//! backend-neutral code. This cache closes that gap generically, inside
-//! `draw_image` itself, so every backend gets it for free instead of
-//! every consumer reinventing it in host code.
+//! concern. Each `draw_image` call decodes `image.source` on demand and caches
+//! the result keyed on a cheap hash of the encoded bytes/path, the resolved
+//! paint size, and DPI scale. Two calls for the same source at the same size
+//! and scale reuse the same decoded value; a cache miss still leaves the
+//! `draw_image` implementation to decide what to decode (e.g. GTK can cache
+//! the already-scaled `Pixbuf` since `scale_simple` has non-trivial cost).
 //!
 //! # Shape
 //!
-//! Keyed on a cheap hash of the [`ImageSource`]'s encoded bytes/path, plus
-//! the resolved paint size and DPI scale the decode was rasterised at
-//! (the issue's own proposed key shape) — two `draw_image` calls for the
-//! same source at the same size and scale reuse the same decoded value
-//! rather than re-decoding. Capacity is small and fixed: the issue's own
-//! scope note is "the sizes in play are UI chrome, not media" — a handful
-//! of app icons/toolbar glyphs, not an image gallery — so a small linear
-//! LRU is plenty; nothing here is tuned for a large working set.
+//! Capacity is small and fixed: the cache targets UI chrome (app icons,
+//! toolbar glyphs), not media galleries, so a small linear LRU suffices.
 //!
 //! Generic over the decoded value type `T` so each backend can plug in
 //! its own native type — `gdk_pixbuf::Pixbuf` on GTK, `CGImage` on macOS,
 //! `ID2D1Bitmap` on Win — without this module depending on any of them.
-//! A `draw_image` that misses the cache still owns deciding *what* to
-//! decode and cache (e.g. GTK caches the already-scaled `Pixbuf`, since
-//! `scale_simple` is itself non-trivial cost on top of the decode); this
-//! module only owns the lookup/eviction bookkeeping.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};

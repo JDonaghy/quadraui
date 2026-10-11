@@ -1,49 +1,38 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::ListView`] (issue #26).
+//! Direct2D / DirectWrite rasteriser for [`crate::ListView`].
 //!
-//! Content painting (background, title, rows, h/v scrollbars) moved to
-//! the shared [`crate::primitives::list::native_surface_paint::paint`]
-//! (#1075, `PaintSurface` Phase 4 slice 2/8) — see that fn's module doc
-//! for what's shared and what stays per-backend. This module still owns
-//! the [`ListView::bordered`] frame itself: a plain (square-cornered)
-//! 1-DIP rectangle border painted *after* the shared content paint (see
-//! *Scope for #26* below for why it's square rather than GTK's rounded
-//! stroke). Painting the border after, not before, matters: the shared
-//! `paint` unconditionally fills the whole rect with `base_bg` as its
-//! first operation, which would erase a border drawn beforehand — an
-//! ordering bug this module briefly had (#1075 review fix) before
-//! matching `gtk::list::draw_list`'s post-content border stroke.
+//! Content painting (background, title, rows, h/v scrollbars) is shared via
+//! [`crate::primitives::list::native_surface_paint::paint`] — see that fn's
+//! module doc for what's shared and what stays per-backend. This module owns
+//! the [`ListView::bordered`] frame itself: a plain (square-cornered) 1-DIP
+//! rectangle border painted *after* the shared content paint. Painting the
+//! border after, not before, matters: the shared `paint` unconditionally fills
+//! the whole rect with `base_bg` as its first operation, which would erase a
+//! border drawn beforehand.
 //!
-//! [`win_list_layout`] itself needs no Direct2D/DirectWrite type — it's
-//! pure geometry over [`crate::primitives::layout_metrics::list_layout`],
-//! same as `mac_list_layout` / `gtk_list_layout` — so, per issue #1078,
-//! only [`draw_list`] (the actual Direct2D paint entry point) is
-//! `#[cfg(target_os = "windows")]`-gated; `win_list_layout` compiles and
-//! runs everywhere, including a plain `cargo test --features win` on
-//! Linux. See `super::mod`'s `mod list;` (no longer whole-module gated)
-//! and `backend.rs`'s module docs. See `win::status_bar`'s module doc for
-//! why colours come from `Theme::default()` rather than a live
-//! `WinBackend` theme field.
+//! [`win_list_layout`] itself needs no Direct2D/DirectWrite type — it's pure
+//! geometry over [`crate::primitives::layout_metrics::list_layout`], same as
+//! `mac_list_layout` / `gtk_list_layout` — so only [`draw_list`] (the actual
+//! Direct2D paint entry point) is `#[cfg(target_os = "windows")]`-gated;
+//! `win_list_layout` compiles and runs everywhere. See `super::mod`'s `mod list;`
+//! and `backend.rs`'s module docs. See `win::status_bar`'s module doc for why
+//! colours come from `Theme::default()` rather than a live `WinBackend` theme field.
 //!
 //! # Scope for #26
 //!
-//! `bordered` lists get a plain (square-cornered) 1-DIP rectangle
-//! border rather than GTK's rounded-rect stroke — Direct2D's rounded
-//! rectangle would need a second brush/geometry path for no visual
-//! contract this issue depends on; a follow-up can round the corners.
-//! Nerd-Font icon glyphs are not distinguished from ASCII fallbacks —
-//! see `win::tree`'s module doc for why.
+//! `bordered` lists get a plain (square-cornered) 1-DIP rectangle border rather
+//! than GTK's rounded-rect stroke — Direct2D's rounded rectangle would need a
+//! second brush/geometry path for no visual contract this issue depends on.
+//! Nerd-Font icon glyphs are not distinguished from ASCII fallbacks — see
+//! `win::tree`'s module doc for why.
 //!
-//! # #1078: h-scrollbar row reservation now shared
+//! # H-scrollbar row reservation now shared
 //!
-//! Before #1078, [`win_list_layout`] took no `char_width` and never
-//! reserved a bottom row for an h-scrollbar — `ListView::max_content_width`
-//! was silently ignored for layout purposes on this backend, unlike
-//! `gtk_list_layout` / `mac_list_layout`. Routing through
-//! [`crate::primitives::layout_metrics::list_layout`] (with
-//! `border_inset` derived from [`ListView::bordered`], matching
-//! [`BORDER_DIP`]) closes that gap for free: Windows now reserves the
-//! same row every other pixel backend does, and [`draw_list`] passes
-//! `supports_hscrollbar: true` to the shared paint to match.
+//! [`win_list_layout`] now reserves a bottom row for an h-scrollbar by routing
+//! through [`crate::primitives::layout_metrics::list_layout`] (with `border_inset`
+//! derived from [`ListView::bordered`], matching [`BORDER_DIP`]), matching
+//! `gtk_list_layout` / `mac_list_layout`. Windows now reserves the same row every
+//! other pixel backend does, and [`draw_list`] passes `supports_hscrollbar: true`
+//! to the shared paint to match.
 
 use crate::event::Rect;
 use crate::primitives::list::{ListView, ListViewLayout};
@@ -54,35 +43,16 @@ use crate::primitives::list::{ListView, ListViewLayout};
 /// [`crate::primitives::layout_metrics::list_layout`].
 const BORDER_DIP: f32 = 1.0;
 
-/// Compute a [`ListView`]'s layout without painting — the DirectWrite
-/// twin of [`draw_list`]'s internal layout call. Pure geometry (no
-/// Direct2D/DirectWrite type in its signature), so — unlike
-/// [`draw_list`] — this is not `target_os = "windows"`-gated; see this
-/// module's doc.
+/// Compute a [`ListView`]'s layout without painting — the DirectWrite twin of
+/// [`draw_list`]'s internal layout call. Pure geometry (no Direct2D/DirectWrite
+/// type in its signature), so unlike [`draw_list`], this is not
+/// `target_os = "windows"`-gated; see this module's doc.
 ///
-/// `char_width` is used only for the h-scrollbar-overflow threshold
-/// check (`ListView::max_content_width` is in character columns); pass
-/// a live `DWrite`-measured glyph width when painting (see
-/// [`draw_list`]), or [`crate::backend::Backend::char_width`]'s cached
-/// value for a no-paint layout, matching every other pixel backend's
-/// `Backend::list_layout`.
-///
-/// ## Downstream impact (CLAUDE.md rule 8): new `char_width` parameter (#1078)
-///
-/// This is a genuine arity break (3 args → 4), not a source-compatible
-/// widening like the other `win_*_layout` fns this issue touched
-/// (`win_data_table_layout` / `win_menu_bar_layout` / `win_status_bar_layout`
-/// / `win_spinner_layout` / `win_toast_stack_layout` / the four
-/// `win_tab_bar_*` fns only widened their first parameter's type from a
-/// concrete `&DWrite`/`&CTFont` to `&dyn TextMeasure`, which every existing
-/// `&DWrite`/`&CTFont` call site still satisfies via Rust's automatic
-/// unsized coercion — no call site anywhere needs to change). Any external
-/// caller invoking the old 3-arg `win_list_layout` no longer compiles.
-/// `win_list_layout` and all nine of the above are re-exported unconditionally
-/// from `quadraui::win` (not `cfg(target_os = "windows")`-gated — see this
-/// module's and `win::mod`'s doc), so per CLAUDE.md's mandatory rule 1, here
-/// is the blast radius for every one of them:
-///
+/// `char_width` is used only for the h-scrollbar-overflow threshold check
+/// (`ListView::max_content_width` is in character columns); pass a live
+/// `DWrite`-measured glyph width when painting (see [`draw_list`]), or
+/// [`crate::backend::Backend::char_width`]'s cached value for a no-paint layout,
+/// matching every other pixel backend's `Backend::list_layout`.
 /// ```text
 /// $ grep -rn 'win_list_layout\|win_data_table_layout\|win_menu_bar_layout\|win_status_bar_layout\|win_spinner_layout\|win_toast_stack_layout\|win_tab_bar_layout\|win_tab_bar_layout_icons\|win_tab_bar_native_layout\|win_tab_bar_native_layout_icons' \
 ///     ~/src/coord-tui/src ~/src/vimcode/src
@@ -115,9 +85,9 @@ pub fn win_list_layout(
     )
 }
 
-/// Draw a [`ListView`] into `rect` (DIPs) on `target`. Returns the
-/// resolved [`ListViewLayout`] for host click dispatch (list-local
-/// coordinates, matching every other backend's `draw_list` contract).
+/// Draw a [`ListView`] into `rect` (DIPs) on `target`. Returns the resolved
+/// [`ListViewLayout`] for host click dispatch (list-local coordinates, matching
+/// every other backend's `draw_list` contract).
 ///
 /// # Visual contract
 ///
@@ -125,15 +95,13 @@ pub fn win_list_layout(
 ///   `Theme::background`.
 /// - **Selected row:** `Theme::selected_bg`.
 /// - **Header-decorated row:** `Theme::header_bg` / `header_fg`.
-/// - **Muted / Error / Warning rows:** `muted_fg` / `error_fg` /
-///   `warning_fg` on the row's own background.
-/// - **Detail span:** right-aligned in `muted_fg`, skipped when there
-///   isn't room past the main text.
+/// - **Muted / Error / Warning rows:** `muted_fg` / `error_fg` / `warning_fg`
+///   on the row's own background.
+/// - **Detail span:** right-aligned in `muted_fg`, skipped when there isn't
+///   room past the main text.
 /// - **Vertical scrollbar:** painted via
 ///   [`crate::primitives::scrollbar::native_surface_paint::paint`] when
-///   [`ListView::show_v_scrollbar`] calls for one (#1075) — previously
-///   never painted on any of the three pixel backends despite
-///   `Backend::list_vscrollbar` already returning real geometry.
+///   [`ListView::show_v_scrollbar`] calls for one.
 #[cfg(target_os = "windows")]
 pub fn draw_list(
     target: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
@@ -169,7 +137,7 @@ pub fn draw_list(
         /* nerd_fonts_enabled */
         false,
         /* supports_border */ true,
-        // #1078: `win_list_layout` now reserves the h-scrollbar row via
+        // `win_list_layout` now reserves the h-scrollbar row via
         // the shared `layout_metrics::list_layout`, so painting one here
         // when it's needed matches the reservation instead of leaving an
         // unlabeled blank row.
@@ -180,12 +148,10 @@ pub fn draw_list(
     );
 
     // The `bordered` frame is drawn *after* the shared content paint so it
-    // isn't erased by `native_surface_paint::paint`'s own initial
-    // full-`rect` background fill (`surface_fill_rect(area, base_bg)`,
-    // `primitives/list.rs`) — mirroring `gtk::list::draw_list`, which
-    // strokes its border after `cr.restore()` for the same reason (#1075
-    // review fix: this order used to be reversed here, so a bordered
-    // Win-GUI list silently lost its border).
+    // isn't erased by `native_surface_paint::paint`'s own initial full-`rect`
+    // background fill (`surface_fill_rect(area, base_bg)`, `primitives/list.rs`).
+    // This order mirrors `gtk::list::draw_list`, which strokes its border after
+    // the content paint for the same reason.
     if list.bordered {
         let br = theme.border_fg;
         let _ = fill_rect(
@@ -272,12 +238,10 @@ mod tests {
         }
     }
 
-    /// #1078 regression: `win_list_layout` must apply the exact same
-    /// `border_inset` [`crate::primitives::layout_metrics::list_layout`]
-    /// would given [`BORDER_DIP`] — before #1078 `win_list_layout` had no
-    /// `border_inset`/`char_width` concept at all and could not agree
-    /// with the shared fn by construction. Runs on Linux: no Direct2D/
-    /// DirectWrite type involved.
+    /// `win_list_layout` must apply the exact same `border_inset`
+    /// [`crate::primitives::layout_metrics::list_layout`] would given
+    /// [`BORDER_DIP`] — this ensures both functions agree on the bordered list's
+    /// layout. Runs on Linux: no Direct2D/DirectWrite type involved.
     #[test]
     fn win_list_layout_matches_layout_metrics_list_layout_border_inset() {
         let list = make_bordered_list(vec![item("alpha"), item("beta"), item("gamma")]);
@@ -329,10 +293,8 @@ mod tests {
         );
     }
 
-    /// #712/#1078: an overflowing `max_content_width` must reserve the
-    /// bottom row for an h-scrollbar, exactly like `mac_list_layout` /
-    /// `gtk_list_layout` — the "known gap" this module's pre-#1078 doc
-    /// tracked.
+    /// An overflowing `max_content_width` must reserve the bottom row for an
+    /// h-scrollbar, exactly like `mac_list_layout` / `gtk_list_layout`.
     #[test]
     fn win_list_layout_reserves_hscrollbar_row_when_content_overflows() {
         let mut list = make_list((0..12).map(|i| item(&format!("row-{i}"))).collect());
@@ -456,13 +418,9 @@ mod tests {
             assert_eq!(painted, no_paint);
         }
 
-        /// #1075 regression: before the `native_surface_paint` migration,
-        /// `draw_list` never painted `ListView::show_v_scrollbar`'s
-        /// track/thumb on any of the three pixel backends, even though
-        /// `Backend::list_vscrollbar` already returned real geometry for
-        /// hit-testing. Paints through the real `draw_list` and probes a
-        /// pixel inside the resolved track rect — this would have failed
-        /// (background colour, nothing painted) against the pre-#1075 body.
+        /// The vertical scrollbar's track and thumb are painted when
+        /// [`ListView::show_v_scrollbar`] is true. This probes a pixel inside the
+        /// resolved track rect to verify painting occurred.
         #[test]
         fn paints_vertical_scrollbar_track_when_enabled() {
             let mut list = make_list((0..30).map(|i| item(&format!("row-{i}"))).collect());
@@ -492,13 +450,10 @@ mod tests {
             );
         }
 
-        /// #1075 review fix: the `native_surface_paint::paint` migration
-        /// briefly drew the `ListView::bordered` frame *before* the shared
-        /// content paint, which unconditionally fills the whole `rect` with
-        /// `base_bg` as its first paint operation — silently erasing the
-        /// border. Paints a bordered list and probes all four edges,
-        /// asserting they still carry `theme.border_fg` after the shared
-        /// paint has run.
+        /// The `ListView::bordered` frame is drawn *after* the shared content
+        /// paint, which unconditionally fills the whole `rect` with `base_bg` as its
+        /// first operation. This test verifies all four edges still carry
+        /// `theme.border_fg` after the shared paint has run.
         #[test]
         fn bordered_frame_survives_shared_content_paint() {
             let list = make_bordered_list(vec![item("alpha"), item("beta"), item("gamma")]);

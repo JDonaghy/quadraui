@@ -2,7 +2,7 @@
 //!
 //! Renders a `Dialog` with a [`DialogTable`] — a two-column keybindings
 //! grid with headers and a `─┼─` separator row. Demonstrates the new
-//! table-layout slot (issue #225).
+//! table-layout slot.
 //!
 //! Controls:
 //! - `q` / `Esc`    quit

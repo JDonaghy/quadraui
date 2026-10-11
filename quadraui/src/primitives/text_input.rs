@@ -12,21 +12,16 @@
 //!
 //! ## Editing — [`EditOp`] / [`TextEditor`]
 //!
-//! Before issue #833, this module had no editing behaviour at all: apps
-//! (e.g. `examples/common/text_input_demo.rs`) had to hand-roll their own
-//! insert/backspace/arrow-key logic against `lines`/`cursor_line`/
-//! `cursor_col` directly. [`EditOp`] is a closed set of edit intents
-//! (insert, delete, cursor movement, selection, undo/redo);
-//! [`TextEditor::apply`] is the single mutator that turns one into the
-//! next buffer/cursor/selection state, so every consumer gets the same
-//! (correct, multibyte-safe) editing behaviour instead of an ad hoc copy.
-//! [`EditOp::from_key`] maps a plain keypress to the `EditOp` it means;
-//! [`EditOp::from_key_binding`] maps the universal
+//! [`EditOp`] is a closed set of edit intents (insert, delete, cursor
+//! movement, selection, undo/redo); [`TextEditor::apply`] is the single
+//! mutator that turns one into the next buffer/cursor/selection state,
+//! so every consumer gets the same (correct, multibyte-safe) editing
+//! behaviour. [`EditOp::from_key`] maps a plain keypress to the `EditOp`
+//! it means; [`EditOp::from_key_binding`] maps the universal
 //! [`crate::accelerator::KeyBinding::Undo`] /
 //! [`crate::accelerator::KeyBinding::Redo`] /
 //! [`crate::accelerator::KeyBinding::SelectAll`] accelerators the same
-//! way, wiring those long-declared-but-unused names (see
-//! `accelerator.rs`'s module doc) to real behaviour.
+//! way.
 //!
 //! ## Why the editing state is a wrapper, not new `TextInput` fields
 //!
@@ -35,9 +30,7 @@
 //!
 //! `TextInput` is this crate's public paint-time snapshot type: all eight
 //! of its fields are `pub`, and external consumers construct it with an
-//! **exhaustive struct literal** — `vimcode`'s
-//! `render.rs::sc_commit_message_to_text_input()` is a live example, with
-//! no `..base` to absorb additions. Rust gives no way to grow such a
+//! **exhaustive struct literal**. Rust gives no way to grow such a
 //! struct without breaking those call sites:
 //!
 //! * a **private** field makes every external `TextInput { .. }` literal
@@ -50,7 +43,7 @@
 //! whose first preference is "a shape that isn't breaking at all". So
 //! **both** pieces of live editing state — the selection anchor and the
 //! undo history — live on `TextEditor`, and `TextInput`'s field list is
-//! unchanged by #833.
+//! unchanged.
 //!
 //! `TextEditor` `Deref`s to the wrapped `TextInput`, so `.lines`,
 //! `.cursor_line`, `.layout(..)` and `backend.draw_text_input(rect, &ed)`
@@ -84,14 +77,8 @@ use crate::undo::UndoStack;
 /// being fields here (short version: adding **any** field, `pub` or
 /// private, breaks external exhaustive `TextInput { .. }` literals).
 ///
-/// **Adding a field to this struct used to be a breaking change** — see
-/// issue #1251 (the v0.1.0 breaking batch, phase 2), which made this
-/// struct `#[non_exhaustive]` for real once both known consumers had
-/// migrated off exhaustive literals.
-///
-/// Every field below has a
-/// matching `with_*` builder on [`TextInput::new`], and the type
-/// implements `Default`, so a consumer constructs with
+/// Every field below has a matching `with_*` builder on [`TextInput::new`],
+/// and the type implements `Default`, so a consumer constructs with
 /// `TextInput::new(id)` / `TextInput::default()` and chains `with_*`
 /// instead of an exhaustive struct literal.
 ///
@@ -140,16 +127,6 @@ pub struct TextInput {
     pub scroll_col: usize,
     /// Whether the input has keyboard focus. Controls cursor visibility
     /// and border color (rasteriser-defined).
-    ///
-    /// This is set by the app, not derived automatically — see
-    /// [`crate::focus`]'s module doc ("representation 5") for why this
-    /// field (and the identical convention on several other primitives)
-    /// is left as-is rather than collapsed onto `FocusManager` in #830.
-    /// An app that *does* drive this `TextInput` through
-    /// [`crate::runner::AppLogic::tab_stops`] should set it from
-    /// `backend.focus_manager().is_focused(&input.id)` each frame —
-    /// [`crate::focus::FocusManager::is_focused`] is the read path such
-    /// a migration converges on.
     #[serde(default)]
     pub has_focus: bool,
 }
@@ -327,18 +304,15 @@ impl EditOp {
 
     /// Map a universal [`KeyBinding`] accelerator to the [`EditOp`] it
     /// represents — wires [`KeyBinding::Undo`]/[`KeyBinding::Redo`]/
-    /// [`KeyBinding::SelectAll`] (declared in `accelerator.rs` since
-    /// before #833, previously with no consumer) to real `TextInput`
-    /// behaviour. Apps register an [`crate::accelerator::Accelerator`]
-    /// with one of these bindings and, on the matching
-    /// [`crate::event::UiEvent::Accelerator`], call
+    /// [`KeyBinding::SelectAll`] to real `TextInput` behaviour. Apps register
+    /// an [`crate::accelerator::Accelerator`] with one of these bindings and,
+    /// on the matching [`crate::event::UiEvent::Accelerator`], call
     /// `text_input.apply(op)` with the result.
     ///
     /// Returns `None` for every other binding: `Copy`/`Cut`/`Paste` need
     /// clipboard content that arrives via
     /// [`crate::event::UiEvent::ClipboardPaste`]/`TextCopied`, not the
-    /// accelerator alone (see `accelerator.rs`'s module doc on that
-    /// event split), so they're not represented as an `EditOp` — callers
+    /// accelerator alone, so they're not represented as an `EditOp` — callers
     /// wire `Cut`/`Copy` through [`TextEditor::selected_text`] plus
     /// (for `Cut`) [`EditOp::DeleteSelection`], and `Paste` through
     /// [`EditOp::InsertText`] fed by `ClipboardPaste`'s payload.
@@ -515,8 +489,8 @@ impl TextInput {
 /// long the widget has been alive.
 const UNDO_HISTORY_LIMIT: usize = 200;
 
-/// An editing session over a [`TextInput`] — this is #833's insert /
-/// delete / cursor-movement / selection / undo behaviour.
+/// An editing session over a [`TextInput`] — handles insert / delete /
+/// cursor-movement / selection / undo behaviour.
 ///
 /// `TextEditor` owns the two pieces of live editing state that
 /// deliberately are **not** `TextInput` fields: the selection anchor, and
@@ -524,15 +498,12 @@ const UNDO_HISTORY_LIMIT: usize = 200;
 /// module's *Why the editing state is a wrapper* section for why — the
 /// short version is that adding **any** field to `TextInput`, `pub` or
 /// private, breaks external exhaustive `TextInput { .. }` struct literals
-/// (`E0063` / `E0451`), which `CLAUDE.md`'s *Downstream consumers* policy
-/// and `docs/PRIMITIVE_RULES.md` rule 8 forbid without a consumer
-/// migration.
+/// (`E0063` / `E0451`).
 ///
 /// Access the wrapped `TextInput` through the public [`Self::input`]
 /// field or through `Deref`/`DerefMut`, so `.lines`, `.cursor_line`,
 /// `.layout(..)` and `backend.draw_text_input(rect, &editor)` all work
 /// directly on a `TextEditor`.
-///
 /// ```
 /// use quadraui::{EditOp, TextEditor, TextInput, WidgetId};
 ///
@@ -893,7 +864,7 @@ impl TextInputLayout {
     /// convention (`bounds`/`content_bounds`/`hit_regions` all carry
     /// `rect.x`/`rect.y`, per `PRIMITIVE_RULES.md`'s coordinate-frame
     /// table). Returns [`TextInputHit::EmptyArea`] when `(x, y)` falls
-    /// outside every region (quadraui#818).
+    /// outside every region.
     pub fn hit_test(&self, x: f32, y: f32) -> TextInputHit {
         for (rect, hit) in &self.hit_regions {
             if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
@@ -910,9 +881,9 @@ pub struct TextInputMeasure {
     /// Height of one row in surface-native units (TUI: 1.0 cells;
     /// GTK: line_height pixels).
     pub row_height: f32,
-    /// Width of one character column. TUI: 1.0 (cells). GTK: the
-    /// monospace `char_width` from the backend — used to position the
-    /// cursor and route clicks back to columns.
+    /// Width of one character column in surface-native units. TUI: 1.0
+    /// (cells). GTK: the monospace `char_width` from the backend — used to
+    /// position the cursor and route clicks back to columns.
     pub char_width: f32,
 }
 
@@ -928,7 +899,7 @@ impl TextInputMeasure {
     /// (`backend.measure()`) instead of hand-threading
     /// `backend.line_height()` / `backend.char_width()` through
     /// [`Self::new`] — the two are identical, this just names the
-    /// intent (quadraui#817).
+    /// intent.
     pub fn from_metrics(m: &crate::backend::Metrics) -> Self {
         Self::new(m.line_height, m.char_width)
     }
@@ -1053,7 +1024,7 @@ impl TextInput {
     /// Exposed so callers that need to pre-wrap text to a fixed width
     /// *before* calling [`Self::layout`] — e.g.
     /// [`crate::compose::ChatController`]'s soft-wrapping, auto-growing
-    /// chat input (quadraui#1136) — compute the same budget `layout` will
+    /// chat input — compute the same budget `layout` will
     /// end up rendering into, without duplicating the border/padding
     /// constants (and risking the two drifting apart).
     pub fn content_cols(width: f32, char_width: f32) -> usize {
@@ -1064,19 +1035,16 @@ impl TextInput {
     }
 }
 
-// ── PaintSurface paint (#1093) ─────────────────────────────────────────
+// ── PaintSurface paint ─────────────────────────────────────────────────
 //
-// macOS's `draw_text_input` used to be a bare layout-only stub (issue
-// #1093: "paints nothing and no `BackendCaps` flag says so") — unlike
-// `TextDisplay`/`Form`/`FindReplacePanel`, GTK and Windows already carry
-// their own working (and already-tested) per-backend `draw_text_input`
-// rasterisers, so this module does *not* replace either of those the way
-// #808/#809/#810 did. It exists solely so `MacBackend::draw_text_input`
-// has a real implementation to call, built once against the portable
-// `PaintSurface` verbs rather than a fourth bespoke per-backend copy.
+// This module provides a portable paint implementation for `MacBackend`'s
+// `draw_text_input`. Unlike `TextDisplay`/`Form`/`FindReplacePanel`, GTK
+// and Windows already carry their own per-backend `draw_text_input`
+// rasterisers. This module avoids a fourth bespoke per-backend copy by
+// building once against the portable `PaintSurface` verbs.
 //
-// Shape mirrors `win::text_input::draw_text_input` (the simplest of the
-// three existing twins — no selection-range painting, since `TextInput`
+// Shape mirrors the Windows implementation (the simplest of the three
+// existing twins — no selection-range painting, since `TextInput`
 // itself carries none; see this module's own doc, "Selection is
 // therefore readable via `TextEditor::selection_range`..."): fill the
 // background, stroke a focus-aware border, paint the placeholder or each
@@ -1238,10 +1206,8 @@ mod native_surface_paint {
             ti
         }
 
-        /// #1093's acceptance bar: a text input's value and cursor must
-        /// both appear in the recorded paint. Pre-fix, `MacBackend::
-        /// draw_text_input` never called anything that could paint at
-        /// all, so this fails red against the un-fixed stub.
+        /// A text input's value and cursor must both appear in the recorded
+        /// paint.
         #[test]
         fn value_and_cursor_both_paint() {
             let ti = sample(vec!["hello"], 0, 3);
@@ -1540,7 +1506,7 @@ mod tests {
         assert_eq!(l.resolved_scroll_offset, 2);
     }
 
-    // ── content_cols (pre-wrap budget, quadraui#1136) ────────────────
+    // ── content_cols (column budget for pre-wrap) ──────────────────────────
 
     #[test]
     fn content_cols_matches_layouts_content_width() {

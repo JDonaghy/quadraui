@@ -4,7 +4,7 @@
 //! return `None` on TUI (the in-canvas `Dialog` primitive /
 //! `Backend::draw_dialog` stays the TUI path) — this demo exercises that
 //! contract. See `examples/common/message_dialog_demo.rs` and the paired
-//! `gtk_message_dialog` example (#666) for the GTK counterpart that
+//! `gtk_message_dialog` example for the GTK counterpart that
 //! actually shows a native `gtk4::AlertDialog`.
 //!
 //! - `m` show the "Discard unsaved changes?" message dialog (always

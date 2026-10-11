@@ -1,46 +1,36 @@
-//! Compiles-as-an-external-crate proof that `PaintSurface` (issue #1101) is
-//! genuinely unsealed — this file is a separate compilation unit from
-//! `quadraui`'s own `src/`, the same position `coord-tui`/`vimcode` are in,
-//! so anything it can name and call is real public API, not an
-//! accidentally-`pub(crate)`-adjacent item only reachable from in-tree
-//! `#[cfg(test)]` modules.
+//! Proof that `PaintSurface` is genuinely public API.
+//!
+//! This file is a separate compilation unit, so anything it can name
+//! and call is real public API, not an accidentally-`pub(crate)` item.
 //!
 //! Three things are asserted, one per backend family:
 //!
 //! 1. A free function generic over `&mut dyn quadraui::PaintSurface`
-//!    type-checks here at all — before #1101 this trait was
-//!    `pub(crate)`, so this file could not even name it.
+//!    type-checks here at all.
 //! 2. [`quadraui::Backend::paint_surface`] answers `Some` on every pixel
-//!    backend compiled in (today: GTK, Win-GUI — `MacBackend` only builds
-//!    under `target_os = "macos"`, covered by `macos_appkit_features.rs`'s
-//!    sibling pattern, not here), and the trait object it hands back
-//!    dispatches to the same backend instance `Backend`'s own methods see
-//!    (`surface_viewport` agrees with `Backend::viewport`).
+//!    backend compiled in (GTK, Win-GUI), and the trait object it hands
+//!    back dispatches to the same backend instance `Backend`'s own methods
+//!    see (`surface_viewport` agrees with `Backend::viewport`).
 //! 3. `Backend::paint_surface` answers `None` on `TuiBackend` — the
 //!    structural absence `PaintSurface`'s own module doc names ("Why TUI
 //!    stays out"), not a missing override.
 //!
 //! Calling an actual paint verb (`surface_fill_rect` et al.) needs a live
 //! Cairo/Direct2D render target wired up through each backend's own
-//! `attach_surface`-equivalent, crate-private machinery this file (an
-//! external-crate position) cannot reach — that round trip is already
-//! covered, per backend, by `src/gtk/backend.rs`'s and `src/win/backend.rs`'s
-//! own `#[cfg(test)] mod tests`. This file's job is narrower and
-//! complementary: prove the *seam* (the trait, and the accessor that reaches
-//! it) is public, not that every verb paints correctly.
+//! `attach_surface`-equivalent machinery — that round trip is covered by
+//! `src/gtk/backend.rs` and `src/win/backend.rs` tests. This file's job is
+//! narrower: prove the trait and its accessor are public.
 
 #[cfg(any(feature = "tui", feature = "gtk", feature = "win"))]
 use quadraui::Backend;
 #[cfg(any(feature = "gtk", feature = "win"))]
 use quadraui::{PaintSurface, Viewport};
 
-/// Exercises exactly the capability #1101 adds: code outside this crate
-/// writing a function generic over `&mut dyn PaintSurface`, the same shape
-/// every in-tree `primitives::*::native_surface_paint::paint` helper
-/// already uses. `surface_viewport` is read-only and safe to call on any
-/// backend in any state (no live Cairo/Direct2D context required), unlike
-/// the fill/stroke/text verbs — see this file's module doc for why those
-/// stay out of scope here.
+/// Code outside this crate can write a function generic over
+/// `&mut dyn PaintSurface`, the same shape every in-tree
+/// `primitives::*::native_surface_paint::paint` helper uses.
+/// `surface_viewport` is read-only and safe to call on any
+/// backend in any state (no live Cairo/Direct2D context required).
 #[cfg(any(feature = "gtk", feature = "win"))]
 fn read_viewport_through_the_seam(surface: &mut dyn PaintSurface) -> Viewport {
     surface.surface_viewport()

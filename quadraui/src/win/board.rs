@@ -1,21 +1,8 @@
 //! Direct2D / DirectWrite rasteriser for
-//! [`crate::primitives::board::BoardModel`] (#736).
+//! [`crate::primitives::board::BoardModel`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::board::native_surface_paint::paint`] (#1085,
-//! `PaintSurface` Phase 4 slice 8/8) — see that fn's doc for the four
-//! named divergences (column-header overflow; card-title wrapping;
-//! rounded vs. straight card borders — this backend's own straight-rect
-//! border becomes the behaviour every backend now shares; per-element
-//! font size — this backend's own single-text-format behaviour becomes
-//! the behaviour every backend now shares) found while unifying
-//! `gtk::board::draw_board`, `macos::board::draw_board` and
-//! `win::board::draw_board` into one implementation. This module now
-//! only carries [`win_board_layout`] (still real, backend-specific pure
-//! geometry — no painting involved); the deprecated `draw_board`
-//! compatibility shim over the shared [`super::surface::D2dSurface`]
-//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
-//! and vimcode's `develop`).
+//! Painting is shared via [`crate::primitives::board::native_surface_paint::paint`].
+//! This module provides [`win_board_layout`] for backend-specific pure geometry.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod board;` and `backend.rs`'s module
@@ -31,13 +18,10 @@ use crate::primitives::layout_metrics::pixel_board_layout;
 use crate::theme::Theme;
 
 /// Compute the Win-GUI DIP-unit layout for a [`BoardModel`] without
-/// painting — the DirectWrite twin of `crate::Backend::draw_board`'s
-/// internal layout call (the free-function `draw_board` shim this
-/// backed was removed in issue #1109). Same contract as the
-/// GTK/macOS/TUI twins' `*_board_layout`:
+/// painting. Same contract as the GTK/macOS/TUI twins' `*_board_layout`:
 /// `rect.x`/`rect.y` are baked into every returned bound (absolute
 /// frame). Shares its column/card measure with `gtk_board_layout` /
-/// `mac_board_layout` via [`pixel_board_layout`] (issue #1079).
+/// `mac_board_layout` via [`pixel_board_layout`].
 pub fn win_board_layout(model: &BoardModel, rect: Rect) -> BoardLayout {
     pixel_board_layout(model, rect.x, rect.y, rect.width, rect.height)
 }
@@ -91,7 +75,7 @@ mod tests {
     /// [`crate::primitives::board::native_surface_paint::paint`] through
     /// a [`super::super::surface::D2dSurface`] over `surface`'s headless
     /// target — the same adapter the now-removed `draw_board` shim
-    /// used (issue #1109), exercised here directly.
+    /// used, exercised here directly.
     fn paint(
         surface: &HeadlessSurface,
         dwrite: &DWrite,
@@ -111,9 +95,7 @@ mod tests {
             .expect("paint board")
     }
 
-    /// C0 smoke: `draw_board` must actually paint text + a click-routable
-    /// layout rather than panicking or hitting a `todo!()` (#736's
-    /// acceptance bar — "draw_board survives C0 with text_ok on win").
+    /// `draw_board` must paint text and return a click-routable layout.
     #[test]
     fn draw_board_paints_text_and_returns_layout() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
@@ -147,10 +129,8 @@ mod tests {
         assert!(painted_any, "expected draw_board to paint visible glyphs");
     }
 
-    /// Paint↔click round trip (`docs/TESTING.md` coverage-taxonomy row 1)
-    /// at a non-zero origin — #505's LOCAL/ABSOLUTE mixup regression guard,
-    /// mirrored from `win::sidebar_panel`/`win::pipeline_view`'s own
-    /// nonzero-origin tests.
+    /// Paint↔click round trip at a non-zero origin, ensuring LOCAL/ABSOLUTE
+    /// coordinates are handled correctly.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         let origin_x = 12.0_f32;

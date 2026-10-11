@@ -1,16 +1,13 @@
-//! First core smoke set for the GTK example-driver harness (quadraui#448,
-//! GD-3) — the GTK twin of `tests/tui_example_driver.rs`. Each test
-//! instantiates the *same* backend-agnostic `AppLogic` impl the
-//! corresponding `gtk_*` example runs, scripts real [`quadraui::UiEvent`]s
-//! through it via [`GtkDriver`], and asserts on the rendered surface — no
-//! display, no `gtk::init`, no window (quadraui#446/#447, GD-1/GD-2).
+//! Core smoke tests for the GTK example-driver harness — the GTK twin of
+//! `tests/tui_example_driver.rs`. Each test instantiates the *same*
+//! backend-agnostic `AppLogic` impl the corresponding `gtk_*` example runs,
+//! scripts real [`quadraui::UiEvent`]s through it via [`GtkDriver`], and
+//! asserts on the rendered surface — no display, no `gtk::init`, no window.
 //!
-//! Deliberately thin per the issue's scope ("a few tests, not a big-bang
-//! suite") — coverage grows incrementally per behaviour-changing issue,
-//! same as the TUI suite. `PipelineApp` is the one already used as the
-//! reference example in `docs/TESTING.md`'s cross-backend sample code, so
-//! it doubles as the parity test's subject in
-//! `tests/cross_backend_parity.rs`.
+//! Coverage grows incrementally per behaviour-changing issue, same as the TUI
+//! suite. `PipelineApp` is the one already used as the reference example in
+//! `docs/TESTING.md`'s cross-backend sample code, so it doubles as the parity
+//! test's subject in `tests/cross_backend_parity.rs`.
 #![cfg(feature = "gtk")]
 
 use quadraui::gtk::testing::{driver_with_shell, GtkDriver};
@@ -135,16 +132,13 @@ fn pipeline_clicking_a_stage_action_routes_the_click() {
     );
 }
 
-// ─── AppShellDemo: `driver_with_shell` (ShellApp) coverage (quadraui#518) ───
+// ─── AppShellDemo: `driver_with_shell` (ShellApp) coverage ──────────────────
 //
 // `AppShellDemo` implements `ShellApp` (not `AppLogic` directly) and is
 // driven by `gtk::shell_runner::run_with_shell` in production.
 // `driver_with_shell` builds the identical `ShellAdapter` stack — through
 // the same `gtk::shell_runner::build_shell_adapter` factory `run_with_shell`
-// calls — then scripts events through it headlessly. Before quadraui#518
-// there was no way for a `ShellApp` consumer to reach `GtkDriver` at all;
-// these are the GTK twins of `tests/tui_example_driver.rs`'s
-// `appshell_demo_*` tests.
+// calls — then scripts events through it headlessly.
 
 // Pixel canvas sized for the shell chrome (activity bar + sidebar + main
 // content), distinct from the pipeline canvas above.
@@ -177,14 +171,10 @@ fn appshell_demo_renders_shell_chrome_via_driver_with_shell() {
     );
 }
 
-/// Regression test for issue #996: the sidebar/editor resize divider used
-/// to be painted as N stacked one-row `StatusBar`s, and GTK's
-/// `draw_status_bar_interactive` fills only `current_line_height`
-/// regardless of the row rect's own height — so on GTK every row painted
-/// short of its own pitch and the gaps between rows rendered as a dashed
-/// line down the divider's full height. Sample pixel colors down the
-/// divider's registered zone (real geometry, not a hardcoded coordinate)
-/// and assert they're all identical, i.e. one solid fill top to bottom.
+/// The sidebar/editor resize divider must be painted as a solid fill with no
+/// gaps between rows. Sample pixel colors down the divider's registered zone
+/// (real geometry, not a hardcoded coordinate) and assert they're all
+/// identical.
 #[test]
 fn appshell_demo_resize_divider_is_solid_with_no_gaps() {
     let config = AppShellDemo::config();
@@ -232,7 +222,7 @@ fn appshell_demo_resize_divider_is_solid_with_no_gaps() {
 /// (shared by `GtkDriver::dispatch`) and reads `ShellAdapter` state built by
 /// `build_shell_adapter` — if `driver_with_shell` constructed that adapter
 /// differently than `run_with_shell` does, this round trip would desync
-/// exactly the way vimcode's Ctrl+B bug (#454) did for the sidebar toggle.
+/// exactly the way vimcode's Ctrl+B bug did for the sidebar toggle.
 #[test]
 fn appshell_demo_tab_focus_then_jj_enter_switches_panel() {
     let config = AppShellDemo::config();
@@ -289,11 +279,8 @@ fn appshell_demo_tab_focus_then_jj_enter_switches_panel() {
     );
 }
 
-/// #1055, proven on GTK: a bottom item (the Settings gear) can own the
-/// sidebar header once its `BottomItemClicked` handler calls `show_panel` —
-/// before the fix, `show_panel` silently no-opped for a bottom item's id,
-/// so GTK's header stayed captioned "EXPLORER" no matter what the sidebar
-/// actually showed (vimcode#1258/#1343's exact symptom). Mirrors
+/// A bottom item (the Settings gear) can own the sidebar header once its
+/// `BottomItemClicked` handler calls `show_panel`. Mirrors
 /// `tests/tui_example_driver.rs`'s
 /// `appshell_demo_bottom_item_show_panel_retitles_sidebar_header`.
 #[test]
@@ -341,7 +328,7 @@ fn appshell_demo_bottom_item_show_panel_retitles_sidebar_header() {
         driver.painted_texts()
     );
 
-    // #1055 follow-up (review): now navigate back to a top panel through
+    // Now navigate back to a top panel through
     // the real keyboard activity-bar path (not `show_panel` directly) and
     // confirm the header reclaims from Settings. Before the fix,
     // `handle_activity_click`'s top-panel arm never cleared
@@ -389,10 +376,9 @@ fn appshell_demo_bottom_item_show_panel_retitles_sidebar_header() {
     );
 }
 
-/// #454's fix, proven on GTK: `ctx.shell_mut()` reaches the real `AppShell`
-/// instance `ShellAdapter` renders, so `Ctrl+B` hides/shows the sidebar
-/// `driver_with_shell` actually painted — not a shadow copy. Mirrors
-/// `tests/tui_example_driver.rs`'s
+/// `ctx.shell_mut()` reaches the real `AppShell` instance `ShellAdapter`
+/// renders, so `Ctrl+B` hides/shows the sidebar `driver_with_shell` actually
+/// painted — not a shadow copy. Mirrors `tests/tui_example_driver.rs`'s
 /// `appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar`.
 #[test]
 fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
@@ -431,7 +417,7 @@ fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
     );
 }
 
-// ─── DataTableApp: body clipping, separators, resize direction (#516) ──────
+// ─── DataTableApp: body clipping, separators, resize direction ─────────────
 //
 // `DataTableApp` had zero GTK coverage before this issue. Pixel canvas big
 // enough (900x600) for all 20 pod rows + header + the 2-row footer band +
@@ -441,13 +427,10 @@ fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
 const DT_W: i32 = 900;
 const DT_H: i32 = 600;
 
-/// #516 defect 1 (GTK guard, app level): the "Status" column (index 1, a
-/// *middle* column) holds a value far wider than its resolved share.
-/// `src/gtk/data_table.rs`'s own tests already pin the `cr.clip()`
-/// behaviour in isolation; this proves the same thing through the real
-/// app + the painted-text map this issue adds to `GtkBackend::draw_data_table`
-/// — a corrupted/merged cell would show up here as a missing or mangled
-/// `painted_texts()` entry, not just a pixel discrepancy.
+/// The "Status" column (index 1, a *middle* column) holds a value far wider
+/// than its resolved share. The painted-text map proves the same thing through
+/// the real app — a corrupted/merged cell would show up as a missing or
+/// mangled `painted_texts()` entry, not just a pixel discrepancy.
 #[test]
 fn data_table_wide_middle_column_leaves_neighbours_intact_in_painted_texts() {
     let driver = GtkDriver::new(DataTableApp::new(), DT_W, DT_H);
@@ -477,7 +460,7 @@ fn data_table_wide_middle_column_leaves_neighbours_intact_in_painted_texts() {
     );
 }
 
-/// #516 defect 2 (GTK): body rows previously drew no separator at all.
+/// Body rows must draw separators at the same x coordinate as the header.
 #[test]
 fn data_table_body_rows_draw_separators_at_same_x_as_header() {
     let mut driver = GtkDriver::new(DataTableApp::new(), DT_W, DT_H);
@@ -543,16 +526,11 @@ fn data_table_body_rows_draw_separators_at_same_x_as_header() {
     }
 }
 
-// ─── ToolbarApp / ShellApp / MenuBarApp: unblocked by quadraui#489 ──────────
+// ─── ToolbarApp / ShellApp / MenuBarApp: using paint-time text recording ──
 //
-// These three apps had zero GTK coverage before #489, and could not have
-// had any: every assertion below needs `find`/`screen_contains` to see
-// text painted by a rasteriser that recorded nothing into
-// `GtkBackend::painted_text` (toolbar buttons, tree rows, menu-bar
-// items). With the paint-time recorder in place they are straight twins
-// of the TUI suite's scripts. Breadth-first coverage of the recorder
-// itself lives in `tests/gtk_painted_text_coverage.rs`; these are the
-// behavioural round trips.
+// These three apps are driven by assertions on text painted by the rasteriser
+// and recorded into `GtkBackend::painted_text` (toolbar buttons, tree rows,
+// menu-bar items). These are behavioral round trips with the TUI suite.
 
 /// GTK twin of `tui_example_driver.rs`'s
 /// `toolbar_initial_screen_paints_action_buttons`.
@@ -577,13 +555,12 @@ fn toolbar_initial_screen_paints_action_buttons() {
 /// `toolbar_click_fires_action_without_focus`: a click round-trips paint
 /// → hit_test → handle → state → re-render with **no hardcoded
 /// coordinates**, on a primitive whose labels only became locatable in
-/// #489.
 #[test]
 fn toolbar_clicking_filter_toggles_it_without_keyboard_focus() {
     let mut driver = GtkDriver::new(ToolbarApp::new(), W, H);
     // Two deliberate single clicks at the same spot, back to back, with
     // no real GDK press-count or wall-clock gap between them — without
-    // this, `crate::dispatch::DoubleClickDetector` (quadraui#813) could
+    // this, `crate::dispatch::DoubleClickDetector` could
     // fold the second press into a `DoubleClick` instead of a second
     // `MouseDown`, and `ToolbarApp` doesn't bind `DoubleClick` at all.
     // Mirrors `tui_example_driver.rs`'s identical
@@ -625,7 +602,6 @@ fn toolbar_clicking_filter_toggles_it_without_keyboard_focus() {
 /// `ShellApp`'s sidebar rows are painted by `draw_tree`. Clicking one by
 /// text (not by coordinate) must select it, which the main-content label
 /// echoes — the shell round trip the GTK suite could not assert before
-/// #489.
 #[test]
 fn shell_app_clicking_a_sidebar_tree_row_selects_it() {
     let mut driver = GtkDriver::new(ShellApp::new(), SHELL_W, SHELL_H);
@@ -683,9 +659,8 @@ fn menu_bar_clicking_an_item_opens_its_dropdown() {
     );
 }
 
-/// #516 defect 3: same script as the TUI driver test, run against GTK —
-/// dragging the divider immediately before the last column (Age |
-/// Restarts) must widen Age when dragged right.
+/// Dragging the divider immediately before the last column (Age | Restarts)
+/// must widen Age when dragged right.
 #[test]
 fn data_table_divider_before_last_column_widens_on_right_drag() {
     let mut driver = GtkDriver::new(DataTableApp::new(), DT_W, DT_H);
@@ -706,7 +681,7 @@ fn data_table_divider_before_last_column_widens_on_right_drag() {
     );
 }
 
-// ─── WorkspaceDemo: `WorkspaceController` inside an AppShell panel (#596) ───
+// ─── WorkspaceDemo: `WorkspaceController` inside an AppShell panel ──────────
 //
 // GTK twin of `tests/tui_example_driver.rs`'s workspace set. Same
 // `ShellApp`, so the controller is driven through the Pango-measured
@@ -789,24 +764,18 @@ fn workspace_ctrl_tab_cycles_and_wraps() {
     }
 }
 
-// ─── SplitApp: the shared `PaintSurface` divider paint (#864) ───────────────
+// ─── SplitApp: the shared `PaintSurface` divider paint ──────────────────────
 //
 // Driver-tier cover for `primitives::split::native_surface_paint::paint`,
-// the one shared implementation that replaced `gtk::draw_split`'s,
-// `macos::split::draw_split`'s and `win::split::draw_split`'s three
-// separate divider fills (#864, `PaintSurface` Phase 2d slice 7/9, child
-// of #811). The macOS and Windows halves of that path have their own
-// in-crate pixel tests, but neither compiles on the Linux `gtk` CI leg —
-// these are the tests that actually run there, driving the *same*
-// backend-agnostic `SplitApp` the `gtk_split` example runs through
-// `GtkBackend::draw_split` -> the shared paint, and asserting on real
-// Cairo pixels rather than on a recorded call list.
+// the shared implementation for divider fills. The GTK backend drives the
+// *same* backend-agnostic `SplitApp` the `gtk_split` example runs through
+// `GtkBackend::draw_split` -> the shared paint, and asserts on real Cairo
+// pixels rather than on a recorded call list.
 //
 // `Split` paints no text at all (see `GtkDriver::painted_texts`' doc), so
-// `find`/`screen_contains` can't locate the divider the way every other
-// test in this file locates its target. Scanning for the divider's own
-// painted colour is the equivalent move — still derived from the surface,
-// never a hardcoded coordinate.
+// `find`/`screen_contains` can't locate the divider. Scanning for the
+// divider's own painted colour is the equivalent move — still derived from
+// the surface, never a hardcoded coordinate.
 
 /// Longest contiguous run of `theme.separator`-coloured pixels along row
 /// `y`, as `(start_x, len)`. `None` if the row has none.
@@ -856,10 +825,9 @@ fn separator_run_in_col(driver: &mut GtkDriver<SplitApp>, x: i32) -> Option<(i32
 }
 
 /// The shared paint fills exactly `SplitLayout::divider_bounds` in
-/// `theme.separator` and nothing else — a vertical band, one divider
-/// thickness wide, roughly centred for the app's default 0.5 ratio, with
-/// both panes left untouched (pane content is the host's job on every
-/// backend, before and after #864).
+/// `theme.separator` and nothing else — a vertical band, one divider thickness
+/// wide, roughly centred for the app's default 0.5 ratio, with both panes left
+/// untouched.
 #[test]
 fn split_divider_paints_a_separator_band_through_the_shared_paint_surface_path() {
     let mut driver = GtkDriver::new(SplitApp::new(), W, H);
@@ -953,30 +921,16 @@ fn split_dragging_the_painted_divider_moves_it_and_updates_the_ratio() {
     );
 }
 
-// ─── draw_solid_fill vs draw_status_bar_interactive: the #996 root-cause
-//     mechanism, fixed for real by #1179 ─────────────────────────────────
+// ─── draw_solid_fill vs draw_status_bar_interactive mechanism ───────────────
 //
-// `AppShellDemo`'s own line height happens to make `Backend::line_height()`
-// and the fill height `draw_status_bar_interactive` actually uses agree, so
-// the end-to-end `appshell_demo_resize_divider_is_solid_with_no_gaps` test
-// above can't by itself demonstrate the mechanism issue #996 originally
-// described: a caller that hands `draw_status_bar_interactive` a row rect
-// taller than the backend's `current_line_height` used to silently get
-// back a shorter fill, with no way to notice — GTK's flavour of the same
-// bug #1179 fixed on macOS (a hard-coded clear colour and a status bar
-// that ignored `rect.height` both showed through the leftover strip).
-// This probe reproduces that mechanism directly: it still pins why
-// `AppShell` stops depending on `draw_status_bar_interactive` for its
-// divider (a plain solid fill is cheaper and carries no segment/text
-// layout at all — see `app_shell.rs`'s own #996 comment), and proves
-// `Backend::draw_solid_fill` (the replacement) never depended on the fix
-// either way.
+// A caller that hands `draw_status_bar_interactive` a row rect taller than
+// the backend's `current_line_height` receives a fill exactly as tall as the
+// rect. `Backend::draw_solid_fill` (the replacement for dividers) also fills
+// the whole rect with no segment/text layout — a cheaper primitive.
 
-/// Paints one rect, taller than the backend's default line height, with
-/// each of the two candidate primitives — `draw_status_bar_interactive`
-/// (the old per-row divider hack's building block) and `draw_solid_fill`
-/// (issue #996's replacement) — side by side so a single frame can assert
-/// on both.
+/// Paints one rect, taller than the backend's default line height, with each
+/// of the two candidate primitives — `draw_status_bar_interactive` and
+/// `draw_solid_fill` — side by side so a single frame can assert on both.
 struct SolidFillVsStatusBarProbe;
 
 /// Height of the probe rects — comfortably taller than any backend's
@@ -1016,16 +970,9 @@ impl quadraui::AppLogic for SolidFillVsStatusBarProbe {
     }
 }
 
-/// #1179 flipped this from a defect pin to a positive assertion:
-/// `GtkBackend::draw_status_bar_interactive` used to fill only
-/// `current_line_height` regardless of the row rect's own height — the
-/// mechanism issue #996 identified as unsafe for a caller that wants a
-/// tall, single-color rect, and the same class of bug #1179 reports for
-/// macOS (a caller-supplied `rect` taller than the chrome font's own
-/// line height left an unpainted strip showing the frame's clear colour
-/// instead of the bar's own fill). It now measures its fill from
-/// `rect.height`, matching `draw_solid_fill` below. Sampling near the
-/// bottom of a `PROBE_RECT_HEIGHT`-tall rect must land on the fill.
+/// `GtkBackend::draw_status_bar_interactive` must fill the *whole* rect it's
+/// given — no `current_line_height` ceiling. Sampling near the bottom of a
+/// `PROBE_RECT_HEIGHT`-tall rect must land on the fill.
 #[test]
 fn draw_status_bar_interactive_fills_a_rect_taller_than_line_height_completely() {
     let mut driver = GtkDriver::new(SolidFillVsStatusBarProbe, 200, PROBE_RECT_HEIGHT as i32);
@@ -1040,11 +987,10 @@ fn draw_status_bar_interactive_fills_a_rect_taller_than_line_height_completely()
     );
 }
 
-/// `Backend::draw_solid_fill` (issue #996's replacement primitive for
-/// `AppShell`'s divider) must fill the *whole* rect it's given — no
-/// `current_line_height` ceiling, no per-row seams. Sampling top, middle,
-/// and near the bottom of the same `PROBE_RECT_HEIGHT`-tall rect must all
-/// land on the fill color.
+/// `Backend::draw_solid_fill` (the replacement primitive for dividers) must
+/// fill the *whole* rect it's given — no `current_line_height` ceiling, no
+/// per-row seams. Sampling top, middle, and near the bottom of the same
+/// `PROBE_RECT_HEIGHT`-tall rect must all land on the fill color.
 #[test]
 fn draw_solid_fill_fills_a_rect_taller_than_line_height_completely() {
     let mut driver = GtkDriver::new(SolidFillVsStatusBarProbe, 200, PROBE_RECT_HEIGHT as i32);
@@ -1063,17 +1009,14 @@ fn draw_solid_fill_fills_a_rect_taller_than_line_height_completely() {
     }
 }
 
-// ─── SidebarPanelBody (issue #1041) ─────────────────────────────────────
+// ─── SidebarPanelBody ───────────────────────────────────────────────────
 
 const SIDEBAR_PANEL_BODY_W: i32 = 300;
 const SIDEBAR_PANEL_BODY_H: i32 = 240;
 
-/// GTK-side smoke test for the `gtk_sidebar_panel_body` example
-/// (issue #1041's review non-blocking concern: only `tui_example_driver.rs`
-/// exercised the new example pair). Confirms the composer's chrome header
-/// paints on the GTK backend at all — the default mode is
-/// `HeaderAndSearch`, so both the header label and the search
-/// placeholder should be visible.
+/// Smoke test for the `gtk_sidebar_panel_body` example. The default mode is
+/// `HeaderAndSearch`, so both the header label and the search placeholder
+/// should be visible.
 #[test]
 fn sidebar_panel_body_gtk_initial_paint_shows_header_and_search() {
     let driver = GtkDriver::new(
@@ -1095,15 +1038,9 @@ fn sidebar_panel_body_gtk_initial_paint_shows_header_and_search() {
     );
 }
 
-/// Cycling to `Header`-only chrome (no search row) must still paint the
-/// header label — and must no longer show the search placeholder text,
-/// which only ever appears in `HeaderAndSearch` mode. This is the GTK
-/// twin of `tui_example_driver.rs`'s
-/// `sidebar_panel_body_header_only_mode_has_no_search_row` (issue #1041
-/// review): together with the direct `draw_settings_chrome` unit tests in
-/// `src/gtk/form.rs`, this exercises the same `Header` mode through the
-/// full composed example on the backend the review's blocking finding
-/// was filed against.
+/// Cycling to `Header`-only chrome (no search row) must still paint the header
+/// label — and must no longer show the search placeholder text, which only
+/// ever appears in `HeaderAndSearch` mode.
 #[test]
 fn sidebar_panel_body_gtk_header_only_mode_paints_header_without_search_placeholder() {
     let mut driver = GtkDriver::new(
@@ -1132,17 +1069,16 @@ fn sidebar_panel_body_gtk_header_only_mode_paints_header_without_search_placehol
     );
 }
 
-// ─── ContextMenuStyleDemo: MenuStyle + ContextMenuController (#1187) ───────
+// ─── ContextMenuStyleDemo: MenuStyle + ContextMenuController ───────────────
 
 const CTX_MENU_W: i32 = 400;
 const CTX_MENU_H: i32 = 300;
 
-/// Issue #1187 acceptance: on a GTK test backend, opening a context menu
-/// through `ContextMenuController::open` with the resolved `Custom`
-/// style paints it and makes it hit-testable — clicking an item
-/// delivers `UiEvent::ContextMenuItemActivated` with the right id.
-/// `GtkBackend` never declares `native_menu`, so `Auto` (the default)
-/// already resolves `Custom` here without touching `set_menu_style`.
+/// Opening a context menu through `ContextMenuController::open` with the
+/// resolved `Custom` style paints it and makes it hit-testable — clicking an
+/// item delivers `UiEvent::ContextMenuItemActivated` with the right id. GTK
+/// has no native_menu capability, so `Auto` (the default) already resolves
+/// `Custom` here.
 #[test]
 fn context_menu_style_demo_gtk_click_activates_item() {
     let mut driver = GtkDriver::new(ContextMenuStyleDemo::new(), CTX_MENU_W, CTX_MENU_H);
@@ -1177,8 +1113,8 @@ fn context_menu_style_demo_gtk_click_activates_item() {
     );
 }
 
-/// Issue #1187 acceptance: Escape dismisses the painted menu and
-/// delivers `UiEvent::ContextMenuDismissed` without activating anything.
+/// Escape dismisses the painted menu and delivers
+/// `UiEvent::ContextMenuDismissed` without activating anything.
 #[test]
 fn context_menu_style_demo_gtk_escape_dismisses() {
     let mut driver = GtkDriver::new(ContextMenuStyleDemo::new(), CTX_MENU_W, CTX_MENU_H);
@@ -1201,15 +1137,12 @@ fn context_menu_style_demo_gtk_escape_dismisses() {
     );
 }
 
-// ─── SubmenuApp: pull-right cascading submenus on GTK (#371, GTK twin of
-// #370's TUI work) ───────────────────────────────────────────────────────
+// ─── SubmenuApp: pull-right cascading submenus ──────────────────────────────
 //
-// Same `SubmenuApp` as `tui_submenu`/`gtk_submenu` — driven entirely
-// through `Backend::draw_context_menu` / `MenuSystem`, so this is the
-// coordinate-free proof that GTK's shared `native_surface_paint::paint`
-// now renders the `▶` affordance and that the cascading open/close/click
-// state machine (already backend-agnostic in `compose::MenuSystem` and
-// the example's own `CtxState`) behaves the same as it does on TUI.
+// Same `SubmenuApp` as `tui_submenu`/`gtk_submenu` — driven entirely through
+// `Backend::draw_context_menu` / `MenuSystem`, proving that GTK's shared
+// `native_surface_paint::paint` renders the `▶` affordance and that the
+// cascading open/close/click state machine behaves the same as it does on TUI.
 
 const SUBMENU_W: i32 = 500;
 const SUBMENU_H: i32 = 400;

@@ -1,4 +1,4 @@
-//! Curated one-line import for a first quadraui app (quadraui#799).
+//! Curated one-line import for a first quadraui app.
 //!
 //! quadraui re-exports roughly 500 names flat at the crate root — every
 //! primitive, every layout struct, every hit-test enum, every backend
@@ -35,7 +35,7 @@ pub use crate::event::{Key, MouseButton, NamedKey, Point, Rect, ScrollDelta, UiE
 pub use crate::theme::Theme;
 pub use crate::types::{Color, Icon, Modifiers, StyledSpan, StyledText, WidgetId};
 
-// ── Hover/pressed state keyed by WidgetId (issue #819) ──────────────────
+// ── Hover/pressed state keyed by WidgetId ───────────────────────────────
 pub use crate::interaction::InteractionState;
 
 // ── ShellApp — the other runner (see docs/GUIDE.md "which runner?") ─────

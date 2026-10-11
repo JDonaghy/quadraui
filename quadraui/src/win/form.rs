@@ -1,8 +1,7 @@
-//! Direct2D / DirectWrite layout for [`crate::Form`] (issue #26;
-//! field-kind painting moved to the shared [`crate::primitives::form::paint`]
-//! in #808, via the shared [`super::surface::D2dSurface`] adapter
-//! consolidated in #1072 from this module's own private
-//! `RawFormSurface`).
+//! Direct2D / DirectWrite layout for [`crate::Form`].
+//!
+//! Field-kind painting is handled by the shared [`crate::primitives::form::paint`]
+//! through the shared [`super::surface::D2dSurface`] adapter.
 //!
 //! [`win_form_layout`] computes one [`crate::FormLayout`] — the same
 //! "one layout, paint and hit-test both consume it" contract
@@ -19,7 +18,7 @@
 //! (see that fn's doc for why) — as plain per-button text via
 //! `toolbar_item`/`WinBackend::draw_form`, not `win::toolbar`'s full
 //! chrome; unifying that with the GTK/macOS twins (which do delegate to
-//! their full toolbar rasteriser) is follow-up scope, not part of #808.
+//! their full toolbar rasteriser) is follow-up scope.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -39,16 +38,12 @@ pub(crate) fn toolbar_item(field_id: &WidgetId, btn: &ToolbarButton) -> Option<(
 }
 
 /// Compute a [`Form`]'s layout without painting — the DirectWrite twin
-/// of `crate::Backend::draw_form`'s internal layout call (the
-/// free-function `draw_form` shim this backed was removed in issue
-/// #1109).
+/// of `crate::Backend::draw_form`'s internal layout call.
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::form_row_height`]
-/// / [`crate::primitives::layout_metrics::form_field_measure`] (#499,
-/// adopted for `win/` by #701) — `dwrite` itself is a
-/// [`crate::primitives::layout_metrics::TextMeasure`] (issue #1078), the
-/// same per-field-kind measurement math `macos::form::mac_form_layout`
-/// uses.
+/// and [`crate::primitives::layout_metrics::form_field_measure`], using `dwrite`
+/// as a [`crate::primitives::layout_metrics::TextMeasure`] for per-field-kind
+/// measurement, the same math `macos::form::mac_form_layout` uses.
 pub fn win_form_layout(dwrite: &DWrite, rect: Rect, form: &Form, line_height: f32) -> FormLayout {
     let row_h = crate::primitives::layout_metrics::form_row_height(line_height as f64);
     form.layout(rect.width, rect.height, |i| {
@@ -67,19 +62,14 @@ const SETTINGS_SEARCH_PREFIX: &str = " /  ";
 /// leaves room for it, a search input row beneath it, designed to sit
 /// immediately above a [`Form`] body.
 ///
-/// Port of [`crate::gtk::form::draw_settings_chrome`] (and
-/// [`crate::macos::form::draw_settings_chrome`]) — same row layout,
+/// Mirrors [`crate::gtk::form::draw_settings_chrome`] and
+/// [`crate::macos::form::draw_settings_chrome`] — same row layout,
 /// same `" /  "` prefix, same placeholder rule (shown only when the
 /// query is empty *and* the row is inactive), same accent caret when
-/// active, and the same height-aware search-row gate (issue #1041
-/// review): the header row always paints at one `line_height`; the
-/// search row paints only when `rect.height >= line_height * 1.5`, so a
-/// caller reserving a single row (e.g.
-/// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`])
-/// gets a header-only strip instead of an unrequested second row
-/// painted past its own rect. Before this fix `rect.height` wasn't
-/// consulted at all — total chrome height was always `2 * line_height`
-/// regardless of what the caller reserved.
+/// active, and the same height-aware search-row gate: the header row always paints
+/// at one `line_height`; the search row paints only when `rect.height >= line_height * 1.5`,
+/// so a caller reserving a single row gets a header-only strip instead of an
+/// unrequested second row painted past its own rect.
 ///
 /// Chrome only: the form body and any scrollbar layered below are
 /// painted separately by the caller.
@@ -180,9 +170,7 @@ mod tests {
 
     /// Paint `form` via the shared [`crate::primitives::form::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s headless target —
-    /// the same adapter `win::multi_section_view`'s embedded-`Form` body
-    /// uses, exercised here instead of a live `WinBackend` since these
-    /// tests predate #808 and only ever needed `target`/`dwrite`.
+    /// the same adapter `win::multi_section_view`'s embedded-`Form` body uses.
     fn paint(surface: &HeadlessSurface, dwrite: &DWrite, rect: Rect, form: &Form) -> FormLayout {
         let layout = win_form_layout(dwrite, rect, form, LINE_HEIGHT);
         let theme = Theme::default();
@@ -304,14 +292,9 @@ mod tests {
         );
     }
 
-    /// #808: `paint` reads geometry only from the `FormLayout` it's
-    /// given — it can no longer disagree with a "no-paint" call to
-    /// `win_form_layout` for the same inputs, because both now *are*
-    /// the same call. This is the structural version of what used to be
-    /// a byte-for-byte equality assertion between two independently
-    /// computed layouts; kept as a smoke test that painting a
-    /// `TextInput` + `PasswordInput` pair (with cursors set) doesn't
-    /// panic.
+    /// Both `paint` and `win_form_layout` consume the same layout computation,
+    /// ensuring they cannot disagree on geometry. This is a smoke test that
+    /// painting a `TextInput` + `PasswordInput` pair (with cursors set) doesn't panic.
     #[test]
     fn paint_with_cursors_does_not_panic() {
         let form = make_form(vec![
@@ -347,8 +330,7 @@ mod tests {
     /// GTK twin (`gtk::form::draw_settings_chrome`) uses for the same
     /// inputs: row 0 (`y in [0, line_height)`) is `header_bg`, row 1
     /// (`y in [line_height, 2*line_height)`) is `tab_bar_bg` when
-    /// `active` is `false`. Probed away from the left-aligned text (issue
-    /// #734).
+    /// `active` is `false`.
     #[test]
     fn settings_chrome_paints_header_and_inactive_search_rows() {
         let surface = HeadlessSurface::new(200, 60).expect("create surface");
@@ -425,13 +407,9 @@ mod tests {
         );
     }
 
-    /// Issue #1041 review: a `rect.height` of exactly one `line_height`
-    /// (the shape
+    /// A `rect.height` of exactly one `line_height` (the shape
     /// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`]
-    /// reserves) must not paint the search row — before this fix
-    /// `rect.height` wasn't consulted at all and a second row always
-    /// painted regardless of what the caller reserved, overpainting
-    /// whatever sat directly beneath a header-only chrome strip.
+    /// reserves) must not paint the search row — only the header row paints.
     #[test]
     fn settings_chrome_one_row_height_paints_no_search_row() {
         let surface = HeadlessSurface::new(200, 60).expect("create surface");

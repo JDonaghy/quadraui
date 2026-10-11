@@ -65,9 +65,7 @@ pub fn draw_chart(
 }
 
 /// Resolve the colour series `idx` paints with: its own `color` if it
-/// set one, else the theme's shared series palette, cycling by index
-/// (#815 — this used to be a `SERIES_COLORS` literal private to this
-/// module, duplicating the identical table in `primitives::chart`).
+/// set one, else the theme's shared series palette, cycling by index.
 fn series_color(chart: &Chart, idx: usize, theme: &Theme) -> Color {
     let palette = theme.chart_series();
     chart
@@ -135,7 +133,7 @@ fn paint_line(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &The
     }
 
     // Grid is background: paint it before axes and series so data and
-    // axes are drawn on top of it, not cut by it (#648).
+    // axes are drawn on top of it, not cut by it.
     paint_grid(buf, layout, chart, theme);
 
     // Axes: left edge and bottom edge.
@@ -247,7 +245,7 @@ fn paint_bar(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Them
     }
 
     // Grid is background: paint it before any bars are drawn so bars sit
-    // on top of it, not cut by it (#648). Painted even for an empty
+    // on top of it, not cut by it. Painted even for an empty
     // chart (below) so the grid stays consistent regardless of data.
     paint_grid(buf, layout, chart, theme);
 
@@ -263,7 +261,7 @@ fn paint_bar(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Them
 
     // Cell-quantised bar geometry. Each slot's edges are computed
     // independently as `di*pw/n` .. `(di+1)*pw/n` rather than a single
-    // floored `pw/n` width stepped by `di` (#975): the latter drops
+    // floored `pw/n` width stepped by `di`: the latter drops
     // `pw % n` cells at the right edge (e.g. plot=108, n=28 -> slot=3,
     // 84 cells painted, 24 left blank) because the same floored width
     // is reused for every slot instead of letting later slots absorb
@@ -273,9 +271,6 @@ fn paint_bar(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Them
     // `primitives::chart::Chart::layout` already uses for
     // `data_point_positions`, so hit-testing drifts by at most a
     // rounding cell instead of up to a whole slot near the right edge.
-    // A single-series chart is no longer guaranteed byte-identical to
-    // pre-#975 output when `pw` doesn't divide evenly by `n` — that
-    // divergence is the fix, not a regression.
     let pw_cells = pw as usize;
     let plot_h = ph.saturating_sub(1) as usize;
     let stacked = chart.kind.is_stacked_bar();
@@ -375,7 +370,7 @@ fn paint_legend(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &T
 
 /// Paint the horizontal grid rules at each y-tick row. Background layer:
 /// must run *before* axes and series are painted so data sits on top of
-/// the grid rather than being cut by it (#648). Mirrors the macOS
+/// the grid rather than being cut by it. Mirrors the macOS
 /// rasteriser's grid-then-series ordering (`macos/chart.rs`).
 fn paint_grid(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Theme) {
     if !chart.show_grid {
@@ -406,7 +401,7 @@ fn paint_axis_labels(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, them
     let pw = pa.width.round() as u16;
 
     // Right-align each label against the gutter's right edge, but never
-    // let it start left of the chart's own bounds (#647): a label wider
+    // let it start left of the chart's own bounds: a label wider
     // than the gutter has its leading characters dropped instead of
     // spilling onto whatever the enclosing panel painted there.
     let bounds_x = layout.bounds.x.round() as u16;
@@ -425,10 +420,10 @@ fn paint_axis_labels(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, them
         }
     }
 
-    // X-axis ticks (#975): one row directly below the plot, centred
+    // X-axis ticks: one row directly below the plot, centred
     // under each tick's screen x but clamped to stay inside the chart's
     // own bounds — the same "clamp, don't let it spill" shape the
-    // y-axis labels already use (#647), since a tick at `frac == 1.0`
+    // y-axis labels already use, since a tick at `frac == 1.0`
     // sits exactly on `bounds_right` and a naive centred label there
     // would always run past the edge. A label that still collides with
     // the previous (already-clamped) one after that is dropped rather
@@ -561,7 +556,7 @@ fn paint_hover_marker(
         ChartKind::Bar | ChartKind::BarGrouped => {
             // Bars anchor on their own rectangle, so reuse the layout's
             // per-segment positions rather than the line/braille math —
-            // the marker lands on the hovered stack segment (#584).
+            // the marker lands on the hovered stack segment.
             let pos = layout
                 .data_point_positions
                 .iter()
@@ -638,7 +633,7 @@ mod tests {
     /// `tui_chart_layout` bakes `area.x`/`area.y` into `Chart::layout`'s
     /// `origin_x`/`origin_y` (absolute frame), so paint + click must agree
     /// at a non-zero origin too, per LESSONS.md's "layout helpers must
-    /// return coords in the same frame across backends" (quadraui#494).
+    /// return coords in the same frame across backends".
     fn sparkline_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 5, 1);
         let mut buf = Buffer::empty(area);
@@ -678,10 +673,9 @@ mod tests {
         }
     }
 
-    /// #815: a series with no explicit `color` resolves through
-    /// [`Theme::chart_series`] — this rasteriser no longer carries its
-    /// own `SERIES_COLORS` literal, so it can't drift from the copy the
-    /// pixel backends share in `primitives::chart`.
+    /// A series with no explicit `color` resolves through
+    /// [`Theme::chart_series`], ensuring consistency with the pixel
+    /// backends that share the same palette in `primitives::chart`.
     #[test]
     fn sparkline_with_no_explicit_color_paints_with_the_themes_chart_series() {
         let area = Rect::new(0, 0, 3, 1);
@@ -699,7 +693,7 @@ mod tests {
         );
     }
 
-    /// #815: with more series than the palette has entries, series `i`
+    /// With more series than the palette has entries, series `i`
     /// takes `chart_series()[i % 6]` — the legend swatches make the
     /// cycle directly observable, and the 7th series must reuse entry 0
     /// rather than panic or paint an off-palette colour.
@@ -787,13 +781,10 @@ mod tests {
 
     /// Shared body for `bar_chart_paint_and_click_round_trip[_at_nonzero_origin]`
     /// — see `sparkline_paint_and_click_round_trip_at` for the non-zero-origin
-    /// rationale (quadraui#494).
+    /// rationale.
     fn bar_chart_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 10, 5);
-        // A buffer exactly matching `area`: since #647, y-axis tick-label
-        // painting is clamped to `bounds.x` and can no longer spill left
-        // of the widget's own area, so this no longer needs the
-        // full-screen buffer the pre-fix rasteriser required.
+        // Y-axis tick-label painting is clamped to `bounds.x` and
         let mut buf = Buffer::empty(area);
         let chart = Chart {
             id: WidgetId::new("c"),
@@ -839,7 +830,7 @@ mod tests {
         bar_chart_paint_and_click_round_trip_at(7, 13);
     }
 
-    /// #647 regression: y-range `0..18` over the default 5 ticks formats
+    /// Y-range `0..18` over the default 5 ticks formats
     /// the interior ticks as `3.6`, `7.2`, `10.8`, `14.4` — 4 characters,
     /// wider than either endpoint (`0`/`18`). Pre-fix, the gutter was
     /// sized from the endpoints alone and these interior labels spilled
@@ -893,12 +884,10 @@ mod tests {
 
     /// Shared body for `legend_paint_and_click_round_trip[_at_nonzero_origin]`
     /// — see `sparkline_paint_and_click_round_trip_at` for the non-zero-origin
-    /// rationale (quadraui#494).
+    /// rationale.
     fn legend_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
         let area = Rect::new(origin_x, origin_y, 30, 10);
-        // See `bar_chart_paint_and_click_round_trip_at`: since #647
-        // axis-label painting can no longer spill left of `area.x`, so a
-        // buffer exactly matching `area` is enough.
+        // Axis-label painting is clamped to `area.x`, so a buffer
         let mut buf = Buffer::empty(area);
         let chart = Chart {
             id: WidgetId::new("c"),
@@ -951,7 +940,7 @@ mod tests {
         legend_paint_and_click_round_trip_at(7, 13);
     }
 
-    // ── Multi-series bars (#584) ────────────────────────────────────────
+    // ── Multi-series bars ───────────────────────────────────────────────
 
     fn series_of(label: &str, data: Vec<f64>, color: Color) -> Series {
         Series {
@@ -996,10 +985,10 @@ mod tests {
         buf[(x, y)].fg
     }
 
-    /// #584 is additive: a single-series `Bar` must paint exactly what
-    /// it painted before stacking existed. The grid below (y-tick
-    /// gutter on the left, bars floored at the auto-range minimum,
-    /// slot width `pw / n` floored) is the pre-#584 output, pinned.
+    /// A single-series `Bar` must paint exactly what it painted
+    /// before stacking existed. The grid below (y-tick gutter on the
+    /// left, bars floored at the auto-range minimum, slot width
+    /// `pw / n` floored) is pinned as the baseline for this case.
     #[test]
     fn single_series_bar_grid_is_pinned() {
         let area = Rect::new(0, 0, 10, 5);
@@ -1010,7 +999,7 @@ mod tests {
             None,
         );
         let _ = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
-        // #647: the gutter is now sized from the widest *interior* tick
+        // The gutter is now sized from the widest *interior* tick
         // label ("1.4"/"1.8"/"2.2"/"2.6", 3 chars) rather than just the
         // endpoints ("1"/"3", 1 char), so it's a column wider than
         // pre-fix and every column below shifts right to match.
@@ -1026,11 +1015,9 @@ mod tests {
         );
     }
 
-    /// Review round 2 on #584: a single-series `Bar` whose data is all
-    /// negative auto-derives the range (-5, -1), where `norm(0.0)`
-    /// clamps to the plot *ceiling*. The stacked baseline used to be
-    /// applied here too, collapsing every bar to zero height — an empty
-    /// plot area. Bars must still rise from the floor at 0% / 50% / 100%.
+    /// A single-series `Bar` whose data is all negative auto-derives
+    /// the range (-5, -1), where `norm(0.0)` clamps to the plot
+    /// *ceiling*. Bars must still rise from the floor at 0% / 50% / 100%.
     #[test]
     fn single_series_bar_with_negative_data_still_paints() {
         let area = Rect::new(0, 0, 10, 5);
@@ -1041,10 +1028,10 @@ mod tests {
             None,
         );
         let _ = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
-        // #647: the gutter now reserves room for the widest interior
+        // The gutter now reserves room for the widest interior
         // tick label ("-4.2", 4 chars) rather than just the endpoints
         // ("-5"/"-1", 2 chars), shifting every column right by 1. That
-        // leaves a 5-cell plot for 3 buckets (#975): edge-based slots
+        // leaves a 5-cell plot for 3 buckets: edge-based slots
         // are 1/2/2 cells wide (`di*pw/n .. (di+1)*pw/n`) rather than
         // every slot flooring to 1 and leaving the last 2 plot columns
         // permanently blank, so the tallest bar (index 2) now spans 2
@@ -1240,8 +1227,6 @@ mod tests {
         };
 
         // Six plot rows, two per segment: hovering the bottom series
-        // marks the bottom band, the top series the top band — not the
-        // one spot the braille/line math used to pick for every series.
         let (bottom_row, py, ph) = marker_row((0, 0));
         assert!(
             bottom_row >= py + ph - 3,
@@ -1291,7 +1276,7 @@ mod tests {
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
-    // ── Grid paints under data, not over it (#648) ──────────────────────
+    // ── Grid paints under data, not over it ─────────────────────────────
 
     /// A tall bar and an empty (zero-height) bar share a y-tick row: the
     /// tall bar's cell must stay `█` (data wins) while the empty bar's
@@ -1346,7 +1331,7 @@ mod tests {
 
     /// A line chart's braille line crosses several y-tick rows; the
     /// braille glyph at the crossing must survive, not be replaced by
-    /// the grid dash (#648).
+    /// the grid dash.
     #[test]
     fn line_chart_grid_paints_under_braille_not_over_it() {
         let area = Rect::new(0, 0, 20, 10);
@@ -1398,16 +1383,13 @@ mod tests {
         );
     }
 
-    // ── Bar slots tile the full plot width (#975) ───────────────────────
+    // ── Bar slots tile the full plot width ──────────────────────────────
 
-    /// Regression for #975: bar slots must tile the full plot width even
-    /// when it doesn't divide evenly by the bucket count. With a
-    /// 10-cell plot and 3 buckets the old `floor(10/3) = 3`-wide slot
-    /// stepped by `di * 3` only ever painted `3 * 3 = 9` columns,
-    /// leaving the last plot column permanently blank regardless of the
-    /// data. Edge-based slots (`di*pw/n .. (di+1)*pw/n`) give slot
-    /// widths 3/3/4, so the tallest bucket's bar now reaches the plot's
-    /// final column.
+    /// Bar slots must tile the full plot width even when it doesn't
+    /// divide evenly by the bucket count. With a 10-cell plot and 3
+    /// buckets, edge-based slots (`di*pw/n .. (di+1)*pw/n`) give slot
+    /// widths 3/3/4, ensuring the tallest bucket's bar reaches the
+    /// plot's final column instead of leaving it blank.
     #[test]
     fn bar_slots_tile_the_full_plot_width_with_no_blank_remainder() {
         let area = Rect::new(0, 0, 10, 5);
@@ -1450,7 +1432,7 @@ mod tests {
         );
     }
 
-    // ── X-axis ticks are painted (#975) ─────────────────────────────────
+    // ── X-axis ticks are painted ────────────────────────────────────────
 
     fn line_chart_with_x_axis(
         data: Vec<f64>,
@@ -1483,8 +1465,7 @@ mod tests {
             .collect()
     }
 
-    /// Before #975, `layout.x_tick_positions` was computed but nothing
-    /// ever painted it — `x_ticks: Some(_)` was a silent no-op.
+    /// X-axis ticks are painted below the plot based on
     #[test]
     fn x_axis_ticks_are_painted_below_the_plot() {
         let area = Rect::new(0, 0, 30, 8);
@@ -1503,9 +1484,8 @@ mod tests {
         );
     }
 
-    /// #975: an explicit `x_range` drives tick *values* — previously a
-    /// dead field the layout never read, so ticks always labelled by
-    /// data index no matter what `x_range` said.
+    /// An explicit `x_range` drives tick *values*, labelling ticks by
+    /// the range rather than by data index.
     #[test]
     fn x_axis_tick_values_honour_x_range() {
         let area = Rect::new(0, 0, 30, 8);
@@ -1529,7 +1509,7 @@ mod tests {
         );
     }
 
-    /// #975: a label that would overlap the previous one is dropped
+    /// A label that would overlap the previous one is dropped
     /// rather than painted on top of it. An 8-cell plot with ticks at
     /// each edge and 4-char labels leaves no room for both once the
     /// right-edge label is clamped inside bounds.
@@ -1559,7 +1539,7 @@ mod tests {
         );
     }
 
-    /// #975: a tick at `frac == 1.0` sits exactly on the chart's own
+    /// A tick at `frac == 1.0` sits exactly on the chart's own
     /// right edge, so a naive centred label there would always spill
     /// past it. It must clamp inward instead — mirroring the y-axis's
     /// existing #647 clamp — never painting outside the chart's bounds.
@@ -1606,7 +1586,7 @@ mod tests {
         );
     }
 
-    /// #975: reserving the x-ticks row must push `x_label` down by one
+    /// Reserving the x-ticks row must push `x_label` down by one
     /// more row than when there's no tick row at all — otherwise the
     /// caption would paint into the same row as the tick values.
     #[test]

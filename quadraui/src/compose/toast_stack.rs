@@ -1,5 +1,5 @@
 //! `ToastStackController` — VS Code-style keyboard-focus driver for the
-//! in-canvas [`ToastOverlay`] primitive (#1185).
+//! in-canvas [`ToastOverlay`] primitive.
 //!
 //! Toasts are non-modal (see [`crate::primitives::toast`]'s module doc)
 //! — unlike [`crate::compose::MessageDialogController`], this controller
@@ -46,9 +46,7 @@
 //! - Up / Down move focus to the previous / next toast in
 //!   [`ToastOverlay::toasts`] (temporal, oldest-first) order, clamping at
 //!   either end rather than wrapping, and reset the in-toast cursor back
-//!   to the dismiss button. (A corner-aware "visual stacking order"
-//!   would invert this for bottom corners; this controller intentionally
-//!   keeps the simpler array-order contract — see this module's tests.)
+//!   to the dismiss button.
 //! - Enter activates the focused control: [`ToastStackEvent::Dismiss`]
 //!   for `×`, [`ToastStackEvent::Action`] (carrying that action's own
 //!   [`crate::types::WidgetId`]) otherwise.
@@ -57,8 +55,7 @@
 //!   since there is nothing left to keep focused once its toast is gone.
 //! - Every other key, and every key while nothing is focused, is
 //!   [`ToastStackEvent::Ignored`] — the controller never claims focus for
-//!   itself, and never consumes a key it isn't the target of (#1185
-//!   acceptance: "no key consumed while unfocused").
+//!   itself, and never consumes a key it isn't the target of.
 //!
 //! # Mouse clicks are unaffected
 //!
@@ -142,7 +139,7 @@ impl ToastStackController {
     ///
     /// Call this from the app's own keybinding/command that means
     /// "focus notifications" — this controller never claims focus on
-    /// its own initiative (#1185: "the app decides how focus arrives").
+    /// its own initiative.
     pub fn give_focus(&mut self, stack: &ToastOverlay) -> bool {
         match stack.toasts.last() {
             Some(t) => {
@@ -499,9 +496,9 @@ mod tests {
         );
     }
 
-    /// #1185 acceptance: a toast removed by some other path (e.g. a
-    /// mouse click dismissing it) drops stale focus instead of letting
-    /// `handle` keep resolving events against a toast that's gone.
+    /// A toast removed by some other path (e.g. a mouse click dismissing
+    /// it) drops stale focus instead of letting `handle` keep resolving
+    /// events against a toast that's gone.
     #[test]
     fn handle_resyncs_when_focused_toast_vanished() {
         let mut c = ToastStackController::new();

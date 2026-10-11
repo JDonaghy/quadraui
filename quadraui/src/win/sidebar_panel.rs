@@ -1,21 +1,10 @@
 //! Direct2D / DirectWrite rasteriser for
-//! [`crate::primitives::sidebar_panel::SidebarPanel`] (#731).
+//! [`crate::primitives::sidebar_panel::SidebarPanel`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
-//! (#862, `PaintSurface` Phase 2d slice 5/9) — see that fn's module doc
-//! for the four named divergences found while unifying
-//! `gtk::draw_sidebar_panel`, `macos::sidebar_panel::draw_sidebar_panel`
-//! and `win::sidebar_panel::draw_sidebar_panel` into one implementation
-//! (divergence 4 covers the embedded toolbar's theme wiring:
-//! `WinBackend::draw_sidebar_panel_interactive` passes
-//! `&self.current_theme`, the same field `Backend::set_theme` writes).
-//! This module now only carries [`win_sidebar_panel_layout`] (pure
-//! layout, still needed by `WinBackend::sidebar_panel_layout` for
-//! no-paint hit-test queries); the deprecated `draw_sidebar_panel`
-//! compatibility shim over the shared [`super::surface::D2dSurface`]
-//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
-//! and vimcode's `develop`).
+//! This module contains [`win_sidebar_panel_layout`] for pure layout
+//! calculations needed by `WinBackend::sidebar_panel_layout` for
+//! hit-test queries. Painting has moved to the shared
+//! [`crate::primitives::sidebar_panel::native_surface_paint::paint`].
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod sidebar_panel;` and `backend.rs`'s
@@ -32,10 +21,8 @@ use crate::theme::Theme;
 use crate::types::WidgetId;
 
 /// Compute the Win-GUI pixel/DIP layout for a [`SidebarPanel`] without
-/// painting — the DirectWrite twin of `crate::Backend::draw_sidebar_panel`
-/// (the removed `draw_sidebar_panel` free function shim this backed —
-/// see module doc). No geometry is re-derived here: this delegates
-/// entirely to [`SidebarPanel::layout`] (#731's acceptance bar).
+/// painting. No geometry is re-derived here: this delegates
+/// entirely to [`SidebarPanel::layout`].
 ///
 /// Coordinate frame: **ABSOLUTE** (`rect.x`/`rect.y` baked into
 /// `content_bounds` / `toolbar_bounds`), matching
@@ -66,7 +53,7 @@ mod tests {
     /// [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s headless
     /// target — the same adapter the now-removed `draw_sidebar_panel`
-    /// shim used (issue #1109), exercised here directly.
+    /// shim used, exercised here directly.
     fn paint(
         surface: &HeadlessSurface,
         dwrite: &DWrite,
@@ -130,10 +117,8 @@ mod tests {
         }
     }
 
-    /// C0 smoke: `draw_sidebar_panel` must actually paint + return a
-    /// click-routable layout rather than panicking or hitting a
-    /// `todo!()` (#731's acceptance bar — "draw_sidebar_panel survives
-    /// C0 with text_ok on win").
+    /// Smoke test: `draw_sidebar_panel` must paint and return a
+    /// click-routable layout.
     #[test]
     fn text_ok_round_trip_click_hits_toolbar_button() {
         let panel = panel_with_toolbar();

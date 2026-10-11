@@ -1,5 +1,5 @@
 //! Backend-agnostic app code for the toast-actions example
-//! ([`tui_toast_actions`] / [`gtk_toast_actions`]) — issue #1185.
+//! ([`tui_toast_actions`] / [`gtk_toast_actions`]).
 //!
 //! Demonstrates the VS Code-style actionable toast: a two-action toast
 //! ("Install" primary + "Don't ask again" secondary, plus the dismiss

@@ -9,8 +9,7 @@
 //! - All printable characters are forwarded to the PTY.
 //! - Arrow keys, Tab, Backspace, Enter, Delete, Home, End, PgUp/PgDn are
 //!   translated to the appropriate VT100 escape sequences by
-//!   [`TerminalSession::write_key`] (quadraui#342) — this example no longer
-//!   hand-rolls the escape-sequence encoding.
+//!   [`TerminalSession::write_key`].
 //! - **Shift+PageUp / Shift+PageDown** scroll the history view (not sent to PTY).
 //! - **Shift+Home** jumps to the oldest available history line.
 //! - Ctrl+C / Ctrl+D / Ctrl+Z forward as terminal control bytes.
@@ -25,15 +24,10 @@
 //!   bracketed-paste-wraps the text when the child has enabled that mode
 //!   and sends it raw otherwise. On GTK this fires for Ctrl-V,
 //!   Ctrl-Shift-V, and middle-click (PRIMARY selection) — all three route
-//!   to the same `ClipboardPaste` event (quadraui#415).
-//! - **IME / dead-key composed input is out of scope here.** quadraui#415
-//!   ("route clipboard paste + IME/dead-key composition into the focused
-//!   terminal PTY") covers only the clipboard-paste half in this example
-//!   and in `gtk::run::dispatch_event`. No backend runs an IME composition
-//!   pipeline yet — see [`quadraui::UiEvent::CharTyped`]'s doc comment and
-//!   epic quadraui#481, which owns wiring a real `GtkIMContext` (commit +
-//!   preedit) end to end. Composed characters (e.g. a dead-key `´` + `e` →
-//!   `é`) are not yet forwarded to the PTY by this example on any backend.
+//!   to the same `ClipboardPaste` event.
+//! - **IME / dead-key composed input is not yet supported.**
+//!   Composed characters (e.g. a dead-key `´` + `e` → `é`) are not
+//!   forwarded to the PTY by this example on any backend.
 //! - When the shell exits a status line shows the exit code; Ctrl+Q closes.
 
 use quadraui::terminal_engine::{default_shell, TerminalMouseKind, TerminalSession};
@@ -92,9 +86,7 @@ impl TerminalApp {
     /// `char_w`/`line_h` are `Backend::char_width()` /
     /// `Backend::line_height()` — `1.0` on TUI (viewport units already
     /// are cells, so this is a no-op division) and real Pango-resolved
-    /// pixel metrics on GTK, where `Viewport` is in pixels, not cells
-    /// (quadraui#437 — this used to treat GTK's pixel viewport as a
-    /// cell count directly, spawning wildly wrong PTY sizes).
+    /// pixel metrics on GTK, where `Viewport` is in pixels, not cells.
     fn viewport_to_pty(vp: Viewport, char_w: f32, line_h: f32) -> (u16, u16) {
         let char_w = char_w.max(1.0);
         let line_h = line_h.max(1.0);
@@ -137,9 +129,8 @@ impl TerminalApp {
                     Color::rgb(60, 30, 0),
                 )
             } else {
-                // Show [APP KEYS] indicator when DECCKM is active so users can
-                // see that arrow keys are being encoded in application-cursor
-                // mode (ESC O A…D rather than ESC [ A…D) — quadraui #336.
+                // Show [APP KEYS] indicator when DECCKM is active (application-cursor
+                // mode: ESC O A…D rather than ESC [ A…D).
                 let app_indicator = if sess.application_cursor_keys() {
                     "  · [APP KEYS]"
                 } else {
@@ -272,16 +263,10 @@ impl AppLogic for TerminalApp {
                 ..
             } => return Reaction::Exit,
 
-            // GTK only (quadraui#501): the OS "×" / Alt-F4 / window-manager
-            // close dispatches this before the window is torn down, and an
-            // app that returns anything other than `Exit` implicitly vetoes
-            // it (`gtk::run::activate`'s `connect_close_request`). This demo
-            // has no unsaved-state veto reason, so it just lets the close
-            // proceed — same as pressing Ctrl-Q above. This is also the
-            // default `gtk_smoke.sh` target, but the smoke harness itself
-            // no longer depends on this arm: `schedule_smoke_check` forces
-            // the window shut with `window.destroy()`, which bypasses the
-            // close-request veto entirely.
+            // GTK only: the OS "×" / Alt-F4 / window-manager close dispatches this
+            // before the window is torn down. An app that returns anything other than
+            // `Exit` implicitly vetoes the close. This demo has no unsaved-state veto
+            // reason, so it lets the close proceed — same as pressing Ctrl-Q above.
             UiEvent::WindowClose => return Reaction::Exit,
 
             // ── Resize ───────────────────────────────────────────────────────
@@ -308,7 +293,7 @@ impl AppLogic for TerminalApp {
                     let in_term = position.y >= 0.0 && position.y < term_h;
 
                     // Delegate the forward-vs-scrollback policy to
-                    // `TerminalSession::handle_wheel` (quadraui#365): it
+                    // `TerminalSession::handle_wheel`: it
                     // tries to forward the wheel to the PTY child first
                     // (mouse reporting / alt-screen, e.g. tmux / vim /
                     // less), and falls back to local scrollback otherwise.
@@ -422,10 +407,8 @@ impl AppLogic for TerminalApp {
             UiEvent::ClipboardPaste(text) => {
                 if let Some(ref mut sess) = self.session {
                     if !sess.is_exited() {
-                        // `TerminalSession::paste` centralizes the
-                        // bracketed-paste wrap (only applied when the
-                        // child has enabled bracketed-paste mode) so this
-                        // example doesn't hand-roll it — quadraui#415.
+                        // `TerminalSession::paste` applies bracketed-paste wrapping only when
+                        // the child has enabled bracketed-paste mode, and sends raw otherwise.
                         sess.paste(&text);
                     }
                 }
@@ -478,11 +461,9 @@ impl AppLogic for TerminalApp {
                     if sess.is_exited() {
                         return Reaction::Continue;
                     }
-                    // `TerminalSession::write_key` centralizes the
-                    // VT100/xterm key encoding (arrows, F-keys, modifiers,
-                    // Ctrl-combos, DECCKM) so this example doesn't hand-roll
-                    // it — quadraui#342. It also resets the scroll offset
-                    // to the live view, same as ordinary character input.
+                    // `TerminalSession::write_key` encodes VT100/xterm key sequences
+                    // (arrows, F-keys, modifiers, Ctrl-combos, DECCKM) and resets the scroll
+                    // offset to the live view, same as ordinary character input.
                     sess.write_key(key, modifiers);
                 }
                 return Reaction::Redraw;
@@ -518,7 +499,7 @@ impl AppLogic for TerminalApp {
             if sess.poll() {
                 redraw = true;
             }
-            // OSC 0/2 window title (quadraui#339): the child program (vim,
+            // OSC 0/2 window title: the child program (vim,
             // tmux, a shell prompt hook, …) may have retitled the window.
             // `take_title_changed` is a one-shot dirty flag so this only
             // calls into the backend when the title actually changed, not
@@ -622,7 +603,7 @@ mod tests {
 
     // ── viewport_to_pty converts pixels → cells (GTK path) ────────────────────
     //
-    // quadraui#437: GTK's `Viewport` is in pixels, not cells. These pin
+    // GTK's `Viewport` is in pixels, not cells. These pin
     // the conversion so a future edit can't silently regress back to
     // treating pixel dimensions as cell counts.
 

@@ -55,14 +55,10 @@ pub enum StageStatus {
 }
 
 /// The `status → glyph` table for a stage's status icon — shared by every
-/// backend's rasteriser (gtk, macos, tui, win). Issue #713's primitive-first
-/// rule forbids a backend from carrying its own copy of this match; a
-/// second/third/fourth `status_icon_text`-shaped function is exactly the
-/// duplication that rule exists to stop.
+/// backend's rasteriser (gtk, macos, tui, win).
 ///
 /// Every arm is a single-codepoint glyph, so callers needing a `char`
-/// (e.g. `tui::pipeline_view`, which paints one cell at a time) can take
-/// `.chars().next()` safely.
+/// (e.g. code that paints one cell at a time) can take `.chars().next()` safely.
 pub fn status_glyph(status: &StageStatus) -> &'static str {
     match status {
         StageStatus::Done => "✓",
@@ -75,7 +71,7 @@ pub fn status_glyph(status: &StageStatus) -> &'static str {
 }
 
 /// The `status → colour` table for a stage — shared by every backend's
-/// rasteriser (#713). Used for **both** the status icon fill and the stage
+/// rasteriser. Used for **both** the status icon fill and the stage
 /// box border: the two mappings were identical in all three pre-existing
 /// copies (gtk, macos, tui), so this single table covers both call sites
 /// rather than shipping as two near-duplicate tables that could drift.
@@ -386,91 +382,30 @@ impl PipelineView {
     }
 }
 
-// ── PaintSurface paint (shared gtk/macos/win implementation, issue #1085,
-// PaintSurface Phase 4 8/8) ────────────────────────────────────────────
+// Shared implementation of pipeline-view painting (gtk/macos/win).
+// Before this, each backend independently painted the same stage/arrow
+// geometry with its own drawing API. This implementation is written against
+// [`crate::paint_surface::PaintSurface`] instead of any one backend's drawing
+// API, normalizing behavior across backends.
 //
-// Before this, `gtk::pipeline_view::draw_pipeline_view` (Cairo + Pango),
-// `macos::pipeline_view::draw_pipeline_view` (Core Graphics + Core Text)
-// and `win::pipeline_view::draw_pipeline_view` (Direct2D + DirectWrite)
-// each independently painted the same stage/arrow geometry (already
-// unified by [`PipelineView::layout`]/[`pixel_pipeline_view_layout`])
-// with their own drawing API. `paint` below is the one shared
-// implementation, written against [`crate::paint_surface::PaintSurface`]
-// (#807, Phase 1) instead of any one backend's drawing API — same shape
-// as `diff_view`'s #866 migration and `board`'s #1085 slice above.
+// ## Implementation notes for backend unification:
 //
-// ## Divergences found (re-verified, reported here rather than silently
-// resolved — CLAUDE.md's "re-verify before you implement" + this issue's
-// acceptance bar)
-//
-// 1. **Status icon vertical position.** `gtk::pipeline_view` and
-//    `win::pipeline_view` both centred the icon glyph within the top
-//    third of the box (`icon_h = bh / 3.0`, then `by + icon_h / 2.0 -
-//    ih / 2.0`). `macos::pipeline_view` used `by + bh / 5.0`, ignoring
-//    the glyph's own measured height entirely. `paint` uses the 2-of-3
-//    majority (gtk/win) formula on every backend — macOS gains real
-//    vertical centring it never had.
-// 2. **Label vertical position.** `gtk::pipeline_view` and
-//    `win::pipeline_view` both centred the label using its own measured
-//    height (`by + bh / 2.0 - lh / 2.0`). `macos::pipeline_view` used a
-//    hardcoded `by + bh / 2.0 - 8.0` offset, never consulting the
-//    measured height. `paint` uses the 2-of-3 majority formula — macOS's
-//    label centring no longer drifts for fonts taller/shorter than the
-//    8px the hardcoded offset assumed.
-// 3. **Label overflow handling.** `gtk::pipeline_view` ellipsized an
-//    overflowing label with Pango's `EllipsizeMode::End`.
-//    `win::pipeline_view` clamped the *drawn* width to
-//    `bb.width - 2 * PIPELINE_H_PAD` and let `DWrite::draw_text`'s
-//    `D2D1_DRAW_TEXT_OPTIONS_CLIP` cut it off. `macos::pipeline_view` did
-//    neither — an overlong label could paint past the box into the next
-//    stage or the arrow connector, uncropped. `PaintSurface` has no
-//    ellipsize verb (see `diff_view`'s #866 "Header-label overflow
-//    handling" and `board`'s #1085 divergence 1/2 for the identical
-//    tradeoff), so `paint` clamps the label's drawn width like
-//    `win::pipeline_view` did and additionally hard-clips the whole box
-//    (icon + label + action) to `box_bounds` — macOS's overflow bleed is
-//    fixed, and GTK's ellipsis becomes a hard clip.
-// 4. **Action-button tint background.** `gtk::pipeline_view` painted a
-//    translucent `theme.accent_bg` tint (Cairo `set_source_rgba` at
-//    `0.15` alpha, inset 1px) behind the button label.
-//    `win::pipeline_view` approximated the same tint with a CPU-side
-//    [`crate::types::Color::blend`] against `theme.surface_bg` — exactly
-//    the "`Color::blend` instead of a real alpha composite" smell
-//    [`crate::paint_surface::PaintSurface::surface_fill_rect_alpha`]'s
-//    own doc names as the reason that verb exists.
-//    `macos::pipeline_view` painted no tint at all. `paint` uses
-//    [`crate::paint_surface::PaintSurface::surface_fill_rect_alpha`] to
-//    fill the full `action_bounds` with a real alpha composite over
-//    `theme.accent_bg` at the same `0.15` alpha every backend already
-//    agreed on — macOS gains the tint it was missing, and Windows's CPU
-//    blend becomes a real composite.
-// 5. **Action-button label vertical position.** `gtk::pipeline_view` and
-//    `win::pipeline_view` both centred the button label vertically within
+// 1. **Status icon vertical position.** Centred within the top third of the
+//    box (`icon_h = bh / 3.0`, then `by + icon_h / 2.0 - ih / 2.0`).
+// 2. **Label vertical position.** Centred using its own measured height
+//    (`by + bh / 2.0 - lh / 2.0`).
+// 3. **Label overflow handling.** Drawn width is clamped to
+//    `bb.width - 2 * PIPELINE_H_PAD` and the whole box is hard-clipped to
+//    `box_bounds`. `PaintSurface` has no ellipsize verb.
+// 4. **Action-button tint background.** Fills `action_bounds` with a real
+//    alpha composite using `surface_fill_rect_alpha` at `0.15` alpha over
+//    `theme.accent_bg`.
+// 5. **Action-button label vertical position.** Centred vertically within
 //    `action_bounds` (`ab.y + ab.height / 2.0 - bh2 / 2.0`).
-//    `macos::pipeline_view` drew it flush to `ab.y` (top-aligned,
-//    ignoring the button's own height). `paint` uses the 2-of-3 majority
-//    formula — macOS's button label is now vertically centred like its
-//    siblings.
-// 6. **Focus indicator / arrow-head shape.** `gtk::pipeline_view` and
-//    `macos::pipeline_view` filled a solid triangle path for both the
-//    `▼` focus indicator and the arrow connector's head.
-//    `win::pipeline_view` drew each as two stroked line segments instead
-//    — `win::text` exposes no filled-arbitrary-path primitive (only
-//    rects, rounded rects, lines, and circles). `PaintSurface` has the
-//    identical gap (`surface_draw_line`/`surface_fill_rect`/
-//    `surface_fill_rounded_rect`, no fill-path verb), so `paint` adopts
-//    Windows's two-line chevron on every backend. GTK/macOS's solid
-//    triangles become open chevrons — a visible but small shape change at
-//    this glyph-scale size.
-// 7. **Stage-box border shape.** `gtk::pipeline_view` and
-//    `macos::pipeline_view` stroked a *rounded*-rect border
-//    (`pixel::CORNER_RADIUS`); `win::pipeline_view` could only stroke a
-//    straight rectangle (no rounded-stroke primitive — see divergence 6's
-//    same underlying gap). `PaintSurface::surface_stroke_rect` is
-//    axis-aligned only, so `paint` strokes every stage-box border as a
-//    straight rectangle — mirrors `board`'s #1085 divergence 3 exactly.
-//    GTK/macOS boxes lose their rounded-pill corners; `pixel::CORNER_RADIUS`
-//    is no longer consumed by any rasteriser.
+// 6. **Focus indicator / arrow-head shape.** Both drawn as two stroked line
+//    segments (open chevron). `PaintSurface` has no fill-path primitive.
+// 7. **Stage-box border shape.** Stroked as a straight rectangle
+//    (`PaintSurface::surface_stroke_rect` is axis-aligned only).
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -634,7 +569,7 @@ pub(crate) mod native_surface_paint {
         use crate::Image;
 
         /// Records every drawing verb `paint` issues — mirrors
-        /// `primitives::diff_view`'s own `RecordingSurface` (#810/#865/#866).
+        /// `primitives::diff_view`'s own `RecordingSurface`.
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
@@ -785,12 +720,9 @@ pub(crate) mod native_surface_paint {
             assert_eq!(surface.clip_pushes.len(), view.stages.len());
         }
 
-        /// Regression for divergence 4: the action button paints a
-        /// translucent `accent_bg` tint (a real alpha composite, via the
-        /// default `surface_fill_rect_alpha` forwarding to
-        /// `surface_fill_rect` with `color.with_alpha`), covering the
-        /// whole `action_bounds` — every backend gets it now, including
-        /// the one (macOS) that previously painted none at all.
+        /// The action button paints a translucent `accent_bg` tint (via
+        /// `surface_fill_rect_alpha` at `0.15` alpha), covering the whole
+        /// `action_bounds` — every backend gets this now.
         #[test]
         fn action_button_paints_a_translucent_tint_over_the_full_bounds() {
             let view = make_view();
@@ -859,9 +791,7 @@ pub(crate) mod native_surface_paint {
             );
         }
 
-        /// Regression for divergences 1/2: icon and label both use the
-        /// "top-third centred" / "measured-height centred" majority
-        /// formula (gtk+win), not macOS's pre-#1085 hardcoded offsets.
+        /// Icon and label are both centred using their measured size:
         #[test]
         fn icon_and_label_are_centred_using_their_measured_size() {
             let view = make_view();

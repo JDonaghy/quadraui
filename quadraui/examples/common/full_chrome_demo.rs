@@ -2,25 +2,25 @@
 //! (title bar, bottom panel, command line, status bar) plus the
 //! existing activity bar / sidebar / main layout.
 //!
-//! The empty part of the title bar also exercises the CSD drag/maximize
-//! escape hatch (#400): left-`MouseDown` calls `Backend::begin_window_drag`,
+//! The empty part of the title bar exercises the CSD drag/maximize
+//! escape hatch: left-`MouseDown` calls `Backend::begin_window_drag`,
 //! `DoubleClick` calls `Backend::toggle_window_maximize`. On GTK this
 //! actually moves/maximizes the window; on TUI (no window to drive) both
 //! calls are a documented no-op — the demo's status line shows which
 //! happened either way.
 //!
-//! The outer window border also exercises the edge-resize escape hatch
-//! (#406): a left-`MouseDown` within `backend.line_height()` of any edge or
+//! The outer window border exercises the edge-resize escape hatch:
+//! a left-`MouseDown` within `backend.line_height()` of any edge or
 //! corner calls `Backend::begin_window_resize`, and every `MouseMoved`
 //! hints the resize cursor via `Backend::set_cursor` while hovering one.
-//! Same no-op-on-TUI story as #400 — there's no window to resize, so both
+//! Same no-op-on-TUI story — there's no window to resize, so both
 //! calls report back `false` and the status line says so.
 //!
-//! `Ctrl+T` demonstrates the #532 runtime toggle:
+//! `Ctrl+T` demonstrates runtime toggle:
 //! `ctx.shell_mut().set_title_bar_visible(!visible)` shows/hides the title
 //! bar band without rebuilding the shell, the same `ctx.shell_mut()` path
-//! `Ctrl+B` uses for the sidebar in `appshell_demo.rs` (#454). This is the
-//! shape vimcode's runtime-toggleable menu bar (vimcode#605) needs: the
+//! `Ctrl+B` uses for the sidebar in `appshell_demo.rs`. This is the
+//! shape vimcode's runtime-toggleable menu bar needs: the
 //! activity bar and main content must re-derive their top origin from
 //! `AppShell::layout()` on the very next frame, not from a cached offset —
 //! toggle title bar off and the "TITLE BAR" label disappears while the
@@ -34,7 +34,7 @@ use quadraui::{
     StatusBarAction, StatusBarInteraction, StatusBarSegment, UiEvent, WidgetId,
 };
 
-/// App icon (issue #1142) — the same real PNG asset `image_app.rs`'s
+/// App icon — the same real PNG asset `image_app.rs`'s
 /// `LOGO_PNG` decodes, reused here so this demo proves
 /// `ShellConfig::with_app_icon` reaches a real Dock/app-switcher icon
 /// (macOS) / titlebar+taskbar icon (Win-GUI) on a real asset, not a
@@ -43,7 +43,7 @@ use quadraui::{
 /// those two backends' own runs of this demo.
 const APP_ICON_PNG: &[u8] = include_bytes!("../assets/quadra_logo.png");
 
-/// `action_id`s for the CSD title-bar button row (#402). Namespaced per
+/// `action_id`s for the CSD title-bar button row. Namespaced per
 /// `StatusBarSegment::action_id`'s doc convention.
 const TITLE_BAR_MINIMIZE: &str = "titlebar:minimize";
 const TITLE_BAR_MAXIMIZE: &str = "titlebar:maximize";
@@ -52,9 +52,9 @@ const TITLE_BAR_CLOSE: &str = "titlebar:close";
 pub struct FullChromeDemo {
     last_event: String,
     /// Hover/press tracking for the minimize/maximize/close button row
-    /// painted into the right side of the title bar (#402). The drag/
+    /// painted into the right side of the title bar. The drag/
     /// double-click-to-maximize gesture on the *empty* part of the title
-    /// bar (#400) is handled separately in `handle()` below.
+    /// bar is handled separately in `handle()` below.
     title_bar_interaction: StatusBarInteraction,
 }
 
@@ -138,7 +138,7 @@ impl FullChromeDemo {
     /// Build the title bar's `StatusBar`: the existing plain-text label on
     /// the left, plus a realistic minimize/maximize/close button row on the
     /// right using the same `StatusBarSegment::action_id` mechanism every
-    /// other clickable status-bar segment in this codebase uses (#402).
+    /// other clickable status-bar segment in this codebase uses.
     fn build_title_bar(text: &str, fg: Color, bg: Color) -> StatusBar {
         let button_bg = Color::rgb(70, 70, 76);
         let close_bg = Color::rgb(190, 55, 45);
@@ -221,7 +221,7 @@ impl ShellAppTrait for FullChromeDemo {
             let rect = Rect::new(tb.x, tb.y, tb.width, lh.min(tb.height));
             let bar =
                 Self::build_title_bar("TITLE BAR  |  File  Edit  View  Help", title_fg, title_bg);
-            // #819: the rasteriser reads one `InteractionState`.
+            // The rasteriser reads one `InteractionState`.
             // `StatusBarInteraction` still owns the *state machine*
             // (press/release/click resolution against a cached layout);
             // this only adapts its two ids into the new call shape.
@@ -296,8 +296,8 @@ impl ShellAppTrait for FullChromeDemo {
         backend: &mut dyn Backend,
         ctx: &ShellContext,
     ) -> Reaction {
-        // Title bar button row (#402) takes priority over the drag/
-        // double-click-to-maximize gesture (#400) on the empty part of the
+        // Title bar button row takes priority over the drag/
+        // double-click-to-maximize gesture on the empty part of the
         // bar: a press that lands on minimize/maximize/close must not also
         // start a window drag. `StatusBarInteraction::handle` only reacts
         // to MouseMoved/MouseDown/MouseUp and is a no-op (`Ignored`) for
@@ -317,14 +317,10 @@ impl ShellAppTrait for FullChromeDemo {
                 key: Key::Char('q') | Key::Named(NamedKey::Escape),
                 ..
             } => Reaction::Exit,
-            // `Ctrl+T` = the #532 runtime toggle: `ctx.shell_mut()` reaches
-            // the same real `AppShell` `ShellAdapter` renders (the #454
-            // pattern `Ctrl+B` uses for the sidebar in `appshell_demo.rs`),
-            // so this app can show/hide the title-bar row without
+            // `Ctrl+T` shows/hides the title-bar row without
             // rebuilding the shell. `compute_layout` re-derives the
-            // activity bar and main content origins from `has_title_bar`
-            // on the very next `layout()` call, so no other state needs to
-            // change in lockstep.
+            // activity bar and main content origins on the very next
+            // `layout()` call, so no other state needs to change.
             UiEvent::KeyPressed {
                 key: Key::Char('t'),
                 modifiers: Modifiers { ctrl: true, .. },
@@ -347,12 +343,12 @@ impl ShellAppTrait for FullChromeDemo {
                 position, button, ..
             } => {
                 if ctx.in_title_bar(position.x, position.y) {
-                    // #400: the empty part of the title bar drags the
+                    // The empty part of the title bar drags the
                     // window on a left-button press, same as native CSD
                     // chrome. `begin_window_drag` is a documented no-op
                     // (returns `false`) on backends with no window (TUI).
                     //
-                    // Checked before #406's window-edge resize below: a
+                    // Checked before window-edge resize below: a
                     // full-width title bar owns the entire top band, same
                     // as native GTK `HeaderBar` CSD (which has no top-edge
                     // resize handle either — the header bar IS the top
@@ -373,7 +369,7 @@ impl ShellAppTrait for FullChromeDemo {
                 } else if let Some(edge) =
                     ctx.window_edge(position.x, position.y, backend.line_height())
                 {
-                    // #406: the outer window border resizes on a left-
+                    // The outer window border resizes on a left-
                     // button press, same as native CSD chrome. Margin
                     // derives from `line_height()` (portable across
                     // cells/pixels per LESSONS.md) rather than a hardcoded
@@ -414,7 +410,7 @@ impl ShellAppTrait for FullChromeDemo {
                 }
             }
             UiEvent::MouseMoved { position, .. } => {
-                // #406: hint the resize cursor while hovering the outer
+                // Hint the resize cursor while hovering the outer
                 // window border, restore the default pointer everywhere
                 // else. No repaint needed — this only changes the OS
                 // pointer glyph, not anything the app itself draws.
@@ -437,7 +433,7 @@ impl ShellAppTrait for FullChromeDemo {
             }
             UiEvent::DoubleClick { position, .. } => {
                 if ctx.in_title_bar(position.x, position.y) {
-                    // #400: double-click on the empty title bar toggles
+                    // Double-click on the empty title bar toggles
                     // maximize/restore, same as native CSD chrome.
                     // `toggle_window_maximize` is a documented no-op on
                     // backends with no window (TUI).

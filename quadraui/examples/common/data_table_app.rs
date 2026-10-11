@@ -5,8 +5,8 @@
 //! - `k` / `↑` — select previous row
 //! - `s` — cycle sort column (Name → Status → Age → Restarts → none)
 //! - `d` — toggle sort direction
-//! - `f` — toggle the pinned footer/summary row (#432)
-//! - `H` / `←`, `L` / `→` — scroll horizontally by 5 units (#550)
+//! - `f` — toggle the pinned footer/summary row
+//! - `H` / `←`, `L` / `→` — scroll horizontally by 5 units
 //! - `PageDown` / `PageUp` — page down/up a full screen (keyboard
 //!   equivalent of clicking the scrollbar track, #828)
 //! - `q` / `Esc` — quit
@@ -15,7 +15,7 @@
 //! narrower than the table's `min_total_width` (80 cells) — run this at
 //! ~50 columns to exercise it. Clicks stay routed to the column painted
 //! under the cursor at any `h_scroll`: `DataTableLayout::hit_test`
-//! undoes the same offset the rasteriser applies (#550).
+//! undoes the same offset the rasteriser applies.
 
 use quadraui::primitives::scrollbar::fit_thumb;
 use quadraui::{
@@ -34,7 +34,7 @@ pub struct DataTableApp {
     /// The table layout as it was at the *start* of the in-progress
     /// divider drag (captured on `HeaderDivider` mouse-down), held fixed
     /// for every `MouseMoved` in that same drag rather than re-fetched
-    /// from `table_layout` each move (#1031). `DataTableLayout::drag_divider`
+    /// from `table_layout` each move. `DataTableLayout::drag_divider`
     /// computes the last column's new width as `pair - target` where
     /// `pair` comes from `self.columns[col].width + self.columns[last]
     /// .width` — that's only the *true* pre-drag pair the first time it's
@@ -50,14 +50,12 @@ pub struct DataTableApp {
     /// column is still frozen via `column_overrides` exactly as before.
     resize_base: Option<DataTableLayout>,
     /// Per-column width overrides from divider drags, layered on top of
-    /// `columns`' declared strategy (#516 defect 3) — mirrors how a real
-    /// consumer app drives `DataTable`. Kept
-    /// separate from `columns[i].width` deliberately: overriding a
-    /// column must never rewrite its original declared strategy, only
-    /// lay a resolved width on top of it — that distinction is exactly
-    /// what `primitives::data_table::resolve_columns`'s pass 2 has to
-    /// respect (and, before the fix, didn't) for a `Flex`-declared
-    /// column.
+    /// `columns`' declared strategy — mirrors how a real consumer app
+    /// drives `DataTable`. Kept separate from `columns[i].width`
+    /// deliberately: overriding a column must never rewrite its original
+    /// declared strategy, only lay a resolved width on top of it — that
+    /// distinction is exactly what `primitives::data_table::resolve_columns`'s
+    /// pass 2 has to respect for a `Flex`-declared column.
     column_overrides: Vec<Option<f32>>,
     /// Vertical scrollbar thumb drag: (track_start_y, track_height, thumb_length, grab_offset)
     sb_drag: Option<(f32, f32, f32, f32)>,
@@ -65,7 +63,7 @@ pub struct DataTableApp {
     h_sb_drag: Option<(f32, f32, f32, f32)>,
     h_scroll: f32,
     hovered_idx: Option<usize>,
-    /// Toggle for the pinned footer/summary row demo (`f` key, #432).
+    /// Toggle for the pinned footer/summary row demo.
     show_footer: bool,
 }
 
@@ -100,13 +98,11 @@ impl DataTableApp {
                 width: ColumnWidth::Flex(1.5),
                 align: ColumnAlign::Left,
             },
-            // Flex (not Fixed) so the divider immediately before the
-            // last column (Restarts) sits between two Flex-declared
-            // columns — the exact shape that reproduced #516 defect 3
-            // ("divider before the last column resizes backward"): the
-            // *dragged* column (Age) must itself be Flex-declared for
-            // `resolve_columns`'s flex-redistribution pass to have a
-            // chance of clobbering its override.
+            // Flex (not Fixed) so the divider immediately before the last column
+            // (Restarts) sits between two Flex-declared columns — the exact shape
+            // needed to exercise resize behavior: the *dragged* column (Age) must
+            // itself be Flex-declared for `resolve_columns`'s flex-redistribution
+            // pass to have a chance of affecting its override.
             Column {
                 title: "Age".into(),
                 width: ColumnWidth::Flex(0.5),
@@ -136,12 +132,9 @@ impl DataTableApp {
             ("metrics-server-6d94bc", "Running", "7d", "0"),
             ("fluentd-daemonset-abc", "Running", "7d", "0"),
             ("prometheus-server-0", "Running", "3d", "0"),
-            // Status is the *middle* column (not last) and this value is
-            // far wider than its resolved Flex(1.5) share — #516 defect
-            // 1's regression case ("a table whose middle column contains
-            // text far wider than its resolved width renders every other
-            // column's value intact and readable"). Before the fix this
-            // interleaved into Age/Restarts instead of clipping.
+            // Status is the *middle* column (not last) and this value is far wider
+            // than its resolved Flex(1.5) share — exercises clipping behavior when
+            // a column contains text wider than its resolved width.
             (
                 "grafana-5f4c8d-mn2q7",
                 "CrashLoopBackOff: ImagePullBackOff waiting for registry retry backoff window",
@@ -174,7 +167,6 @@ impl DataTableApp {
     }
 
     /// Column-aligned totals row: pod count under Name, total restarts
-    /// under Restarts — demonstrates #432 (pinned footer/summary row).
     fn footer_row(&self) -> DataRow {
         let rows = Self::rows();
         let total_restarts: u32 = rows
@@ -247,12 +239,10 @@ impl DataTableApp {
         }
     }
 
-    /// Resolved column widths for the current viewport — a test-only
-    /// accessor exercising the exact same `DataTable::layout` (and thus
-    /// the shared `primitives::data_table::resolve_columns`) any real
-    /// backend paints through, so a driver test can assert on resize
-    /// direction without hardcoding per-backend layout math (#516
-    /// defect 3).
+    /// Resolved column widths for the current viewport — exercises the
+    /// same `DataTable::layout` (and thus the shared
+    /// `primitives::data_table::resolve_columns`) that any real backend
+    /// paints through.
     pub fn resolved_column_widths(&self, backend: &dyn Backend) -> Vec<f32> {
         self.table_layout(backend)
             .columns
@@ -311,11 +301,8 @@ impl DataTableApp {
         self.table_layout(backend).visible_rows
     }
 
-    /// `pub` (not just an internal helper) so driver tests can locate
-    /// real hit-test targets (e.g. a column divider) instead of
-    /// hardcoding per-backend coordinates — see
-    /// `resolved_column_widths`'s docs for why this matters for #516
-    /// defect 3 coverage specifically.
+    /// Public so driver tests can locate real hit-test targets (e.g. a
+    /// column divider) instead of hardcoding per-backend coordinates.
     pub fn table_layout(&self, backend: &dyn Backend) -> DataTableLayout {
         let vp = backend.viewport();
         let lh = backend.line_height();
@@ -426,9 +413,8 @@ impl AppLogic for DataTableApp {
                     Key::Named(NamedKey::End) => {
                         self.selected = Some(total.saturating_sub(1));
                     }
-                    // Keyboard equivalent of clicking above/below the
-                    // scrollbar thumb (a "page" jump) — #828: the mouse-only
-                    // scrollbar track click had no key path.
+                    // Keyboard equivalent of clicking above/below the scrollbar thumb
+                    // (a "page" jump).
                     Key::Named(NamedKey::PageDown) => {
                         let vis = self.visible_rows(backend).max(1);
                         let cur = self.selected.unwrap_or(0);
@@ -525,7 +511,7 @@ impl AppLogic for DataTableApp {
                     DataTableHit::HeaderDivider { col } => {
                         // Remember which divider is being dragged *and*
                         // snapshot the layout as it stands right now
-                        // (#1031) — `MouseMoved` below reuses this same
+                        // — `MouseMoved` below reuses this same
                         // snapshot for every move in the drag instead of
                         // re-fetching `table_layout` each time, which
                         // `resize_base`'s doc comment explains is required
@@ -563,32 +549,23 @@ impl AppLogic for DataTableApp {
                     return Reaction::Redraw;
                 }
                 if let Some(col) = self.resize_col {
-                    // Last-absorbs resize (#1031, formerly #521 defect 1's
-                    // pair-resize): a divider drag takes its slack from
-                    // the *last* column (`Restarts`), not `col + 1`, and
-                    // every column strictly between the two is frozen at
-                    // its currently-resolved width. Once `Restarts` bottoms
-                    // out at the floor below, the table overflows and
-                    // `DataTableLayout` grows its own horizontal
-                    // scrollbar instead of refusing the drag. Layered on
-                    // top of `columns` via `column_overrides` — the real
-                    // API surface a consumer drags through — rather than
+                    // Last-absorbs resize: a divider drag takes its slack from the *last*
+                    // column (`Restarts`), not `col + 1`, and every column strictly between
+                    // the two is frozen at its currently-resolved width. Once `Restarts`
+                    // bottoms out at the floor below, the table overflows and
+                    // `DataTableLayout` grows its own horizontal scrollbar instead of
+                    // refusing the drag. Layered on top of `columns` via `column_overrides`
+                    // — the real API surface a consumer drags through — rather than
                     // rewriting the columns' declared strategies directly.
-                    // A small absolute floor (not the old single-column
-                    // `.max(20.0)`): this table's own `Restarts` column
-                    // is declared `Fixed(10.0)` — the same literal value
-                    // in both cell (TUI) and pixel (GTK) units — so a
-                    // floor bigger than that would make the divider
-                    // immediately before it refuse to widen at all,
-                    // contradicting the #516 regression that the same
-                    // divider must resize in the drag's direction.
                     //
-                    // Uses `resize_base` (captured at mouse-down), not a
-                    // freshly re-fetched `table_layout` — see its doc
-                    // comment for why re-deriving the layout from this
-                    // same drag's own prior output would corrupt the
-                    // rightmost column's floor bookkeeping once
-                    // overflowed (#1031).
+                    // Uses a small absolute floor (not per-column minimum): this table's
+                    // own `Restarts` column is declared `Fixed(10.0)` — the same literal
+                    // value in both cell (TUI) and pixel (GTK) units.
+                    //
+                    // Uses `resize_base` (captured at mouse-down), not a freshly
+                    // re-fetched `table_layout` — see its doc comment for why re-deriving
+                    // the layout from this same drag's own prior output would corrupt the
+                    // rightmost column's floor bookkeeping once overflowed.
                     if let Some(base) = &self.resize_base {
                         self.column_overrides =
                             base.drag_divider(&self.column_overrides, col, position.x, 4.0);

@@ -232,61 +232,31 @@ impl Panel {
     }
 }
 
-// ── PaintSurface paint (#859, Phase 2d slice 2/9 of the PaintSurface
-// milestone) ─────────────────────────────────────────────────────────────
+// Shared implementation for painting panel title bar and action buttons,
+// replacing separate platform-specific implementations that used Cairo/Pango,
+// Core Graphics/Core Text, and Direct2D/DirectWrite respectively.
 //
-// Before this, `gtk::draw_panel` (Cairo/Pango), `macos::panel::draw_panel`
-// (Core Graphics/Core Text) and `win::panel::draw_panel` (Direct2D/
-// DirectWrite) each independently painted the same title-bar +
-// action-button chrome with their own drawing API (quadraui#785 child
-// #811, `docs/SMELL_AUDIT_2026-07.md` §5). `paint` below is the one
-// shared implementation, written against
-// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
-// one backend's drawing API.
-//
-// The three deleted copies were near-identical: title bar filled with
+// The implementations were near-identical: title bar filled with
 // `panel.accent.unwrap_or(theme.separator)`, title text drawn at
 // `(tb.x + 4, tb.y)`, action buttons filled with `theme.accent_bg` when
 // `is_active` else the title bar's own colour, and each glyph centred
-// horizontally in its button and top-aligned at `va.bounds.y`. One real
-// (if narrow) divergence was found and is **not** silently resolved here,
-// per this issue's "report it" instruction:
+// horizontally in its button and top-aligned at `va.bounds.y`.
 //
-// - `gtk::draw_panel` and `macos::panel::draw_panel` centred an action
-//   glyph with `(va.bounds.width - text_w) / 2.0`, unclamped — if a
-//   glyph were ever wider than its 24px button, the computed x would go
-//   *negative*, drawing left of the button's own left edge.
-// - `win::panel::draw_panel` computed the identical centring offset but
-//   wrapped it in `.max(0.0)`, clamping the glyph to the button's left
-//   edge instead of overhanging it.
+// One divergence exists: GTK and macOS centre an action glyph with
+// `(va.bounds.width - text_w) / 2.0` unclamped (allowing overhang), while
+// Windows clamps this to `.max(0.0)`. This implementation follows GTK/macOS
+// (the 2-of-3 majority) without clamping.
 //
-// This is unreachable in practice (every caller passes a single-glyph
-// icon inside a 24px button, per `PanelMeasure::action_button_width`'s
-// doc), which is presumably why it survived three independent
-// implementations without a bug report. `paint` below follows the 2-of-3
-// majority (GTK, macOS) and does **not** clamp — reported here rather
-// than picked silently, so a future issue can decide whether Win's clamp
-// should instead become the shared behaviour.
+// Another fix: this routes through `surface_fill_rect` (alpha-correct since
+// #811), whereas the old GTK implementation dropped `Color::a` via
+// `gtk::set_source`, making translucent `panel.accent` render opaque on GTK
+// only. macOS and Windows already preserved alpha. Themes ship only opaque
+// colours today, so this has no visible effect until a caller sets a
+// translucent `panel.accent`.
 //
-// A second divergence, this one a straightforward bug fix rather than a
-// judgment call: `gtk::draw_panel` filled the title bar and action
-// buttons via `gtk::set_source` (`cr.set_source_rgb`), which drops
-// `Color::a` — the exact GTK-only alpha-dropping bug quadraui#811 (slice
-// 1/9, `scrollbar`) found and fixed at the source, in
-// `GtkBackend::surface_fill_rect` itself. `macos::panel::draw_panel` and
-// `win::panel::draw_panel` already passed `Color::a` straight through to
-// `CGContextSetRGBFillColor` / `D2D1_COLOR_F`. So a translucent
-// `panel.accent` used to render opaque on GTK only; routing through
-// `surface_fill_rect` (already alpha-correct since #811) makes GTK match
-// macOS/Windows instead of reintroducing the bug, with no extra fix
-// needed here. Themes ship only opaque colours today, so this has no
-// visible effect until a caller sets a translucent `panel.accent`.
-//
-// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
-// — only *called* once a real pixel backend is compiled in, exercised by
-// each backend's own `Backend::draw_panel` call site plus this module's
-// own `RecordingSurface` tests on every leg that enables one of the three
-// cfg'd features.
+// `#[allow(dead_code)]`: only called once a real pixel backend is compiled
+// in, exercised by each backend's `Backend::draw_panel` call site plus
+// `RecordingSurface` tests.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -401,7 +371,7 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// #1073: test-only recorder — `paint` never calls this verb
+            /// Test-only recorder — `paint` never calls this verb
             /// (see this module's own doc for why no primitive here has been
             /// migrated onto it yet); this exists only so `RecordingSurface`
             /// satisfies the trait. Records into the same `fills` list as

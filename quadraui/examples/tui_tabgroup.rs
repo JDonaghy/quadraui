@@ -12,7 +12,6 @@
 //! - click tab label              — activate that tab
 //! - click `×`                   — close the tab (last tab collapses the pane)
 //! - Ctrl-W                      — close the focused pane's active tab
-//!   (keyboard equivalent of `×`, #828)
 //! - click `+`                   — add an untitled tab
 //! - click content area          — focus that pane
 //! - drag divider                — resize panes

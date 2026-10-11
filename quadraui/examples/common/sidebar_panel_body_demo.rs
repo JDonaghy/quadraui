@@ -1,4 +1,4 @@
-//! `SidebarPanelBody` (#1041) demo — background fill + optional
+//! `SidebarPanelBody` demo — background fill + optional
 //! header/search chrome + a raw `TreeView` body + a hand-built
 //! scrollbar, all composed through one `SidebarPanelBody` value instead
 //! of the per-backend hand-rolled row-slicing the issue's `panels.rs`

@@ -1,4 +1,4 @@
-//! TUI rasteriser for [`crate::Minimap`]: braille density view (#382).
+//! TUI rasteriser for [`crate::Minimap`]: braille density view.
 //!
 //! Each terminal cell packs a `2`-dot-wide x `4`-dot-tall braille glyph
 //! (`4` buffer lines per row — [`LINES_PER_ROW`] — and a horizontal
@@ -10,7 +10,7 @@
 //! fraction* —
 //! how much of its source-column bucket is non-whitespace — is
 //! thresholded through [`super::braille::dither_threshold_met`]'s ordered
-//! dither, not a plain boolean OR (issue #1007). A boolean OR over a
+//! dither, not a plain boolean OR. A boolean OR over a
 //! bucket wider than one column saturates: as soon as *any* column in the
 //! bucket is non-whitespace the dot sets, so practically every dot from
 //! the end of a line's indent onward lights up and every row runs to the
@@ -45,41 +45,28 @@ pub const LINES_PER_ROW: usize = 4;
 /// dot content at the tightest resolution the rasteriser ever uses, so an
 /// `N`-cell strip represents at least `N * COLS_PER_CELL` source columns.
 ///
-/// Before issue #1032, this was *also* [`draw_minimap`]'s unconditional
-/// default, baked in regardless of the buffer's own content — a
-/// VS-Code-proportioned strip (~11 cells) could only ever represent ~22
-/// source columns no matter how wide the file's lines actually ran, so
-/// ordinary indented source clipped hard at column ~22 and every row's
-/// dots saturated to the strip's right edge (indistinguishable line
-/// lengths — the #1032 bug). [`draw_minimap`] now resolves its scale
-/// adaptively via [`resolve_cols_per_cell`], which only ever *widens*
-/// past this constant — a file whose widest line already fits inside
-/// `width_cells * COLS_PER_CELL` still resolves to exactly this value, so
-/// narrow files keep the crispest possible dots.
-///
-/// [`draw_minimap_with_scale`] still accepts any `cols_per_cell`
-/// explicitly (issue #1000), for a host that wants to override the
-/// adaptive default. Whichever scale is used, a host aggregating its own
-/// [`crate::MinimapSpan`]s must build its [`crate::MinimapGrid::cols_per_cell`]
-/// from the **same** value — read back via [`MinimapLayout::cols_per_cell`]
-/// rather than hardcoding this constant, since [`crate::aggregate_spans`]
-/// and this rasteriser are only ever kept in sync by that read-back
-/// convention, not by a shared type.
+/// [`draw_minimap_with_scale`] accepts any `cols_per_cell` explicitly, for
+/// a host that wants to override the adaptive default. Whichever scale is
+/// used, a host aggregating its own [`crate::MinimapSpan`]s must build its
+/// [`crate::MinimapGrid::cols_per_cell`] from the **same** value — read back
+/// via [`MinimapLayout::cols_per_cell`] rather than hardcoding this constant,
+/// since [`crate::aggregate_spans`] and this rasteriser are only ever kept in
+/// sync by that read-back convention, not by a shared type.
 ///
 /// An **odd** `cols_per_cell` is rounded up to the nearest even effective
 /// width internally (see [`cols_per_dot`]) so that the dot rasteriser and
 /// the colour lookup always agree on exactly which source columns a cell
 /// covers — passing an odd value still works, it just covers one extra
 /// source column per cell rather than silently desyncing dots from
-/// colour. [`resolve_cols_per_cell`] itself only ever returns an even
+/// colour. [`resolve_cols_per_cell`] only ever returns an even
 /// value, so this only matters for a caller of
-/// [`draw_minimap_with_scale`] passing its own odd scale.
+/// [`draw_minimap_with_scale`] passing their own odd scale.
 pub const COLS_PER_CELL: usize = 2;
 
 /// Compute the TUI cell-unit layout for a [`Minimap`] without painting.
 ///
 /// TUI uses [`MinimapSizing::FixedPitch`] at exactly `1.0` cell row per
-/// minimap row (#992). `draw_minimap` below paints exactly one cell row
+/// minimap row. `draw_minimap` below paints exactly one cell row
 /// per [`VisibleMinimapLine`], so the layout's row pitch and the
 /// rasteriser's paint granularity must agree — under the previous
 /// [`MinimapSizing::Fill`], a short file's pitch could stretch up to
@@ -102,36 +89,27 @@ pub fn tui_minimap_layout(minimap: &Minimap, area: Rect) -> MinimapLayout {
         LINES_PER_ROW,
         MinimapSizing::FixedPitch(1.0),
     );
-    // #1032: `layout_with_sizing` itself only ever sets the 1:1 default
-    // (see `MinimapLayout::cols_per_cell`'s doc) — it has no notion of
-    // dots or braille cells. TUI is the one rasteriser whose strip is
-    // narrow enough that a fixed scale clips most of a real file's width,
-    // so this is where the buffer-width-adaptive resolution actually
-    // happens, on every call (paint or no-paint alike) so a host asking
-    // for layout-only geometry (`Backend::minimap_layout`, used to
-    // hit-test a click without repainting) sees the exact same scale
-    // `draw_minimap` will paint with.
+    // `layout_with_sizing` sets the default scale; TUI is the one
+    // rasteriser whose strip is narrow enough that a fixed scale clips most
+    // of a real file's width, so this is where the buffer-width-adaptive
+    // resolution happens, on every call (paint or no-paint alike) so a host
+    // asking for layout-only geometry (`Backend::minimap_layout`) sees the
+    // exact same scale `draw_minimap` will paint with.
     layout.cols_per_cell = resolve_cols_per_cell(minimap, area.width as usize);
     layout
 }
 
 /// Draw a [`Minimap`] into `area` on `buf`, at [`resolve_cols_per_cell`]'s
-/// buffer-width-adaptive horizontal scale (issue #1032). Returns the
-/// layout for host click dispatch (`layout.hit_test(x, y)` ->
-/// [`crate::MinimapHit`]) — `layout.cols_per_cell` carries the scale
-/// actually used, for a host that colour-aggregates its own
-/// [`crate::MinimapSpan`]s to build a matching [`crate::MinimapGrid`].
+/// buffer-width-adaptive horizontal scale. Returns the layout for host click
+/// dispatch (`layout.hit_test(x, y)` -> [`crate::MinimapHit`]) —
+/// `layout.cols_per_cell` carries the scale actually used, for a host that
+/// colour-aggregates its own [`crate::MinimapSpan`]s to build a matching
+/// [`crate::MinimapGrid`].
 ///
 /// A thin wrapper over [`draw_minimap_with_scale`] — kept as the
-/// zero-argument-change entry point so existing callers (in-crate and
-/// downstream) are unaffected by issue #1000's scale parameter. Before
-/// #1032 this baked in the fixed [`COLS_PER_CELL`] regardless of the
-/// buffer's own width, which is the defect #1032 fixes: a strip only
-/// ever showed a file's first `width_cells * COLS_PER_CELL` columns, so
-/// ordinary indented source (content running well past that column)
-/// painted every row as an identical run reaching the strip's right
-/// edge — see the module docs' `dither_threshold_met` paragraph for the
-/// companion #1007 fix this scale change works alongside.
+/// zero-argument-change entry point so existing callers are unaffected.
+/// This delegates to `draw_minimap_with_scale`, resolving its scale via
+/// [`resolve_cols_per_cell`] adaptively from the buffer's own widest line.
 pub fn draw_minimap(
     buf: &mut Buffer,
     area: Rect,
@@ -144,16 +122,14 @@ pub fn draw_minimap(
 
 /// Resolve the default horizontal scale [`draw_minimap`] paints at:
 /// buffer columns folded into one terminal cell, adapted to the buffer's
-/// own widest sampled line rather than fixed at [`COLS_PER_CELL`]
-/// regardless of content (issue #1032).
+/// own widest sampled line rather than fixed at [`COLS_PER_CELL`].
 ///
 /// `width_cells * 2` is the strip's total dot-column budget (each cell is
 /// 2 braille dots wide). The scale is chosen so that budget spans the
 /// buffer's widest line, capped at [`crate::primitives::minimap::COLUMN_CAPACITY`]
-/// — VS Code's own `minimap.maxColumn` — the same cap the #1007 test
-/// fixture ("variant C") already tunes against: a file wider than the cap
-/// still clips past column 120, matching VS Code's own minimap rather than
-/// trying to compress arbitrarily long lines into a fixed-width strip.
+/// — VS Code's own `minimap.maxColumn` — the same cap the test
+/// fixture already tunes against: a file wider than the cap still clips past
+/// column 120, matching VS Code's own minimap.
 ///
 /// A file whose widest line already fits inside `width_cells * 2`
 /// resolves to exactly `2` — the same scale [`COLS_PER_CELL`] names —
@@ -181,7 +157,7 @@ pub fn resolve_cols_per_cell(minimap: &Minimap, width_cells: usize) -> usize {
 
 /// [`draw_minimap`], but with the horizontal scale — how many source
 /// columns fold into one terminal cell — as an explicit parameter instead
-/// of the hardcoded [`COLS_PER_CELL`] (issue #1000).
+/// of the adaptive default.
 ///
 /// `cols_per_cell` is clamped to at least `1` (a `0` value would collapse
 /// [`cell_color`]'s lookup range to empty, matching nothing). The same
@@ -190,9 +166,7 @@ pub fn resolve_cols_per_cell(minimap: &Minimap, width_cells: usize) -> usize {
 /// are only related by the caller's own consistent choice of scale, not by
 /// a shared type, exactly as [`LINES_PER_ROW`] already works for the
 /// vertical axis. The returned layout's `cols_per_cell` field always
-/// echoes back this same (clamped) value — a caller wiring #1032's
-/// read-back pattern with an explicit scale sees exactly what it passed
-/// in, not [`resolve_cols_per_cell`]'s adaptive guess.
+/// echoes back this same (clamped) value.
 pub fn draw_minimap_with_scale(
     buf: &mut Buffer,
     area: Rect,
@@ -210,7 +184,7 @@ pub fn draw_minimap_with_scale(
 
     let bg = ratatui_color(theme.background);
     let default_fg = ratatui_color(theme.foreground);
-    // Pre-blended tint, not a solid `accent_bg` fill (issue #1181): a
+    // Pre-blended tint, not a solid `accent_bg` fill: a
     // terminal cell's background is one opaque colour, with no alpha
     // channel to composite through, so TUI can't lean on source-over the
     // way `gtk::minimap`/`macos::minimap` do (a translucent
@@ -270,15 +244,9 @@ pub fn draw_minimap_with_scale(
 /// ranges and [`cell_color`]'s colour range can never disagree.
 ///
 /// Both functions used to derive their column width from `cols_per_cell`
-/// independently — `braille_char_for_cell` via `(cols_per_cell /
-/// 2).max(1)` (truncating division) and `cell_color` via `cols_per_cell`
-/// directly — which coincide only when `cols_per_cell` is even. For an
-/// odd value the two ranges drift apart, growing linearly with `col`:
-/// at `cols_per_cell = 11`, `col = 4`, dots used to cover source columns
-/// `[40, 50)` while `cell_color` looked up `[44, 55)`. A span landing in
-/// only one of the two mismatched ranges either tinted a cell with no
-/// real dot behind it (reintroducing the #993 symptom this rasteriser
-/// exists to prevent) or painted a dot with no colour.
+/// independently — `braille_char_for_cell` via truncating division and
+/// `cell_color` via `cols_per_cell` directly — which coincide only when
+/// `cols_per_cell` is even. For an odd value the two ranges drift apart.
 ///
 /// Routing both call sites through this one function — rounding *up*
 /// (`div_ceil`) rather than down, so the degenerate `cols_per_cell <= 1`
@@ -293,30 +261,28 @@ fn cols_per_dot(cols_per_cell: usize) -> usize {
 /// the minimap); each cell is 2 dots wide, so dot columns
 /// `col*2..col*2+2` map to buffer columns at a **fixed** scale of
 /// [`cols_per_dot`] buffer columns per dot — the same scale for every
-/// line, matching [`cell_color`]'s fixed-grid lookup below (issue #993),
-/// and the same scale for every dot column of every cell, so widening it
-/// (issue #1000) widens the represented range without disturbing the
-/// fixed-per-line property #993 established.
+/// line and every dot column of every cell, so widening it widens the
+/// represented range without disturbing the fixed-per-line property.
 ///
 /// Column position is otherwise the only signal indentation has: if the
 /// scale were normalised per-line (each line stretched to fill the full
-/// strip width, as this used to do), a short line's 4-space indent would
-/// land at a different dot column than the same 4-space indent on a long
-/// line, destroying indentation entirely. Fixed scale means a line
-/// shorter than the strip simply leaves the remaining dots clear, and a
-/// line longer than `width_cells * 2 * cols_per_dot(cols_per_cell)` is
-/// clipped rather than compressed — exactly what VS Code's minimap does.
+/// strip width), a short line's 4-space indent would land at a different
+/// dot column than the same 4-space indent on a long line, destroying
+/// indentation entirely. Fixed scale means a line shorter than the strip
+/// simply leaves the remaining dots clear, and a line longer than
+/// `width_cells * 2 * cols_per_dot(cols_per_cell)` is clipped rather than
+/// compressed — exactly what VS Code's minimap does.
 ///
-/// The dot rule itself is a **coverage fraction**, not a boolean OR (issue
-/// #1007): `covered` counts the non-whitespace characters inside the
-/// dot's own `[c0, c1)` bucket — a plain per-dot scan, the same order of
-/// work the old `.any()` scan already paid, no new allocation — and
+/// The dot rule itself is a **coverage fraction**, not a boolean OR:
+/// `covered` counts the non-whitespace characters inside the dot's own
+/// `[c0, c1)` bucket — a plain per-dot scan, the same order of work an
+/// earlier scan already paid, no new allocation — and
 /// [`dither_threshold_met`] thresholds that count against an ordered
 /// dither matrix keyed on the dot's own absolute position. At the
 /// (default) `cols_per_dot == 1` scale this is a no-op — a bucket of width
 /// one has no fractional coverage to dither, so the result is identical to
-/// the old `covered > 0` check — the behaviour change only appears once a
-/// host widens `cols_per_cell` (issue #1000) far enough that a bucket can
+/// a plain `covered > 0` check — the behaviour change only appears once a
+/// host widens `cols_per_cell` far enough that a bucket can
 /// be partially covered.
 fn braille_char_for_cell(
     row_lines: &[Option<Vec<char>>],
@@ -350,8 +316,7 @@ fn braille_char_for_cell(
 ///
 /// The column range is derived from [`cols_per_dot`] — the same helper
 /// [`braille_char_for_cell`] uses — rather than from `cols_per_cell`
-/// directly, so the two can never disagree (issue #1000 review fix; see
-/// [`cols_per_dot`]'s doc for the drift this closes).
+/// directly, so the two can never disagree.
 fn cell_color(
     minimap: &Minimap,
     start_line_idx: usize,
@@ -405,10 +370,10 @@ mod tests {
     /// 8 lines x 4 columns, one "on" dot per line at a different column,
     /// laid out over a 2-cell-wide x 2-row area (dot grid 4 wide x 8
     /// tall matches the buffer exactly — no proportional scaling to
-    /// reason about). This is the transposition guard from #382: each
-    /// of the 4 dot *rows* in the first cell-row carries exactly one set
-    /// dot, in a different dot *column* each time, so swapping row/col
-    /// in the bit table would produce a different (wrong) codepoint.
+    /// reason about). This is the transposition guard: each of the 4 dot
+    /// *rows* in the first cell-row carries exactly one set dot, in a
+    /// different dot *column* each time, so swapping row/col in the bit
+    /// table would produce a different (wrong) codepoint.
     fn eight_by_four() -> Minimap {
         minimap_from(
             vec![
@@ -483,11 +448,9 @@ mod tests {
         assert_ne!(buf[(0u16, 1u16)].bg, expected_tint);
     }
 
-    /// Regression test for issue #1181: the viewport highlight must be the
-    /// same pre-blended tint `gtk::minimap`/`macos::minimap`/`win::minimap`
-    /// converge on (`blend(background, accent_bg, 0.25)`), not opaque
-    /// `theme.accent_bg` at full strength — the pre-fix bug this test
-    /// guards against directly.
+    /// Regression test: the viewport highlight must be the same pre-blended
+    /// tint converged on across backends (`blend(background, accent_bg, 0.25)`),
+    /// not opaque `theme.accent_bg` at full strength.
     #[test]
     fn viewport_highlight_is_a_blended_tint_not_opaque_accent_bg() {
         let mut mm = eight_by_four();
@@ -513,7 +476,7 @@ mod tests {
 
     /// Shared body for `paint_and_click_round_trip_returns_seek_for_the_clicked_fraction`
     /// — see `docs/PRIMITIVE_RULES.md`'s "Coordinate frames for
-    /// `*_layout` methods" (issue #505): `minimap_layout` is documented
+    /// `*_layout` methods": `minimap_layout` is documented
     /// **ABSOLUTE**, so `hit_test` must be called with coordinates
     /// shifted by the same `origin_x`/`origin_y` the minimap was
     /// painted at, not with area-local coordinates.
@@ -537,22 +500,20 @@ mod tests {
         paint_and_click_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md
-    /// "Layout helpers must return coords in the same frame across
-    /// backends"): `area = (0, 0)` is exactly the case where a
-    /// LOCAL/ABSOLUTE mixup in `tui_minimap_layout` would be invisible.
+    /// Non-zero-origin regression guard: `area = (0, 0)` is exactly the case
+    /// where a LOCAL/ABSOLUTE mixup in `tui_minimap_layout` would be invisible.
     #[test]
     fn paint_and_click_round_trip_returns_seek_for_the_clicked_fraction_at_nonzero_origin() {
         paint_and_click_round_trip_at(7, 13);
     }
 
-    /// Regression test for #992: under the previous [`MinimapSizing::Fill`]
-    /// sizing, a short file in a tall strip resolved to a row pitch of up
-    /// to `MAX_ROW_PITCH` cell rows, but `draw_minimap` only ever painted
-    /// the first cell row of each band — leaving `pitch - 1` blank cell
-    /// rows between every painted row, growing as the file got shorter.
-    /// TUI now uses `FixedPitch(1.0)`: exactly one cell row per minimap
-    /// row, tiled top-down with no gaps, regardless of strip height.
+    /// Regression test: under the previous [`MinimapSizing::Fill`] sizing, a
+    /// short file in a tall strip resolved to a row pitch of up to
+    /// `MAX_ROW_PITCH` cell rows, but `draw_minimap` only ever painted the
+    /// first cell row of each band — leaving `pitch - 1` blank cell rows
+    /// between every painted row, growing as the file got shorter. TUI now
+    /// uses `FixedPitch(1.0)`: exactly one cell row per minimap row, tiled
+    /// top-down with no gaps, regardless of strip height.
     #[test]
     fn short_file_in_a_tall_strip_paints_contiguous_rows_no_gaps() {
         let mm = eight_by_four(); // 8 lines, 2 row groups of 4 lines each
@@ -601,7 +562,6 @@ mod tests {
     }
 
     /// [`first_set_cell`], but at an explicit `cols_per_cell` scale
-    /// (issue #1000).
     fn first_set_cell_at_scale(
         chars: &[char],
         width_cells: usize,
@@ -612,19 +572,15 @@ mod tests {
             .find(|&col| braille_char_for_cell(&row_lines, col, cols_per_cell) != '\u{2800}')
     }
 
-    /// Regression test for #993: `braille_char_for_cell` used to
-    /// normalise each line's dot mapping by **that line's own**
-    /// character count (`chars.len() / dot_w`), so a short line's
-    /// content was stretched across the *entire* strip width regardless
-    /// of how little of that width the line actually occupies. Column
-    /// position is the only signal indentation has, so three lines with
-    /// increasing indent ("x", "    x", "        x") must paint their
-    /// set dots at three distinct columns *proportional to the indent*
-    /// — not bunched together near the strip's far edge, which is what
-    /// the old per-line normalisation produced (a 1-char line placed its
-    /// dot near column 0 "by accident", but 5- and 9-char lines both got
-    /// stretched to place their trailing 'x' near the right edge of the
-    /// full strip, regardless of the actual indent).
+    /// Regression test: `braille_char_for_cell` used to normalise each line's
+    /// dot mapping by **that line's own** character count, so a short line's
+    /// content was stretched across the *entire* strip width regardless of how
+    /// little of that width the line actually occupies. Column position is the
+    /// only signal indentation has, so three lines with increasing indent
+    /// ("x", "    x", "        x") must paint their set dots at three
+    /// distinct columns *proportional to the indent* — not bunched together
+    /// near the strip's far edge, which is what the old per-line normalisation
+    /// produced.
     #[test]
     fn indentation_lands_at_distinct_columns_proportional_to_indent() {
         let width_cells = 8;
@@ -651,13 +607,11 @@ mod tests {
 
     /// A short, indented line's dot column must depend only on its own
     /// indent — never on the length of some other line sharing the same
-    /// braille row group (issue #993's fixed-scale requirement, applied
+    /// braille row group. This is the fixed-scale requirement applied
     /// defensively at the row-group level: `dr=0`'s short line and
     /// `dr=1`'s 200-column line are packed into the very same terminal
-    /// cell row, so a future regression toward row-level normalisation
-    /// — e.g. scaling by the longest line in the group instead of a
-    /// fixed constant — would move `dr=0`'s dot even though nothing
-    /// about that line itself changed).
+    /// cell row, so a regression toward row-level normalisation would move
+    /// `dr=0`'s dot even though nothing about that line itself changed.
     #[test]
     fn a_long_neighbour_line_does_not_move_a_short_lines_dot() {
         let width_cells = 8;
@@ -684,9 +638,9 @@ mod tests {
     /// A line longer than the strip's visible column range must be
     /// **clipped**, not compressed to fit — content past
     /// `width_cells * COLS_PER_CELL` never sets a dot, no matter how far
-    /// past it extends (issue #993: this is what distinguishes a fixed
-    /// scale from the old per-line stretch, which had no notion of
-    /// "off the edge" since it always rescaled to fit exactly).
+    /// past it extends. This is what distinguishes a fixed scale from a
+    /// per-line stretch, which had no notion of "off the edge" since it
+    /// always rescaled to fit exactly.
     #[test]
     fn a_line_past_the_visible_range_is_clipped_not_compressed() {
         let width_cells = 4;
@@ -710,19 +664,18 @@ mod tests {
         );
     }
 
-    // ── issue #1000: cols_per_cell as a parameter, not a constant ──────
+    // ── cols_per_cell as a parameter, not a constant ───────────
 
     #[test]
     fn draw_minimap_matches_draw_minimap_with_scale_at_the_default_cols_per_cell() {
         // `draw_minimap` delegates to `draw_minimap_with_scale`, resolving
-        // its own scale via `resolve_cols_per_cell` (issue #1032) rather
-        // than always passing `COLS_PER_CELL` (issue #1000's old
-        // behaviour). `eight_by_four`'s widest line is 4 columns on a
+        // its own scale via `resolve_cols_per_cell` rather than always passing
+        // a hardcoded constant. `eight_by_four`'s widest line is 4 columns on a
         // 2-cell-wide strip (dot budget 4), which resolves to exactly
-        // `COLS_PER_CELL` — this fixture is deliberately narrow so the
-        // two entry points still agree here, proving `draw_minimap` is
-        // still a pure delegation (just to a resolved, not hardcoded,
-        // scale) rather than diverging paint logic of its own.
+        // `COLS_PER_CELL` — this fixture is deliberately narrow so the two entry
+        // points still agree here, proving `draw_minimap` is still a pure
+        // delegation (just to a resolved, not hardcoded, scale) rather than
+        // diverging paint logic of its own.
         let mm = eight_by_four();
         let area = Rect::new(0, 0, 2, 2);
 
@@ -737,15 +690,13 @@ mod tests {
         assert_eq!(plain_layout, scale_layout);
     }
 
-    /// Core #1000 deliverable: at the default [`COLS_PER_CELL`] scale, an
-    /// 11-cell (VS-Code-proportioned) strip can only represent `11 * 2 =
-    /// 22` source columns, so content at column 40 is unrepresentable —
-    /// clipped, exactly like `a_line_past_the_visible_range_is_clipped_not_compressed`
-    /// above. Widening `cols_per_cell` to `10` (5 source columns per dot)
-    /// makes the same 11-cell strip cover `11 * 10 = 110` columns, so
-    /// column 40 now lands inside cell `4` — this is the scale becoming a
-    /// *parameter* a host can widen, not a constant baked into the
-    /// rasteriser.
+    /// At the default [`COLS_PER_CELL`] scale, an 11-cell (VS-Code-proportioned)
+    /// strip can only represent `11 * 2 = 22` source columns, so content at
+    /// column 40 is unrepresentable — clipped. Widening `cols_per_cell` to
+    /// `10` (5 source columns per dot) makes the same 11-cell strip cover
+    /// `11 * 10 = 110` columns, so column 40 now lands inside cell `4` — this
+    /// is the scale becoming a *parameter* a host can widen, not a constant
+    /// baked into the rasteriser.
     #[test]
     fn draw_minimap_with_scale_widens_the_representable_source_range() {
         let width_cells = 11;
@@ -768,25 +719,19 @@ mod tests {
         );
     }
 
-    /// Reproduces vimcode#1030 deliverable 2 ("colour must survive at
-    /// indent 40 and 80") from the TUI side: with `cols_per_cell` widened
-    /// *explicitly* to `10`, two syntax spans at columns 40 and 80 each
-    /// resolve to their own colour in the painted cell rather than
-    /// falling back to the theme default — the same colour-survival
-    /// property #993 already guaranteed near column 0, now reachable at
-    /// depths the fixed [`COLS_PER_CELL`] scale could never paint at all.
+    /// With `cols_per_cell` widened *explicitly* to `10`, two syntax spans at
+    /// columns 40 and 80 each resolve to their own colour in the painted cell
+    /// rather than falling back to the theme default — the same colour-survival
+    /// property guaranteed near column 0, now reachable at depths the fixed
+    /// [`COLS_PER_CELL`] scale could never paint at all.
     ///
-    /// The "before widening" baseline here uses
-    /// [`draw_minimap_with_scale`] pinned to the fixed [`COLS_PER_CELL`],
-    /// not [`draw_minimap`]'s own default — since issue #1032,
-    /// `draw_minimap` resolves its scale adaptively from the buffer's
-    /// widest line, so for *this* fixture (a 90-column line) it would
-    /// already reach both spans without any explicit widening; that
-    /// adaptive-default behaviour is covered separately by
-    /// `draw_minimap_default_scale_reaches_deep_indents_on_a_wide_buffer`
-    /// below. This test's own job is narrower: prove the *explicit*
-    /// `cols_per_cell` parameter (#1000) still works as a widening
-    /// mechanism independent of the adaptive default.
+    /// The "before widening" baseline here uses [`draw_minimap_with_scale`]
+    /// pinned to the fixed [`COLS_PER_CELL`], not [`draw_minimap`]'s own
+    /// default — since `draw_minimap` resolves its scale adaptively from the
+    /// buffer's widest line, so for this fixture (a 90-column line) it would
+    /// already reach both spans without any explicit widening. This test's own
+    /// job is to prove the *explicit* `cols_per_cell` parameter works as a
+    /// widening mechanism independent of the adaptive default.
     #[test]
     fn cell_color_survives_at_indent_40_and_80_with_a_widened_scale() {
         let mut line = vec![' '; 90];
@@ -812,9 +757,8 @@ mod tests {
 
         let area = Rect::new(0, 0, 11, 1);
 
-        // Pinned to the fixed COLS_PER_CELL, both spans are out of the
-        // 22-column visible range: both cells fall back to the theme
-        // default — the #1000 mechanism this test still guards.
+        // Both spans are beyond the 22-column visible range at the fixed
+        // COLS_PER_CELL scale, so both cells fall back to the theme default.
         let mut buf_narrow = Buffer::empty(area);
         draw_minimap_with_scale(&mut buf_narrow, area, &mm, &Theme::default(), COLS_PER_CELL);
         assert_eq!(
@@ -867,34 +811,28 @@ mod tests {
         );
     }
 
-    /// Regression test for the review fix on issue #1000: before this
-    /// fix, `braille_char_for_cell` derived its dot range as
-    /// `(cols_per_cell / 2).max(1)` columns per dot (truncating division)
-    /// while `cell_color` derived its colour range as `cols_per_cell`
-    /// columns directly — these only coincide when `cols_per_cell` is
-    /// **even**. At the odd value used here (`11`), the two used to
-    /// diverge: dots for terminal cell 4 covered source columns `[40,
-    /// 50)` while `cell_color` looked up `[44, 55)`. A span landing in
-    /// only one of the two mismatched ranges either painted colour with
-    /// no real dot behind it, or a dot with no colour.
+    /// Regression test: before this fix, `braille_char_for_cell` derived its
+    /// dot range via truncating division while `cell_color` derived its colour
+    /// range directly — these only coincide when `cols_per_cell` is **even**.
+    /// At an odd value (`11`), the two used to diverge: dots for terminal cell
+    /// 4 covered source columns `[40, 50)` while `cell_color` looked up
+    /// `[44, 55)`. A span landing in only one of the two mismatched ranges
+    /// either painted colour with no real dot behind it, or a dot with no colour.
     ///
-    /// Both functions now derive their width from the same
-    /// [`cols_per_dot`] helper, rounding `11` up to `6` and giving both a
-    /// shared effective cell width of `2 * 6 = 12`: cell 4 covers exactly
-    /// `[48, 60)`. This asserts that shared boundary directly — a source
-    /// range fully inside it (`[48, 60)` itself) must set both a dot and
-    /// its span's colour in cell 4, and a source column just outside it
-    /// (`47`) must set neither, proving the two lookups can't drift apart
-    /// for an odd `cols_per_cell`.
+    /// Both functions now derive their width from the same [`cols_per_dot`]
+    /// helper, rounding `11` up to `6` and giving both a shared effective cell
+    /// width of `2 * 6 = 12`: cell 4 covers exactly `[48, 60)`. This asserts
+    /// that shared boundary directly — a source range fully inside it covers
+    /// both a dot and its span's colour in cell 4, and a source column just
+    /// outside it must set neither, proving the two lookups can't drift apart.
     ///
     /// The "inside" case fills the *entire* `[48, 60)` bucket rather than
-    /// a single character (issue #1007: a lone non-whitespace character in
-    /// a multi-column bucket is no longer guaranteed to set its dot — that
-    /// coverage is now dithered — but full coverage of a bucket always
-    /// does, since [`super::braille::dither_threshold_met`]'s threshold
-    /// tops out below full scale). This keeps the test's actual target —
-    /// dot and colour ranges must agree — deterministic regardless of
-    /// which of #1007's two dot positions the dither happens to land on.
+    /// a single character: a lone non-whitespace character in a multi-column
+    /// bucket is no longer guaranteed to set its dot — that coverage is now
+    /// dithered — but full coverage of a bucket always does, since
+    /// [`super::braille::dither_threshold_met`]'s threshold tops out below
+    /// full scale. This keeps the test's target — dot and colour ranges must
+    /// agree — deterministic regardless of which positions the dither lands on.
     #[test]
     fn odd_cols_per_cell_keeps_dot_and_colour_ranges_aligned() {
         let width_cells = 8;
@@ -960,7 +898,7 @@ mod tests {
         }
     }
 
-    // ── issue #1007: density dithering fixes right-edge saturation ─────
+    // ── density dithering fixes right-edge saturation ────────────
 
     /// Draws `lines` into a `width_cells`-wide, `rows`-tall strip at
     /// `cols_per_cell` scale (down-sampling first if there are more than
@@ -1009,21 +947,14 @@ mod tests {
         }
     }
 
-    /// Core #1007 deliverable, acceptance criterion 1: on a real (>= 500
-    /// line) source file, at a VS-Code-proportioned 12-cell x 33-row TUI
-    /// strip, at most 20% of painted rows may run all the way to the
-    /// strip's right edge. This is the exact reproduction the issue's
-    /// measurement script produced "33/33 (100%)" for under the old
-    /// boolean-OR dot rule (`draw_minimap`'s default `COLS_PER_CELL`
-    /// alone can't fix this — the strip only covers 24 source columns
-    /// then, which is `#1000`'s half); this test drives the same
-    /// widened-scale + dithered-dots combination the issue's "variant C"
-    /// measured directly: `cols_per_cell: 10` (5 source columns per dot,
-    /// `ceil(COLUMN_CAPACITY / (12 cells * 2 dots))` — see
-    /// [`crate::primitives::minimap::COLUMN_CAPACITY`]) is exactly the
-    /// scale a host widens to via `draw_minimap_with_scale` (issue #1000)
-    /// once it also wants #1007's dithered dot rule to stop saturating at
-    /// that scale.
+    /// Core deliverable, acceptance criterion 1: on a real (>= 500 line)
+    /// source file, at a VS-Code-proportioned 12-cell x 33-row TUI strip, at
+    /// most 20% of painted rows may run all the way to the strip's right edge.
+    /// This is the exact reproduction the original measurement produced (100%)
+    /// under the old boolean-OR dot rule; this test drives the same widened-scale
+    /// + dithered-dots combination: `cols_per_cell: 10` (5 source columns per dot)
+    /// is exactly the scale a host widens to via `draw_minimap_with_scale` once
+    /// it also wants dithered dots to stop saturating at that scale.
     #[test]
     fn real_source_file_minimap_right_edge_tracks_line_length_not_saturated() {
         let source = include_str!(concat!(
@@ -1060,11 +991,11 @@ mod tests {
         );
     }
 
-    /// Acceptance criterion 2: a file of uniform-length lines and a file
-    /// of mixed-length lines must produce *visibly different* right-edge
-    /// profiles -- the whole reason #1007 exists is that line length
-    /// should be a visible signal in the minimap's silhouette, not
-    /// something every row erases by saturating to the same column.
+    /// Acceptance criterion 2: a file of uniform-length lines and a file of
+    /// mixed-length lines must produce *visibly different* right-edge profiles
+    /// — the whole reason this fix exists is that line length should be a
+    /// visible signal in the minimap's silhouette, not something every row
+    /// erases by saturating to the same column.
     #[test]
     fn last_set_cell_varies_across_rows_for_mixed_lengths_but_not_for_uniform_ones() {
         let width_cells = 12;
@@ -1119,7 +1050,7 @@ mod tests {
         );
     }
 
-    // ── issue #1032: default scale adapts to the buffer's own width ────
+    // ── default scale adapts to the buffer's own width ──────────
 
     #[test]
     fn resolve_cols_per_cell_stays_at_the_narrow_default_when_the_file_already_fits() {
@@ -1166,22 +1097,15 @@ mod tests {
         assert_eq!(resolve_cols_per_cell(&mm, 12), COLS_PER_CELL);
     }
 
-    /// The issue's own discriminator against #993 (already fixed and
-    /// merged before this issue): #993 made column *position* comparable
-    /// between lines but left the *scale* fixed at one buffer column per
-    /// dot, so a 24-column line and a 300-column line — both at or past
-    /// the old fixed default's 24-column window — painted identically
-    /// saturated runs. #993's own regression fixture (1-char vs 300-char)
-    /// already passed, because the 1-char line sits *inside* the
-    /// 24-column window; it can't distinguish "position is comparable"
-    /// from "scale adapts to width". This fixture straddles the old
-    /// window's right edge instead, so it only passes once the scale
-    /// itself adapts (this issue), not merely once position does (#993).
-    ///
-    /// Both lines live in the same `Minimap` (different row groups so
-    /// their dots never OR together) — the resolved scale is a
-    /// per-*file* property, so both rows share the one scale the file's
-    /// widest line demands.
+    /// Distinguishes the adaptive default scale from the fixed scale: a
+    /// 24-column line and a 300-column line — both at or past the old fixed
+    /// default's 24-column window — painted identically saturated runs under
+    /// the fixed scale. The fixed scale only passed because the 1-char line
+    /// sits *inside* the window; this fixture straddles the old window's right
+    /// edge instead, so it only passes once the scale itself adapts. Both lines
+    /// live in the same `Minimap` (different row groups so their dots never
+    /// interact) — the resolved scale is a per-*file* property, so both rows
+    /// share the one scale the file's widest line demands.
     #[test]
     fn default_scale_distinguishes_a_24_column_line_from_a_300_column_line_in_the_same_file() {
         let width_cells = 12;
@@ -1228,13 +1152,12 @@ mod tests {
         );
     }
 
-    /// Direct #1032 regression for the exact scenario the issue's own
-    /// reproduction describes: `draw_minimap`'s *default* entry point
-    /// (no explicit `cols_per_cell`) reaching indent 40 and 80 on a
-    /// 90-column buffer, with no host-side widening required. Companion
-    /// to `cell_color_survives_at_indent_40_and_80_with_a_widened_scale`,
-    /// which pins the same buffer's colour behaviour under the *explicit*
-    /// #1000 mechanism instead.
+    /// Direct regression for the exact scenario: `draw_minimap`'s *default*
+    /// entry point (no explicit `cols_per_cell`) reaching indent 40 and 80 on
+    /// a 90-column buffer, with no host-side widening required. Companion to
+    /// `cell_color_survives_at_indent_40_and_80_with_a_widened_scale`, which
+    /// pins the same buffer's colour behaviour under the *explicit* parameter
+    /// mechanism instead.
     #[test]
     fn draw_minimap_default_scale_reaches_deep_indents_on_a_wide_buffer() {
         let mut line = vec![' '; 90];

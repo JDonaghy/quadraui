@@ -1,7 +1,6 @@
 //! `Dialog` primitive: a modal message box with a title, body, and
-//! action buttons. Used for confirmations ("Close unsaved file?"),
-//! error reports, and anything else that needs the user to
-//! acknowledge / choose before continuing.
+//! action buttons. Used for confirmations, error reports, and anything
+//! else that needs the user to acknowledge or choose before continuing.
 //!
 //! A `Dialog` is a modal overlay with a fixed layout: title row + body
 //! text + bottom-right-aligned button row. Backends render it as a
@@ -16,21 +15,17 @@
 //! default button (the first whose `is_default = true`); Escape emits
 //! `Cancelled` unconditionally.
 //!
-//! # A deliberate two-way reference with `backend.rs` (quadraui#666)
+//! # Two-way reference with `backend.rs`
 //!
-//! [`native_dialog_options`] below imports [`MessageDialogButton`] /
+//! [`native_dialog_options`] imports [`MessageDialogButton`] and
 //! [`MessageDialogOptions`] from `crate::backend` — the first import
-//! from `crate::backend` anywhere under `src/primitives/` (every other
-//! primitive file stays backend-import-free). `backend.rs` already
-//! imports [`Dialog`]/[`DialogSeverity`] from here, so this creates a
-//! two-way reference between the two files. That inverts the
-//! documented one-directional primitives→backend layering, but doesn't
-//! violate `ARCHITECTURE.md`'s literal rule (`MessageDialogOptions` is
-//! a plain data type, not a `ratatui`/`gtk4`/`cairo`/backend-crate
-//! type), and the #666 design explicitly mandates this file for the
-//! mapping (it's a pure function of the `Dialog` descriptor, unit-
-//! testable with no live surface — see [`native_dialog_options`]'s own
-//! doc). Called out here so it isn't mistaken for drift.
+//! from `crate::backend` in `src/primitives/`. `backend.rs` imports
+//! [`Dialog`] and [`DialogSeverity`] from here, creating a two-way
+//! reference between the files. This inverts the one-directional
+//! primitives→backend layering but stays within `ARCHITECTURE.md`'s
+//! rules: [`MessageDialogOptions`] is a plain data type, not a backend
+//! crate type, and serves as the mapping from `Dialog` descriptor to
+//! native options — a pure function, unit-testable with no live surface.
 
 use crate::backend::{MessageDialogButton, MessageDialogOptions};
 use crate::event::Rect;
@@ -526,34 +521,24 @@ impl Dialog {
         self.buttons.iter().find(|b| b.is_cancel).map(|b| &b.id)
     }
 
-    /// Derive a [`DialogMeasure`] from just `char_width`/`line_height` —
-    /// no real text measurement available (quadraui#419). This is the
-    /// char-cell approximation every caller of [`Self::layout`] currently
-    /// hand-rolls: `char_width == line_height == 1.0` on TUI (one
-    /// character cell), and the backend's real glyph metrics on pixel
-    /// backends. Lifted near-verbatim from
-    /// `examples/common/dialog_table_demo.rs`'s pre-#419 inline
-    /// `measure()` (quadraui#817 fixed that formula to take the real
-    /// `char_width` instead of approximating `line_height * 0.6` — see
-    /// that example's module doc for the provenance) so other
-    /// consumers — vimcode's GTK/TUI backends among them — don't have
-    /// to re-derive the same arithmetic themselves.
+    /// Derive a [`DialogMeasure`] from `char_width` and `line_height`
+    /// without real text measurement. This is the char-cell approximation
+    /// used where `char_width == line_height == 1.0` on TUI (one character
+    /// cell) and the backend's real glyph metrics on pixel backends.
     ///
     /// `border_chrome_inset` optionally shrinks the resulting `width` to
     /// leave room for a border the rasteriser draws *outside*
-    /// [`DialogLayout::bounds`] rather than inside it — e.g. a TUI
-    /// backend whose box-drawing glyphs live one cell past the content
-    /// box, the same convention `tui::context_menu::draw_context_menu`
-    /// (behind the `tui` feature) already uses for `ContextMenu` — see
-    /// that function's "chrome border one cell outside" comment. Pass
-    /// `0.0` when the border is painted *inside* the returned bounds —
-    /// this crate's own `tui::dialog::draw_dialog` (also `tui`-gated)
-    /// and every pixel backend do this today.
+    /// [`DialogLayout::bounds`] rather than inside it — e.g. a TUI backend
+    /// whose box-drawing glyphs live one cell past the content box, the
+    /// same convention `tui::context_menu::draw_context_menu` (behind the
+    /// `tui` feature) already uses for `ContextMenu`. Pass `0.0` when the
+    /// border is painted *inside* the returned bounds — this crate's own
+    /// `tui::dialog::draw_dialog` and every pixel backend do this.
     ///
-    /// Does not measure [`Self::table`]'s or [`Self::buttons`]'
-    /// rendered pixel width beyond the char-cell approximation above;
-    /// callers with real text measurement available should prefer
-    /// measuring directly and building a [`DialogMeasure`] by hand.
+    /// Does not measure [`Self::table`] or [`Self::buttons`]' rendered pixel
+    /// width beyond the char-cell approximation above; callers with real
+    /// text measurement available should prefer measuring directly and
+    /// building a [`DialogMeasure`] by hand.
     pub fn measure_generic(
         &self,
         char_width: f32,
@@ -614,7 +599,7 @@ fn flatten(text: &StyledText) -> String {
 
 /// Map a [`Dialog`] descriptor to the options
 /// [`crate::backend::PlatformServices::show_message_dialog`] needs, or
-/// `None` when `d` is not natively expressible (quadraui#666).
+/// `None` when `d` is not natively expressible.
 ///
 /// Not natively expressible today: `d.table.is_some() || d.input.is_some()`
 /// — no native alert facility hosts a table or a text field, so callers
@@ -656,85 +641,40 @@ pub fn native_dialog_options(d: &Dialog) -> Option<MessageDialogOptions> {
     })
 }
 
-// ── PaintSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
-//
-// `paint` below is the one shared paint implementation, written against
+// PaintSurface Phase 4: shared paint implementation written against
 // [`crate::paint_surface::PaintSurface`] instead of any one backend's
-// API — see `crate::primitives::tooltip::native_surface_paint` for the
-// same pattern applied one primitive earlier in this slice (#1077, part
-// 2/4). Unlike Palette/ContextMenu/Tooltip, Dialog's three per-backend
-// copies had **real, substantive** drift, not just a cosmetic pixel or
-// two — each resolved below by picking one and documenting why, per this
-// migration's established convention, rather than silently:
+// API. Pre-migration per-backend implementations had substantive drift,
+// resolved by picking one implementation and documenting divergences:
 //
-// - **Font role.** [`crate::font_role::ChromePrimitive::Dialog`]
-//   classifies the *whole* primitive as chrome — one font for the whole
-//   box, same as `Tree`/`List`/`MenuBar`. Pre-migration, only macOS
-//   actually did that (issue #1003 passed `self.chrome_font` for the
-//   entire `draw_dialog` call). GTK swapped fonts mid-paint: title +
-//   buttons in the chrome/UI `pango::FontDescription`, but body/table/
-//   input in the editor's monospace layout font. Windows used its one
-//   editor `DWrite` handle for everything, leaving `WinBackend::chrome_dwrite`
-//   (built at attach time, see that field's own doc) completely unused.
-//   `paint` takes a single `surface` already constructed against the
-//   chrome font by its caller — see each backend wrapper — so the whole
-//   dialog now renders in chrome, matching macOS exactly and closing the
-//   gap on GTK (body/table/input move off the editor font) and Windows
-//   (`chrome_dwrite` gets its first real caller). A `DialogInput::Toolbar`
-//   slot is the one exception: `paint` does not render it at all (see
-//   below), so the toolbar rasteriser's own font choice is unaffected by
-//   this decision except through the ambient font state each backend
-//   wrapper leaves behind (GTK: now chrome, previously editor — see
-//   `gtk::dialog::draw_dialog`'s doc for why that's a welcome side effect
-//   rather than a second deliberate change).
-// - **Per-button border stroke.** Windows alone stroked
-//   `theme.border_fg` around every button; GTK/macOS filled the default
-//   button's selected-bg but never stroked a border on any button.
-//   `paint` strokes every button now — cheap, and gives every button a
-//   visible boundary instead of relying on the default button's fill
-//   alone to read as "a button."
-// - **`DialogButton::tint`.** That field's own doc says it's "Override
-//   colour for destructive actions" — Windows was the only backend that
-//   actually read it; GTK/macOS always painted every label in
-//   `theme.surface_fg`, silently dropping a caller's tint. `paint` reads
-//   it on every backend now.
-// - **Button label vertical centring.** GTK/macOS centre each label
-//   inside its button row using the label's own measured height;
-//   Windows passed the button's full row rect and relied on
-//   `IDWriteTextFormat`'s default (top/`NEAR`) paragraph alignment,
-//   i.e. the label sat at the top of a tall button instead of centred.
-//   `paint` centres on every backend — the majority behaviour, and the
-//   same convention every other already-migrated primitive
-//   (`palette`, `context_menu`, `tooltip`) already uses.
-// - **`DialogTextInput` vertical centring.** Same drift, one level
-//   down: GTK/macOS centred the display text in the input box; Windows
-//   passed the box's full height uncentred.
-// - **`DialogTable` explicit `column_widths`.** GTK/macOS honour
-//   `table.column_widths` as a per-column *minimum* width (converted
-//   from the char-cell hint via `line_height * 0.6`, an approximate
-//   monospace char width); Windows's table painter never read the
-//   field at all, so an explicit width hint was silently ignored on
-//   that backend alone.
-// - **`DialogTable` header-separator dash count.** GTK/macOS divide the
-//   table's total content width by the same `line_height * 0.6`
-//   approximate char width to size the `───` separator row under the
-//   header; Windows divided by plain `line_height` (i.e. assumed a
-//   character nearly twice as wide), so its separator row undershot the
-//   table's actual content width. `paint` uses the `* 0.6` approximation
-//   everywhere.
+// - **Font role.** The whole primitive is classified as chrome — one font
+//   for the entire box. Pre-migration, only macOS did this; GTK swapped
+//   fonts mid-paint (title/buttons in chrome, body/table/input in editor
+//   monospace), and Windows used only the editor font. `paint` takes a
+//   single `surface` already constructed against the chrome font by its
+//   caller, so the whole dialog now renders in chrome everywhere.
+//   `DialogInput::Toolbar` is the exception: `paint` does not render it.
+// - **Per-button border stroke.** Windows alone stroked `theme.border_fg`
+//   around every button; GTK/macOS filled the default button's
+//   selected-bg but never stroked a border. `paint` strokes every button.
+// - **`DialogButton::tint`.** Override colour for destructive actions.
+//   Windows was the only backend that read it; GTK/macOS always painted
+//   labels in `theme.surface_fg`. `paint` reads tint on every backend.
+// - **Button label vertical centring.** GTK/macOS centre each label;
+//   Windows left labels at the top. `paint` centres on every backend.
+// - **`DialogTextInput` vertical centring.** Same drift: GTK/macOS
+//   centred display text; Windows passed the box's full height uncentred.
+// - **`DialogTable` explicit `column_widths`.** GTK/macOS honour widths
+//   as per-column minimum; Windows never read the field.
+// - **`DialogTable` header-separator dash count.** GTK/macOS divide by
+//   approximate char width; Windows divided by plain `line_height`,
+//   causing the separator row to undershoot actual content width.
 //
-// `DialogInput::Toolbar` is **not** painted by `paint` at all — the
-// embedded toolbar still renders through each backend's own
-// `super::toolbar::draw_toolbar` (GTK/macOS) or inline Direct2D code
-// (Windows), called by the wrapper *after* `paint` returns, exactly as
-// before this migration. `src/{gtk,macos,win}/toolbar.rs` are not part
-// of this issue's file list — porting the toolbar rasteriser itself onto
-// `PaintSurface` is a separate, future slice, and folding it in here
-// would mean either duplicating its considerably richer layout logic
-// (icons, key hints, per-state colouring) into this file or leaving it
-// half-migrated. Skipping it here changes nothing a caller can observe:
-// every backend's `dialog_layout.input_bounds` position is unaffected,
-// and the toolbar itself paints exactly as it did pre-migration.
+// `DialogInput::Toolbar` is not painted by `paint` — it still renders
+// through each backend's own `super::toolbar::draw_toolbar` (GTK/macOS)
+// or inline Direct2D code (Windows), called by the wrapper after `paint`
+// returns. Porting the toolbar rasteriser onto `PaintSurface` is a
+// separate future change. This skips nothing a caller observes: every
+// backend's `dialog_layout.input_bounds` position is unaffected.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -749,8 +689,8 @@ pub(crate) mod native_surface_paint {
     use crate::types::Color;
     use crate::{Point, Rect};
 
-    /// Approximate monospace character width used to convert a
-    /// [`DialogTable::column_widths`] char-cell hint to pixels.
+    /// Approximate monospace character width ratio: converts
+    /// [`DialogTable::column_widths`] char-cell hints to pixels.
     const APPROX_CHAR_WIDTH_RATIO: f32 = 0.6;
 
     /// Horizontal gap reserved between two columns for the 1px separator
@@ -1524,7 +1464,7 @@ mod tests {
         assert!(d.table.is_none());
     }
 
-    // ── native_dialog_options (quadraui#666) ──────────────────────────────
+    // ── native_dialog_options ─────────────────────────────────────────────
 
     fn dialog_with_buttons() -> Dialog {
         Dialog {
@@ -1818,7 +1758,7 @@ mod tests {
         assert_eq!(d.cancel_button_id().unwrap().as_str(), "cancel");
     }
 
-    // ── Dialog::measure_generic (quadraui#419) ────────────────────────────
+    // ── Dialog::measure_generic ───────────────────────────────────────────
 
     #[test]
     fn measure_generic_tui_shaped_matches_hand_rolled_formula() {

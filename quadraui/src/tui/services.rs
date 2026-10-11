@@ -4,7 +4,7 @@
 //! clipboard), OSC 52 (terminal clipboard via escape sequence), and a
 //! native command-line tool (`wl-copy` / `xclip` / `xsel`). OSC 52
 //! covers SSH and tmux, where arboard cannot reach the host clipboard.
-//! The native-tool leg covers the opposite gap (#398): a local X11
+//! The native-tool leg covers the opposite gap: a local X11
 //! session running *inside* an outer tmux, where arboard can fail to
 //! own the X `CLIPBOARD` selection and OSC 52 is dropped unless both
 //! tmux and the outer terminal are configured to pass it through.
@@ -28,16 +28,16 @@
 //! `~/.tmux.conf` snippets, the `set-clipboard external` trap, the
 //! Shift-drag mouse-selection caveat, the OSC 52 payload cap, and a
 //! troubleshooting order for "the status bar said `Copied:` but nothing
-//! was copied" (#331). Point bug reports there rather than at this
+//! was copied". Point bug reports there rather than at this
 //! module comment — none of it is diagnosable from inside the process.
 //!
 //! [`docs/CLIPBOARD.md`]: https://github.com/JDonaghy/quadraui/blob/develop/quadraui/docs/CLIPBOARD.md
 //!
 //! `send_notification` is a genuine best-effort degrade, not a no-op
-//! stub — see "Notifications (issue #1092)" below. `open_url` is
-//! genuinely implemented too; see "URL opening (issue #969)" below.
+//! stub — see "Notifications" below. `open_url` is
+//! genuinely implemented too; see "URL opening" below.
 //!
-//! ## Dialogs (issue #965)
+//! ## Dialogs
 //!
 //! `show_file_open_dialog`, `show_file_save_dialog`, and
 //! `show_message_dialog` used to return `None` unconditionally — a
@@ -103,7 +103,7 @@
 //! `move_to_trash` (delegates to [`crate::desktop::move_to_trash`] — the
 //! cross-platform `trash` crate needs only a filesystem, not a live
 //! desktop session, so TUI gets it too). `open_path` delegates to
-//! [`crate::desktop::open_with_default`] (issue #1087) — `xdg-open`/`open`
+//! [`crate::desktop::open_with_default`] — `xdg-open`/`open`
 //! on Unix, `ShellExecuteW` on Windows, best-effort either way (see
 //! [`TuiPlatformServices::open_path`]'s own doc). `reveal_in_file_manager`
 //! used to be the one exception, an unconditional
@@ -121,7 +121,7 @@
 //! `Unsupported` when that degrade itself can't reach anything (see that
 //! function's own doc for the full per-platform story).
 //!
-//! ## Notifications (issue #1092)
+//! ## Notifications
 //!
 //! `send_notification` used to be `fn send_notification(&self, _n:
 //! Notification) {}` — a silent, undetectable no-op (`notifications` was
@@ -130,7 +130,7 @@
 //! that skipped the check got nothing with no signal at all). Two
 //! independent, best-effort legs now run on every call, mirroring
 //! [`TuiClipboard::write_text`]'s "every leg best-effort, run
-//! independently" posture (issue #398) rather than trying to pick one:
+//! independently" posture rather than trying to pick one:
 //! this crate has no synchronous way to ask a terminal "do you support
 //! OSC 9?", so guessing which single leg to use would just be trading one
 //! silent failure mode for another.
@@ -194,7 +194,7 @@
 //! attempt on purpose — the capability flag only gates
 //! `notify_or_toast`'s automatic choice, not this method's availability.
 //!
-//! ## URL opening (issue #969)
+//! ## URL opening
 //!
 //! Before this issue, `open_url` was `fn open_url(&self, _url: &str) {}`
 //! and its #949 `open_url_result` twin unconditionally answered
@@ -251,7 +251,7 @@
 //!    itself stays the infallible wrapper `open_url_result`'s doc already
 //!    describes (D-009 seam 2): same behavior, discarded result.
 //!
-//! ## Displays (issue #959)
+//! ## Displays
 //!
 //! `displays` is also genuinely implemented, not a stub: one
 //! [`crate::backend::Display`] whose bounds are `crossterm::terminal::size()`
@@ -278,7 +278,7 @@ use crate::event::{Point, Rect, UiEvent};
 use crate::tui::backend::TuiBackend;
 use crate::{Key, Modifiers, NamedKey};
 
-// ── Nested dialog loop (issue #965) ─────────────────────────────────────────────
+// ── Nested dialog loop ──────────────────────────────────────────────────────────
 
 /// A paintable, sizeable surface a nested dialog loop can draw into —
 /// implemented for any `ratatui::Terminal<B>`. Exists so
@@ -286,7 +286,7 @@ use crate::{Key, Modifiers, NamedKey};
 /// live runner's real `Terminal<CrosstermBackend<Stdout>>`-wrapping
 /// backend and a test's in-memory `Terminal<TestBackend>`, without this
 /// module naming either concrete ratatui backend type. See the module
-/// doc's "Dialogs (issue #965)" section.
+/// doc's "Dialogs" section.
 pub(crate) trait DialogSurface {
     /// Paint one frame, handing the raw `ratatui::Frame` to `paint`.
     /// Swallows a paint error (matching `TuiClipboard`'s established
@@ -411,7 +411,7 @@ pub(crate) fn emit_osc52_to(text: &str, writer: &mut dyn std::io::Write) {
     emit_osc52_with(text, std::env::var_os("TMUX").is_some(), writer);
 }
 
-// ── OSC 8 support (#969) ─────────────────────────────────────────────────────
+// ── OSC 8 support ────────────────────────────────────────────────────────────
 
 /// Build the OSC 8 hyperlink escape sequence for `url`, using `url` itself
 /// as the visible link text: `ESC ]8;;<url> ESC \ <url> ESC ]8;; ESC \` —
@@ -434,7 +434,7 @@ fn emit_osc8_hyperlink_to(url: &str, writer: &mut dyn std::io::Write) -> bool {
 /// Emit an OSC 8 hyperlink for `url` to stdout and (Unix) `/dev/tty`,
 /// mirroring [`emit_osc52_to`]'s "reach the controlling terminal even when
 /// stdout is redirected" reasoning — the fallback leg of
-/// [`TuiPlatformServices::open_url_result`] (issue #969) for when no
+/// [`TuiPlatformServices::open_url_result`] for when no
 /// platform URL opener could be spawned. Returns `true` if *either* write
 /// succeeded, `false` only when neither stream accepted anything — the
 /// genuinely headless case that earns `Err(BackendError::Unsupported)`.
@@ -475,17 +475,15 @@ fn emit_osc8_hyperlink_to_tty(_url: &str) -> bool {
     false
 }
 
-// ── URL opener (#969, consolidated into crate::desktop by #1087) ───────────────
+// ── URL opener (shared with other backends in crate::desktop) ─────────────
 //
-// This module used to carry its own macOS/Linux `Command` builder, its own
-// hand-written `ShellExecuteW` FFI declaration, and its own
-// `wide_nul_terminated` — one of each, duplicated again in `macos::services`
-// and `win::services`. All three now live once in `crate::desktop`
-// ([`crate::desktop::try_open_with_default`]) and are shared by every
-// backend's opener.
+// This module's macOS/Linux `Command` builder, hand-written `ShellExecuteW`
+// FFI declaration, and `wide_nul_terminated` now live once in
+// `crate::desktop` ([`crate::desktop::try_open_with_default`]) and are
+// shared by every backend's opener.
 
 /// The three-step "opener, then OSC 8, then honestly `Unsupported`" logic
-/// [`TuiPlatformServices::open_url_result`] runs (issue #969), factored
+/// [`TuiPlatformServices::open_url_result`] runs, factored
 /// out with `try_opener` injected so tests can swap in a harmless
 /// stand-in instead of the real platform opener — see this module's
 /// `open_url_tests` for why `open_url_result` itself can't safely be
@@ -500,7 +498,7 @@ fn open_url_via(url: &str, try_opener: impl FnOnce(&str) -> bool) -> ServiceResu
     // character (in particular another `ESC`) in an attacker- or
     // content-derived URL could break out of the intended sequence and
     // inject further terminal escapes into a capable-but-not-bulletproof
-    // emulator (issue #969 review). Real URLs never contain an unencoded
+    // emulator. Real URLs never contain an unencoded
     // control character (RFC 3986 requires percent-encoding), so
     // rejecting the OSC 8 leg for one costs nothing legitimate.
     let osc8_safe = !url.contains(|c: char| c.is_control());
@@ -510,11 +508,11 @@ fn open_url_via(url: &str, try_opener: impl FnOnce(&str) -> bool) -> ServiceResu
     Err(BackendError::Unsupported)
 }
 
-// ── Notification OSC support (issue #1092) ──────────────────────────────────────
+// ── Notification OSC support ────────────────────────────────────────────────────
 
 /// Strip raw control characters (`ESC`, `BEL`, other C0/C1 controls) out
 /// of `s` before embedding it in a terminal escape sequence — see the
-/// module doc's "Notifications (issue #1092)" section for why: an
+/// module doc's "Notifications" section for why: an
 /// attacker- or content-derived notification title/body containing
 /// another `ESC` could otherwise break out of the OSC 9/777 sequence
 /// [`emit_notification_osc`] builds and inject arbitrary further escapes
@@ -567,7 +565,7 @@ fn emit_notification_osc_to(title: &str, body: &str, writer: &mut dyn std::io::W
 
 /// Emit both notification OSC sequences for `n` to stdout and (Unix)
 /// `/dev/tty` — the first leg of
-/// [`TuiPlatformServices::send_notification`] (issue #1092); see the
+/// [`TuiPlatformServices::send_notification`]; see the
 /// module doc's "Notifications" section. `title`/`body` are run through
 /// [`strip_control_chars`] first (unlike [`open_url_via`]'s OSC 8
 /// fallback, which rejects the whole write when a control character is
@@ -598,7 +596,7 @@ fn emit_notification_osc_to_tty(title: &str, body: &str) {
 #[cfg(not(unix))]
 fn emit_notification_osc_to_tty(_title: &str, _body: &str) {}
 
-// ── Native clipboard tool fallback (#398) ───────────────────────────────────────
+// ── Native clipboard tool fallback ──────────────────────────────────────────────
 
 /// Ordered list of native clipboard-tool invocations to try, as
 /// `(program, args)` pairs.
@@ -625,7 +623,7 @@ fn native_clipboard_candidates(wayland: bool) -> [(&'static str, &'static [&'sta
 ///
 /// This covers the setup where neither arboard nor OSC 52 reliably
 /// reach the real system clipboard: a local X11 (or Wayland) session
-/// running inside an outer tmux (#398). The native tool owns the
+/// running inside an outer tmux. The native tool owns the
 /// selection exactly the way `xclip -o` (or a paste elsewhere on the
 /// desktop) reads it back.
 ///
@@ -718,7 +716,7 @@ impl Clipboard for TuiClipboard {
         }
         // 3. Native clipboard tool (wl-copy / xclip / xsel) — best-effort
         //    fallback for local X11-inside-tmux setups where neither leg
-        //    above reaches the real system clipboard (#398). Offloaded to
+        //    above reaches the real system clipboard. Offloaded to
         //    a detached thread: these tools daemonize after reading
         //    stdin, so spawning them synchronously here would risk
         //    stalling the UI loop on a slow fork/exec.
@@ -730,7 +728,7 @@ impl Clipboard for TuiClipboard {
     }
 
     /// Clear the **local** desktop clipboard via the same `arboard`
-    /// handle [`Self::read_text`] already reads through (issue #954).
+    /// handle [`Self::read_text`] already reads through.
     ///
     /// Deliberately not a three-leg operation like [`Self::write_text`]:
     /// OSC 52 has no "clear" form (only "set to this base64 payload") and
@@ -870,7 +868,7 @@ mod tests {
         assert_eq!(xsel.1, &["--clipboard", "--input"]);
     }
 
-    // ── Clipboard image/html/file-list/clear degrade story (#954) ──────
+    // ── Clipboard image/html/file-list/clear degrade story ─────────────
 
     /// TUI is text-only by design (OSC 52 has no image/HTML form), so
     /// `read_image`/`write_image`/`write_html`/`read_file_list` must stay
@@ -907,7 +905,7 @@ mod tests {
     /// local desktop clipboard at all (headless CI, pure SSH session),
     /// since that's a real gap this test isn't trying to paper over.
     ///
-    /// # The systemwide clipboard has other writers (quadraui#1129)
+    /// # The systemwide clipboard has other writers
     ///
     /// There is exactly **one** desktop clipboard per session, and this
     /// is not the only `#[test]` fn that writes it. `TuiDriver` wraps a
@@ -1022,7 +1020,7 @@ mod tests {
         after == Some(CLEAR_TEST_SENTINEL)
     }
 
-    /// quadraui#1129: pins [`sentinel_survived_clear`]'s three cases
+    /// Pins [`sentinel_survived_clear`]'s three cases
     /// deterministically, with no real clipboard involved — the flake it
     /// fixes is environment-dependent, this discrimination is not.
     #[test]
@@ -1044,7 +1042,7 @@ mod tests {
     }
 }
 
-// ── URL opening tests (issue #969) ──────────────────────────────────────────────
+// ── URL opening tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod open_url_tests {
@@ -1125,20 +1123,14 @@ mod open_url_tests {
         assert!(emit_osc8_hyperlink("https://example.com/969"));
     }
 
-    /// #969 acceptance bar: `open_url_result` reports `Ok(())` when an
+    /// Acceptance bar: `open_url_result` reports `Ok(())` when an
     /// opener is present. Exercised through [`open_url_via`] with a
     /// harmless stand-in "opener" (a command every supported host can
     /// spawn without doing anything) instead of the real
     /// [`crate::desktop::try_open_with_default`] — spawning the *actual*
-    /// platform opener in a test would launch a real browser as a side
-    /// effect, which is exactly what this issue's acceptance bar says to
-    /// avoid. This still proves the production logic that matters: a
-    /// successful open short circuits straight to `Ok(())` without ever
-    /// touching the OSC 8 fallback. `crate::desktop`'s own
-    /// `open_with_default_tests` module covers the real,
-    /// `$PATH`-delegated opener itself (issue #1087) — see
-    /// `try_open_with_default_returns_true_through_a_real_delegation`
-    /// there.
+    /// platform opener would launch a real browser, which is avoided here.
+    /// This proves the production logic: a successful open short circuits
+    /// to `Ok(())` without touching the OSC 8 fallback.
     #[test]
     fn open_url_via_returns_ok_when_the_opener_spawns() {
         let result = open_url_via("https://example.com/969", |_url| {
@@ -1157,27 +1149,23 @@ mod open_url_tests {
         assert_eq!(result, Ok(()));
     }
 
-    /// #969 acceptance bar: when the opener can't even launch (no desktop
-    /// session, binary missing), `open_url_via` falls back to emitting an
-    /// OSC 8 hyperlink — which succeeds here because stdout is a writable
-    /// stream even under `cargo test`, so this reports `Ok(())` rather
-    /// than `Unsupported`. Writes real OSC 8 bytes to the test process's
-    /// stdout as a side effect (harmless — the same "doesn't assert on
-    /// the actual bytes written" posture `beep_reports_success` already
-    /// accepts for its BEL byte).
+    /// Acceptance bar: when the opener can't launch (no desktop session,
+    /// binary missing), `open_url_via` falls back to emitting an OSC 8
+    /// hyperlink — which succeeds here because stdout is writable even
+    /// under `cargo test`, so this reports `Ok(())` rather than
+    /// `Unsupported`. Writes real OSC 8 bytes to the test process's
+    /// stdout as a side effect (harmless — harmless side effect on stdout).
     #[test]
     fn open_url_via_falls_back_to_osc8_when_the_opener_is_missing() {
         let result = open_url_via("https://example.com/969", |_url| false);
         assert_eq!(result, Ok(()));
     }
 
-    /// Issue #969 review: a URL carrying a raw control character (here, a
-    /// second `ESC`) must never reach the OSC 8 writer, even when the
-    /// opener leg fails and stdout is otherwise writable — which would
-    /// otherwise make this resolve `Ok` the same way
-    /// `open_url_via_falls_back_to_osc8_when_the_opener_is_missing` does
-    /// above. The control-character guard short-circuits straight to
-    /// `Unsupported` instead of ever calling `emit_osc8_hyperlink`.
+    /// A URL carrying a raw control character (here, a second `ESC`) must
+    /// never reach the OSC 8 writer, even when the opener leg fails and
+    /// stdout is otherwise writable. The control-character guard
+    /// short-circuits straight to `Unsupported` instead of calling
+    /// `emit_osc8_hyperlink`.
     #[test]
     fn open_url_via_rejects_control_characters_in_the_osc8_fallback() {
         let malicious_url = "https://example.com/\x1b]0;pwned\x07";
@@ -1212,35 +1200,22 @@ mod open_url_tests {
         // `Err(BackendError::Unsupported)` condition.
     }
 
-    /// #969 review (non-blocking gap): every other test above exercises
-    /// [`open_url_via`] with an injected stand-in opener — this is the
-    /// one test that calls the real, fully-wired
-    /// `PlatformServices::open_url_result` trait method end to end
-    /// (`TuiPlatformServices`'s one-line delegation to `open_url_via`
-    /// with the real [`crate::desktop::try_open_with_default`]), so that
-    /// delegation itself is actually exercised rather than trusted by
-    /// inspection.
+    /// This test calls the real, fully-wired `PlatformServices::open_url_result`
+    /// trait method end to end (`TuiPlatformServices`'s one-line delegation to
+    /// `open_url_via` with the real [`crate::desktop::try_open_with_default`]),
+    /// so that delegation itself is exercised rather than trusted by inspection.
     ///
-    /// Safe to do without launching a real browser only because `$PATH`
-    /// is temporarily redirected (guarded by
-    /// [`crate::desktop::PATH_OVERRIDE_TEST_LOCK`] — shared crate-wide
-    /// since issue #1087 moved the underlying opener into `crate::desktop`,
-    /// alongside `macos::services`'s own use of the same lock — and
-    /// always restored via a drop guard even on panic) to a directory
-    /// containing a stub executable under the *exact* name
-    /// [`crate::desktop::unix_open_with_default_command`] looks up on
-    /// this platform (`open` on macOS, `xdg-open` elsewhere on Unix) that
-    /// exits `0` immediately — so `try_open_with_default`'s real
-    /// `Command::new(..).spawn()` finds and successfully launches *that*,
-    /// not a browser.
+    /// Safe to do without launching a real browser only because `$PATH` is
+    /// temporarily redirected (guarded by
+    /// [`crate::desktop::PATH_OVERRIDE_TEST_LOCK`] and always restored via a
+    /// drop guard even on panic) to a directory containing a stub executable
+    /// under the *exact* name [`crate::desktop::unix_open_with_default_command`]
+    /// looks up on this platform (`open` on macOS, `xdg-open` elsewhere on Unix)
+    /// that exits `0` immediately — so `try_open_with_default`'s real
+    /// `Command::new(..).spawn()` finds and successfully launches *that*.
     ///
-    /// **Unix only.** Windows' opener is a direct `ShellExecuteW` FFI
-    /// call with no `$PATH`-resolved binary to intercept this way, so
-    /// there is no equivalent seam there; see
-    /// `crate::desktop::open_with_default_tests`'s
-    /// `windows_shell_execute_open_does_not_panic_on_shell_metacharacters`
-    /// and `win::services::open_url_result_reports_failure_for_an_unregistered_scheme`
-    /// for that platform's own coverage.
+    /// **Unix only.** Windows' opener is a direct `ShellExecuteW` FFI call with
+    /// no `$PATH`-resolved binary to intercept this way.
     #[cfg(unix)]
     #[test]
     fn open_url_result_returns_ok_through_the_real_delegation() {
@@ -1286,7 +1261,7 @@ mod open_url_tests {
         assert_eq!(result, Ok(()));
     }
 
-    /// #1087 review (blocking gap): before this fix,
+    /// Before this fix,
     /// `TuiPlatformServices::open_path` hand-rolled its own
     /// `std::process::Command::new(OPENER).arg(path).spawn()` instead of
     /// delegating to [`crate::desktop::open_with_default`] the way
@@ -1348,14 +1323,10 @@ mod open_url_tests {
         assert_eq!(services.open_path(scratch), Ok(()));
     }
 
-    /// The other half of the #1087 review gap above: with `$PATH`
-    /// redirected to a directory containing no opener binary at all,
-    /// `open_path` now genuinely reports `Err` (via
-    /// [`crate::desktop::open_with_default`]) instead of either the old
-    /// hand-rolled `Command::spawn` (whose `ENOENT` it did already
-    /// surface, so this specific assertion isn't new on Unix) or, on a
-    /// non-Unix host, the unconditional `Err(BackendError::Unsupported)`
-    /// the pre-fix code returned regardless of whether an opener existed.
+    /// With `$PATH` redirected to a directory containing no opener binary,
+    /// `open_path` now reports `Err` (via [`crate::desktop::open_with_default`])
+    /// instead of the unconditional `Err(BackendError::Unsupported)` returned
+    /// before the opener was delegated to `crate::desktop`.
     #[cfg(unix)]
     #[test]
     fn open_path_reports_err_when_the_opener_is_missing() {
@@ -1382,7 +1353,7 @@ mod open_url_tests {
     }
 }
 
-// ── Notification OSC tests (issue #1092) ─────────────────────────────────────────
+// ── Notification OSC tests ───────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod notification_osc_tests {
@@ -1455,15 +1426,11 @@ mod notification_osc_tests {
         assert!(!emit_notification_osc_to("Build", "Finished", &mut w));
     }
 
-    /// #1092 review-equivalent bar (mirrors issue #969's `open_url_via`
-    /// control-character guard): a title/body carrying a raw control
-    /// character must never reach the OSC sequences unstripped — this
-    /// only pins that [`emit_notification_osc`]'s production call site
-    /// actually runs both through [`strip_control_chars`] first, via the
-    /// pure sequence builders directly (the same "control character
-    /// rejected before it reaches the sequence" bar
-    /// `open_url_via_rejects_control_characters_in_the_osc8_fallback`
-    /// sets for the OSC 8 leg).
+    /// Acceptance bar: a title/body carrying a raw control character must
+    /// never reach the OSC sequences unstripped — this pins that
+    /// [`emit_notification_osc`]'s production call site actually runs both
+    /// through [`strip_control_chars`] first, via the pure sequence builders
+    /// directly (same as the OSC 8 leg's control-character guard).
     #[test]
     fn stripped_title_and_body_never_carry_a_raw_escape_into_the_sequence() {
         let title = strip_control_chars("t\x1b]0;pwned\x07itle");
@@ -1479,13 +1446,10 @@ mod notification_osc_tests {
         assert_eq!(osc777.matches('\x1b').count(), 1, "{osc777:?}");
     }
 
-    /// #1092 acceptance bar: `send_notification` writes real OSC 9/777
-    /// bytes to the test process's stdout as a side effect — harmless,
-    /// the same posture `open_url_via_falls_back_to_osc8_when_the_opener_is_missing`
-    /// already accepts for its OSC 8 write. Doesn't (and can't) assert a
-    /// visible notification appeared; only that the call doesn't panic
-    /// and returns, matching `beep_reports_success`'s "doesn't assert on
-    /// the actual bytes written" posture for a real terminal write.
+    /// Acceptance bar: `send_notification` writes real OSC 9/777 bytes to
+    /// the test process's stdout as a side effect — harmless side effect.
+    /// Doesn't assert a visible notification appeared; only that the call
+    /// doesn't panic and returns.
     #[test]
     fn send_notification_does_not_panic() {
         let services = TuiPlatformServices::new();
@@ -1500,7 +1464,7 @@ mod notification_osc_tests {
 pub struct TuiPlatformServices {
     clipboard: TuiClipboard,
     /// Shared handle onto the live paint target for the nested dialog
-    /// loop (issue #965) — see the module doc's "Dialogs" section.
+    /// loop — see the module doc's "Dialogs" section.
     /// `None` until [`Self::set_dialog_surface`] is called (and in unit
     /// tests that never call it), mirroring
     /// `GtkPlatformServices::window`'s "`None` until wired" shape:
@@ -1634,7 +1598,7 @@ impl TuiPlatformServices {
     /// Draw-and-read nested loop shared by [`Self::show_file_open_dialog`],
     /// [`Self::show_file_save_dialog`], and [`Self::show_message_dialog`]
     /// — the TUI counterpart of `GtkPlatformServices::pump_until_ready`.
-    /// See the module doc's "Dialogs (issue #965)" section for the full
+    /// See the module doc's "Dialogs" section for the full
     /// design.
     ///
     /// Returns `None` immediately if no [`Self::dialog_surface`] is
@@ -1685,7 +1649,7 @@ impl PlatformServices for TuiPlatformServices {
     }
 
     /// Nested draw-and-read loop over [`crate::compose::FilePickerController`]
-    /// in [`FilePickerMode::Open`] (issue #965) — see the module doc's
+    /// in [`FilePickerMode::Open`] — see the module doc's
     /// "Dialogs" section. `opts.initial_dir` seeds the browsing root
     /// (falling back to the process's current directory);
     /// `opts.filters` restricts which files are listed.
@@ -1719,7 +1683,7 @@ impl PlatformServices for TuiPlatformServices {
     }
 
     /// Nested draw-and-read loop over [`crate::compose::FilePickerController`]
-    /// in [`FilePickerMode::Save`] (issue #965) — see
+    /// in [`FilePickerMode::Save`] — see
     /// [`Self::show_file_open_dialog`]'s doc for the shared shape.
     /// `opts.initial_filename` seeds the destination filename (the
     /// picker's query field — see `FilePickerController`'s module doc
@@ -1750,7 +1714,7 @@ impl PlatformServices for TuiPlatformServices {
     }
 
     /// No native directory chooser on TUI — unconditionally `None`, same
-    /// as the file-dialog methods above (quadraui#935). Apps should
+    /// as the file-dialog methods above. Apps should
     /// provide an in-canvas picker instead (see
     /// `BackendCaps::folder_dialogs`'s doc for why this is a distinct
     /// flag from `file_dialogs`).
@@ -1775,7 +1739,7 @@ impl PlatformServices for TuiPlatformServices {
         )
     }
 
-    /// quadraui#1092: a genuine best-effort degrade — see the module
+    /// A genuine best-effort degrade — see the module
     /// doc's "Notifications" section for the full two-leg story
     /// ([`emit_notification_osc`]'s OSC 9/777 escape leg, plus a native
     /// `osascript`/`notify-send` command-line notifier fallback). Both
@@ -1797,7 +1761,7 @@ impl PlatformServices for TuiPlatformServices {
 
     /// Infallible wrapper over [`Self::open_url_result`], discarding its
     /// outcome — see that method's doc (and the module doc's "URL opening
-    /// (issue #969)" section) for what actually happens here. Kept
+    ///" section) for what actually happens here. Kept
     /// alongside the fallible twin per D-009 seam 2 / `PRIMITIVE_RULES.md`
     /// rule 2 ("new function alongside the old one"): both existing
     /// consumers, which only ever call `open_url`, keep compiling
@@ -1806,7 +1770,7 @@ impl PlatformServices for TuiPlatformServices {
         let _ = self.open_url_result(url);
     }
 
-    /// quadraui#969: genuinely opens `url`, rather than #949's honest but
+    /// Genuinely opens `url`, rather than #949's honest but
     /// unconditional `Err(BackendError::Unsupported)`. Tries the platform
     /// URL opener first ([`crate::desktop::try_open_with_default`] —
     /// `xdg-open`/`open` on Unix, `ShellExecuteW` directly on Windows,
@@ -1822,7 +1786,7 @@ impl PlatformServices for TuiPlatformServices {
         })
     }
 
-    /// quadraui#1092: delegates to [`crate::desktop::reveal_in_file_manager`]
+    /// Delegates to [`crate::desktop::reveal_in_file_manager`]
     /// — `open -R` on macOS, `ShellExecuteW`-driven Explorer `/select,` on
     /// Windows, `org.freedesktop.FileManager1.ShowItems` over D-Bus
     /// (falling back to opening the parent directory) on Linux/BSD. Used
@@ -1835,8 +1799,8 @@ impl PlatformServices for TuiPlatformServices {
         crate::desktop::reveal_in_file_manager(path)
     }
 
-    /// [`crate::desktop::open_with_default`] (issue #1087) — the same
-    /// idea [`Self::open_url_result`] above uses for a URL (issue #969),
+    /// [`crate::desktop::open_with_default`] — the same
+    /// idea [`Self::open_url_result`] above uses for a URL,
     /// applied to a filesystem path instead: a terminal running inside a
     /// desktop session (the common case — most TUI apps run in a
     /// graphical terminal emulator, not a bare VT) can still launch the
@@ -1854,7 +1818,7 @@ impl PlatformServices for TuiPlatformServices {
         crate::desktop::open_with_default(path.as_os_str())
     }
 
-    /// [`crate::desktop::move_to_trash`] (issue #956) — genuinely **full**
+    /// [`crate::desktop::move_to_trash`] — genuinely **full**
     /// support on TUI, not a degrade: the `trash` crate needs only a
     /// filesystem, no live desktop/window-server session, so this is the
     /// exact same implementation GTK/macOS/Win-GUI use. See that
@@ -1865,7 +1829,7 @@ impl PlatformServices for TuiPlatformServices {
 
     /// BEL (`\x07`), written to both stdout and (Unix) `/dev/tty` for the
     /// same reliability reason [`TuiClipboard::write_text`]'s OSC 52 leg
-    /// writes to both (issue #956): stdout may be redirected away from
+    /// writes to both: stdout may be redirected away from
     /// the terminal by a wrapper script, but `/dev/tty` always reaches
     /// the controlling terminal directly. Arguably the most *honest* of
     /// this issue's four TUI overrides — BEL is a terminal's only
@@ -1882,7 +1846,7 @@ impl PlatformServices for TuiPlatformServices {
         Ok(())
     }
 
-    /// quadraui#952: the honest TUI degrade — see
+    /// The honest TUI degrade — see
     /// `crate::tui::caps::detect_system_theme`'s doc for exactly what
     /// signal this reads (`COLORFGBG`) and why there is no OSC 11 live
     /// probe here yet. `Err(BackendError::Unsupported)` on any terminal
@@ -1946,7 +1910,7 @@ mod message_dialog_tests {
     use super::*;
     use crate::backend::MessageDialogOptions;
 
-    /// quadraui#965: `show_message_dialog` now drives a real nested
+    /// `show_message_dialog` now drives a real nested
     /// draw-and-read loop over `MessageDialogController` — but that loop
     /// needs somewhere to paint (`set_dialog_surface`), which a bare
     /// `TuiPlatformServices::new()` never wires. This pins the resulting
@@ -1966,7 +1930,7 @@ mod message_dialog_tests {
         assert!(services.show_message_dialog(opts).is_none());
     }
 
-    /// quadraui#935: TUI has no native directory chooser, so
+    /// TUI has no native directory chooser, so
     /// `show_folder_open_dialog` unconditionally returns `None` — same
     /// shape as `show_message_dialog` above, and matching
     /// `BackendCaps::folder_dialogs` being `false` on `TuiBackend`.
@@ -1978,32 +1942,22 @@ mod message_dialog_tests {
             .is_none());
     }
 
-    // quadraui#969: `open_url_result` is now genuinely functional — it no
-    // longer unconditionally reports `Unsupported` the way #949 left it.
-    // Deliberately **not** pinned by a test that calls the real
-    // `open_url_result` here: on a host with a real desktop opener (e.g.
-    // macOS's `open`), that would actually launch a browser as a test
-    // side effect. See `open_url_tests` below for the acceptance-bar
+    // `open_url_result` now delegates to `crate::desktop::try_open_with_default`.
+    // Deliberately not pinned by a test that calls the real `open_url_result`:
+    // on a host with a real desktop opener (e.g. macOS's `open`), that would
+    // actually launch a browser. See `open_url_tests` below for the acceptance-bar
     // coverage instead — it exercises the same "opener present → `Ok`",
     // "opener absent → OSC 8 fallback" logic through `open_url_via` with a
-    // harmless stand-in command, asserted on the spawned command rather
-    // than by actually opening anything.
+    // harmless stand-in command.
 
-    // quadraui#1092: `reveal_in_file_manager` is now genuinely functional
-    // (`crate::desktop::reveal_in_file_manager`) — it no longer
-    // unconditionally reports `Unsupported` the way #956 left it.
-    // Deliberately **not** pinned by a test that calls the real
-    // `TuiPlatformServices::reveal_in_file_manager` here, for the same
-    // "would have a real side effect on a host with a real desktop
-    // opener" reason `open_url_result` isn't (see the comment above this
-    // one): on macOS this would genuinely spawn Finder, and on Linux with
-    // a live session bus and file manager running, it would genuinely pop
-    // a window. See `crate::desktop`'s own `reveal_in_file_manager_tests`
-    // for the acceptance-bar coverage instead — command construction per
-    // platform plus the `$PATH`-stub "every leg fails → `Unsupported`"
-    // outcome, none of which spawn anything real.
+    // `reveal_in_file_manager` now delegates to `crate::desktop::reveal_in_file_manager`.
+    // Deliberately not pinned by a test that calls the real method here: on macOS
+    // this would genuinely spawn Finder, and on Linux with a live session bus and
+    // file manager, it would genuinely pop a window. See `crate::desktop`'s own
+    // `reveal_in_file_manager_tests` for acceptance-bar coverage instead — command
+    // construction per platform plus the "every leg fails → `Unsupported`" outcome.
 
-    /// quadraui#956: BEL is a terminal's only notification channel — this
+    /// BEL is a terminal's only notification channel — this
     /// pins that `beep` reports success (rather than the trait's
     /// `Unsupported` default) on every host this runs on, since writing
     /// to stdout/`/dev/tty` never depends on a live desktop session the
@@ -2016,7 +1970,7 @@ mod message_dialog_tests {
         assert_eq!(services.beep(), Ok(()));
     }
 
-    /// quadraui#959: a terminal has no synchronous cursor-position query
+    /// A terminal has no synchronous cursor-position query
     /// — `cursor_screen_point` always reports `Unsupported`, on every
     /// host this runs on (no environment dependency, unlike `displays`
     /// below).
@@ -2029,7 +1983,7 @@ mod message_dialog_tests {
         );
     }
 
-    /// quadraui#959: `displays` reads the real controlling terminal via
+    /// `displays` reads the real controlling terminal via
     /// `crossterm::terminal::size()` — genuinely environment-dependent
     /// (no pty under `cargo test`'s captured output is a real,
     /// non-bug `Err`, same "skip rather than fail" posture
@@ -2067,7 +2021,7 @@ mod message_dialog_tests {
 /// `PlatformServices` method exactly as an app would — the *same*
 /// `FilePickerController`/`MessageDialogController` state machine and
 /// `TuiBackend` paint path production uses, with no live terminal
-/// involved. See the module doc's "Dialogs (issue #965)" section.
+/// involved. See the module doc's "Dialogs" section.
 #[cfg(test)]
 mod dialog_tests {
     use super::*;

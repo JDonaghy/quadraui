@@ -1,12 +1,10 @@
-//! Proof-of-concept for `ScreenLayout` + `FrameHitMap` (#202 Stage 3+4).
-//!
 //! Renders a TabBar + ListView + StatusBar entirely through
 //! `ScreenLayout::draw()`, then dispatches clicks via
 //! `FrameHitMap::hit_test()` to identify which surface was clicked.
 //!
 //! The ListView rows are intentionally wider than the terminal so the
 //! example doubles as the interactive smoke test for ListView horizontal
-//! scroll (#276): `←`/`→` (or `h`/`l`) scroll the content and a horizontal
+//! scroll: `←`/`→` (or `h`/`l`) scroll the content and a horizontal
 //! scrollbar appears along the bottom of the list area (TUI backend).
 
 use std::cell::RefCell;
@@ -22,7 +20,7 @@ pub struct FrameDemo {
     items: Vec<String>,
     selected: usize,
     h_scroll: usize,
-    /// #326: toggles the ListView vertical scrollbar (the `v` key) so the demo
+    /// Toggles the ListView vertical scrollbar (the `v` key) so the demo
     /// visually exercises `show_v_scrollbar` — the vertical counterpart to the
     /// existing h_scroll demonstration.
     show_v_scroll: bool,
@@ -43,7 +41,7 @@ impl FrameDemo {
             "ConfigMaps   kube-system/kube-root-ca.crt          1 key (ca.crt)  created 14d ago            Immutable".into(),
             "Secrets      default/default-token-abcde           kubernetes.io/service-account-token  3 keys  Opaque".into(),
         ];
-        // #326: many more rows so the list also overflows VERTICALLY — gives the
+        // Many more rows so the list also overflows VERTICALLY — gives the
         // `v` key a real vertical scrollbar to show, with the thumb tracking
         // scroll position as you move the selection with j/k.
         for i in 0..40 {
@@ -124,7 +122,7 @@ impl FrameDemo {
                 })
                 .collect(),
             selected_idx: self.selected,
-            // #326: drive scroll_offset from the selection so j/k scrolls the
+            // Drive scroll_offset from the selection so j/k scrolls the
             // list and the vertical-scrollbar thumb visibly tracks position.
             // The primitive clamps this in `layout()`.
             scroll_offset: self.selected,
@@ -240,7 +238,7 @@ impl AppLogic for FrameDemo {
                     return Reaction::Redraw;
                 }
                 Key::Char('v') => {
-                    // #326: toggle the ListView vertical scrollbar on/off.
+                    // Toggle the ListView vertical scrollbar on/off.
                     self.show_v_scroll = !self.show_v_scroll;
                     return Reaction::Redraw;
                 }

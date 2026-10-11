@@ -36,7 +36,7 @@
 //!     });
 //! ```
 //!
-//! # Adoption status (#825)
+//! # Adoption status
 //!
 //! Folded into [`AppShell`]: `ShellConfig::bottom_panel` /
 //! `ShellConfig::with_bottom_panel` (`shell.rs`) is what constructs a
@@ -67,7 +67,7 @@
 //! shell runner maps to [`BottomPanelEvent::Resized`] for the app.
 
 pub use crate::backend::BackendWidget;
-// `TabBarHits` is `#[deprecated]` (issue #823) — this controller caches
+// `TabBarHits` is `#[deprecated]` — this controller caches
 // exactly what `Backend::draw_tab_bar` returns for click dispatch. See
 // that struct's doc for the replacement plan.
 #[allow(deprecated)]
@@ -186,7 +186,7 @@ pub struct BottomPanelController {
     /// backend's `draw_tab_bar` actually painted against, so paint and click
     /// agree on tab / close-button / maximise positions. Positions are in
     /// target-surface (viewport-absolute) coordinates, matching the click.
-    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
     last_hits: Option<TabBarHits>,
     last_strip_bounds: Option<Rect>,
 }
@@ -317,7 +317,7 @@ impl BottomPanelController {
     ///
     /// Call this from the shell runner's mouse-down handler after
     /// [`AppShell::handle`] returns [`AppShellEvent::Ignored`].
-    #[allow(deprecated)] // reads the deprecated `TabBarHits` cache — issue #823
+    #[allow(deprecated)] // TODO(#823): remove `#[allow(deprecated)]` when `TabBarHits` is removed
     pub fn handle_click(&mut self, x: f32, y: f32) -> Option<BottomPanelEvent> {
         let strip = self.last_strip_bounds?;
         // Check vertical bounds.

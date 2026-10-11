@@ -96,7 +96,7 @@ impl FindReplaceDemo {
         panel
     }
 
-    /// Same `area` `render` paints the panel into, used to keep
+    /// The `area` `render` paints the panel into, used to keep
     /// `panel.group_bounds` and click routing in agreement.
     fn editor_rect(area: Rect, backend: &dyn Backend) -> Rect {
         let lh = backend.line_height();

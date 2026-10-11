@@ -1,5 +1,5 @@
 //! DirectWrite text infrastructure — factory + text-format creation,
-//! font-metrics measurement, and Direct2D text painting (issue #21).
+//! font-metrics measurement, and Direct2D text painting.
 //!
 //! Mirrors the GTK backend's Pango-based measurement
 //! (`gtk::run::render_frame`'s `pango_ctx.metrics()` for line height,
@@ -64,14 +64,12 @@ pub struct DWrite {
     factory: IDWriteFactory,
     text_format: IDWriteTextFormat,
     /// Bold variant of `text_format`, same family/size — built alongside
-    /// it so chrome rasterisers (`StatusBar` segment `bold`, #25) can
-    /// request bold-weight measurement/painting without constructing a
-    /// throwaway `IDWriteTextFormat` per call.
+    /// it so chrome rasterisers can request bold-weight measurement/painting
+    /// without constructing a throwaway `IDWriteTextFormat` per call.
     bold_text_format: IDWriteTextFormat,
     /// Family name this handle was constructed with — stashed so
     /// [`Self::with_size`] can build a same-family clone at a different
-    /// size without an `IDWriteTextFormat::GetFontFamilyName` round-trip
-    /// (issue #1157, the activity-bar icon glyph's fixed-size knob).
+    /// size without an `IDWriteTextFormat::GetFontFamilyName` round-trip.
     family: String,
     /// Nerd-Font fallback this handle was constructed with, if any —
     /// same reuse rationale as `family`.
@@ -110,7 +108,7 @@ impl DWrite {
     /// `fallback` — built by [`build_nerd_font_fallback`] from whatever
     /// [`Backend::set_nerd_font_fallback`][crate::Backend::set_nerd_font_fallback]
     /// last set — is applied once here, to both text formats, via
-    /// [`IDWriteTextFormat1::SetFontFallback`] (issue #929). Every
+    /// [`IDWriteTextFormat1::SetFontFallback`]. Every
     /// `IDWriteTextLayout` created against a format afterward — whether
     /// built explicitly by [`Self::measure_text`]/[`Self::measure_text_styled`]
     /// or internally by [`ID2D1RenderTarget::DrawText`] inside
@@ -126,8 +124,7 @@ impl DWrite {
     /// [`crate::diagnostics`] message and continues without the
     /// fallback rather than returning `Err` — a missing fallback
     /// degrades to tofu on uncovered characters, which is no worse than
-    /// the pre-#929 baseline every other font/layout error here does not
-    /// need to tolerate.
+    /// the baseline every other font/layout error here does not need to tolerate.
     ///
     /// Returns the constructed handles plus `(line_height, char_width)`
     /// resolved from the format's real font metrics, so the caller
@@ -149,7 +146,7 @@ impl DWrite {
             create_text_format(&factory, family, size_dip, DWRITE_FONT_WEIGHT_NORMAL)?;
         let bold_text_format =
             create_text_format(&factory, family, size_dip, DWRITE_FONT_WEIGHT_BOLD)?;
-        // #1077: every rasteriser that paints multi-line content already
+        // Every rasteriser that paints multi-line content already
         // does its own line-splitting before calling `draw_text`/
         // `DrawText` (see `primitives::text_display::paint` and
         // `primitives::dialog::paint`'s per-line `row_rect`s, both of
@@ -173,7 +170,7 @@ impl DWrite {
         unsafe { bold_text_format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
         if let Some(fallback) = fallback {
             // Font fallback is a "nice to have that beats tofu," not a
-            // hard requirement (issue #929 review) — degrade to no
+            // hard requirement — degrade to no
             // fallback rather than failing the whole surface/headless
             // attach (`WinBackend::attach_surface`/`attach_headless`
             // `?`-propagate whatever `DWrite::new` returns) if
@@ -232,11 +229,9 @@ impl DWrite {
     }
 
     /// Build a new `DWrite` for the same family and Nerd-Font fallback as
-    /// `self`, but at `size_pt` — used by `win::activity_bar` (issue
-    /// #1157) to paint the icon glyph at a fixed VS-Code-parity size
-    /// independent of whichever editor/chrome font size `self` itself
-    /// was constructed at, mirroring
-    /// [`crate::macos::backend::MacBackend`]'s
+    /// `self`, but at `size_pt` — used to paint the icon glyph at a fixed
+    /// size independent of whichever editor/chrome font size `self` itself
+    /// was constructed at, mirroring [`crate::macos::backend::MacBackend`]'s
     /// `font.clone_with_font_size(..)` and
     /// `gtk::activity_bar::activity_bar_icon_font`'s fresh
     /// `FontDescription` — both of which also derive a same-family,
@@ -246,16 +241,14 @@ impl DWrite {
         DWrite::new(&self.family, size_pt, self.fallback.as_ref()).map(|(dw, _, _)| dw)
     }
 
-    /// `(width, height)` DIPs of `text` laid out against this format —
-    /// the `measure_text(text) -> (width_dips, height_dips)` helper
-    /// issue #21 asks for, scoped to the current editor font.
+    /// `(width, height)` DIPs of `text` laid out against this format,
+    /// scoped to the current editor font.
     pub fn measure_text(&self, text: &str) -> WinResult<(f32, f32)> {
         measure_text(&self.factory, &self.text_format, text)
     }
 
     /// Like [`Self::measure_text`], but against the bold variant when
-    /// `bold` is `true` — chrome rasterisers (e.g. [`crate::StatusBar`]'s
-    /// per-segment `bold` flag, #25) use this so the fit/paint widths
+    /// `bold` is `true` — chrome rasterisers use this so the fit/paint widths
     /// agree regardless of weight.
     pub fn measure_text_styled(&self, text: &str, bold: bool) -> WinResult<(f32, f32)> {
         measure_text(&self.factory, self.format_for(bold), text)
@@ -388,14 +381,8 @@ impl DWrite {
     }
 }
 
-/// Issue #1078: a direct impl rather than a per-module wrapper struct —
-/// before this, `win::form::DWriteMeasure` and `win::toolbar::DWriteMeasure`
-/// were byte-identical one-line adapters (`.measure_text(text).0`) over
-/// this exact type, and `win::sidebar_panel` imported the `toolbar` one
-/// only because there had to be a canonical copy *somewhere*. Implementing
-/// [`TextMeasure`] on `DWrite` itself means every layout fn that needs a
-/// `&dyn TextMeasure` can pass a live `&DWrite` straight through — no
-/// wrapper, no duplicate to drift.
+/// A direct impl on `DWrite` itself: every layout fn that needs a
+/// `&dyn TextMeasure` can pass a live `&DWrite` straight through.
 impl crate::primitives::layout_metrics::TextMeasure for DWrite {
     fn width_of(&self, text: &str) -> f32 {
         self.measure_text(text).map(|(w, _)| w).unwrap_or(0.0)
@@ -442,7 +429,7 @@ fn create_text_format(
 /// not otherwise support (every other rasteriser already assumes
 /// `IDWriteFactory5`-era APIs — see [`register_font_from_memory`]).
 /// [`DWrite::new`]'s caller logs and continues without a fallback rather
-/// than propagating this error (issue #929 review): font fallback is a
+/// than propagating this error: font fallback is a
 /// "nice to have that beats tofu," and a failure here should degrade,
 /// not take down the whole surface/headless attach the way an `Err`
 /// return from `DWrite::new` would.
@@ -461,7 +448,7 @@ fn apply_fallback_to_format(
 /// Register `bytes` (raw TTF/OTF font data) with DirectWrite for the
 /// lifetime of this process via an `IDWriteInMemoryFontFileLoader` — no
 /// filesystem write, matching [`crate::Backend::register_font_from_memory`]'s
-/// contract (issue #929).
+/// contract.
 ///
 /// Returns a private `IDWriteFontCollection1` containing just this font,
 /// plus every family name it exposes (read back from the font's own name
@@ -550,7 +537,7 @@ fn read_localized_string(strings: &IDWriteLocalizedStrings, index: u32) -> WinRe
 /// Build an [`IDWriteFontFallback`] that resolves `family` for
 /// characters the primary font can't cover, falling back to it only
 /// *after* every mapping the system's own default fallback chain
-/// already provides (issue #929) — mirrors the "later family in the
+/// already provides — mirrors the "later family in the
 /// list, consulted only for uncovered characters" contract
 /// `crate::gtk::with_nerd_font_fallback` already documents for Pango's
 /// cascade, so an app moving from GTK's implicit behaviour to this
@@ -701,10 +688,9 @@ fn font_face_metrics(factory: &IDWriteFactory, family: &str) -> WinResult<DWRITE
 }
 
 /// Answer whether `family` is installed in the system font collection —
-/// [`crate::Backend::has_font_family`]'s Win-GUI implementation (issue
-/// #1024). Distinct from [`register_font_from_memory`]'s private,
-/// app-registered collection: this only ever consults
-/// `GetSystemFontCollection`, the same collection
+/// [`crate::Backend::has_font_family`]'s Win-GUI implementation. Distinct
+/// from [`register_font_from_memory`]'s private, app-registered collection:
+/// this only ever consults `GetSystemFontCollection`, the same collection
 /// [`font_face_metrics`] resolves an editor/UI font family against, so
 /// this answers "did the user install this themselves" rather than
 /// "did the app bundle it".
@@ -769,7 +755,7 @@ fn measure_text(
 /// …, via [`DWrite::draw_text`]/[`DWrite::draw_text_styled`]), so it's
 /// also where paint-time text-run recording hooks in for
 /// [`super::testing::WinDriver::find`]/`find_bounds`/`inventory`
-/// (quadraui#721) — the Win-GUI counterpart of `gtk::painted_text::show_layout`
+/// — the Win-GUI counterpart of `gtk::painted_text::show_layout`
 /// / `macos::text::draw_text`'s recording, sharing the same thread-local
 /// sink (`crate::testing::record_text_run`). Unlike those two, Win-GUI
 /// doesn't need the `text_run_sink_active()` pre-check to skip expensive
@@ -944,13 +930,11 @@ pub(crate) fn reset_brush_creation_count() {
 /// Fill `rect` (DIPs, target-relative) with a solid `color` on `target`.
 ///
 /// Shared by every chrome rasteriser in `crate::win` (status bar, tab bar,
-/// activity bar, menu bar — #25) for background fills, active/hover tints,
-/// and accent lines, so each one doesn't hand-roll its own
-/// `CreateSolidColorBrush` + `FillRectangle` pair. Mirrors
-/// [`super::testing::HeadlessSurface::fill_rect`], which exists
-/// separately because it also owns the `BeginDraw`/`EndDraw` bracket for
-/// the headless test surface; this version assumes the caller is already
-/// inside a frame (or a `HeadlessSurface::paint` closure).
+/// activity bar, menu bar) for background fills, active/hover tints,
+/// and accent lines. Mirrors [`super::testing::HeadlessSurface::fill_rect`],
+/// which exists separately because it also owns the `BeginDraw`/`EndDraw`
+/// bracket for the headless test surface; this version assumes the caller
+/// is already inside a frame (or a `HeadlessSurface::paint` closure).
 pub(crate) fn fill_rect(target: &ID2D1RenderTarget, rect: Rect, color: Color) -> WinResult<()> {
     let brush = get_or_create_brush(target, color)?;
     let rect_f = D2D_RECT_F {
@@ -967,7 +951,7 @@ pub(crate) fn fill_rect(target: &ID2D1RenderTarget, rect: Rect, color: Color) ->
     Ok(())
 }
 
-/// [`fill_rect`]'s rounded-corner twin (issue #1073) —
+/// [`fill_rect`]'s rounded-corner twin —
 /// `ID2D1RenderTarget::FillRoundedRectangle` with both radii set to
 /// `radius`, clamped to half of `rect`'s shorter side (and floored at
 /// `0.0`, so a negative radius degrades to "no rounding" rather than
@@ -1004,7 +988,7 @@ pub(crate) fn fill_rounded_rect(
 
 /// Stroke the outline of `rect` (DIPs, target-relative) in `color` at
 /// `stroke_width` — the Direct2D twin of `fill_rect` for the overlay
-/// rasterisers (#28: tooltip / context menu / dialog / palette /
+/// rasterisers (tooltip / context menu / dialog / palette /
 /// completions / find-replace / rich-text-popup) that all draw a
 /// bordered box, mirroring GTK/Cairo's `cr.rectangle(..).stroke()`
 /// idiom used throughout `crate::gtk`.
@@ -1222,7 +1206,7 @@ pub(crate) fn with_translation<F: FnOnce() -> R, R>(
 /// uses this to stretch or shrink a double-width glyph (CJK / emoji) so it
 /// fills its two-column cell box exactly, using the scale factor from
 /// [`crate::terminal_style::wide_glyph_x_scale`] — the same decision GTK
-/// and macOS apply (#500, #703).
+/// and macOS apply.
 ///
 /// Restoring identity unconditionally (rather than the transform that was
 /// active before this call) matches every other rasteriser in this crate,
@@ -1383,7 +1367,7 @@ mod tests {
             .expect("paint");
     }
 
-    /// #1077 regression: `draw_text` must paint a label into a box sized
+    /// `draw_text` must paint a label into a box sized
     /// to exactly its own measured width — the shared
     /// `primitives::dialog`/`primitives::text_display` paints do exactly
     /// this (`row_rect`/`text_rect` widths come straight from
@@ -1492,19 +1476,13 @@ mod tests {
         );
     }
 
-    /// #1077 review follow-up: the fix above (`DWRITE_WORD_WRAPPING_NO_WRAP`)
-    /// is justified by "no caller relies on DirectWrite's own wrapping" —
-    /// every rasteriser pre-splits multi-line content into one `draw_text`
-    /// call per already-measured line (see this module's doc). This pins
-    /// the other half of that claim for a box that's *genuinely* too
-    /// narrow for its text (not just a hair short by float rounding, like
-    /// the test above): a long run given a box only wide enough for its
-    /// first character or two must still paint visible ink right at the
-    /// box's left edge — i.e. clip at the right edge — rather than reflow
-    /// its first word onto a second line that a caller's single-line-tall
-    /// box then crops away entirely (the exact silent-vanishing failure
-    /// mode `DWRITE_WORD_WRAPPING_WRAP` produced pre-fix, reproduced
-    /// above for the narrower "hair short by rounding" case).
+    /// Justification: no caller relies on DirectWrite's own wrapping — every
+    /// rasteriser pre-splits multi-line content into one `draw_text` call per
+    /// already-measured line (see this module's doc). This pins that every
+    /// caller can assume a box that's genuinely too narrow for its text
+    /// (not just a hair short by float rounding) clips at the right edge
+    /// rather than reflowing its first word onto a second line that a
+    /// caller's single-line-tall box then crops away entirely.
     #[test]
     fn draw_text_clips_an_overlong_run_instead_of_wrapping_it_away() {
         const BG: Color = Color::rgb(10, 20, 30);

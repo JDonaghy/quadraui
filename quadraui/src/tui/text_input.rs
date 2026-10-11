@@ -132,15 +132,12 @@ mod tests {
         ti
     }
 
-    // Parametrized over the area's origin — LESSONS.md "Layout helpers
-    // must return coords in the same frame across backends" (quadraui#494).
-    // `tui_text_input_layout` bakes `rect.x`/`rect.y` straight into
-    // `ti.layout`'s returned bounds (absolute frame: `TextInput::layout`
-    // computes `content_x = rect.x + border + pad_x`), so the regression
-    // guard is a full paint+hit_test round trip re-run at a non-zero
-    // origin. There was no existing `#[cfg(test)] mod tests` in this file
-    // at all before quadraui#494, hence this doubles as the origin-(0,0)
-    // baseline test too.
+    // Parametrized over the area's origin: layout helpers must return
+    // coords in the same frame across backends. `tui_text_input_layout`
+    // bakes `rect.x`/`rect.y` straight into `ti.layout`'s returned bounds
+    // (absolute frame: `TextInput::layout` computes
+    // `content_x = rect.x + border + pad_x`), so this test verifies a full
+    // paint+hit_test round trip at a non-zero origin.
     fn paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
         let rect = Rect::new(origin_x, origin_y, 10, 4);
         let mut buf = Buffer::empty(rect);
@@ -172,9 +169,8 @@ mod tests {
         paint_and_click_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md): the
-    /// same paint + hit_test round trip must hold when the input isn't
-    /// painted at the screen origin.
+    /// Paint and hit-test must work correctly when the input is not at the
+    /// screen origin.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         paint_and_click_round_trip_at(7, 13);

@@ -1,33 +1,19 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::DataTable`] (issue #26).
+//! Direct2D / DirectWrite rasteriser for [`crate::DataTable`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::data_table::native_surface_paint::paint`] (#1084,
-//! `PaintSurface` Phase 4 7/8) — see that fn's doc for the full
-//! per-backend divergence survey this closed, most notably: this module
-//! used to hand-roll flat, non-hover-aware scrollbar fills (see the old
-//! "Scope for #26" note below) instead of the shared, translucent
-//! [`crate::primitives::scrollbar::native_surface_paint::paint`]
-//! `gtk::data_table` already used, approximated selection/hover row tints
-//! with a CPU-side [`crate::types::Color::blend`] instead of a real alpha
-//! composite, and silently discarded every footer span's own `fg`,
-//! painting the whole footer cell in one colour. [`draw_data_table`]
-//! below is now a thin wrapper over the shared paint, using
-//! [`crate::win::surface::D2dSurface`] as the `PaintSurface` adapter —
-//! mirroring [`crate::macos::data_table::draw_data_table`]'s equivalent
-//! migration. `gtk::data_table::draw_data_table` is *not* migrated; see
-//! the shared `paint`'s doc for why. [`win_data_table_layout`] (pure
-//! geometry, no paint) is untouched.
+//! Painting uses the shared [`crate::primitives::data_table::native_surface_paint::paint`].
+//! See that function's documentation for the full per-backend divergence survey.
+//! This module now uses the shared, translucent
+//! [`crate::primitives::scrollbar::native_surface_paint::paint`] for scrollbars
+//! and respects each footer span's foreground colour.
+//! [`draw_data_table`] is a thin wrapper over the shared paint, using
+//! [`crate::win::surface::D2dSurface`] as the `PaintSurface` adapter.
 //!
-//! Issue #1078: only [`draw_data_table`] (the real Direct2D paint entry
-//! point) is `#[cfg(target_os = "windows")]`-gated. [`win_data_table_layout`]
-//! is pure geometry generic over
+//! [`win_data_table_layout`] is pure geometry generic over
 //! [`crate::primitives::layout_metrics::TextMeasure`] — no Direct2D/
 //! DirectWrite type in its signature — so it compiles and runs
-//! everywhere, including a plain `cargo test --features win` on Linux.
-//! `super::mod`'s `mod data_table;` is no longer whole-module gated; see
-//! `backend.rs`'s module docs. See `win::status_bar`'s module doc for why
-//! colours come from `Theme::default()` rather than a live `WinBackend`
-//! theme field.
+//! everywhere. Only [`draw_data_table`] is `#[cfg(target_os = "windows")]`-gated.
+//! See `win::status_bar`'s module doc for why colours come from `Theme::default()`
+//! rather than a live `WinBackend` theme field.
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
@@ -41,10 +27,10 @@ use crate::DataTableLayout;
 
 /// Compute a [`DataTable`]'s layout without painting — the DirectWrite
 /// twin of [`draw_data_table`]'s internal layout call. Pure geometry over
-/// [`TextMeasure`] (issue #1078) — `measure` may be a live `&DWrite` (when
+/// [`TextMeasure`] — `measure` may be a live `&DWrite` (when
 /// painting) or [`super::backend`]'s nominal measurer (no surface yet).
 /// Shares its column-measurement path with `gtk_data_table_layout` /
-/// `mac_data_table_layout` via [`pixel_data_table_layout`] (issue #1079).
+/// `mac_data_table_layout` via [`pixel_data_table_layout`].
 pub fn win_data_table_layout(
     measure: &dyn TextMeasure,
     rect: Rect,
@@ -86,9 +72,7 @@ pub fn draw_data_table(
     )
 }
 
-// #1078: every test below paints through a real `DWrite`/`HeadlessSurface`
-// — gated the same way the whole module used to be, rather than
-// pretending they run on Linux.
+// Tests paint through a real `DWrite`/`HeadlessSurface`.
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
@@ -218,13 +202,8 @@ mod tests {
         assert_eq!(painted, no_paint);
     }
 
-    /// #1084's RED-before-the-port case: pre-migration,
-    /// `win::data_table::draw_data_table`'s footer painted the *entire*
-    /// cell as one run in `theme.foreground`, discarding every span's own
-    /// `fg` — there was no way for a footer span's colour override to
-    /// ever reach the screen on this backend. The shared `paint` now
-    /// splits by span, so the "Total" span's red `fg` must actually
-    /// appear somewhere in the footer band.
+    /// Footer spans' foreground colours are respected, not discarded
+    /// in favour of the theme's default foreground.
     #[test]
     fn footer_span_colour_overrides_the_default_foreground() {
         use crate::types::{Color, StyledSpan};

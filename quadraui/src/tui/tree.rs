@@ -5,7 +5,7 @@
 //! tall) and paints the resolved positions verbatim. The GTK rasteriser
 //! supplies a different per-row measurer (header rows 1× line_height,
 //! leaves 1.4×) — that's a backend-specific decision the rasteriser
-//! owns, not the primitive. `TreeStyle::row_height` (#623) is a GUI-pixel
+//! owns, not the primitive. `TreeStyle::row_height` is a GUI-pixel
 //! override; a terminal cell can't be subdivided, so TUI intentionally
 //! ignores it and always measures 1 cell per row.
 
@@ -36,7 +36,7 @@ use crate::types::Decoration;
 ///   `tree.style.show_chevrons` is true; leaves get a 2-cell leading
 ///   gap for visual alignment.
 /// - **Icon:** `row.icon.glyph` when `nerd_fonts_enabled`, else the
-///   ASCII fallback. Painted in `icon.color` when set (#1057), else the
+///   ASCII fallback. Painted in `icon.color` when set, else the
 ///   row's `default_fg`.
 /// - **Badge** (right-aligned within row): rendered in
 ///   `badge.fg`/`badge.bg` (falling back to [`Theme::muted_fg`] /
@@ -143,13 +143,10 @@ pub fn draw_tree(
         } else {
             let text_start = col;
 
-            // #1183: reserve room for the right-aligned badge *before*
+            // Reserve room for the right-aligned badge *before*
             // painting the label, clamping the label to end at least one
-            // blank column short of the badge. Previously the label
-            // painted at full row width and the badge was drawn on top of
-            // it afterward, overwriting the label's last cells with no
-            // gap and no indication anything was cut off (e.g.
-            // `BACKEND_SPECU` instead of `BACKEND_SP… U`).
+            // blank column short of the badge. The label must not overwrite
+            // the badge; a gap indicates when the label is truncated.
             let badge_start_col = row
                 .badge
                 .as_ref()
@@ -488,7 +485,7 @@ mod tests {
         );
     }
 
-    /// #1183 regression: a label too long to fit before a right-aligned
+    /// A label too long to fit before a right-aligned
     /// badge must be clamped to end at least one blank column short of
     /// the badge, with the clamped label ending in `…` — not overwritten
     /// by the badge with no gap or truncation indicator (vimcode's
@@ -555,12 +552,8 @@ mod tests {
 
         // `area` is caller-supplied and can legitimately exceed the real
         // buffer's own bounds (a resize race, an off-by-one in a caller's
-        // layout math, or a stale cached rect — see #1183 review). The
-        // ellipsis-overwrite used to read the existing cell via unchecked
-        // direct indexing, which panics the instant its column falls
-        // outside `buf`'s own area; this regression test paints into a
-        // buffer narrower than the row's `area` so `ellipsis_col` lands
-        // out of bounds, and simply not panicking is the assertion.
+        // layout math, or a stale cached rect). Ellipsis painting must
+        // clamp the column to the buffer's actual bounds.
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
         draw_tree(
             &mut buf,
@@ -588,7 +581,7 @@ mod tests {
     // painted absolute y. Same source-of-truth contract; different
     // origin convention.
     //
-    // Mirrors the MultiSectionView harness shape (#298) so future
+    // Mirrors the MultiSectionView harness shape so future
     // primitives can copy this pattern.
 
     use crate::primitives::tree::TreeViewHit;
@@ -653,7 +646,7 @@ mod tests {
     /// test verifies row-position consistency, not whether the click
     /// landed on the chevron or the body.
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
-    // must return coords in the same frame across backends" (quadraui#494).
+    // must return coords in the same frame across backends".
     // This harness already subtracts `area.y` before calling `hit_test`
     // (tree-local coords), but every pre-existing call site used
     // `Rect::new(0, 0, ...)`, so the subtraction was never exercised with
@@ -697,10 +690,9 @@ mod tests {
         clicks_land_on_painted_row_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md): the
-    /// same paint + hit_test round trip must hold when the tree isn't
-    /// painted at the screen origin — exercises the `local_y = painted_y
-    /// - area.y` subtraction with a non-zero `area.y` for the first time.
+    /// The same paint + hit_test round trip must hold when the tree
+    /// isn't painted at the screen origin — exercises the `local_y =
+    /// painted_y - area.y` subtraction with a non-zero `area.y`.
     #[test]
     fn clicks_land_on_painted_row_at_nonzero_origin() {
         clicks_land_on_painted_row_at(7, 13);

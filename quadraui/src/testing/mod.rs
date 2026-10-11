@@ -1,12 +1,8 @@
-//! Backend-agnostic conformance-test surface (quadraui#488).
+//! Backend-agnostic conformance-test surface.
 //!
-//! [`ConformanceDriver`] promotes the `ExampleDriver` trait that was
-//! sketched in `docs/TESTING.md` ("Cross-backend example tests: shared
-//! bodies, per-backend adapters") and re-implemented as a test-local copy
-//! in `tests/cross_backend_parity.rs`, into a real, feature-independent
-//! module every backend driver can implement — see
-//! `docs/SMELL_AUDIT_2026-07.md` §6.3 for the full design this is the first
-//! slice of.
+//! [`ConformanceDriver`] promotes the `ExampleDriver` trait sketched in
+//! `docs/TESTING.md` into a real, feature-independent module every backend
+//! driver can implement.
 //!
 //! This module has **no `tui`/`gtk`/`macos`/`win` feature gate** — the
 //! trait and its supporting types (`LogicalViewport`, `Anchor`,
@@ -16,17 +12,14 @@
 //! blocks live in `quadraui::tui::testing` / `quadraui::gtk::testing`,
 //! each behind its own backend feature flag.
 //!
-//! ## Why a promoted trait, not the test-local one
+//! ## Why a promoted trait, not test-local
 //!
-//! The test-local `ExampleDriver` in `cross_backend_parity.rs` dropped
-//! `drag_text` — the one method `docs/TESTING.md`'s canonical sketch
-//! includes — so no drag scenario could be shared across backends. It also
-//! froze the two drivers' gratuitous API divergences (constructor units,
-//! `screen()` return type, missing `GtkDriver::app_mut`, a TUI `find()`
-//! that assumes one cell per character) in place, since a test-local trait
-//! has no reach into the driver modules themselves to fix them.
+//! A module-level trait reaches into driver modules to fix API divergences
+//! (constructor units, `screen()` return type, missing `GtkDriver::app_mut`,
+//! TUI `find()` assumptions) and include all methods — a test-local trait
+//! cannot. It also enables shared drag scenarios.
 //!
-//! ## Rules for shared bodies (unchanged from `docs/TESTING.md`)
+//! ## Rules for shared bodies
 //!
 //! 1. **Locate by semantics, never literal coordinates.** Use
 //!    `click_text`/`click_text_at`/`drag_text`, not a hardcoded
@@ -35,12 +28,11 @@
 //! 2. **Assert on logic/text, not pixels, in shared bodies.** `screen_has`
 //!    works identically on every backend.
 //!
-//! ## `driver_core` (quadraui#814, finishing quadraui#708)
+//! ## `driver_core`
 //!
 //! [`driver_core::DriverCore`] is the shared `app`/`backend`/`exited`
 //! state every concrete backend driver (`TuiDriver`, `GtkDriver`,
-//! `MacDriver`, `WinDriver`) wraps rather than redeclaring — see that
-//! module's doc for what it replaced. `pub(crate)`, not re-exported here:
+//! `MacDriver`, `WinDriver`) wraps. `pub(crate)`, not re-exported here:
 //! it's an implementation detail of the four driver structs, not part of
 //! this module's own `ConformanceDriver`/`DriverInput` public surface.
 //!
@@ -51,13 +43,9 @@
 //! driver — `TuiDriver` (`feature = "tui"`), `GtkDriver`
 //! (`feature = "gtk"`), `MacDriver`
 //! (`all(feature = "macos", target_os = "macos")`), or `WinDriver`
-//! (`feature = "win"` alone, since issue #1038 — `win::testing` compiles
-//! everywhere `win::backend`/`win::run` do, with its real Direct2D/GDI
-//! calls individually `cfg(target_os = "windows")`-gated internally, so
-//! `DriverCore<WinBackend, _>` is reached on a non-Windows host too) — is
-//! actually being compiled. Without this, `cargo check -p quadraui
-//! --features win` on a non-Windows host would trip `dead_code` under
-//! this crate's workflow-wide `-D warnings`.
+//! (`feature = "win"`) — is actually being compiled. Without this,
+//! `cargo check -p quadraui --features win` on a non-Windows host would
+//! trip `dead_code` under this crate's workflow-wide `-D warnings`.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -129,51 +117,38 @@ pub struct TextRun {
     pub bounds: Rect,
 }
 
-// ── Shared paint-time text-run recording sink (quadraui#721) ───────────
+// GTK (`gtk::painted_text::show_layout`) and macOS (`macos::text::draw_text`)
+// each need to record a `(text, bounds)` run at the exact point their backend
+// paints text, so `find`/`find_bounds`/`inventory`/`screen_has` can locate
+// any text-bearing primitive without a per-primitive opt-in. Neither call
+// site has a `&mut Backend` in scope to push the run onto — GTK's rasterisers
+// are free functions handed only a `&cairo::Context`, macOS's `draw_text` is
+// handed only a borrowed `CGContextRef`, Win-GUI's `DWrite::draw_text` is
+// a `&ID2D1RenderTarget` — so both back onto a thread-local sink instead.
 //
-// GTK (`gtk::painted_text::show_layout`, quadraui#489) and macOS
-// (`macos::text::draw_text`, quadraui#493) each need to record a
-// `(text, bounds)` run at the exact point their backend paints text, so
-// `find`/`find_bounds`/`inventory`/`screen_has` can locate any
-// text-bearing primitive without a per-primitive opt-in. Neither call
-// site has a `&mut Backend` in scope to push the run onto — GTK's
-// rasterisers are free functions handed only a `&cairo::Context`,
-// macOS's `draw_text` is handed only a borrowed `CGContextRef` (see that
-// module's "Why direct CoreGraphics FFI" doc) — so both back onto a
-// thread-local sink instead. Win-GUI's `DWrite::draw_text` (win/text.rs)
-// is the same shape: a `&ID2D1RenderTarget`, no backend handle.
+// This is a thread-local shared implementation every backend's paint-time
+// recorder now wraps, per `docs/PRIMITIVE_RULES.md`'s primitive-first rule.
 //
-// This was a thread-local *duplicated* in `gtk::painted_text` and
-// `macos::text` until quadraui#721 lifted it here — the one shared
-// implementation every backend's paint-time recorder now wraps, per
-// `docs/PRIMITIVE_RULES.md`'s primitive-first rule (#713): a shared
-// concern gets one implementation with per-backend adapters over it, not
-// N independent copies.
-//
-// Thread-local rather than a static: GTK painting is single-threaded and
-// this pairs with `cargo test`'s one-thread-per-test model exactly as
-// `gtk::painted_text`'s original doc explained — each headless driver
-// (`GtkDriver`/`MacDriver`/`WinDriver`) lives on its own test thread, so
-// one sink per thread is exactly right and needs no locking.
+// Thread-local rather than a static: each headless driver lives on its own
+// test thread, so one sink per thread pairs exactly with `cargo test`'s
+// one-thread-per-test model and needs no locking.
 //
 // Two distinct cfg predicates gate this section, not one, because the
 // three backends reach it through call sites with different OS gating:
 //
-// - `WinBackend::begin_frame`/`end_frame` (`win/backend.rs`) call
-//   `install_text_run_sink`/`take_text_run_sink` unconditionally under
-//   `feature = "win"` — those two methods are never `cfg(target_os)`-gated
-//   themselves (only the real Direct2D calls inside their bodies are), so
-//   `--features win` alone reaches them on *any* host, Linux included
-//   (`ci.yml`'s ubuntu-only "Compile check (win feature)" step).
+// - `WinBackend::begin_frame`/`end_frame` call `install_text_run_sink`/
+//   `take_text_run_sink` unconditionally under `feature = "win"` — those two
+//   methods are never `cfg(target_os)`-gated themselves (only the real
+//   Direct2D calls inside are), so `--features win` alone reaches them on
+//   any host, including Linux.
 // - `gtk::painted_text::show_layout` / `macos::text::draw_text` /
-//   `win::text::draw_text` call `text_run_sink_active`/`record_text_run`
-//   — but `win::text` is itself `cfg(target_os = "windows")`-gated (see
-//   its module doc), so under `--features win` on a non-Windows host
-//   those two calls don't exist anywhere in the crate.
+//   `win::text::draw_text` call `text_run_sink_active`/`record_text_run`,
+//   but `win::text` is itself `cfg(target_os = "windows")`-gated (see its
+//   module doc), so under `--features win` on a non-Windows host those two
+//   calls don't exist anywhere in the crate.
 //
-// A single shared predicate would therefore leave `text_run_sink_active`/
-// `record_text_run` `dead_code` (→ build failure under this crate's
-// workflow-wide `-D warnings`) on that ubuntu leg specifically, even
+// A single shared predicate would leave `text_run_sink_active`/
+// `record_text_run` `dead_code` on that ubuntu leg specifically, even
 // though `install_text_run_sink`/`take_text_run_sink` are genuinely used
 // there. TUI needs neither group at all — its `find` scans a character
 // grid instead of a sink.
@@ -266,8 +241,7 @@ pub struct ZoneRec {
 }
 
 /// Semantic paint inventory for one rendered frame — the cross-backend
-/// observable contract `docs/SMELL_AUDIT_2026-07.md` §6.2/B3 describes,
-/// aligned with quadraweb#322's id→rect map (quadraui#490).
+/// observable contract describing what was painted.
 ///
 /// `text_runs` is populated from each backend's existing text search
 /// (TUI's cell-grid scan, GTK's `painted_text` map) — this covers every
@@ -291,9 +265,7 @@ pub struct ZoneRec {
 /// [`Self::inside`] answers `false` for an unregistered zone exactly as
 /// it does for a run that landed outside a registered one, a caller
 /// asserting against a zone id no paint site produces gets an
-/// unsatisfiable assertion, not a flaky one; the conformance suite's
-/// `every_asserted_zone_is_registered_by_every_backend` guard exists to
-/// catch precisely that and name it.
+/// unsatisfiable assertion, not a flaky one.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FrameInventory {
     pub text_runs: Vec<TextRun>,
@@ -309,7 +281,7 @@ impl FrameInventory {
         &self.zones
     }
 
-    // ── Relational assertion vocabulary (quadraui#490) ──────────────────
+    // ── Relational assertion vocabulary ─────────────────────────────────
     //
     // These are the "no hardcoded coordinates" assertions the issue calls
     // for: every one of them is computed from `Rect`s this same
@@ -404,12 +376,7 @@ impl FrameInventory {
     }
 }
 
-/// Shared "act" surface for headless [`AppLogic`] test drivers
-/// (quadraui#708, issue #708's "Problem 2" — `testing.rs` is a 3-way
-/// copy). #708's other half — Problem 1, the `app`/`backend`/`exited`
-/// state these trait defaults are methods *on* — is
-/// [`driver_core::DriverCore`], landed by quadraui#814; both halves of
-/// #708 are met as of that issue.
+/// Shared "act" surface for headless [`AppLogic`] test drivers.
 ///
 /// `press`/`type_char`/`press_named`/`ctrl_char`/`click`/`drag` reduce to
 /// the exact same body on every backend driver once [`Self::dispatch`]
@@ -417,12 +384,10 @@ impl FrameInventory {
 /// `dispatch`/`mouse_down`/`mouse_move`/`mouse_up` differs per backend
 /// (compare `GtkDriver::mouse_down`, which routes through
 /// `crate::dispatch::dispatch_click` and drag-state tracking, against
-/// `TuiDriver::mouse_down`, a bare `UiEvent::MouseDown` dispatch). Before
-/// this trait existed, every method built *on top of* those four
-/// primitives was transcribed byte-for-byte into `GtkDriver`'s,
-/// `MacDriver`'s, and `TuiDriver`'s own inherent impl blocks — the
-/// gtk↔macos overlap alone measured 26 duplicated lines in the
-/// 2026-09-03 function-level duplication re-audit that opened #708.
+/// `TuiDriver::mouse_down`, a bare `UiEvent::MouseDown` dispatch).
+/// Before this trait existed, every method built *on top of* those four
+/// primitives was transcribed into each of `GtkDriver`'s, `MacDriver`'s,
+/// and `TuiDriver`'s own inherent impl blocks.
 ///
 /// Each driver keeps its own same-named **inherent** method (so no
 /// caller needs to import this trait to call `driver.press(..)` — see
@@ -494,7 +459,7 @@ pub trait DriverInput: Sized {
 
 /// Shared [`ConformanceDriver::click_text_at`] /
 /// [`ConformanceDriver::drag_text`] / [`ConformanceDriver::scroll_at`]
-/// bodies for pixel-unit backends (quadraui#708).
+/// bodies for pixel-unit backends.
 ///
 /// GTK, macOS, and Win-GUI all locate a painted run's bounds and click
 /// `bounds.x + 1.0` / `bounds.x + bounds.width - 1.0` for
@@ -504,9 +469,7 @@ pub trait DriverInput: Sized {
 /// this trait. The 2026-09-03 duplication audit measured this block at 8
 /// duplicated lines between `GtkDriver` and `MacDriver` alone.
 pub trait PixelClickConformance: DriverInput {
-    /// This driver's type name, for panic messages (`"GtkDriver"`, …) —
-    /// mirrors what each driver's hand-written panic message used to
-    /// hardcode.
+    /// This driver's type name, for panic messages (`"GtkDriver"`, …).
     const NAME: &'static str;
 
     /// Pixel bounds of the first painted run containing `needle`.
@@ -615,17 +578,12 @@ pub trait ConformanceDriver: Sized {
 
     /// The [`crate::BackendCaps`] the backend under this driver declares
     /// — i.e. `Backend::backend_caps` on the *real* backend instance the
-    /// driver wraps, never a re-statement of it.
+    /// driver wraps.
     ///
-    /// quadraui#492 review: the conformance runner used to pair each
-    /// backend with a hand-maintained `&[&str]` of capability names,
-    /// disconnected from what the backend itself declares, so the two
-    /// could drift silently in both directions. This method is the wire
-    /// between them — `BackendReg::caps` is now literally this value, so
-    /// a scenario's `requires` gate can only ever match against what the
+    /// Capability names are now literally from what the backend declares,
+    /// so a scenario's `requires` gate can only ever match against what the
     /// backend really said. Required (no default) on purpose: there is no
-    /// honest answer to guess, and inventing one is exactly the silence
-    /// `BackendCaps` exists to break.
+    /// honest answer to guess.
     fn backend_caps(&self) -> crate::BackendCaps;
 
     /// Semantic paint inventory for the last rendered frame.
@@ -638,7 +596,7 @@ pub trait ConformanceDriver: Sized {
     fn exited(&self) -> bool;
 }
 
-// ── RecordingBackend (quadraui#799) ─────────────────────────────────────
+// ── RecordingBackend ────────────────────────────────────────────────────
 //
 // Before this, an external developer who wanted to unit-test their own
 // `compose`-style controller (something that takes `&mut dyn Backend`,
@@ -696,7 +654,7 @@ pub struct RecordingBackend {
     pub char_width: f32,
     /// Backs [`Backend::focus_manager`] — unlike `modal_stack_handle`/
     /// `drag_state_handle`, this one *is* real state a headless mock can
-    /// honestly fabricate (issue #830), so it's included rather than
+    /// honestly fabricate, so it's included rather than
     /// `unimplemented!()`.
     pub focus: crate::focus::FocusManager,
 }
@@ -820,13 +778,13 @@ impl crate::Backend for RecordingBackend {
         // `RecordingBackend` only records call shape, not real font
         // metrics (see `char_width`/`line_height` above) — no separate
         // chrome-font notion to model, so this just aliases `char_width`
-        // like TUI's real backend does (quadraui#912).
+        // like TUI's real backend does.
         self.char_width
     }
     fn measure_text(&self, text: &str, _role: crate::FontRole) -> (f32, f32) {
         // Same rationale as `list_char_width` above: no real font to
         // measure against, just the same char-cell arithmetic every
-        // caller used before `Backend::measure_text` existed (quadraui#1132).
+        // caller used before `Backend::measure_text` existed.
         (
             text.chars().count() as f32 * self.char_width,
             self.line_height,
@@ -897,19 +855,12 @@ impl crate::Backend for RecordingBackend {
     ) {
         self.record("draw_settings_chrome");
     }
-    /// Union note: `app_shell::MockBackend` was the only one of the three
-    /// with a real body here (the other two `unimplemented!()`d, safe
-    /// only because neither `TreeController` nor `ChatController` ever
-    /// calls `draw_status_bar`) — `AppShell::render` calls this for
-    /// real, so its behaviour wins.
-    ///
     /// Computes a real [`crate::StatusBarLayout`] via [`crate::StatusBar::layout`]
     /// with a char-cell measurer (`self.char_width` per character,
     /// mirroring `TuiBackend`'s own measurer) rather than a hardcoded
-    /// empty layout — every prior caller only discarded the return
-    /// value, but `SidebarPanelBody`'s `StatusBars` chrome (issue
-    /// #1061) surfaces real hit regions from it, and a recorder that
-    /// always returns empty can never exercise that translation.
+    /// empty layout — `SidebarPanelBody`'s `StatusBars` chrome surfaces real
+    /// hit regions from it, and a recorder that always returns empty can
+    /// never exercise that translation.
     fn draw_status_bar_interactive(
         &mut self,
         r: Rect,
@@ -925,7 +876,7 @@ impl crate::Backend for RecordingBackend {
     /// Union note: see `draw_status_bar` above — `app_shell::MockBackend`'s
     /// real body wins for the same reason.
     ///
-    /// `TabBarHits` is `#[deprecated]` (issue #823); this mock still
+    /// `TabBarHits` is `#[deprecated]`; this mock still
     /// implements the trait method as declared.
     #[allow(deprecated)]
     fn draw_tab_bar(
@@ -937,7 +888,7 @@ impl crate::Backend for RecordingBackend {
         self.record("draw_tab_bar");
         crate::TabBarHits::default()
     }
-    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
     fn draw_tab_bar_icons(
         &mut self,
         _r: Rect,
@@ -948,8 +899,7 @@ impl crate::Backend for RecordingBackend {
         self.record("draw_tab_bar_icons");
         crate::TabBarHits::default()
     }
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// `draw_tab_bar` above — same inert-but-real default posture.
+    /// `TabBarLayout`-returning counterpart to `draw_tab_bar` above.
     fn draw_tab_bar_layout(
         &mut self,
         _r: Rect,
@@ -959,8 +909,7 @@ impl crate::Backend for RecordingBackend {
         self.record("draw_tab_bar_layout");
         empty_tab_bar_layout()
     }
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// `draw_tab_bar_icons` above.
+    /// `TabBarLayout`-returning counterpart to `draw_tab_bar_icons` above.
     fn draw_tab_bar_icons_layout(
         &mut self,
         _r: Rect,
@@ -1022,11 +971,11 @@ impl crate::Backend for RecordingBackend {
             resolved_right_start: 0,
         }
     }
-    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
     fn tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarHits {
         crate::TabBarHits::default()
     }
-    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
+    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
     fn tab_bar_layout_icons(
         &self,
         _r: Rect,
@@ -1035,13 +984,11 @@ impl crate::Backend for RecordingBackend {
     ) -> crate::TabBarHits {
         crate::TabBarHits::default()
     }
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// `tab_bar_layout` above.
+    /// `TabBarLayout`-returning counterpart to `tab_bar_layout` above.
     fn resolve_tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarLayout {
         empty_tab_bar_layout()
     }
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// `tab_bar_layout_icons` above.
+    /// `TabBarLayout`-returning counterpart to `tab_bar_layout_icons` above.
     fn resolve_tab_bar_layout_icons(
         &self,
         _r: Rect,
@@ -1381,7 +1328,7 @@ impl crate::Backend for RecordingBackend {
 mod tests {
     use super::*;
 
-    // ─── Shared text-run recording sink (quadraui#721) ────────────────────
+    // ─── Shared text-run recording sink ───────────────────────────────────
     //
     // Gated to match `record_text_run`/`text_run_sink_active`'s own cfg
     // (the narrower of the sink module's two predicates — see its
@@ -1600,15 +1547,12 @@ mod tests {
         assert!(!inv.inside("nope", &WidgetId::new("sidebar-content")));
     }
 
-    // ─── quadraui#708: DriverInput / PixelClickConformance defaults ───────
-    //
     // Every real backend driver now delegates `press`/`type_char`/
     // `press_named`/`ctrl_char`/`click`/`drag` (and, for the pixel-unit
     // backends, `click_text_at`/`drag_text`/`scroll_at`) to these traits'
-    // default method bodies — they're the single source of truth the
-    // gtk/tui/mac/win driver tests exercise indirectly. This fixture
-    // exercises the default bodies *directly*, with no backend feature at
-    // all, so a future edit to a default here has a test right beside it.
+    // default method bodies. This fixture exercises the default bodies
+    // *directly*, with no backend feature at all, so a future edit to a
+    // default has a test right beside it.
 
     use crate::MouseButton;
 

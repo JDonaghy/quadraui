@@ -6,8 +6,7 @@
 //!
 //! Controls:
 //! - drag divider             resize panes
-//! - [ / ]                    nudge divider by 5% (keyboard equivalent of
-//!   dragging it — quadraui#828)
+//! - [ / ]                    nudge divider by 5% (keyboard equivalent of dragging)
 //! - v                        toggle Horizontal / Vertical
 //! - r                        reset ratio to 0.5
 //! - q / Esc                  quit
@@ -18,8 +17,7 @@ use quadraui::{
 };
 
 /// Ratio delta per `[`/`]` keypress — the keyboard equivalent of nudging
-/// the divider a small distance by mouse (quadraui#828: Tier-1 gestures
-/// must all have a key path, not just a drag one).
+/// the divider a small distance by mouse.
 const KEYBOARD_RESIZE_STEP: f32 = 0.05;
 
 pub struct SplitApp {

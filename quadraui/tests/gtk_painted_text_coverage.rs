@@ -1,28 +1,19 @@
-//! Painted-text coverage self-test for the GTK backend (quadraui#489).
+//! Painted-text coverage self-test for the GTK backend.
 //!
 //! `GtkDriver::find` / `find_bounds` / `screen_contains` are backed by
-//! `GtkBackend::painted_text`. Until #489 only three trait methods
-//! (`draw_status_bar`, `draw_data_table`, `draw_pipeline_view`) recorded
-//! into it — 2 of 37 rasterisers at the time the issue was filed — which
-//! structurally capped the GTK example-driver suite at `PipelineApp`
-//! (4 tests, against the TUI suite's 84): the tests could not be
-//! *authored*, because no coordinate-free way existed to locate a tree
-//! row, a toolbar button, or a table cell.
+//! `GtkBackend::painted_text`. This file tests that example apps record
+//! text-bearing primitives into the painted-text map, enabling coordinate-free
+//! text location in test assertions.
 //!
-//! This file is the coverage gate for the fix. Each test paints one
-//! exemplar of a text-bearing primitive — through a real example app, so
-//! the fixtures cannot drift from what the examples actually render — and
-//! asserts the driver can *locate* its text, i.e. that the primitive
-//! reports into the painted-text map at all. It doubles as the Tier C0
-//! seed data for story B5.
+//! Each test paints one exemplar of a text-bearing primitive through a real
+//! example app and asserts the driver can locate its text.
 //!
 //! Not covered here, deliberately:
 //!
 //! * **`draw_terminal`** — the cell-grid rasteriser paints one Pango run
 //!   *per cell*, so routing it through the recorder would push thousands
 //!   of single-character entries into the map per frame. It needs the
-//!   cheaper row-coalescing path the issue flags as optional; see
-//!   `src/gtk/painted_text.rs`.
+//!   cheaper row-coalescing path; see `src/gtk/painted_text.rs`.
 //! * **`draw_split` / `draw_split_tree` / `draw_scrollbar` /
 //!   `draw_drop_overlay`** — these paint no text at all (dividers,
 //!   tracks, tint rects), so there is nothing to record. The labels a
@@ -163,19 +154,14 @@ fn shell_app_paints_locatable_chrome_and_tree_rows() {
 /// current-point read would record bar-local instead of surface
 /// coordinates. Its glyphs must land inside the bar's own column.
 ///
-/// # Needle choice (issue #1155)
+/// # Needle choice
 ///
 /// Both probes must be needles *no other* painted text in this fixture
 /// contains, because [`GtkDriver::find_bounds`] is a substring search over
-/// painted texts in **paint order** and `AppShell` paints the sidebar's
+/// painted texts in paint order and `AppShell` paints the sidebar's
 /// `" EXPLORER "` panel-title status bar before `draw_activity_bar` runs.
-/// This test used to probe the top-pinned glyph with `"E"`, which resolved
-/// to that status bar instead — and passed only because the sidebar (and
-/// therefore its title bar) starts at x=54, just inside the `< 64.0` bound
-/// below. #1155's `PIXEL_EDGE_INSET` pushed that segment to x=64 and the
-/// assertion failed, exposing the mis-resolution rather than a real
-/// regression in `draw_activity_bar`. `"G"` (source-control) and `"*"`
-/// (settings) are unique to the activity bar's own glyphs.
+/// `"G"` (source-control) and `"*"` (settings) are unique to the
+/// activity bar's own glyphs.
 #[test]
 fn activity_bar_glyphs_record_absolute_surface_coordinates() {
     let driver = GtkDriver::new(shell_app::ShellApp::new(), W, H);

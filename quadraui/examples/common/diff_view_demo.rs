@@ -64,8 +64,7 @@ pub struct DiffViewApp {
     /// Wrapped in `Cell` so `render(&self, ...)` can update it.
     last_layout: Cell<DiffViewLayout>,
     /// Human-readable description of the last click, shown in the status
-    /// bar (#818 — proves `DiffViewGeometry::hit_test` reaches a real
-    /// click, not just a unit test against the primitive in isolation).
+    /// bar. Proves `DiffViewGeometry::hit_test` reaches a real click.
     last_click: Option<String>,
 }
 
@@ -155,7 +154,7 @@ impl AppLogic for DiffViewApp {
         let total = self.last_layout.get().total_rows;
 
         match event {
-            // Click routing (#818): resolve the click through
+            // Click routing: resolve the click through
             // `DiffView::layout` + `DiffViewGeometry::hit_test` — the
             // same geometry `render` just painted from — and report
             // what was hit in the status bar.

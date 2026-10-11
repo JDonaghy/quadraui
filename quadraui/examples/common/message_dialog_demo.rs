@@ -1,28 +1,22 @@
 //! Message-dialog demo — exercises [`PlatformServices::show_message_dialog`]
-//! / [`native_dialog_options`] (quadraui#666).
+//! / [`native_dialog_options`].
 //!
 //! - **GTK** (`gtk_message_dialog`): maps an in-canvas [`Dialog`]
-//!   descriptor through `native_dialog_options` and opens a real native
-//!   `gtk4::AlertDialog` (via the same nested-mainloop adapter
-//!   `gtk::services` already uses for file dialogs), parented to this
+//!   descriptor through `native_dialog_options` and opens a native
+//!   `gtk4::AlertDialog` (via the nested-mainloop adapter
+//!   `gtk::services` uses for file dialogs), parented to this
 //!   window, with GNOME-HIG button order (cancel leftmost, default
-//!   rightmost). This is the primary manual smoke test for #666 —
-//!   driving it headlessly isn't possible (no `GtkDriver` yet, #301, and
-//!   `GtkDriver` paints Cairo — it never sees a native `AlertDialog`
-//!   window at all), so exercise it by hand: run the example, press `m`,
-//!   and confirm the native alert appears, is parented to the demo
-//!   window, shows "Discard" left of "Keep Editing" (HIG cancel-left /
-//!   default-right order), and the status bar reflects the chosen button
-//!   (or "cancelled" on Escape/close). See `docs/TESTING.md`'s "What
-//!   unit tests don't cover" for the write-up of this gap.
-//! - **TUI** (`tui_message_dialog`): since issue #965,
+//!   rightmost). Press `m` to run it: the native alert appears
+//!   parented to the demo window, shows "Discard" left of "Keep Editing"
+//!   (HIG cancel-left / default-right order), and the status bar
+//!   reflects the chosen button (or "cancelled" on Escape/close).
+//! - **TUI** (`tui_message_dialog`):
 //!   `show_message_dialog` drives a real in-canvas
 //!   `compose::MessageDialogController` through a nested draw-and-read
 //!   loop (see `tui::services`'s module doc) and returns the button the
-//!   user actually chose — press `m`, then arrow/Tab and Enter, or
-//!   Escape, like `tui_message_dialog_app` does directly against the
-//!   controller. Covered by the `TuiDriver` tests in
-//!   `tests/tui_example_driver.rs`, which prove both an explicit
+//!   user chose — press `m`, then arrow/Tab and Enter, or
+//!   Escape, like `tui_message_dialog_app` does. Covered by the `TuiDriver`
+//!   tests in `tests/tui_example_driver.rs`, which prove both an explicit
 //!   "Discard" choice and the Escape-resolves-to-the-cancel-button path.
 //!
 //! ```sh

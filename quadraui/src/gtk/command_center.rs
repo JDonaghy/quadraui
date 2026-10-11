@@ -161,7 +161,7 @@ mod tests {
         (surface, layout)
     }
 
-    /// `command_center_layout` is documented **ABSOLUTE** (issue #505):
+    /// `command_center_layout` is documented **ABSOLUTE**:
     /// `back_bounds` / `search_bounds` must be shifted by the strip's
     /// own origin, not left at (0, 0) — the case that hides a
     /// LOCAL/ABSOLUTE mixup (also regression-tested for macOS as
@@ -199,7 +199,7 @@ mod tests {
         round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (issue #505 / LESSONS.md).
+    /// Verifies that painting and clicking work correctly at non-zero origins.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         round_trip_at(7.0, 13.0);

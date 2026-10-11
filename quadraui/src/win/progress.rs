@@ -1,26 +1,12 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::ProgressBar`] (issue
-//! #29).
+//! Direct2D / DirectWrite rasteriser for [`crate::ProgressBar`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::progress::native_surface_paint::paint`] (#1085,
-//! `PaintSurface` Phase 4 slice 8/8) — see that fn's doc for the one
-//! named divergence this backend was the source of: this module's
-//! pre-#1085 `draw_progress` took no `theme` parameter at all and called
-//! `Theme::default()` internally on every paint, so a Win-GUI host
-//! running any theme other than the default painted every progress bar
-//! in the wrong colours.
-//!
-//! [`super::backend::WinBackend::draw_progress`] (the sanctioned,
-//! `Backend`-trait entry point, and the one every in-tree call site
-//! already uses) no longer goes through a free function at all — it
-//! calls the shared `paint` directly with `self.current_theme`, the
-//! same live theme every other Win-GUI rasteriser already uses, which
-//! is where the fix actually lands. The deprecated `draw_progress` free
-//! function (which, matching its pre-#1085 self, always hardcoded
-//! `Theme::default()` internally) was removed in issue #1109 (zero uses
-//! in coord-tui's `main` and vimcode's `develop`). This module now only
-//! carries [`win_progress_layout`] (still real, backend-specific pure
-//! geometry — no painting involved).
+//! Painting is delegated to the shared
+//! [`crate::primitives::progress::native_surface_paint::paint`] function — see that
+//! fn's doc for details. The `Backend`-trait entry point
+//! [`super::backend::WinBackend::draw_progress`] calls the shared `paint` directly
+//! with `self.current_theme`, ensuring the live theme is used for all painting.
+//! This module now only carries [`win_progress_layout`], which provides backend-specific
+//! geometry calculations without performing painting.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod progress;` and `backend.rs`'s
@@ -41,7 +27,7 @@ use crate::theme::Theme;
 /// [`ProgressBar::layout`] with the identical cancel-affordance width,
 /// so a no-paint hit-test call always agrees with what the last paint
 /// drew. Shares that width with `gtk_progress_layout` /
-/// `mac_progress_layout` via [`pixel_progress_layout`] (issue #1079).
+/// `mac_progress_layout` via [`pixel_progress_layout`].
 pub fn win_progress_layout(rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
     pixel_progress_layout(bar, rect.x, rect.y, rect.width, rect.height)
 }
@@ -71,7 +57,7 @@ mod tests {
     /// [`crate::primitives::progress::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s
     /// headless target — the same adapter the now-removed
-    /// `draw_progress` shim used (issue #1109), exercised here directly.
+    /// `draw_progress` shim used, exercised here directly.
     fn paint(
         surface: &HeadlessSurface,
         dwrite: &DWrite,
@@ -130,10 +116,7 @@ mod tests {
         assert_eq!(hit, ProgressBarHit::Body(WidgetId::new("p")));
     }
 
-    /// Regression for #1085's one named divergence: `draw_progress` used
-    /// to hardcode `Theme::default()` internally, ignoring whatever theme
-    /// the host was actually running. A non-default `accent_bg` must now
-    /// show up in the painted fill.
+    /// The painted fill must respect the supplied theme, not a hardcoded default.
     #[test]
     fn paints_the_caller_supplied_theme_not_a_hardcoded_default() {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
@@ -181,8 +164,6 @@ mod tests {
         paint(&surface1, &dwrite, rect, &bar1, &theme);
 
         // The pulse starts at x=0 on frame 0 (lit) and has moved past
-        // x=0 by frame 5 (frame 0's leading pixel should no longer be
-        // lit — it now shows the plain track colour).
         let px0 = surface0.pixel_at(1, H / 2);
         let px1 = surface1.pixel_at(1, H / 2);
         assert_ne!(
@@ -209,8 +190,7 @@ mod tests {
         assert_eq!(hit, ProgressBarHit::Cancel(WidgetId::new("p")));
     }
 
-    /// `win_progress_layout` (no-paint) must produce byte-identical
-    /// layout to what `draw_progress` used to paint.
+    /// `win_progress_layout` must produce byte-identical layout to the painted result.
     #[test]
     fn no_paint_layout_matches_paint_layout() {
         let bar = bar(Some(0.3), true);

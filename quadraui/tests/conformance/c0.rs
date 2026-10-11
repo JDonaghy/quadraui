@@ -1,16 +1,14 @@
-//! Tier C0 — auto-generated per-primitive paint smoke (quadraui#492,
-//! epic #480 acceptance: "Compiles must stop implying renders").
+//! Tier C0 — smoke test that every primitive draws observable output.
 //!
 //! `Backend` gives several `draw_*`-adjacent methods a no-op (or `false`)
 //! default so a new backend compiles before every optional surface is
 //! wired up. That silence is the bug: a backend can implement every
-//! `draw_*` method and still discard the caller's content (the macOS
-//! `draw_diff_view` fake #492 names), and nothing in a green build says
-//! so. C0 is the boot tier that closes that gap: for every primitive in
-//! [`CASES`], `begin_frame` → draw → `end_frame` must not panic, and the
-//! resulting frame must be **observable** — a non-empty
-//! `FrameInventory::text_runs()` or a non-empty `zones()` — on every
-//! registered backend.
+//! `draw_*` method and still discard the caller's content, and nothing
+//! in a green build says so. C0 is the boot tier that closes that gap:
+//! for every primitive in [`CASES`], `begin_frame` → draw → `end_frame`
+//! must not panic, and the resulting frame must be **observable** — a
+//! non-empty `FrameInventory::text_runs()` or a non-empty `zones()` —
+//! on every registered backend.
 //!
 //! [`CASES`] *is* the generator: [`run`] is generic over
 //! [`super::runner::DriverFactory`], so adding a backend costs nothing
@@ -18,20 +16,15 @@
 //! `fixtures::build`), and adding a primitive is one more entry in the
 //! table rather than one more hand-written test function per backend.
 //!
-//! Deliberately weak, matching contract §5b (`tests/acceptance/ms-11/
-//! contract.md`): this is "the primitive draws *something* attributable
-//! to it", not a rendering assertion — C1/#491's scenario suite is where
-//! layout and interaction get checked.
+//! Deliberately weak: this is "the primitive draws *something*
+//! attributable to it", not a rendering assertion — layout and
+//! interaction get checked elsewhere.
 //!
-//! [`CASES`] covers every `draw_*` method [`quadraui::Backend`] declares
-//! (quadraui#492 review: a 15-of-38 sample let a backend with a
-//! completely broken `draw_editor` — arguably the single highest-stakes
-//! primitive in the library — pass this tier silently). That claim is not
-//! just asserted in prose: `tests::cases_cover_every_draw_method_on_the_trait`
-//! below parses `backend.rs`'s own source for every `fn draw_*` trait
-//! item and fails if `CASES` and the trait ever disagree, in either
-//! direction — a new primitive added to the trait without a matching
-//! entry here, or a stale entry naming a method that no longer exists.
+//! [`CASES`] covers every `draw_*` method [`quadraui::Backend`] declares.
+//! That claim is not just asserted in prose:
+//! `tests::cases_cover_every_draw_method_on_the_trait` below parses
+//! `backend.rs`'s own source for every `fn draw_*` trait item and fails
+//! if `CASES` and the trait ever disagree, in either direction.
 
 use quadraui::{
     compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, Anchor, AppLogic, Backend,
@@ -111,10 +104,9 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        // #1045 item 2: same content as `draw_status_bar_interactive`
-        // above, but through the scaled entry point so C0 exercises the
-        // `font_scale` parameter reaching the backend (even though the
-        // default impl ignores it and forwards unscaled).
+        // Same content as `draw_status_bar_interactive` above, but
+        // through the scaled entry point to exercise the `font_scale`
+        // parameter reaching the backend.
         method: "draw_status_bar_interactive_scaled",
         needle: Some("c0statscaled"),
         paint: |b, area| {
@@ -192,7 +184,7 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        // #631: the chrome-carrying entry point. Same content as
+        // The chrome-carrying entry point. Same content as
         // `draw_tab_bar` above (which renders `TabFrame::None`, i.e. no
         // framing change), but asking explicitly for `Brackets` so C0
         // exercises a non-default request reaching the backend rather
@@ -226,9 +218,8 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        // Issue #919's `TabBarLayout`-returning counterpart to
-        // `draw_tab_bar` above — same content, same needle convention,
-        // just a different return type reaching the backend.
+        // `TabBarLayout`-returning counterpart to `draw_tab_bar`.
+        // Same content, same needle convention, different return type.
         method: "draw_tab_bar_layout",
         needle: Some("c0tabslayout"),
         paint: |b, area| {
@@ -252,8 +243,7 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        // Issue #919's `TabBarLayout`-returning counterpart to
-        // `draw_tab_bar_icons` above.
+        // `TabBarLayout`-returning counterpart to `draw_tab_bar_icons`.
         method: "draw_tab_bar_icons_layout",
         needle: Some("c0icontabslayout"),
         paint: |b, area| {
@@ -286,11 +276,10 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        // Issue #919's `TabBarLayout`-returning counterpart to
-        // `draw_tab_bar_with_chrome` above — same non-default `Brackets`
-        // request, exercising the override on backends that honour it
-        // (TUI/GTK) and the trait default fallback on the ones that
-        // don't (macOS/Win).
+        // `TabBarLayout`-returning counterpart to `draw_tab_bar_with_chrome`.
+        // Same non-default `Brackets` request, exercising the override on
+        // backends that honour it (TUI/GTK) and the trait default fallback
+        // on the ones that don't (macOS/Win).
         method: "draw_tab_bar_with_chrome_layout",
         needle: Some("c0chrometabslayout"),
         paint: |b, area| {
@@ -450,8 +439,7 @@ pub const CASES: &[Case] = &[
         needle: Some("c0diff"),
         paint: |b, area| {
             // The needle lives in the row content, not a pane label, so a
-            // backend that paints the chrome and drops the diff body
-            // (the macOS fake #492 names) still fails.
+            // backend that paints the chrome and drops the diff body still fails.
             let left = "c0diff-old".to_string();
             let right = "c0diff-new".to_string();
             let hunks = compute_hunks(&left, &right);
@@ -489,7 +477,7 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        // #541: the chrome-carrying entry point. Same content as
+        // The chrome-carrying entry point. Same content as
         // `draw_tooltip` above (which renders `TooltipChrome::default()`),
         // but asking explicitly for `Sides` chrome so C0 exercises a
         // non-default request reaching the backend rather than only the
@@ -611,7 +599,7 @@ pub const CASES: &[Case] = &[
             let _ = area;
         },
     },
-    // ── The rest of the trait surface (quadraui#492 review) ───────────
+    // ── The rest of the trait surface ─────────────────────────────────
     //
     // The 15 cases above were the original sample; everything below was
     // added to close that gap. `tests::cases_cover_every_draw_method_on_
@@ -706,13 +694,12 @@ pub const CASES: &[Case] = &[
     },
     Case {
         method: "draw_activity_bar",
-        // TUI paints only the icon's *first* character
-        // (`item.icon.chars().next()`), while GTK paints the whole
-        // `icon` string — an inherent cross-backend asymmetry in this
-        // primitive's own design, not a #492 gap, so no single needle
-        // matches both verbatim. Observability still comes from the
-        // icon glyph itself: a backend that painted nothing would leave
-        // both `text_runs()` and `zones()` empty.
+        // TUI paints only the icon's *first* character while GTK paints the
+        // whole `icon` string — an inherent cross-backend asymmetry in this
+        // primitive's design, not a coverage gap, so no single needle matches
+        // both verbatim. Observability comes from the icon glyph itself: a
+        // backend that painted nothing would leave both `text_runs()` and
+        // `zones()` empty.
         needle: None,
         paint: |b, area| {
             let lh = b.line_height();
@@ -734,7 +721,7 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        // #658: the style-carrying entry point. Same content as
+        // The style-carrying entry point. Same content as
         // `draw_activity_bar` above, but asking explicitly for an
         // `ActivityBarStyle` row fill so C0 exercises a non-default
         // request reaching the backend rather than only the delegating
@@ -770,12 +757,10 @@ pub const CASES: &[Case] = &[
         method: "draw_terminal",
         // GTK's rasteriser paints cell glyphs via a raw
         // `pangocairo::functions::show_layout` call, bypassing the
-        // `painted_text` tracking every other primitive's rasteriser
-        // routes through (see the `#492` comment on
-        // `GtkBackend::draw_terminal`) — so an exact-text needle can't
-        // be asserted across backends today. Observability instead
-        // comes from the zone `draw_terminal` now registers (TUI's
-        // buffer scan sees the glyphs directly either way).
+        // `painted_text` tracking every other primitive's rasteriser routes
+        // through — so an exact-text needle cannot be asserted across
+        // backends. Observability instead comes from the zone `draw_terminal`
+        // now registers (TUI's buffer scan sees the glyphs directly either way).
         needle: None,
         paint: |b, area| {
             let cell = |ch: char| TerminalCell {
@@ -877,7 +862,7 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        // #1321: `Float` is pure chrome — a background fill and
+        // `Float` is pure chrome — a background fill and
         // (border-on, the default) a stroke, no text of its own, by
         // design (see `Float`'s module doc). No needle to search for on
         // any backend; observability comes from `draw_float`'s
@@ -1235,7 +1220,7 @@ pub const CASES: &[Case] = &[
             );
         },
     },
-    // #260: the options-taking twin backends actually implement —
+    // The options-taking twin backends actually implement —
     // `draw_toolbar_interactive` above is a forwarding default over it.
     // A C0 row here is what proves each backend's rasteriser is reached
     // through *this* entry point too, and it paints into a slot taller
@@ -1371,7 +1356,7 @@ pub const CASES: &[Case] = &[
             let _ = b.draw_minimap(area, &minimap);
         },
     },
-    // #662: GTK paints real pixels (no text run); TUI paints
+    // GTK paints real pixels (no text run); TUI paints
     // `fallback_text` into the buffer. A single needle can't cover both
     // paint techniques, so — like `draw_minimap` above — this relies on
     // the `zones()` fallback, which both backends register
@@ -1391,21 +1376,14 @@ pub const CASES: &[Case] = &[
             let _ = b.draw_image(area, &image);
         },
     },
-    // ── Deprecated positional hover/pressed shim (issue #819) ─────────
+    // ── Deprecated positional hover/pressed shim ──────────────────────
     //
-    // `draw_status_bar` is no longer implemented by any backend: it is
-    // a `#[deprecated]` trait *default* that rebuilds an
-    // `InteractionState` and forwards to `draw_status_bar_interactive`.
-    // `cases_cover_every_draw_method_on_the_trait` requires an entry
-    // per `fn draw_*` regardless, and this one earns its keep — a C0
-    // row here is the only automated proof that the shim actually
-    // reaches a rasteriser rather than silently painting nothing, which
-    // is exactly the breakage the shim exists to prevent for the sealed
-    // `tests/acceptance/ms-11` slices that still call it this way (see
-    // that method's own doc for why it outlived its #1251 siblings).
-    // `#[allow(deprecated)]` is scoped to the one call in this closure,
-    // deliberately: everywhere else in this repo the `-D warnings` gate
-    // must keep rejecting this name.
+    // `draw_status_bar` is a `#[deprecated]` trait *default* that rebuilds
+    // an `InteractionState` and forwards to `draw_status_bar_interactive`.
+    // This C0 row is the only automated proof that the shim reaches a
+    // rasteriser rather than silently painting nothing. `#[allow(deprecated)]`
+    // is scoped to the one call in this closure deliberately: elsewhere in
+    // this repo `-D warnings` must keep rejecting this name.
     Case {
         method: "draw_status_bar",
         needle: Some("c0stsh"),
@@ -1521,18 +1499,11 @@ pub fn run<F: DriverFactory>() -> Vec<CaseOutcome> {
 mod tests {
     use super::CASES;
 
-    /// quadraui#492 review, blocking finding 1: `CASES` must name *every*
-    /// `draw_*` method on `Backend`, not a hand-picked sample — a 15-of-38
-    /// table let a backend ship a completely broken `draw_editor` and
-    /// still get a fully green C0 row. Rather than trust that claim to
-    /// stay true by convention, parse `backend.rs`'s own source for every
-    /// `fn draw_*` trait item (skipping the doc-comment example inside the
-    /// "Implementations are thin wrappers" blurb, which is indented as
-    /// prose rather than a real trait item — `fn` there does not start
-    /// the trimmed line) and assert the two lists agree exactly. A new
-    /// primitive added to the trait without a matching `CASES` entry
-    /// fails here, at the source of the drift, instead of shipping an
-    /// untested `draw_*` method with a silently-passing C0 row.
+    /// `CASES` must name *every* `draw_*` method on `Backend`, not a
+    /// hand-picked sample. Parse `backend.rs`'s own source for every `fn draw_*`
+    /// trait item (skipping the doc-comment example inside the "Implementations
+    /// are thin wrappers" blurb, which is indented as prose rather than a real
+    /// trait item) and assert the two lists agree exactly.
     #[test]
     fn cases_cover_every_draw_method_on_the_trait() {
         const BACKEND_SRC: &str = include_str!("../../src/backend.rs");

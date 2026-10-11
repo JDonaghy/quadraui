@@ -1,9 +1,8 @@
 //! `DataTable` primitive: a flat, scrollable multi-column table with
 //! sortable headers and row selection.
 //!
-//! Distinct from `TreeTable` (hierarchical rows with expand/collapse)
-//! per Decision D-002: list:tree :: DataTable:TreeTable. Column-sizing
-//! helpers are shared via `quadraui::internal::columns` (not public).
+//! Distinct from `TreeTable` (hierarchical rows with expand/collapse).
+//! Column-sizing helpers are shared via `quadraui::internal::columns` (not public).
 //!
 //! # Backend contract
 //!
@@ -37,7 +36,7 @@
 //! [`DataTableLayout::drag_divider`]) therefore takes it in **viewport
 //! space** and adds [`DataTableLayout::h_scroll`] back before comparing
 //! against `columns`. At `h_scroll == 0.0` the two spaces coincide and
-//! the conversion is a no-op (#550).
+//! the conversion is a no-op.
 //!
 //! ## `h_scroll` must already agree with what was painted
 //!
@@ -48,7 +47,7 @@
 //! renderer subtracted when it painted, not merely "close" to it — any
 //! rounding a backend applies at paint time must already be baked into
 //! the `h_scroll` carried on the layout `hit_test` runs against, because
-//! `hit_test` does no rounding of its own (#550 round 2).
+//! `hit_test` does no rounding of its own.
 //!
 //! Pixel backends (GTK/macOS) paint at the exact fractional `h_scroll`,
 //! so the layout's `h_scroll` — copied verbatim from `DataTable::h_scroll`
@@ -64,18 +63,16 @@
 //! `Backend::data_table_layout` route through, so the layout-on-demand
 //! hit-test path (no repaint) agrees with the paint path bit-for-bit.
 //! Adding a third TUI entry point that calls [`DataTable::layout`]
-//! directly would reopen #550; go through `tui::data_table_layout`
+//! directly would reopen that issue; go through `tui::data_table_layout`
 //! instead. The same applies to any caller that hand-builds a
 //! `DataTableLayout` for a cell-granular surface: it must apply the
 //! rounding itself.
 //!
-//! One residual, pre-existing and unrelated to `h_scroll`: the TUI paint
-//! loop rounds each column's `rc.x` and the scroll offset independently
-//! (`rc.x.round() - h_off`), while `hit_test` compares against the
-//! continuous `rc.x`. For columns whose resolved boundaries aren't
-//! integers (`Flex`/`Content` widths that don't divide evenly) the two
-//! can disagree by up to one cell. That predates #550 and is not
-//! addressed here.
+//! One residual, pre-existing: the TUI paint loop rounds each column's
+//! `rc.x` and the scroll offset independently (`rc.x.round() - h_off`),
+//! while `hit_test` compares against the continuous `rc.x`. For columns
+//! whose resolved boundaries aren't integers (`Flex`/`Content` widths that
+//! don't divide evenly) the two can disagree by up to one cell.
 
 use crate::types::{Decoration, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -276,7 +273,7 @@ pub enum DataTableHit {
 ///
 /// `#[non_exhaustive]`: per PRIMITIVE_RULES rule 8, this keeps future
 /// field additions non-breaking regardless of what downstream ends up
-/// doing with the struct. Today (#550) no downstream crate constructs or
+/// doing with the struct. Today no downstream crate constructs or
 /// pattern-matches this type directly — both `coord-tui` and `vimcode`
 /// only ever receive it from `.layout()` — but there's no reason to
 /// leave that door open for free.
@@ -306,8 +303,7 @@ pub struct DataTableLayout {
     pub footer_height: f32,
     /// The horizontal scroll offset this layout was **painted** at — not
     /// necessarily a bit-for-bit copy of [`DataTable::h_scroll`], carried
-    /// here so hit-testing can undo the same shift the renderer applied
-    /// (#550).
+    /// here so hit-testing can undo the same shift the renderer applied.
     ///
     /// Backends paint column `i` at `columns[i].x - h_scroll`, so a
     /// pointer `x` in viewport space maps to `x + h_scroll` in the
@@ -320,10 +316,9 @@ pub struct DataTableLayout {
     /// from each column's `x` — because `hit_test`/`column_hit` add this
     /// field back with no rounding of their own; a mismatch here
     /// misroutes clicks whenever `DataTable::h_scroll`'s fractional part
-    /// crosses 0.5 (#550 round 2). Both TUI entry points that produce a
-    /// layout — `tui::data_table::draw_data_table` and
-    /// `Backend::data_table_layout` — apply it via
-    /// [`tui::data_table_layout`](crate::tui::data_table_layout).
+    /// crosses 0.5. Both TUI entry points that produce a layout —
+    /// `tui::data_table::draw_data_table` and `Backend::data_table_layout`
+    /// — apply it via [`tui::data_table_layout`](crate::tui::data_table_layout).
     pub h_scroll: f32,
 }
 
@@ -333,7 +328,7 @@ const DIVIDER_GRAB_PX: f32 = 3.0;
 impl DataTableLayout {
     /// Convert a pointer `x` in **viewport space** into the **content
     /// space** [`ResolvedColumn::x`] is expressed in, undoing the same
-    /// `- h_scroll` shift the renderer applies when painting (#550).
+    /// `- h_scroll` shift the renderer applies when painting.
     ///
     /// Identity when `h_scroll == 0.0`.
     ///
@@ -344,7 +339,7 @@ impl DataTableLayout {
     /// positions, not cell-centres, so there is no `+ 0.5` to lean on:
     /// a cell-granular backend that fed this an un-rounded `h_scroll`
     /// while painting at a rounded offset would misroute clicks whenever
-    /// `h_scroll`'s fractional part crosses 0.5 (#550 round 2).
+    /// `h_scroll`'s fractional part crosses 0.5.
     #[inline]
     fn content_x(&self, x: f32) -> f32 {
         x + self.h_scroll
@@ -362,12 +357,9 @@ impl DataTableLayout {
     /// Deliberately inert at `h_scroll == 0.0`. A `min_total_width`
     /// table's columns already extend past the strip's left edge at zero
     /// scroll, so an unconditional exclusion would change what such a
-    /// table's *unscrolled* clicks resolve to — and acceptance bullet 3
-    /// of #550 requires zero-scroll routing to stay bit-identical for
-    /// the many callers that pin `h_scroll` at 0. Pre-existing
-    /// strip-fall-through at zero scroll is the callers' to intercept
-    /// (coord-tui already does, via `audit_scrollbar_hit`); this fix's
-    /// job is only to avoid *introducing* a new one.
+    /// table's *unscrolled* clicks resolve to. Pre-existing strip-fall-through
+    /// at zero scroll is the callers' to intercept; this mechanism's job is
+    /// only to avoid introducing a new one.
     #[inline]
     fn in_v_scrollbar_strip(&self, x: f32) -> bool {
         self.h_scroll != 0.0
@@ -377,10 +369,9 @@ impl DataTableLayout {
 
     /// Resolve a click to a header / divider / row / footer.
     ///
-    /// `x` and `y` are **viewport-relative** (see the module header):
-    /// `x` is measured from the table's left edge, *before* `h_scroll`
-    /// is added back, so callers pass the raw pointer position exactly
-    /// as they did before #550.
+    /// `x` and `y` are **viewport-relative**: `x` is measured from the
+    /// table's left edge, *before* `h_scroll` is added back, so callers
+    /// pass the raw pointer position.
     pub fn hit_test(
         &self,
         x: f32,
@@ -419,16 +410,10 @@ impl DataTableLayout {
         }
         // Row resolution is intentionally purely `y`-based and does NOT
         // consult `in_v_scrollbar_strip` — a v-scrollbar-track click here
-        // already fell through to `Row { .. }` before #550 (row
-        // resolution never looked at `x` at all), so this fix does not
-        // regress it. It is, however, still uncovered by this layer: the
-        // issue's acceptance bullet ("a track click must not fall
-        // through to a header or a row") is only satisfied for rows by a
-        // caller intercepting the strip itself before calling
-        // `hit_test` — e.g. coord-tui's `audit_scrollbar_hit`. See
-        // `scrollbar_strips_keep_priority_when_horizontally_scrolled`
-        // (header case) and `v_scrollbar_strip_row_click_is_a_caller_concern`
-        // (documents this row-branch gap) in the tests below.
+        // falls through to `Row { .. }` as row resolution never looked at
+        // `x` at all. This is pre-existing behaviour. Callers that own a
+        // vertical scrollbar (e.g. coord-tui's `audit_scrollbar_hit`) are
+        // expected to intercept the strip themselves before calling `hit_test`.
         let body_bottom = self.header_height + self.visible_rows as f32 * self.row_height;
         if y < body_bottom {
             let row_in_viewport = ((y - self.header_height) / self.row_height).floor() as usize;
@@ -450,7 +435,7 @@ impl DataTableLayout {
     /// This is the cell-resolution counterpart to [`Self::hit_test`]
     /// (which reports rows, not cells) and takes `x` in the same
     /// **viewport space**: `h_scroll` is added back before the lookup,
-    /// and the vertical scrollbar strip resolves to `None` (#550).
+    /// and the vertical scrollbar strip resolves to `None`.
     pub fn column_hit(&self, x: f32) -> Option<usize> {
         if self.in_v_scrollbar_strip(x) {
             return None;
@@ -461,79 +446,64 @@ impl DataTableLayout {
             .position(|c| cx >= c.x && cx < c.x + c.width)
     }
 
-    /// Compute the `column_overrides` for a divider drag (#521 defect 1,
-    /// #1031).
+    /// Compute the `column_overrides` for a divider drag.
     ///
     /// `col` is the column to the LEFT of the dragged divider, as
     /// returned by [`DataTableHit::HeaderDivider`]. `pointer_x` is the
     /// drag pointer's current position in **viewport space** — the same
     /// space [`Self::hit_test`] took to produce `col`, so a caller keeps
-    /// forwarding the raw pointer `x` and this converts once, internally
-    /// (#550). `min_width` is the floor both the dragged column and the
+    /// forwarding the raw pointer `x` and this converts once, internally.
+    /// `min_width` is the floor both the dragged column and the
     /// last column are clamped to.
     ///
-    /// **The rightmost column absorbs the slack (#1031).** Widening `col`
-    /// shrinks the *last* column (`self.columns.len() - 1`), not `col +
-    /// 1` — every column strictly between `col` and the last one keeps
+    /// **The rightmost column absorbs the slack.** Widening `col`
+    /// shrinks the *last* column (`self.columns.len() - 1`), not `col + 1` —
+    /// every column strictly between `col` and the last one keeps
     /// its currently-resolved width bit-for-bit (only its `x` origin
-    /// shifts, which is unavoidable). This is a deliberate change from
-    /// the #521 "pair" invariant (`col` and `col + 1` only): giving an
-    /// early column more room no longer eats the column immediately
-    /// after it, it eats the one the grid already treats as flexible —
-    /// the rightmost. When `col + 1` *is* the last column this reduces to
-    /// the old pair behaviour exactly (see below).
+    /// shifts, which is unavoidable). This means dragging an early column
+    /// wider eats the one the grid already treats as flexible — the
+    /// rightmost. When `col + 1` *is* the last column this matches the
+    /// original pair-resize behaviour exactly.
     ///
     /// **Once the last column bottoms out at `min_width`, the table is
     /// allowed to overflow** instead of refusing the drag: the dragged
     /// column keeps growing, total content width grows past the
     /// viewport, and [`DataTable::layout`] derives `content_width` from
-    /// the resolved columns and flips `h_scrolling` on its own — nothing
-    /// special is needed here. Dragging back the other way reclaims that
-    /// overflow into the last column first and shrinks the total back
-    /// down to fit, before the dragged column itself narrows.
+    /// the resolved columns and flips `h_scrolling` on its own. Dragging
+    /// back the other way reclaims that overflow into the last column
+    /// first and shrinks the total back down to fit, before the dragged
+    /// column itself narrows.
     ///
     /// No cascade to the second-from-last column, or any other column
-    /// beyond the last, is ever recruited. A cascade (shrink the neighbour
-    /// to its floor, then start eating the one past it) was considered
-    /// and rejected: it is lossy in one direction — dragging back does not
-    /// return the columns it pushed into to their original widths, because
-    /// which column absorbed what now depends on drag history, which is
-    /// exactly the #521 defect ("moving the left column makes the problem
-    /// disappear") in a new shape. The rule here is instead a pure
-    /// function of the pointer position (`target`/`last_width` below),
-    /// which makes it reversible by construction: drag out past the
-    /// overflow point and back to the same pointer position and every
-    /// column — including the last one and `h_scrolling` — returns to
-    /// exactly its starting value, with no transfer history to unwind.
+    /// beyond the last, is ever recruited. A cascade would be lossy in one
+    /// direction — dragging back would not return the columns it pushed to
+    /// their original widths because which column absorbed what depends on
+    /// drag history. The rule here is instead a pure function of the
+    /// pointer position (`target`/`last_width` below), which makes it
+    /// reversible by construction: drag out and back to the same pointer
+    /// position and every column — including the last one — returns to
+    /// exactly its starting value.
     ///
-    /// A `Fixed`-declared last column still absorbs: `drag_divider`
-    /// already pins every column as a numeric override regardless of its
-    /// declared [`ColumnWidth`] (see the freeze loop below), so this
-    /// falls out of the existing model rather than being a new special
-    /// case. If a `Fixed` last column should instead skip straight to
-    /// overflowing without absorbing anything, that is a follow-up, not a
-    /// silent variation of this rule.
+    /// A `Fixed`-declared last column still absorbs: `drag_divider` already
+    /// pins every column as a numeric override regardless of its declared
+    /// [`ColumnWidth`], so this falls out of the existing model rather than
+    /// being a new special case.
     ///
-    /// "Rightmost" means the last column in the table (`self.columns.len()
-    /// - 1`), not the last one currently visible — unchanged by
-    /// `min_total_width` or an already-h-scrolling table.
+    /// "Rightmost" means the last column in the table (`self.columns.len()` - 1),
+    /// not the last one currently visible.
     ///
-    /// `overrides` is the `column_overrides` in effect *before* this
-    /// call (typically the in-progress drag's current state, or the
-    /// table's existing overrides at drag start). Any column that does
-    /// not already have an override is frozen here at its *currently
-    /// resolved* width before `col` and the last column are adjusted —
-    /// this must happen unconditionally, not just for `Flex` columns,
-    /// because leaving an unrelated `Flex` column unresolved would let
-    /// pass 2's redistribution reshuffle it the moment the touched
-    /// columns' weights are pulled out of `total_flex` (the exact "moving
-    /// the left column makes the problem disappear" mechanism reported in
-    /// #521: whichever columns are still unpinned divide up whatever
-    /// space the pinned ones didn't claim, so the split among *them*
-    /// changes even though the user never touched them). Freezing every
-    /// column up front makes the result independent of drag history:
-    /// whatever the table's current resolved widths are, that's what gets
-    /// pinned, regardless of which dividers produced them.
+    /// `overrides` is the `column_overrides` in effect *before* this call
+    /// (typically the in-progress drag's current state, or the table's
+    /// existing overrides at drag start). Any column that does not already
+    /// have an override is frozen here at its *currently resolved* width
+    /// before `col` and the last column are adjusted — this must happen
+    /// unconditionally, not just for `Flex` columns, because leaving an
+    /// unrelated `Flex` column unresolved would let pass 2's redistribution
+    /// reshuffle it the moment the touched columns' weights are pulled out
+    /// of `total_flex`. Freezing every column up front makes the result
+    /// independent of drag history: whatever the table's current resolved
+    /// widths are, that's what gets pinned, regardless of which dividers
+    /// produced them.
     pub fn drag_divider(
         &self,
         overrides: &[Option<f32>],
@@ -671,21 +641,20 @@ where
     // Pass 1: resolve Fixed and Content columns, accumulate flex weight.
     // Column overrides replace the original strategy with Fixed(w).
     //
-    // Overrides are honored at face value — NOT clamped to `remaining`
-    // (#1031). Fixed/Content columns below are still clamped: they come
-    // from the table's own declared shape, which is expected to fit the
-    // budget it was resolved against. An override, by contrast, is a
-    // deliberate divider-drag request (`DataTableLayout::drag_divider`)
-    // that may legitimately ask for more than `viewport_width` has to
-    // give — that's exactly how #1031's "rightmost column absorbs the
-    // slack, then the table overflows and h-scrolls" falls out: once
-    // every column's override sum exceeds `viewport_width`, `remaining`
-    // goes negative (harmless — it only gates pass 2's flex distribution
-    // below) and the resolved `x + width` of the last column comes out
-    // bigger than `viewport_width`, which `DataTable::layout` already
-    // reads as `content_width` and compares against `visible_col_area` to
-    // flip `h_scrolling`. Clamping here would silently truncate that
-    // overflow away instead of letting it scroll.
+    // Overrides are honored at face value — NOT clamped to `remaining`.
+    // Fixed/Content columns are still clamped: they come from the table's
+    // own declared shape, which is expected to fit the budget it was
+    // resolved against. An override, by contrast, is a deliberate
+    // divider-drag request that may legitimately ask for more than
+    // `viewport_width` has to give — that's exactly how the "rightmost
+    // column absorbs the slack, then the table overflows and h-scrolls"
+    // behaviour falls out: once every column's override sum exceeds
+    // `viewport_width`, `remaining` goes negative (harmless — it only gates
+    // pass 2's flex distribution below) and the resolved `x + width` of the
+    // last column comes out bigger than `viewport_width`, which
+    // `DataTable::layout` already reads as `content_width` and compares
+    // against `visible_col_area` to flip `h_scrolling`. Clamping here would
+    // silently truncate that overflow away instead of letting it scroll.
     for (i, col) in columns.iter().enumerate() {
         if let Some(Some(ow)) = overrides.get(i) {
             let w = ow.max(0.0);
@@ -714,23 +683,20 @@ where
 
     // Pass 2: distribute remaining space among Flex columns.
     //
-    // Must skip any column with an active override (#516 defect 3): pass 1
-    // already resolved that column's width from the override and folded
-    // its contribution *out* of `total_flex` (the `continue` above skips
-    // the `Flex` arm for overridden columns). But `col.width` here is
-    // still the column's *original* declared strategy — overriding a
-    // column never rewrites it, only layers a width on top — so a
-    // dragged column whose original strategy is `Flex` matches this `if
-    // let` too. Without this guard its pass-1 width gets clobbered by a
-    // flex share computed from a `total_flex` that already excludes its
-    // own weight, which can land smaller than its *original* pre-drag
-    // width — i.e. the column visibly *shrinks* while being dragged
-    // wider. This is the root cause of the "divider before the last
-    // column resizes backward" symptom: it reproduces on the divider
-    // before any column whose left-hand neighbour is Flex-declared, not
-    // just the last one, but a trailing pair of Flex text columns (the
-    // common server-data-driven layout) puts it right where the last
-    // divider lives.
+    // Must skip any column with an active override: pass 1 already resolved
+    // that column's width from the override and folded its contribution
+    // *out* of `total_flex` (the `continue` above skips the `Flex` arm for
+    // overridden columns). But `col.width` here is still the column's
+    // *original* declared strategy — overriding a column never rewrites it,
+    // only layers a width on top — so a dragged column whose original
+    // strategy is `Flex` matches this `if let` too. Without this guard its
+    // pass-1 width gets clobbered by a flex share computed from a
+    // `total_flex` that already excludes its own weight, which can land
+    // smaller than its *original* pre-drag width — the column visibly
+    // *shrinks* while being dragged wider. This occurs whenever the divider
+    // before a Flex-declared column is dragged wider, but a trailing pair
+    // of Flex text columns (the common server-data-driven layout) puts it
+    // right where the last divider lives.
     if total_flex > 0.0 && remaining > 0.0 {
         for (i, col) in columns.iter().enumerate() {
             if matches!(overrides.get(i), Some(Some(_))) {
@@ -753,19 +719,17 @@ where
         })
         .collect();
 
-    // Pass 4: fill any leftover space into the last column (#521 defect
-    // 2). Pass 2 is gated on `total_flex > 0.0`: once every `Flex`
-    // column has an active override, `total_flex` is `0` (pass 1's
-    // `continue` for overridden columns never contributes to it), so
-    // pass 2 is skipped entirely and whatever space `remaining` still
-    // held goes unclaimed — the resolved widths sum to less than
-    // `viewport_width` and the table visibly stops filling its area.
-    // One-directional (only ever *grows* the last column to reach
-    // `viewport_width`, never shrinks it): when columns legitimately
-    // exceed the viewport (e.g. `min_total_width`, or an overridden
-    // column whose requested width pass 1 above now honors uncapped,
-    // #1031), `x + width` here is already `>= viewport_width` and this
-    // is a no-op, so h-scroll is
+    // Pass 4: fill any leftover space into the last column. Pass 2 is gated
+    // on `total_flex > 0.0`: once every `Flex` column has an active override,
+    // `total_flex` is `0` (pass 1's `continue` for overridden columns never
+    // contributes to it), so pass 2 is skipped entirely and whatever space
+    // `remaining` still held goes unclaimed — the resolved widths sum to
+    // less than `viewport_width` and the table visibly stops filling its
+    // area. One-directional (only ever *grows* the last column to reach
+    // `viewport_width`, never shrinks it): when columns legitimately exceed
+    // the viewport (e.g. `min_total_width`, or an overridden column whose
+    // requested width pass 1 above now honors uncapped), `x + width` here is
+    // already `>= viewport_width` and this is a no-op, so h-scroll is
     // untouched.
     if let Some(last) = resolved.last_mut() {
         let shortfall = viewport_width - (last.x + last.width);
@@ -777,105 +741,38 @@ where
     resolved
 }
 
-// ── PaintSurface paint (issue #1084, PaintSurface Phase 4 7/8) ───────────
+// The shared paint implementation for **macOS and Windows** rasterisers only —
+// `gtk::data_table::draw_data_table` is not migrated and stays a full, bespoke
+// Cairo + Pango implementation.
 //
-// `paint` below is shared by the **macOS and Windows** rasterisers only —
-// `gtk::data_table::draw_data_table` is **not** migrated and stays a full,
-// bespoke Cairo + Pango implementation. Same exception, same reason,
-// already documented on
-// [`crate::primitives::rich_text_popup::native_surface_paint`] and
-// [`crate::primitives::message_list::native_surface_paint`]: every header/
-// body/footer cell GTK paints goes through **one** Pango `show_layout`
-// call per cell, with per-span colour expressed as a byte-ranged
-// `AttrList` rather than "measure each span, advance x by its width" —
-// exactly the shape issue #214 fixed `rich_text_popup` away from, because
-// summed per-span widths can drift from one line's real shaped glyph
-// positions for a proportional font. `PaintSurface` has no "shape one
-// line with N attribute ranges" verb, only single-style runs
-// (`surface_draw_text_run(_styled)`), so migrating GTK onto `paint` below
-// would mean reintroducing that bug class for the sake of a mechanical
-// "move the code." Per this issue's "do not tranche silently"
-// instruction: this is that call, made explicitly, not a silent skip.
+// **Selection / hover row tint alpha-blending.** All three backends now use
+// alpha-blended fills. `gtk::data_table` already did; `win::data_table` used CPU-side
+// blending against an assumed background; `macos::data_table` used fully opaque fills.
+// The shared implementation uses [`PaintSurface::surface_fill_rect_alpha`] uniformly,
+// compositing a real translucent tint over whatever is already painted.
 //
-// macOS and Windows never had that problem — both already painted
-// per-span with manual x-advance (the same shape `paint` below takes) —
-// so consolidating *their* two copies carries no such risk, and closes
-// real, pre-existing gaps between them (2-of-3 majority pattern, same
-// convention `crate::primitives::palette`/`tooltip`/`dialog`/
-// `rich_text_popup`'s `native_surface_paint` modules already establish):
+// **Scrollbar treatment.** All three backends now paint vertical and horizontal
+// scrollbars via [`crate::primitives::scrollbar::native_surface_paint::paint`]:
+// a translucent, hover/drag-aware track and thumb. `gtk::data_table` already used
+// this; `macos::data_table` and `win::data_table` each hand-rolled opaque fills.
 //
-// - **Selection / hover row tint alpha-blending.** GTK and Windows both
-//   intend a translucent tint (`theme.selection_alpha` / a hardcoded
-//   `0.5` hover mix) — Windows approximates it with a CPU-side
-//   [`crate::types::Color::blend`] against an assumed `theme.background`
-//   because its `fill_rect` only took an opaque colour before
-//   `PaintSurface` existed. `macos::data_table`'s own module doc named
-//   this outright: "macOS paints a solid `selection_bg` pixel today"
-//   (no blending at all) — a real, documented scope omission. `paint`
-//   uses [`PaintSurface::surface_fill_rect_alpha`] uniformly now, which
-//   `CgSurface`'s default forwards to a real alpha-blended
-//   `surface_fill_rect` (see that adapter's own doc — no CPU-side
-//   approximation needed, unlike the pre-#1084 Windows shape), so both
-//   backends now composite a true translucent tint over whatever is
-//   already painted underneath, matching GTK's Cairo `set_source_rgba`
-//   behaviour instead of assuming what the background was.
-// - **Scrollbar treatment.** `gtk::data_table` already paints its
-//   vertical/horizontal scrollbars through
-//   [`crate::primitives::scrollbar::native_surface_paint::paint`] — a
-//   translucent, hover/drag-aware track+thumb. macOS and Windows each
-//   hand-rolled their own flat, always-opaque, never-hover-aware
-//   track+thumb fills instead (Windows's own module doc calls this out:
-//   "Scrollbar track/thumb paint as flat fills (no `win::draw_scrollbar`
-//   dependency...)"). `paint` calls the same shared scrollbar paint GTK
-//   already uses for both backends now, via a
-//   [`crate::primitives::scrollbar::Scrollbar`] built with
-//   `hovered`/`dragging` both left at their `false` default — identical
-//   to what `gtk::data_table` itself passes, so this is a pure quality
-//   upgrade (translucency, matching every other scrollbar-bearing
-//   primitive in this crate) with no new interaction surface.
-// - **Footer per-span colour.** GTK and macOS both painted each footer
-//   span in its own `fg` (falling back to `theme.foreground`); Windows's
-//   pre-#1084 footer painted the *entire* cell as one bold run in
-//   `theme.foreground`, silently discarding every span's own `fg`. This
-//   was not a documented scope omission — the footer path simply never
-//   split by span the way the header/body paths didn't need to (no
-//   per-span colour there either... except the footer's very own
-//   `styled.spans` loop existed for exactly this purpose and Windows's
-//   footer never used it). `paint` splits by span, honouring `span.fg`,
-//   on both backends now.
-// - **Header/footer separator + vertical alignment.** GTK and macOS
-//   already draw the header separator at `sep_x - 0.5` (a half-pixel
-//   inset so antialiasing centres the 1-unit line on the boundary);
-//   Windows drew it at `sep_x` with no inset. `paint` uses `sep_x - 0.5`
-//   uniformly (2-of-3 majority — GTK is uncounted here since its own
-//   copy is untouched, but its choice agrees with macOS's). Vertical
-//   alignment goes the other way: GTK and Windows both paint the
-//   header/footer text flush with the band's top edge (`rect.y`/
-//   `footer_y` directly); macOS alone vertically centred it within the
-//   taller header/footer band. `paint` adopts the GTK/Windows top-flush
-//   convention uniformly (2-of-3 majority again), which is also simpler:
-//   one fewer height measurement needed per header/footer cell.
-// - **Vertical scrollbar track height.** GTK and Windows both reserve
-//   `rect.height - header_height - footer_height` for the vertical
-//   track — the same height regardless of whether a horizontal
-//   scrollbar is *also* showing. macOS alone additionally subtracted
-//   `h_scrollbar_height`, which would otherwise leave the vertical
-//   track short of the horizontal scrollbar's row on every other
-//   backend. `paint` adopts the GTK/Windows convention (2-of-3 majority)
-//   for both migrated backends, rather than introducing a third,
-//   unreviewed geometry choice.
+// **Footer per-span colour.** All three backends now honour each span's own `fg`,
+// falling back to `theme.foreground`. Previously, `win::data_table` painted the
+// entire footer cell as one run in `theme.foreground`, discarding per-span colours.
+//
+// **Header/footer separator + vertical alignment.** The separator is drawn at
+// `sep_x - 0.5` (half-pixel inset for antialiasing). Header/footer text is painted
+// flush with the top of the band. Previously, `macos::data_table` vertically
+// centred header/footer text; the others painted top-flush.
+//
+// **Vertical scrollbar track height.** The track height is `rect.height - header_height
+// - footer_height`, independent of whether a horizontal scrollbar is showing.
+// Previously, `macos::data_table` additionally subtracted `h_scrollbar_height`.
 //
 // Not changed: per-span **bold** in header/footer text is carried via
-// [`PaintSurface::surface_draw_text_run_styled`] on both backends now —
-// `D2dSurface` honours it for real (matching this module's pre-#1084
-// behaviour exactly); `CgSurface` takes that verb's *default*, which
-// drops style entirely — inert on macOS (no visual regression, no new
-// bold either), the same posture `crate::primitives::status_bar` and
-// `crate::primitives::rich_text_popup` already document for the
-// identical default. Body-cell text was never bold on any backend before
-// this migration and stays that way (no `StyledSpan::bold` read for body
-// cells anywhere, matching all three pre-#1084 copies, `gtk::data_table`
-// included).
+// [`PaintSurface::surface_draw_text_run_styled`]. `D2dSurface` honours it; `CgSurface`
+// takes the default, which drops style entirely — inert on macOS. Body-cell text was
+// never bold on any backend before and stays that way.
 #[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
@@ -916,14 +813,10 @@ pub(crate) mod native_surface_paint {
 
     /// Paint a [`DataTable`] into `rect` on `surface` and return the
     /// resolved [`DataTableLayout`] — same contract as every backend's
-    /// pre-#1084 `draw_data_table`. See this module's doc for the full
-    /// per-backend divergence survey this closes/preserves.
+    /// `draw_data_table`.
     ///
     /// A non-positive `rect.width`/`rect.height` short-circuits to the
-    /// no-paint layout without touching `surface` at all, matching
-    /// `macos::data_table`'s pre-#1084 guard (`win::data_table` had none
-    /// to preserve — this is a superset, not a behaviour change, since a
-    /// non-positive Direct2D fill/clip rect was already a no-op there).
+    /// no-paint layout without touching `surface` at all.
     pub(crate) fn paint(
         table: &DataTable,
         surface: &mut dyn PaintSurface,
@@ -1361,12 +1254,9 @@ pub(crate) mod native_surface_paint {
             assert!(!surface.styled_runs.iter().any(|r| r.1.contains('\u{25BC}')));
         }
 
-        /// #1084's RED-before-the-port case: `macos::data_table` used to
-        /// paint the selected row's background as a fully opaque
-        /// `selection_bg` fill (its own module doc named this a "Scope
-        /// omission" — no alpha blending at all). The shared `paint` now
-        /// always goes through `surface_fill_rect_alpha`, so every
-        /// migrated backend composites a real translucent tint.
+        /// The selected row's background is now alpha-blended rather than
+        /// fully opaque, allowing the tint to composite over what is already
+        /// painted underneath.
         #[test]
         fn selected_row_uses_alpha_blended_fill_not_opaque() {
             let mut table = two_col_table();
@@ -1414,10 +1304,8 @@ pub(crate) mod native_surface_paint {
             assert_eq!(surface.fills_alpha[0].1, theme.selection_bg);
         }
 
-        /// #1084's RED-before-the-port case: `win::data_table`'s footer
-        /// painted the *entire* cell as one run in `theme.foreground`,
-        /// discarding every span's own `fg`. The shared `paint` now
-        /// splits by span on every migrated backend.
+        /// The footer now honours each span's own `fg` override, rather than
+        /// painting the entire cell as one run in `theme.foreground`.
         #[test]
         fn footer_honours_per_span_fg_override() {
             let mut table = two_col_table();
@@ -1669,7 +1557,7 @@ mod tests {
         assert!((layout.columns[2].width - 20.0).abs() < 0.01);
     }
 
-    // ── #516 defect 3: divider-before-last-column resize direction ──────
+    // ── Divider drag: a column override on a Flex-declared column ──────
 
     /// A column override on a `Flex`-declared column must win outright —
     /// pass 2's flex redistribution must not re-derive (and clobber) a
@@ -1736,22 +1624,10 @@ mod tests {
         );
     }
 
-    // ── #521 defect 1 / #1031: a divider drag never displaces a column
-    //    it doesn't border. Originally a strict pair-resize (`col` and
-    //    `col + 1` only); #1031 changed *which* column is `col`'s
-    //    dance partner to the last column in the table instead, with an
-    //    overflow fallback once the last column bottoms out — the tests
-    //    immediately below (through
-    //    `drag_divider_stops_at_minimum_without_displacing_other_columns`)
-    //    exercise the divider immediately before the last column, where
-    //    the two models coincide (`col + 1 == last`) as long as the last
-    //    column has room; #1031's own tests follow after those. ─────────
+    // ── Divider drag: the rightmost column absorbs slack, then overflow ──
 
-    /// Builds the same column shape the shipped sample app uses to
-    /// reproduce #521: 3 `Flex` columns (weights 3.0, 1.5, 0.5) then one
-    /// `Fixed(10.0)` — the divider dragged in these tests is the one
-    /// between the 3rd and 4th columns (`col: 2`), matching "Age" |
-    /// "Restarts" in the sample.
+    /// Builds a table with 3 `Flex` columns (weights 3.0, 1.5, 0.5) then one
+    /// `Fixed(10.0)` — the shape used in divider-drag tests below.
     fn make_sample_shaped_table() -> DataTable {
         let mut table = make_table(4, 0);
         table.columns[0].width = ColumnWidth::Flex(3.0);
@@ -1766,11 +1642,9 @@ mod tests {
         let table = make_sample_shaped_table();
         let baseline = table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
 
-        // Grab the divider between col 2 ("Age") and col 3 ("Restarts")
-        // and drag it right by 5 units — comfortably within col 3's room
-        // above its 4.0 floor (col 3 starts at 10.0), so this stays in
-        // the col+1==last "behaves exactly as today" regime rather than
-        // #1031's overflow case (covered separately below).
+        // Grab the divider between col 2 and col 3 and drag it right by 5
+        // units — comfortably within col 3's room above its floor, so this
+        // stays in the pair-resize regime.
         let pointer_x = baseline.columns[2].x + baseline.columns[2].width + 5.0;
         let overrides = baseline.drag_divider(&[], 2, pointer_x, 4.0);
 
@@ -1847,17 +1721,13 @@ mod tests {
         );
     }
 
-    /// #1031's version of the #521 "independent of drag history" property:
-    /// since every divider now shares the *same* last-column dance
-    /// partner, dragging divider X, then a different divider Y, then X
-    /// again (re-settling X back to its own target after Y disturbed the
-    /// shared last column) must land on exactly the same final layout as
-    /// simply dragging Y then X once each, in that order — the redundant
-    /// re-drag of X is a no-op past what a clean two-step sequence already
-    /// gets you. Each drag targets a fixed *resolved width*, re-deriving
-    /// its pointer_x from wherever that divider's current `x` happens to
-    /// be (since dragging X shifts every column after it, including
-    /// wherever Y currently sits) — exactly how a real screen-relative
+    /// Since every divider now shares the same last-column dance partner,
+    /// dragging divider X, then a different divider Y, then X again
+    /// (re-settling X back to its own target) must land on the same final
+    /// layout as simply dragging Y then X once each in that order. Each
+    /// drag targets a fixed *resolved width*, re-deriving its pointer_x from
+    /// wherever that divider's current `x` happens to be (since dragging X
+    /// shifts every column after it) — exactly how a real screen-relative
     /// drag behaves.
     #[test]
     fn drag_divider_redundant_replay_matches_the_equivalent_clean_order() {
@@ -1942,17 +1812,15 @@ mod tests {
         assert!((after.columns[3].width - (pair_total - 4.0)).abs() < 0.01);
     }
 
-    // ── #1031: the rightmost column absorbs the slack, then the table
-    //    overflows instead of refusing the drag ─────────────────────────
+    // ── Divider drag: rightmost column absorbs the slack ───────────────
 
     #[test]
     fn drag_divider_widen_takes_slack_from_the_last_column_not_the_neighbour() {
         // Drag the *first* divider (col 0 | col 1) — its right-hand
         // neighbour (col 1) has plenty of room, so a pair-resize model
-        // would have eaten it. #1031 says the give instead comes from
-        // the *last* column (col 3), leaving col 1 and col 2 — every
-        // column strictly between the dragged one and the last — bit-
-        // for-bit unchanged in width (their `x` shifts, which is fine).
+        // would have eaten it. The implementation says the slack instead
+        // comes from the *last* column (col 3), leaving col 1 and col 2
+        // unchanged in width.
         let table = make_sample_shaped_table();
         let baseline = table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
 
@@ -2155,8 +2023,7 @@ mod tests {
         );
     }
 
-    // ── #521 defect 2: a fully-overridden table must still fill its
-    //    viewport ──────────────────────────────────────────────────────
+    // ── Divider drag: fully-overridden table still fills viewport ───────
 
     #[test]
     fn overriding_every_flex_column_still_fills_the_viewport() {
@@ -2238,8 +2105,8 @@ mod tests {
 
     #[test]
     fn none_footer_is_byte_identical_to_pre_change_layout() {
-        // Regression guard (#432 req 5): a table with `footer: None`
-        // must lay out exactly as it did before the footer existed.
+        // A table with `footer: None` must lay out exactly as it did
+        // before the footer feature existed.
         let table = make_table(2, 100);
         let layout = table.layout(80.0, 25.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
         assert_eq!(layout.footer_height, 0.0);
@@ -2260,9 +2127,9 @@ mod tests {
 
     #[test]
     fn footer_columns_align_with_body_columns() {
-        // Column-aligned totals (#432 req 1): the footer is laid out
-        // against the *same* resolved columns as the body, so a right
-        // -aligned numeric column's total lands directly under it.
+        // The footer is laid out against the *same* resolved columns as
+        // the body, so a right-aligned numeric column's total lands
+        // directly under it.
         let mut table = make_table(3, 10);
         table.footer = Some(footer_row(3));
         let layout = table.layout(90.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
@@ -2292,9 +2159,8 @@ mod tests {
 
     #[test]
     fn hit_test_footer_is_not_a_row() {
-        // Selection/hit-testing must ignore the footer (#432 req 2/
-        // acceptance bullet 4): a click in the footer band is never a
-        // `Row` hit, even though `total_rows` exceeds what's visible.
+        // A click in the footer band is never a `Row` hit, even though
+        // `total_rows` exceeds what's visible.
         let mut table = make_table(2, 3);
         table.footer = Some(footer_row(2));
         let layout = table.layout(80.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
@@ -2331,12 +2197,11 @@ mod tests {
         assert_eq!(table, back);
     }
 
-    // ── #550: `hit_test` must undo the renderer's `h_scroll` shift ──────
+    // ── Hit-testing with horizontal scroll offset ──────────────────────
     //
-    // Geometry shared by the tests below: 4 × `Fixed(30.0)` columns laid
-    // out at `min_total_width = 120` inside a 60-wide viewport, so
-    // content space is exactly twice the viewport and every column
-    // boundary lands on a round number.
+    // Geometry: 4 × `Fixed(30.0)` columns laid out at `min_total_width = 120`
+    // inside a 60-wide viewport, so content space is exactly twice the
+    // viewport and every column boundary lands on a round number.
     //
     //   content x:  0───30───60───90───120
     //   column:      c0 │ c1 │ c2 │ c3
@@ -2359,8 +2224,8 @@ mod tests {
         table.layout(60.0, 20.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(0.0))
     }
 
-    /// The pre-#550 algorithm, verbatim, as the oracle for the
-    /// "`h_scroll == 0.0` is bit-identical" acceptance bullet.
+    /// The pre-scroll-offset-tracking algorithm, as the oracle for the
+    /// "zero scroll offset is bit-identical" acceptance criterion.
     fn legacy_hit_test(
         l: &DataTableLayout,
         x: f32,
@@ -2501,9 +2366,8 @@ mod tests {
             layout.hit_test(45.0, 0.5, 0, 10),
             DataTableHit::HeaderDivider { col: 2 }
         );
-        // The *unscrolled* positions of those dividers must no longer
-        // grab: viewport 60 is off-viewport, and viewport 30 is now the
-        // middle of c2.
+        // The unscrolled positions of those dividers must no longer grab:
+        // viewport 60 is off-viewport, and viewport 30 is now the middle of c2.
         assert_eq!(
             layout.hit_test(30.0, 0.5, 0, 10),
             DataTableHit::Header { col: 2 }
@@ -2569,17 +2433,11 @@ mod tests {
 
     #[test]
     fn v_scrollbar_strip_row_click_is_a_caller_concern() {
-        // Documents the non-blocking #550-review gap: unlike the header
-        // branch, `hit_test`'s row branch never consults `x` at all (row
-        // resolution is purely `y`-based, both before and after #550),
-        // so a click over the vertical-scrollbar track on a body row
-        // falls through to `Row { .. }` here rather than `Empty`. This
-        // is pre-existing behaviour, not a #550 regression — asserted
-        // against explicitly so a future change can't silently start
-        // relying on `hit_test` filtering this out. Callers that own a
-        // vertical scrollbar (e.g. coord-tui's `audit_scrollbar_hit`)
-        // are expected to intercept the strip themselves before forwarding
-        // to `hit_test`.
+        // A click over the vertical scrollbar track on a body row falls
+        // through to `Row { .. }` as row resolution is purely `y`-based.
+        // This is pre-existing behaviour. Callers that own a vertical
+        // scrollbar are expected to intercept the strip themselves before
+        // calling `hit_test`.
         let mut table = make_wide_table(200);
         table.show_scrollbar = true;
         table.h_scroll = 45.0;
@@ -2674,8 +2532,8 @@ mod tests {
 
     #[test]
     fn footer_defaults_to_none_when_omitted_from_json() {
-        // `#[serde(default)]` back-compat (#432 req 5): older payloads
-        // with no `footer` key deserialize to `None`.
+        // Older payloads with no `footer` key deserialize to `None` due to
+        // `#[serde(default)]`.
         let table = make_table(2, 3);
         let mut json: serde_json::Value = serde_json::to_value(&table).unwrap();
         json.as_object_mut().unwrap().remove("footer");

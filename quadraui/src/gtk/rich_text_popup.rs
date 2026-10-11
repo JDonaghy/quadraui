@@ -7,9 +7,8 @@
 //!
 //! Each visible line is rendered as a SINGLE Pango call with an
 //! `AttrList` — per-span fg/bold/italic + per-character selection bg
-//! become attribute ranges. This avoids the per-span manual-advance bug
-//! where proportional Pango widths drift from monospace
-//! `char_width * char_count` math (#214 first-cut regression).
+//! become attribute ranges. This avoids proportional Pango widths
+//! drifting from monospace `char_width * char_count` math.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -22,7 +21,7 @@ use crate::types::Color;
 /// Visible width of the rich-text-popup scrollbar in pixels. Wider
 /// than the layout's 1px border so the bar is paint+click-friendly.
 /// Callers that hit-test the scrollbar should match this constant so
-/// paint and hit-test geometry stay in sync (#215).
+/// paint and hit-test geometry stay in sync.
 pub const RICH_TEXT_POPUP_SB_WIDTH: f64 = 8.0;
 /// Pixels of inset between the scrollbar's right edge and the popup's
 /// right border.
@@ -35,7 +34,7 @@ pub const RICH_TEXT_POPUP_SB_INSET: f64 = 1.0;
 /// rasteriser temporarily swaps in `body_font_desc` for popup body
 /// rendering, then restores the layout's original font description
 /// before returning so subsequent paints in the same frame keep
-/// rendering in the editor font (#247). `body_font_desc` is caller-
+/// rendering in the editor font. `body_font_desc` is caller-
 /// resolved: `Backend::draw_rich_text_popup` passes the chrome (UI)
 /// description, `Backend::draw_rich_text_popup_with_font_role` passes
 /// the editor one when asked for `FontRole::Editor` — this function
@@ -86,13 +85,9 @@ pub fn draw_rich_text_popup(
     cr.rectangle(bx, by, bw, bh);
     cr.stroke().ok();
 
-    // Save the layout's current font_description before our per-line
-    // `set_font_description(body_font_desc)` calls inside the loop
-    // below. Without this, the UI font leaks into subsequent draw
-    // calls in the same frame — most visibly: the palette / dialog
-    // / context-menu rendering immediately after the hover popup
-    // would render in the UI font instead of the editor font (#247
-    // second symptom).
+    // Save the layout's current font_description before per-line
+    // `set_font_description(body_font_desc)` calls below. Without this,
+    // the UI font leaks into subsequent draw calls in the same frame.
     let saved_font = pango_layout.font_description();
 
     // Clip text rendering to the content area so long lines (Pango is
@@ -144,13 +139,9 @@ pub fn draw_rich_text_popup(
             let to_u16 = |c: u8| ((c as u16) << 8) | c as u16;
             let bg_color = popup.bg.unwrap_or(Color::rgb(0, 0, 0));
 
-            // Selection bg used to be a single Pango background attr, but
-            // adjacent text runs (one per fg colour change) produced
-            // hairline antialiasing gaps where the per-run rects met
-            // (#219). The fix paints the selection rect once in Cairo
-            // BEFORE the Pango render so the bg is a single solid fill.
-            // The Pango call below still inverts fg per-character within
-            // the selected range so the text remains legible.
+            // Selection bg is painted in Cairo as a single rect BEFORE the
+            // Pango render to avoid hairline antialiasing gaps. The Pango call
+            // below inverts fg per-character within the selected range.
 
             // Per-span fg + bold + italic. Each span is split by the
             // selection boundary so we can swap the fg colour to the
@@ -260,7 +251,7 @@ pub fn draw_rich_text_popup(
     // Scrollbar — wider than the 1px border so it's visually + clickably
     // present. Draw at the right inside edge of the popup. Constants
     // shared with the caller's hit-test so click hit-test matches what's
-    // painted (#215).
+    // painted.
     if let Some(sb) = layout.scrollbar {
         let sb_w = RICH_TEXT_POPUP_SB_WIDTH;
         let sb_x = bx + bw - sb_w - RICH_TEXT_POPUP_SB_INSET;
@@ -283,7 +274,7 @@ pub fn draw_rich_text_popup(
     // rects match the proportional-font glyphs the rasteriser actually
     // painted. The primitive's layout.link_hit_regions (computed from
     // the consumer's measure closure) are inaccurate for proportional
-    // fonts (#230). We re-derive them here using the same pango_layout
+    // fonts. We re-derive them here using the same pango_layout
     // + attrs the line was rendered with.
     let mut link_rects: Vec<(f64, f64, f64, f64, String)> = Vec::new();
     for vis in &layout.visible_lines {

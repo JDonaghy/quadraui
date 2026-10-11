@@ -1,16 +1,10 @@
 //! Direct2D / DirectWrite rasteriser for
-//! [`crate::primitives::diff_view::DiffView`] (#737).
+//! [`crate::primitives::diff_view::DiffView`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::diff_view::native_surface_paint::paint`] (#866,
-//! `PaintSurface` Phase 2d slice 9/9) — see that fn's doc for the two
-//! named divergences (row/header text vertical alignment; header-label
-//! ellipsize vs. hard-clip) found while unifying
-//! `gtk::diff_view::draw_diff_view`, `macos::diff_view::draw_diff_view`
-//! and `win::diff_view::draw_diff_view` into one implementation. The
-//! deprecated `draw_diff_view` compatibility shim over the shared
-//! [`super::surface::D2dSurface`] adapter was removed in issue #1109
-//! (zero uses in coord-tui's `main` and vimcode's `develop`).
+//! Painting is shared via [`crate::primitives::diff_view::native_surface_paint::paint`] —
+//! see that function's documentation for two named divergences (row/header text vertical
+//! alignment; header-label ellipsize vs. hard-clip) found while unifying platform
+//! implementations.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod diff_view;` and `backend.rs`'s
@@ -20,11 +14,8 @@
 //! `diff_view_layout` is **not** overridden on `WinBackend` — same as
 //! every other backend. It ships a trait default (`Backend::diff_view_layout`)
 //! that is a pure function of `line_height()` + `DiffView::mode`, which is
-//! exactly what every backend's own `draw_diff_view` already resolves to
-//! (see `tests/conformance/caps.rs`'s `#506` block comment, revisited for
-//! #737 — the new shared [`DiffView::layout`] backs that default's
-//! reasoning even more directly now, but the default itself was already
-//! the honest answer and stays unoverridden here too).
+//! exactly what every backend's own `draw_diff_view` already resolves to.
+//! The shared [`DiffView::layout`] backs that default's reasoning directly.
 
 #[cfg(test)]
 use super::text::DWrite;
@@ -77,7 +68,7 @@ mod tests {
     /// [`crate::primitives::diff_view::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s headless
     /// target — the same adapter the now-removed `draw_diff_view` shim
-    /// used (issue #1109), exercised here directly.
+    /// used, exercised here directly.
     fn paint(
         surface: &HeadlessSurface,
         dwrite: &DWrite,
@@ -104,10 +95,7 @@ mod tests {
             .expect("paint diff view")
     }
 
-    /// C0 smoke: `draw_diff_view` must actually paint text + a
-    /// scroll-clamp-usable layout rather than panicking or hitting a
-    /// `todo!()` (#737's acceptance bar — "draw_diff_view survives C0
-    /// with text_ok on win").
+    /// `draw_diff_view` must paint text and return a layout usable for scroll clamping.
     #[test]
     fn draw_diff_view_paints_text_and_returns_layout() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");

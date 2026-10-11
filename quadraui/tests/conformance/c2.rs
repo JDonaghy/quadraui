@@ -27,7 +27,7 @@
 //! shape without forcing a shared driver trait that doesn't fit this
 //! layer.
 //!
-//! **Win** (quadraui#742) needs no `target_os = "windows"` host: unlike
+//! **Win** needs no `target_os = "windows"` host: unlike
 //! C0/C1, which drive a live `Backend` (a real `ID2D1DCRenderTarget` for
 //! Win), C2 only calls `win::events`'s free functions — pure `WM_*`
 //! message + already-decoded params → `UiEvent`, no WinAPI call in
@@ -80,26 +80,19 @@ impl CaseOutcome {
     }
 
     /// A row that always reports "pass" because the thing it names
-    /// genuinely can't be asserted at this tier (see call site comment
-    /// for why) — recorded so the row appears in the matrix at all,
-    /// distinctly marked so it isn't read as equivalent to a verified
-    /// `ok()`.
+    /// genuinely can't be asserted at this tier — recorded so the row
+    /// appears in the matrix at all, distinctly marked so it isn't read as
+    /// equivalent to a verified `ok()`.
     ///
     /// Two kinds of placeholder row exist today, both reached through
     /// this constructor:
     ///
-    /// - `window_close`, on GTK and Win (quadraui#742) — the backends
+    /// - `window_close`, on GTK and Win — the backends
     ///   with a real OS window, whose close veto only round-trips through
     ///   a live window/`wndproc`, not a bare translation call.
     /// - every [`DISPATCH_ROWS`] cell (via [`dispatch_row`]) that the
     ///   backend synthesises in `dispatch_event` rather than translating
     ///   from a native event.
-    ///
-    /// Since `DISPATCH_ROWS` is declared by *every* column including TUI,
-    /// this constructor now has a caller in every feature set that builds
-    /// this file at all, so it needs no `cfg_attr(…, allow(dead_code))` —
-    /// unlike before quadraui#742, when a `--features tui` build (CI runs
-    /// it with a workflow-wide `RUSTFLAGS: -D warnings`) had none.
     fn placeholder(detail: impl Into<String>) -> Self {
         Self {
             pass: true,
@@ -132,16 +125,13 @@ pub const CORE_ROWS: &[&str] = &[
 ];
 
 /// Required row(s) for backends with a real OS window — GTK and Win
-/// (quadraui#742) — but N/A on TUI (D-010: TUI's "window" is the
+/// — but N/A on TUI (D-010: TUI's "window" is the
 /// terminal viewport, which the process doesn't close independently of
 /// itself).
 pub const WINDOWED_ROWS: &[&str] = &["window_close"];
 
 /// The remaining rows `docs/BACKEND.md`'s emission matrix marks
-/// **required** for every backend (quadraui#742). Their *production
-/// wiring* has landed everywhere the matrix says ✅ — including Win
-/// (`fold_double_click` #729, `match_keypress` #707, Ctrl-V paste #728) —
-/// but with one exception they are not produced by a native→`UiEvent`
+/// **required** for every backend are not produced by a native→`UiEvent`
 /// *translator*, which is the only thing tier C2 can call. They're
 /// synthesised one layer up, in each backend's `dispatch_event`:
 ///
@@ -383,7 +373,7 @@ pub fn gtk_case(row: &str) -> CaseOutcome {
             // app's `Reaction` through `EventOutcome` unchanged — that's
             // the veto contract `gtk::run::window_close_tests` (in-crate,
             // `gtk/run.rs`) covers directly with a `GtkDriver`. Recorded
-            // as a `placeholder()`, not `ok()` (quadraui#501 review), so
+            // as a `placeholder()`, not `ok()`, so
             // this row appears in the matrix rather than silently having
             // no C2 entry at all, but the printed table still marks it
             // as unverified-at-this-tier rather than reading identically
@@ -401,7 +391,7 @@ pub fn gtk_case(row: &str) -> CaseOutcome {
     }
 }
 
-/// Win-GUI (quadraui#742). Unlike `tui_case`/`gtk_case`, none of the
+/// Win-GUI. Unlike `tui_case`/`gtk_case`, none of the
 /// `win::events` functions this calls need `target_os = "windows"` — see
 /// this file's module doc and `win::events`'s own doc for why the
 /// translators are plain host-independent functions, so this whole
@@ -513,13 +503,6 @@ pub fn win_case(row: &str) -> CaseOutcome {
                  tier for the real coverage",
             )
         }
-        // All three landed on Win during this epic — `docs/BACKEND.md`'s
-        // `❌` cells for them were stale, and are corrected by
-        // quadraui#742 alongside these rows. What's still missing is a
-        // *tier-C2* recipe, not the wiring: none of them is a `WM_*` →
-        // `UiEvent` translation (Win deliberately ignores
-        // `WM_*BUTTONDBLCLK`), so there is nothing in `win::events` to
-        // call.
         "double_click" => dispatch_row(row, "WinBackend::fold_double_click, quadraui#729"),
         "accelerator" => dispatch_row(
             row,

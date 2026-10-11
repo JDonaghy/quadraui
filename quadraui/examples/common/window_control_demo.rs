@@ -1,4 +1,4 @@
-//! Window-control demo (issue #950) — exercises `Backend::window()` /
+//! Window-control demo — exercises `Backend::window()` /
 //! `WindowControl` from app code and shows the `ServiceResult` each call
 //! returns as on-screen status text.
 //!

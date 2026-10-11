@@ -1,4 +1,4 @@
-//! TUI rasteriser for the focus-ring convention (issue #830).
+//! TUI rasteriser for the focus-ring convention.
 //!
 //! Draws a border-only box (rounded corners, matching `dialog::draw_dialog`'s
 //! glyph set) around whichever widget [`crate::focus::FocusManager`]

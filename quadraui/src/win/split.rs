@@ -1,16 +1,13 @@
-//! Direct2D rasteriser for [`crate::Split`] (issue #29).
+//! Direct2D rasteriser for [`crate::Split`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::split::native_surface_paint::paint`] (#864,
-//! `PaintSurface` Phase 2d slice 7/9, child of #811) — see that fn's
-//! module doc for a reported divergence between this module and GTK's:
+//! Painting is delegated to the shared
+//! [`crate::primitives::split::native_surface_paint::paint`] — see that fn's
+//! module doc for a documented divergence between this module and GTK's:
 //! Windows's `ID2D1SolidColorBrush` (via `super::text::fill_rect`)
-//! always honoured a translucent `theme.separator`, while pre-migration
-//! GTK did not — this module's behaviour is unchanged by the migration.
-//! This module now carries [`win_split_layout`]; the deprecated
-//! `draw_split` compatibility shim over the shared
-//! [`super::surface::D2dSurface`] adapter was removed in issue #1109
-//! (zero uses in coord-tui's `main` and vimcode's `develop`).
+//! always honoured a translucent `theme.separator`, while GTK did not.
+//! This module carries [`win_split_layout`]; the shared
+//! [`super::surface::D2dSurface`] adapter has replaced the previous
+//! `draw_split` compatibility shim.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod split;` and `backend.rs`'s module
@@ -39,7 +36,7 @@ use crate::theme::Theme;
 /// the identical divider thickness, so a no-paint hit-test call always
 /// agrees with what the last paint drew. Shares that thickness with
 /// `gtk_split_layout` / `mac_split_layout` via
-/// [`crate::primitives::layout_metrics::pixel::DIVIDER`] (issue #1079).
+/// [`crate::primitives::layout_metrics::pixel::DIVIDER`].
 pub fn win_split_layout(rect: Rect, split: &Split) -> SplitLayout {
     pixel_split_layout(split, rect)
 }
@@ -67,7 +64,7 @@ mod tests {
     /// Paint `layout` via the shared
     /// [`crate::primitives::split::native_surface_paint::paint`] through
     /// a [`super::super::surface::D2dSurface`] over `target` — the same
-    /// adapter the now-removed `draw_split` shim used (issue #1109),
+    /// adapter the now-removed `draw_split` shim used,
     /// exercised here directly.
     fn paint(target: &ID2D1RenderTarget, layout: &SplitLayout) {
         let mut raw = super::super::surface::D2dSurface {
@@ -114,8 +111,8 @@ mod tests {
         assert_eq!(second_hit, SplitHit::SecondPane(WidgetId::new("s")));
     }
 
-    /// `win_split_layout` (no-paint) must produce byte-identical layout
-    /// to what `draw_split` used to paint — same split, same rect.
+    /// `win_split_layout` (no-paint) produces byte-identical layout
+    /// to what `draw_split` painted — same split, same rect.
     #[test]
     fn no_paint_layout_matches_paint_layout() {
         let split = split();

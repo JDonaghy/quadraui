@@ -1,26 +1,13 @@
-//! Shared foundation for the layout()/hit_test() convergence (issue #816).
+//! Shared foundation for layout() and hit_test() primitives.
 //!
-//! Today every primitive invents its own `layout()` argument shape (four
-//! families: `(bounds, measure)`, `(origin_x, origin_y, measure)`,
-//! `(viewport, line_height)`, `(bounds, lines_per_row)`, ...), its own
-//! hit-test shape (`(x, y) -> Hit`, `(x, y, id) -> Hit`, `(point,
-//! tolerance) -> Option<usize>`, or nothing at all — seven primitives
-//! have no `hit_test` today), and its own coordinate frame (LOCAL or
-//! ABSOLUTE, tracked in a table in `docs/PRIMITIVE_RULES.md` because the
-//! two are not interchangeable at a call site). On top of that, 19
-//! primitives each define a near-identical `Visible*{idx, bounds}`
-//! struct and re-walk "which items are visible from this scroll offset"
-//! by hand.
-//!
-//! This module is the shared *infrastructure* that per-primitive
-//! convergence PRs adopt one at a time — it does not, by itself, change
-//! any existing primitive's public API. Converting a primitive to return
-//! [`VisibleItem`] instead of its bespoke `Visible*` struct, or to
-//! position itself via [`Anchor`] instead of its own placement enum, is
-//! a rule-8 breaking change (see `docs/PRIMITIVE_RULES.md`) and lands as
-//! its own PR with a `#[deprecated]` shim so no consumer breaks in one
-//! commit. See issue #816 for the full per-primitive split and its
-//! coordination with quadraui#785's Phase 2.
+//! This module provides shared infrastructure for primitives to converge on
+//! common method shapes and geometry math: `fn layout(&self, bounds: Rect,
+//! m: &Self::Measure)`, `fn hit_test(&self, p: Point)`, with bounds in
+//! ABSOLUTE (target-surface) coordinates. All returned bounds use the same
+//! coordinate frame, eliminating the LOCAL/ABSOLUTE ambiguity tracked in
+//! `docs/PRIMITIVE_RULES.md`. Converting a primitive to use this module's
+//! [`VisibleItem`] and [`Anchor`] is a rule-8 breaking change (see
+//! `docs/PRIMITIVE_RULES.md`), landing with a `#[deprecated]` shim.
 //!
 //! ## Target convention (for primitives converging onto this module)
 //!
@@ -92,15 +79,9 @@ pub enum ResolvedSide {
 /// relative to an anchor rect (or point) inside a containing viewport:
 /// `Tooltip`, `Completions`, `ContextMenu`, `RichTextPopup`, `Dialog`.
 ///
-/// Each of those primitives re-implements the same "try the preferred
-/// side; if the box would overflow the viewport, try the opposite side;
-/// if both overflow, pin to the viewport edge on the preferred side"
-/// resolution today (see e.g. `TooltipView::layout`'s "Placement
-/// fallback" doc). `Anchor::resolve` is that logic, written once.
-///
-/// Converting an existing primitive onto `Anchor` is a rule-8 breaking
-/// change (its own PR, `#[deprecated]` shim on the old placement enum) —
-/// see issue #816.
+/// Provides the logic to try the preferred side; if the box would
+/// overflow the viewport, try the opposite side; if both overflow, pin
+/// to the viewport edge on the preferred side. See [`Anchor::resolve`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Anchor {
     /// Bounds of the element the overlay is positioned against, in
@@ -246,14 +227,12 @@ pub enum Axis {
 /// within the visible slice) and its painted bounds in ABSOLUTE
 /// coordinates.
 ///
-/// Replaces the shape every one of the 19 `Visible*{idx, bounds}`
-/// structs shares today (`VisibleListItem`, `VisibleTreeRow`,
-/// `VisibleTextDisplayLine`, `VisibleTab`, `VisibleMenuBarItem`, ...).
-/// A primitive whose visible-item type carries extra per-item data
-/// (`VisibleTab::close_bounds`, `VisibleMenuBarItem::clickable`) still
-/// benefits from `visible_range_walk` for the index/bounds walk itself,
-/// zipping its extra fields onto the result — see issue #816's
-/// per-primitive conversion notes.
+/// Replaces the per-primitive `Visible*{idx, bounds}` structs
+/// (`VisibleListItem`, `VisibleTreeRow`, `VisibleTextDisplayLine`,
+/// `VisibleTab`, `VisibleMenuBarItem`, ...). A primitive whose
+/// visible-item type carries extra per-item data (`VisibleTab::close_bounds`,
+/// `VisibleMenuBarItem::clickable`) still benefits from [`visible_range_walk`]
+/// for the index/bounds walk itself, zipping its extra fields onto the result.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VisibleItem {
     pub idx: usize,

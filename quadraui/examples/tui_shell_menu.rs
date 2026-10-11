@@ -1,9 +1,8 @@
-//! TUI runner for the shell + MenuSystem regression demo (#411).
+//! TUI runner for the shell + MenuSystem regression demo.
 //!
 //! Open the "File" menu and click an item — including the ones drawn
-//! over the activity bar strip on the left. Before the #411 fix, those
-//! clicks were silently swallowed by `AppShell`'s chrome hit-testing and
-//! never reached the app.
+//! over the activity bar strip on the left. Menu clicks are properly
+//! routed through `AppShell`'s chrome to the app.
 #[path = "common/mod.rs"]
 mod common;
 

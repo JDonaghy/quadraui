@@ -8,34 +8,32 @@
 //! - Tracks a rotating spinner frame while the "assistant" is thinking.
 //! - Supports `↑`/`↓` input-history navigation.
 //! - Shows a status strip with context label and model chip.
-//! - Opts into `submit_on_enter` (#1137) plus a persistent hint line, and a
+//! - Opts into `submit_on_enter` plus a persistent hint line, and a
 //!   clickable Send/Stop segment at the right of the input row.
 //! - Exits on `q` / `Ctrl+C`.
 //!
 //! Controls:
-//! - Type any text; `Enter` submits it (`submit_on_enter` — #1137).
+//! - Type any text; `Enter` submits it.
 //! - `Shift+Enter` (or `Alt+Enter` as a terminal-compatibility fallback)
 //!   inserts a newline instead.
 //! - Click the **Send** segment at the right of the input row to submit
 //!   with the mouse instead of the keyboard; it reads **Stop** while the
 //!   simulated assistant is "thinking" — click it to cancel the reply.
 //! - `↑` / `↓` — history navigation (when cursor is on the first/last
-//!   *visual* row of the wrapped, auto-growing input box — quadraui#1136).
+//!   *visual* row of the wrapped, auto-growing input box).
 //! - `PageUp` / `PageDown` — scroll the transcript.
 //! - Click a turn's role-header row (or press `Enter` while `Tab`/
-//!   `Shift+Tab` has focused it — quadraui#1138) to collapse it to a
-//!   one-line summary card; click/`Enter` again to expand it back.
+//!   `Shift+Tab` has focused it) to collapse it to a one-line summary
+//!   card; click/`Enter` again to expand it back.
 //! - `Esc` — clear the input, or quit when the input is already empty.
 //! - `q` / `Ctrl+C` — quit immediately.
 //!
-//! **quadraui#832**: the "thinking" spinner's per-frame countdown
-//! (`Self::tick`) demonstrates [`Backend::request_frame_in`] — while
-//! still counting down, `tick` explicitly re-arms itself at a precise
-//! ~100ms cadence instead of assuming the runner will call `tick` again
-//! soon on its own, which is no longer guaranteed once nothing else is
-//! scheduled (see that method's doc, and `Spinner`'s module doc for why
-//! this stays app-driven `frame_idx` rather than a primitive-owned
-//! timer — quadraui#825).
+//! The "thinking" spinner's per-frame countdown (`Self::tick`) uses
+//! [`Backend::request_frame_in`] to re-arm itself at a precise ~100ms
+//! cadence rather than relying on automatic ticks, enabling continued
+//! animation when no other work is scheduled (see [`Backend::request_frame_in`]
+//! and `Spinner`'s module doc for why frame timing stays app-driven rather
+//! than timer-owned).
 
 use quadraui::{
     AppLogic, Backend, ChatController, ChatControllerEvent, ChatRole, ChatTurn, Color, Key,
@@ -72,7 +70,7 @@ impl ChatDemo {
         let mut controller = ChatController::new("demo:chat");
         controller.set_status(StyledText::plain("Chat demo — Enter to send, q to quit"));
         controller.set_model_label("claude-opus-4-5");
-        // #1137: Zed-style "Enter to send" plus a persistent hint line
+        // Zed-style "Enter to send" plus a persistent hint line
         // (unlike the placeholder, this stays visible while typing).
         controller.set_submit_on_enter(true);
         controller.set_hint(Some(StyledText::plain(
@@ -142,7 +140,7 @@ impl AppLogic for ChatDemo {
                 // Queue a simulated reply (delivered after a few ticks).
                 self.pending_reply = Some(format!("Echo: {text}"));
                 self.thinking_ticks = 5;
-                // quadraui#832: arm the first precise wake here rather
+                // Arm the first precise wake here rather
                 // than waiting on the runner's coarse idle-poll fallback
                 // for it — see `Self::tick`'s matching call.
                 backend.request_frame_in(THINKING_TICK_INTERVAL);
@@ -157,7 +155,7 @@ impl AppLogic for ChatDemo {
                     Reaction::Redraw
                 }
             }
-            // #1137: clicking the Send segment while it reads "Stop"
+            // Clicking the Send segment while it reads "Stop"
             // interrupts the simulated "thinking" reply — a real app would
             // cancel its backend session continuation here instead.
             ChatControllerEvent::StopRequested => {
@@ -166,7 +164,7 @@ impl AppLogic for ChatDemo {
                 self.sync_controller();
                 Reaction::Redraw
             }
-            // quadraui#1138: clicking a turn's role-header row (row 0 of its
+            // Clicking a turn's role-header row (row 0 of its
             // block) toggles it between its full body and a one-line
             // summary card. A click elsewhere in the body is ignored here —
             // a real consumer (e.g. vimcode's tool-call cards) would resolve
@@ -207,7 +205,7 @@ impl AppLogic for ChatDemo {
                     });
                 }
             } else {
-                // quadraui#832: still counting down — ask to be woken
+                // Still counting down — ask to be woken
                 // again at a precise interval instead of relying on
                 // whatever idle cadence (if any) the runner happens to
                 // poll at.

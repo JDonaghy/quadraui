@@ -1,4 +1,4 @@
-//! Tray / status-bar icon control for Win-GUI (issue #953).
+//! Tray / status-bar icon control for Win-GUI.
 //!
 //! `Shell_NotifyIconW` backs `Backend::tray`'s
 //! [`crate::backend::TrayService`] surface — see
@@ -93,7 +93,7 @@ use super::services::{copy_wide_truncated, ensure_com_initialized};
 #[cfg(target_os = "windows")]
 const TRAY_ICON_UID: u32 = 0;
 
-/// Per-[`super::backend::WinBackend`] tray state (issue #953).
+/// Per-[`super::backend::WinBackend`] tray state.
 #[cfg(target_os = "windows")]
 #[derive(Default)]
 pub(crate) struct WinTrayState {
@@ -375,8 +375,6 @@ fn append_hmenu_item(hmenu: HMENU, item: &ContextMenuItem, ids: &mut Vec<WidgetI
 }
 
 /// `str` → NUL-terminated UTF-16 helper — the one implementation shared
-/// crate-wide (issue #1087); this module used to carry its own copy of
-/// the same two-line conversion, as did `super::backend`/`super::services`.
 #[cfg(target_os = "windows")]
 use crate::desktop::wide_nul_terminated as win_wide_nul_terminated;
 
@@ -386,7 +384,7 @@ use crate::desktop::wide_nul_terminated as win_wide_nul_terminated;
 /// `super::image::decode_bitmap` documents for the in-canvas `Image`
 /// primitive's decode failures.
 ///
-/// `pub(crate)` (issue #1142): `win::run`'s window-creation call site
+/// `pub(crate)`: `win::run`'s window-creation call site
 /// reuses this same WIC → `HICON` pipeline to set the titlebar/taskbar
 /// icon via `WM_SETICON`, rather than hand-rolling a second decoder for
 /// what is exactly the same source-to-`HICON` conversion the tray icon
