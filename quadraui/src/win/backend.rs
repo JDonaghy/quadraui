@@ -3803,6 +3803,10 @@ impl Backend for WinBackend {
         tree.vscrollbar(rect, row_h as f32)
     }
 
+    fn tree_paints_own_scrollbar(&self) -> bool {
+        true
+    }
+
     /// Pure measurement — only needs `self.dwrite`, not a live
     /// render target. See [`Self::status_bar_layout`]'s doc. Prefers
     /// `chrome_dwrite`, matching [`Self::draw_form`]'s paint font — both
