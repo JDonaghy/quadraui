@@ -3271,16 +3271,32 @@ pub trait Backend: sealed::Sealed {
     /// same values a rasteriser would paint, so consumers hit-test the
     /// returned thumb to implement drag without re-deriving geometry.
     ///
-    /// #1043: `Backend::draw_tree` paints no scrollbar affordance of its
-    /// own — an overflowing tree scrolls (mouse wheel, keyboard) but gave
-    /// no visual indication there was more content, and there was no
-    /// host-facing way to ask for one short of hand-rolling a scrollbar
-    /// per backend. This mirrors [`Backend::list_hscrollbar`] /
-    /// [`Backend::list_vscrollbar`]'s already-established shape: a
-    /// layout-level scroll extent the host passes to the existing
-    /// [`Scrollbar`] primitive and paints itself via
-    /// [`Backend::draw_scrollbar`] — see [`TreeView::vscrollbar`].
+    /// This mirrors [`Backend::list_hscrollbar`] / [`Backend::list_vscrollbar`]'s
+    /// already-established shape: a layout-level scroll extent the host
+    /// hit-tests against. Whether the host also needs to *paint* a
+    /// scrollbar from this geometry depends on
+    /// [`Self::tree_paints_own_scrollbar`]: on backends where
+    /// [`Self::draw_tree`] already paints an overlay scrollbar, this
+    /// geometry exists purely for hit-testing and the host must not
+    /// paint its own on top (that would double-paint it) — see
+    /// [`TreeView::vscrollbar`].
     fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<Scrollbar>;
+
+    /// Whether [`Self::draw_tree`] already paints a vertical scrollbar
+    /// overlay for an overflowing tree, so hosts (e.g.
+    /// [`crate::compose::TreeController`]) must not also reserve a
+    /// column for one or separately call [`Self::draw_scrollbar`] with
+    /// the geometry from [`Self::tree_vscrollbar`] — doing so paints the
+    /// scrollbar twice.
+    ///
+    /// GTK, macOS and Win paint the overlay inside `draw_tree` itself and
+    /// override this to `true`. TUI has no such overlay — scrolling a
+    /// tree in a terminal has no spare pixels for one — so it keeps the
+    /// default `false` and relies on the host to reserve a column and
+    /// paint the scrollbar explicitly.
+    fn tree_paints_own_scrollbar(&self) -> bool {
+        false
+    }
 
     /// Compute the form layout the rasteriser would produce for `form`
     /// in `rect`, using the backend's native metrics. Hosts call this

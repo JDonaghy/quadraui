@@ -3150,6 +3150,9 @@ impl Backend for MacBackend {
             crate::primitives::layout_metrics::tree_row_pitch(tree, self.current_line_height);
         tree.vscrollbar(rect, row_h as f32)
     }
+    fn tree_paints_own_scrollbar(&self) -> bool {
+        true
+    }
     fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout {
         // No-paint twin of `draw_form` — must agree with what that
         // method painted.

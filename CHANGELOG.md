@@ -61,6 +61,25 @@ only a push to `main` runs this workflow.
 
 ### Added
 
+- `Backend::tree_paints_own_scrollbar() -> bool` (issue #1476) — a provided
+  (default `false`) trait method a tree-hosting consumer (e.g.
+  `compose::TreeController`) calls to decide whether it must still reserve a
+  column and paint a scrollbar itself, or whether the backend's `draw_tree`
+  already paints an overlay scrollbar over the tree's own content. GTK,
+  macOS and Win override it to `true`; TUI keeps the default `false`.
+
+### Fixed
+
+- `compose::TreeController` no longer double-paints the tree's vertical
+  scrollbar on GTK, macOS and Win (issue #1476): it previously always
+  reserved a column and called `Backend::draw_scrollbar` even on backends
+  whose `draw_tree` already paints an overlay scrollbar, producing two
+  scrollbars (one of them an extra-wide reserved column) beside the tree.
+  It now checks the new `Backend::tree_paints_own_scrollbar()` and, when
+  `true`, paints nothing itself — the existing `Backend::tree_vscrollbar`
+  geometry is still used for hit-testing and dragging. TUI's behavior is
+  unchanged.
+
 - `FlexLayout::without_rounding(self) -> Self` (issue #1428) — opts a
   `FlexLayout` out of its default pixel-snapping so a caller can compare
   raw `taffy` output bit-for-bit against a hand-rolled layout in tests.
