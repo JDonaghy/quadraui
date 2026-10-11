@@ -146,7 +146,10 @@ names.
   "the reviewer", "adversarial review") in `//`/`#` comments — history goes in the
   commit message. CI's comment-history ratchet (`tools/comment_history_lint.py`)
   fails a PR that raises any module's count; run
-  `python3 tools/comment_history_lint.py` before pushing. Only exception: a
+  `python3 tools/comment_history_lint.py` before pushing. If it blocks you, run
+  `tools/comment_history_lint.py --fix` first — it mechanically strips the easy
+  cases (a leading `#1234 review: ...` tag, a trailing `(#1234)` aside, a
+  ref-only line) for free; what's left needs a hand rewrite. Only exception: a
   load-bearing workaround reference gated on that issue closing
   (`CONTRIBUTING.md` "Comment policy").
 
