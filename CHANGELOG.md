@@ -76,6 +76,13 @@ only a push to `main` runs this workflow.
   genuinely needs no entry can carry the `no-changelog` label instead. Not
   wired into branch protection as a required check here — that's an
   operator-controlled setting.
+- `scripts/release.py` (issue #1501) — one-command release prep (`prepare
+  X.Y.Z`: version bump + `Cargo.lock` refresh + CHANGELOG.md retitle, on a
+  new `release-X.Y.Z` branch) and promotion (`promote`: prints the
+  `develop` -> `main` PR + merge commands with the actual released
+  CHANGELOG.md section as the PR body). Prints but never runs any
+  `git push`/`gh` command, since `gh` may not be available wherever this
+  runs. See `scripts/test_release.py` for coverage.
 
 ## [0.1.4] - 2026-10-11
 
