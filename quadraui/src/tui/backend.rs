@@ -3399,7 +3399,7 @@ impl Backend for TuiBackend {
     fn tree_vscrollbar(&self, rect: QRect, tree: &TreeView) -> Option<crate::Scrollbar> {
         // TUI rows are uniform 1-cell tall (see `tui_tree_layout`'s doc).
         let area = q_rect_to_ratatui(rect);
-        tree.vscrollbar(
+        tree.vscrollbar_with_track_width(
             crate::event::Rect::new(
                 area.x as f32,
                 area.y as f32,
@@ -4561,7 +4561,7 @@ mod tests {
         }
 
         fn tree_vscrollbar(&self, r: QRect, t: &TreeView) -> Option<crate::Scrollbar> {
-            t.vscrollbar(r, 1.0, 1.0)
+            t.vscrollbar_with_track_width(r, 1.0, 1.0)
         }
 
         fn form_layout(&self, r: QRect, form: &Form) -> crate::primitives::form::FormLayout {

@@ -3800,7 +3800,7 @@ impl Backend for WinBackend {
             tree,
             self.current_line_height as f64,
         );
-        tree.vscrollbar(
+        tree.vscrollbar_with_track_width(
             rect,
             row_h as f32,
             crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,

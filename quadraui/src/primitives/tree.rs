@@ -344,13 +344,20 @@ impl TreeView {
     ///   or [`crate::primitives::layout_metrics::tree_row_pitch`]'s result
     ///   on pixel backends. Used only as the minimum thumb length, matching
     ///   [`ListView::vscrollbar`](crate::primitives::list::ListView::vscrollbar).
+    pub fn vscrollbar(&self, area: Rect, row_height: f32) -> Option<Scrollbar> {
+        self.vscrollbar_with_track_width(area, row_height, row_height)
+    }
+
+    /// Like [`vscrollbar`](Self::vscrollbar), but with an explicit
+    /// `track_width` instead of defaulting it to `row_height`.
+    ///
     /// - `track_width` — width of the scrollbar column, occupying the
     ///   rightmost `track_width` of `area`: `1.0` on TUI (one cell), or
     ///   [`crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`]
     ///   on pixel backends. Deliberately independent of `row_height`:
     ///   VS Code's list/tree scrollbar is a fixed 10px regardless of row
     ///   pitch.
-    pub fn vscrollbar(&self, area: Rect, row_height: f32, track_width: f32) -> Option<Scrollbar> {
+    pub fn vscrollbar_with_track_width(&self, area: Rect, row_height: f32, track_width: f32) -> Option<Scrollbar> {
         if row_height <= 0.0 || track_width <= 0.0 {
             return None;
         }
@@ -639,7 +646,7 @@ pub(crate) mod native_surface_paint {
         // Paint the vertical scrollbar when present. The track is a
         // fixed pixel-backend width, independent of row pitch — see
         // `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`'s doc.
-        if let Some(vsb) = tree.vscrollbar(
+        if let Some(vsb) = tree.vscrollbar_with_track_width(
             area,
             item_height,
             crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
@@ -836,7 +843,7 @@ pub(crate) mod native_surface_paint {
             let item_height =
                 crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT as f64) as f32;
             let expected = tree
-                .vscrollbar(
+                .vscrollbar_with_track_width(
                     AREA,
                     item_height,
                     crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
@@ -1426,7 +1433,7 @@ mod tests {
         fn none_when_tree_is_empty() {
             let t = vtree(0, 0);
             assert!(t
-                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
                 .is_none());
         }
 
@@ -1435,7 +1442,7 @@ mod tests {
             // 5 rows, 10-row viewport — all fit, no scrollbar.
             let t = vtree(5, 0);
             assert!(t
-                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
                 .is_none());
         }
 
@@ -1444,7 +1451,7 @@ mod tests {
             // 10 rows, 10-row viewport — total == visible, no scrollbar.
             let t = vtree(10, 0);
             assert!(t
-                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
                 .is_none());
         }
 
@@ -1452,10 +1459,10 @@ mod tests {
         fn none_when_row_height_is_zero_or_negative() {
             let t = vtree(50, 0);
             assert!(t
-                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 0.0, 1.0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 0.0, 1.0)
                 .is_none());
             assert!(t
-                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), -1.0, 1.0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), -1.0, 1.0)
                 .is_none());
         }
 
@@ -1463,10 +1470,10 @@ mod tests {
         fn none_when_track_width_is_zero_or_negative() {
             let t = vtree(50, 0);
             assert!(t
-                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 0.0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 0.0)
                 .is_none());
             assert!(t
-                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, -1.0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, -1.0)
                 .is_none());
         }
 
@@ -1474,7 +1481,7 @@ mod tests {
         fn track_spans_rightmost_column() {
             let t = vtree(20, 0);
             let sb = t
-                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
                 .expect("overflow should yield a scrollbar");
             // Rightmost column (x=19), full height, 1 unit wide.
             assert_eq!(sb.track.x, 19.0);
@@ -1490,7 +1497,7 @@ mod tests {
         fn thumb_advances_with_scroll_offset() {
             let t = vtree(20, 10);
             let sb = t
-                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
                 .expect("overflow should yield a scrollbar");
             assert!(
                 sb.thumb_start > 0.0,
@@ -1506,7 +1513,7 @@ mod tests {
             // to match the row pitch.
             let t = vtree(50, 0);
             let sb = t
-                .vscrollbar(
+                .vscrollbar_with_track_width(
                     Rect::new(0.0, 0.0, 300.0, 200.0),
                     20.0,
                     crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
@@ -1526,7 +1533,7 @@ mod tests {
             // row pitch.
             let t = vtree(50, 0);
             let sb = t
-                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
                 .expect("overflow should yield a scrollbar");
             assert_eq!(sb.track.width, 1.0);
         }

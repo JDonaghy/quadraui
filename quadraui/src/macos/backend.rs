@@ -3050,7 +3050,7 @@ impl Backend for MacBackend {
         // (or `TreeStyle::row_height`), not the raw `line_height`.
         let row_h =
             crate::primitives::layout_metrics::tree_row_pitch(tree, self.current_line_height);
-        tree.vscrollbar(
+        tree.vscrollbar_with_track_width(
             rect,
             row_h as f32,
             crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
