@@ -493,15 +493,15 @@ pub fn font_metrics(font: &CTFont) -> FontMetrics {
 /// then leak into the typographic bounds. [`draw_text_impl`] positions
 /// every glyph using only `font`'s own `ascent()` (never a resolved
 /// fallback run's), so letting height vary with the resolved run's
-/// metrics desynchronises the two: callers that centre text vertically
-/// using this height (e.g.
-/// `sidebar_panel::native_surface_paint::paint_toolbar_header`) end up
-/// centring against a height `draw_text_impl` never actually
-/// positioned against, pushing the glyph low in its slot — see #1494.
-/// Pinning height to `font`'s own metrics, exactly as the empty-string
-/// branch below already does, keeps this function's contract true for
-/// every input and keeps it consistent with how glyphs are actually
-/// drawn.
+/// metrics would desynchronise the two: callers that centre text
+/// vertically using this height (e.g.
+/// `sidebar_panel::native_surface_paint::paint_toolbar_header`) would
+/// then centre against a height [`draw_text_impl`] never positions
+/// against, pushing the glyph low in its slot where a clip rect can cut
+/// off its lower part. Pinning height to `font`'s own metrics, exactly
+/// as the empty-string branch below also does, keeps this function's
+/// contract true for every input and consistent with how glyphs are
+/// actually drawn.
 pub fn measure_text(font: &CTFont, text: &str) -> (f64, f64) {
     let height = font.ascent() + font.descent() + font.leading();
     if text.is_empty() {
