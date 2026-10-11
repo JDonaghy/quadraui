@@ -188,6 +188,13 @@ It can't tell a load-bearing reference from a narrating one; that judgment
 call is what each module's own mechanical-pass issue (#1243-#1249) makes
 when it lowers that module's threshold.
 
+If it blocks your PR, run `tools/comment_history_lint.py --fix` first
+(defaults to your branch's changed files). It mechanically strips the easy
+cases — a leading `#1234 review: ...` tag, a trailing `(#1234)` aside, a
+ref-only line — for free, no model call. Whatever it leaves flagged is
+free-text history prose or a `SAFETY` line; hand-rewrite those in the
+present tense, same as above.
+
 ## Opening a pull request
 
 - Target `develop`, not `main`.
