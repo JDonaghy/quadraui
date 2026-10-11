@@ -306,7 +306,7 @@ pub struct MacBackend {
     /// arguments are always `0.0` and go unread.
     pending_window_press: WindowDragArm<Retained<NSEvent>>,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
-    /// (issue #683). Picks `Icon::glyph` vs `Icon::fallback` in
+    // /. Picks `Icon::glyph` vs `Icon::fallback` in
     /// `draw_activity_bar` and (since #804) `draw_tree`. Set via
     /// [`Backend::set_nerd_fonts`]; defaults to `true` on this backend —
     /// see `GtkBackend`'s matching field doc for why a
@@ -1222,18 +1222,18 @@ fn native_menu_bar_layout(rect: Rect) -> MenuBarLayout {
     }
 }
 
-/// Defensive clamp for [`MacBackend::draw_editor`] (`#1496`): both
-/// `editor.rect` and `viewport` are already in points (see [`Viewport`]'s
-/// doc), so no scale conversion is needed — this only ever shrinks
-/// `editor.rect`'s right/bottom edge back inside `viewport`, never moves
-/// its origin or grows it.
+/// Defensive clamp for [`MacBackend::draw_editor`]: both `editor.rect`
+/// and `viewport` are already in points (see [`Viewport`]'s doc), so no
+/// scale conversion is needed — this only ever shrinks `editor.rect`'s
+/// right/bottom edge back inside `viewport`, never moves its origin or
+/// grows it.
 ///
 /// Returns `None` when `editor.rect` already fits (the overwhelmingly
 /// common case — no clone), and `None` rather than clamping at all when
 /// `viewport` is the all-zero default (`MacBackend::new` before its first
 /// `begin_frame`), so a backend used outside the normal
 /// `begin_frame` → `enter_frame_scope` → `draw_editor` sequence keeps
-/// today's unclamped behaviour instead of silently painting nothing.
+/// unclamped behaviour instead of silently painting nothing.
 fn clamp_editor_rect_to_viewport(editor: &Editor, viewport: Viewport) -> Option<Editor> {
     if viewport.width <= 0.0 || viewport.height <= 0.0 {
         return None;
@@ -3109,12 +3109,12 @@ impl Backend for MacBackend {
         // function's module doc) — this trait method's own `_rect`
         // argument is unused by design, same as `GtkBackend::draw_editor`
         // (see `Backend::draw_editor`'s doc for the caller invariant that
-        // the two are expected to agree). When a host's `editor.rect`
-        // disagrees with this backend's real window bounds (`#1496`: a
-        // host-side rounding/DPI mismatch left `editor.rect` wider than
-        // the window), painting straight into it lays the reserved
-        // scrollbar column mostly or wholly past the right edge, leaving
-        // only a sliver visible. Clamp a defensive copy so nothing this
+        // the two are expected to agree). A host's `editor.rect` can
+        // disagree with this backend's real window bounds (e.g. a
+        // rounding/DPI mismatch making `editor.rect` wider than the
+        // window); painting straight into it lays the reserved scrollbar
+        // column mostly or wholly past the right edge, leaving only a
+        // sliver visible. Clamp a defensive copy so nothing this
         // rasteriser paints — least of all the scrollbar track — can
         // extend past the real viewport.
         let clamped = clamp_editor_rect_to_viewport(editor, self.viewport);

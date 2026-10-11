@@ -1564,30 +1564,25 @@ mod tests {
         );
     }
 
-    /// Regression test for `#1496`: a host can hand `draw_editor` an
-    /// `editor.rect` wider than the real window (a rounding/DPI mismatch
-    /// upstream of this backend) — `draw_editor` must still paint the
-    /// scrollbar track fully inside the real viewport rather than laying
-    /// it out past the right edge, where only a sliver (or nothing at
-    /// all) would end up visible on screen.
+    /// A host can hand `draw_editor` an `editor.rect` wider than the
+    /// real window (e.g. a rounding/DPI mismatch upstream of this
+    /// backend). `draw_editor` must still paint the scrollbar track fully
+    /// inside the real viewport rather than laying it out past the right
+    /// edge, where only a sliver (or nothing at all) would be visible.
     ///
-    /// `editor.rect` here is 20px wider than the real 200×80 viewport
-    /// `scroll_test_paint_via_backend` paints into. Pre-fix, `draw_editor`
-    /// trusted `editor.rect` outright, so the 14px column would land at
-    /// `x = 0 + 220 - 14 = 206` — entirely outside the painted surface's
-    /// `[0, 200)` — leaving every pixel in `[186, 200)` plain background.
-    /// Post-fix, `draw_editor` clamps its own copy of `editor.rect` back
-    /// inside `self.viewport` before painting, so the column lands at the
-    /// same `[186, 200)` span the in-bounds `_paints_14px_column` test
-    /// above asserts.
+    /// `editor.rect` here is 20px wider than the real 200x80 viewport
+    /// `scroll_test_paint_via_backend` paints into. Without the clamp,
+    /// the 14px column would land at `x = 0 + 220 - 14 = 206` —
+    /// entirely outside the painted surface's `[0, 200)`. The clamp in
+    /// `draw_editor` shrinks `editor.rect` back inside `self.viewport`,
+    /// so the column lands at `[186, 200)` — the same span the in-bounds
+    /// `_paints_14px_column` test above asserts.
     ///
     /// This only covers the paint path. `Backend::editor_layout` (the
     /// no-paint hit-test twin, `src/backend.rs`) is shared, trait-default
-    /// code outside this issue's `quadraui/src/macos/**` scope, and is
-    /// not overridden here — its own doc already documents that passing
-    /// it a `rect` which disagrees with what was actually painted is a
-    /// pre-existing, uncovered caller invariant, not something this fix
-    /// changes.
+    /// code and is not overridden here — its own doc documents that
+    /// passing it a `rect` which disagrees with what was actually
+    /// painted is an uncovered caller invariant.
     #[test]
     fn backend_clamps_oversized_editor_rect_to_viewport() {
         let mut oversized = scroll_test_editor(50, 5);
