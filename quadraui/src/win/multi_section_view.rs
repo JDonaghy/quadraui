@@ -1,18 +1,13 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::MultiSectionView`]
-//! (issue #27).
 //!
 //! Paints the full chrome (per-section headers, optional aux rows,
 //! per-section scrollbars, optional dividers) onto an `ID2D1RenderTarget`
 //! and dispatches each section's body to the appropriate quadraui body
 //! rasteriser (`super::tree::draw_tree`, `super::list::draw_list`,
-//! `draw_form_body`, `crate::primitives::chart::paint` (#810),
-//! `crate::primitives::terminal::paint` (#810),
+//! `draw_form_body`, `crate::primitives::chart::paint`,
+//! `crate::primitives::terminal::paint`,
 //! `super::message_list::draw_message_list`) using the body bounds
 //! returned by the primitive's [`crate::MultiSectionView::layout`].
-//! `SectionBody::Terminal` / `SectionBody::MessageList` used to paint
-//! background only, on the rationale that `super::terminal` /
-//! `super::message_list` were still `todo!()` stubs — stale since #30
-//! landed both rasterisers; #727 wired them in here.
 //!
 //! Mirrors [`crate::macos::multi_section_view`] in shape (the closest
 //! existing pixel backend: no frame-scope requirement for layout, real
@@ -24,8 +19,8 @@
 //! and click share one source of truth (see `super::backend`'s
 //! `msv_layout`/`msv_metrics` methods). Both, and the section
 //! body-measurement they drive, are thin wrappers over
-//! [`crate::primitives::layout_metrics`] (#499, adopted for `win/` by
-//! #701) rather than a third hand-derived copy of the GTK/macOS math.
+//! [`crate::primitives::layout_metrics`] rather than a third hand-derived
+//! copy of the GTK/macOS math.
 //!
 //! Vertical-only in v1 (per #294 / D-003 in
 //! `quadraui/docs/decisions/DECISIONS.md`); horizontal sections fall through to a
@@ -49,15 +44,11 @@
 //!   the input `has_focus`, matching `gtk::multi_section_view`'s
 //!   simpler (non-blinking) convention rather than macOS's blink-aware
 //!   one.
-//! - ~~Translucent overlays are CPU-premixed, not native D2D alpha
-//!   blending~~ — fixed by #1074: the per-section scrollbar now paints
-//!   through the shared
-//!   [`crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar`],
+//! - **Translucent overlays** — the per-section scrollbar paints through
+//!   the shared [`crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar`],
 //!   which fills with real alpha (`Color::with_alpha`) the same way
-//!   GTK/macOS always have. [`super::surface::D2dSurface::surface_fill_rect`]
-//!   has honoured real alpha since quadraui#791/#1072 — the CPU-premix
-//!   convention this bullet used to document was legacy from before
-//!   that adapter existed, not a remaining Direct2D limitation.
+//!   GTK/macOS do. [`super::surface::D2dSurface::surface_fill_rect`] honours
+//!   real alpha, unifying Win-GUI onto the same real alpha blend GTK/macOS use.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -77,7 +68,7 @@ use crate::types::StyledText;
 /// convention exactly.
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::msv_metrics`]
-/// (#499) — identical math across every pixel backend.
+/// — identical math across every pixel backend.
 pub fn win_msv_metrics(line_height: f32, allow_resize: bool) -> MsvLayoutMetrics {
     crate::primitives::layout_metrics::msv_metrics(line_height as f64, allow_resize)
 }
@@ -85,15 +76,14 @@ pub fn win_msv_metrics(line_height: f32, allow_resize: bool) -> MsvLayoutMetrics
 /// Compute the layout for a `MultiSectionView` using the Win-GUI
 /// metrics the rasteriser would use itself. Hosts call this to drive
 /// hit-testing without re-computing — paint and click share this single
-/// layout per frame. No `DWrite` handle needed: body measurement below
-/// is estimate-based (row counts × `line_height`), not real text
+/// layout per frame. No `DWrite` handle needed: body measurement is
+/// estimate-based (row counts × `line_height`), not real text
 /// measurement, mirroring `mac_msv_metrics`'s twin body measure.
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::msv_layout`]
-/// (#499) / [`crate::primitives::layout_metrics::msv_body_measure`],
-/// which is also where the `MessageList` real-content-height fix (a
-/// pre-#499 macOS drift — see `msv_body_measure`'s doc) lives, so `win/`
-/// inherits it automatically instead of re-deriving the old `0.0` stub.
+/// / [`crate::primitives::layout_metrics::msv_body_measure`],
+/// which handle the `MessageList` real-content-height computation
+/// so `win/` inherits it automatically instead of re-deriving it.
 pub fn win_msv_layout(
     view: &MultiSectionView,
     bounds: Rect,
@@ -171,17 +161,15 @@ pub fn draw_multi_section_view(
 
     // Panel-level scrollbar (WholePanel mode) painted outside the
     // panel clip so it isn't itself clipped — matches
-    // `mac_msv`/`gtk_msv`'s posture. Thumb geometry comes straight from
-    // `view_layout.panel_scrollbar_thumb` (computed once, via
-    // `fit_thumb`, in `MultiSectionView::layout`) — see
-    // `paint_panel_scrollbar`'s doc for why this used to be a fourth,
-    // disagreeing formula (quadraui#820).
+    // `mac_msv`/`gtk_msv`'s posture. Thumb geometry comes from
+    // `view_layout.panel_scrollbar_thumb` (computed once via `fit_thumb`
+    // in `MultiSectionView::layout`).
     if let Some(panel_sb) = view_layout.panel_scrollbar {
         paint_panel_scrollbar(target, panel_sb, view_layout.panel_scrollbar_thumb, &theme);
     }
 }
 
-// #1074 (PaintSurface Phase 4): header/aux/text/empty/scrollbar/divider
+// Header/aux/text/empty/scrollbar/divider
 // chrome painting moved to the shared
 // [`crate::primitives::multi_section_view::native_surface_paint`] — these
 // wrappers just build a [`super::surface::D2dSurface`] adapter and
@@ -260,21 +248,12 @@ fn paint_body(
 
     match body {
         SectionBody::Tree(t) => {
-            // #804 fixed the nerd-fonts gap in `win::tree::draw_tree`
-            // itself; wiring `nerd_fonts_enabled` through
-            // `draw_multi_section_view`'s own call chain (it isn't a
-            // parameter here yet, unlike TUI/GTK's MSV) is separate,
-            // unstarted scope — passing `false` preserves today's
-            // fallback-only behaviour for tree bodies nested in an MSV.
-            //
-            // `theme` here is `draw_multi_section_view`'s own local
-            // `Theme::default()` (see this function's caller) —
-            // `multi_section_view.rs` is not one of the Win-GUI
-            // rasterisers wired to `current_theme`, so this stays scoped
-            // to *compiling* against `super::tree::draw_tree`'s `&Theme`
-            // parameter rather than threading the live theme through
-            // MSV's own call chain — that is still separate, unstarted
-            // scope, same as the `nerd_fonts_enabled` gap noted above.
+            // `nerd_fonts_enabled` parameter is not yet wired through
+            // `draw_multi_section_view`'s call chain; passing `false`
+            // preserves fallback-only behaviour for tree bodies nested in an MSV.
+            // `theme` is the local `Theme::default()` — this module is not
+            // wired to `current_theme`, so this stays scoped to compiling
+            // against `super::tree::draw_tree`'s `&Theme` parameter.
             let _ = super::tree::draw_tree(target, dwrite, bounds, t, line_height, false, theme);
         }
         SectionBody::List(l) => {
@@ -284,11 +263,11 @@ fn paint_body(
             draw_form_body(target, dwrite, bounds, f, theme, line_height);
         }
         SectionBody::Chart(c) => {
-            // #810: painting moved to the shared
+            // Painting moved to the shared
             // `crate::primitives::chart::paint`; this raw
             // `(&ID2D1RenderTarget, &DWrite)` call site (no live
             // `WinBackend` on hand) reuses the shared
-            // `super::surface::D2dSurface` adapter (#1072).
+            // `super::surface::D2dSurface` adapter.
             let chart_layout = super::chart::win_chart_layout(c, bounds, char_width, line_height);
             let mut surface = super::surface::D2dSurface {
                 target,
@@ -297,7 +276,7 @@ fn paint_body(
             crate::primitives::chart::paint(c, &chart_layout, &mut surface, theme, None, None);
         }
         SectionBody::Terminal(t) => {
-            // #810: painting moved to the shared
+            // Painting moved to the shared
             // `crate::primitives::terminal::paint`; reuses the shared
             // `super::surface::D2dSurface` adapter like the `Chart` arm
             // above.
@@ -342,12 +321,11 @@ fn paint_body(
     pop_clip(target);
 }
 
-/// Paint an embedded [`crate::Form`] section body. #808: field-kind
+/// Paint an embedded [`crate::Form`] section body. Field-kind
 /// painting goes through the shared [`crate::primitives::form::paint`]
 /// via [`super::surface::D2dSurface`] (this call site has only a raw
-/// `target`/`dwrite`, not a live [`super::WinBackend`]) —
-/// `FieldKind::Toolbar` is painted separately below, same as
-/// `WinBackend::draw_form`, for the same reason (see that fn's doc).
+/// `target`/`dwrite`, not a live [`super::WinBackend`]). `FieldKind::Toolbar`
+/// is painted separately below, same as `WinBackend::draw_form`.
 fn draw_form_body(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -453,18 +431,11 @@ fn paint_empty_body(
 
 /// Per-section scrollbar gutter — 50%-alpha track, 90%-alpha thumb.
 ///
-/// Pre-port this premixed both fills against `theme.background` via
-/// [`crate::types::Color::blend`] rather than painting a real
-/// translucent brush, on the (once-true) rationale that Direct2D fills
-/// here were opaque-only. That stopped being true when
-/// [`super::surface::D2dSurface::surface_fill_rect`] started honouring
-/// real alpha (quadraui#791/#1072 — see that adapter's module doc: "no
-/// fill-translucency divergence to preserve"), so routing this scrollbar
-/// through the shared, real-alpha
-/// [`crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar`]
-/// unifies Win-GUI onto the same real alpha blend GTK/macOS already use
-/// here, rather than continuing to approximate it against a hardcoded
-/// destination colour.
+/// This scrollbar paints through the shared, real-alpha
+/// [`crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar`],
+/// which honours real alpha (`Color::with_alpha`) the same way GTK/macOS do.
+/// [`super::surface::D2dSurface::surface_fill_rect`] honours real alpha,
+/// unifying Win-GUI onto the same real alpha blend.
 fn paint_section_scrollbar(
     target: &ID2D1RenderTarget,
     gutter: Rect,
@@ -484,21 +455,11 @@ fn paint_section_scrollbar(
 }
 
 /// Panel-level scrollbar (`ScrollMode::WholePanel`) — opaque track and
-/// thumb, no blending needed since it's painted outside any body clip.
-/// Thumb geometry comes from `thumb_bounds` — computed once by
+/// thumb. Thumb geometry comes from `thumb_bounds`, computed once by
 /// [`crate::primitives::multi_section_view::MultiSectionView::layout`]
 /// (`fit_thumb`) and published as
-/// [`crate::primitives::multi_section_view::MultiSectionViewLayout::panel_scrollbar_thumb`].
-///
-/// Pre-quadraui#820 this function computed thumb size/position itself
-/// from `(scroll, total_content)` with its own formula that disagreed
-/// with the layout's `fit_thumb`-based one in two ways: the caller
-/// passed `total_content` as *just* the summed section sizes, silently
-/// dropping divider strips; and a hardcoded `20.0`-pixel minimum thumb
-/// here disagreed with `panel_thumb_min`'s `metrics.scrollbar_size.max(8.0)`
-/// used everywhere else. Mirrors [`paint_section_scrollbar`]'s
-/// (per-section) pattern of consuming pre-computed bounds instead of
-/// re-deriving them.
+/// [`crate::primitives::multi_section_view::MultiSectionViewLayout::panel_scrollbar_thumb`],
+/// so paint and hit-testing use the same bounds.
 fn paint_panel_scrollbar(
     target: &ID2D1RenderTarget,
     bounds: Rect,
@@ -754,14 +715,6 @@ mod tests {
     /// `theme.scrollbar_track`, and hit-testing the painted thumb pixel
     /// agrees with the layout. Win-side mirror of GTK's
     /// `gtk_panel_scrollbar_thumb_paints_at_layout_position`.
-    ///
-    /// Regression coverage for quadraui#820: pre-fix, this backend's
-    /// `paint_panel_scrollbar` recomputed thumb geometry itself from
-    /// `layout.sections.iter().map(|s| s.resolved_size).sum()` (dropping
-    /// the divider strip from the total) and a hardcoded `20.0`-pixel
-    /// minimum thumb, instead of reusing `panel_scrollbar_thumb` — the
-    /// same geometry `fit_thumb` + `panel_thumb_min` already computed
-    /// for hit-testing.
     #[test]
     fn panel_scrollbar_thumb_paints_at_layout_position() {
         let view = MultiSectionView {
@@ -885,16 +838,10 @@ mod tests {
         );
     }
 
-    /// #701 regression guard: `win_msv_layout`'s body measurement for a
-    /// `MessageList` section must agree with
-    /// [`crate::primitives::layout_metrics::msv_body_measure`] — the
-    /// exact case that drifted pre-#499 (GTK measured real content,
-    /// macOS returned `0.0`). `win/` used to re-derive this match arm by
-    /// hand (and, before #701, returned `0.0` for `MessageList` too); a
-    /// `SectionSize::Content` section's `resolved_size` is
-    /// `header_size + body content_size` (no aux), so comparing it
-    /// against the shared function directly catches a re-introduced
-    /// hand-rolled copy.
+    /// `win_msv_layout`'s body measurement for a `MessageList` section
+    /// must agree with [`crate::primitives::layout_metrics::msv_body_measure`],
+    /// ensuring a `SectionSize::Content` section's `resolved_size`
+    /// (`header_size + body content_size`) matches the shared function.
     #[test]
     fn msv_body_measure_message_list_matches_shared_layout_metrics() {
         use crate::primitives::message_list::{MessageList, MessageRow};
@@ -964,12 +911,9 @@ mod tests {
         );
     }
 
-    /// #727: `SectionBody::MessageList` used to paint background only.
-    /// A real MSV paint of a `MessageList` section must now reach
-    /// `super::message_list::draw_message_list` and record a text run
-    /// for each row — the same `inventory().text_runs()` contract
-    /// quadraui#721 established for `WinDriver`, checked here directly
-    /// against the recording sink `paint_via` doesn't install.
+    /// `SectionBody::MessageList` is painted through
+    /// `super::message_list::draw_message_list`, which records a text run
+    /// for each row, matching the `inventory().text_runs()` contract.
     #[test]
     fn message_list_section_paints_row_text() {
         use crate::primitives::message_list::{MessageList, MessageRow};
@@ -1022,11 +966,9 @@ mod tests {
         );
     }
 
-    /// #727: `SectionBody::Terminal` used to paint background only. A
-    /// real MSV paint of a `Terminal` section must now reach
-    /// `crate::primitives::terminal::paint` (#810) and record a text run
-    /// for each non-blank cell — same contract as
-    /// `message_list_section_paints_row_text` above.
+    /// `SectionBody::Terminal` is painted through
+    /// `crate::primitives::terminal::paint`, which records a text run
+    /// for each non-blank cell.
     #[test]
     fn terminal_section_paints_cell_glyphs() {
         use crate::primitives::terminal::{Terminal, TerminalCell, TerminalCursorShape};

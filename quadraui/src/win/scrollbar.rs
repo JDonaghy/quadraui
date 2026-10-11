@@ -1,17 +1,11 @@
-//! Direct2D rasteriser for [`crate::Scrollbar`] (issue #27).
+//! Direct2D rasteriser for [`crate::Scrollbar`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::scrollbar::native_surface_paint::paint`] (#811,
-//! `PaintSurface` Phase 2d) — see that fn's doc for the one named
-//! divergence (quadraui#791) re-verified (already fixed) while unifying
-//! `gtk::draw_scrollbar`, `macos::scrollbar::draw_scrollbar` and
-//! `win::scrollbar::draw_scrollbar` into one implementation. The
-//! deprecated `draw_scrollbar` compatibility shim over the shared
-//! [`super::surface::D2dSurface`] adapter was removed in issue #1109
-//! (zero uses in coord-tui's `main` and vimcode's `develop`).
+//! Painting is implemented in the shared
+//! [`crate::primitives::scrollbar::native_surface_paint::paint`] — see that
+//! function's documentation for implementation details.
 //!
-//! `super::multi_section_view`'s embedded scrollbar still uses its own
-//! CPU-premix convention — out of scope here, see that module's doc.
+//! `super::multi_section_view`'s embedded scrollbar uses its own
+//! CPU-premix convention — see that module's documentation.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod scrollbar;` and `backend.rs`'s
@@ -37,7 +31,7 @@ mod tests {
     /// [`crate::primitives::scrollbar::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s
     /// headless target — the same adapter the now-removed
-    /// `draw_scrollbar` shim used (issue #1109), exercised here
+    /// `draw_scrollbar` shim used, exercised here
     /// directly.
     fn paint(scrollbar: &Scrollbar) -> HeadlessSurface {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
@@ -89,16 +83,11 @@ mod tests {
         )
     }
 
-    /// Regression for quadraui#791: `draw_scrollbar` used to premix the
-    /// track colour against `theme.background` via `super::text::blend`
-    /// regardless of what was already painted underneath, so a
-    /// scrollbar drawn over an editor/terminal/panel header (anything
-    /// other than the bare theme background) got a
-    /// `theme.background`-coloured halo instead of blending with the
-    /// real content beneath it. Paint over a background that's
-    /// deliberately far from `theme.background` and assert the result
-    /// is the real alpha blend of *that* background with the track
-    /// colour — not the old premixed halo.
+    /// The scrollbar track blends correctly with the actual background
+    /// beneath it, not with the theme background. This ensures the track
+    /// color is alpha-blended with whatever content is actually underneath
+    /// (editor, terminal, panel header, etc.), not with a premixed theme
+    /// background color.
     #[test]
     fn track_blends_with_real_background_not_theme_background() {
         let sb = vertical_bar(0.0, 200.0, 50.0);

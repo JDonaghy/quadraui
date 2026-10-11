@@ -4,10 +4,9 @@
 //! The shared [`crate::shell_adapter::ShellAdapter`] owns all runtime logic
 //! (bottom-panel init, panel routing, resize recalc, click dispatch), and
 //! [`crate::shell_adapter::build_shell_adapter`] owns assembling one from a
-//! [`ShellConfig`] — shared across every backend since #497. This module
-//! only wires the adapter into the Win32 message loop, mirroring
-//! `tui::shell_runner` / `gtk::shell_runner` / `macos::shell_runner` — the
-//! Windows analogue of #465 (quadraui#707).
+//! [`ShellConfig`]. This module wires the adapter into the Win32 message
+//! loop, mirroring `tui::shell_runner` / `gtk::shell_runner` /
+//! `macos::shell_runner`.
 //!
 //! `config.title` reaches the real Win32 window via [`RunConfig`], the
 //! same way `gtk::shell_runner::run_with_shell` threads `config.title`
@@ -15,11 +14,11 @@
 //! `win::run` isn't enough for a shell consumer (the window title is
 //! otherwise hardcoded to `"quadraui"`).
 //!
-//! `WinBackend` still carries dozens of `todo!()` rasteriser stubs (see
+//! `WinBackend` carries many `todo!()` rasteriser stubs (see
 //! `win::backend`'s module docs) — this module composes purely over the
-//! `Backend` trait, so it compiles and runs against those stubs today;
-//! each stub retired afterwards lights up more of the shell with no
-//! further change needed here.
+//! `Backend` trait, so it compiles and runs against those stubs; each stub
+//! retired afterwards lights up more of the shell with no further change
+//! needed here.
 
 use super::run::RunConfig;
 use crate::shell::{ShellApp, ShellConfig};
@@ -27,7 +26,7 @@ use crate::shell_adapter::build_shell_adapter;
 
 /// Run a [`ShellApp`] with AppShell chrome on the Win-GUI backend.
 ///
-/// #1142: `config.app_icon` (set via [`ShellConfig::with_app_icon`])
+/// `config.app_icon` (set via [`ShellConfig::with_app_icon`])
 /// reaches [`RunConfig::app_icon`] the same way `config.title` does —
 /// cloned out before `config` moves into [`build_shell_adapter`], since
 /// `RunConfig` (not `ShellConfig`) is what [`super::run::run_with`]'s

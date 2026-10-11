@@ -1,16 +1,11 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::MessageList`] (issue
-//! #30).
+//! Direct2D / DirectWrite rasteriser for [`crate::MessageList`].
 //!
-//! Painting moved to the shared
+//! Painting uses the shared
 //! [`crate::primitives::message_list::native_surface_paint::paint`]
-//! (#1084, `PaintSurface` Phase 4 7/8) — see that fn's doc for the full
-//! per-backend divergence survey (most notably: `macos::message_list`
-//! used to ignore `row.spans` entirely; this module's own italic/
-//! underline/scale gap, described below, is unchanged by the move).
-//! [`draw_message_list`] below is now a thin wrapper over the shared
-//! paint, using [`crate::win::surface::D2dSurface`] as the `PaintSurface`
-//! adapter. `gtk::message_list::draw_message_list` is *not* migrated; see
-//! the shared `paint`'s doc for why.
+//! via [`draw_message_list`] below, a thin wrapper over the shared
+//! paint using [`crate::win::surface::D2dSurface`] as the `PaintSurface`
+//! adapter. See the shared `paint`'s doc for the full per-backend
+//! divergence survey.
 //!
 //! # Styled rows
 //!
@@ -18,22 +13,17 @@
 //! own `fg` (falling back to `row.fg`) and `bold` weight, via
 //! [`PaintSurface::surface_draw_text_run_styled`]'s `D2dSurface`
 //! implementation (`DWrite::draw_text_styled`). `italic` / `underline` /
-//! `scale` are **not yet** applied: `DWrite` has no italic text format,
-//! underline attribute, or per-run font-scale wired up today (GTK applies
-//! these through Pango's `AttrList`, TUI through ratatui `Modifier`s —
-//! neither has a Direct2D equivalent yet). A future issue can add them
-//! once a consumer needs rich message-list rows on Windows; until then a
-//! styled row still renders correctly coloured, bold-aware text, which
-//! is what distinguishes it from the flat path.
+//! `scale` are **not** applied: `DWrite` has no italic text format,
+//! underline attribute, or per-run font-scale support (GTK applies
+//! these through Pango's `AttrList`, TUI through ratatui `Modifier`s).
+//! A styled row renders correctly coloured, bold-aware text.
 //!
 //! When `spans` is **empty** the rasteriser falls back to the flat
-//! `row.text` + `row.fg` path — output matches the pre-styled-row
-//! behaviour every other backend preserves.
+//! `row.text` + `row.fg` path.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
-//! `#[cfg(target_os = "windows")] mod message_list;` and `backend.rs`'s
-//! module docs for why the rest of this repo's `--features win` compile
-//! gate stays meaningful without a Windows host.
+//! `#[cfg(target_os = "windows")] mod message_list;` for the
+//! conditional compilation.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -184,7 +174,7 @@ mod tests {
 
     /// A styled row (non-empty `spans`) must paint without error and
     /// leave visible glyph paint in its band — the "renders styled
-    /// rows" acceptance criterion (#30).
+    /// rows" acceptance criterion.
     #[test]
     fn styled_row_paints_per_span_colour() {
         let mut list = sample_list();

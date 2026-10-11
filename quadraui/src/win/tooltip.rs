@@ -1,12 +1,6 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::Tooltip`] (issue #28).
+//! Direct2D / DirectWrite rasteriser for [`crate::Tooltip`].
 //!
-//! Content painting moved to the shared
-//! [`crate::primitives::tooltip::native_surface_paint::paint`] (#1077,
-//! `PaintSurface` Phase 4 slice 4/8) — see that fn's module doc for the
-//! one drift it resolved (styled-line span bold/italic/underline; this
-//! backend already applied `span.bold` via `DWrite::draw_text_styled`,
-//! which is exactly what `PaintSurface::surface_draw_text_run_styled`'s
-//! Windows override still does, unchanged).
+//! Content painting uses the shared [`crate::primitives::tooltip::native_surface_paint::paint`].
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod tooltip;` and `backend.rs`'s module
@@ -51,7 +45,7 @@ pub fn draw_tooltip(
 
 /// Draw a [`Tooltip`] at its resolved layout, with the border and
 /// optional title requested by `chrome` (mirrors
-/// `gtk::draw_tooltip_with_chrome`, #541). `padding_x` is the horizontal
+/// `gtk::draw_tooltip_with_chrome`). `padding_x` is the horizontal
 /// gap (DIPs) between the left border and the start of text; halved
 /// when `chrome.border` is [`crate::TooltipBorder::None`], matching the
 /// GTK/TUI rasterisers.

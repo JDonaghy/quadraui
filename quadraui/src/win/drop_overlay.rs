@@ -1,34 +1,13 @@
 //! Direct2D rasteriser for [`crate::primitives::drop_zone::DropOverlay`]
-//! (#726).
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::drop_zone::native_surface_paint::paint`] (#865,
-//! `PaintSurface` Phase 2d slice 8/9) — see that fn's doc for the one
-//! named divergence this migration found and reported (rather than
-//! silently resolving): this module's pre-migration `draw_drop_overlay`
-//! CPU-premixed the highlight tint against `theme.background` via
-//! `super::text::blend` (the render target here is created with
-//! `D2D1_ALPHA_MODE_IGNORE`/`UNKNOWN`), which is a genuine behavioural
-//! difference from GTK's `cr.set_source_rgba` and macOS's
-//! `CGContextSetRGBFillColor`, both of which alpha-blend the tint
-//! against whatever is *actually* underneath. Unlike `win::scrollbar`
-//! (#791 already fixed its equivalent premix before the #811 slice 1/9
-//! migration started), this module's premix was **not** already fixed —
-//! `super::text::fill_rect`, the verb `PaintSurface::surface_fill_rect`
-//! calls on this backend, has honoured `color.a` with a real
-//! `ID2D1SolidColorBrush` alpha blend since #791, so routing this
-//! primitive's paint through the shared `surface_fill_rect` verb (same
-//! as every other backend) *corrects* Windows's highlight to a real
-//! alpha blend instead of reproducing the old premix. The insertion bar
-//! was already opaque on every backend, so it fills unchanged.
+//! Painting uses the shared
+//! [`crate::primitives::drop_zone::native_surface_paint::paint`] function — see
+//! that function's documentation for details. On Windows, the highlight tint is
+//! alpha-blended against the actual background via `ID2D1SolidColorBrush`, matching
+//! the behaviour of GTK's `cr.set_source_rgba` and macOS's `CGContextSetRGBFillColor`.
 //!
-//! The deprecated `draw_drop_overlay` compatibility shim over the
-//! shared [`super::surface::D2dSurface`] adapter was removed in issue
-//! #1109 (zero uses in coord-tui's `main` and vimcode's `develop`).
-//!
-//! `DropOverlay::ghost_position` is not rendered — neither GTK, macOS
-//! nor TUI paints a ghost label either, so this is parity, not a
-//! Win-GUI gap.
+//! `DropOverlay::ghost_position` is not rendered — GTK, macOS, and TUI do not paint
+//! a ghost label either, so this is consistent across platforms.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod drop_overlay;` and `backend.rs`'s
@@ -53,7 +32,7 @@ mod tests {
     /// [`crate::primitives::drop_zone::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s headless
     /// target — the same adapter the now-removed `draw_drop_overlay`
-    /// shim used (issue #1109), exercised here directly.
+    /// shim used, exercised here directly.
     fn paint(overlay: &DropOverlay) -> HeadlessSurface {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
         // Fill with a known background so a blended highlight tint is
@@ -81,7 +60,7 @@ mod tests {
     }
 
     /// The impl this replaced was a genuine `todo!()` — every tab drag
-    /// panicked (quadraui#726).
+    /// panicked.
     #[test]
     fn highlight_tints_the_target_rect() {
         let overlay = DropOverlay {

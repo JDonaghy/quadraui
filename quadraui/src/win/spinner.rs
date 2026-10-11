@@ -1,4 +1,4 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::Spinner`] (issue #29).
+//! Direct2D / DirectWrite rasteriser for [`crate::Spinner`].
 //!
 //! Mirrors `gtk::spinner`'s structure: a Unicode braille animation frame
 //! table — same as TUI and GTK, for visual consistency across backends
@@ -7,19 +7,16 @@
 //! primitive's module doc) just wraps the measured glyph+label box; the
 //! measurement itself comes from [`DWrite::measure_text`].
 //!
-//! Issue #1078: only [`draw_spinner`] (the real Direct2D paint entry
-//! point) is `#[cfg(target_os = "windows")]`-gated. [`win_spinner_layout`]
-//! is pure geometry generic over [`SpinnerMeasureSource`] — no Direct2D/
-//! DirectWrite type in its signature — so it compiles and runs
-//! everywhere, including a plain `cargo test --features win` on Linux.
-//! `super::mod`'s `mod spinner;` is no longer whole-module gated; see
-//! `backend.rs`'s module docs.
+//! [`win_spinner_layout`] is pure geometry generic over
+//! [`SpinnerMeasureSource`] — no Direct2D/DirectWrite type in its
+//! signature — so it compiles and runs everywhere, including a plain
+//! `cargo test --features win` on Linux. `super::mod`'s `mod spinner;`
+//! is not whole-module gated; see `backend.rs`'s module docs.
 //!
 //! # Theme
 //!
 //! `WinBackend` does not yet carry a live [`Theme`] — see `win::status_bar`'s
-//! module doc for the "placeholder until a later issue wires the app's
-//! real theme through" posture this module shares.
+//! module doc for the placeholder theme posture this module shares.
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
@@ -94,8 +91,7 @@ pub fn draw_spinner(
     layout
 }
 
-// #1078: every test below paints through a real `DWrite`/`HeadlessSurface`
-// — gated the same way the whole module used to be.
+// Tests paint through a real `DWrite`/`HeadlessSurface`.
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;

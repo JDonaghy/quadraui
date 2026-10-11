@@ -1,5 +1,5 @@
 //! Direct2D / DirectWrite rasteriser for
-//! [`crate::primitives::minimap::Minimap`] (#738).
+//! [`crate::primitives::minimap::Minimap`].
 //!
 //! Mirrors `gtk::minimap`'s technique: rows tile at a fixed pitch
 //! ([`crate::primitives::minimap::ROW_PITCH_PX`],
@@ -59,26 +59,16 @@ use crate::primitives::minimap::{
 use crate::theme::Theme;
 
 /// Compute the Win-GUI DIP-unit layout for a [`Minimap`] without painting,
-/// at [`MinimapScale::One`] — the pre-#1143 fixed pitch. Kept exactly
-/// as-is for source compatibility with any caller reaching this free
-/// function directly; every real paint path goes through
-/// [`WinBackend::minimap_layout`]'s [`win_minimap_layout_scaled`] instead,
-/// so it can honor [`crate::backend::Backend::minimap_scale`] (issue
-/// #1143). Same contract as the GTK/TUI twins' `*_minimap_layout`:
+/// at [`MinimapScale::One`]. Same contract as the GTK/TUI twins' `*_minimap_layout`:
 /// `rect.x`/`rect.y` are baked into every returned bound (absolute frame).
-///
-/// [`WinBackend::minimap_layout`]: crate::win::backend::WinBackend
 pub fn win_minimap_layout(minimap: &Minimap, rect: Rect) -> MinimapLayout {
     win_minimap_layout_scaled(minimap, rect, MinimapScale::One)
 }
 
-/// [`win_minimap_layout`], but at an explicit [`MinimapScale`] (issue
-/// #1143) — what [`WinBackend::minimap_layout`] actually calls. Shares
-/// its `lines_per_row`/sizing formula with `gtk_minimap_layout_scaled` /
-/// `mac_minimap_layout_scaled` via [`pixel_minimap_layout_scaled`] (issue
-/// #1079).
-///
-/// [`WinBackend::minimap_layout`]: crate::win::backend::WinBackend
+/// [`win_minimap_layout`], but at an explicit [`MinimapScale`] — what
+/// [`WinBackend::minimap_layout`] calls. Shares its `lines_per_row`/sizing
+/// formula with `gtk_minimap_layout_scaled` / `mac_minimap_layout_scaled` via
+/// [`pixel_minimap_layout_scaled`].
 pub(crate) fn win_minimap_layout_scaled(
     minimap: &Minimap,
     rect: Rect,
@@ -101,29 +91,12 @@ pub fn draw_minimap(
     draw_minimap_scaled(target, dwrite, rect, minimap, theme, MinimapScale::One)
 }
 
-/// [`draw_minimap`], but at an explicit [`MinimapScale`] (issue #1143) —
-/// what [`WinBackend::draw_minimap`] actually calls. At
+/// [`draw_minimap`], but at an explicit [`MinimapScale`]. At
 /// [`MinimapScale::Two`] the row pitch clears
 /// [`crate::primitives::minimap::LEGIBILITY_FLOOR_PX`], so `render_mode`
 /// resolves to [`MinimapRenderMode::Characters`] and this rasteriser paints
 /// real `DrawText` glyph runs via [`paint_row_glyphs`], shaped at
-/// [`minimap_font_px`]'s resolved size via [`DWrite::minimap_text_format`]
-/// — unlike GTK's atlas blit, this still shapes a
-/// real `IDWriteTextFormat` per paint rather than blitting a downsampled
-/// sample-sheet tile; a DirectWrite sample-sheet atlas mirroring GTK's is
-/// left as follow-up work for a Windows-hosted session (see
-/// `CLAUDE.md`'s "Win-GUI: building and testing for real" — an FFI-heavy
-/// pixel-readback port like this needs to be verified against a live
-/// Direct2D/WARP surface, not just `cargo check`). Issue #1153 ported the
-/// atlas technique to `macos::minimap` (a Core Text sample-sheet atlas,
-/// verifiable there via `headless::BitmapSurface` on a macOS CI runner) —
-/// this module's own atlas gap is the same shape, still open, and still
-/// needs a Windows-hosted session to build+verify (`HeadlessSurface` is
-/// real Direct2D/WARP, not a stub, but this repo has no such host in CI
-/// today); only the font *size* this rasteriser shapes at is matched,
-/// not the shaping technique.
-///
-/// [`WinBackend::draw_minimap`]: crate::win::backend::WinBackend
+/// [`minimap_font_px`]'s resolved size via [`DWrite::minimap_text_format`].
 pub(crate) fn draw_minimap_scaled(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -160,15 +133,13 @@ pub(crate) fn draw_minimap_scaled(
 
     // Clip all row painting to the strip: a below-floor colour-block walk
     // is already width-bounded by `COLUMN_CAPACITY`, but a strip narrower
-    // than that capacity must still not bleed into whatever the host
-    // painted beside the minimap (mirrors `gtk::draw_minimap`'s `cr.clip()`
-    // bracket, #663).
+    // than that capacity must still not bleed into whatever the host painted
+    // beside the minimap (mirrors `gtk::draw_minimap`'s `cr.clip()` bracket).
     push_clip(target, rect);
 
     // One merge-walk over `syntax_spans` for the whole paint, not one
-    // linear rescan per row (#667 pt. 4) -- `visible_lines` is always
-    // ascending in `start_line_idx`, matching `SpanCursor`'s own
-    // non-decreasing-query requirement.
+    // linear rescan per row — `visible_lines` is always ascending in
+    // `start_line_idx`, matching `SpanCursor`'s own non-decreasing-query requirement.
     let mut spans = SpanCursor::new(&minimap.syntax_spans);
 
     for vline in &layout.visible_lines {
@@ -250,13 +221,11 @@ fn paint_row_glyphs(
 
 /// `ColumnBlocks` branch: paint one `cell_w`-DIP-wide block per non-blank
 /// character column of `text`, each coloured by whichever span covers it
-/// — VS Code's `renderCharacters: false` look, which (unlike a single
-/// per-line bar) preserves the line's indent and internal-gap silhouette
-/// (#667 pt. 2). Stops after [`COLUMN_CAPACITY`] columns, so a
-/// pathologically long line costs no more to paint than a short one.
-/// `cell_w` is [`MinimapScale::cell_w_px`] (issue #1143) — `1.0` at the
-/// pre-#1143 default [`MinimapScale::One`], matching this function's
-/// original hardcoded block width byte for byte.
+/// — VS Code's `renderCharacters: false` look, which preserves the line's
+/// indent and internal-gap silhouette. Stops after [`COLUMN_CAPACITY`]
+/// columns, so a pathologically long line costs no more to paint than a short
+/// one. `cell_w` is [`MinimapScale::cell_w_px`] — `1.0` at the default
+/// [`MinimapScale::One`].
 fn paint_row_blocks(
     target: &ID2D1RenderTarget,
     vline: &VisibleMinimapLine,
@@ -309,12 +278,9 @@ mod tests {
         }
     }
 
-    /// C0 smoke: `draw_minimap` must actually paint pixels + return a
-    /// click-routable layout rather than panicking or hitting a `todo!()`
-    /// (#738's acceptance bar). The default fixed pitch stays below the
-    /// legibility floor, so this exercises `ColumnBlocks`, not `DrawText`
-    /// — the "non-background pixel actually painted" check every other
-    /// `win::` C0 smoke uses stands in for "text_ok" here.
+    /// C0 smoke: `draw_minimap` must actually paint pixels and return a
+    /// click-routable layout. The default fixed pitch stays below the legibility
+    /// floor, so this exercises `ColumnBlocks`, not `DrawText`.
     #[test]
     fn draw_minimap_paints_column_blocks_and_returns_layout() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
@@ -348,9 +314,8 @@ mod tests {
         assert!(painted_any, "expected draw_minimap to paint visible blocks");
     }
 
-    /// Paint↔click round trip at a non-zero origin — #505's LOCAL/ABSOLUTE
-    /// mixup regression guard, mirrored from `win::board`/`win::diff_view`'s
-    /// own nonzero-origin tests.
+    /// Paint↔click round trip at a non-zero origin — regression guard for
+    /// LOCAL/ABSOLUTE mixup, mirrored from `win::board`/`win::diff_view`'s tests.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         let origin_x = 7.0_f32;
@@ -430,10 +395,8 @@ mod tests {
     }
 
     /// The fixed pitch stays independent of both the strip height and the
-    /// file length — same parity guarantee `gtk::minimap`'s
-    /// `row_pitch_is_independent_of_the_strip_height` /
-    /// `_of_the_file_length` tests pin, now proven on Win-GUI's own
-    /// `win_minimap_layout` (#738: both backends share `ROW_PITCH_PX`).
+    /// file length — same parity guarantee `gtk::minimap`'s tests pin, now
+    /// proven on Win-GUI's own `win_minimap_layout`.
     #[test]
     fn row_pitch_is_independent_of_strip_height_and_file_length() {
         let short = minimap_from(vec!["fn main() {}"; 3], 3);

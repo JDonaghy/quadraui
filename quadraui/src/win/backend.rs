@@ -1,69 +1,7 @@
 //! `WinBackend` — Direct2D + DirectWrite implementation of [`Backend`].
 //!
-//! #19 landed the window + render-target bootstrap: `begin_frame` /
-//! `end_frame` bracket real `ID2D1HwndRenderTarget::BeginDraw` /
-//! `Clear` / `EndDraw` calls (gated on `cfg(target_os = "windows")` —
-//! see [`Surface`] and [`WinBackend::attach_surface`]), and
-//! `Viewport::scale` carries the real per-window DPI ratio. #21 landed
-//! the DirectWrite text infrastructure — [`super::text::DWrite`],
-//! [`WinBackend::measure_text`], [`WinBackend::draw_text`] — so
-//! `line_height()`/`char_width()` return real font metrics instead of
-//! the `16.0`/`8.0` placeholder defaults. #25 landed the four chrome-strip
-//! rasterisers — `status_bar`, `tab_bar`, `activity_bar`, `menu_bar` (see
-//! `super::status_bar`/`super::tab_bar`/`super::activity_bar`/
-//! `super::menu_bar`) — each wired into its `Backend` trait method below,
-//! falling back to a no-paint/nominal-layout fallback (issue #924) only
-//! for a `WinBackend` no window has ever attached a surface to (see
-//! [`WinBackend::draw_status_bar`]'s doc). #26 landed the six
-//! content-area rasterisers (`tree`/`list`/`form`/`data_table`/`editor`/
-//! `chart`), #27 the multi-section view + standalone scrollbar, and #28
-//! the seven overlay rasterisers — `tooltip`/`context_menu`/`dialog`/
-//! `palette`/`completions`/`find_replace`/`rich_text_popup` (see
-//! `super::tooltip` etc.). #29 landed the five container/indicator
-//! rasterisers — `panel`/`split`/`toast`/`progress`/`spinner`. #30
-//! landed the three text-heavy rasterisers — `terminal`/`text_display`/
-//! `message_list` (see `super::terminal`/`super::text_display`/
-//! `super::message_list`). Every other `draw_*`/`*_layout` rasteriser
-//! method still has no real Direct2D/DirectWrite paint path — later
-//! issues implement each one, same as the GTK backend did one primitive
-//! at a time — but as of #924 a missing rasteriser degrades to a real
-//! (or nominal-measurer) layout with nothing painted, never a panic;
-//! see that issue's doc for why a reachable `todo!()` here used to be
-//! able to abort the whole host process.
-//!
-//! # Implementation notes
-//!
-//! - **Render target**: `ID2D1HwndRenderTarget` for the main window
-//!   (this issue). Offscreen: [`super::testing::HeadlessSurface`] wraps an
-//!   `ID2D1DCRenderTarget` bound to an in-memory DIB section for headless
-//!   tests (#24) — a lower-level building block than a `WinBackend`
-//!   driver, since most `draw_*`/`*_layout` rasterisers below still have
-//!   nothing real to paint (see the paragraph above). Only actually
-//!   *runs* on the `windows-latest` leg of `ci.yml`'s `tui` job (see
-//!   `HeadlessSurface`'s module docs and that workflow's "Test (win
-//!   feature, real Windows)" step) — `cargo check --features win` on
-//!   Linux still only type-checks this file, same as everything else
-//!   `target_os = "windows"`-gated in this module.
-//! - **Text** (#21): `IDWriteTextFormat` + `IDWriteTextLayout` for
-//!   measurement and rendering (`super::text`). `line_height`/`char_width`
-//!   are resolved once per surface from `IDWriteFontFace::GetMetrics`
-//!   (same role as GTK's `current_line_height` / `current_char_width`,
-//!   see [`WinBackend::set_current_line_height`] /
-//!   [`WinBackend::set_current_char_width`]).
-//! - **Frame scope**: `BeginDraw()` / `EndDraw()` bracket each frame.
-//!   Unlike GTK, the render target is available outside the frame
-//!   scope for measurement — `_layout()` methods can use
-//!   `IDWriteTextLayout` directly.
-//! - **DPI**: `GetDpiForWindow()` / 96.0 → `Viewport::scale` (this
-//!   issue). Rasterisers landing later scale coordinates by it the same
-//!   way GTK's rasterisers use `DrawingArea::scale_factor()`.
-//! - **Events**: `WM_LBUTTONDOWN` → `UiEvent::MouseDown`, `WM_KEYDOWN` →
-//!   `UiEvent::KeyPressed`, etc. — landed in #20 (`win::events`'
-//!   translators, dispatched from `win::run`'s `WndProc`). #19 wired only
-//!   the three window-lifecycle events the message-loop bootstrap itself
-//!   needs to stay alive: `WM_SIZE` → `UiEvent::WindowResized`,
-//!   `WM_DPICHANGED` → `UiEvent::DpiChanged`, and `WM_CLOSE` →
-//!   `UiEvent::WindowClose`.
+//! The render target, text infrastructure, and rasterisers are described in
+//! the "Implementation notes" section below.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -108,15 +46,9 @@ use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::{StatusBarHit, StatusBarLayout};
 #[cfg(target_os = "windows")]
 use crate::primitives::toolbar::ToolbarButton;
-// `TabBarHits` is `#[deprecated]` (issue #823) — the original six
-// `Backend` tab-bar methods still return it (issue #919 added six more,
-// additive, `TabBarLayout`-returning counterparts alongside them rather
-// than swapping the originals in place — see `TabBarLayout`'s own doc
-// for the full deprecate-then-remove plan), so the import needs the
-// same allow every use site below does. `win::tab_bar` does compute a
-// real `TabBarLayout` first and narrow it via
-// `backend::tab_bar_hits_from_layout` — unlike `macos::tab_bar`, which
-// builds the struct straight from Core Text metrics.
+// `TabBarHits` is `#[deprecated]` — the `Backend` trait still returns it
+// alongside newer `TabBarLayout`-returning counterparts. The import needs
+// the same allow every use site below does.
 #[allow(deprecated)]
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::text_display::{TextDisplayLayout, TextDisplayLineMeasure};
@@ -130,17 +62,14 @@ use crate::{
 };
 #[cfg(target_os = "windows")]
 use crate::{FieldKind, Theme};
-// `AcceleratorScope` is only referenced by `#[cfg(test)]` code below —
-// `register_accelerator`/`match_keypress` moved their bodies into
-// `crate::backend_core::BackendCore` (#1090), so this file's non-test
-// code no longer names it directly. Gate the import so a non-test build
-// doesn't flag it as unused.
+// `AcceleratorScope` is only referenced by `#[cfg(test)]` code below.
+// Gate the import so a non-test build doesn't flag it as unused.
 #[cfg(test)]
 use crate::AcceleratorScope;
 
 use super::services::WinPlatformServices;
 
-// ─── Cross-platform fallback measurement (issue #924) ───────────────────
+// ─── Cross-platform fallback measurement ────────────────────────────────
 //
 // Every `draw_*`/`*_layout` method below that needs a text-width
 // measurement gated on `self.dwrite` being `Some` — built once by
@@ -159,11 +88,8 @@ fn nominal_text_width(text: &str, char_width: f32) -> f32 {
 }
 
 /// [`crate::primitives::layout_metrics::TextMeasure`] impl backed by
-/// [`nominal_text_width`] — for `*_layout` fallbacks (`form_layout`,
-/// `toolbar_layout`, `sidebar_panel_layout`, and — since issue #1078
-/// deleted their inline nominal-layout duplicates — `tab_bar_layout*`,
-/// `data_table_layout`, `menu_bar_layout`, `toast_stack_layout`) that
-/// need a `&dyn TextMeasure` rather than a bare width.
+/// [`nominal_text_width`] for `*_layout` fallbacks that need a
+/// `&dyn TextMeasure` rather than a bare width.
 struct NominalTextMeasure {
     char_width: f32,
 }
@@ -175,11 +101,9 @@ impl crate::primitives::layout_metrics::TextMeasure for NominalTextMeasure {
 }
 
 /// [`super::status_bar::StatusMeasure`] impl backed by
-/// [`nominal_text_width`] — `bold` is ignored, matching the pre-#1078
-/// `win_status_bar_nominal_layout`'s behaviour exactly (a real, tracked
-/// gap in the nominal fallback, not something this refactor fixes; see
-/// `super::status_bar::StatusMeasure`'s doc for why bold-awareness needs
-/// its own trait rather than `TextMeasure`).
+/// [`nominal_text_width`] — `bold` is ignored, a known gap in the
+/// nominal fallback (see `super::status_bar::StatusMeasure`'s doc for why
+/// bold-awareness needs its own trait).
 impl super::status_bar::StatusMeasure for NominalTextMeasure {
     fn width_of(&self, text: &str, _bold: bool) -> f32 {
         nominal_text_width(text, self.char_width)
@@ -201,7 +125,7 @@ impl super::spinner::SpinnerMeasureSource for NominalSpinnerMeasure {
     }
 }
 
-// ─── Direct2D bootstrap (#19) ───────────────────────────────────────────
+// ─── Direct2D bootstrap ─────────────────────────────────────────────────
 //
 // Real WinAPI/Direct2D calls only compile where the `windows` crate
 // actually has bindings, i.e. `target_os = "windows"` (see
@@ -229,9 +153,8 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{IDWriteFontCollection1, IDWriteFontFallback};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-// `MonitorFromWindow`/`GetMonitorInfoW`/`MONITORINFO` (issue #950's
-// `WindowControl::set_fullscreen`): HMONITOR queries live under `Gdi` in
-// the `windows` crate, not `WindowsAndMessaging`, even though they're
+// `MonitorFromWindow`/`GetMonitorInfoW`/`MONITORINFO` live under `Gdi`
+// in the `windows` crate, not `WindowsAndMessaging`, though they're
 // conceptually "window" APIs — already-enabled `Win32_Graphics_Gdi`
 // feature (Cargo.toml), no new feature needed.
 #[cfg(target_os = "windows")]
@@ -260,7 +183,7 @@ use super::text::{new_brush_cache, BrushCache, DWrite};
 const DEFAULT_EDITOR_FONT_FAMILY: &str = "Consolas";
 
 /// Default chrome (UI) font family for the Win-GUI backend until
-/// [`Backend::set_ui_font`] overrides it (#724) — the system UI font on
+/// [`Backend::set_ui_font`] overrides it — the system UI font on
 /// every Windows version since Vista, same role as GTK's `"Sans 11"`
 /// fallback for `ui_font`.
 #[cfg(target_os = "windows")]
@@ -272,31 +195,14 @@ const DEFAULT_UI_FONT_FAMILY: &str = "Segoe UI";
 #[cfg(target_os = "windows")]
 const DEFAULT_UI_FONT_SIZE_PT: f32 = 11.0;
 
-/// Parse a Pango-style font description (`Backend::set_ui_font`'s
-/// documented shape, e.g. `"Segoe UI 11"`) into a DirectWrite-ready
-/// `(family, size_pt)` pair. Win-GUI has no Pango parser to reuse the way
-/// `gtk::chrome_font_description` reuses `pango::FontDescription::from_string`,
-/// so this only understands the conventions this doc names: a trailing
-/// whitespace-separated numeric token is the point size (defaulting to
-/// [`DEFAULT_UI_FONT_SIZE_PT`] when `desc` carries none — a bare
-/// comma-separated fallback list with no size at all is a real shape,
-/// not a parse failure), and everything before it is a Pango-style
-/// comma-separated family fallback list (issue #1023): trimmed and
-/// split on `,`, taking the first entry.
-///
-/// Unlike macOS's `parse_ui_font_desc` (which can ask Core Text whether
-/// a concrete family is actually installed via `make_font_exact`),
-/// Win-GUI has no installed-family check to try each candidate against
-/// — see this function's pre-#1023 doc history — so "take the first
-/// resolvable family" degrades to "take the first candidate": a CSS/Pango
-/// generic token ([`GenericFamily::parse`]) resolves immediately to its
-/// DirectWrite default ([`DEFAULT_EDITOR_FONT_FAMILY`]/
-/// [`DEFAULT_UI_FONT_FAMILY`]); a concrete name is trusted as-is, the
-/// same "don't fail, degrade" posture `super::text`'s font-metrics
-/// lookup already takes downstream when a requested family isn't
-/// installed. Falls back to `(DEFAULT_UI_FONT_FAMILY,
-/// DEFAULT_UI_FONT_SIZE_PT)` wholesale only when `desc` has no usable
-/// family at all (empty, or entirely commas/whitespace).
+/// Parse a Pango-style font description (e.g. `"Segoe UI 11"`) into a
+/// DirectWrite-ready `(family, size_pt)` pair. A trailing whitespace-separated
+/// numeric token is the point size (defaulting to [`DEFAULT_UI_FONT_SIZE_PT`]),
+/// and everything before it is a comma-separated family fallback list, taking
+/// the first entry. A CSS/Pango generic token resolves to its DirectWrite
+/// default; a concrete name is trusted as-is. Falls back to
+/// `(DEFAULT_UI_FONT_FAMILY, DEFAULT_UI_FONT_SIZE_PT)` when `desc` has no
+/// usable family at all.
 #[cfg(target_os = "windows")]
 fn parse_ui_font_desc(desc: &str) -> (String, f32) {
     let desc = desc.trim();
@@ -330,21 +236,13 @@ fn parse_ui_font_desc(desc: &str) -> (String, f32) {
 }
 
 /// A live Direct2D render target: either a window-bound
-/// `ID2D1HwndRenderTarget` ([`WinBackend::attach_surface`], a real
-/// window) or an offscreen `ID2D1DCRenderTarget`
-/// ([`WinBackend::attach_headless`], [`super::testing::WinDriver`] —
-/// quadraui#707). Every rasteriser below (`super::activity_bar::draw_activity_bar`
-/// et al.) only ever needs the shared `ID2D1RenderTarget` base interface
-/// (`BeginDraw`/`Clear`/`EndDraw`/`FillRectangle`/`DrawText`/...) — both
-/// D2D interfaces derive from it, and `windows-rs` generates a `Deref`
-/// to the base interface for each, which this enum forwards below — so
-/// none of the `&surface.target` call sites throughout this file need to
-/// know or care which kind of target they're painting onto. The one
-/// exception is [`WinBackend::resize_surface`]'s `Resize` call, which is
-/// declared on `ID2D1HwndRenderTarget` itself (a DC render target has no
-/// live-resize concept: [`super::testing::HeadlessSurface`] is a fixed
-/// size for its whole lifetime) and so matches on the variant directly
-/// instead of going through `Deref`.
+/// `ID2D1HwndRenderTarget` or an offscreen `ID2D1DCRenderTarget` for
+/// headless tests. Every rasteriser only needs the shared `ID2D1RenderTarget`
+/// base interface — both derive from it and forward via `Deref` — so none of
+/// the `&surface.target` call sites need to know which kind they're painting
+/// onto. The exception is [`WinBackend::resize_surface`]'s `Resize` call,
+/// which is declared only on `ID2D1HwndRenderTarget` and so matches the
+/// variant directly.
 #[cfg(target_os = "windows")]
 enum RenderTarget {
     Hwnd(ID2D1HwndRenderTarget),
@@ -363,12 +261,12 @@ impl std::ops::Deref for RenderTarget {
     }
 }
 
-/// The live Direct2D handles behind a real Win32 window, or (#707) an
+/// The live Direct2D handles behind a real Win32 window, or an
 /// offscreen headless surface. Only exists once
 /// [`WinBackend::attach_surface`] or [`WinBackend::attach_headless`] has
 /// run — a `WinBackend` constructed standalone (before either has run)
 /// has `surface: None` and every draw call degrades to its no-paint
-/// fallback (issue #924) until a later issue lands a real rasteriser.
+/// fallback until a later issue lands a real rasteriser.
 #[cfg(target_os = "windows")]
 struct Surface {
     /// Kept alive only because `ID2D1HwndRenderTarget` was created from
@@ -380,7 +278,7 @@ struct Surface {
     #[allow(dead_code)]
     factory: Option<ID2D1Factory>,
     target: RenderTarget,
-    /// Brushes created against `target`, reused across frames (#1282).
+    /// Brushes created against `target`, reused across frames.
     /// Lives and dies with this `Surface`, so a recreated target always
     /// starts from an empty cache — see `super::text`'s `Brush cache`
     /// section for how paint helpers reach it.
@@ -401,29 +299,15 @@ struct Surface {
 /// than inventing a third unverified constant.
 const WIN_DOUBLE_CLICK_RADIUS: f32 = 4.0;
 
-/// Custom `wndproc` message issue #831's [`WinBackend::waker`] posts via
-/// `PostMessageW` to wake a possibly-`GetMessageW`-blocked message loop
-/// from a background thread. `win::run`'s `wndproc` match arm on this
-/// value is what actually drains and dispatches — see that arm's doc.
-/// `WM_APP` (`0x8000`) through `0xBFFF` is the range Win32 reserves for
-/// application-defined messages; the `windows` crate has no `WM_APP`
-/// constant of its own (it's a `<winuser.h>` numeric convention, not a
-/// real API), so this is defined locally, same as `win::run`'s
-/// `MK_LBUTTON`/`MK_RBUTTON`/`MK_MBUTTON`.
-///
-/// Only ever read from `win::run`'s `wndproc`, which is itself entirely
-/// `#[cfg(target_os = "windows")]`-gated (unlike this file, which compiles
-/// cross-platform per this crate's "type-check the `cfg(windows)` arms
-/// everywhere" posture — see the crate-level docs on `src/win/`). A
-/// non-Windows `cargo check --features win` therefore never compiles that
-/// consumer at all, which would otherwise read as dead code; it isn't —
-/// `ci.yml`'s `tui + win` matrix job's `windows-latest` leg is what
-/// actually compiles `wndproc` and proves this value round-trips through
-/// a live `PostMessageW`.
+/// Custom `wndproc` message posted via `PostMessageW` to wake a possibly-
+/// blocked message loop from a background thread. `win::run`'s `wndproc`
+/// match arm on this value drains and dispatches — see that arm's doc.
+/// Applications can use `WM_APP` (`0x8000`) through `0xBFFF`; the `windows`
+/// crate has no `WM_APP` constant of its own, so this is defined locally.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) const WM_QUADRAUI_USER_EVENT: u32 = 0x8000 + 1;
 
-/// `NOTIFYICONDATAW::uCallbackMessage` (issue #953) — the message
+/// `NOTIFYICONDATAW::uCallbackMessage` — the message
 /// `Shell_NotifyIconW`'s tray icon posts back to this app's `HWND` on
 /// every mouse event over the icon (`lparam` carries the Win32 mouse
 /// message: `WM_LBUTTONUP`/`WM_RBUTTONUP`/etc — see
@@ -436,7 +320,7 @@ pub(crate) const WM_QUADRAUI_USER_EVENT: u32 = 0x8000 + 1;
 pub(crate) const WM_QUADRAUI_TRAY_CALLBACK: u32 = 0x8000 + 2;
 
 /// `SetTimer`/`KillTimer`'s `nIDEvent` for [`WinBackend::request_frame_in`]'s
-/// one-shot scheduled-wake timer (quadraui#832) — the sibling of
+/// one-shot scheduled-wake timer — the sibling of
 /// [`WM_QUADRAUI_USER_EVENT`] for a scheduled frame rather than a
 /// cross-thread wake. Distinct from `win::run`'s `SMOKE_TIMER_ID` (1) and
 /// `RESIZE_TIMER_ID` (2) — Win32 timer ids are scoped per-`hwnd`, and any
@@ -452,20 +336,20 @@ pub struct WinBackend {
     /// `Rc<RefCell<>>` (not a plain field) so [`Backend::modal_stack_handle`]
     /// can hand back a handle that outlives any single `&mut self`
     /// borrow — the shape `GtkBackend`/`TuiBackend`/`MacBackend` already
-    /// use for this (quadraui#699).
+    /// use for this.
     modal_stack: Rc<RefCell<ModalStack>>,
     /// See `modal_stack`'s doc comment — same rationale.
     drag_state: Rc<RefCell<DragState>>,
     /// Folds a `MouseDown` translated from `WM_LBUTTONDOWN`/`WM_RBUTTONDOWN`/
     /// etc. into `DoubleClick` when it lands within the time/position
-    /// window of the previous click (#729). `win::run`'s `wndproc`
+    /// window of the previous click. `win::run`'s `wndproc`
     /// dispatches synchronously per Win32 message — same model as
     /// `macos::run` per `NSEvent` — so this runs on one event at a time
     /// via [`Self::fold_double_click`] rather than `TuiBackend`'s
     /// per-poll batch. Mirrors `MacBackend::double_click`; deliberately
     /// *not* a new `WM_*BUTTONDBLCLK` translator — see that issue for why.
     double_click: DoubleClickDetector,
-    /// Accelerator registry + text-selection bookkeeping (#1090) — see
+    /// Accelerator registry + text-selection bookkeeping — see
     /// [`crate::backend_core::BackendCore`]'s module doc. Replaces the
     /// formerly Win-local `accelerators`/`parsed_accelerators` fields
     /// verbatim, plus (below) the formerly separate `text_selection`
@@ -473,18 +357,15 @@ pub struct WinBackend {
     core: crate::backend_core::BackendCore,
     /// `WidgetId` of the [`ActivityBar`] that declared
     /// `is_keyboard_focused = true` during the most recent
-    /// [`Backend::draw_activity_bar`] call, or `None` if no bar is
-    /// focused. Read by `win::run::dispatch_event` to decide whether a
-    /// `KeyPressed` should be redirected into
-    /// `UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { … })`
-    /// instead of reaching `AppLogic::handle` as a raw key — the Win-GUI
-    /// twin of `GtkBackend`/`MacBackend`'s `focused_activity_bar`
-    /// (quadraui#707, mirroring #465's macOS wiring). Without it,
-    /// `ShellAdapter`'s built-in activity-bar keyboard navigation (#409)
-    /// is unreachable on this backend.
+    /// [`Backend::draw_activity_bar`] call, or `None` if no bar is focused.
+    /// Read by `win::run::dispatch_event` to redirect a `KeyPressed` into
+    /// `UiEvent::ActivityBar(...)` instead of reaching `AppLogic::handle`
+    /// as a raw key — the Win-GUI twin of `GtkBackend`/`MacBackend`'s
+    /// `focused_activity_bar`. Without it, `ShellAdapter`'s activity-bar
+    /// keyboard navigation is unreachable on this backend.
     focused_activity_bar: Option<WidgetId>,
     /// Queue-adapter between event producers and the trait's poll-style
-    /// [`Backend::poll_events`]/[`Backend::wait_events`] (#806) — the
+    /// [`Backend::poll_events`]/[`Backend::wait_events`] — the
     /// `docs/BACKEND.md` "option A event queue" shape, same
     /// `Rc<RefCell<VecDeque<UiEvent>>>` field GTK/macOS ship
     /// (`GtkBackend::events`/`MacBackend::events`). `Rc<RefCell<>>` (not a
@@ -506,14 +387,12 @@ pub struct WinBackend {
     /// [`Backend::set_editor_v_scrollbar_width`]; `None` = one
     /// `current_char_width` wide.
     editor_v_scrollbar_w: Option<f32>,
-    /// [`crate::backend::Backend::minimap_scale`]'s backing field (issue
-    /// #1143) — read by [`Backend::draw_minimap`]/[`Backend::minimap_layout`]
-    /// to resolve the row pitch (and per-column width) a paint or layout
-    /// call uses. Defaults to [`crate::primitives::minimap::MinimapScale::One`],
-    /// the pre-#1143 fixed pitch, so a host that never calls
-    /// [`Backend::set_minimap_scale`] sees no behaviour change. Plain
-    /// `MinimapScale` value, no WinAPI dependency — not `target_os`-gated,
-    /// same rationale as `events` above.
+    /// [`crate::backend::Backend::minimap_scale`]'s backing field — read by
+    /// [`Backend::draw_minimap`]/[`Backend::minimap_layout`] to resolve the
+    /// row pitch and per-column width. Defaults to
+    /// [`crate::primitives::minimap::MinimapScale::One`], so a host that
+    /// never calls [`Backend::set_minimap_scale`] sees no behaviour change.
+    /// Not `target_os`-gated: `MinimapScale` has no WinAPI dependency.
     minimap_scale: crate::primitives::minimap::MinimapScale,
     /// DPI ratio (`GetDpiForWindow(hwnd) / 96.0`). Mirrored into
     /// `viewport.scale` on every attach/resize/`WM_DPICHANGED` so
@@ -546,57 +425,43 @@ pub struct WinBackend {
     /// `attach_surface` call succeeds.
     #[cfg(target_os = "windows")]
     hwnd: Option<HWND>,
-    /// Tray/status-bar icon state (issue #953) — see [`super::tray`]'s
+    /// Tray/status-bar icon state — see [`super::tray`]'s
     /// module doc and `impl TrayService for WinBackend` below.
     #[cfg(target_os = "windows")]
     tray: super::tray::WinTrayState,
-    /// Window rect + `GWL_STYLE` value saved by
-    /// [`WindowControl::set_fullscreen`][crate::backend::WindowControl::set_fullscreen]
-    /// the moment it enters fullscreen, so exiting can restore both —
-    /// Win-GUI's fullscreen is a manual `WS_OVERLAPPEDWINDOW` style
-    /// strip + `SetWindowPos` to the monitor rect (issue #950's "style
-    /// toggle plus `MonitorFromWindow`" design note), not a single
-    /// reversible OS call the way GTK's `fullscreen`/`unfullscreen` or
-    /// AppKit's `toggleFullScreen:` are. `None` outside fullscreen.
+    /// Window rect + `GWL_STYLE` value saved when entering fullscreen, so
+    /// exiting can restore both — Win-GUI's fullscreen is a manual
+    /// `WS_OVERLAPPEDWINDOW` style strip + `SetWindowPos` to the monitor
+    /// rect, not a single reversible OS call the way GTK or AppKit provide.
+    /// `None` outside fullscreen.
     #[cfg(target_os = "windows")]
     fullscreen_saved: Option<(RECT, isize)>,
-    /// Live, thread-safe mirror of `hwnd`'s raw handle value, read fresh
-    /// on every invocation of the closure [`Self::waker`] hands out
-    /// (issue #831 review fix). `HWND` itself isn't `Send`, so it can't
-    /// be captured directly into the `Send + Sync` closure `waker()`
-    /// returns — but `waker()` is also documented to be callable during
-    /// `AppLogic::setup`, *before* [`Self::attach_surface`] has ever run
-    /// (`win::run::run_inner` calls `app.setup(&mut backend)` before
-    /// `CreateWindowExW`/`attach_surface`). A closure that captured
-    /// `self.hwnd` as a one-time `Option<isize>` snapshot at `waker()`
-    /// call time would permanently bake in "no window" for that closure
-    /// instance, even after `attach_surface` later runs — silently
-    /// dropping every future wake nudge, since a live `GetMessageW` loop
+    /// Live, thread-safe mirror of `hwnd`'s raw handle value, read fresh on
+    /// every invocation of the [`Self::waker`] closure. `HWND` itself isn't
+    /// `Send`, so it can't be captured directly into the `Send + Sync`
+    /// closure — but `waker()` is callable during `AppLogic::setup`, *before*
+    /// [`Self::attach_surface`] has run. A closure capturing `self.hwnd`
+    /// as a one-time snapshot would permanently bake in "no window", silently
+    /// dropping every future wake nudge since a live `GetMessageW` loop
     /// blocks indefinitely with no other way to notice a queued payload.
-    /// An `AtomicIsize` shared (not cloned-by-value) between `self` and
-    /// the closure lets the closure re-read the *current* value at
-    /// invocation time instead, mirroring the live-lookup pattern
-    /// `GtkBackend::waker` (thread-local map lookup) and
-    /// `MacBackend::waker` (`.get()` on a shared `OnceLock` inside the
-    /// dispatched closure) both already use for the same "waker obtained
-    /// before the wake target exists" case. `0` means "no window yet",
-    /// mirroring `hwnd`'s own `None` until `attach_surface` runs — a
-    /// real `HWND` is never null.
+    /// An `AtomicIsize` shared between `self` and the closure lets the
+    /// closure re-read the *current* value at invocation time, mirroring the
+    /// live-lookup pattern `GtkBackend::waker` and `MacBackend::waker` use.
+    /// `0` means "no window yet", mirroring `hwnd`'s own `None` — a real
+    /// `HWND` is never null.
     #[cfg(target_os = "windows")]
     hwnd_raw: std::sync::Arc<std::sync::atomic::AtomicIsize>,
     /// DirectWrite factory + `IDWriteTextFormat` for the current editor
     /// font (`editor_font_family`/`editor_font_size_pt`). `None` until
     /// [`Self::attach_surface`] creates it — same lifecycle as `surface`,
     /// and recreated alongside it whenever [`Self::ensure_surface`]'s
-    /// device-lost recovery re-attaches (#21).
+    /// device-lost recovery re-attaches.
     #[cfg(target_os = "windows")]
     dwrite: Option<DWrite>,
     /// Font family used to paint text via DirectWrite. Defaults to
-    /// [`DEFAULT_EDITOR_FONT_FAMILY`]. Set via
-    /// [`Backend::set_editor_font`]; [`Self::attach_surface`] reads it
-    /// when constructing the `IDWriteTextFormat` — mirrors GTK's
-    /// `editor_font_family` (#422). `cfg`-gated like `dwrite`: nothing
-    /// outside the `target_os = "windows"` methods reads or writes it.
+    /// [`DEFAULT_EDITOR_FONT_FAMILY`]. Set via [`Backend::set_editor_font`];
+    /// read when constructing the `IDWriteTextFormat` — mirrors GTK's
+    /// `editor_font_family`. `cfg`-gated like `dwrite`.
     #[cfg(target_os = "windows")]
     editor_font_family: String,
     /// Editor font size in points, paired with `editor_font_family`.
@@ -606,7 +471,7 @@ pub struct WinBackend {
     /// DirectWrite factory + `IDWriteTextFormat` for the current chrome
     /// (UI) font (`ui_font_family`/`ui_font_size_pt`) — the chrome twin
     /// of `dwrite` above. `None` until [`Self::attach_surface`] creates
-    /// it; recreated alongside it the same way (#724). Read via
+    /// it; recreated alongside it the same way. Read via
     /// [`Self::chrome_dwrite`]; `Dialog` and every other
     /// `ChromePrimitive` rasteriser (`Tree`, `List`, `MenuBar`,
     /// `ContextMenu`, `CommandCenter`, `MultiSectionView`,
@@ -634,7 +499,7 @@ pub struct WinBackend {
     #[cfg(target_os = "windows")]
     ui_font_size_pt: f32,
     /// Live font fallback built by [`Backend::set_nerd_font_fallback`]
-    /// (issue #929) — `None` until that method is called. Read by
+    /// — `None` until that method is called. Read by
     /// [`Self::attach_surface`]/[`Self::attach_headless`] when they build
     /// [`DWrite`] for the editor/chrome fonts, so a `set_nerd_font_fallback`
     /// call made before either (the documented "call once from `setup()`"
@@ -650,7 +515,7 @@ pub struct WinBackend {
     /// [`crate::win::text::build_nerd_font_fallback`] so a later
     /// `set_nerd_font_fallback(family)` resolves `family` against the
     /// font this process actually registered rather than a same-named
-    /// system font (issue #929). Only the most recent registration is
+    /// system font. Only the most recent registration is
     /// kept: nothing in this backend's contract promises more than one
     /// app-registered font resolves at a time, mirroring
     /// `MacBackend`/vimcode's own single-subset-font usage.
@@ -703,19 +568,16 @@ pub struct WinBackend {
     #[cfg(target_os = "windows")]
     registered_font_bytes: Vec<Vec<u8>>,
     /// The active [`crate::Theme`], set via [`Backend::set_theme`] and
-    /// read by every `draw_*` rasteriser that used to fall back to
-    /// `Theme::default()` regardless of what the app configured (#724).
-    /// Not `cfg`-gated like `surface`/`dwrite` above: `Theme` is a plain,
+    /// read by every `draw_*` rasteriser. Not `cfg`-gated: `Theme` is a plain,
     /// portable value with no WinAPI dependency — same rationale as
-    /// `current_pointer_shape` below — so `set_theme`/`current_theme`
-    /// stay testable on every host, not only `target_os = "windows"`.
+    /// `current_pointer_shape` — so this stays testable on every host.
     current_theme: crate::theme::Theme,
     /// Captured once per frame, mirroring `current_theme` — see
     /// [`crate::Style`]'s module doc for why this is a separate field
-    /// rather than folded into `Theme` (issue #1133).
+    /// rather than folded into `Theme`.
     current_style: crate::Style,
     /// The `PointerShape` [`Backend::set_cursor`] last applied — read back
-    /// by `win::run`'s `WM_SETCURSOR` handler (#702) so the pointer glyph
+    /// by `win::run`'s `WM_SETCURSOR` handler so the pointer glyph
     /// stays put across every `WM_SETCURSOR` Windows sends for the
     /// client area (on every mouse move, not just the ones that also
     /// deliver `WM_MOUSEMOVE`), instead of snapping back to the window
@@ -732,72 +594,50 @@ pub struct WinBackend {
     /// `GtkBackend::painted_text_recording` / `MacBackend::painted_text_recording`.
     /// Off by default: a live app never reads `text_runs`, and recording
     /// every run would allocate a `String` per painted text run per
-    /// frame. [`super::testing::WinDriver`] turns it on (quadraui#721).
+    /// frame. [`super::testing::WinDriver`] turns it on.
     /// Not `target_os`-gated: the flag itself is a plain `bool` with no
     /// WinAPI dependency, only the paint calls that would ever populate
     /// anything are.
     painted_text_recording: bool,
     /// Text runs recorded during the last frame, when
     /// `painted_text_recording` is on — the `WinDriver::find`/`find_bounds`
-    /// /`inventory`/`screen_has` backing store (quadraui#721). Populated
+    /// /`inventory`/`screen_has` backing store. Populated
     /// by draining the shared sink at the end of [`Self::end_frame`];
     /// mirrors `MacBackend::text_runs`'s lifecycle. Not `target_os`-gated
     /// for the same reason as `painted_text_recording` above.
     text_runs: Vec<crate::testing::TextRun>,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
-    /// / `MacBackend::nerd_fonts_enabled` (issue #683, extended to
-    /// Win-GUI by #804). Picks `Icon::glyph` vs `Icon::fallback` in
-    /// `draw_tree`. Set via [`Backend::set_nerd_fonts`]; defaults to
-    /// `true` on this backend — see `GtkBackend`'s
-    /// matching field doc for why a GUI backend with the bundled
-    /// codicon font always available carries none of the "terminal
-    /// with no Nerd Font installed" risk [`Backend::set_nerd_fonts`]'s
-    /// own doc gives for keeping TUI's default at `false`. Not
-    /// `target_os`-gated: the flag itself is a plain `bool` with no
-    /// WinAPI dependency, same rationale as
-    /// `current_pointer_shape`/`painted_text_recording` above — only
-    /// the DirectWrite paint call that reads it needs a real host to
-    /// actually render Nerd Font glyphs, not to store the setting or
-    /// run headless tests against it.
+    /// / `MacBackend::nerd_fonts_enabled`. Picks `Icon::glyph` vs `Icon::fallback`
+    /// in `draw_tree`. Set via [`Backend::set_nerd_fonts`]; defaults to `true`
+    /// on this backend. Not `target_os`-gated: the flag itself has no WinAPI
+    /// dependency, same rationale as `current_pointer_shape` — only the
+    /// DirectWrite paint call that reads it needs a real host.
     nerd_fonts_enabled: bool,
-    /// The most recent [`BackendError`] recorded by `end_frame`, drained
-    /// (and cleared) by [`Backend::last_error`] (issue #805, D-009). Not
-    /// `target_os`-gated: the field itself is a plain value with no
-    /// WinAPI dependency, same rationale as `current_pointer_shape` above
-    /// — only the `EndDraw` call that would ever populate it needs a
-    /// real host.
+    /// The most recent [`BackendError`] recorded by `end_frame`, drained and
+    /// cleared by [`Backend::last_error`]. Not `target_os`-gated: the field
+    /// itself has no WinAPI dependency, same rationale as `current_pointer_shape`
+    /// — only the `EndDraw` call that would populate it needs a real host.
     last_error: Option<BackendError>,
-    /// Single owner of keyboard focus (issue #830) — see
+    /// Single owner of keyboard focus — see
     /// [`crate::focus`]'s module doc. Mutated only by the shared
     /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
     /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
     /// read elsewhere via [`Backend::focus_manager`].
     focus: crate::focus::FocusManager,
-    /// Thread-safe inbox for [`crate::UiEvent::User`] payloads (issue
-    /// #831) — see [`crate::runtime::UserEventQueue`]'s doc. Not
-    /// `target_os`-gated: the queue itself has no WinAPI dependency, same
-    /// rationale as `events` above; only [`Self::waker`]'s
-    /// `PostMessageW` nudge needs a real host to actually wake a live
-    /// message loop.
+    /// Thread-safe inbox for [`crate::UiEvent::User`] payloads — see
+    /// [`crate::runtime::UserEventQueue`]'s doc. Not `target_os`-gated: the
+    /// queue has no WinAPI dependency, same rationale as `events` above; only
+    /// [`Self::waker`]'s `PostMessageW` nudge needs a real host.
     user_events: std::sync::Arc<crate::runtime::UserEventQueue>,
     /// Zones registered this frame via [`Backend::register_zone`] —
     /// `WinBackend`'s twin of `GtkBackend::zones`/`MacBackend::zones`.
-    /// Previously left on the trait's no-op default (tracked as a stub
-    /// gap in `tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS`, "stub
-    /// backend — see #19"), which silently dropped every zone this
-    /// backend's own rasterisers already tried to register
-    /// (`draw_focus_ring`'s `"chrome:focus-ring"`, `draw_solid_fill`'s
-    /// `"chrome:solid-fill"`) and left [`Self::nc_hit_test`] (issue #1199)
-    /// with nothing to classify a `WM_NCHITTEST` point against. Cleared at
-    /// the start of every frame by [`Self::begin_frame`], same lifecycle
-    /// as `GtkBackend::zones`. Not `target_os`-gated: the zone list itself
-    /// is a plain `Vec` with no WinAPI dependency, same rationale as
-    /// `events`/`user_events` above. `pub(crate)` so
-    /// [`super::testing::WinDriver::inventory`] can read it back, the
-    /// same way `GtkBackend::zones` already does for `GtkDriver::inventory`.
+    /// Cleared at the start of every frame by [`Self::begin_frame`], same
+    /// lifecycle as `GtkBackend::zones`. Not `target_os`-gated: the zone list
+    /// is a plain `Vec` with no WinAPI dependency. `pub(crate)` so
+    /// [`super::testing::WinDriver::inventory`] can read it back.
     pub(crate) zones: Vec<crate::testing::ZoneRec>,
     /// Test-facing [`Backend::request_frame_in`] call-count/deadline
-    /// bookkeeping (quadraui#1264), mirroring
+    /// bookkeeping, mirroring
     /// [`crate::tui::TuiBackend`]'s own `frame_scheduler` field — see
     /// [`crate::runtime::FrameScheduler`]'s doc for why Windows, which
     /// already has a real native timer (`SetTimer`/`WM_TIMER`, armed
@@ -903,7 +743,7 @@ impl WinBackend {
     /// Drain pending [`crate::UiEvent::User`] payloads — the same
     /// [`Self::user_events`] queue [`Backend::poll_events`] folds in,
     /// exposed standalone so `win::run`'s `WM_QUADRAUI_USER_EVENT` handler
-    /// (issue #831) can drain-and-dispatch directly without going through
+    /// can drain-and-dispatch directly without going through
     /// the otherwise-vestigial `poll_events`/`wait_events` pair (see that
     /// pair's doc for why the live `wndproc` doesn't normally call them).
     ///
@@ -935,7 +775,6 @@ impl WinBackend {
 
     /// Update the cached theme. Ergonomic concrete-type sibling of
     /// [`Backend::set_theme`] — mirrors `GtkBackend::set_current_theme`
-    /// (#724).
     pub fn set_current_theme(&mut self, theme: crate::theme::Theme) {
         self.current_theme = theme;
     }
@@ -973,15 +812,8 @@ impl WinBackend {
 
     /// Create a single-threaded `ID2D1Factory` and an `ID2D1HwndRenderTarget`
     /// sized to `hwnd`'s current client rect, and store both on `self`.
-    ///
-    /// Called once by [`crate::win::run`] right after `CreateWindowExW`
-    /// returns a live `HWND` (#19's bootstrap). Also seeds
-    /// [`Backend::viewport`][crate::backend::Backend::viewport] with the
-    /// window's real pixel size and DPI scale, so the very first
-    /// `WM_PAINT` (and any app code reading `backend.viewport()` from
-    /// `setup()`, which per the trait doc runs *before* this is called
-    /// and so still sees the zeroed seed) catches up to reality on that
-    /// first paint.
+    /// Also seeds [`Backend::viewport`][crate::backend::Backend::viewport]
+    /// with the window's real pixel size and DPI scale.
     #[cfg(target_os = "windows")]
     pub(crate) fn attach_surface(&mut self, hwnd: HWND) -> WinResult<()> {
         let factory: ID2D1Factory =
@@ -1024,19 +856,18 @@ impl WinBackend {
             brushes: new_brush_cache(),
         });
         self.hwnd = Some(hwnd);
-        // Keep the waker's live mirror in sync (issue #831 review fix) —
-        // see `Self::hwnd_raw`'s doc for why this can't just be read off
-        // `self.hwnd` from inside the closure.
+        // Keep the waker's live mirror in sync — see `Self::hwnd_raw`'s doc
+        // for why this can't just be read off `self.hwnd` from inside the closure.
         self.hwnd_raw
             .store(hwnd.0 as isize, std::sync::atomic::Ordering::Release);
-        // #23: give `WinPlatformServices` the live window so file dialogs
+        // Give `WinPlatformServices` the live window so file dialogs
         // open parented to it and notifications have an owning `HWND` —
         // mirrors `GtkBackend::set_window` calling
         // `GtkPlatformServices::set_window` right after its own window is
         // constructed.
         self.services.set_window(hwnd);
 
-        // DirectWrite bootstrap (#21): build the factory + text format for
+        // DirectWrite bootstrap: build the factory + text format for
         // the currently-configured editor font and seed `line_height()` /
         // `char_width()` from its real font metrics, same role as
         // `gtk::run::render_frame`'s per-frame Pango metrics resolve —
@@ -1052,7 +883,7 @@ impl WinBackend {
         self.current_line_height = line_height;
         self.current_char_width = char_width;
 
-        // Chrome (UI) font bootstrap (#724) — same DirectWrite dance as
+        // Chrome (UI) font bootstrap — same DirectWrite dance as
         // the editor font above, but for `ui_font_family`/`ui_font_size_pt`.
         // `line_height`/`char_width` from this format aren't needed:
         // those are always resolved from the editor font, so they're
@@ -1068,10 +899,10 @@ impl WinBackend {
     }
 
     /// Attach an offscreen `ID2D1DCRenderTarget` instead of a live
-    /// window's — the headless twin of [`Self::attach_surface`] (#707),
+    /// window's — the headless twin of [`Self::attach_surface`],
     /// used only by [`super::testing::driver_with_shell`] /
     /// [`super::testing::WinDriver`] so a `WinBackend`'s already-landed
-    /// rasterisers (#25-#30) can paint somewhere a test can read pixels
+    /// rasterisers can paint somewhere a test can read pixels
     /// back from, without a live `HWND`.
     ///
     /// `target` is expected to be [`super::testing::HeadlessSurface::target`]
@@ -1098,7 +929,7 @@ impl WinBackend {
         // Keep a second clone around (cheap COM `AddRef`) so
         // `ensure_surface` can rebuild `surface` after `end_frame`'s
         // device-lost recovery drops it, even though headless mode has
-        // no `hwnd` to reattach through (issue #805) — see the
+        // no `hwnd` to reattach through — see the
         // `headless_target` field doc.
         self.headless_target = Some(target.clone());
         self.surface = Some(Surface {
@@ -1130,10 +961,7 @@ impl WinBackend {
     }
 
     /// `(width, height)` DIPs of `text` measured against the current
-    /// editor font (#21's `measure_text(text) -> (width_dips,
-    /// height_dips)` helper). Returns `(0.0, 0.0)` if no surface has
-    /// attached yet — nothing to measure against, same "not wired up
-    /// yet" posture as every `todo!()` rasteriser below.
+    /// editor font. Returns `(0.0, 0.0)` if no surface has attached yet.
     #[cfg(target_os = "windows")]
     pub fn measure_text(&self, text: &str) -> (f32, f32) {
         self.dwrite
@@ -1143,10 +971,7 @@ impl WinBackend {
     }
 
     /// Paint `text` inside `rect` (DIPs) in `color` onto the live render
-    /// target (#21's `draw_text(target, text, rect, color)` helper, with
-    /// `target` implicit via `self.surface` rather than threaded through
-    /// explicitly — matching every other `draw_*` method on this
-    /// backend). No-op if no surface/DirectWrite handle is attached yet.
+    /// target. No-op if no surface/DirectWrite handle is attached yet.
     #[cfg(target_os = "windows")]
     pub fn draw_text(&self, text: &str, rect: Rect, color: crate::Color) {
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
@@ -1168,7 +993,7 @@ impl WinBackend {
     /// before `run_inner` has a `HWND` to attach at all).
     ///
     /// Headless surfaces ([`Self::attach_headless`], `WinDriver`) recover
-    /// through `headless_target` instead of `hwnd` (issue #805): before
+    /// through `headless_target` instead of `hwnd`: before
     /// this, a headless surface dropped by `end_frame`'s device-lost path
     /// stayed `None` forever, since `hwnd` is never set in headless mode
     /// — the exact gap that made this method's recovery unreachable from
@@ -1194,7 +1019,7 @@ impl WinBackend {
         }
     }
 
-    /// Test-only hook (issue #1263): force `self.surface` back to the
+    /// Test-only hook: force `self.surface` back to the
     /// "not attached" state a genuine `EndDraw` failure (device lost /
     /// `D2DERR_RECREATE_TARGET`) leaves it in — see [`Self::end_frame`]'s
     /// doc — without needing a real Direct2D error to get there.
@@ -1224,23 +1049,18 @@ impl WinBackend {
     }
 
     /// Resize the live render target to `width` x `height` device pixels.
-    /// Called from `win::run`'s `WM_SIZE` handler (#19's "responds to
-    /// resize without crashing" acceptance criterion).
+    /// Called from `win::run`'s `WM_SIZE` handler.
     ///
     /// A no-op on the render-target side if no surface is attached yet —
     /// Windows can fire an initial `WM_SIZE` synchronously from inside
-    /// `CreateWindowExW`, before the caller has the `HWND` back to pass
-    /// to [`Self::attach_surface`]. The viewport is still updated so
+    /// `CreateWindowExW`, before the caller has the `HWND` back to pass to
+    /// [`Self::attach_surface`]. The viewport is still updated so
     /// `Backend::viewport()` reflects the window's real size as soon as
-    /// it's known, even before there's a surface to paint onto.
+    /// it's known.
     ///
-    /// Also a no-op on the render-target side for a
-    /// [`RenderTarget::Dc`] surface ([`Self::attach_headless`]):
-    /// `ID2D1HwndRenderTarget::Resize` has no `ID2D1DCRenderTarget`
-    /// counterpart — a DC render target is bound once to a fixed-size
-    /// DIB section ([`super::testing::HeadlessSurface::new`]) and never
-    /// resized, so `win::run`'s `WM_SIZE` handler (the only caller) never
-    /// reaches this arm for a headless driver in the first place.
+    /// Also a no-op on the render-target side for a [`RenderTarget::Dc`]
+    /// surface: `ID2D1DCRenderTarget` is bound once to a fixed-size DIB
+    /// section and never resized.
     #[cfg(target_os = "windows")]
     pub(crate) fn resize_surface(&mut self, width: u32, height: u32) -> WinResult<()> {
         let width = width.max(1);
@@ -1270,7 +1090,7 @@ impl WinBackend {
         self.viewport.scale = scale;
     }
 
-    // ── ActivityBar keyboard focus (#707) ─────────────────────────────
+    // ── ActivityBar keyboard focus ────────────────────────────────────
 
     /// `WidgetId` of the [`ActivityBar`] that declared
     /// `is_keyboard_focused = true` during the most recent
@@ -1284,7 +1104,7 @@ impl WinBackend {
         self.focused_activity_bar.as_ref()
     }
 
-    // ── Double-click folding (#729) ────────────────────────────────────
+    // ── Double-click folding ───────────────────────────────────────────
 
     /// Fold a `MouseDown` into `DoubleClick` if it lands within the
     /// detector's time/position window of the previous click. Every other
@@ -1300,10 +1120,10 @@ impl WinBackend {
         ev
     }
 
-    // ── Accelerator matching (#707) ───────────────────────────────────
+    // ── Accelerator matching ──────────────────────────────────────────
     //
     // The registry itself lives in [`crate::backend_core::BackendCore`]
-    // (#1090) — both methods below are thin delegations.
+    // — both methods below are thin delegations.
 
     /// Look up a registered `Global`-scope accelerator for a
     /// `(key, modifiers)` pair. Not `target_os`-gated for the same reason
@@ -1314,7 +1134,7 @@ impl WinBackend {
 
     /// Rewrite matching `KeyPressed` events to `UiEvent::Accelerator` in
     /// place — the `docs/BACKEND.md` "Event poll / wait" step 3, run by
-    /// [`Backend::poll_events`]/[`Backend::wait_events`] (#806) over
+    /// [`Backend::poll_events`]/[`Backend::wait_events`] over
     /// whatever this call drained from [`Self::events`].
     /// `win::run::dispatch_event`'s synchronous per-message path calls
     /// [`Self::match_keypress`] directly instead of going through this,
@@ -1323,7 +1143,7 @@ impl WinBackend {
         self.core.apply_accelerators(events);
     }
 
-    // ── Event queue adapter (#806) ──────────────────────────────────────
+    // ── Event queue adapter ─────────────────────────────────────────────
 
     /// Shared handle to the backend's event queue, for a future producer
     /// (a live `wndproc` wiring, or any other event source) to clone and
@@ -1336,18 +1156,14 @@ impl WinBackend {
     }
 
     /// Push one event onto the adapter queue, drained by
-    /// [`Backend::poll_events`]/[`Backend::wait_events`] below. The
-    /// producer side of the `docs/BACKEND.md` "option A event queue"
-    /// pattern — mirrors `MacBackend::push_event`. Exercised directly by
-    /// this module's own tests (`events_queue_*`, #806) standing in for
-    /// the not-yet-wired live `wndproc` producer (see [`Self::events`]'s
-    /// field doc).
+    /// [`Backend::poll_events`]/[`Backend::wait_events`]. The producer side
+    /// of the queue pattern — mirrors `MacBackend::push_event`.
     pub fn push_event(&self, ev: UiEvent) {
         self.events.borrow_mut().push_back(ev);
     }
 
     /// Re-apply `current_pointer_shape` via `SetCursor`/`LoadCursorW`
-    /// (#702). Called both by [`Backend::set_cursor`] (an app-driven
+    ///. Called both by [`Backend::set_cursor`] (an app-driven
     /// change) and by `win::run`'s `WM_SETCURSOR` handler (Windows
     /// re-asking "what cursor belongs here?" on every mouse move over the
     /// client area) — see `current_pointer_shape`'s field doc for why
@@ -1370,7 +1186,7 @@ impl WinBackend {
         }
     }
 
-    // ── Custom-caption hit testing (issue #1199) ─────────────────────────
+    // ── Custom-caption hit testing ───────────────────────────────────────
 
     /// Reserved [`WidgetId`] a host registers (via [`Backend::register_zone`])
     /// for the drawn title-bar band it wants Windows to treat as a native
@@ -1429,26 +1245,14 @@ impl WinBackend {
         Some(!excluded)
     }
 
-    // ── Band-content zone registration (#1232) ──────────────────────────
+    // ── Band-content zone registration ──────────────────────────────────
     //
-    // `Self::nc_hit_test` only excludes a point from `HTCAPTION` when a
-    // *smaller* zone than `TITLE_BAR_DRAG_ZONE` covers it — but nothing
-    // used to register those smaller zones for the widgets a host
-    // actually paints inside the band (the menu row, the command-centre
-    // search box, inline window-control buttons drawn as status-bar
-    // segments). The band-exclusion unit tests above fed `nc_hit_test`
-    // hand-registered zones directly, which is why #1199's design
-    // verified green while every real click in the band still hit
-    // `HTCAPTION` end to end (quadraui#1232). These three helpers close
-    // that gap at the one place each widget's real screen bounds are
-    // already known: right after its `draw_*` call computes a layout.
-    // Called unconditionally (not just when the widget happens to sit
-    // inside the band) — a zone outside the band is simply never found
-    // by `nc_hit_test`'s `band.bounds.contains(point)` check, so this is
-    // harmless for the common case (status bar at the bottom of the
-    // window, a menu bar with no title bar at all, etc.) and mirrors how
-    // `AppShell::render` already registers every activity-bar item's
-    // zone regardless of where the shell puts the activity bar.
+    // These three helpers register zones at the one place each widget's real
+    // screen bounds are known: right after its `draw_*` call. Called
+    // unconditionally — a zone outside the band is simply never found by
+    // `nc_hit_test`'s `band.bounds.contains(point)` check, so this is harmless
+    // for the common case and mirrors how `AppShell::render` already registers
+    // every activity-bar item's zone regardless of position.
 
     /// Register one zone per clickable [`MenuBarLayout`] item — the
     /// File/Edit/... labels in the drawn menu row. See the section doc
@@ -1478,7 +1282,6 @@ impl WinBackend {
     /// translated by `rect.x`/`rect.y` before being handed to
     /// `register_zone`, which — like `nc_hit_test`'s `z.bounds.contains`
     /// check — compares against absolute, window-space coordinates
-    /// (quadraui#1259).
     fn register_status_bar_segment_zones(&mut self, rect: Rect, layout: &StatusBarLayout) {
         for (bounds, hit) in &layout.hit_regions {
             if let StatusBarHit::Segment(id) = hit {
@@ -1516,19 +1319,14 @@ impl WinBackend {
         }
     }
 
-    // ── Paint-time text-run recording (quadraui#721) ────────────────────
+    // ── Paint-time text-run recording ───────────────────────────────────
 
     /// Enable/disable the paint-time text-run recording that backs
     /// [`super::testing::WinDriver::find`]/`find_bounds`/`inventory`/
-    /// `screen_has`. Off by default — see [`Self::text_runs`].
-    ///
-    /// Not `target_os`-gated, unlike most of this file: the
+    /// `screen_has`. Off by default. Not `target_os`-gated: the
     /// `painted_text_recording` field it writes has no WinAPI dependency,
-    /// and — since issue #1038 — its caller, [`super::testing::WinDriver::new`],
-    /// exists on every host too (`win::testing` is gated on `feature =
-    /// "win"` alone, same posture as this file — see that module's doc),
-    /// so this method must compile and run everywhere `WinDriver` does,
-    /// not just on Windows.
+    /// and its caller [`super::testing::WinDriver::new`] exists on every
+    /// host too, so this must compile everywhere `WinDriver` does.
     pub(crate) fn set_painted_text_recording(&mut self, enabled: bool) {
         self.painted_text_recording = enabled;
     }
@@ -1541,7 +1339,7 @@ impl WinBackend {
         &self.text_runs
     }
 
-    // ── request_frame_in scheduling (quadraui#1264) ─────────────────────
+    // ── request_frame_in scheduling ─────────────────────────────────────
 
     /// How many times [`Backend::request_frame_in`] has been called on
     /// this backend since it was constructed — [`crate::tui::TuiBackend::
@@ -1573,24 +1371,21 @@ impl WinBackend {
         self.frame_scheduler.pending_delay()
     }
 
-    // ── Text selection (#741) ────────────────────────────────────────────
+    // ── Text selection ───────────────────────────────────────────────────
     //
     // The region registry + active-selection state machine, plus the
     // accelerator registry alongside it, live in
-    // [`crate::backend_core::BackendCore`] (#1090) — every method below
+    // [`crate::backend_core::BackendCore`] — every method below
     // except [`Self::apply_selection_highlight`]/[`Self::extract_selection_text`]
     // (Direct2D painting / `TextRegion::lines` extraction, this backend's
     // own — mirrors `GtkBackend`'s pixel-based twins via the shared
     // `BackendCore::selection_highlight_rects`/`extract_selection_text_pixel`
     // helpers) is a thin delegation.
 
-    /// Mutable access to the whole [`crate::text_selection::TextSelectionState`]
-    /// — the shape [`crate::dispatch::route_pointer`] (issue #1088) needs
-    /// to both read `text_regions` and call `track_focused_text_region`
-    /// without two separate accessors (the pair `win::run`'s inlined
-    /// `dispatch_click` call used before #1088 consolidated it — see that
-    /// function's own git history for the pre-#1088 shape). Mirrors
-    /// `GtkBackend::text_selection_state_mut`.
+    /// Mutable access to the [`crate::text_selection::TextSelectionState`]
+    /// — the shape [`crate::dispatch::route_pointer`] needs to both read
+    /// `text_regions` and call `track_focused_text_region` without separate
+    /// accessors. Mirrors `GtkBackend::text_selection_state_mut`.
     pub(crate) fn text_selection_state_mut(
         &mut self,
     ) -> &mut crate::text_selection::TextSelectionState {
@@ -1674,7 +1469,7 @@ impl WinBackend {
     ///
     /// The rect resolution is
     /// [`crate::backend_core::BackendCore::selection_highlight_rects`] —
-    /// shared with `GtkBackend`/`MacBackend`'s twins (#1090); only the
+    /// shared with `GtkBackend`/`MacBackend`'s twins; only the
     /// `super::text::fill_rect` Direct2D calls below are Win-GUI-specific
     /// real toolkit code.
     pub(crate) fn apply_selection_highlight(&self) {
@@ -1699,12 +1494,8 @@ impl WinBackend {
 }
 
 /// `GetDpiForWindow(hwnd) / 96.0` — the ratio `Viewport::scale` carries
-/// for this backend (issue #19's "DPI scale factor plumbed to
-/// `Viewport::scale`" acceptance criterion).
-///
-/// The divide (and its zero-DPI fallback) lives in
-/// [`crate::win::msg::dpi_ratio`] so it stays unit-tested off Windows;
-/// this wrapper is only the `GetDpiForWindow` call that can't be.
+/// for this backend. The divide and its zero-DPI fallback live in
+/// [`crate::win::msg::dpi_ratio`] so they stay unit-tested off Windows;
 #[cfg(target_os = "windows")]
 fn dpi_scale_for_window(hwnd: HWND) -> f32 {
     // SAFETY: `GetDpiForWindow` takes only a handle and returns a `u32` by
@@ -1716,10 +1507,7 @@ fn dpi_scale_for_window(hwnd: HWND) -> f32 {
 /// Resolve [`WinBackend::hwnd_raw`]'s current raw value back into an
 /// `HWND`, or `None` if no window has attached yet (`0`). Split out of
 /// [`WinBackend::waker`]'s closure so the "read the live handle" step is
-/// a plain, directly unit-testable function that doesn't also need a
-/// real `PostMessageW` call (or a real window) to exercise (issue #831
-/// review fix — see `hwnd_raw`'s doc for why this must be a fresh read
-/// on every call rather than a value closed over once).
+/// a plain, directly unit-testable function.
 #[cfg(target_os = "windows")]
 fn live_hwnd(hwnd_raw: &std::sync::atomic::AtomicIsize) -> Option<HWND> {
     let raw = hwnd_raw.load(std::sync::atomic::Ordering::Acquire);
@@ -1731,23 +1519,12 @@ fn live_hwnd(hwnd_raw: &std::sync::atomic::AtomicIsize) -> Option<HWND> {
 }
 
 /// Map a [`PointerShape`] to the Win32 `IDC_*` cursor-resource `PCWSTR`
-/// [`LoadCursorW`] expects (#702, adopting `desktop::ALL_RESIZE_EDGES`/
-/// `desktop::all_pointer_shapes` — see
-/// `pointer_shape_to_win32_cursor_maps_every_variant` below).
-///
-/// Win32's stock cursor set has no *separate* NE-only vs. SW-only (resp.
-/// NW-only vs. SE-only) diagonal-resize glyph the way GTK's CSS keyword
-/// set does (`"ne-resize"` and `"sw-resize"` are visually identical but
-/// distinct keywords there) — `IDC_SIZENESW`/`IDC_SIZENWSE` are each a
-/// single double-headed arrow already shared between its two opposite
-/// corners at the OS resource level, unrelated to AppKit's *complete
-/// absence* of a public diagonal-resize cursor (see
-/// `MacBackend::mac_cursor_for_shape`'s doc comment, a different and
-/// more severe gap this backend doesn't have). Every
-/// [`crate::backend::ResizeEdge`] variant below still gets a
-/// direction-correct cursor; only the specific `IDC_*` resource is
-/// shared per diagonal, matching how the double-headed arrow looks
-/// identical from either end.
+/// [`LoadCursorW`] expects. Win32's stock cursor set has no separate NE-only
+/// vs. SW-only (or NW-only vs. SE-only) diagonal-resize glyph — `IDC_SIZENESW`
+/// and `IDC_SIZENWSE` are each shared between their two opposite corners at the
+/// OS resource level. Every [`crate::backend::ResizeEdge`] variant still gets a
+/// direction-correct cursor; only the specific `IDC_*` resource is shared per
+/// diagonal.
 #[cfg(target_os = "windows")]
 fn pointer_shape_to_win32_cursor(shape: PointerShape) -> windows::core::PCWSTR {
     use crate::backend::ResizeEdge;
@@ -1832,22 +1609,19 @@ impl Backend for WinBackend {
         // Clear the focused activity bar — re-set by `draw_activity_bar`
         // during this frame's render pass if still focused. Same
         // lifecycle as `GtkBackend`/`MacBackend`'s `focused_activity_bar`
-        // (quadraui#707).
         self.focused_activity_bar = None;
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger. Mirrors `GtkBackend`/`TuiBackend`'s
-        // identical `begin_frame` clear (#741).
+        // identical `begin_frame` clear.
         self.core.begin_frame();
-        // Clear last frame's `register_zone` entries (#1199, closing the
-        // `register_zone` stub gap) — a zone a widget stops painting must
-        // stop resolving hit tests (including [`Self::nc_hit_test`]'s
-        // `WM_NCHITTEST` classification) too. Mirrors `GtkBackend::begin_frame`'s
-        // identical `self.zones.clear()`.
+        // Clear last frame's `register_zone` entries — a zone a widget stops
+        // painting must stop resolving hit tests too. Mirrors
+        // `GtkBackend::begin_frame`'s identical `self.zones.clear()`.
         self.zones.clear();
         // Install the shared paint-time text-run recording sink for the
         // duration of this frame — drained into `self.text_runs` by
         // `end_frame` below. Mirrors `MacBackend::enter_frame_scope`'s
-        // start/stop bracket (quadraui#721); Win-GUI needs no closure-based
+        // start/stop bracket; Win-GUI needs no closure-based
         // frame scope of its own, since `draw_*` trait methods already
         // have `&mut self` throughout the frame.
         if self.painted_text_recording {
@@ -1869,13 +1643,11 @@ impl Backend for WinBackend {
                 surface.target.BeginDraw();
             }
             // Route this frame's paint helpers through the surface's
-            // brush cache (#1282); `end_frame` deactivates it.
+            // brush cache; `end_frame` deactivates it.
             super::text::activate_brush_cache(&surface.target, &surface.brushes);
-            // #1179: was a hard-coded placeholder dark clear colour left
-            // over from issue #19's bootstrap. Unpainted areas — e.g.
-            // the gap a status bar used to leave when it painted short
-            // of `rect.height` — must show the theme's background, not
-            // a fixed dark shade, on light themes too.
+            // Use the theme's background colour instead of a hard-coded dark
+            // shade — unpainted areas must show the correct background on light
+            // themes too.
             let clear_color = super::text::color_to_d2d(self.current_theme.background);
             // SAFETY: same live `surface.target` as `BeginDraw` above,
             // now inside the `BeginDraw`/`EndDraw` bracket that call
@@ -1888,7 +1660,7 @@ impl Backend for WinBackend {
         // A non-Windows host never has Direct2D types to call
         // `BeginDraw`/`Clear` against at all — same "nothing to paint
         // onto" posture as the `self.surface.is_none()` case above, not a
-        // gap this issue's fallbacks need to fake (issue #924). The
+        // gap this issue's fallbacks need to fake. The
         // `#[cfg]` still binds directly to this statement (not a sibling
         // unused-param line), unlike the bug this issue otherwise fixes —
         // see the module-level issue doc.
@@ -1944,17 +1716,16 @@ impl Backend for WinBackend {
                 );
             }
         }
-        // See `begin_frame`'s matching comment (issue #924).
+        // See `begin_frame`'s matching comment.
         #[cfg(not(target_os = "windows"))]
         {}
     }
 
     // ─── Theming ────────────────────────────────────────────────────────
 
-    /// Store the theme so the `draw_*` rasterisers below stop falling
-    /// back to `Theme::default()` regardless of what the app configured
-    /// (#724 — quadraui#492's headline example). Mirrors
-    /// `GtkBackend::set_theme`/`MacBackend::set_theme`.
+    /// Store the theme so the `draw_*` rasterisers below use it instead of
+    /// falling back to `Theme::default()`. Mirrors `GtkBackend::set_theme`
+    /// and `MacBackend::set_theme`.
     fn set_theme(&mut self, theme: crate::Theme) {
         self.set_current_theme(theme);
     }
@@ -1972,7 +1743,7 @@ impl Backend for WinBackend {
     }
 
     /// Store the nerd-fonts flag so `draw_tree` paints `Icon::glyph`
-    /// instead of always falling back to `Icon::fallback` (#804).
+    /// instead of always falling back to `Icon::fallback`.
     /// Mirrors `TuiBackend::set_nerd_fonts`/`GtkBackend::set_nerd_fonts`/
     /// `MacBackend::set_nerd_fonts` — see [`Backend::set_nerd_fonts`]'s
     /// doc for why every backend defaults this to `false`.
@@ -1986,7 +1757,7 @@ impl Backend for WinBackend {
 
     /// Store the chrome font description for the next
     /// [`Self::attach_surface`]/[`Self::attach_headless`] call to build a
-    /// chrome `IDWriteTextFormat` from (#724), parsed via
+    /// chrome `IDWriteTextFormat` from, parsed via
     /// [`parse_ui_font_desc`]. Same "doesn't rebuild a live surface's
     /// text format immediately" limitation as [`Self::set_editor_font`] —
     /// see that method's doc.
@@ -2003,7 +1774,7 @@ impl Backend for WinBackend {
         }
     }
 
-    /// Win-GUI's platform-native convention (issue #1156): `Consolas
+    /// Win-GUI's platform-native convention: `Consolas
     /// 14` for editor content, `Segoe UI 13` for UI chrome — VS Code's
     /// own Windows defaults, and the same family names
     /// `DEFAULT_EDITOR_FONT_FAMILY`/`DEFAULT_UI_FONT_FAMILY` already
@@ -2024,7 +1795,7 @@ impl Backend for WinBackend {
     }
 
     /// Register `bytes` with DirectWrite via
-    /// [`crate::win::text::register_font_from_memory`] (issue #929) — no
+    /// [`crate::win::text::register_font_from_memory`] — no
     /// filesystem write, process-lifetime only. Stores the resulting
     /// private `IDWriteFontCollection1` (so a later
     /// [`Self::set_nerd_font_fallback`] resolves against the font that
@@ -2071,7 +1842,7 @@ impl Backend for WinBackend {
         }
     }
 
-    /// Answers via [`crate::win::text::has_font_family`] (issue #1024):
+    /// Answers via [`crate::win::text::has_font_family`]:
     /// DirectWrite's system font collection lookup (`FindFamilyName`),
     /// distinct from `register_font_from_memory`'s private,
     /// app-registered collection. `Err` (a DirectWrite factory/
@@ -2093,7 +1864,7 @@ impl Backend for WinBackend {
     /// Build a Nerd-Font (or other PUA-codepoint) fallback for `family`
     /// via [`crate::win::text::build_nerd_font_fallback`] and store it
     /// for the next [`Self::attach_surface`]/[`Self::attach_headless`]
-    /// call to bake into both `IDWriteTextFormat`s (issue #929). Resolves
+    /// call to bake into both `IDWriteTextFormat`s. Resolves
     /// against `registered_font_collection` when a prior
     /// [`Self::register_font_from_memory`] call populated one, otherwise
     /// against the system font collection — see
@@ -2124,7 +1895,7 @@ impl Backend for WinBackend {
                     // `register_font_from_memory` does — but silently
                     // dropping the built fallback with no diagnostic at
                     // all left a caller no way to learn this didn't take
-                    // effect (issue #929 review). Emit via
+                    // effect. Emit via
                     // `crate::diagnostics` (never a raw `eprintln!` —
                     // this is live library code a host may be running
                     // with the terminal in raw mode, see that module's
@@ -2145,31 +1916,19 @@ impl Backend for WinBackend {
 
     // ─── Events + keybindings ─────────────────────────────────────────
 
-    /// Drain [`Self::events`] (the `docs/BACKEND.md` queue adapter,
-    /// #806) and run the result through [`Self::apply_accelerators`].
-    /// Never blocks — a plain `VecDeque` drain, no WinAPI call, so this
-    /// runs identically on every host and needs no `target_os` gate,
-    /// same posture as `GtkBackend::poll_events`/`MacBackend::poll_events`.
-    ///
-    /// Nothing feeds this queue from the live `wndproc` message pump
-    /// yet — see [`Self::events`]'s field doc and `win::run`'s "Dispatch
-    /// model" module doc for why: the live loop dispatches each
-    /// translated event straight to `AppLogic::handle` instead, the same
-    /// "ships the API, producer wiring is separate work" state
-    /// `docs/BACKEND.md` documents for `GtkBackend`. A driver or any
-    /// other caller that pushes via [`Self::push_event`]/
-    /// [`Self::events_handle`] gets a real, non-panicking drain instead
-    /// of the `todo!()` this issue replaces.
+    /// Drain [`Self::events`] and run the result through
+    /// [`Self::apply_accelerators`]. Never blocks — a plain `VecDeque` drain.
+    /// Nothing feeds this queue from the live `wndproc` yet — see [`Self::events`]'s
+    /// field doc and `win::run`'s "Dispatch model" module doc. A driver or other
+    /// caller that pushes via [`Self::push_event`] gets a real, non-panicking
+    /// drain.
     fn poll_events(&mut self) -> Vec<UiEvent> {
         let mut out: Vec<UiEvent> = self.events.borrow_mut().drain(..).collect();
         self.apply_accelerators(&mut out);
-        // Issue #831: fold in any `UiEvent::User` payloads a background
-        // thread queued via `waker()` since the last drain. The live
-        // `wndproc` doesn't actually call this method (see this method's
-        // doc) — its `WM_QUADRAUI_USER_EVENT` handler calls
-        // `Self::drain_user_events` directly instead — but this keeps
-        // `poll_events` itself correct for any other caller (a driver, a
-        // test) the same way `TuiBackend`/`GtkBackend::poll_events` do.
+        // Fold in any `UiEvent::User` payloads a background thread queued via
+        // `waker()` since the last drain. The live `wndproc` calls
+        // `Self::drain_user_events` directly instead, but this keeps `poll_events`
+        // correct for any other caller (a driver, a test).
         self.user_events.drain_into(&mut out);
         out
     }
@@ -2263,7 +2022,7 @@ impl Backend for WinBackend {
     }
 
     /// See [`Backend::request_frame_in`]'s doc for the cross-backend
-    /// contract (quadraui#832). Unlike [`Self::waker`] this always runs
+    /// contract. Unlike [`Self::waker`] this always runs
     /// synchronously on the thread that owns the message loop — called
     /// directly from event/tick handling, never from a background
     /// thread — so it needs none of `waker`'s cross-thread `AtomicIsize`
@@ -2284,7 +2043,7 @@ impl Backend for WinBackend {
     /// an unattached backend to wake.
     ///
     /// Records into [`Self::frame_scheduler`] unconditionally, `hwnd` or
-    /// not (quadraui#1264) — that bookkeeping is test-facing only (see
+    /// not — that bookkeeping is test-facing only (see
     /// [`Self::frame_requests`]/[`Self::pending_frame_delay`]) and must
     /// not depend on the real `SetTimer` arm below, which stays exactly
     /// as no-op-before-attach as before.
@@ -2319,7 +2078,7 @@ impl Backend for WinBackend {
         self.core.unregister_accelerator(id);
     }
 
-    /// #1187: persists via `self.core`, same one-liner delegation as the
+    /// Persists via `self.core`, same one-liner delegation as the
     /// accelerator methods above.
     fn menu_style(&self) -> crate::backend::MenuStyle {
         self.core.menu_style()
@@ -2329,7 +2088,7 @@ impl Backend for WinBackend {
         self.core.set_menu_style(style);
     }
 
-    // ─── Text selection (#741) ──────────────────────────────────────────
+    // ─── Text selection ─────────────────────────────────────────────────
 
     /// Overrides the trait's no-op default — see [`Self::text_regions`]
     /// and `crate::text_selection::TextSelectionState`.
@@ -2343,17 +2102,18 @@ impl Backend for WinBackend {
         self.cancel_text_selection_drag_impl();
     }
 
-    // ─── Zone registration (#1199, closing the register_zone stub gap) ──
+    // ─── Zone registration ──────────────────────────────────────────────────
+    //
+    // Overrides the trait's no-op default. Every `draw_*` rasteriser on this
+    // backend that already called `self.register_zone(...)` used to have that
+    // call silently swallowed; this is the first thing that reads `self.zones`
+    // back.
 
-    /// Overrides the trait's no-op default — closes `tests/conformance/
-    /// caps.rs`'s `("win", "register_zone", "stub backend — see #19")`
-    /// `ACCEPTED_DEFAULTS` entry. Every `draw_*` rasteriser on this
-    /// backend that already called `self.register_zone(...)`
-    /// (`draw_focus_ring`, `draw_solid_fill`) used to have that call
-    /// silently swallowed by the trait default; this is the first thing
-    /// on `WinBackend` that reads `self.zones` back, via
-    /// [`Self::nc_hit_test`]'s `WM_NCHITTEST` classification (issue
-    /// #1199). Mirrors `GtkBackend::register_zone`/`MacBackend::register_zone`.
+    /// Overrides the trait's no-op default. Every `draw_*` rasteriser that
+    /// already called `self.register_zone(...)` used to have that call silently
+    /// swallowed. This reads `self.zones` back via [`Self::nc_hit_test`]'s
+    /// `WM_NCHITTEST` classification. Mirrors `GtkBackend::register_zone` and
+    /// `MacBackend::register_zone`.
     fn register_zone(&mut self, id: WidgetId, bounds: Rect) {
         self.zones.push(crate::testing::ZoneRec { id, bounds });
     }
@@ -2379,7 +2139,7 @@ impl Backend for WinBackend {
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
 
-    // ─── Error reporting (issue #507, D-009) ────────────────────────────
+    // ─── Error reporting ────────────────────────────────────────────
 
     /// Drain the `BackendError` `end_frame` recorded on a failed
     /// `EndDraw`, if any, since the last call. Mirrors
@@ -2396,9 +2156,9 @@ impl Backend for WinBackend {
         &self.services
     }
 
-    // ─── Paint surface (issue #1101) ───────────────────────────────────
+    // ─── Paint surface ─────────────────────────────────────────────────
 
-    /// #1101: `WinBackend` implements [`PaintSurface`] directly (see this
+    /// `WinBackend` implements [`PaintSurface`] directly (see this
     /// module's own `impl PaintSurface for WinBackend` block below), so
     /// this always answers `Some(self)` — never the `None` default
     /// `Backend::paint_surface` falls back to. Each verb degrades on its
@@ -2412,7 +2172,7 @@ impl Backend for WinBackend {
 
     // ─── Cursor ───────────────────────────────────────────────────────
 
-    /// #702: maps `shape` onto a `SetCursor(LoadCursorW(..))` call via
+    /// Maps `shape` onto a `SetCursor(LoadCursorW(..))` call via
     /// [`pointer_shape_to_win32_cursor`] and records it in
     /// `current_pointer_shape` so `win::run`'s `WM_SETCURSOR` handler can
     /// keep re-applying the same shape for as long as the pointer stays
@@ -2440,7 +2200,7 @@ impl Backend for WinBackend {
         }
     }
 
-    // ─── Window control (issue #950) ────────────────────────────────────
+    // ─── Window control ─────────────────────────────────────────────────
     fn window(&mut self) -> Option<&mut dyn crate::backend::WindowControl> {
         #[cfg(target_os = "windows")]
         {
@@ -2453,7 +2213,7 @@ impl Backend for WinBackend {
         }
     }
 
-    // ─── Tray / status-bar icon (issue #953) ────────────────────────────
+    // ─── Tray / status-bar icon ─────────────────────────────────────────
     /// Gated on `self.hwnd` for the same reason as [`Self::window`]:
     /// `Shell_NotifyIconW` needs a real `HWND` to own the icon and
     /// receive its callback message, which only exists once
@@ -2472,75 +2232,64 @@ impl Backend for WinBackend {
 
     // ─── Capability declaration ──────────────────────────────────────────
 
-    /// quadraui#492: honest, not aspirational. #19 landed the window +
-    /// render-target bootstrap (`begin_frame`/`end_frame`) and the three
-    /// window-lifecycle events the message loop itself needs
-    /// (`WindowResized`/`DpiChanged`/`WindowClose`); #20 added the rest of
-    /// the input table — mouse buttons/motion/wheel, `WM_KEYDOWN`/
-    /// `WM_CHAR`, and focus — all dispatched directly from `win::run`'s
-    /// `WndProc` (see that module's docs for why this mirrors the GTK
-    /// backend's signal-callback dispatch rather than
-    /// `poll_events`/`wait_events`; #806 gave both a real queue-adapter
-    /// drain instead of a `todo!()`, but nothing feeds that queue from
-    /// the live `WndProc` yet — still not on that hot path).
+    /// Honest, not aspirational: the window + render-target bootstrap
+    /// (`begin_frame`/`end_frame`) and the three window-lifecycle events
+    /// the message loop itself needs (`WindowResized`/`DpiChanged`/
+    /// `WindowClose`); the rest of the input table — mouse buttons/
+    /// motion/wheel, `WM_KEYDOWN`/`WM_CHAR`, and focus — all dispatched
+    /// directly from `win::run`'s `WndProc`; the queue-adapter drain is
+    /// wired but nothing feeds that queue from the live `WndProc` yet.
     ///
-    /// quadraui#723: `mouse`/`scroll`/`drag` are now declared `true` — the
-    /// translators are wired (`WM_LBUTTONDOWN`/`WM_LBUTTONUP`/
-    /// `WM_MOUSEMOVE`/`WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` all reach
-    /// `dispatch_event`, per #20/#707), and the painted-text sink prereq
-    /// (verification spine step 1) means a scenario that now runs instead
-    /// of skipping fails on real signal rather than panicking mid-scenario
-    /// on a missing text lookup.
+    /// `mouse`/`scroll`/`drag` are declared `true`: the translators are
+    /// wired (`WM_LBUTTONDOWN`/`WM_LBUTTONUP`/`WM_MOUSEMOVE`/
+    /// `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` all reach `dispatch_event`), and
+    /// the painted-text sink means a scenario that now runs instead of
+    /// skipping fails on real signal rather than panicking.
     ///
-    /// quadraui#741: `text_selection` is now declared `true` too —
-    /// `register_text_region`/`cancel_text_selection_drag` are both
-    /// overridden, backed by the same `crate::text_selection::TextSelectionState`
-    /// `GtkBackend`/`TuiBackend` embed, so `panel.drag_select_copy` (which
+    /// `text_selection` is declared `true`: `register_text_region`/
+    /// `cancel_text_selection_drag` are both overridden, backed by the
+    /// same `crate::text_selection::TextSelectionState` `GtkBackend`/
+    /// `TuiBackend` embed, so `panel.drag_select_copy` (which
     /// `requires: ["text_selection"]`) now runs instead of skipping.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         // A genuine struct literal (not `let mut caps = ...; caps.field =
         // true;`), matching every other backend's `backend_caps` shape —
         // `tests/conformance/caps.rs`'s `BackendSource::declared` parses
         // this method's source for `<field>: true,` lines, so an
-        // assignment-statement form would silently parse as declaring
-        // nothing (#702 review-fix note).
+        // assignment-statement form would silently parse as declaring nothing.
         #[cfg(target_os = "windows")]
         {
-            // #23: file dialogs (`IFileOpenDialog`/`IFileSaveDialog`) and
-            // notifications (`Shell_NotifyIconW`) go through COM/Shell
-            // APIs independent of the Direct2D rasteriser work above, so
-            // they're honestly `true` on Windows itself.
+            // File dialogs (`IFileOpenDialog`/`IFileSaveDialog`) and
+            // notifications (`Shell_NotifyIconW`) go through COM/Shell APIs
+            // independent of the Direct2D rasteriser, so they're honestly `true`
+            // on Windows itself.
             //
-            // `folder_dialogs` (#935): the same `IFileOpenDialog`, with
+            // `folder_dialogs`: the same `IFileOpenDialog`, with
             // `FOS_PICKFOLDERS` set — see
             // `src/win/services.rs::win_show_folder_open_dialog`.
             //
-            // `native_dialogs` (#744): `show_message_dialog` now shows a
-            // real `TaskDialogIndirect` alert and returns the chosen
-            // button's id — see `src/win/services.rs::win_show_message_dialog`.
-            // `CAP_CONTRACTS`'s `native_dialogs` entry is `Unprovable`
-            // (there is no no-op default `show_message_dialog` diverges
-            // from — every backend implements it), so this declaration
-            // isn't source-checked by the honesty test; it's true because
-            // the alert is real, not because anything can parse that.
+            // `native_dialogs`: `show_message_dialog` now shows a real
+            // `TaskDialogIndirect` alert and returns the chosen button's id —
+            // see `src/win/services.rs::win_show_message_dialog`. `CAP_CONTRACTS`'s
+            // `native_dialogs` entry is `Unprovable` (every backend implements it),
+            // so this declaration isn't source-checked; it's true because the
+            // alert is real.
             //
-            // `pointer_cursor` (#702): `set_cursor` now drives a real
-            // `SetCursor`/`WM_SETCURSOR` round-trip instead of the
-            // trait's no-op default — see `Self::set_cursor` /
-            // `Self::apply_current_cursor`.
+            // `pointer_cursor`: `set_cursor` now drives a real
+            // `SetCursor`/`WM_SETCURSOR` round-trip instead of the trait's no-op
+            // default — see `Self::set_cursor` / `Self::apply_current_cursor`.
             //
-            // `mouse`/`scroll`/`drag` (#723): the translators are wired —
+            // `mouse`/`scroll`/`drag`: the translators are wired —
             // `WM_LBUTTONDOWN`/`WM_LBUTTONUP`/`WM_MOUSEMOVE` reach
             // `dispatch_event` as `MouseDown`/`MouseUp`/`MouseMoved`, and
-            // `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` reach it as `Scroll` (#20,
-            // #707) — so a press → move → release sequence is a real
-            // drag.
+            // `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` reach it as `Scroll` — so a
+            // press → move → release sequence is a real drag.
             //
-            // `text_selection` (#741): `register_text_region` and
-            // `cancel_text_selection_drag` are both overridden above,
-            // backed by the shared `crate::text_selection::TextSelectionState`
-            // GTK/TUI also embed — `panel.drag_select_copy` (which
-            // `requires: ["text_selection"]`) now runs instead of skipping.
+            // `text_selection`: `register_text_region` and
+            // `cancel_text_selection_drag` are both overridden, backed by the
+            // shared `crate::text_selection::TextSelectionState` GTK/TUI also
+            // embed — `panel.drag_select_copy` (which `requires: ["text_selection"]`)
+            // now runs instead of skipping.
             crate::backend::BackendCaps {
                 file_dialogs: true,
                 folder_dialogs: true,
@@ -2552,19 +2301,19 @@ impl Backend for WinBackend {
                 drag: true,
                 text_selection: true,
                 // `register_font_from_memory`/`set_nerd_font_fallback`
-                // (#929): both overridden above, backed by real
+                //: both overridden above, backed by real
                 // DirectWrite calls (`crate::win::text::register_font_from_memory`
                 // / `build_nerd_font_fallback`) rather than the trait's
                 // no-op default.
                 app_font_registration: true,
-                // `generic_font_families` (issue #1023): `set_editor_font`/
+                // `generic_font_families`: `set_editor_font`/
                 // `set_ui_font` are both overridden above and now resolve
                 // CSS/Pango generic tokens to their DirectWrite defaults
                 // (`DEFAULT_EDITOR_FONT_FAMILY`/`DEFAULT_UI_FONT_FAMILY`)
                 // via `parse_ui_font_desc`/`GenericFamily::parse` instead
                 // of treating them as an unresolvable literal family name.
                 generic_font_families: true,
-                // `window` (issue #950) is overridden below and returns
+                // `window` is overridden below and returns
                 // `Some` once `attach_surface` has stashed a real
                 // `HWND` — see `impl WindowControl for WinBackend`'s doc
                 // for which methods it backs with real `SetWindowPos`/
@@ -2575,46 +2324,35 @@ impl Backend for WinBackend {
                 // resize — tracked as follow-up, not silently faked
                 // here as a one-shot clamp).
                 window_control: true,
-                // `tray` (issue #953) is overridden below and returns
+                // `tray` is overridden below and returns
                 // `Some` once `attach_surface` has stashed a real
                 // `HWND` — see `impl TrayService for WinBackend`'s doc
                 // for the real `Shell_NotifyIconW`/`TrackPopupMenuEx`
                 // calls backing each method.
                 tray: true,
-                // `native_menu` (issue #1200, reverted by #1228): a real
-                // `HMENU` used to be built and attached here via
-                // `SetMenu`, but that sits in the *non-client* area —
-                // exactly the strip #1199's `WM_NCCALCSIZE` handler
-                // (below) reclaims for the app's own drawn caption. With
-                // both landed, the native menu was permanently covered by
-                // the drawn band and unreachable, and `window_chrome`'s
-                // custom caption stays; a native menu would need the
-                // native caption back, undoing #1199. So Win-GUI now
-                // matches `GtkBackend`/`TuiBackend`: no `Backend`
-                // override at all, taking the trait's no-op default —
-                // `install_menu_bar` callers (e.g.
-                // `examples/common/native_menu.rs`) get a painted
-                // in-window `MenuBar` (`draw_menu_bar`) instead, the same
-                // "runs on TUI/GTK too, but it's a no-op there" posture
-                // that doc already describes. Left `false` rather than
-                // declared and unprovable — `tests/conformance/caps.rs`'s
-                // honesty check requires *no* `install_menu_bar`/
-                // `show_context_menu` override to back a `false` here,
-                // which holds: this backend has neither.
+                // `native_menu`: a real `HMENU` used to be built and attached here
+                // via `SetMenu`, but that sits in the *non-client* area — exactly
+                // the strip the `WM_NCCALCSIZE` handler (below) reclaims for the
+                // app's own drawn caption. With both landed, the native menu was
+                // permanently covered by the drawn band and unreachable, and
+                // `window_chrome`'s custom caption stays; a native menu would need
+                // the native caption back. So Win-GUI now matches `GtkBackend`/
+                // `TuiBackend`: no `Backend` override at all, taking the trait's
+                // no-op default — `install_menu_bar` callers get a painted in-window
+                // `MenuBar` (`draw_menu_bar`) instead. Left `false` rather than
+                // declared and unprovable — the honesty check requires *no*
+                // `install_menu_bar`/`show_context_menu` override to back a `false`
+                // here, which holds: this backend has neither.
                 //
-                // `window_chrome` (issue #1199): `toggle_window_maximize`
-                // is overridden below (real `IsZoomed`/`ShowWindow`
-                // calls), and `win::run`'s `wndproc` now handles
-                // `WM_NCCALCSIZE`/`WM_NCHITTEST` to fold a host's drawn
-                // title-bar band into the native caption the way
-                // `GtkBackend`'s CSD titlebar already does — see
-                // [`Self::nc_hit_test`]'s doc for the classification and
-                // `App::render_content`'s doc (vimcode `src/app.rs`) for
-                // the consumer-side branch this un-gates. Declaring this
-                // before `win::run` grew that handling would have just
-                // stacked a second, always-drawn band under the real
-                // native caption instead of replacing it — see this
-                // issue's own text for why the two land together.
+                // `window_chrome`: `toggle_window_maximize` is overridden below (real
+                // `IsZoomed`/`ShowWindow` calls), and `win::run`'s `wndproc` now
+                // handles `WM_NCCALCSIZE`/`WM_NCHITTEST` to fold a host's drawn
+                // title-bar band into the native caption the way `GtkBackend`'s CSD
+                // titlebar already does — see [`Self::nc_hit_test`]'s doc for the
+                // classification and `App::render_content`'s doc for the consumer-side
+                // branch this un-gates. Declaring this before `win::run` grew that
+                // handling would have just stacked a second, always-drawn band under
+                // the real native caption instead of replacing it.
                 window_chrome: true,
                 ..crate::backend::BackendCaps::empty()
             }
@@ -2625,7 +2363,7 @@ impl Backend for WinBackend {
         }
     }
 
-    // ─── Window chrome (issue #1199) ────────────────────────────────────
+    // ─── Window chrome ──────────────────────────────────────────────────
     //
     // Unlike `GtkBackend`/`MacBackend`, Win-GUI keeps its native
     // `WS_OVERLAPPEDWINDOW` non-client frame (`win::run`'s window creation
@@ -2683,7 +2421,7 @@ impl Backend for WinBackend {
         self.current_char_width
     }
 
-    /// Forwards to [`Self::set_current_line_height`] (issue #1086) — the
+    /// Forwards to [`Self::set_current_line_height`] — the
     /// `Backend`-trait-object-reachable twin of that inherent method, the
     /// Win-GUI counterpart of `GtkBackend`'s / `MacBackend`'s overrides of
     /// the same trait method.
@@ -2744,8 +2482,8 @@ impl Backend for WinBackend {
 
     /// Store the editor font family + size for the next
     /// [`Self::attach_surface`]/[`Self::ensure_surface`] call to build an
-    /// `IDWriteTextFormat` from (#21). Mirrors `GtkBackend::set_editor_font`
-    /// (#422): a live surface doesn't rebuild its `IDWriteTextFormat`
+    /// `IDWriteTextFormat` from. Mirrors `GtkBackend::set_editor_font`
+    ///: a live surface doesn't rebuild its `IDWriteTextFormat`
     /// immediately on a runtime font change — same limitation the GTK
     /// backend has today (its Pango layout is rebuilt fresh every frame
     /// from these fields instead, which this backend's once-per-surface
@@ -2755,13 +2493,12 @@ impl Backend for WinBackend {
     fn set_editor_font(&mut self, family: &str, size_pt: f32) {
         #[cfg(target_os = "windows")]
         {
-            // Issue #1023: a CSS/Pango generic token resolves to its
-            // DirectWrite default immediately — `monospace` has no
-            // installed-family lookup to run, only `DEFAULT_EDITOR_FONT_FAMILY`
-            // to substitute in. `sans-serif`/`system-ui` aren't monospace
-            // (this method's doc requires that), but there's no error
-            // channel to reject the mismatch through, so they resolve
-            // honestly to the chrome default rather than being treated as
+            // A CSS/Pango generic token resolves to its DirectWrite default
+            // immediately — `monospace` has no installed-family lookup to run,
+            // only `DEFAULT_EDITOR_FONT_FAMILY` to substitute in. `sans-serif`/
+            // `system-ui` aren't monospace (this method's doc requires that), but
+            // there's no error channel to reject the mismatch through, so they
+            // resolve honestly to the chrome default rather than being treated as
             // an unknown literal family name.
             self.editor_font_family = match GenericFamily::parse(family) {
                 Some(GenericFamily::Monospace) => DEFAULT_EDITOR_FONT_FAMILY.to_string(),
@@ -2780,7 +2517,7 @@ impl Backend for WinBackend {
 
     // ─── Drawing ──────────────────────────────────────────────────────
 
-    /// #26: real Direct2D/DirectWrite rasteriser via `win::tree` once a
+    /// Real Direct2D/DirectWrite rasteriser via `win::tree` once a
     /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
     /// "surface not attached yet" fallback posture. `draw_tree` returns
     /// `()` per the trait (unlike the chrome rasterisers) — hosts get
@@ -2811,7 +2548,7 @@ impl Backend for WinBackend {
         }
         // No surface/DWrite yet (fresh backend, device lost, or a
         // non-Windows host, where this module never compiles) — paint
-        // nothing rather than panic (issue #924); the next real
+        // nothing rather than panic; the next real
         // `attach_surface`/`attach_headless` resumes painting.
         let _ = (rect, tree);
     }
@@ -2833,11 +2570,11 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = (rect, list);
     }
 
-    /// #26: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     /// `DataTable` is not `ChromePrimitive`/`EditorClassPrimitive`-listed
     /// — it's chrome by the `crate::font_role` module's default (see that
@@ -2869,7 +2606,7 @@ impl Backend for WinBackend {
         }
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `data_table_layout` falls back to, and paint
-        // nothing (issue #924). `hovered_idx` only affects painting, so
+        // nothing. `hovered_idx` only affects painting, so
         // it's unused on this path.
         let _ = hovered_idx;
         super::data_table::win_data_table_layout(
@@ -2882,7 +2619,7 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #26: pure measurement — only needs `self.dwrite`, not a live
+    /// Pure measurement — only needs `self.dwrite`, not a live
     /// render target. See [`Self::status_bar_layout`]'s doc. Prefers
     /// `chrome_dwrite`, matching [`Self::draw_data_table`]'s paint font
     /// — both must resolve the same handle or column widths measured
@@ -2907,7 +2644,7 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #26: GTK's twin (`GtkBackend::list_hscrollbar`) builds the
+    /// GTK's twin (`GtkBackend::list_hscrollbar`) builds the
     /// `Scrollbar` directly from `self.current_char_width` rather than
     /// delegating to [`ListView::hscrollbar`] — that primitive method
     /// treats `max_content_width` as already being in the caller's
@@ -2937,7 +2674,7 @@ impl Backend for WinBackend {
         ))
     }
 
-    /// #26: `vscrollbar` deals purely in row counts/row-height, so
+    /// `vscrollbar` deals purely in row counts/row-height, so
     /// unlike [`Self::list_hscrollbar`] the primitive's own geometry
     /// method is unit-correct for every backend — see
     /// [`ListView::vscrollbar`]. Cross-platform, same reasoning as
@@ -2947,11 +2684,9 @@ impl Backend for WinBackend {
     }
 
     fn list_layout(&self, rect: Rect, list: &ListView) -> crate::ListViewLayout {
-        // #1078: `win_list_layout` is pure geometry — no Direct2D/
-        // DirectWrite type in its signature — so it's no longer gated
-        // behind `target_os = "windows"` and can be called directly
-        // instead of being duplicated inline here (issue #924's original
-        // reason for the duplicate no longer applies).
+        // `win_list_layout` is pure geometry — no Direct2D/DirectWrite type
+        // in its signature — so it can be called directly instead of being
+        // duplicated inline here.
         super::list::win_list_layout(
             list,
             rect,
@@ -2960,12 +2695,12 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #26: see [`Self::draw_tree`]'s doc.
+    /// See [`Self::draw_tree`]'s doc.
     ///
-    /// #808: shared field-kind painting lives in
+    /// Shared field-kind painting lives in
     /// [`crate::primitives::form::paint`] now — see that fn's doc for
     /// why `FieldKind::Toolbar` is painted here instead (as plain
-    /// per-button text, matching this backend's pre-#808 behaviour —
+    /// per-button text, matching this backend's behaviour —
     /// `win::toolbar`'s full chrome isn't wired into `Form` fields; see
     /// `win::form`'s module doc), after `paint` releases its exclusive
     /// borrow of `self`.
@@ -3077,11 +2812,11 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = (rect, form);
     }
 
-    /// #28: real Direct2D/DirectWrite rasteriser via `win::palette` once a
+    /// Real Direct2D/DirectWrite rasteriser via `win::palette` once a
     /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
     /// "surface not attached yet" fallback posture.
     fn draw_palette(&mut self, rect: Rect, palette: &Palette) {
@@ -3131,19 +2866,19 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = (rect, palette);
     }
 
-    /// Pure geometry (issue #818) — needs no live surface, unlike
+    /// Pure geometry — needs no live surface, unlike
     /// [`Self::draw_palette`], so this doesn't gate on one being attached.
     /// `win::palette` itself is Windows-only (real `Direct2D`/`DirectWrite`
     /// types), same `#[cfg(target_os = "windows")]` split every other
     /// method on this impl uses to stay a type-check-only stub elsewhere —
     /// so this calls the shared, target-agnostic
     /// [`crate::primitives::palette::native_surface_paint::layout`]
-    /// (#1076) directly rather than reaching into that Windows-only
-    /// module (issue #924).
+    /// directly rather than reaching into that Windows-only
+    /// module.
     fn palette_layout(&self, rect: Rect, palette: &Palette) -> crate::PaletteLayout {
         crate::primitives::palette::native_surface_paint::layout(
             rect.width,
@@ -3154,7 +2889,7 @@ impl Backend for WinBackend {
         .0
     }
 
-    /// #734: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     fn draw_settings_chrome(
         &mut self,
@@ -3182,14 +2917,14 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = (rect, header_text, query, placeholder, active);
     }
 
-    /// #25: real Direct2D/DirectWrite rasteriser via `win::status_bar`
+    /// Real Direct2D/DirectWrite rasteriser via `win::status_bar`
     /// once a surface is attached. Falls back to
     /// [`super::status_bar::win_status_bar_layout`] with a
-    /// [`NominalTextMeasure`] otherwise (issue #924) —
+    /// [`NominalTextMeasure`] otherwise —
     /// `self.surface`/`self.dwrite` are always populated together by
     /// [`Self::attach_surface`], so that only happens for a standalone
     /// `WinBackend` no window has ever attached to yet.
@@ -3224,7 +2959,7 @@ impl Backend for WinBackend {
                 hovered_id,
                 pressed_id,
             );
-            // #1232: a status-bar segment drawn inside the AppShell
+            // A status-bar segment drawn inside the AppShell
             // title-bar band (e.g. vimcode's inline minimize/maximize/
             // close buttons) needs its own `register_zone` entry — see
             // `Self::nc_hit_test`'s doc — or the whole band keeps
@@ -3238,7 +2973,7 @@ impl Backend for WinBackend {
         }
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `status_bar_layout` falls back to, and paint
-        // nothing (issue #924). `hovered_id`/`pressed_id` only affect
+        // nothing. `hovered_id`/`pressed_id` only affect
         // painting, so they're unused on this path.
         let _ = (hovered_id, pressed_id);
         let layout = super::status_bar::win_status_bar_layout(
@@ -3265,8 +3000,7 @@ impl Backend for WinBackend {
         self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
     }
 
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::draw_tab_bar`] above.
+    /// `TabBarLayout`-returning counterpart to [`Self::draw_tab_bar`].
     fn draw_tab_bar_layout(
         &mut self,
         rect: Rect,
@@ -3276,7 +3010,7 @@ impl Backend for WinBackend {
         self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
     }
 
-    /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     ///
     /// `TabBar` is `ChromePrimitive::TabBar` — see
@@ -3306,7 +3040,7 @@ impl Backend for WinBackend {
         }
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `tab_bar_layout_icons` falls back to, and
-        // paint nothing (issue #924). `hovered_close_tab` only affects
+        // paint nothing. `hovered_close_tab` only affects
         // painting, so it's unused on this path.
         let _ = hovered_close_tab;
         super::tab_bar::win_tab_bar_layout_icons(
@@ -3319,9 +3053,9 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture. Issue #919's `TabBarLayout`-
-    /// returning counterpart to [`Self::draw_tab_bar_icons`] above.
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture. `TabBarLayout`-returning
+    /// counterpart to [`Self::draw_tab_bar_icons`] above.
     fn draw_tab_bar_icons_layout(
         &mut self,
         rect: Rect,
@@ -3354,7 +3088,7 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     ///
     /// `ActivityBar` is `ChromePrimitive::ActivityBar` — see
@@ -3366,11 +3100,9 @@ impl Backend for WinBackend {
         hovered_idx: Option<usize>,
     ) -> Vec<ActivityBarRowHit> {
         // Track keyboard focus so `win::run::dispatch_event` can redirect
-        // the next `KeyPressed` into this bar (#707) — same contract
+        // the next `KeyPressed` into this bar — same contract
         // `GtkBackend`/`MacBackend::draw_activity_bar` implement. Runs
-        // regardless of whether a surface is attached yet, so a headless
-        // `WinDriver` sees focus tracking even before #707's rasteriser
-        // dependencies land a surface.
+        // regardless of whether a surface is attached yet.
         if bar.is_keyboard_focused {
             self.focused_activity_bar = Some(bar.id.clone());
         }
@@ -3387,14 +3119,14 @@ impl Backend for WinBackend {
             );
         }
         // No surface/DWrite yet — return the real (pure-geometry) hit
-        // list via `activity_bar_layout` and paint nothing (issue #924).
+        // list via `activity_bar_layout` and paint nothing.
         // `hovered_idx` only affects painting, so it's unused on this
         // path.
         let _ = hovered_idx;
         self.activity_bar_layout(rect, bar)
     }
 
-    /// #25: pure measurement — only needs `self.dwrite`, not a live
+    /// Pure measurement — only needs `self.dwrite`, not a live
     /// render target, so this works as soon as a surface has ever been
     /// attached (DirectWrite handles outlive device loss; see
     /// `Self::ensure_surface`'s docs).
@@ -3423,13 +3155,12 @@ impl Backend for WinBackend {
         self.tab_bar_layout_icons(rect, bar, &[])
     }
 
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::tab_bar_layout`] above.
+    /// `TabBarLayout`-returning counterpart to [`Self::tab_bar_layout`].
     fn resolve_tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarLayout {
         self.resolve_tab_bar_layout_icons(rect, bar, &[])
     }
 
-    /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
+    /// See [`Self::status_bar_layout`]'s doc for why this only needs
     /// `self.dwrite`; see that method's doc for why this prefers
     /// `chrome_dwrite` — must agree with [`Self::draw_tab_bar_icons`]'s
     /// paint font.
@@ -3454,10 +3185,10 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
-    /// `self.dwrite`. Issue #919's `TabBarLayout`-returning counterpart
-    /// to [`Self::tab_bar_layout_icons`] above; see that method's
-    /// doc for why this prefers `chrome_dwrite`.
+    /// See [`Self::status_bar_layout`]'s doc for why this only needs
+    /// `self.dwrite`. `TabBarLayout`-returning counterpart to
+    /// [`Self::tab_bar_layout_icons`] above; see that method's doc for
+    /// why this prefers `chrome_dwrite`.
     fn resolve_tab_bar_layout_icons(
         &self,
         rect: Rect,
@@ -3478,18 +3209,16 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #25: activity-bar layout needs no measurer at all (uniform
+    /// Activity-bar layout needs no measurer at all (uniform
     /// `ACTIVITY_ROW_DIP` row height), so unlike its siblings this
     /// doesn't even need `self.dwrite` — only kept behind the
     /// `target_os = "windows"` gate for consistency with every other
     /// method in this file.
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
-        // Pure geometry (uniform `ACTIVITY_ROW_DIP` row height, no
-        // measurer at all) — `super::activity_bar::win_activity_bar_layout`
-        // needs no Direct2D/DirectWrite type either, so this is computed
-        // directly instead of reaching into that Windows-only module
-        // (issue #924). `ACTIVITY_ROW_DIP`'s value (48.0) is duplicated
-        // from that module per `PRIMITIVE_RULES.md`#713.
+        // Pure geometry (uniform `ACTIVITY_ROW_DIP` row height, no measurer
+        // at all) — this is computed directly instead of reaching into the
+        // Windows-only module. `ACTIVITY_ROW_DIP`'s value (48.0) matches the
+        // module's per `PRIMITIVE_RULES.md`#713.
         const ACTIVITY_ROW_DIP: f32 = 48.0;
         bar.layout(rect.width, rect.height, ACTIVITY_ROW_DIP)
             .visible_items
@@ -3513,15 +3242,14 @@ impl Backend for WinBackend {
             .collect()
     }
 
-    /// #30: real Direct2D/DirectWrite rasteriser via `win::terminal` once
-    /// a surface is attached. Mirrors `GtkBackend::draw_terminal`'s
+    /// Real Direct2D/DirectWrite rasteriser via `win::terminal` once a
+    /// surface is attached. Mirrors `GtkBackend::draw_terminal`'s
     /// scrollbar handling (subtract the gutter from the cell area, paint
     /// cells, then paint the scrollbar over the freed strip) but skips
-    /// the #417 dirty-row cache — see `win::terminal`'s module doc for
-    /// why that's a deliberate, follow-up-sized scope cut. See
-    /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
-    /// fallback posture.
-    /// #810: shared cell-grid painting lives in
+    /// the dirty-row cache — see `win::terminal`'s module doc for why
+    /// that's a deliberate follow-up. See [`Self::draw_status_bar`]'s
+    /// doc for the "surface not attached yet" fallback posture.
+    /// Shared cell-grid painting lives in
     /// [`crate::primitives::terminal::paint`] now — see that fn's doc
     /// for the divergences (per-cell bold/italic/underline styling)
     /// resolved while unifying `gtk::terminal::draw_terminal_cells`,
@@ -3573,11 +3301,11 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = (rect, term);
     }
 
-    /// #30: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture. `Terminal` paints no text, so
     /// unlike most of that method's siblings this doesn't need
     /// `self.dwrite`.
@@ -3589,11 +3317,11 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = rect;
     }
 
-    /// #996: see [`Backend::draw_solid_fill`]'s doc — a pixel backend
+    /// See [`Backend::draw_solid_fill`]'s doc — a pixel backend
     /// can honor `rect` exactly via `PaintSurface::surface_fill_rect`,
     /// which already degrades to a no-op when no surface is attached
     /// (see its own doc), so this can call it unconditionally — same
@@ -3603,11 +3331,11 @@ impl Backend for WinBackend {
         self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
     }
 
-    /// #30: real Direct2D/DirectWrite rasteriser via `win::text_display`
+    /// Real Direct2D/DirectWrite rasteriser via `win::text_display`
     /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
     /// for the "surface not attached yet" fallback posture.
     ///
-    /// #810: shared text-display painting lives in
+    /// Shared text-display painting lives in
     /// [`crate::primitives::text_display::paint`] now — see that fn's
     /// doc for the divergence (this backend's `StyledSpan::bold`
     /// support, dropped since `PaintSurface` has no weight parameter)
@@ -3635,11 +3363,11 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = (rect, td);
     }
 
-    /// #725: real Direct2D/DirectWrite rasteriser via `win::command_line`
+    /// Real Direct2D/DirectWrite rasteriser via `win::command_line`
     /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
     /// for the "surface not attached yet" fallback posture.
     fn draw_command_line(
@@ -3650,13 +3378,10 @@ impl Backend for WinBackend {
         self.draw_command_line_selection(rect, cmd, None);
     }
 
-    /// #1083: real selection-highlight paint via the shared
-    /// `primitives::command_line::native_surface_paint::paint` —
-    /// previously ignored `selection` entirely and forwarded to the
-    /// plain (unhighlighted) paint, the gap issue #1001 scoped out of
-    /// this backend and left as a documented follow-up. See
-    /// `win::command_line`'s module doc. Same "surface not attached
-    /// yet" degrade-to-no-op posture as before (issue #924).
+    /// Real selection-highlight paint via the shared
+    /// `primitives::command_line::native_surface_paint::paint`. See
+    /// `win::command_line`'s module doc. Same "surface not attached yet"
+    /// degrade-to-no-op posture as before.
     fn draw_command_line_selection(
         &mut self,
         rect: Rect,
@@ -3677,11 +3402,11 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = (rect, cmd, selection);
     }
 
-    /// #725: pure measurement — only needs `current_char_width`, not a
+    /// Pure measurement — only needs `current_char_width`, not a
     /// live render target or `self.dwrite` (mirrors
     /// `Self::text_display_layout`'s doc for why this only needs the
     /// `target_os = "windows"` gate every method in this file shares). No
@@ -3694,14 +3419,14 @@ impl Backend for WinBackend {
     ) -> crate::primitives::command_line::CommandLineLayout {
         // Pure measurement (only `current_char_width`, no `self.dwrite`)
         // — computed directly rather than reaching into the Windows-only
-        // `super::command_line` module (issue #924).
+        // `super::command_line` module.
         cmd.layout(
             rect,
             crate::primitives::command_line::CommandLineMeasure::new(self.current_char_width),
         )
     }
 
-    /// #30: pure measurement — only needs `line_height`, not a live
+    /// Pure measurement — only needs `line_height`, not a live
     /// render target or `self.dwrite` (mirrors `MacBackend::text_display_layout`
     /// / `GtkBackend::text_display_layout`, both row-count-based rather
     /// than real text measurement) — but still lives in a Windows-only
@@ -3710,11 +3435,10 @@ impl Backend for WinBackend {
     /// see [`Self::activity_bar_layout`]'s doc for why.
     fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout {
         // Pure measurement (row-count estimate off `line_height`/
-        // `char_width`, no real text layout) — mirrors
-        // `super::text_display::win_text_display_layout`'s shape (same
-        // scrollbar-gutter constants, duplicated by value per
-        // `PRIMITIVE_RULES.md`#713), computed directly instead of
-        // reaching into that Windows-only module (issue #924).
+        // `char_width`, no real text layout) — mirrors the shape of layout
+        // functions in `super::text_display` (same scrollbar-gutter constants,
+        // duplicated by value per `PRIMITIVE_RULES.md`#713), computed directly
+        // instead of reaching into that Windows-only module.
         const SCROLLBAR_GUTTER_DIP: f32 = 12.0;
         const SCROLLBAR_MIN_THUMB_DIP: f32 = 8.0;
         let line_height = self.current_line_height;
@@ -3750,7 +3474,7 @@ impl Backend for WinBackend {
         }
     }
 
-    /// #733: real Direct2D/DirectWrite rasteriser via `win::text_input`
+    /// Real Direct2D/DirectWrite rasteriser via `win::text_input`
     /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
     /// for the "surface not attached yet" fallback posture.
     fn draw_text_input(
@@ -3774,7 +3498,7 @@ impl Backend for WinBackend {
             );
         }
         // Pure geometry — `TextInput::layout` needs only `line_height`/
-        // `char_width`, no real text measurement (issue #924); paints
+        // `char_width`, no real text measurement; paints
         // nothing since there's no surface to paint onto.
         ti.layout(
             rect,
@@ -3785,7 +3509,7 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #733: pure measurement — only needs `current_line_height`/
+    /// Pure measurement — only needs `current_line_height`/
     /// `current_char_width`, not a live render target or `self.dwrite`
     /// (mirrors [`Self::command_line_layout`]'s doc for why this only
     /// needs the `target_os = "windows"` gate every method in this file
@@ -3805,7 +3529,7 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #28: real Direct2D/DirectWrite rasteriser via `win::tooltip` once a
+    /// Real Direct2D/DirectWrite rasteriser via `win::tooltip` once a
     /// surface is attached. Renders `TooltipChrome::default()` — see
     /// [`Self::draw_tooltip_with_chrome`] for the full-chrome entry point.
     /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
@@ -3814,7 +3538,7 @@ impl Backend for WinBackend {
         self.draw_tooltip_with_chrome(tooltip, layout, &TooltipChrome::default());
     }
 
-    /// #28: see [`Self::draw_tooltip`]'s doc. Overridden (rather than
+    /// See [`Self::draw_tooltip`]'s doc. Overridden (rather than
     /// relying on the trait's default delegate-to-`draw_tooltip` body) so
     /// a `Sides`/`None`/title chrome request is honoured, matching the
     /// TUI, GTK and macOS backends (see `Backend::draw_tooltip_with_chrome`'s
@@ -3857,11 +3581,11 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = (tooltip, layout, chrome);
     }
 
-    /// #28: real Direct2D/DirectWrite rasteriser via `win::context_menu`
+    /// Real Direct2D/DirectWrite rasteriser via `win::context_menu`
     /// once a surface is attached. `layout` is fully resolved upstream
     /// (see `crate::compose::menu_system`) — this only paints it and
     /// collects the per-clickable-item hit rectangles. See
@@ -3900,10 +3624,10 @@ impl Backend for WinBackend {
                 &style,
             );
         }
-        // `layout` is already fully resolved (see this fn's doc) — the
-        // hit-rect list is a pure extraction from it, no text measurement
-        // involved, so this doesn't need a surface/DWrite at all (issue
-        // #924). Painting is skipped; only the hit rects are returned.
+        // `layout` is already fully resolved — the hit-rect list is a pure
+        // extraction from it, no text measurement involved, so this doesn't
+        // need a surface/DWrite at all. Painting is skipped; only the hit
+        // rects are returned.
         layout
             .visible_items
             .iter()
@@ -3917,20 +3641,20 @@ impl Backend for WinBackend {
             .collect()
     }
 
-    /// #28: real Direct2D/DirectWrite rasteriser via `win::dialog` once a
+    /// Real Direct2D/DirectWrite rasteriser via `win::dialog` once a
     /// surface is attached. `layout` is fully resolved upstream (see
     /// [`crate::primitives::dialog::Dialog::layout`]) — this only paints
     /// it and returns the per-button hit rectangles in
     /// `layout.visible_buttons` order. See [`Self::draw_status_bar`]'s
     /// doc for the "surface not attached yet" fallback posture.
     ///
-    /// #1077: `Dialog` is `ChromePrimitive::Dialog` (whole primitive,
-    /// matching macOS's existing #1003 fix) — see `draw_tree`'s comment
-    /// for the font swap. Passes `chrome_dwrite`, falling back to the
-    /// editor `dwrite` handle if no live chrome one exists yet, same
-    /// "degrade, don't panic" convention as
-    /// `surface_draw_text_run_with_role`'s Windows override — this is
-    /// `chrome_dwrite`'s first real caller (see that field's own doc).
+    /// `Dialog` is `ChromePrimitive::Dialog` (whole primitive, matching
+    /// macOS's existing fix) — see `draw_tree`'s comment for the font
+    /// swap. Passes `chrome_dwrite`, falling back to the editor `dwrite`
+    /// handle if no live chrome one exists yet, same "degrade, don't
+    /// panic" convention as `surface_draw_text_run_with_role`'s Windows
+    /// override — this is `chrome_dwrite`'s first real caller (see that
+    /// field's own doc).
     fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect> {
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.surface {
@@ -3950,7 +3674,7 @@ impl Backend for WinBackend {
         // `layout` is already fully resolved (see this fn's doc) — the
         // per-button hit rects are a pure extraction from
         // `layout.visible_buttons`, no text measurement involved, so this
-        // doesn't need a surface/DWrite at all (issue #924). Painting is
+        // doesn't need a surface/DWrite at all. Painting is
         // skipped; only the hit rects are returned.
         let _ = dialog;
         layout
@@ -3982,7 +3706,7 @@ impl Backend for WinBackend {
         self.register_zone(float.id.clone(), layout.bounds);
     }
 
-    /// #27: real Direct2D/DirectWrite rasteriser via `win::multi_section_view`
+    /// Real Direct2D/DirectWrite rasteriser via `win::multi_section_view`
     /// once a surface is attached. See [`Self::draw_status_bar`]'s doc for
     /// the "surface not attached yet" fallback posture.
     ///
@@ -4010,11 +3734,11 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = (rect, view);
     }
 
-    /// #27: like [`Self::tree_layout`], this is pure measurement — only
+    /// Like [`Self::tree_layout`], this is pure measurement — only
     /// needs `line_height`, not a live render target or `self.dwrite`
     /// (`win_msv_layout`'s `body_measure` is row-count-based, not real
     /// text measurement, mirroring `MacBackend::msv_layout`/
@@ -4030,11 +3754,11 @@ impl Backend for WinBackend {
         // `crate::primitives::layout_metrics::msv_layout` is fully
         // portable (row-count estimate, no Direct2D/DirectWrite type) —
         // call it directly instead of reaching into the Windows-only
-        // `super::multi_section_view` module (issue #924).
+        // `super::multi_section_view` module.
         crate::primitives::layout_metrics::msv_layout(view, rect, self.current_line_height as f64)
     }
 
-    /// #27: see [`Self::msv_layout`]'s doc for both the "no measurer
+    /// See [`Self::msv_layout`]'s doc for both the "no measurer
     /// needed, but still Windows-only" posture and the no-`return`
     /// pattern. `allow_resize` is hardcoded `false` here (no `view` to
     /// read it from), matching `MacBackend::msv_metrics`/
@@ -4042,11 +3766,11 @@ impl Backend for WinBackend {
     /// the resize-aware divider size should go through
     /// [`Self::msv_layout`] instead.
     fn msv_metrics(&self) -> MsvLayoutMetrics {
-        // Portable — see `msv_layout`'s doc (issue #924).
+        // Portable — see `msv_layout`'s doc.
         crate::primitives::layout_metrics::msv_metrics(self.current_line_height as f64, false)
     }
 
-    /// #26: like [`Self::activity_bar_layout`], this needs no measurer
+    /// Like [`Self::activity_bar_layout`], this needs no measurer
     /// at all — chevron width is a `line_height`-derived estimate (see
     /// `win::tree::win_tree_layout`'s doc), not a real DirectWrite
     /// measurement — so this doesn't even need `self.dwrite`, only the
@@ -4054,11 +3778,11 @@ impl Backend for WinBackend {
     /// (the callee lives in a Windows-only module).
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
         // `crate::primitives::layout_metrics::tree_layout` is fully
-        // portable — see `msv_layout`'s doc (issue #924).
+        // portable — see `msv_layout`'s doc.
         crate::primitives::layout_metrics::tree_layout(tree, rect, self.current_line_height as f64)
     }
 
-    /// #1043: `vscrollbar` deals purely in row counts/row-height, so
+    /// `vscrollbar` deals purely in row counts/row-height, so
     /// (like [`Self::list_vscrollbar`]) the primitive's own geometry
     /// method is unit-correct for every backend — see
     /// [`TreeView::vscrollbar`]. Cross-platform, no Direct2D/DirectWrite
@@ -4079,7 +3803,7 @@ impl Backend for WinBackend {
         tree.vscrollbar(rect, row_h as f32)
     }
 
-    /// #26: pure measurement — only needs `self.dwrite`, not a live
+    /// Pure measurement — only needs `self.dwrite`, not a live
     /// render target. See [`Self::status_bar_layout`]'s doc. Prefers
     /// `chrome_dwrite`, matching [`Self::draw_form`]'s paint font — both
     /// must resolve the same handle or field widths measured here would
@@ -4090,7 +3814,7 @@ impl Backend for WinBackend {
             return super::form::win_form_layout(dwrite, rect, form, self.current_line_height);
         }
         // No live DWrite handle — nominal char-width estimate instead
-        // (issue #924); real per-glyph measurement resumes once
+        //; real per-glyph measurement resumes once
         // `attach_surface`/`attach_headless` builds one.
         let row_h =
             crate::primitives::layout_metrics::form_row_height(self.current_line_height as f64);
@@ -4102,7 +3826,7 @@ impl Backend for WinBackend {
         })
     }
 
-    /// #26: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture. `rect` is unused on the painted
     /// path — `editor.rect` is authoritative (mirrors
     /// `GtkBackend::draw_editor`, which does the same).
@@ -4147,9 +3871,7 @@ impl Backend for WinBackend {
             return result;
         }
         // No surface/DWrite yet — paint nothing and report no cursor
-        // position, matching every other backend's "nothing painted"
-        // shape for a struct with no `painted` flag of its own (issue
-        // #924).
+        // position, matching every other backend's "nothing painted" shape.
         let _ = (rect, editor);
         EditorPaintResult::default()
     }
@@ -4162,7 +3884,7 @@ impl Backend for WinBackend {
         self.editor_v_scrollbar_w
     }
 
-    /// #30: real Direct2D/DirectWrite rasteriser via `win::message_list`
+    /// Real Direct2D/DirectWrite rasteriser via `win::message_list`
     /// once a surface is attached. Mirrors `GtkBackend::draw_message_list`
     /// / `MacBackend::draw_message_list` — no panel-background fill here;
     /// hosts that want one paint it before calling (see
@@ -4187,24 +3909,23 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = (rect, list);
     }
 
-    /// #28: real Direct2D/DirectWrite rasteriser via `win::rich_text_popup`
+    /// Real Direct2D/DirectWrite rasteriser via `win::rich_text_popup`
     /// once a surface is attached. The rasteriser returns per-link hit
     /// regions for its own tests; the trait signature discards them (same
     /// posture as `GtkBackend::draw_rich_text_popup` — hosts that need
     /// link hit-testing query `popup.layout(...).hit_test(...)` directly).
     /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
     /// yet" fallback posture.
-    /// #1077: `RichTextPopup` is `ChromePrimitive::RichTextPopup` (whole
-    /// primitive, matching macOS's existing #1003 fix — see `draw_tree`'s
+    /// `RichTextPopup` is `ChromePrimitive::RichTextPopup` (whole
+    /// primitive, matching macOS's existing fix — see `draw_tree`'s
     /// comment for the font swap). Passes `chrome_dwrite`, falling back
     /// to the editor `dwrite` handle if no live chrome one exists yet,
     /// same "degrade, don't panic" convention as
-    /// `surface_draw_text_run_with_role`'s Windows override — this was
-    /// still reaching for the editor `dwrite` handle pre-#1077.
+    /// `surface_draw_text_run_with_role`'s Windows override.
     fn draw_rich_text_popup(&mut self, popup: &RichTextPopup, layout: &RichTextPopupLayout) {
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.surface {
@@ -4223,7 +3944,7 @@ impl Backend for WinBackend {
             }
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = (popup, layout);
     }
 
@@ -4258,7 +3979,7 @@ impl Backend for WinBackend {
         let _ = (popup, layout);
     }
 
-    /// #809 (`PaintSurface` Phase 2b): real Direct2D/DirectWrite
+    /// Real Direct2D/DirectWrite
     /// rendering via [`crate::primitives::find_replace::paint`] once a
     /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
     /// "surface not attached yet" fallback posture.
@@ -4271,11 +3992,11 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = (rect, panel);
     }
 
-    /// #28: real Direct2D/DirectWrite rasteriser via `win::completions`
+    /// Real Direct2D/DirectWrite rasteriser via `win::completions`
     /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
     /// for the "surface not attached yet" fallback posture.
     fn draw_completions(&mut self, completions: &Completions, layout: &CompletionsLayout) {
@@ -4295,11 +4016,11 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = (completions, layout);
     }
 
-    /// #27: real Direct2D rasteriser via `win::scrollbar` once a surface
+    /// Real Direct2D rasteriser via `win::scrollbar` once a surface
     /// is attached. See [`Self::draw_status_bar`]'s doc for the "surface
     /// not attached yet" fallback posture. `rect` is unused on the
     /// painted path — `scrollbar.track` is authoritative, mirroring
@@ -4313,11 +4034,11 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = (rect, scrollbar);
     }
 
-    /// #865: paint via the shared
+    /// Paint via the shared
     /// [`crate::primitives::drop_zone::native_surface_paint::paint`]
     /// once a surface is attached — mirrors [`Self::draw_scrollbar`].
     /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
@@ -4330,11 +4051,11 @@ impl Backend for WinBackend {
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking (issue #924).
+        // of panicking.
         let _ = overlay;
     }
 
-    /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     ///
     /// `MenuBar` is `ChromePrimitive::MenuBar` — see
@@ -4356,7 +4077,7 @@ impl Backend for WinBackend {
                 bar,
                 &self.current_theme,
             );
-            // #1232: see "Band-content zone registration" above —
+            // See "Band-content zone registration" above —
             // without this, every point over "File"/"Edit"/... reads as
             // `HTCAPTION` and the OS swallows the click before the app
             // ever sees it.
@@ -4365,7 +4086,7 @@ impl Backend for WinBackend {
         }
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `menu_bar_layout` falls back to, and paint
-        // nothing (issue #924).
+        // nothing.
         let layout = super::menu_bar::win_menu_bar_layout(
             &NominalTextMeasure {
                 char_width: self.current_char_width,
@@ -4377,7 +4098,7 @@ impl Backend for WinBackend {
         layout
     }
 
-    /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
+    /// See [`Self::status_bar_layout`]'s doc for why this only needs
     /// `self.dwrite`. Prefers `chrome_dwrite`, matching
     /// [`Self::draw_menu_bar`]'s paint font.
     fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
@@ -4394,7 +4115,7 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture. `Split` paints no text, so unlike
     /// most of that method's siblings this doesn't need `self.dwrite`.
     fn draw_split(&mut self, rect: Rect, split: &Split) -> SplitLayout {
@@ -4408,27 +4129,27 @@ impl Backend for WinBackend {
             return layout;
         }
         // No surface yet — return the real (pure-geometry) layout via
-        // `split_layout` and paint nothing (issue #924).
+        // `split_layout` and paint nothing.
         self.split_layout(rect, split)
     }
 
-    /// #29: pure geometry — no measurer at all (uniform divider
-    /// thickness), so unlike most `*_layout` siblings this doesn't even
-    /// need `self.dwrite`, only kept behind the `target_os = "windows"`
-    /// gate for consistency with every other method in this file.
+    /// Pure geometry — no measurer at all (uniform divider thickness),
+    /// so unlike most `*_layout` siblings this doesn't even need
+    /// `self.dwrite`, only kept behind the `target_os = "windows"` gate
+    /// for consistency with every other method in this file.
     ///
-    /// Issue #1079: this used to duplicate `super::split::win_split_layout`'s
+    /// This used to duplicate `super::split::win_split_layout`'s
     /// `DIVIDER_DIP` constant by value (per `PRIMITIVE_RULES.md`#713, to
-    /// avoid reaching into the Windows-only `super::split` module — issue
-    /// #924). [`crate::primitives::layout_metrics::pixel_split_layout`]
-    /// is plain, platform-independent geometry (no Windows-only type in
-    /// its signature), so it can be called directly here with no such
-    /// tradeoff — one shared divider-thickness constant instead of two.
+    /// avoid reaching into the Windows-only `super::split` module).
+    /// [`crate::primitives::layout_metrics::pixel_split_layout`] is plain,
+    /// platform-independent geometry, so it can be called directly here
+    /// with no such tradeoff — one shared divider-thickness constant.
+    /// instead of two.
     fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout {
         crate::primitives::layout_metrics::pixel_split_layout(split, rect)
     }
 
-    /// #740: see [`Self::draw_split`]'s doc for the "surface not attached
+    /// See [`Self::draw_split`]'s doc for the "surface not attached
     /// yet" fallback posture. `SplitTree` paints no text, so unlike most
     /// of that method's siblings this doesn't need `self.dwrite`.
     fn draw_split_tree(
@@ -4446,15 +4167,15 @@ impl Backend for WinBackend {
             return layout;
         }
         // No surface yet — return the real (pure-geometry) layout via
-        // `split_tree_layout` and paint nothing (issue #924).
+        // `split_tree_layout` and paint nothing.
         self.split_tree_layout(rect, tree)
     }
 
-    /// #740: pure geometry — no measurer at all (uniform divider
+    /// Pure geometry — no measurer at all (uniform divider
     /// thickness), so unlike most `*_layout` siblings this doesn't even
     /// need `self.dwrite`, only kept behind the `target_os = "windows"`
     /// gate for consistency with every other method in this file. See
-    /// [`Self::split_layout`]'s doc (issue #1079) for why this now
+    /// [`Self::split_layout`]'s doc for why this now
     /// delegates to the shared, platform-independent
     /// [`crate::primitives::layout_metrics::pixel_split_tree_layout`]
     /// instead of duplicating `super::split_tree`'s `DIVIDER_DIP` by
@@ -4467,7 +4188,7 @@ impl Backend for WinBackend {
         crate::primitives::layout_metrics::pixel_split_tree_layout(tree, rect)
     }
 
-    /// #1085: paint via the shared
+    /// Paint via the shared
     /// [`crate::primitives::board::native_surface_paint::paint`] once a
     /// surface is attached — mirrors [`Self::draw_diff_view`]. See that
     /// fn's doc for the four named divergences (column-header overflow;
@@ -4486,23 +4207,22 @@ impl Backend for WinBackend {
             );
         }
         // No surface/DWrite yet — return the real (pure-geometry) layout
-        // via `board_layout` and paint nothing (issue #924).
+        // via `board_layout` and paint nothing.
         self.board_layout(rect, model)
     }
 
-    /// #736: pure geometry — `board_layout` needs no measurer at all
+    /// Pure geometry — `board_layout` needs no measurer at all
     /// (fixed DIP constants, same posture as
     /// [`Self::pipeline_view_layout`]'s doc), only kept behind the
     /// `target_os = "windows"` gate for consistency with every other
     /// method in this file. No `return` in the `windows` arm — see
     /// [`Self::activity_bar_layout`]'s doc for why.
     fn board_layout(&self, rect: Rect, model: &crate::BoardModel) -> crate::BoardLayout {
-        // Pure geometry (fixed DIP constants) — issue #1079 lifted the
-        // `BoardMeasure::new(BOARD_*_PX...)` construction
-        // `super::board::win_board_layout` also does into
+        // Pure geometry (fixed DIP constants) — lifted the
+        // `BoardMeasure::new(BOARD_*_PX...)` construction into
         // `crate::primitives::layout_metrics::pixel_board_layout`, callable
-        // directly here (no Windows-only type in its signature) rather
-        // than reaching into that Windows-only module (issue #924).
+        // directly here (no Windows-only type in its signature) rather than
+        // reaching into that Windows-only module.
         crate::primitives::layout_metrics::pixel_board_layout(
             model,
             rect.x,
@@ -4512,7 +4232,7 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #738: real Direct2D/DirectWrite rasteriser via `win::minimap` once a
+    /// Real Direct2D/DirectWrite rasteriser via `win::minimap` once a
     /// surface is attached — see [`Self::draw_status_bar`]'s doc for the
     /// "surface not attached yet" fallback posture.
     fn draw_minimap(
@@ -4535,17 +4255,15 @@ impl Backend for WinBackend {
                 painted: true,
             };
         }
-        // No surface/DWrite yet — same treatment `MacBackend::draw_minimap`
-        // gives its own "no rasteriser yet" gap (#802/dbb3023): real
-        // geometry via `minimap_layout`, `painted: false`, nothing drawn
-        // (issue #924).
+        // No surface/DWrite yet — same treatment as `MacBackend::draw_minimap`:
+        // real geometry via `minimap_layout`, `painted: false`, nothing drawn.
         crate::backend::MinimapPaintResult {
             layout: self.minimap_layout(rect, minimap),
             painted: false,
         }
     }
 
-    /// #738: pure geometry — `minimap_layout` needs no measurer at all
+    /// Pure geometry — `minimap_layout` needs no measurer at all
     /// (fixed DIP constants, same posture as
     /// [`Self::board_layout`]'s doc), only kept behind the
     /// `target_os = "windows"` gate for consistency with every other
@@ -4557,12 +4275,11 @@ impl Backend for WinBackend {
     ) -> crate::primitives::minimap::MinimapLayout {
         // Pure geometry (fixed DIP constants) — `Minimap::layout_with_sizing`
         // needs no Direct2D/DirectWrite type, so this is computed directly
-        // instead of reaching into the Windows-only `super::minimap`
-        // module (issue #924). One buffer line per painted row (no
-        // cross-line colour reduction), same `LINES_PER_ROW` value that
-        // module uses. `self.minimap_scale`'s own `row_pitch_px` (issue
-        // #1143) replaces the bare `ROW_PITCH_PX` constant this used
-        // before, so this pure-geometry path and `super::minimap`'s real
+        // instead of reaching into the Windows-only `super::minimap` module.
+        // One buffer line per painted row (no cross-line colour reduction),
+        // same `LINES_PER_ROW` value that module uses. `self.minimap_scale`'s
+        // own `row_pitch_px` replaces the bare `ROW_PITCH_PX` constant this
+        // used before, so this pure-geometry path and `super::minimap`'s real
         // paint path always resolve the same pitch.
         minimap.layout_with_sizing(
             rect,
@@ -4581,7 +4298,7 @@ impl Backend for WinBackend {
         self.minimap_scale = scale;
     }
 
-    /// #739: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture. Only needs `self.surface` (not
     /// `self.dwrite` too) — WIC decoding and `DrawBitmap` are pure
     /// Direct2D, no text measurement involved.
@@ -4595,13 +4312,13 @@ impl Backend for WinBackend {
             return super::image::draw_image(&surface.target, rect, image);
         }
         // No surface yet — matches `MacBackend::draw_image`'s categorical
-        // `Unsupported` (#802): no pixels to rasterise onto, so report it
-        // rather than panic (issue #924).
+        // `Unsupported`: no pixels to rasterise onto, so report it
+        // rather than panic.
         let _ = (rect, image);
         crate::backend::ImagePaintResult::Unsupported
     }
 
-    /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout {
         #[cfg(target_os = "windows")]
@@ -4615,13 +4332,13 @@ impl Backend for WinBackend {
             return layout;
         }
         // No surface/DWrite yet — return the real (pure-geometry) layout
-        // via `panel_layout` and paint nothing (issue #924).
+        // via `panel_layout` and paint nothing.
         self.panel_layout(rect, panel)
     }
 
-    /// #29: pure geometry — `Panel::layout` needs only `line_height`,
+    /// Pure geometry — `Panel::layout` needs only `line_height`,
     /// not text measurement, so this needs no `self.dwrite`/surface at
-    /// all (issue #924) — computed directly rather than reaching into
+    /// all — computed directly rather than reaching into
     /// the Windows-only `super::panel` module.
     fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout {
         let line_height = self.current_line_height;
@@ -4652,11 +4369,11 @@ impl Backend for WinBackend {
         layout
     }
 
-    /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture. #861: paints via the shared
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
+    /// yet" fallback posture. Paints via the shared
     /// [`crate::primitives::toast::native_surface_paint::paint`] now,
     /// passing `&self.current_theme` — see `super::toast`'s module doc
-    /// for why the pre-#861 free function never did.
+    /// for why the previous free function never did.
     fn draw_toast_overlay(&mut self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
@@ -4677,7 +4394,7 @@ impl Backend for WinBackend {
         }
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `toast_stack_layout` falls back to, and paint
-        // nothing (issue #924).
+        // nothing.
         super::toast::win_toast_stack_layout(
             &NominalTextMeasure {
                 char_width: self.current_char_width,
@@ -4688,7 +4405,7 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #29: pure measurement — only needs `self.dwrite`, not a live
+    /// Pure measurement — only needs `self.dwrite`, not a live
     /// render target, so this works as soon as a surface has ever been
     /// attached — same posture as [`Self::status_bar_layout`]. Prefers
     /// `chrome_dwrite`, matching `Self::draw_toast_overlay`'s paint font
@@ -4715,10 +4432,10 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #735: real Direct2D/DirectWrite rasteriser via `win::pipeline_view`
+    /// Real Direct2D/DirectWrite rasteriser via `win::pipeline_view`
     /// once a surface is attached. See [`Self::draw_status_bar`]'s doc for
     /// the "surface not attached yet" fallback posture.
-    /// #1085: paint via the shared
+    /// Paint via the shared
     /// [`crate::primitives::pipeline_view::native_surface_paint::paint`]
     /// once a surface is attached — mirrors [`Self::draw_diff_view`]. See
     /// that fn's doc for the seven named divergences found while
@@ -4740,19 +4457,19 @@ impl Backend for WinBackend {
             );
         }
         // No surface/DWrite yet — return the real (pure-geometry) layout
-        // via `pipeline_view_layout` and paint nothing (issue #924).
+        // via `pipeline_view_layout` and paint nothing.
         self.pipeline_view_layout(rect, view)
     }
 
-    /// #735: pure geometry — `PipelineView::layout` needs no measurer at
-    /// all (fixed DIP constants for arrow/action-height), so this needs
-    /// no `self.dwrite`/surface at all (issue #924).
+    /// Pure geometry — `PipelineView::layout` needs no measurer at all
+    /// (fixed DIP constants for arrow/action-height), so this needs no
+    /// `self.dwrite`/surface at all.
     ///
-    /// Issue #1079: this used to duplicate `super::pipeline_view`'s
+    /// This used to duplicate `super::pipeline_view`'s
     /// `WIN_ARROW_WIDTH_DIP` / `WIN_ACTION_HEIGHT_DIP` /
     /// `WIN_FOCUS_INDICATOR_H` constants by value (per
     /// `PRIMITIVE_RULES.md`#713, to avoid reaching into that
-    /// Windows-only module — issue #924).
+    /// Windows-only module).
     /// [`crate::primitives::layout_metrics::pixel_pipeline_view_layout`]
     /// is plain, platform-independent geometry, so it can be called
     /// directly here instead — one shared set of constants.
@@ -4770,20 +4487,13 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #1085: paint via the shared
+    /// Paint via the shared
     /// [`crate::primitives::progress::native_surface_paint::paint`] once
-    /// a surface is attached — mirrors [`Self::draw_diff_view`]. See that
-    /// fn's doc for the one named divergence (this backend previously
-    /// ignored the host's theme entirely, painting `Theme::default()` on
-    /// every call — see `win::progress`'s module doc) found while
-    /// unifying `gtk::progress::draw_progress`,
-    /// `macos::progress::draw_progress` and `win::progress::draw_progress`
-    /// into one implementation. Note this now passes `self.current_theme`
-    /// — the fix — rather than routing through `win::progress::draw_progress`,
-    /// whose deprecated shim deliberately keeps the old
-    /// `Theme::default()`-only behaviour for byte-compatible external
-    /// callers (CLAUDE.md rule 8). See [`Self::draw_status_bar`]'s doc
-    /// for the "surface not attached yet" fallback posture.
+    /// a surface is attached — mirrors [`Self::draw_diff_view`]. The
+    /// Windows backend now passes `self.current_theme` instead of painting
+    /// `Theme::default()`, matching the macOS and GTK backends. See
+    /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
+    /// fallback posture.
     fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
@@ -4794,20 +4504,20 @@ impl Backend for WinBackend {
             );
         }
         // No surface/DWrite yet — return the real (pure-geometry) layout
-        // via `progress_layout` and paint nothing (issue #924).
+        // via `progress_layout` and paint nothing.
         self.progress_layout(rect, bar)
     }
 
-    /// #29: pure geometry — `ProgressBar::layout` needs no measurer at
-    /// all (uniform cancel-affordance width), so this needs no
-    /// `self.dwrite`/surface at all (issue #924).
+    /// Pure geometry — `ProgressBar::layout` needs no measurer at all
+    /// (uniform cancel-affordance width), so this needs no
+    /// `self.dwrite`/surface at all.
     ///
-    /// Issue #1079: this used to duplicate `super::progress`'s
-    /// `CANCEL_WIDTH_DIP` constant by value (per `PRIMITIVE_RULES.md`#713,
-    /// to avoid reaching into that Windows-only module — issue #924).
+    /// This used to duplicate `super::progress`'s `CANCEL_WIDTH_DIP`
+    /// constant by value (per `PRIMITIVE_RULES.md`#713, to avoid reaching
+    /// into that Windows-only module).
     /// [`crate::primitives::layout_metrics::pixel_progress_layout`] is
-    /// plain, platform-independent geometry, so it can be called
-    /// directly here instead — one shared constant.
+    /// plain, platform-independent geometry, so it can be called directly
+    /// here instead — one shared constant.
     fn progress_layout(&self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
         crate::primitives::layout_metrics::pixel_progress_layout(
             bar,
@@ -4818,7 +4528,7 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
         #[cfg(target_os = "windows")]
@@ -4831,7 +4541,7 @@ impl Backend for WinBackend {
         }
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `spinner_layout` falls back to, and paint
-        // nothing (issue #924).
+        // nothing.
         super::spinner::win_spinner_layout(
             &NominalSpinnerMeasure {
                 char_width: self.current_char_width,
@@ -4842,7 +4552,7 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #29: pure measurement — only needs `self.dwrite`, not a live
+    /// Pure measurement — only needs `self.dwrite`, not a live
     /// render target, so this works as soon as a surface has ever been
     /// attached — same posture as [`Self::status_bar_layout`]. Prefers
     /// `chrome_dwrite`, matching [`Self::draw_spinner`]'s paint font.
@@ -4861,7 +4571,7 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #732: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     ///
     /// `CommandCenter` is `ChromePrimitive::CommandCenter` — see
@@ -4885,24 +4595,23 @@ impl Backend for WinBackend {
                 cc,
                 &self.current_theme,
             );
-            // #1232: see "Band-content zone registration" above — the
+            // See "Band-content zone registration" above — the
             // command-centre search box the issue names explicitly.
             self.register_command_center_zones(&cc.id, &layout);
             return layout;
         }
         // No surface yet — return the real (pure `char_width` estimate)
-        // layout via `command_center_layout` and paint nothing (issue
-        // #924).
+        // layout via `command_center_layout` and paint nothing.
         let layout = self.command_center_layout(rect, cc);
         self.register_command_center_zones(&cc.id, &layout);
         layout
     }
 
-    /// #732: pure `char_width` estimate (via the shared
+    /// Pure `char_width` estimate (via the shared
     /// [`crate::primitives::command_center::CommandCenterMeasure::from_char_width`]
-    /// formula) — no live `DWrite` measurer is needed at all (issue
-    /// #924), so this is computed directly rather than reaching into the
-    /// Windows-only `super::command_center` module.
+    /// formula) — no live `DWrite` measurer is needed at all, so this is
+    /// computed directly rather than reaching into the Windows-only
+    /// `super::command_center` module.
     fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
         cc.layout(
             rect,
@@ -4914,7 +4623,7 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #730: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     ///
     /// `Toolbar` is `ChromePrimitive::Toolbar` — see
@@ -4946,13 +4655,13 @@ impl Backend for WinBackend {
         }
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `toolbar_layout` falls back to, and paint
-        // nothing (issue #924). `hovered_id`/`pressed_id`/`options` only
+        // nothing. `hovered_id`/`pressed_id`/`options` only
         // affect painting, so they're unused on this path.
         let _ = (hovered_id, pressed_id, options);
         self.toolbar_layout(rect, bar)
     }
 
-    /// #730: see [`Self::status_bar_layout`]'s doc for why this only
+    /// See [`Self::status_bar_layout`]'s doc for why this only
     /// needs `self.dwrite`. Prefers `chrome_dwrite`, matching
     /// [`Self::draw_toolbar_with_options`]'s paint font.
     fn toolbar_layout(
@@ -4965,7 +4674,6 @@ impl Backend for WinBackend {
             return super::toolbar::win_toolbar_layout(dwrite, rect, bar);
         }
         // No live DWrite handle — nominal char-width estimate instead
-        // (issue #924).
         let measure = NominalTextMeasure {
             char_width: self.current_char_width,
         };
@@ -4976,12 +4684,12 @@ impl Backend for WinBackend {
         })
     }
 
-    /// #731 / #862: see [`Self::draw_status_bar`]'s doc for the "surface
+    /// See [`Self::draw_status_bar`]'s doc for the "surface
     /// not attached yet" fallback posture. `SidebarPanel` embeds a
     /// [`crate::primitives::toolbar::Toolbar`] header, painted here via
     /// the shared
     /// [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
-    /// (#862) rather than a per-backend `toolbar::draw_toolbar` call.
+    /// rather than a per-backend `toolbar::draw_toolbar` call.
     ///
     /// `SidebarPanel` is `ChromePrimitive::SidebarPanel` (whole
     /// primitive, including its embedded toolbar header) — see
@@ -5014,14 +4722,14 @@ impl Backend for WinBackend {
         }
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `sidebar_panel_layout` falls back to, and
-        // paint nothing (issue #924). `hovered_toolbar_id`/
+        // paint nothing. `hovered_toolbar_id`/
         // `pressed_toolbar_id` only affect painting, so they're unused
         // on this path.
         let _ = (hovered_toolbar_id, pressed_toolbar_id);
         self.sidebar_panel_layout(rect, panel)
     }
 
-    /// #731: see [`Self::toolbar_layout`]'s doc for why this only needs
+    /// See [`Self::toolbar_layout`]'s doc for why this only needs
     /// `self.dwrite` (text measurement for the nested toolbar's button
     /// widths), not a live render target. Prefers `chrome_dwrite`,
     /// matching [`Self::draw_sidebar_panel_interactive`]'s paint font.
@@ -5040,7 +4748,6 @@ impl Backend for WinBackend {
             );
         }
         // No live DWrite handle — nominal char-width estimate instead
-        // (issue #924).
         let measure = NominalTextMeasure {
             char_width: self.current_char_width,
         };
@@ -5058,11 +4765,11 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #737: `diff_view_layout` is **not** overridden on this backend —
+    /// `diff_view_layout` is **not** overridden on this backend —
     /// see `win::diff_view`'s module doc for why the trait default stays
     /// the honest answer even after the shared `DiffView::layout` landed.
     ///
-    /// #866: paint via the shared
+    /// Paint via the shared
     /// [`crate::primitives::diff_view::native_surface_paint::paint`]
     /// once a surface is attached — mirrors [`Self::draw_scrollbar`]. See
     /// that fn's doc for the two named divergences (row/header text
@@ -5095,21 +4802,20 @@ impl Backend for WinBackend {
         // No surface/DWrite yet — the trait's own default
         // `diff_view_layout` (not overridden here — see this fn's doc)
         // already computes the real row-based layout with no measurer
-        // at all, so delegate to it and paint nothing (issue #924).
+        // at all, so delegate to it and paint nothing.
         Backend::diff_view_layout(self, rect, view)
     }
 
-    /// #26: see [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture.
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
+    /// yet" fallback posture.
     ///
-    /// #810: shared chart painting lives in
-    /// [`crate::primitives::chart::paint`] now — see that fn's doc for
-    /// the divergences (the quadraui#791 clip, most notably — Windows
-    /// never had one before this) resolved while unifying
-    /// `gtk::chart::draw_chart`, `macos::chart::draw_chart` and
+    /// Shared chart painting lives in [`crate::primitives::chart::paint`]
+    /// now — see that fn's doc for the divergences (the quadraui clip,
+    /// most notably — Windows never had one before this) resolved while
+    /// unifying `gtk::chart::draw_chart`, `macos::chart::draw_chart` and
     /// `win::chart::draw_chart` into one implementation. Keeps
     /// `Theme::default()` rather than `self.current_theme`, matching
-    /// `WinBackend::draw_form`'s own #808 migration — see that fn's doc.
+    /// `WinBackend::draw_form`'s own migration — see that fn's doc.
     fn draw_chart(
         &mut self,
         rect: Rect,
@@ -5133,15 +4839,15 @@ impl Backend for WinBackend {
         }
         // No surface yet — return the real (pure `char_width`/
         // `line_height` estimate) layout via `chart_layout` and paint
-        // nothing (issue #924).
+        // nothing.
         let _ = (hovered_point, crosshair_x);
         self.chart_layout(rect, chart)
     }
 
-    /// #26: like [`Self::tree_layout`], no measurer is needed — chart
+    /// Like [`Self::tree_layout`], no measurer is needed — chart
     /// tick-label sizing only uses `char_width`/`line_height`, both
     /// already cross-platform fields — so this needs no `self.dwrite`/
-    /// surface at all (issue #924), computed directly rather than
+    /// surface at all, computed directly rather than
     /// reaching into the Windows-only `super::chart` module.
     fn chart_layout(
         &self,
@@ -5160,7 +4866,7 @@ impl Backend for WinBackend {
     }
 }
 
-/// Win-GUI's `WindowControl` surface (issue #950). Every method guards on
+/// Win-GUI's `WindowControl` surface. Every method guards on
 /// `self.hwnd` the same way [`Backend::set_cursor`] does — cheap defense
 /// against a caller that stashed the trait object past a window teardown,
 /// even though [`Backend::window`] only ever hands one out once `hwnd` is
@@ -5351,11 +5057,10 @@ impl WindowControl for WinBackend {
     }
 
     /// Manual `WS_OVERLAPPEDWINDOW` style strip + `SetWindowPos` to the
-    /// nearest monitor's full rect (issue #950's own design note for
-    /// Win-GUI fullscreen) — Win32 has no single reversible "fullscreen"
-    /// call the way GTK's `fullscreen`/`unfullscreen` or AppKit's
-    /// `toggleFullScreen:` are, so [`WinBackend::fullscreen_saved`] does
-    /// the remembering `toggleFullScreen:`'s own window-manager state
+    /// nearest monitor's full rect — Win32 has no single reversible
+    /// "fullscreen" call the way GTK's `fullscreen`/`unfullscreen` or
+    /// AppKit's `toggleFullScreen:` are, so [`WinBackend::fullscreen_saved`]
+    /// does the remembering `toggleFullScreen:`'s own window-manager state
     /// would otherwise do for free. Idempotent: entering while already
     /// fullscreen, or exiting while not, is a no-op `Ok(())` rather than
     /// clobbering the saved rect with an already-fullscreen one.
@@ -5436,7 +5141,7 @@ impl WindowControl for WinBackend {
         }
     }
 
-    /// `IsZoomed` (issue #1022) — Win32's own maximize-state query, the
+    /// `IsZoomed` — Win32's own maximize-state query, the
     /// same notion `ShowWindow(SW_MAXIMIZE)`/[`Self::restore`] flip.
     fn is_maximized(&self) -> ServiceResult<bool> {
         #[cfg(target_os = "windows")]
@@ -5487,14 +5192,13 @@ impl WindowControl for WinBackend {
         }
     }
 
-    /// Toggles the `WS_CAPTION` style bit (issue #1022) — backs
-    /// vimcode's client-side-decoration path (its #552). `WS_CAPTION`
-    /// carries both the titlebar and (implicitly, per Win32's style-bit
-    /// dependencies) the thin sizing border that comes with it, so
-    /// clearing it removes the whole native non-client frame a host
-    /// painting its own titlebar wants gone.
-    /// `SWP_FRAMECHANGED` forces Windows to recompute the non-client
-    /// area from the new style — same requirement `set_fullscreen`'s own
+    /// Toggles the `WS_CAPTION` style bit — backs the client-side-
+    /// decoration path. `WS_CAPTION` carries both the titlebar and
+    /// (implicitly, per Win32's style-bit dependencies) the thin sizing
+    /// border that comes with it, so clearing it removes the whole native
+    /// non-client frame a host painting its own titlebar wants gone.
+    /// `SWP_FRAMECHANGED` forces Windows to recompute the non-client area
+    /// from the new style — same requirement `set_fullscreen`'s own
     /// `SetWindowPos` calls already document.
     fn set_decorated(&mut self, decorated: bool) -> ServiceResult<()> {
         #[cfg(target_os = "windows")]
@@ -5628,7 +5332,7 @@ impl WindowControl for WinBackend {
     }
 }
 
-/// Win-GUI's `TrayService` surface (issue #953), backed by
+/// Win-GUI's `TrayService` surface, backed by
 /// `Shell_NotifyIconW` — see [`super::tray`]'s module doc for the full
 /// design (icon decode, the menu-vs-plain-click sequencing, why
 /// `ContextMenuDismissed` fires here unlike macOS). Every method just
@@ -5691,10 +5395,8 @@ impl WinBackend {
     }
 }
 
-/// UTF-16, NUL-terminated — the framing every `PCWSTR`-taking Win32 call
-/// in this backend needs. The one implementation shared crate-wide
-/// (issue #1087) — this module used to carry its own copy, as did
-/// `super::services`/`super::tray`.
+/// UTF-16, NUL-terminated — the framing every `PCWSTR`-taking Win32
+/// call in this backend needs. The one implementation shared crate-wide.
 #[cfg(target_os = "windows")]
 use crate::desktop::wide_nul_terminated as win_wide_nul_terminated;
 
@@ -5731,34 +5433,29 @@ fn win_monitor_rect(hwnd: HWND) -> ServiceResult<RECT> {
     Ok(info.rcMonitor)
 }
 
-// ─── PaintSurface (#807, Phase 1) ───────────────────────────────────────────
+// ─── PaintSurface ──────────────────────────────────────────────────────────
 //
 // The ~15-verb drawing surface underneath `Backend::draw_*`, extracted from
-// helpers this backend already had privately: `super::text::fill_rect`/
-// `stroke_rect`/`push_clip`/`pop_clip`/`draw_line` and the inherent
-// `Self::measure_text`/`Self::draw_text` (both already `Rect`-taking, #21).
-// Phase 1 was a pure extraction — every verb below either forwards to the
-// identically-named `Backend` method (frame lifecycle, measurement,
+// helpers this backend already had: `super::text::fill_rect`/`stroke_rect`/
+// `push_clip`/`pop_clip`/`draw_line` and the inherent `Self::measure_text`/
+// `Self::draw_text` (both already `Rect`-taking). Every verb either forwards
+// to the identically-named `Backend` method (frame lifecycle, measurement,
 // viewport, image) or to the same free function/inherent method a real
-// `draw_*` rasteriser would call. Same `#[cfg(target_os = "windows")]`
-// split — and, since issue #924, the same no-op/nominal-estimate fallback
-// instead of a `todo!()` — as every other method on this backend. See the
-// module doc's "Implementation notes" for why that keeps
-// `cargo check --features win` meaningful on Linux. See `paint_surface`'s
-// module doc for the full scope note and why these methods are
-// `surface_`-prefixed instead of colliding with `Backend`'s.
+// `draw_*` rasteriser would call. Same `#[cfg(target_os = "windows")]` split
+// and no-op/nominal-estimate fallback as every other method on this backend.
+// See the module doc's "Implementation notes" for why that keeps `cargo check
+// --features win` meaningful on Linux. See `paint_surface`'s module doc for
+// the full scope note and why these methods are `surface_`-prefixed instead of
+// colliding with `Backend`'s.
 //
-// The default is chrome: the four text-shaped verbs below resolve
-// `chrome_dwrite`, falling back to the editor `dwrite` handle only when no
-// live chrome handle exists yet, rather than resolving `dwrite`
-// unconditionally — the same default `MacBackend`'s and `GtkBackend`'s own
-// `PaintSurface` impls carry. [`EditorSurface`] (below) is the opt-out
-// adapter the three editor-class call sites that reach this trait
-// (`WinBackend::draw_terminal`, `draw_text_display`, `draw_diff_view`) wrap
-// `self` in instead, mirroring `MacBackend::EditorSurface`/
-// `GtkBackend::EditorSurface`. [`ChromeSurface`] (also below) still exists
-// for call sites that already wrap `self` in it — harmless, since it
-// resolves the same default plain `self` does.
+// The default is chrome: the four text-shaped verbs resolve `chrome_dwrite`,
+// falling back to the editor `dwrite` handle only when no live chrome handle
+// exists yet — the same default `MacBackend`'s and `GtkBackend`'s own
+// `PaintSurface` impls carry. [`EditorSurface`] (below) is the opt-out adapter
+// the three editor-class call sites that reach this trait wrap `self` in
+// instead, mirroring `MacBackend::EditorSurface`/`GtkBackend::EditorSurface`.
+// [`ChromeSurface`] (also below) still exists for call sites that already wrap
+// `self` in it — harmless, since it resolves the same default plain `self` does.
 impl PaintSurface for WinBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
@@ -5802,7 +5499,7 @@ impl PaintSurface for WinBackend {
         // No live DWrite handle (fresh backend, device lost, or a
         // non-Windows host where this never compiles) — a measurement
         // can't be faked meaningfully, but a wrong-but-finite nominal
-        // per-character estimate beats a dead process (issue #924). Real
+        // per-character estimate beats a dead process. Real
         // widths resume once a surface exists.
         (
             nominal_text_width(text, self.current_char_width),
@@ -5810,9 +5507,9 @@ impl PaintSurface for WinBackend {
         )
     }
 
-    /// #860: overrides the default (which drops `bold`) —
+    /// Overrides the default (which drops `bold`) —
     /// `DWrite::measure_text_styled` already exists on this backend
-    /// (#25), matching what `win::status_bar::draw_status_bar` measured
+    ///, matching what `win::status_bar::draw_status_bar` measured
     /// before its paint moved to
     /// `primitives::status_bar::native_surface_paint::paint`. Also
     /// resolves `chrome_dwrite` now, matching
@@ -5827,7 +5524,7 @@ impl PaintSurface for WinBackend {
             }
         }
         // See `surface_measure_text`'s doc for why this nominal estimate
-        // (rather than `(0.0, 0.0)`) is the chosen degrade (issue #924).
+        // (rather than `(0.0, 0.0)`) is the chosen degrade.
         (
             nominal_text_width(text, self.current_char_width),
             self.current_line_height,
@@ -5841,13 +5538,13 @@ impl PaintSurface for WinBackend {
             return;
         }
         // See `WinBackend::draw_tree`'s doc for why this degrades to a
-        // no-op instead of panicking (issue #924).
+        // no-op instead of panicking.
         let _ = (rect, color);
     }
 
-    /// #1073: `super::text::fill_rounded_rect` is the
+    /// `super::text::fill_rounded_rect` is the
     /// `FillRoundedRectangle` twin of `fill_rect` above — same
-    /// no-surface degrade as every other verb here (issue #924).
+    /// no-surface degrade as every other verb here.
     fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: crate::Color) {
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.surface {
@@ -5855,7 +5552,7 @@ impl PaintSurface for WinBackend {
             return;
         }
         // See `WinBackend::draw_tree`'s doc for why this degrades to a
-        // no-op instead of panicking (issue #924).
+        // no-op instead of panicking.
         let _ = (rect, radius, color);
     }
 
@@ -5866,7 +5563,7 @@ impl PaintSurface for WinBackend {
             return;
         }
         // See `WinBackend::draw_tree`'s doc for why this degrades to a
-        // no-op instead of panicking (issue #924).
+        // no-op instead of panicking.
         let _ = (rect, color, stroke_width);
     }
 
@@ -5913,14 +5610,7 @@ impl PaintSurface for WinBackend {
         let _ = (rect, text, color);
     }
 
-    /// #810: overrides the default (which drops styling) for `bold`
-    /// only — `DWrite::draw_text_styled` already exists on this
-    /// backend (#25); `italic`/`underline` are silently dropped,
-    /// matching `win::terminal::draw_terminal_cells`'s pre-#810
-    /// documented limitation ("DWrite has no italic text format or
-    /// underline attribute wired up today"). Also resolves
-    /// `chrome_dwrite` now, matching [`Self::surface_measure_text`]'s
-    /// doc.
+    /// Overrides the default (which drops styling) for `bold`
     #[allow(clippy::too_many_arguments)]
     fn surface_draw_text_run_styled(
         &mut self,
@@ -5948,18 +5638,11 @@ impl PaintSurface for WinBackend {
             return;
         }
         // See `WinBackend::draw_tree`'s doc for why this degrades to a
-        // no-op instead of panicking (issue #924).
+        // no-op instead of panicking.
         let _ = (rect, text, color, bold, scale_x);
     }
 
-    /// #1073: overrides the default (which ignores `role`) — `chrome_dwrite`
-    /// (built by [`Self::attach_headless`]/the live-surface setup path
-    /// alongside the editor `dwrite` handle) has sat unused since it was
-    /// added; this is the first call site that actually selects it.
-    /// `italic` is dropped, matching [`Self::surface_draw_text_run_styled`]'s
-    /// own documented pre-#810 limitation ("DWrite has no italic text
-    /// format ... wired up today") — adding one is out of this issue's
-    /// scope.
+    /// Overrides the default (which ignores `role`) to select `chrome_dwrite`
     fn surface_draw_text_run_with_role(
         &mut self,
         rect: Rect,
@@ -5984,11 +5667,11 @@ impl PaintSurface for WinBackend {
             }
         }
         // See `WinBackend::draw_tree`'s doc for why this degrades to a
-        // no-op instead of panicking (issue #924).
+        // no-op instead of panicking.
         let _ = (rect, text, color, role);
     }
 
-    /// #1073: overrides the default only to document why it needn't
+    /// Overrides the default only to document why it needn't
     /// change anything — `DWrite::new` already bakes
     /// [`Self::set_nerd_font_fallback`]'s `IDWriteFontFallback` into
     /// every `IDWriteTextFormat` it builds (editor and chrome alike) via
@@ -6020,7 +5703,7 @@ impl PaintSurface for WinBackend {
             return;
         }
         // See `WinBackend::draw_tree`'s doc for why this degrades to a
-        // no-op instead of panicking (issue #924).
+        // no-op instead of panicking.
         let _ = (from, to, color, stroke_width);
     }
 
@@ -6031,7 +5714,7 @@ impl PaintSurface for WinBackend {
             return;
         }
         // See `WinBackend::draw_tree`'s doc for why this degrades to a
-        // no-op instead of panicking (issue #924).
+        // no-op instead of panicking.
         let _ = rect;
     }
 
@@ -6041,7 +5724,7 @@ impl PaintSurface for WinBackend {
             super::text::pop_clip(&surface.target);
         }
         // See `WinBackend::draw_tree`'s doc for why this degrades to a
-        // no-op instead of panicking (issue #924).
+        // no-op instead of panicking.
     }
 
     fn surface_draw_image(
@@ -6075,14 +5758,10 @@ impl PaintSurface for WinBackend {
 /// `chrome_char_width` — can revisit this; it is out of this issue's
 /// scope.
 // `ChromeSurface` is only ever constructed inside a `#[cfg(target_os =
-// "windows")]` block (see `Self::draw_status_bar_interactive`/
-// `Self::draw_sidebar_panel_interactive`), so a non-Windows `--features
-// win` check (this crate's `win` CI leg, run on Linux — see `CLAUDE.md`'s
-// "Win-GUI: building and testing for real") never constructs it. Before
-// issue #1101 made `PaintSurface` `pub`, that was masked by the trait's
-// own now-removed `#[allow(dead_code)]`; this mirrors the identical
+// "windows")]` block, so a non-Windows `--features win` check never
+// constructs it. This mirrors the identical
 // `#[cfg_attr(not(target_os = "windows"), allow(dead_code))]` already used
-// elsewhere in this file for the same reason (e.g. the fields above).
+// elsewhere in this file for the same reason.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 struct ChromeSurface<'a> {
     backend: &'a mut WinBackend,
@@ -6462,16 +6141,13 @@ mod tests {
         }
     }
 
-    /// #1043 regression: `tree_vscrollbar` used to pass the raw
-    /// `line_height` (16px default) as `TreeView::vscrollbar`'s
-    /// `row_height`, not the `line_height * 1.4` pitch
-    /// `layout_metrics::tree_layout` actually paints for non-header
-    /// rows. With `current_line_height` left at its 16px default, 15
-    /// rows painted at the real 22.4px→22px pitch only fit 13 into a
-    /// 300px-tall viewport (300/22 = 13), so an overflow scrollbar must
-    /// appear — the old raw-`line_height` math (300/16 = 18) would have
-    /// wrongly reported "everything fits". Cross-platform: no
-    /// `target_os = "windows"` gate needed — see `tree_vscrollbar`'s doc.
+    /// `tree_vscrollbar` must use the `line_height * 1.4` pitch
+    /// `layout_metrics::tree_layout` paints for non-header rows, not the raw
+    /// `line_height`. With 15 rows at the real 22.4px→22px pitch, only 13 fit
+    /// into a 300px-tall viewport (300/22 = 13), so an overflow scrollbar must
+    /// appear — the raw-`line_height` math (300/16 = 18) would have wrongly
+    /// reported "everything fits". Cross-platform: no `target_os = "windows"`
+    /// gate needed — see `tree_vscrollbar`'s doc.
     #[test]
     fn win_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
         let backend = WinBackend::new();
@@ -6645,11 +6321,10 @@ mod tests {
         assert_eq!(crate::win::text::brush_creation_count(), 2);
     }
 
-    /// Issue #1156: `default_fonts()` reports Win-GUI's VS-Code-alignment
-    /// convention (`Consolas 14`/`Segoe UI 13`) — cross-platform, no
-    /// `target_os = "windows"` gate needed, same rationale as
-    /// `win_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height`
-    /// above.
+    /// `default_fonts()` reports Win-GUI's VS-Code-alignment convention
+    /// (`Consolas 14`/`Segoe UI 13`) — cross-platform, no `target_os =
+    /// "windows"` gate needed, same rationale as
+    /// `win_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height` above.
     #[test]
     fn win_backend_default_fonts_reports_platform_convention() {
         let backend = WinBackend::new();
@@ -6680,7 +6355,7 @@ mod tests {
         assert_eq!(defaults.ui_size_pt, 13.0);
     }
 
-    /// #1043 / #623: a host-set `TreeStyle::row_height` must be honored
+    /// A host-set `TreeStyle::row_height` must be honored
     /// by `tree_vscrollbar`, exactly as `tree_layout`/`draw_tree` honor
     /// it — not silently ignored in favor of `line_height`.
     #[test]
@@ -6695,11 +6370,9 @@ mod tests {
         assert_eq!(sb.track.width, 50.0);
     }
 
-    /// Issue #1023: `parse_ui_font_desc` splits a Pango-style
-    /// comma-separated fallback list and takes the first candidate —
-    /// generic or concrete — instead of treating the whole list as one
-    /// unmatchable literal family name the way a single `rfind(' ')`
-    /// split used to.
+    /// `parse_ui_font_desc` splits a Pango-style comma-separated fallback list
+    /// and takes the first candidate — generic or concrete — instead of treating
+    /// the whole list as one unmatchable literal family name.
     #[cfg(target_os = "windows")]
     #[test]
     fn parse_ui_font_desc_splits_a_comma_separated_fallback_list() {
@@ -6716,11 +6389,10 @@ mod tests {
         );
     }
 
-    /// Issue #1023: a CSS/Pango generic token resolves to its
-    /// DirectWrite default (`DEFAULT_EDITOR_FONT_FAMILY`/
-    /// `DEFAULT_UI_FONT_FAMILY`) rather than being treated as a literal,
-    /// unmatchable family name — including when it's the first entry of
-    /// a comma-separated list.
+    /// A CSS/Pango generic token resolves to its DirectWrite default
+    /// (`DEFAULT_EDITOR_FONT_FAMILY`/`DEFAULT_UI_FONT_FAMILY`) rather than being
+    /// treated as a literal, unmatchable family name — including when it's the
+    /// first entry of a comma-separated list.
     #[cfg(target_os = "windows")]
     #[test]
     fn parse_ui_font_desc_resolves_generic_tokens() {
@@ -6744,7 +6416,7 @@ mod tests {
     }
 
     /// `set_editor_font("monospace", …)` resolves through the same
-    /// `GenericFamily` path as `parse_ui_font_desc` (issue #1023) —
+    /// `GenericFamily` path as `parse_ui_font_desc` —
     /// `editor_font_family` must land on `DEFAULT_EDITOR_FONT_FAMILY`,
     /// not the literal string `"monospace"`.
     #[cfg(target_os = "windows")]
@@ -6756,7 +6428,7 @@ mod tests {
         assert_eq!(b.editor_font_size_pt, 14.0);
     }
 
-    /// quadraui#699: `WinBackend::modal_stack_handle` must hand back a
+    /// `WinBackend::modal_stack_handle` must hand back a
     /// handle that shares state with the backend's own modal stack —
     /// same guarantee already proved for `GtkBackend`
     /// (`gtk::backend::tests::gtk_backend_modal_stack_handle_shares_state`),
@@ -6776,7 +6448,7 @@ mod tests {
         assert_eq!(h2.borrow().len(), 1);
     }
 
-    /// #1022: `is_maximized`/`set_decorated` guard on the (target-gated)
+    /// `is_maximized`/`set_decorated` guard on the (target-gated)
     /// `hwnd` field the same way every other `WindowControl` method here
     /// does. `WinBackend::new()` never sets `hwnd`, on Windows or off, so
     /// both must report `Unsupported` rather than panic — no
@@ -6800,7 +6472,7 @@ mod tests {
         ));
     }
 
-    /// #790: pins the Windows column of the shared `hscrollbar_track` fix
+    /// Pins the Windows column of the shared `hscrollbar_track` fix
     /// as the reference behaviour macOS's copy had silently dropped —
     /// `list_hscrollbar` insets the track by one char width on each side
     /// (and moves it up one row) for a `bordered` list, so the thumb sits
@@ -6848,7 +6520,7 @@ mod tests {
         assert!(bordered_sb.track.x + bordered_sb.track.width <= rect.x + rect.width - 8.0);
     }
 
-    /// quadraui#699: the stash-then-reuse pattern this issue exists to
+    /// The stash-then-reuse pattern this issue exists to
     /// unblock — obtain the handle through `&mut dyn Backend`, drop
     /// that borrow, and use the handle afterwards from an unrelated
     /// borrow scope.
@@ -6865,7 +6537,7 @@ mod tests {
         assert_eq!(backend.modal_stack_handle().borrow().len(), 1);
     }
 
-    /// quadraui#699: same shared-state guarantee as
+    /// Same shared-state guarantee as
     /// `win_backend_modal_stack_handle_shares_state`, for
     /// `drag_state_handle`.
     #[test]
@@ -6881,7 +6553,7 @@ mod tests {
         assert!(h2.borrow().is_active());
     }
 
-    // ── Accelerator matching + ActivityBar keyboard focus (#707) ───────
+    // ── Accelerator matching + ActivityBar keyboard focus ──────────────
     //
     // Pure `HashMap`/`Vec`/`Option<WidgetId>` logic, no Direct2D — runs
     // on every host, same as the handle-sharing tests above. Mirrors
@@ -6898,7 +6570,7 @@ mod tests {
         }
     }
 
-    /// The registry itself now lives in `BackendCore` (#1090) — its
+    /// The registry itself now lives in `BackendCore` — its
     /// `contains_key`/`len()` aren't reachable from here anymore, so this
     /// observes the same round trip behaviourally via `match_keypress`.
     #[test]
@@ -6995,7 +6667,7 @@ mod tests {
         );
     }
 
-    // ── Double-click folding (#729) ─────────────────────────────────────
+    // ── Double-click folding ────────────────────────────────────────────
     //
     // Pure `DoubleClickDetector` logic, no Direct2D — runs on every host.
     // Mirrors `macos::backend::tests`' `fold_double_click_*` suite.
@@ -7037,7 +6709,7 @@ mod tests {
         assert_eq!(ev, UiEvent::WindowFocused(true));
     }
 
-    // ── Event queue adapter (#806) ───────────────────────────────────────
+    // ── Event queue adapter ──────────────────────────────────────────────
     //
     // Before this issue, `WinBackend::poll_events`/`wait_events` were
     // unconditional `todo!()` — calling either panicked immediately,
@@ -7066,7 +6738,7 @@ mod tests {
         assert!(b.poll_events().is_empty());
     }
 
-    // ── Background-thread wake (issue #831) ─────────────────────────────
+    // ── Background-thread wake ──────────────────────────────────────────
     //
     // `WinBackend::waker`'s `PostMessageW` half only exists under
     // `cfg(target_os = "windows")` and needs a real `HWND`/message loop to
@@ -7106,7 +6778,7 @@ mod tests {
         }
     }
 
-    /// quadraui#832: `request_frame_in` before any window is attached
+    /// `request_frame_in` before any window is attached
     /// (`self.hwnd == None` on every host this test runs on, including a
     /// real Windows one that just hasn't called `attach_surface` yet)
     /// must be a safe no-op, not a panic — mirrors `waker`'s "no wake
@@ -7120,7 +6792,7 @@ mod tests {
         Backend::request_frame_in(&backend, Duration::from_millis(50));
     }
 
-    /// quadraui#1264: `frame_requests`/`pending_frame_delay` must observe
+    /// `frame_requests`/`pending_frame_delay` must observe
     /// every `request_frame_in` call even with no `HWND` attached — the
     /// whole point of this bookkeeping existing alongside the real
     /// `SetTimer` arm (which stays silently no-op in this exact state,
@@ -7143,18 +6815,14 @@ mod tests {
         assert_eq!(backend.frame_requests(), 2);
     }
 
-    /// Regression test for the review finding on `WinBackend::waker`: a
-    /// closure obtained *before* `attach_surface` ever runs (exactly the
-    /// `AppLogic::setup` timing `Backend::waker`'s own doc example shows)
-    /// must not permanently bake in "no window" — it has to notice a
-    /// window attaching later. `attach_surface` itself needs a real
-    /// `HWND`/D2D device and can't run on this host, so this test drives
-    /// `hwnd_raw` (the live mirror `attach_surface` writes into) and
-    /// `live_hwnd` (the read `waker`'s closure performs on every call)
-    /// directly — the same two pieces of state the closure actually
-    /// touches, without needing `PostMessageW` to succeed against a real
-    /// window. Windows-only: `hwnd_raw`/`live_hwnd` don't exist on other
-    /// hosts (see `hwnd_raw`'s field doc).
+    /// A closure obtained before `attach_surface` ever runs must notice a
+    /// window attaching later. `attach_surface` itself needs a real `HWND`/D2D
+    /// device and can't run on this host, so this test drives `hwnd_raw` (the
+    /// live mirror `attach_surface` writes into) and `live_hwnd` (the read
+    /// `waker`'s closure performs on every call) directly — the same two pieces
+    /// of state the closure actually touches, without needing `PostMessageW` to
+    /// succeed against a real window. Windows-only: `hwnd_raw`/`live_hwnd` don't
+    /// exist on other hosts (see `hwnd_raw`'s field doc).
     #[cfg(target_os = "windows")]
     #[test]
     fn waker_resolves_hwnd_set_after_the_waker_was_obtained() {
@@ -7183,21 +6851,16 @@ mod tests {
 
     #[test]
     fn poll_events_does_not_panic_on_empty_queue() {
-        // The core regression this issue fixes: before #806 this call
-        // was an unconditional `todo!()`, so *any* polling caller
-        // (headless driver, quadraui#785's shared `DriverCore`) panicked
-        // even with nothing queued.
+        // `poll_events` must not panic with nothing queued.
         let mut b = WinBackend::new();
         assert!(b.poll_events().is_empty());
     }
 
     #[test]
     fn wait_events_does_not_panic_and_drains_like_poll_events() {
-        // Same regression as `poll_events_does_not_panic_on_empty_queue`,
-        // for `wait_events` — also an unconditional `todo!()` before
-        // #806. No true blocking primitive is wired up (see
-        // `Backend::wait_events`'s doc on `WinBackend`), so a queued
-        // event is still returned immediately rather than lost.
+        // `wait_events` must not panic with nothing queued. No true blocking
+        // primitive is wired up (see `Backend::wait_events`'s doc on `WinBackend`),
+        // so a queued event is still returned immediately rather than lost.
         let mut b = WinBackend::new();
         assert!(b.wait_events(Duration::from_millis(50)).is_empty());
 
@@ -7209,7 +6872,7 @@ mod tests {
 
     #[test]
     fn poll_events_and_wait_events_agree_for_the_same_sequence() {
-        // Acceptance bar (#806): the queue-adapter behaviour must match
+        // Acceptance bar: the queue-adapter behaviour must match
         // `GtkBackend`'s for the same event sequence. `GtkBackend::
         // poll_events`/`wait_events` are both a plain drain + the same
         // `apply_accelerators` pass over the batch (see
@@ -7331,16 +6994,13 @@ mod tests {
         );
     }
 
-    /// Issue #1228: a native `HMENU` sits in the *non-client* area, which
-    /// `window_chrome`'s custom caption (#1199) permanently covers, so
-    /// #1200's native menu bar was unreachable — this asserts the
-    /// resulting decision (`native_menu: false`, `window_chrome: true`)
-    /// stays that way. `tests/conformance/caps.rs`'s
-    /// `backends_declare_only_what_they_override` is the honesty check
-    /// that ties this to source (no `install_menu_bar`/
-    /// `show_context_menu` override may exist while `native_menu` is
-    /// `false`); this test pins the declared *values* themselves, which
-    /// that generic check never asserts on.
+    /// A native `HMENU` sits in the non-client area, which `window_chrome`'s
+    /// custom caption permanently covers, so the native menu bar is unreachable —
+    /// this asserts `native_menu: false` and `window_chrome: true`. The
+    /// `tests/conformance/caps.rs` generic check
+    /// `backends_declare_only_what_they_override` ties override existence to
+    /// `native_menu: false` (no `install_menu_bar`/`show_context_menu` override
+    /// may exist); this test pins the declared values themselves.
     #[test]
     fn backend_caps_declares_no_native_menu_but_keeps_window_chrome() {
         let b = WinBackend::new();
@@ -7366,21 +7026,13 @@ mod tests {
         );
     }
 
-    /// Issue #1228, the live-hardware half of the acceptance bar:
-    /// `GetMenu(hwnd)` must be null on a real window, even for a caller
-    /// that still invokes `Backend::install_menu_bar` unaware
-    /// `native_menu` went false (before this fix, that exact call —
-    /// see the removed issue #1200 `wm_command_resolves_back_to_the_activated_items_widget_id`
-    /// test this replaces — built a real `HMENU` and attached it via
-    /// `SetMenu`, so this would have found a 1-item menu instead).
-    /// `WM_NCHITTEST`'s "drawn close button → `HTCLIENT`, empty band →
-    /// `HTCAPTION`" half of the same acceptance bar is covered
-    /// separately by [`nc_hit_test_client_on_an_inline_button`] /
-    /// [`nc_hit_test_caption_in_the_empty_band`] above, which already
-    /// exercise [`WinBackend::nc_hit_test`] (the pure classification
-    /// `win::run`'s `WM_NCHITTEST` arm defers to) against exactly those
-    /// two scenarios — real hardware isn't needed to prove pure
-    /// geometry, only to prove `GetMenu`.
+    /// `GetMenu(hwnd)` must be null on a real window — a caller that invokes
+    /// `Backend::install_menu_bar` unaware `native_menu` went false must still
+    /// get a no-op, matching the behaviour of other backends without a native
+    /// menu bar. `WM_NCHITTEST`'s "drawn close button → `HTCLIENT`, empty band →
+    /// `HTCAPTION`" behaviour is covered separately by
+    /// [`nc_hit_test_client_on_an_inline_button`] / [`nc_hit_test_caption_in_the_empty_band`].
+    /// Real hardware isn't needed to prove pure geometry, only to prove `GetMenu`.
     #[cfg(target_os = "windows")]
     #[test]
     fn install_menu_bar_never_attaches_a_native_menu_to_a_live_window() {
@@ -7471,13 +7123,10 @@ mod tests {
             "a freshly created window must start with no menu at all"
         );
 
-        // The exact call path the issue names: a caller that still
-        // invokes `Backend::install_menu_bar` — matching a pre-#1228
-        // caller that hasn't noticed `native_menu` went false, or
-        // `examples/common/native_menu.rs`'s cross-backend app, which
-        // calls this unconditionally on every backend — must get the
-        // same no-op every other backend without a native menu bar
-        // already gives it. No `SetMenu` call, ever, on this backend.
+        // A caller that invokes `Backend::install_menu_bar` — matching a caller
+        // that hasn't noticed `native_menu` went false, or a cross-backend app
+        // that calls this unconditionally on every backend — must get the same
+        // no-op every other backend without a native menu bar gives it.
         {
             use crate::primitives::menu_bar::MenuBarItem;
             Backend::install_menu_bar(
@@ -7515,9 +7164,7 @@ mod tests {
         }
     }
 
-    /// `register_zone` used to be the trait's no-op default (`tests/
-    /// conformance/caps.rs`'s `("win", "register_zone", …)` `ACCEPTED_DEFAULTS`
-    /// entry) — this is the regression pin for closing that gap.
+    /// `register_zone` must record the zone into the backend's state.
     #[test]
     fn register_zone_records_the_zone() {
         let mut b = WinBackend::new();
@@ -7611,15 +7258,11 @@ mod tests {
         assert_eq!(b.nc_hit_test(100.0, 16.0), Some(true));
     }
 
-    /// Issue #1232 end-to-end regression: before this fix, nothing ever
-    /// registered a zone for the real widgets a host paints *inside* the
-    /// title-bar band — `nc_hit_test_client_on_an_inline_button` above
-    /// passed by hand-registering the exclusion zone directly, which is
-    /// exactly why #1199's design review didn't catch the gap. This test
-    /// drives the real paint path instead: register the band, call
-    /// `Backend::draw_menu_bar` with a real `MenuBar` sitting inside it,
-    /// and confirm a click on the "File" label now excludes itself from
-    /// `HTCAPTION` — with no hand-registered zone of its own.
+    /// End-to-end regression: nothing ever registered a zone for the real
+    /// widgets a host paints inside the title-bar band — this test drives the
+    /// real paint path: register the band, call `Backend::draw_menu_bar` with a
+    /// real `MenuBar` sitting inside it, and confirm a click on the label now
+    /// excludes itself from `HTCAPTION` — with no hand-registered zone of its own.
     #[test]
     fn draw_menu_bar_registers_its_own_item_zones_inside_the_band() {
         let mut b = WinBackend::new();
@@ -7701,7 +7344,7 @@ mod tests {
             })
             .expect("close segment must be a registered hit region");
         let _ = hit;
-        // quadraui#1259: `close_rect` is bar-local (the layout's own,
+        // `close_rect` is bar-local (the layout's own,
         // documented contract — see `register_status_bar_segment_zones`'s
         // doc). The probe point must be derived independently of that
         // bar-local layout by adding `status_rect`'s own absolute origin
@@ -7720,7 +7363,7 @@ mod tests {
         assert_eq!(b.nc_hit_test(10.0, 16.0), Some(true));
     }
 
-    /// quadraui#1259: the regression above with a non-zero `rect.x`/
+    /// The regression above with a non-zero `rect.x`/
     /// `rect.y` specifically targeted — the exact gap that let the bug
     /// ship past `draw_status_bar_interactive_registers_its_own_segment_
     /// zones_inside_the_band` above, whose non-zero `rect.x` alone wasn't
@@ -7744,9 +7387,8 @@ mod tests {
             }],
         };
         let interaction = crate::interaction::InteractionState::new();
-        // Both x and y non-zero, matching vimcode#1656's measured
-        // real-world geometry (a controls bar anchored near the window's
-        // right edge).
+        // Non-zero x and y, matching real-world geometry (a controls bar anchored
+        // near the window's right edge).
         let status_rect = Rect::new(850.0, 4.0, 150.0, 28.0);
         let layout = Backend::draw_status_bar_interactive(&mut b, status_rect, &bar, &interaction);
         let (close_rect, _) = layout
@@ -7805,20 +7447,13 @@ mod tests {
         assert_eq!(b.nc_hit_test(1.0, 16.0), Some(true));
     }
 
-    /// #1260 regression: when the Command Center's container is
-    /// deliberately *wider* than its centred content (arrows + gaps +
-    /// search box), the left/right padding inside the container — but
-    /// still inside the drag band — must read `Some(true)` (`HTCAPTION`),
-    /// not get swallowed by an over-eager exclusion. This is the shape
-    /// of #1260's bug report: a real `WM_NCHITTEST` sweep across the
-    /// title band found `HTCLIENT` almost everywhere between the menu
-    /// row and the caption buttons, including the blank strip the
-    /// Command Center's own padding should leave `HTCAPTION`.
-    /// `draw_command_center_registers_its_own_zones_inside_the_band`
-    /// above only ever probes a point *inside* the search box itself, so
-    /// it can't catch a content block that over-fills its own container
-    /// (or, symmetrically, a container with room to spare that isn't
-    /// correctly left unclaimed) — this test probes the gap between the
+    /// When the Command Center's container is wider than its centred content,
+    /// the left/right padding inside the container — but still inside the drag
+    /// band — must read `Some(true)` (`HTCAPTION`), not get swallowed by an
+    /// over-eager exclusion. The blank strip the Command Center's padding should
+    /// leave `HTCAPTION` must stay that way. The probes inside the search box
+    /// alone can't catch a content block that over-fills its container or a
+    /// container with unclaimed room — this test probes the gap between the
     /// container's left edge and the centred content instead.
     #[test]
     fn draw_command_center_leaves_its_own_container_padding_as_caption() {
@@ -7877,7 +7512,7 @@ mod tests {
         assert_eq!(b.nc_hit_test(400.0, 16.0), Some(true));
     }
 
-    /// #702: `PointerShape` -> Win32 `IDC_*` cursor-resource mapping
+    /// `PointerShape` -> Win32 `IDC_*` cursor-resource mapping
     /// covers every variant, mirroring
     /// `gtk::backend::tests::pointer_shape_cursor_name_maps_every_variant`.
     /// Windows-only: unlike GTK's CSS-keyword table, the mapping function
@@ -7892,9 +7527,8 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn pointer_shape_to_win32_cursor_maps_every_variant() {
-        // Iterates the shared `desktop::all_pointer_shapes()` scaffold
-        // (#498, adopted here by #702) instead of hand-listing all 9
-        // `Default` + `Resize(edge)` combinations.
+        // Uses the shared `desktop::all_pointer_shapes()` scaffold instead of
+        // hand-listing all 9 `Default` + `Resize(edge)` combinations.
         let expected = [
             IDC_ARROW,
             IDC_SIZENS,   // North
@@ -7914,17 +7548,11 @@ mod tests {
         }
     }
 
-    /// #724 acceptance: `Backend::set_theme` must actually reach the
-    /// rasterisers, not just be stored and ignored — a real
-    /// `HeadlessSurface` pixel probe, not a source-parse check (that's
-    /// `tests/conformance/caps.rs`'s job). Probes
-    /// [`super::terminal::draw_terminal_divider`]'s painted pixel: a
-    /// single flat `theme.separator` fill with no blending
-    /// (`super::scrollbar`/`super::multi_section_view`'s translucency
-    /// premixes would make the expected colour only approximate), so a
-    /// non-default theme's colour must come through pixel-exact if
-    /// `set_theme` is wired at all. Before #724 this rasteriser always
-    /// painted `Theme::default().separator` regardless of what was set.
+    /// `Backend::set_theme` must reach the rasterisers, not just be stored and
+    /// ignored — a real `HeadlessSurface` pixel probe. Tests
+    /// [`super::terminal::draw_terminal_divider`]'s painted pixel: a single flat
+    /// `theme.separator` fill with no blending, so a non-default theme's colour
+    /// must come through pixel-exact if `set_theme` is wired at all.
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_rasterisers() {
@@ -7967,17 +7595,13 @@ mod tests {
         );
     }
 
-    /// quadraui#789 acceptance: `activity_bar`/`menu_bar`/`context_menu`/
-    /// `completions`/`find_replace` used to each build their own
-    /// `Theme::default()` instead of reading `WinBackend::current_theme`
-    /// — a dark-themed app got a light activity bar, menu bar, context
-    /// menu, completions popup and find/replace panel regardless of
-    /// `set_theme`. Same pixel-probe pattern
-    /// [`set_theme_reaches_the_rasterisers`] established for #724: paint
-    /// with a theme colour that differs from the default, and demand the
-    /// non-default colour show up pixel-exact. Confirmed to fail against
-    /// unfixed `develop @ a9104f5` (each rasteriser painted
-    /// `Theme::default()`'s colour instead).
+    /// `activity_bar`/`menu_bar`/`context_menu`/`completions`/`find_replace` must
+    /// read `WinBackend::current_theme`, not each build their own
+    /// `Theme::default()` — a dark-themed app must get a dark activity bar,
+    /// menu bar, context menu, completions popup and find/replace panel. Tests
+    /// with a theme colour that differs from the default, and demands the
+    /// non-default colour show up pixel-exact, the same shape
+    /// [`set_theme_reaches_the_rasterisers`] established.
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_activity_bar() {
@@ -8295,7 +7919,7 @@ mod tests {
         // overwrites `current_line_height`/`current_char_width` with the
         // *measured* DirectWrite metrics of the editor font, and those
         // are what `Backend::draw_find_replace` then hands
-        // `crate::primitives::find_replace::paint` (#809). Hardcoding
+        // `crate::primitives::find_replace::paint`. Hardcoding
         // 16.0/8.0 here would put the probe at coordinates the painter
         // never painted on any host whose font measures differently.
         let cw = backend.char_width().max(1.0);
@@ -8810,14 +8434,11 @@ mod tests {
         );
     }
 
-    // ── PaintSurface (#807, Phase 1) ────────────────────────────────
+    // ── PaintSurface (#807, Phase 1) ────────────────────────────────────────
     //
-    // Real Direct2D execution, like every other headless-surface test in
-    // this file — `#[cfg(target_os = "windows")]`-gated because
-    // `attach_headless`/`HeadlessSurface` only exist on that target (see
-    // this file's module doc, "Render target"); `cargo check --features
-    // win` on Linux still type-checks the impl block above, but only the
-    // `windows-latest` CI leg actually runs these.
+    // Real Direct2D execution — `#[cfg(target_os = "windows")]`-gated because
+    // `attach_headless`/`HeadlessSurface` only exist on that target; `cargo
+    // check --features win` on Linux still type-checks the impl block above.
 
     #[cfg(target_os = "windows")]
     #[test]
@@ -8847,23 +8468,14 @@ mod tests {
         );
     }
 
-    /// The colour an *unpainted* pixel carries after
-    /// [`Backend::begin_frame`] on a freshly-attached [`HeadlessSurface`]
-    /// — read back from an empty frame rather than hardcoded.
+    /// The colour an unpainted pixel carries after [`Backend::begin_frame`] on a
+    /// freshly-attached [`HeadlessSurface`].
     ///
-    /// Win-GUI's `begin_frame` issues a `Clear` with its placeholder
-    /// background (`0.117` grey today, the app's real `Theme` background
-    /// once that's wired through), so "untouched" on this backend is
-    /// **not** `(0, 0, 0)` the way it is for the GTK twins of the tests
-    /// below — those probe a zeroed `cairo::ImageSurface` that nothing
-    /// clears. Copying GTK's literal black is what reddened the
-    /// `windows-latest` leg on #1073's first push; resolving it from a
-    /// live empty frame instead keeps these assertions honest whichever
-    /// colour that clear grows into.
-    ///
-    /// Reads one pixel because the clear covers the whole target —
-    /// `win_backend_begin_frame_clears_the_whole_surface_uniformly`
-    /// below is the test that keeps that premise true.
+    /// Win-GUI's `begin_frame` issues a `Clear` with its placeholder background,
+    /// so "untouched" is **not** `(0, 0, 0)` the way it is for the GTK twins of the
+    /// tests below — those probe a zeroed `cairo::ImageSurface` that nothing
+    /// clears. Reading one pixel from a live empty frame keeps these assertions
+    /// honest whichever colour that clear grows into.
     #[cfg(target_os = "windows")]
     fn cleared_frame_background(width: u32, height: u32) -> (u8, u8, u8) {
         use crate::win::testing::HeadlessSurface;
@@ -8914,7 +8526,7 @@ mod tests {
         }
     }
 
-    /// #1073: real `FillRoundedRectangle` execution, mirroring
+    /// Real `FillRoundedRectangle` execution, mirroring
     /// `gtk_backend_paint_surface_fill_rounded_rect_clips_the_corners` —
     /// a centre pixel must land the fill colour, and a corner pixel well
     /// inside a generous radius must stay at [`begin_frame`](Backend::begin_frame)'s
@@ -9058,7 +8670,7 @@ mod tests {
         );
     }
 
-    /// #1073: `surface_fill_rect_alpha` has no `WinBackend` override —
+    /// `surface_fill_rect_alpha` has no `WinBackend` override —
     /// it inherits `PaintSurface`'s default, which forwards to
     /// `surface_fill_rect` with `color.a` replaced. This proves that
     /// default genuinely blends on Direct2D's own compositing pipeline
@@ -9118,12 +8730,11 @@ mod tests {
         );
     }
 
-    /// #1073: `role` must select a genuinely different live `IDWriteTextFormat`
-    /// (the previously-unused `chrome_dwrite` handle vs the editor
-    /// `dwrite` one), not a documented no-op — proven by a huge chrome
-    /// font size versus a tiny editor font size painting visibly
-    /// different amounts of ink for the same glyph. Win-GUI twin of
-    /// `gtk_backend_paint_surface_draw_text_run_with_role_uses_the_requested_fonts_size`.
+    /// `role` must select a genuinely different live `IDWriteTextFormat`
+    /// (the `chrome_dwrite` handle vs the editor `dwrite` one), not a documented
+    /// no-op — proven by a huge chrome font size versus a tiny editor font size
+    /// painting visibly different amounts of ink for the same glyph. Win-GUI twin
+    /// of `gtk_backend_paint_surface_draw_text_run_with_role_uses_the_requested_fonts_size`.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_paint_surface_draw_text_run_with_role_uses_the_requested_fonts_size() {
@@ -9197,28 +8808,12 @@ mod tests {
         assert!(editor_ink > 0, "FontRole::Editor must still paint real ink");
     }
 
-    /// #1077 "Font role" drift: pre-migration Windows painted the whole
-    /// dialog (including body text) through the one editor `dwrite`
-    /// handle — `chrome_dwrite` sat unused, exactly like
-    /// `surface_draw_text_run_with_role` before #1073. `WinBackend::
-    /// draw_dialog` (see its own doc) now passes `chrome_dwrite`
-    /// instead, so body text should render at the *chrome* font's size,
-    /// not the editor's.
+    /// `WinBackend::draw_dialog` now passes `chrome_dwrite` for body text, so it
+    /// should render at the *chrome* font's size, not the editor's.
     ///
-    /// The editor font size is held **fixed** across both runs — only
-    /// the chrome (ui) font size varies. `native_surface_paint::paint`'s
-    /// per-row rect height comes from `WinBackend::current_line_height`,
-    /// which is always seeded from the *editor* font's own metrics (see
-    /// `attach_headless`'s doc: "those are always resolved from the
-    /// editor font"), regardless of which `DWrite` handle actually
-    /// paints the glyphs — so varying the editor size too would change
-    /// the row's clip box and confound the comparison. With the editor
-    /// (and therefore the row geometry) held constant, any ink
-    /// difference between the two runs can only come from the chrome
-    /// font size — proving body text is painted through `chrome_dwrite`.
-    /// If it were still painted through the editor `dwrite` handle (the
-    /// pre-migration behaviour), both runs would paint identical ink
-    /// regardless of the chrome size.
+    /// The editor font size is held **fixed** across both runs — only the chrome
+    /// (ui) font size varies. If it were still painted through the editor `dwrite`
+    /// handle, both runs would paint identical ink regardless of the chrome size.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_dialog_paints_body_text_in_the_chrome_fonts_size() {
@@ -9321,16 +8916,11 @@ mod tests {
         );
     }
 
-    /// [`Backend::draw_rich_text_popup_with_font_role`] must select a
-    /// genuinely different live `IDWriteTextFormat`, not a documented
-    /// no-op — same shape as
-    /// `win_backend_draw_dialog_paints_body_text_in_the_chrome_fonts_size`:
-    /// the editor font size is held fixed across both runs; only which
-    /// method/role is used to paint the same popup varies. Plain
-    /// `draw_rich_text_popup` (no role argument) must still paint
-    /// through the chrome handle (today's behaviour, unchanged), and
-    /// `draw_rich_text_popup_with_font_role(.., FontRole::Editor)` must
-    /// paint through the editor handle instead.
+    /// `Backend::draw_rich_text_popup_with_font_role` must select a genuinely
+    /// different live `IDWriteTextFormat`, not a documented no-op. Plain
+    /// `draw_rich_text_popup` (no role argument) must paint through the chrome
+    /// handle, and `draw_rich_text_popup_with_font_role(.., FontRole::Editor)`
+    /// must paint through the editor handle instead.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_rich_text_popup_honours_font_role() {
@@ -10625,7 +10215,7 @@ mod tests {
         );
     }
 
-    /// #1073: `surface_draw_icon_glyph` forwards to `surface_draw_text_run`
+    /// `surface_draw_icon_glyph` forwards to `surface_draw_text_run`
     /// on this backend (DirectWrite's font-fallback cascade is already
     /// baked into every `IDWriteTextFormat` — see the trait override's
     /// doc) — this proves that forward actually paints real ink rather
@@ -10677,14 +10267,11 @@ mod tests {
         );
     }
 
-    /// Not a pixel-precision test for every verb (that's `fill_rect`'s job
-    /// above, and the dedicated #1073 rounded-rect/alpha/role/icon tests
-    /// above it) — this exercises every remaining `PaintSurface` method
-    /// at least once end-to-end (frame lifecycle, measurement, stroke,
-    /// line, clip push/pop, text run, rounded rect, alpha fill, role text,
-    /// icon glyph, image) so an implementation bug (wrong arg order, a
-    /// missing surface guard, a panic inside the `todo!()` split) fails a
-    /// test instead of shipping silently.
+    /// Exercise every remaining `PaintSurface` method at least once end-to-end
+    /// (frame lifecycle, measurement, stroke, line, clip push/pop, text run,
+    /// rounded rect, alpha fill, role text, icon glyph, image) so an
+    /// implementation bug (wrong arg order, a missing surface guard, a panic
+    /// inside the `todo!()` split) fails a test instead of shipping silently.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_paint_surface_verbs_do_not_panic() {
@@ -10720,7 +10307,7 @@ mod tests {
         backend.surface_push_clip(Rect::new(0.0, 0.0, 40.0, 40.0));
         backend.surface_draw_text_run(Rect::new(2.0, 2.0, 30.0, 10.0), "hi", white);
         backend.surface_pop_clip();
-        // #1073: the four new verbs, exercised here too (pixel-precision
+        // The four new verbs, exercised here too (pixel-precision
         // coverage of each lives in the dedicated tests above).
         backend.surface_fill_rounded_rect(Rect::new(44.0, 0.0, 16.0, 16.0), 4.0, blue);
         backend.surface_fill_rect_alpha(Rect::new(44.0, 20.0, 16.0, 16.0), blue, 0.5);
@@ -10755,15 +10342,10 @@ mod tests {
         backend.surface_end_frame();
     }
 
-    // ── #810: draw_chart real-pixel driver tests ────────────────────────
+    // ── #810: draw_chart real-pixel driver tests ──────────────────────────────
     //
-    // Ported from the deleted `win::chart::tests` (that module drove
-    // `HeadlessSurface::paint` straight against the since-deleted free
-    // function `win::chart::draw_chart`) to instead drive the real
-    // `Backend::draw_chart` → `primitives::chart::paint` path end to
-    // end, the same shape `set_theme_reaches_the_find_replace` above
-    // uses. `#[cfg(target_os = "windows")]`-gated for the same reason
-    // every other `HeadlessSurface` test in this file is.
+    // Drive the real `Backend::draw_chart` → `primitives::chart::paint` path
+    // end to end, the same shape `set_theme_reaches_the_find_replace` above uses.
 
     #[cfg(target_os = "windows")]
     fn chart_line_fixture(data: Vec<f64>) -> crate::primitives::chart::Chart {
@@ -10852,15 +10434,11 @@ mod tests {
         assert_eq!(painted, no_paint);
     }
 
-    /// Regression for quadraui#791/#810: `win::chart::draw_chart` never
-    /// clipped at all before #810 unified all three backends onto the
-    /// shared `primitives::chart::paint`, which always brackets its body
-    /// in `surface_push_clip`/`surface_pop_clip`. Mirrors
+    /// `win::chart::draw_chart` never clipped before #810 unified all three
+    /// backends onto the shared `primitives::chart::paint`, which always brackets
+    /// its body in `surface_push_clip`/`surface_pop_clip`. Mirrors
     /// `gtk::backend::tests::gtk_backend_draw_chart_hover_marker_does_not_escape_chart_rect`
-    /// pixel-for-pixel (same fixture, same geometry) — this is the
-    /// "driver-tier … observed RED" proof for Windows: reverting #810's
-    /// `WinBackend::draw_chart` to call the old, clip-less
-    /// `win::chart::draw_chart` free function turns this red.
+    /// pixel-for-pixel (same fixture, same geometry).
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_chart_hover_marker_does_not_escape_chart_rect() {
@@ -10924,46 +10502,28 @@ mod tests {
         );
     }
 
-    /// #860 review follow-up: driver-tier proof that
-    /// `WinBackend::surface_measure_text_styled`'s bold override actually
-    /// asks DirectWrite for a wider bold measurement, not just the
-    /// primitive-tier `RecordingSurface` test's synthetic `BOLD_BONUS_PX`
-    /// (which by construction would pass even if this override were a
-    /// no-op). Mirrors
-    /// `gtk::backend::tests::gtk_backend_draw_status_bar_bold_segment_measures_wider`:
-    /// paints the same text through the real `Backend::draw_status_bar`
-    /// path once bold, once not, and asserts the bold segment's resolved
-    /// (painted) width is strictly wider.
+    /// `WinBackend::surface_measure_text_styled`'s bold override must ask
+    /// DirectWrite for a wider bold measurement, not just a synthetic bonus.
+    /// Mirrors `gtk::backend::tests::gtk_backend_draw_status_bar_bold_segment_measures_wider`:
+    /// paints the same text through the real `Backend::draw_status_bar` path once
+    /// bold, once not, and asserts the bold segment's resolved (painted) width is
+    /// strictly wider.
     ///
-    /// **Both the editor and chrome fonts are overridden on purpose —
-    /// don't drop either call.** `PaintSurface::surface_measure_text_styled`
-    /// (the probe fixture guard above) measures through `self.dwrite`,
-    /// i.e. the *editor* font; `Backend::draw_status_bar_interactive`
-    /// itself now measures/paints through `chrome_dwrite`
-    /// instead, falling back to `self.dwrite` only if no chrome handle
-    /// exists — see [`ChromeSurface`]'s doc. Both must be set to the
-    /// *same* `FONT`/`SIZE_PT` or the two sides of the final `assert_eq!`
-    /// below would compare DirectWrite's *editor*-font probe against a
-    /// paint that actually ran through a differently-sized *chrome*
-    /// font, which is a drift this test exists to rule out, not produce.
+    /// **Both the editor and chrome fonts are overridden on purpose — don't drop
+    /// either call.** `PaintSurface::surface_measure_text_styled` measures through
+    /// `self.dwrite` (the editor font); `Backend::draw_status_bar_interactive`
+    /// measures/paints through `chrome_dwrite` instead. Both must be set to the
+    /// *same* `FONT`/`SIZE_PT` or the comparison would drift.
     ///
-    /// `DEFAULT_EDITOR_FONT_FAMILY` (`"Consolas"`) is monospaced, and a
-    /// monospaced family shares **one advance width across every weight**
-    /// by design (that's the whole point — bold code must not reflow
-    /// columns), so `measure_text_styled(t, true)` and
-    /// `measure_text_styled(t, false)` return byte-identical widths
-    /// there no matter how faithfully the `bold` flag is threaded
-    /// through. This test first landed against the default font and
-    /// went red on `windows-latest` for exactly that reason:
-    /// `bold_width > regular_width` is unsatisfiable under Consolas.
-    /// Driving the backend with a *proportional* font (`"Segoe UI"` —
-    /// already this backend's `DEFAULT_UI_FONT_FAMILY`, so it ships on
-    /// every supported Windows) makes "bold is wider" a property the
-    /// font can actually express, which is what lets this test observe
-    /// the override at all.
+    /// `DEFAULT_EDITOR_FONT_FAMILY` (`"Consolas"`) is monospaced and shares **one
+    /// advance width across every weight** by design, so `measure_text_styled(t, true)`
+    /// and `measure_text_styled(t, false)` return identical widths there regardless
+    /// of how faithfully the `bold` flag is threaded through. This test drives a
+    /// *proportional* font (`"Segoe UI"` — the `DEFAULT_UI_FONT_FAMILY`) where
+    /// "bold is wider" is a property the font can actually express.
     ///
-    /// This chrome primitive measures through `chrome_dwrite`, so the
-    /// fixture sets `set_ui_font` to match the bold-override font.
+    /// This chrome primitive measures through `chrome_dwrite`, so the fixture sets
+    /// `set_ui_font` to match the bold-override font.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_status_bar_bold_segment_measures_wider() {
@@ -11068,7 +10628,7 @@ mod tests {
         );
     }
 
-    // ── #929: register_font_from_memory / set_nerd_font_fallback ────────
+    // ── #929: register_font_from_memory / set_nerd_font_fallback ────────────
 
     /// Garbage bytes aren't a font Core Graphics/DirectWrite can parse —
     /// `register_font_from_memory` must report that as `None` rather than
@@ -11086,27 +10646,13 @@ mod tests {
         );
     }
 
-    /// Regression coverage for the issue #929 review finding:
-    /// `register_font_from_memory` used to call `bytes.to_vec()`
-    /// *after* already handing `crate::win::text::register_font_from_memory`
-    /// a raw pointer into the caller's original `bytes` slice —
-    /// `IDWriteInMemoryFontFileLoader::CreateInMemoryFontFileReference`
-    /// does not copy its input, so a caller passing a short-lived local
-    /// (a shape this trait method's own doc explicitly permits: "a local
-    /// `Vec` read from disk and dropped the instant this call returns")
-    /// left DirectWrite holding a dangling pointer the moment that local
-    /// went out of scope.
-    ///
-    /// This can't reproduce the resulting use-after-free directly (this
-    /// suite has no embedded valid-font fixture, so registration always
-    /// fails before DirectWrite parses anything — see
-    /// `register_font_from_memory_rejects_bytes_that_are_not_a_font`
-    /// above), but it does assert the actual fix: `bytes` is copied into
-    /// `self`-owned storage (`registered_font_bytes`) *before* the
-    /// caller's buffer goes out of scope, and that copy is a distinct
-    /// allocation from the caller's — not a `None`/empty placeholder — so
-    /// nothing downstream can still be holding a pointer into memory this
-    /// method just let its caller free.
+    /// `register_font_from_memory` must copy `bytes` into self-owned storage
+    /// *before* the caller's buffer can be dropped, not after — otherwise a
+    /// caller passing a short-lived local (the shape this trait method's own doc
+    /// explicitly permits) leaves DirectWrite holding a dangling pointer. This
+    /// asserts the fix: `bytes` is copied into `registered_font_bytes` before
+    /// the caller's buffer goes out of scope, and that copy is a distinct
+    /// allocation from the caller's.
     #[cfg(target_os = "windows")]
     #[test]
     fn register_font_from_memory_copies_bytes_before_the_callers_buffer_can_be_dropped() {
@@ -11285,7 +10831,7 @@ mod tests {
         );
     }
 
-    // ── #1024: has_font_family ───────────────────────────────────────────
+    // ── #1024: has_font_family ───────────────────────────────────────────────
 
     /// "Segoe UI" ships on every supported Windows version — a real
     /// system-installed family that `has_font_family` must report as
@@ -11315,12 +10861,9 @@ mod tests {
         );
     }
 
-    // ── #810: draw_text_display real-pixel driver tests ─────────────────
+    // ── #810: draw_text_display real-pixel driver tests ───────────────────────
     //
-    // Ported from the deleted `win::text_display::tests` (that module
-    // drove `HeadlessSurface::paint` straight against the since-deleted
-    // free function `win::text_display::draw_text_display`) to instead
-    // drive the real `Backend::draw_text_display` →
+    // Drive the real `Backend::draw_text_display` →
     // `primitives::text_display::paint` path end to end.
 
     #[cfg(target_os = "windows")]
@@ -11423,10 +10966,9 @@ mod tests {
         );
     }
 
-    /// Regression guard for quadraui#494 ("layout helpers must return
-    /// coords in the same frame across backends"): paint at a non-zero
-    /// rect origin with a title row present, then round-trip an
-    /// absolute click the way a real host does.
+    /// Paint at a non-zero rect origin with a title row present, then
+    /// round-trip an absolute click the way a real host does — layout helpers
+    /// must return coords in the same frame across backends.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_text_display_layout_hit_test_resolves_lines_at_nonzero_origin() {
@@ -11498,7 +11040,7 @@ mod tests {
         assert_eq!(painted, no_paint);
     }
 
-    // ─── Issue #924: no-surface fallback survives instead of panicking ──
+    // ─── Issue #924: no-surface fallback survives instead of panicking ────────
 
     fn sample_minimap() -> crate::primitives::minimap::Minimap {
         crate::primitives::minimap::Minimap {
@@ -11526,17 +11068,12 @@ mod tests {
         }
     }
 
-    /// Issue #924's core acceptance bar: a `WinBackend` that has never
-    /// had `attach_surface`/`attach_headless` called — the same
-    /// surface-less state a fresh `WinBackend::new()` starts in *and*
-    /// the state `end_frame` drops back to after a device-lost
-    /// `EndDraw` failure — survives a full `begin_frame` -> a spread of
-    /// `draw_*`/`*_layout`/`PaintSurface` calls spanning every
-    /// return-type group this issue's fallbacks touch (`()`, a
-    /// `*PaintResult`, a `*Layout`, and the two measurement methods) ->
-    /// `end_frame`, without panicking. No `target_os = "windows"` gate:
-    /// the whole point is that this now degrades instead of aborting on
-    /// *every* host, not just Windows — see the module-level issue doc.
+    /// A `WinBackend` that has never had `attach_surface`/`attach_headless`
+    /// called — the same surface-less state a fresh `WinBackend::new()` starts in
+    /// and the state `end_frame` drops back to after a device-lost `EndDraw`
+    /// failure — must survive a full `begin_frame` -> a spread of draw/layout/paint
+    /// calls -> `end_frame`, without panicking. No `target_os = "windows"` gate: the
+    /// whole point is that this degrades instead of aborting on every host.
     #[test]
     fn win_backend_does_not_panic_with_no_surface_attached_across_a_full_frame() {
         let mut backend = WinBackend::new();
@@ -11619,12 +11156,10 @@ mod tests {
         Backend::end_frame(&mut backend);
     }
 
-    /// Acceptance: a layout returned with no surface attached is real
-    /// geometry, and — for the minimap — agrees exactly with what
-    /// [`WinBackend::draw_minimap`] itself reports as unpainted layout,
-    /// the same "paint and no-paint query can't drift apart" contract
-    /// every backend upholds (mirrors `MacBackend`'s
-    /// `minimap_layout_agrees_with_draw_minimap`, #802/dbb3023).
+    /// A layout returned with no surface attached reports real geometry
+    /// and agrees with what [`WinBackend::draw_minimap`] itself reports as
+    /// unpainted layout, upholding the "paint and no-paint query can't
+    /// drift apart" contract that every backend upholds.
     #[test]
     fn draw_minimap_with_no_surface_reports_unpainted_and_agrees_with_minimap_layout() {
         let mut backend = WinBackend::new();
@@ -11650,11 +11185,9 @@ mod tests {
         );
     }
 
-    /// Issue #1143: `set_minimap_scale`/`minimap_scale` must actually
-    /// change the row pitch `minimap_layout` resolves — this is the pure
-    /// no-surface-needed path (see `minimap_layout`'s own doc comment for
-    /// why it never reaches into the Windows-only `super::minimap`
-    /// module), so it's real signal on every host, not just Windows.
+    /// `set_minimap_scale`/`minimap_scale` must actually change the row
+    /// pitch that `minimap_layout` resolves. This path needs no Windows
+    /// surface, so it provides real signal on every host.
     #[test]
     fn set_minimap_scale_changes_the_resolved_row_pitch() {
         use crate::primitives::minimap::MinimapScale;
@@ -11686,9 +11219,8 @@ mod tests {
         );
     }
 
-    /// Same contract as the minimap test above, for a `Panel` — issue
-    /// #924's acceptance criterion explicitly calls out "the minimap and
-    /// one panel".
+    /// `draw_panel` with no surface must agree with `panel_layout`,
+    /// upholding the same contract as the minimap test.
     #[test]
     fn draw_panel_with_no_surface_agrees_with_panel_layout() {
         let mut backend = WinBackend::new();
@@ -11705,8 +11237,7 @@ mod tests {
         );
     }
 
-    /// `draw_image` on a surface-less backend must report categorically
-    /// `Unsupported` (matching `MacBackend::draw_image`'s #802 posture)
+    /// `draw_image` on a surface-less backend must report `Unsupported`
     /// rather than panic.
     #[test]
     fn draw_image_with_no_surface_reports_unsupported() {
@@ -11734,10 +11265,8 @@ mod tests {
 
     /// `PaintSurface::surface_measure_text`/`surface_measure_text_styled`
     /// on a surface-less backend must return a finite nominal estimate
-    /// (`char_width` per character) instead of panicking — chosen over
-    /// `(0.0, 0.0)` so a host doing hit-testing against the "measurement"
-    /// still gets a non-degenerate box (issue #924's final-message
-    /// disclosure).
+    /// (`char_width` per character) instead of panicking, so a host doing
+    /// hit-testing against the measurement gets a non-degenerate box.
     #[test]
     fn surface_measure_text_with_no_surface_returns_a_nominal_estimate() {
         let backend = WinBackend::new();

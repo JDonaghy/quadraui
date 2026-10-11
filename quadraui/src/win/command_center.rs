@@ -1,10 +1,10 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::CommandCenter`] (#732).
+//! Direct2D / DirectWrite rasteriser for [`crate::CommandCenter`].
 //!
 //! Mirrors `gtk::command_center` / `macos::command_center`'s structure:
 //! back/forward arrows (`◀` / `▶`) and a bordered search box, centred
 //! within the given area. [`CommandCenter::layout`] (the D6 layout API)
 //! does every positioning decision via the shared
-//! [`CommandCenterMeasure::from_char_width`] formula (#732) — this
+//! [`CommandCenterMeasure::from_char_width`] formula — this
 //! module only measures (from a plain `char_width` average, not a
 //! per-glyph DirectWrite layout — see that constructor's doc for why)
 //! and paints (`ID2D1RenderTarget::FillRectangle` / `DrawRectangle` /
@@ -53,14 +53,14 @@ const SEARCH_MIN_WIDTH_PX: f32 = 280.0;
 /// layout call. Needs only `char_width` (no live `DWrite` measurer): the
 /// shared [`CommandCenterMeasure::from_char_width`] formula estimates the
 /// search box from `char_width` alone, exactly like
-/// `GtkBackend::command_center_layout`'s own no-paint query path (#732).
+/// `GtkBackend::command_center_layout`'s own no-paint query path.
 ///
 /// This is deliberately the cheap *estimate* used only when no live
 /// `DWrite` measurer is on hand (the `WinBackend::command_center_layout`
 /// trait method's "no surface attached yet" fallback, #924). Once a
 /// surface is live, [`draw_command_center`] sizes the search box from
 /// [`win_command_center_layout_measured`] instead — see that function's
-/// doc for why the two must not be conflated (issue #1260).
+/// doc for why the two must not be conflated.
 ///
 /// Coordinate frame: **ABSOLUTE** (`rect.x`/`rect.y` baked into every
 /// bounds field), matching [`crate::Backend::command_center_layout`]'s
@@ -85,21 +85,10 @@ pub fn win_command_center_layout(
 /// box from a live font-layout measurement of the actual label, not an
 /// average-char-width guess.
 ///
-/// Before this existed, [`draw_command_center`] called
-/// [`win_command_center_layout`] even though it already had `dwrite` on
-/// hand and called [`DWrite::measure_text`] on the very same label a few
-/// lines later (just to position the drawn glyphs) — the measured width
-/// was computed and then discarded, never fed back into the box's own
-/// size. On a real Win-GUI host, `char_width` is the *editor* font's
-/// average glyph width (see `WinBackend::attach_surface`'s doc: only the
-/// editor `DWrite::new` call's `char_width` is kept; the chrome-font
-/// one is discarded), which can disagree sharply with how wide the
-/// label actually renders in the *chrome* font `dwrite` here was built
-/// from — exactly the Command Center/`current_char_width` font-mismatch
-/// issue #1260's "leading hypothesis" named as the likely root cause of
-/// the registered search-box zone swallowing most of the title-bar
-/// band's blank strip. Measuring the real label removes that mismatch
-/// entirely, the same way the GTK/macOS rasterisers already do.
+/// The measured width from the actual chrome font can disagree sharply
+/// with `char_width` (the *editor* font's average glyph width), which
+/// ensures the search box is sized correctly and consistently across
+/// backends.
 fn win_command_center_layout_measured(
     dwrite: &DWrite,
     rect: Rect,
@@ -128,15 +117,8 @@ fn win_command_center_layout_measured(
 pub fn draw_command_center(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
-    // #1260: no longer used to size the search box (see
-    // `win_command_center_layout_measured`'s doc) — kept in the
-    // signature, just unused, rather than removed, since this function
-    // is re-exported (`win::mod`'s `pub use command_center::{
-    // draw_command_center, ..}`) and dropping a parameter would be a
-    // breaking signature change for any direct caller outside this
-    // crate (rule 8). `WinBackend::draw_command_center`, the only
-    // in-tree caller, still has `self.current_char_width` on hand for
-    // free, so it costs nothing to keep passing it.
+    // No longer used to size the search box — kept in the signature
+    // for API stability, unused rather than removed.
     _char_width: f32,
     line_height: f32,
     rect: Rect,
@@ -233,10 +215,8 @@ mod tests {
             .expect("paint command center")
     }
 
-    /// C0 smoke: `draw_command_center` must actually paint + return a
-    /// click-routable layout rather than panicking or hitting a
-    /// `todo!()` (#732's acceptance bar — "draw_command_center survives
-    /// C0 on win").
+    /// `draw_command_center` must paint and return a click-routable
+    /// layout.
     #[test]
     fn round_trip_click_hits_back_and_search_box() {
         let cc = sample_cc();
@@ -255,10 +235,8 @@ mod tests {
         );
     }
 
-    /// Non-zero-origin regression guard (issue #494/#505 — LESSONS.md
-    /// "Layout helpers must return coords in the same frame across
-    /// backends") — mirrors `gtk::command_center`'s and
-    /// `mac_command_center_layout`'s own non-zero-origin tests.
+    /// Non-zero-origin regression guard — `layout_helpers` must return
+    /// coords in the same frame across backends, matching GTK and macOS.
     #[test]
     fn round_trip_click_hits_back_at_nonzero_origin() {
         let cc = sample_cc();
@@ -288,15 +266,9 @@ mod tests {
     }
 
     /// No-paint *measured* layout must agree byte-for-byte with what
-    /// `draw_command_center` painted — same contract every other `win::`
-    /// rasteriser's `no_paint_layout_matches_paint_layout` test proves
-    /// (see `win::toolbar`, `win::sidebar_panel`), updated for #1260: the
-    /// paint path now sizes the search box from
-    /// `win_command_center_layout_measured` (real `DWrite` measurement),
-    /// not the plain-`char_width` estimate [`win_command_center_layout`]
-    /// still returns — see that function's doc. Comparing against the
-    /// estimate here would make this test fail by design after the fix,
-    /// not catch a real regression.
+    /// `draw_command_center` painted. The paint path sizes the search box
+    /// from `win_command_center_layout_measured` (real `DWrite`
+    /// measurement), not the plain-`char_width` estimate.
     #[test]
     fn no_paint_layout_matches_paint_layout() {
         let cc = sample_cc();
@@ -322,7 +294,7 @@ mod tests {
         assert_eq!(painted, no_paint);
     }
 
-    /// #1260 regression: `draw_command_center`'s returned layout (and
+    /// `draw_command_center`'s returned layout (and
     /// therefore the zone `WinBackend::register_command_center_zones`
     /// registers for `nc_hit_test`) must be sized from `dwrite`'s real
     /// measured label width, not the plain-`char_width` estimate — this
@@ -381,17 +353,10 @@ mod tests {
         );
     }
 
-    /// #732 acceptance bar: `win_command_center_layout` must delegate to
-    /// the shared [`CommandCenterMeasure::from_char_width`] formula
-    /// rather than re-deriving the search-box width itself — the same
-    /// delegation `gtk::backend::GtkBackend::command_center_layout`
-    /// proves on its own side (see
-    /// `gtk::backend::tests::command_center_layout_delegates_to_shared_char_width_formula`).
-    /// Because both call through the identical constructor, this and
-    /// that test together establish that gtk and win compute the same
-    /// command-center layout for the same char width, even though the
-    /// two can't run in one process on this Linux host (this whole
-    /// module is `target_os = "windows"`-gated).
+    /// `win_command_center_layout` must delegate to the shared
+    /// [`CommandCenterMeasure::from_char_width`] formula rather than
+    /// re-deriving the search-box width itself, ensuring GTK and Win
+    /// compute the same command-center layout for the same char width.
     #[test]
     fn win_command_center_layout_delegates_to_shared_char_width_formula() {
         let cc = CommandCenter {

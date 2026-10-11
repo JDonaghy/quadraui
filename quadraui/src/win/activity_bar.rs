@@ -1,28 +1,20 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::ActivityBar`] (issue #25).
+//! Direct2D / DirectWrite rasteriser for [`crate::ActivityBar`].
 //!
 //! [`win_activity_bar_layout`] calls [`ActivityBar::layout`] with
 //! [`ACTIVITY_ROW_DIP`] as the item height; content painting moved to
 //! the shared
-//! [`crate::primitives::activity_bar::native_surface_paint::paint`]
-//! (#1081, `PaintSurface` Phase 4 slice 5/8), which also **adds this
-//! backend's missing right-edge separator**: pre-migration
-//! `win::activity_bar` was the only one of the three that never painted
-//! the 1px `theme.separator` column GTK and macOS both had — no doc
-//! comment explained why, so this reads as an oversight the shared
-//! paint now closes. Win still takes the
-//! [`crate::Backend::draw_activity_bar_with_style`] default (no
-//! [`crate::ActivityBarStyle`] override — this module always paints
-//! with `ActivityBarStyle::default()`), same as before.
+//! [`crate::primitives::activity_bar::native_surface_paint::paint`],
+//! which also adds this backend's right-edge separator.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod activity_bar;` and `backend.rs`'s
 //! module docs.
 //!
-//! Takes the live theme as a `&Theme` parameter (quadraui#789) — the
+//! Takes the live theme as a `&Theme` parameter — the
 //! caller ([`crate::win::WinBackend::draw_activity_bar`]) passes
 //! `&self.current_theme`, the same field `Backend::set_theme` writes.
 //!
-//! Issue #1157: the icon glyph paints at a fixed, VS-Code-parity size
+//! The icon glyph paints at a fixed, VS-Code-parity size
 //! (`ActivityBarStyle::resolved_icon_size_px`), independent of whichever
 //! editor/chrome font size the caller's `dwrite` handle carries — via
 //! [`super::text::DWrite::with_size`], a same-family, same-fallback
@@ -35,12 +27,7 @@
 //! is converted by that same `72.0 / 96.0` ratio before reaching
 //! `with_size` (unlike macOS, where Core Text points are already
 //! device-independent pixels 1:1 — see
-//! [`crate::macos::activity_bar`]'s module doc). Since this module still
-//! only paints `ActivityBarStyle::default()` (see the paragraph above —
-//! a pre-existing gap, not one #1157 closes), a caller-supplied
-//! `icon_size_px` override doesn't reach Win-GUI's paint yet either;
-//! only the *default* 24px size does, which is what fixes the reported
-//! "icon size follows the active font" symptom on this backend.
+//! [`crate::macos::activity_bar`]'s module doc).
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -64,7 +51,7 @@ pub fn win_activity_bar_layout(rect: Rect, bar: &ActivityBar) -> ActivityBarLayo
 /// Draw an [`ActivityBar`] into `rect` (DIPs) on `target`. Returns
 /// per-row hit regions **relative to `rect`** (first row's `y_start` is
 /// always `0.0`, per [`crate::Backend::draw_activity_bar`]'s coordinate
-/// contract — issue #552).
+/// contract).
 ///
 /// # Visual contract
 ///
@@ -74,9 +61,9 @@ pub fn win_activity_bar_layout(rect: Rect, bar: &ActivityBar) -> ActivityBarLayo
 /// - **Hovered row** (and not keyboard-selected): `theme.tab_bar_bg.lighten(0.10)`.
 /// - **Active item's accent line:** 2 DIP left-edge strip in
 ///   `bar.active_accent`, painted only when that field is `Some` — no
-///   theme fallback (matches every other backend as of #658).
+///   theme fallback.
 /// - **Icon glyph:** centred in the row, at a fixed VS-Code-parity size
-///   (issue #1157 — see this module's doc); `theme.foreground` for
+///   (see this module's doc); `theme.foreground` for
 ///   active/hovered/selected rows, `theme.inactive_fg` otherwise.
 pub fn draw_activity_bar(
     target: &ID2D1RenderTarget,
@@ -86,25 +73,19 @@ pub fn draw_activity_bar(
     hovered_idx: Option<usize>,
     theme: &Theme,
 ) -> Vec<ActivityBarRowHit> {
-    // `win_activity_bar_layout` (like `ActivityBar::layout` itself) is
-    // already bar-relative — `rect.x`/`rect.y` never reach it. Pre-#1081
-    // this fn baked `rect.x`/`rect.y` into each `row_rect` by hand;
-    // `native_surface_paint::paint` instead expects bar-relative
-    // coordinates (it paints `(0, 0, width, height)`, matching
-    // `gtk::activity_bar` / `macos::activity_bar`'s contract), so this
-    // now translates the render target itself via
-    // `super::text::with_translation` — the exact same shape as
-    // `GtkBackend::draw_activity_bar`'s `cr.translate(rect.x, rect.y)`
-    // and `MacBackend::draw_activity_bar`'s `CGContextTranslateCTM`
-    // (see that module's doc, "What #552's audit missed").
+    // Layout coordinates are bar-relative. `native_surface_paint::paint`
+    // expects bar-relative coordinates (it paints `(0, 0, width, height)`,
+    // matching `gtk::activity_bar` / `macos::activity_bar`'s contract),
+    // so translate the render target itself via `super::text::with_translation`
+    // — the exact same shape as `GtkBackend::draw_activity_bar`'s
+    // `cr.translate(rect.x, rect.y)` and `MacBackend::draw_activity_bar`'s
+    // `CGContextTranslateCTM`.
     let layout = win_activity_bar_layout(rect, bar);
     let style = ActivityBarStyle::default();
 
-    // #1157: build a same-family, same-fallback `DWrite` sized to the
-    // (default) icon size — see this module's doc for the pt/px ratio —
-    // falling back to the caller's own `dwrite` handle if the resize
-    // fails (degrades to the pre-#1157 "icon tracks the caller's font
-    // size" behaviour rather than painting nothing).
+    // Build a same-family, same-fallback `DWrite` sized to the icon size
+    // (see this module's doc for the pt/px ratio), falling back to the
+    // caller's own `dwrite` handle if the resize fails.
     let icon_size_pt = style.resolved_icon_size_px() * 72.0 / 96.0;
     let icon_dwrite = dwrite.with_size(icon_size_pt);
     let icon_dwrite = icon_dwrite.as_ref().unwrap_or(dwrite);
@@ -223,7 +204,7 @@ mod tests {
     }
 
     /// Row spans are bar-relative — the first visible row always starts
-    /// at `y_start == 0.0`, regardless of where `rect` sits (issue #552).
+    /// at `y_start == 0.0`, regardless of where `rect` sits.
     #[test]
     fn hit_regions_are_bar_relative_not_absolute() {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
@@ -261,7 +242,7 @@ mod tests {
         );
     }
 
-    /// #1081 regression: pre-migration `win::activity_bar` was the only
+    /// Pre-migration `win::activity_bar` was the only
     /// one of the three backends that never painted the right-edge
     /// separator column GTK/macOS both have. The shared
     /// `native_surface_paint::paint` now fills it uniformly.
@@ -288,7 +269,7 @@ mod tests {
         );
     }
 
-    /// #1157: the icon glyph paints at the fixed VS-Code-parity size
+    /// The icon glyph paints at the fixed VS-Code-parity size
     /// (`ActivityBarStyle::resolved_icon_size_px`'s default, 24px)
     /// regardless of the `DWrite` handle's own font size — the
     /// regression this issue reports ("icon size follows the active
@@ -342,11 +323,9 @@ mod tests {
         );
     }
 
-    /// The `with_translation`-based repaint at a non-zero `rect` origin
-    /// (#1081 — replacing the old per-coordinate `rect.x`/`rect.y`
-    /// addition) must still land the bar's own background and accent
-    /// strip at `rect`'s actual on-screen position, not at the surface's
-    /// literal `(0, 0)`.
+    /// The translation-based repaint must still land the bar's own
+    /// background and accent strip at `rect`'s actual on-screen position,
+    /// not at the surface's literal `(0, 0)`.
     #[test]
     fn paints_at_rect_origin_not_at_surface_origin() {
         const ORIGIN_X: f32 = 10.0;

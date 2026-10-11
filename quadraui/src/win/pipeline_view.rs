@@ -1,21 +1,10 @@
 //! Direct2D / DirectWrite rasteriser for
-//! [`crate::primitives::pipeline_view::PipelineView`] (#735).
+//! [`crate::primitives::pipeline_view::PipelineView`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::pipeline_view::native_surface_paint::paint`]
-//! (#1085, `PaintSurface` Phase 4 slice 8/8) — see that fn's doc for the
-//! seven named divergences found while unifying
-//! `gtk::pipeline_view::draw_pipeline_view`,
-//! `macos::pipeline_view::draw_pipeline_view` and
-//! `win::pipeline_view::draw_pipeline_view` into one implementation
-//! (several of which — the straight-rect stage-box border, the two-line
-//! chevron arrow head/focus indicator, the clamped+clipped label — were
-//! already this backend's own behaviour and are now what every backend
-//! shares). This module now only carries [`win_pipeline_view_layout`]
-//! (still real, backend-specific pure geometry — no painting involved);
-//! the deprecated `draw_pipeline_view` compatibility shim over the
-//! shared [`super::surface::D2dSurface`] adapter was removed in issue
-//! #1109 (zero uses in coord-tui's `main` and vimcode's `develop`).
+//! Painting is implemented in the shared
+//! [`crate::primitives::pipeline_view::native_surface_paint::paint`].
+//! This module carries [`win_pipeline_view_layout`], the backend-specific
+//! geometry computation with no painting involved.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod pipeline_view;` and `backend.rs`'s
@@ -30,12 +19,9 @@ use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
 #[cfg(test)]
 use crate::theme::Theme;
 
-/// Compute the Win-GUI DIP-unit layout for a [`PipelineView`] without
-/// painting — the DirectWrite twin of `crate::Backend::draw_pipeline_view`'s
-/// internal layout call (the free-function `draw_pipeline_view` shim
-/// this backed was removed in issue #1109). Shares its geometry with
-/// `gtk_pipeline_view_layout` / `mac_pipeline_view_layout` via
-/// [`pixel_pipeline_view_layout`] (issue #1079).
+/// Compute the Win-GUI DIP-unit layout for a [`PipelineView`].
+/// Shares its geometry with `gtk_pipeline_view_layout` / `mac_pipeline_view_layout`
+/// via [`pixel_pipeline_view_layout`].
 ///
 /// Note: the returned layout (incl. `bounds`) is offset down by
 /// [`pixel::PIPELINE_FOCUS_INDICATOR_H`], so `bounds.y` starts below the
@@ -81,7 +67,7 @@ mod tests {
     /// [`crate::primitives::pipeline_view::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s
     /// headless target — the same adapter the now-removed
-    /// `draw_pipeline_view` shim used (issue #1109), exercised here
+    /// `draw_pipeline_view` shim used, exercised here
     /// directly.
     fn paint(
         surface: &HeadlessSurface,
@@ -104,11 +90,8 @@ mod tests {
             .expect("paint pipeline view")
     }
 
-    /// C0 smoke: `draw_pipeline_view` must actually paint text + a
-    /// click-routable layout rather than panicking or hitting a
-    /// `todo!()` (#735's acceptance bar — "draw_pipeline_view survives C0
-    /// with text_ok on win"), and the Tier-1 conformance scenario
-    /// `pipeline.click_advances_stage` needs a real box to click.
+    /// Smoke test: `draw_pipeline_view` paints text and returns a
+    /// click-routable layout.
     #[test]
     fn draw_pipeline_view_paints_text_and_returns_layout() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
@@ -145,11 +128,8 @@ mod tests {
         );
     }
 
-    /// Paint↔click round trip (`docs/TESTING.md` coverage-taxonomy row 1)
-    /// at a non-zero origin — #505's LOCAL/ABSOLUTE mixup regression
-    /// guard, mirrored from `win::sidebar_panel`/`win::text_input`'s own
-    /// nonzero-origin tests. Also exercises the action-button hit, which
-    /// is what the Tier-1 `pipeline.click_advances_stage` scenario clicks.
+    /// Paint↔click round trip at a non-zero origin, and exercises
+    /// the action-button hit.
     #[test]
     fn paint_and_click_round_trip_action_button_at_nonzero_origin() {
         let origin_x = 12.0_f32;

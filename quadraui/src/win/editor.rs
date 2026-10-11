@@ -1,5 +1,4 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::primitives::editor::Editor`]
-//! (issue #26).
 //!
 //! Positions come from [`Editor::layout`] (viewport / gutter / text
 //! bounds, all in the caller's `cell_width`/`line_height` — uniform
@@ -16,18 +15,15 @@
 //! ([`crate::win::WinBackend::draw_editor`]) passes `&self.current_theme`,
 //! the same field `Backend::set_theme` writes.
 //!
-//! # Scope for #26
-//!
-//! This issue's acceptance bar is "line numbers, syntax-highlighted
-//! text, cursor, selections, diagnostics" — implemented below. Not yet
-//! painted (all pre-existing GTK/TUI features out of scope for this
-//! pass, not a compile-error gap): git-diff gutter column, breakpoint
-//! gutter column, DAP-current-line background, fold headers, AI ghost
-//! text, inline annotations, bracket-match highlight, indent guides,
-//! colorcolumns, spell-check underlines, and the code-action lightbulb
-//! glyph. `EditorPaintResult::cursor_position_native` is always `None`
-//! — this backend paints its own caret directly (via [`fill_rect`]),
-//! the same posture `GtkBackend::draw_editor`'s doc documents for GTK.
+//! Implements line numbers, syntax-highlighted text, cursor, selections,
+//! and diagnostics. Not yet painted (pre-existing GTK/TUI features out of
+//! scope): git-diff gutter column, breakpoint gutter column,
+//! DAP-current-line background, fold headers, AI ghost text, inline
+//! annotations, bracket-match highlight, indent guides, colorcolumns,
+//! spell-check underlines, and the code-action lightbulb glyph.
+//! `EditorPaintResult::cursor_position_native` is always `None` — this
+//! backend paints its own caret directly (via [`fill_rect`]), the same
+//! posture `GtkBackend::draw_editor`'s doc documents for GTK.
 //!
 //! ## Scrollbar
 //!
@@ -270,7 +266,7 @@ pub fn draw_editor_with_options_and_v_scrollbar_w(
                 // Re-paint the glyph under the cursor in background
                 // colour so it reads against the cursor fill — mirrors
                 // `macos::editor::draw_editor`'s `CursorShape::Block` arm
-                // (issue #1197). `cursor.pos.col` indexes the raw
+                //. `cursor.pos.col` indexes the raw
                 // (unscrolled) buffer line, matching `CursorPos::col`'s
                 // doc; the glyph is painted back at the same scrolled
                 // screen `(x, y)` the block fill just used.
@@ -336,7 +332,7 @@ fn text_v_offset(dwrite: &DWrite, line_height: f32) -> f32 {
 /// visible `lines`, before text is painted. Column math — including
 /// `SelectionKind::Block` vs `Char` distinctness, wrapped-segment
 /// offsetting, and ghost-continuation / diff-padding row skipping —
-/// comes from [`EditorSelection::cols_on`] (#1082); this function only
+/// comes from [`EditorSelection::cols_on`]; this function only
 /// converts the returned segment-local columns to a fixed-cell-width
 /// pixel rectangle (mirrors `tui::editor::render_selection`'s per-cell
 /// approach rather than GTK/macOS's proportional text measurement,
@@ -666,14 +662,9 @@ mod tests {
         assert_eq!((px.r, px.g, px.b), (expected.r, expected.g, expected.b));
     }
 
-    /// Regression for #1082: a naive re-derivation of the selection
-    /// column math (this backend's pre-fix `paint_selection`) ignored
-    /// `is_ghost_continuation`, `DiffLine::Padding`, and
-    /// `segment_col_offset` entirely — painting selection tint over
-    /// ghost/padding rows it should skip, and at the wrong x position on
-    /// a wrapped segment. `EditorSelection::cols_on` (shared with every
-    /// other backend) fixes all three; this proves it through a real
-    /// Direct2D paint.
+    /// `EditorSelection::cols_on` (shared with every other backend) correctly
+    /// computes selection columns, accounting for wrapped ghosts, padding rows,
+    /// and segment offsets. This proves it through a real Direct2D paint.
     #[test]
     fn selection_respects_wrapped_ghost_and_diff_padding_rows() {
         let surface = HeadlessSurface::new(200, 100).expect("create surface");
@@ -761,22 +752,14 @@ mod tests {
         );
     }
 
-    /// Regression for #1197: the block cursor must not permanently hide
-    /// the glyph underneath it — `CursorShape::Block`'s `fill_rect`
-    /// opaquely covers the character, so the arm must re-paint it on top
-    /// in `theme.background`, mirroring `macos::editor::draw_editor`'s own
-    /// `CursorShape::Block` arm (and its
-    /// `block_cursor_paints_theme_cursor_color` test). Buffer text and
-    /// cursor column match vimcode#1559's own repro (`"1789518172522"`,
-    /// cursor on column 0).
-    ///
-    /// Scans the cursor cell for any pixel that reads `theme.background`
-    /// rather than guessing exact glyph ink placement — real DirectWrite
-    /// glyph positioning isn't predictable off a live Windows font pass,
-    /// same posture as `paints_without_panicking_and_gutter_is_visible`'s
-    /// gutter scan. Before the fix, `CursorShape::Block` fills the whole
-    /// cell with a single opaque `theme.cursor`-blended colour and this
-    /// scan finds nothing.
+    /// `CursorShape::Block` opaquely covers the character with a filled rect,
+    /// so the arm must re-paint the glyph on top in `theme.background`,
+    /// mirroring `macos::editor::draw_editor`'s own `CursorShape::Block` arm.
+    /// This test scans the cursor cell for any pixel that reads
+    /// `theme.background` rather than guessing exact glyph ink placement —
+    /// real DirectWrite glyph positioning isn't predictable off a live Windows
+    /// font pass. Before the fix, `CursorShape::Block` fills the whole cell
+    /// with a single opaque `theme.cursor`-blended colour.
     #[test]
     fn block_cursor_repaints_glyph_in_background_colour() {
         let surface = HeadlessSurface::new(200, 100).expect("create surface");

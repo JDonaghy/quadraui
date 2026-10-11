@@ -1,14 +1,10 @@
 //! Direct2D / DirectWrite layout helper for
-//! [`crate::primitives::chart::Chart`] (issue #26).
+//! [`crate::primitives::chart::Chart`].
 //!
-//! Painting moved to the shared [`crate::primitives::chart::paint`]
-//! (#810, PaintSurface Phase 2c) — see that fn's doc for the
-//! divergences resolved while unifying `gtk::chart::draw_chart`,
-//! `macos::chart::draw_chart` and `win::chart::draw_chart` into one
-//! implementation, including the quadraui#791 clip this backend never
-//! had before. This module now only carries [`win_chart_layout`], the
-//! DIP-unit layout query used for both hit-testing
-//! (`WinBackend::chart_layout`) and painting (`WinBackend::draw_chart`).
+//! This module provides [`win_chart_layout`], the DIP-unit layout query
+//! used for both hit-testing (`WinBackend::chart_layout`) and painting
+//! (`WinBackend::draw_chart`). Painting is implemented in the shared
+//! [`crate::primitives::chart::paint`].
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod chart;` and `backend.rs`'s module
@@ -20,7 +16,6 @@ use crate::primitives::layout_metrics::pixel_chart_layout;
 
 /// Compute a [`Chart`]'s layout without painting — the DirectWrite twin
 /// of `gtk_chart_layout`/`mac_chart_layout`, via [`pixel_chart_layout`]
-/// (issue #1079).
 pub fn win_chart_layout(
     chart: &Chart,
     rect: Rect,
