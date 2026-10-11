@@ -657,6 +657,12 @@ pub struct RecordingBackend {
     /// honestly fabricate, so it's included rather than
     /// `unimplemented!()`.
     pub focus: crate::focus::FocusManager,
+    /// Reported by [`Backend::tree_paints_own_scrollbar`]. `false` by
+    /// default, matching TUI. Set to `true` to exercise the branch
+    /// GTK/macOS/Win take, where [`Backend::draw_tree`] already paints
+    /// an overlay scrollbar and a host must not also call
+    /// [`Backend::draw_scrollbar`] for the same tree.
+    pub tree_paints_own_scrollbar: bool,
 }
 
 impl Default for RecordingBackend {
@@ -671,6 +677,7 @@ impl Default for RecordingBackend {
             line_height: 1.0,
             char_width: 1.0,
             focus: crate::focus::FocusManager::new(),
+            tree_paints_own_scrollbar: false,
         }
     }
 }
@@ -1084,6 +1091,9 @@ impl crate::Backend for RecordingBackend {
     }
     fn tree_vscrollbar(&self, rect: Rect, tree: &crate::TreeView) -> Option<crate::Scrollbar> {
         tree.vscrollbar(rect, self.line_height())
+    }
+    fn tree_paints_own_scrollbar(&self) -> bool {
+        self.tree_paints_own_scrollbar
     }
     fn form_layout(&self, _r: Rect, _f: &crate::Form) -> crate::primitives::form::FormLayout {
         unimplemented!("RecordingBackend has no Form layout algorithm")

@@ -3814,6 +3814,10 @@ impl Backend for GtkBackend {
         tree.vscrollbar(rect, row_h as f32)
     }
 
+    fn tree_paints_own_scrollbar(&self) -> bool {
+        true
+    }
+
     /// Delegates to [`crate::primitives::layout_metrics::form_field_measure`]
     /// — the shared measurer that `macos::form::mac_form_layout` and
     /// `win::form::win_form_layout` already use. Measures one row per field,

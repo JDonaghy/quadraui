@@ -558,6 +558,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tree_controller_render_does_not_double_paint_scrollbar() {
+        // `MacBackend` reports `tree_paints_own_scrollbar() == true`,
+        // meaning its `draw_tree` already paints the tree's overlay
+        // scrollbar over the tree's own content. `TreeController::render`
+        // therefore passes the full rect to `draw_tree` and skips a
+        // separate `draw_scrollbar` call. Rendering the same rows through
+        // `TreeController::render` and through a bare `draw_tree` call
+        // must produce pixel-identical frames; any stray pixel would be
+        // an extra, separately painted scrollbar.
+        let rows: Vec<TreeRow> = (0..40).map(|i| leaf(i, &format!("row{i}"))).collect();
+        let tree = make_tree(rows.clone());
+        let (reference, _layout) = paint_via_backend(&tree);
+
+        let mut controller = crate::TreeController::new("tree");
+        controller.set_rows(rows);
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_theme(Theme {
+            tab_bar_bg: Color::rgb(255, 255, 255),
+            background: Color::rgb(255, 255, 255),
+            ..Theme::default()
+        });
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            assert!(
+                b.tree_paints_own_scrollbar(),
+                "macOS owns the tree scrollbar paint"
+            );
+            controller.render(b, area);
+        });
+        backend.end_frame();
+
+        for y in 0..H {
+            for x in 0..W {
+                assert_eq!(
+                    surface.pixel(x, y),
+                    reference.pixel(x, y),
+                    "pixel ({x}, {y}) differs between TreeController::render and a \
+                     draw_tree-only reference frame — TreeController painted \
+                     something extra, i.e. a second scrollbar"
+                );
+            }
+        }
+    }
+
     /// #1075: macOS upgrades from a plain-text inline-rename fallback
     /// (pre-migration "Scope omissions") to the same caret/selection
     /// treatment GTK always had. A row mid-rename must still paint
