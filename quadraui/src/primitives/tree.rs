@@ -585,22 +585,26 @@ pub(crate) mod native_surface_paint {
             let text_right_limit = row_x + row_w - badge_reserve - 4.0;
             let text_start_x = cursor_x;
 
-            // #1183: hard-clip label painting to `text_right_limit` so a
-            // long span can never bleed into the badge's reserved gap.
-            // Before this, only a span's *background fill* was clamped
-            // (`clipped_w` below) — the glyph run itself was always drawn
-            // at its full measured width via `surface_draw_text_run_styled`,
-            // so an over-long label's last glyphs painted straight through
-            // (and often past) the badge with no gap, mirroring the TUI
-            // bug this issue reports. `PaintSurface` has no ellipsize verb
-            // (see `diff_view::native_surface_paint`'s identical note), so
-            // GUI backends hard-clip rather than ellipsize — TUI is the
-            // only backend that can cheaply measure+truncate a column
-            // budget and paint a literal `…` glyph.
-            let clip_w = (text_right_limit - cursor_x).max(0.0);
-            surface.surface_push_clip(Rect::new(cursor_x, row_y, clip_w, row_h));
+            // #1183: reserve `text_right_limit` as the label's budget so
+            // a long span can never bleed into the badge's reserved gap.
+            // A label that doesn't fit the budget is ellipsized —
+            // `fit_text_prefix` binary-searches the longest prefix of the
+            // overflowing span that, with a trailing `…` appended, still
+            // fits — rather than hard-clipped mid-glyph, so GTK/macOS/Win
+            // all show the same VS Code-style truncation TUI already did.
+            let avail = (text_right_limit - cursor_x).max(0.0);
+            let total_w: f32 = row
+                .text
+                .spans
+                .iter()
+                .map(|span| surface.surface_measure_text_styled(&span.text, span.bold).0)
+                .sum();
+            let needs_ellipsis = total_w > avail;
+
+            surface.surface_push_clip(Rect::new(cursor_x, row_y, avail, row_h));
+            let mut remaining = avail;
             for span in &row.text.spans {
-                if cursor_x >= text_right_limit {
+                if remaining <= 0.0 {
                     break;
                 }
                 let span_fg = if let Some(c) = span.fg {
@@ -611,21 +615,34 @@ pub(crate) mod native_surface_paint {
                     def_fg
                 };
                 let (sw, sh) = surface.surface_measure_text_styled(&span.text, span.bold);
+                let (paint_text, paint_w) = if !needs_ellipsis || sw <= remaining {
+                    (span.text.clone(), sw)
+                } else {
+                    crate::paint_surface::fit_text_prefix(surface, &span.text, span.bold, remaining)
+                };
+                if paint_w <= 0.0 {
+                    break;
+                }
                 if let Some(sbg) = span.bg {
-                    let clipped_w = sw.min((text_right_limit - cursor_x).max(0.0));
-                    surface.surface_fill_rect(Rect::new(cursor_x, row_y, clipped_w, row_h), sbg);
+                    surface.surface_fill_rect(Rect::new(cursor_x, row_y, paint_w, row_h), sbg);
                 }
                 let sy = row_y + (row_h - sh) / 2.0;
                 surface.surface_draw_text_run_styled(
-                    Rect::new(cursor_x, sy, sw, sh),
-                    &span.text,
+                    Rect::new(cursor_x, sy, paint_w, sh),
+                    &paint_text,
                     span_fg,
                     span.bold,
                     false,
                     false,
                     1.0,
                 );
-                cursor_x += sw;
+                cursor_x += paint_w;
+                remaining -= paint_w;
+                if paint_text != span.text {
+                    // This span was truncated with an ellipsis — any
+                    // later spans are fully overflowed, so stop here.
+                    break;
+                }
             }
             surface.surface_pop_clip();
 
@@ -1084,16 +1101,13 @@ pub(crate) mod native_surface_paint {
                 .any(|(_, t, c)| t == "careful" && *c == theme.warning_fg));
         }
 
-        /// #1183 parity check: GUI backends (GTK/Win/macOS all share this
-        /// `paint` fn) must clamp an over-long label before a right-aligned
-        /// badge the same way TUI does — a gap between the label's clip
-        /// boundary and the badge, never the badge painted flush against
-        /// (or on top of) the label. `PaintSurface` has no ellipsize verb
-        /// (see `paint`'s inline #1183 note), so this asserts the hard-clip
-        /// boundary sits strictly left of the badge's start, not a literal
-        /// `…` glyph — that part of the fix is TUI-only.
+        /// #1183/#1475: GUI backends (GTK/Win/macOS all share this `paint`
+        /// fn) must ellipsize an over-long label before a right-aligned
+        /// badge the same way TUI does — a literal trailing `…` that fits
+        /// within the label's budget, never a mid-glyph hard clip and
+        /// never painted through/past the badge's reserved gap.
         #[test]
-        fn long_label_with_badge_clips_before_badge_leaving_a_gap() {
+        fn long_label_with_badge_ellipsizes_before_badge() {
             let mut row = leaf(0, "BACKEND_SPECULATIVE_EXECUTION_MODULE");
             row.badge = Some(Badge::plain("U"));
             let tree = make_tree(vec![row]);
@@ -1112,31 +1126,32 @@ pub(crate) mod native_surface_paint {
             );
 
             let (badge_bw, _) = surface.surface_measure_text("U");
-            let badge_start_x = AREA.x + AREA.width - badge_bw - 4.0;
+            let row_bounds = layout.visible_rows[0].bounds;
+            let row_x = AREA.x + row_bounds.x;
+            let row_w = row_bounds.width;
+            let text_right_limit = row_x + row_w - (badge_bw + 8.0) - 4.0;
 
-            // `paint` also pushes one whole-`area` clip bracket at the top
-            // of the function (unrelated to this row's label); the label
-            // clip is the narrower, row-scoped one, so pick the tightest
-            // match rather than the first.
-            let label_clip = surface
-                .clips
+            let ellipsized = surface
+                .texts
                 .iter()
-                .filter(|r| (r.y - layout.visible_rows[0].bounds.y).abs() < 0.01)
-                .min_by(|a, b| a.width.partial_cmp(&b.width).unwrap())
-                .expect("expected a clip pushed around the row's label paint");
-
+                .find(|(_, t, _)| t.ends_with('…'))
+                .expect("an over-long label must paint a run ending in an ellipsis");
+            let (rect, text, _color) = ellipsized;
             assert!(
-                label_clip.x + label_clip.width < badge_start_x,
-                "label clip right edge ({}) must sit strictly left of the badge's \
-                 start ({badge_start_x}), leaving a gap — got clip {:?}",
-                label_clip.x + label_clip.width,
-                label_clip
+                text.chars().count() < "BACKEND_SPECULATIVE_EXECUTION_MODULE".chars().count(),
+                "the ellipsized run must be a strict prefix of the full label, got {text:?}"
+            );
+            assert!(
+                rect.x + rect.width <= text_right_limit + 0.01,
+                "the ellipsized run's right edge ({}) must fit within the label's \
+                 budget ({text_right_limit}), leaving the badge's reserved gap intact",
+                rect.x + rect.width
             );
 
             // The badge itself must still be painted (there was room for it).
             assert!(
                 surface.texts.iter().any(|(_, t, _)| t == "U"),
-                "badge text should still paint when the label is clamped, got texts: {:?}",
+                "badge text should still paint when the label is ellipsized, got texts: {:?}",
                 surface.texts
             );
         }
