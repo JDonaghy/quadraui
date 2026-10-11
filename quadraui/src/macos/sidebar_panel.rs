@@ -190,24 +190,23 @@ mod tests {
         );
     }
 
-    /// #1494: the header toolbar's icon glyphs (new file, new folder,
-    /// refresh, collapse, "…") must paint fully inside the header band and
-    /// be vertically centred on it, matching the title row. #1470 fixed the
-    /// band's *height* (sized off the chrome font's line height) but left a
-    /// separate bug: `measure_text` let a fallback-resolved glyph run's own
-    /// ascent/descent leak into the text height it reported, while
-    /// `draw_text`/`draw_text_impl` always positions glyphs off the
-    /// *primary* font's own ascent — the two disagree, so centring against
-    /// the reported height pushes the glyph off-centre (low in the slot)
-    /// and the header's clip rect then cuts off its lower part.
+    /// The header toolbar's icon glyphs (new file, new folder, refresh,
+    /// collapse, "…") paint fully inside the header band and sit vertically
+    /// centred on it, level with the title row.
+    ///
+    /// Centring is only correct while `measure_text` reports the *primary*
+    /// font's own line height: `draw_text`/`draw_text_impl` position every
+    /// glyph off that font's ascent, so a height carrying a
+    /// fallback-resolved run's ascent/descent instead would disagree with
+    /// where the ink lands, placing the glyph low in its slot where the
+    /// header's clip rect cuts off its lower part.
     ///
     /// `'\u{EAF0}'` ("Explorer") is not a bare-Menlo (the chrome font under
     /// test) glyph — it's a codicon PUA codepoint that resolves through the
     /// chrome font's fallback cascade to a different font entirely (see
     /// `resolved_fallback_for_char_reports_no_real_glyph_for_bare_menlo_on_pua`
-    /// and its sibling tests in `super::super::text`), which is exactly the
-    /// case that desynchronised `measure_text`'s reported height from where
-    /// `draw_text_impl` actually paints.
+    /// and its sibling tests in `super::super::text`), so it is exactly the
+    /// case where a resolved run's metrics differ from the primary font's.
     #[test]
     fn toolbar_icon_glyph_is_vertically_centered_in_header_band() {
         let panel = SidebarPanel {
@@ -269,7 +268,7 @@ mod tests {
         assert!(
             max_y + 1.0 <= tb.y + tb.height + 0.5,
             "icon glyph bottom ({}) is clipped by the header band's bottom edge \
-             ({}) — see #1494",
+             ({})",
             max_y + 1.0,
             tb.y + tb.height,
         );
@@ -279,7 +278,7 @@ mod tests {
         assert!(
             (glyph_center - band_center).abs() <= 1.0,
             "icon glyph vertical centre ({glyph_center}) is not within 1px of the \
-             header band's centre ({band_center}) — see #1494",
+             header band's centre ({band_center})",
         );
     }
 }
