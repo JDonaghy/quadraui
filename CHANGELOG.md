@@ -97,6 +97,11 @@ only a push to `main` runs this workflow.
   the new `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH` constant. TUI is
   unaffected — its track stays one cell wide.
 
+### Fixed
+
+- macOS Explorer header toolbar icons are now vertically centred in the
+  sidebar header band instead of being placed low and clipped (issue #1494).
+
 ## [0.1.4] - 2026-10-11
 
 ### Added
