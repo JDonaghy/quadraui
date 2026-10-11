@@ -143,8 +143,8 @@ struct Row {
     verified_by: &'static str,
 }
 
-/// Colour-depth axis — `tests/tui_pty_smoke.rs`'s `sgr_color_depth` module
-///. Exhaustiveness against `quadraui::ColorDepth`'s three
+/// Colour-depth axis — `tests/tui_pty_smoke.rs`'s `sgr_color_depth` module.
+/// Exhaustiveness against `quadraui::ColorDepth`'s three
 /// variants is checked by `every_colordepth_variant_has_a_verified_matrix_row`.
 fn color_depth_rows() -> Vec<Row> {
     vec![

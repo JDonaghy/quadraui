@@ -280,8 +280,8 @@ pub const MAX_ROW_PITCH: f32 = 8.0;
 /// both remove: every backend now sizes with [`Self::FixedPitch`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MinimapSizing {
-    /// Stretch rows to fill `bounds.height`, capped at [`MAX_ROW_PITCH`]
-    ///. A file shorter than the strip at that cap top-aligns
+    /// Stretch rows to fill `bounds.height`, capped at [`MAX_ROW_PITCH`].
+    /// A file shorter than the strip at that cap top-aligns
     /// rather than stretching further; there is no sliding window — every
     /// row is always visible.
     ///

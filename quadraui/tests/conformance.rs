@@ -536,8 +536,8 @@ fn c0_paint_smoke() {
     }
     table.push('\n');
 
-    // Split by gating exactly as `verdict` does for the Tier-1 matrix
-    //: a `BurnDown` column's gaps are printed, named, and
+    // Split by gating exactly as `verdict` does for the Tier-1 matrix:
+    // a `BurnDown` column's gaps are printed, named, and
     // folded into the promotable check below, but never fail this test.
     let mut blocking_gaps: Vec<String> = Vec::new();
     let mut burn_down_gaps: Vec<String> = Vec::new();

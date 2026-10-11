@@ -88,8 +88,8 @@ pub(crate) struct BackendCore {
     /// at a couple of call sites that also touch other backend fields in
     /// the same statement.
     pub(crate) text_selection: TextSelectionState,
-    /// The [`crate::backend::MenuStyle`] set via [`Backend::set_menu_style`]
-    ///. `#[derive(Default)]` above gives this
+    /// The [`crate::backend::MenuStyle`] set via [`Backend::set_menu_style`].
+    /// `#[derive(Default)]` above gives this
     /// `MenuStyle::default()` (`Auto`) with no explicit initialisation,
     /// matching the framework-wide default the issue asks for.
     ///

@@ -206,8 +206,8 @@ pub(crate) trait ReactionSink {
     fn request_redraw(&self);
     /// Tear down / close.
     fn request_exit(&self);
-    /// Arm a scheduled wake — see [`Backend::request_frame_in`]
-    ///. `&self`, matching the other two methods and
+    /// Arm a scheduled wake — see [`Backend::request_frame_in`].
+    /// `&self`, matching the other two methods and
     /// [`Backend::request_frame_in`]/[`Backend::waker`] themselves:
     /// macOS's implementor (`QuadraView`) is an `objc2` `NSObject`
     /// subclass, which is only ever handed out as `&self` (Objective-C

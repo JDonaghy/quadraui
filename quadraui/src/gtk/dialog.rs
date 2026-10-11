@@ -317,8 +317,8 @@ mod tests {
     }
 
     /// The font swap must not leak: the layout's font description
-    /// before `draw_dialog` is called should be restored afterwards
-    ///, so later paints in the same frame keep rendering in
+    /// before `draw_dialog` is called should be restored afterwards,
+    /// so later paints in the same frame keep rendering in
     /// whatever font (editor) was active.
     #[test]
     fn draw_dialog_restores_the_layouts_original_font_description_afterwards() {

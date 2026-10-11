@@ -1162,8 +1162,8 @@ impl WinBackend {
         self.events.borrow_mut().push_back(ev);
     }
 
-    /// Re-apply `current_pointer_shape` via `SetCursor`/`LoadCursorW`
-    ///. Called both by [`Backend::set_cursor`] (an app-driven
+    /// Re-apply `current_pointer_shape` via `SetCursor`/`LoadCursorW`.
+    /// Called both by [`Backend::set_cursor`] (an app-driven
     /// change) and by `win::run`'s `WM_SETCURSOR` handler (Windows
     /// re-asking "what cursor belongs here?" on every mouse move over the
     /// client area) — see `current_pointer_shape`'s field doc for why
@@ -2300,8 +2300,8 @@ impl Backend for WinBackend {
                 scroll: true,
                 drag: true,
                 text_selection: true,
-                // `register_font_from_memory`/`set_nerd_font_fallback`
-                //: both overridden above, backed by real
+                // `register_font_from_memory`/`set_nerd_font_fallback`:
+                // both overridden above, backed by real
                 // DirectWrite calls (`crate::win::text::register_font_from_memory`
                 // / `build_nerd_font_fallback`) rather than the trait's
                 // no-op default.
@@ -2482,8 +2482,8 @@ impl Backend for WinBackend {
 
     /// Store the editor font family + size for the next
     /// [`Self::attach_surface`]/[`Self::ensure_surface`] call to build an
-    /// `IDWriteTextFormat` from. Mirrors `GtkBackend::set_editor_font`
-    ///: a live surface doesn't rebuild its `IDWriteTextFormat`
+    /// `IDWriteTextFormat` from. Mirrors `GtkBackend::set_editor_font`:
+    /// a live surface doesn't rebuild its `IDWriteTextFormat`
     /// immediately on a runtime font change — same limitation the GTK
     /// backend has today (its Pango layout is rebuilt fresh every frame
     /// from these fields instead, which this backend's once-per-surface
@@ -3813,8 +3813,8 @@ impl Backend for WinBackend {
         if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
             return super::form::win_form_layout(dwrite, rect, form, self.current_line_height);
         }
-        // No live DWrite handle — nominal char-width estimate instead
-        //; real per-glyph measurement resumes once
+        // No live DWrite handle — nominal char-width estimate instead;
+        // real per-glyph measurement resumes once
         // `attach_surface`/`attach_headless` builds one.
         let row_h =
             crate::primitives::layout_metrics::form_row_height(self.current_line_height as f64);
@@ -5508,8 +5508,8 @@ impl PaintSurface for WinBackend {
     }
 
     /// Overrides the default (which drops `bold`) —
-    /// `DWrite::measure_text_styled` already exists on this backend
-    ///, matching what `win::status_bar::draw_status_bar` measured
+    /// `DWrite::measure_text_styled` already exists on this backend,
+    /// matching what `win::status_bar::draw_status_bar` measured
     /// before its paint moved to
     /// `primitives::status_bar::native_surface_paint::paint`. Also
     /// resolves `chrome_dwrite` now, matching

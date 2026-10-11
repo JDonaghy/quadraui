@@ -234,8 +234,8 @@ mod tests {
         assert_eq!(result, ImagePaintResult::Unsupported);
     }
 
-    /// Black-box proof that a cache hit skips re-decoding entirely
-    ///: a `Path` source that decodes fine once, then gets
+    /// Black-box proof that a cache hit skips re-decoding entirely:
+    /// a `Path` source that decodes fine once, then gets
     /// corrupted on disk, must still paint successfully on a second call
     /// with the same size/scale — that's only possible if the second
     /// call never touched the (now-corrupt) file again. Without the

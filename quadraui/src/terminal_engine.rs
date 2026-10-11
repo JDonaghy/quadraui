@@ -721,8 +721,8 @@ fn clamp_vt100_size(cols: u16, rows: u16) -> (u16, u16) {
 /// track DECSCUSR (`ESC [ Ps SP q`) at all — that sequence has an
 /// intermediate byte (`SP`, `0x20`) vt100's own `csi_dispatch` doesn't
 /// recognise for any final byte, so it falls through to
-/// [`unhandled_csi`](vt100::Callbacks::unhandled_csi) instead
-///. [`TerminalSession`] carries one of these alongside
+/// [`unhandled_csi`](vt100::Callbacks::unhandled_csi) instead.
+/// [`TerminalSession`] carries one of these alongside
 /// its parser and reads both back after each [`poll`](TerminalSession::poll)
 /// via [`TerminalSession::title`]/[`TerminalSession::cursor_shape`]/
 /// [`TerminalSession::cursor_blinking`].

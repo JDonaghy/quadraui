@@ -265,8 +265,8 @@ pub fn draw_editor_with_options_and_v_scrollbar_w(
                 let _ = fill_rect(target, Rect::new(x, y, cell_width, line_height), color);
                 // Re-paint the glyph under the cursor in background
                 // colour so it reads against the cursor fill — mirrors
-                // `macos::editor::draw_editor`'s `CursorShape::Block` arm
-                //. `cursor.pos.col` indexes the raw
+                // `macos::editor::draw_editor`'s `CursorShape::Block` arm.
+                // `cursor.pos.col` indexes the raw
                 // (unscrolled) buffer line, matching `CursorPos::col`'s
                 // doc; the glyph is painted back at the same scrolled
                 // screen `(x, y)` the block fill just used.

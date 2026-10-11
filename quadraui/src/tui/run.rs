@@ -81,8 +81,8 @@ pub struct RunConfig {
     /// Whether to negotiate mouse reporting with the terminal
     /// (`EnableMouseCapture`/`DisableMouseCapture`).
     ///
-    /// Defaults to `true`. Set to `false` for **`no-mouse` mode**
-    ///: a host where mouse capture is refused or
+    /// Defaults to `true`. Set to `false` for **`no-mouse` mode**:
+    /// a host where mouse capture is refused or
     /// unavailable (e.g. some multiplexers, restrictive SSH sessions, a
     /// screen reader driving the terminal) never gets the capture escape
     /// sequences at all — instead of getting them and then discarding
@@ -254,8 +254,8 @@ fn setup_terminal(config: RunConfig) -> io::Result<TerminalSetup> {
 
     let mut backend = TuiBackend::new();
     // Overwrite `TuiBackend::new()`'s environment-only guess with the live
-    // answer: whether the enhancement flags were actually pushed just now
-    //. Before this line, `kbd_enhanced` was consulted only
+    // answer: whether the enhancement flags were actually pushed just now.
+    // Before this line, `kbd_enhanced` was consulted only
     // to decide whether to pop the flags on exit below — an app had no way
     // to read it at all, so a gesture built on the assumption the push
     // worked would silently never fire on a terminal where it didn't. See
@@ -739,8 +739,8 @@ where
             // buffer. Done outside enter_frame_scope so the closure lifetime
             // doesn't conflict with the frame borrow.
             backend.apply_selection_highlight(frame.buffer_mut());
-            // Apply the editor cursor position cached by `draw_editor`
-            //. `Backend::draw_editor` only has the buffer,
+            // Apply the editor cursor position cached by `draw_editor`.
+            // `Backend::draw_editor` only has the buffer,
             // not the `Frame`, so it stashes the position on `TuiBackend`
             // for us to apply here — the one place per frame with access
             // to the real `Frame::set_cursor_position`. `run_with_shell`

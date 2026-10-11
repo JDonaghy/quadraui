@@ -9,8 +9,8 @@
 //! grows as more primitives migrate from vimcode-private rasterisers into
 //! `quadraui::tui` / `quadraui::gtk`.
 //!
-//! This is the **first** field set — driven by the StatusBar pilot
-//!. Future migrations (TabBar, ListView, TreeView, …) will
+//! This is the **first** field set — driven by the StatusBar pilot.
+//! Future migrations (TabBar, ListView, TreeView, …) will
 //! extend the struct.
 
 use crate::types::Color;

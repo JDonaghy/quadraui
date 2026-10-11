@@ -661,8 +661,8 @@ mod macos_core_text {
     }
 
     /// Answer whether `family` is genuinely installed, via Core Text's
-    /// own name resolution — the Core Text half of [`super::has_font_family`]
-    ///, mirroring [`crate::macos::text::make_font_exact`]'s
+    /// own name resolution — the Core Text half of [`super::has_font_family`],
+    /// mirroring [`crate::macos::text::make_font_exact`]'s
     /// "the resolved font's own name must equal the request" check:
     /// `CTFontCreateWithName` substitutes a default face rather than
     /// failing for an unknown family, so a bare success can't mean

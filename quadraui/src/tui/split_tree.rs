@@ -123,8 +123,8 @@ mod tests {
     }
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
-    // must return coords in the same frame across backends"
-    //. `tui_split_tree_layout` bakes `area.x`/`area.y`
+    // must return coords in the same frame across backends".
+    // `tui_split_tree_layout` bakes `area.x`/`area.y`
     // straight into `tree.layout`'s returned bounds (absolute frame),
     // so the regression guard is a full paint+hit_test round trip
     // re-run at a non-zero origin.
@@ -342,8 +342,8 @@ mod tests {
     }
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
-    // must return coords in the same frame across backends"
-    //. This is a genuine paint→hit_test round trip (it
+    // must return coords in the same frame across backends".
+    // This is a genuine paint→hit_test round trip (it
     // reads the actually-painted column back out of the buffer), so it
     // gets the same non-zero-origin treatment as the other round trips
     // in this file.

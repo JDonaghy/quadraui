@@ -205,8 +205,8 @@ fn rounded_rect_path(cr: &Context, x: f64, y: f64, w: f64, h: f64, radius: f64) 
 /// this function computed to paint and derive `hits` from — its own
 /// `visible_tabs`/`close_bounds` rects are **bar-relative** (origin at
 /// `(0, 0)`, *not* `x_offset`/`y_offset`); `GtkBackend::draw_tab_bar`
-/// caches it per `WidgetId` for `GtkDriver::tab_center`/`tab_close_center`
-///, which add the bar's own screen-space origin back in.
+/// caches it per `WidgetId` for `GtkDriver::tab_center`/`tab_close_center`,
+/// which add the bar's own screen-space origin back in.
 ///
 /// # Visual contract
 ///

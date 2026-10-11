@@ -1349,8 +1349,8 @@ mod tests {
 
     /// Covers every `build_file_dialog` behavior that requires
     /// constructing a real `gtk4::FileDialog`. Deliberately one `#[test]`
-    /// fn (not three) — see the thread-affinity note on [`require_gtk`]
-    ///: splitting these across separate `#[test]` fns lets the
+    /// fn (not three) — see the thread-affinity note on [`require_gtk`]:
+    /// splitting these across separate `#[test]` fns lets the
     /// Rust test harness run them on different OS threads, which
     /// deterministically panics every thread except whichever one wins
     /// the `require_gtk()` / `gtk4::init()` race.
@@ -1479,8 +1479,8 @@ mod tests {
     // Regression test for #427 ("depth counter stays positive until the
     // outermost re-entrant pump unwinds") used to live here directly
     // against a local `PumpGuard`; that behavior is now covered once,
-    // backend-neutrally, by `crate::desktop`'s own `modal_pump_tests`
-    //. The test below stays GTK-specific: it pins that
+    // backend-neutrally, by `crate::desktop`'s own `modal_pump_tests`.
+    // The test below stays GTK-specific: it pins that
     // `GtkPlatformServices::pump_depth()`'s returned handle really does
     // share state with the services' own counter (same `Rc`, not an
     // independent clone).

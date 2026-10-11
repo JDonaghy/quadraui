@@ -100,8 +100,8 @@ pub trait DriverFactory {
     /// What this backend declares it can do — read off a real instance of
     /// the backend, via [`DynDriver::backend_caps`].
     ///
-    /// **Do not override this.** The default body is the whole point
-    ///: it builds a throwaway driver over a
+    /// **Do not override this.** The default body is the whole point:
+    /// it builds a throwaway driver over a
     /// paint-nothing [`AppLogic`] and asks the backend itself, so
     /// registering a backend cannot restate — and therefore cannot
     /// contradict — its own `Backend::backend_caps`. Overriding it would

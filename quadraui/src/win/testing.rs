@@ -852,8 +852,8 @@ impl<A: AppLogic> DriverInput for WinDriver<A> {
 
 /// Backs [`ConformanceDriver::click_text_at`]/`drag_text`/`scroll_at`'s
 /// shared pixel-unit bodies, resolved against the real
-/// painted-text-run recording described on [`WinDriver`]'s module doc
-///. A needle no rasteriser has painted this frame (either
+/// painted-text-run recording described on [`WinDriver`]'s module doc.
+/// A needle no rasteriser has painted this frame (either
 /// because it genuinely isn't on screen, or because its rasteriser is
 /// still a `todo!()` stub) reports `None`/`false`, same as every other
 /// backend's driver does for a genuinely-missing needle — any

@@ -842,8 +842,8 @@ mod win32 {
     /// given `hwnd` in this runner, so any nonzero id is fine — Win32
     /// scopes timer ids per-window, not per-process.
     const SMOKE_TIMER_ID: usize = 1;
-    /// `SetTimer`/`KillTimer`'s `nIDEvent` for the resize-settle debounce
-    ///. Distinct from [`SMOKE_TIMER_ID`] — Win32 timer ids
+    /// `SetTimer`/`KillTimer`'s `nIDEvent` for the resize-settle debounce.
+    /// Distinct from [`SMOKE_TIMER_ID`] — Win32 timer ids
     /// are scoped per-`hwnd`, and both can legitimately be armed on the
     /// same window (a headless smoke run that also resizes).
     const RESIZE_TIMER_ID: usize = 2;

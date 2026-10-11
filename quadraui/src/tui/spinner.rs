@@ -86,8 +86,8 @@ mod tests {
     }
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
-    // must return coords in the same frame across backends"
-    //. `tui_spinner_layout` bakes `area.x`/`area.y`
+    // must return coords in the same frame across backends".
+    // `tui_spinner_layout` bakes `area.x`/`area.y`
     // straight into `spinner.layout`'s returned bounds (absolute
     // frame), so the regression guard is a full paint+hit_test round
     // trip re-run at a non-zero origin.

@@ -760,8 +760,8 @@ fn activate<A: AppLogic + 'static>(
     // other backend, and GTK apps that don't opt into a CSD titlebar).
     backend.borrow_mut().set_window(window.clone());
 
-    // Re-entrancy guard shared with `GtkPlatformServices::pump_until_ready`
-    //: `> 0` while a file dialog's nested-mainloop wait is in
+    // Re-entrancy guard shared with `GtkPlatformServices::pump_until_ready`:
+    // `> 0` while a file dialog's nested-mainloop wait is in
     // flight. Fetched once here, before any event controller is
     // installed, and cloned (not re-derived via `backend.borrow()`) into
     // every closure below that calls `backend.borrow_mut()` — those

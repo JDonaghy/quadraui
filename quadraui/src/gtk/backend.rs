@@ -419,8 +419,8 @@ pub struct GtkBackend {
     /// Folds a `MouseDown` into `DoubleClick` when it lands within
     /// [`GTK_DOUBLE_CLICK_RADIUS`]/400ms of the previous click at the
     /// same button — the shared mechanism every backend's
-    /// `dispatch_event` now uses via [`Self::fold_double_click`]
-    ///. Mirrors `MacBackend::double_click`/
+    /// `dispatch_event` now uses via [`Self::fold_double_click`].
+    /// Mirrors `MacBackend::double_click`/
     /// `WinBackend::double_click`.
     double_click: DoubleClickDetector,
     /// Whether [`Self::fold_double_click`] is armed. Defaults to `true`

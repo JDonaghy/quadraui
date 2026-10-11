@@ -162,8 +162,8 @@ pub struct TerminalCell {
     pub is_cursor: bool,
     /// Shape of the VT100 cursor at this cell, from the child program's
     /// most recent DECSCUSR request (`ESC [ Ps SP q`) — see
-    /// [`crate::terminal_engine::TerminalSession::cursor_shape`]
-    ///. Meaningful only when [`is_cursor`](Self::is_cursor)
+    /// [`crate::terminal_engine::TerminalSession::cursor_shape`].
+    /// Meaningful only when [`is_cursor`](Self::is_cursor)
     /// is `true`; every other cell carries the default (`Block`).
     #[serde(default)]
     pub cursor_shape: TerminalCursorShape,
@@ -215,8 +215,8 @@ impl TerminalCell {
     /// no way for a cell's stored width to drift from its own content.
     /// Delegates to [`crate::text_util::display_width`] — the same
     /// `unicode-width`-backed table vt100 itself consults when it
-    /// decides whether to reserve a spacer column for a wide character
-    ///, so this always agrees with vt100's own column
+    /// decides whether to reserve a spacer column for a wide character,
+    /// so this always agrees with vt100's own column
     /// accounting for cells built by [`crate::terminal_engine`].
     pub fn cell_width(&self) -> u16 {
         crate::text_util::display_width(&self.text) as u16
@@ -580,8 +580,8 @@ mod native_surface_paint {
     ///
     /// `cell_area_w`/`cell_area_h` clip painting to the pane's own
     /// bounds — cells past the right edge, or rows whose top has reached
-    /// the bottom, stop being drawn rather than bleeding past the pane
-    ///. `line_height`/`char_width` are the per-cell
+    /// the bottom, stop being drawn rather than bleeding past the pane.
+    /// `line_height`/`char_width` are the per-cell
     /// dimensions in surface-native units.
     ///
     /// `dirty_rows`: `None` paints every row; `Some(rows)` paints only

@@ -161,8 +161,8 @@ pub enum DropZoneHit {
 }
 
 /// Hit-test a cursor position against `groups`, following this
-/// primitive's `Empty`-variant convention on top of [`compute_drop_zone`]
-///. Identical arguments and behaviour to
+/// primitive's `Empty`-variant convention on top of [`compute_drop_zone`].
+/// Identical arguments and behaviour to
 /// [`compute_drop_zone`] — this only wraps its `Option` result in a
 /// [`DropZoneHit`] so `DropZone`, like every other primitive, has a
 /// `hit_test` entry point with a named miss case instead of `None`.

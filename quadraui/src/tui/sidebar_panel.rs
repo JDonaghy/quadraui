@@ -124,8 +124,8 @@ mod tests {
     }
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
-    // must return coords in the same frame across backends"
-    //. `tui_sidebar_panel_layout` bakes `area.x`/
+    // must return coords in the same frame across backends".
+    // `tui_sidebar_panel_layout` bakes `area.x`/
     // `area.y` straight into `panel.layout`'s returned bounds
     // (absolute frame), so the regression guard is a full
     // paint+hit_test round trip re-run at a non-zero origin.

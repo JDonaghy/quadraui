@@ -173,8 +173,8 @@ pub enum StepOutcome {
 pub trait AppLogic {
     /// Identifier for distinct render targets. All current runners
     /// use `type AreaId = ()` — zone routing is handled by
-    /// `AppShell::compute_layout` + `FrameHitMap`, not multiple DAs
-    ///. Retained as a compatibility seam.
+    /// `AppShell::compute_layout` + `FrameHitMap`, not multiple DAs.
+    /// Retained as a compatibility seam.
     type AreaId: Copy + Eq + std::fmt::Debug + Default;
 
     /// One-time setup hook. Called by the runner after backend

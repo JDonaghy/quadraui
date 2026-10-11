@@ -531,8 +531,8 @@ impl ChatController {
         self.submit_on_enter
     }
 
-    /// Set (or clear) the persistent hint row painted above the input box
-    ///. Pass `None` to omit the row (default).
+    /// Set (or clear) the persistent hint row painted above the input box.
+    /// Pass `None` to omit the row (default).
     ///
     /// Unlike the `TextInput` placeholder, this stays visible while
     /// typing — see this struct's *Persistent hint line* doc section.
@@ -1035,8 +1035,8 @@ impl ChatController {
         SEND_SEGMENT_COLS * char_width.max(1.0)
     }
 
-    /// Build the single-button [`Form`] painted into the Send/Stop segment
-    ///. Reuses `FieldKind::Button`'s existing cross-backend
+    /// Build the single-button [`Form`] painted into the Send/Stop segment.
+    /// Reuses `FieldKind::Button`'s existing cross-backend
     /// rasteriser — see this struct's *Send / Stop segment* doc section.
     fn build_send_form(&self) -> Form {
         let disabled = !self.busy && self.input_buf.trim().is_empty();

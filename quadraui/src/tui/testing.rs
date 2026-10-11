@@ -115,8 +115,8 @@ pub fn driver_with_shell<A: ShellApp + 'static>(
 /// `sub_modifier`/`underline_color` ratatui carries for *diffing* two
 /// styles against each other — a rendered cell has no "subtracted"
 /// modifiers, only the resolved `add_modifier` bits ratatui reports back as
-/// [`Modifier`], which is what a driver test wants to assert against
-///. `fg`/`bg` are ratatui's own [`Color`] (re-exported as
+/// [`Modifier`], which is what a driver test wants to assert against.
+/// `fg`/`bg` are ratatui's own [`Color`] (re-exported as
 /// [`self::Color`], see [`TuiDriver::style_at`]) rather than
 /// `quadraui::types::Color` because that's what the rasterisers actually
 /// paint into the buffer — comparing against a theme token means wrapping

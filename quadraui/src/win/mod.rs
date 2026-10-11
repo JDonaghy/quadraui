@@ -30,8 +30,8 @@ pub mod backend;
 /// see its module docs.
 #[cfg(target_os = "windows")]
 mod board;
-/// Direct2D / DirectWrite rasteriser for [`crate::primitives::chart::Chart`]
-///. Windows-only in full — see its module docs.
+/// Direct2D / DirectWrite rasteriser for [`crate::primitives::chart::Chart`].
+/// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod chart;
 /// Direct2D / DirectWrite rasteriser for [`crate::CommandCenter`].
@@ -68,8 +68,8 @@ mod diff_view;
 /// in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod drop_overlay;
-/// Direct2D / DirectWrite rasteriser for [`crate::primitives::editor::Editor`]
-///. Windows-only in full — see its module docs.
+/// Direct2D / DirectWrite rasteriser for [`crate::primitives::editor::Editor`].
+/// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod editor;
 /// Win32 message → `quadraui::UiEvent` translation (mouse, keyboard,
@@ -82,8 +82,8 @@ pub mod events;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod form;
-/// Direct2D + WIC rasteriser for [`crate::primitives::image::Image`]
-///. Windows-only in full — see its module docs.
+/// Direct2D + WIC rasteriser for [`crate::primitives::image::Image`].
+/// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod image;
 /// Direct2D / DirectWrite rasteriser for [`crate::ListView`].
@@ -158,24 +158,24 @@ mod spinner;
 /// full — see its module docs.
 #[cfg(target_os = "windows")]
 mod split;
-/// Direct2D rasteriser for [`crate::primitives::split_tree::SplitTree`]
-///. Windows-only in full — see its module docs.
+/// Direct2D rasteriser for [`crate::primitives::split_tree::SplitTree`].
+/// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod split_tree;
 /// Direct2D / DirectWrite rasteriser for [`crate::StatusBar`]. Issue
 /// Only its deprecated paint shim is Windows-only — see its
 /// module docs.
 mod status_bar;
-/// Shared `PaintSurface` adapter over a bare `&ID2D1RenderTarget`
-///. Windows-only — same gating as the per-primitive
+/// Shared `PaintSurface` adapter over a bare `&ID2D1RenderTarget`.
+/// Windows-only — same gating as the per-primitive
 /// rasteriser modules above that consume it.
 #[cfg(target_os = "windows")]
 mod surface;
 /// Direct2D / DirectWrite rasteriser for [`crate::TabBar`]. Issue
 /// Only its paint fns are Windows-only — see its module docs.
 mod tab_bar;
-/// Direct2D / DirectWrite rasteriser for [`crate::Terminal`] cell grids
-///. Windows-only in full — see its module docs.
+/// Direct2D / DirectWrite rasteriser for [`crate::Terminal`] cell grids.
+/// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod terminal;
 /// Headless Direct2D test surface: an offscreen `ID2D1DCRenderTarget`
@@ -232,8 +232,8 @@ mod toolbar;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod tooltip;
-/// Tray/status-bar icon control (`Shell_NotifyIconW`) for `Backend::tray`
-///. `pub(crate)` (not target-gated) for the same "compiles
+/// Tray/status-bar icon control (`Shell_NotifyIconW`) for `Backend::tray`.
+/// `pub(crate)` (not target-gated) for the same "compiles
 /// everywhere via internal `cfg(target_os = "windows")`, only *works* on
 /// Windows" reason as `backend`/`services`/`run` above — see this
 /// module's own doc and `tray`'s module doc.

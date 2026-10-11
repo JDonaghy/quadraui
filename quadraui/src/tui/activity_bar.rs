@@ -43,8 +43,8 @@ pub fn draw_activity_bar(
     )
 }
 
-/// [`draw_activity_bar`] with an explicit [`ActivityBarStyle`] request
-///. `ActivityBarStyle::default()` reproduces [`draw_activity_bar`]
+/// [`draw_activity_bar`] with an explicit [`ActivityBarStyle`] request.
+/// `ActivityBarStyle::default()` reproduces [`draw_activity_bar`]
 /// cell for cell. See [`draw_activity_bar`] for `nerd_fonts_enabled`.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_activity_bar_with_style(

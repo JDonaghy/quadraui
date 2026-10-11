@@ -550,8 +550,8 @@ impl<'a> ShellContext<'a> {
         self.layout.bottom_panel_bounds
     }
 
-    /// Resolved bounds for one currently-visible [`BottomBand`]
-    ///, or `None` if `id` names no registered band or the
+    /// Resolved bounds for one currently-visible [`BottomBand`],
+    /// or `None` if `id` names no registered band or the
     /// band is not visible in the last computed layout.
     ///
     /// Reads [`AppShell::bottom_band_bounds`] rather than a field on
@@ -669,8 +669,8 @@ pub trait ShellApp {
     /// the consumer draws sidebar panel content + main content here.
     fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout);
 
-    /// Render one currently-visible [`crate::compose::app_shell::BottomBand`]
-    ///. Called once per visible band, after `render_content`,
+    /// Render one currently-visible [`crate::compose::app_shell::BottomBand`].
+    /// Called once per visible band, after `render_content`,
     /// in the same bottom-up stacking order the band list was given.
     ///
     /// This is a separate hook rather than a field on [`AppShellLayout`]

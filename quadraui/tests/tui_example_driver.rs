@@ -4301,8 +4301,8 @@ fn split_tree_q_exits() {
 // ─── ModalOcclusionDemo: modal click-through guard ─────────────────────────
 //
 // `ModalOcclusionDemo` is the fixture behind
-// `tests/conformance/scenarios/modal/dialog.blocks_click_through.scn.json`
-//. It has no `if dialog_open` guard anywhere in its own
+// `tests/conformance/scenarios/modal/dialog.blocks_click_through.scn.json`.
+// It has no `if dialog_open` guard anywhere in its own
 // `handle` — occlusion is entirely quadraui's `ModalStack` + `dispatch_click`
 // tagging a `MouseDown` that lands inside the topmost modal's bounds with
 // that modal's `WidgetId`. These tests exercise the same behaviour the

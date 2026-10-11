@@ -200,8 +200,8 @@ pub struct TuiBackend {
     /// from [`super::caps::detect_kitty_keyboard`]'s cheap environment
     /// heuristic at construction time, then overwritten by
     /// [`super::run::run`] via [`Self::set_kitty_keyboard`] once it has
-    /// [`super::caps::probe_kitty_keyboard`]'s live, authoritative answer
-    ///. Exposed to apps via
+    /// [`super::caps::probe_kitty_keyboard`]'s live, authoritative answer.
+    /// Exposed to apps via
     /// [`crate::backend::BackendCaps::kitty_keyboard`] — see that field's
     /// doc for why this exists.
     kitty_keyboard: bool,
@@ -377,8 +377,8 @@ impl TuiBackend {
         self.frame_scheduler.clear_if_due();
     }
 
-    /// Consume the pending [`Backend::request_full_repaint`] request
-    ///, if any — returns `true` and clears it, or `false`
+    /// Consume the pending [`Backend::request_full_repaint`] request,
+    /// if any — returns `true` and clears it, or `false`
     /// if nothing was requested since the last call.
     ///
     /// Call once per loop iteration, right before painting the next
@@ -759,8 +759,8 @@ impl TuiBackend {
         let area = buf.area;
 
         // Cache text before inverting so we read the original cell content.
-        // `text_selection_line_range` reports cell-space columns as f32
-        //; TUI cells are always whole units, so round-trip
+        // `text_selection_line_range` reports cell-space columns as f32;
+        // TUI cells are always whole units, so round-trip
         // through `u16` for buffer indexing.
         let mut lines: Vec<String> = Vec::with_capacity(ranges.len());
         for &(row, col_start, col_end) in &ranges {
@@ -1249,8 +1249,8 @@ fn try_reassemble_sgr_mouse(
 /// sequence would have used
 /// ([`super::events::crossterm_mouse_to_uievent_scaled`]). `cell_size`
 /// should be [`Self::cell_pixel_size`](TuiBackend::cell_pixel_size) when
-/// this recovery path fires on a session with SGR-Pixels mode active
-///, or the identity `TerminalCellSize::new(1.0, 1.0)`
+/// this recovery path fires on a session with SGR-Pixels mode active,
+/// or the identity `TerminalCellSize::new(1.0, 1.0)`
 /// otherwise — this recovery path decodes raw `Cx`/`Cy` exactly as
 /// received, whichever unit the terminal is actually reporting in.
 ///
@@ -2147,9 +2147,9 @@ impl Backend for TuiBackend {
     ///   (`TuiPlatformServices::show_file_open_dialog` /
     ///   `show_file_save_dialog` / `show_folder_open_dialog` /
     ///   `show_message_dialog`). The in-canvas `Dialog` primitive
-    ///   (`draw_dialog`) stays the only dialog path on this backend
-    ///, same posture for `folder_dialogs`
-    ///: hosts keep whatever in-canvas picker they
+    ///   (`draw_dialog`) stays the only dialog path on this backend,
+    ///   same posture for `folder_dialogs`:
+    ///   hosts keep whatever in-canvas picker they
     ///   already have.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         crate::backend::BackendCaps {
@@ -6354,8 +6354,8 @@ mod tests {
 
     /// `Backend::snap_height` must agree with `q_rect_to_ratatui`'s height
     /// rounding for every height a rect can carry, since it exists to let
-    /// consumers predict that rounding without reimplementing it
-    ///. If the two ever drift, a consumer's pre-snapped
+    /// consumers predict that rounding without reimplementing it.
+    /// If the two ever drift, a consumer's pre-snapped
     /// layout height stops matching what the rasteriser actually paints —
     /// the exact one-row misalignment that bit coord-tui in #464 and #995.
     #[test]
