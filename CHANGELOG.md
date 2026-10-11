@@ -68,6 +68,14 @@ only a push to `main` runs this workflow.
   bottom edge, instead of spanning the full window width. Off by default,
   which keeps the original full-width carve byte-identical to before this
   method existed.
+- CI now enforces a `CHANGELOG.md` `[Unreleased]` entry for any PR that
+  changes a non-test `quadraui/src/**` Rust file (issue #1500) —
+  `tools/changelog_check.py`, run as the new "CHANGELOG [Unreleased] entry
+  check" job. Comment-only diffs and changes confined to a trailing
+  `#[cfg(test)] mod tests` block are exempt automatically; a PR that
+  genuinely needs no entry can carry the `no-changelog` label instead. Not
+  wired into branch protection as a required check here — that's an
+  operator-controlled setting.
 
 ## [0.1.4] - 2026-10-11
 
