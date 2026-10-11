@@ -1,18 +1,10 @@
 //! macOS (Core Graphics) rasteriser for [`crate::DropOverlay`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::drop_zone::native_surface_paint::paint`] (#865,
-//! `PaintSurface` Phase 2d slice 8/9) — see that fn's doc for the one
-//! named divergence (Windows's pre-migration CPU-premixed highlight,
-//! unlike GTK/macOS's real alpha blend) found and reported while
-//! unifying `gtk::draw_drop_overlay`, `macos::drop_overlay::
-//! draw_drop_overlay` and `win::drop_overlay::draw_drop_overlay` into
-//! one implementation. This module no longer carries any public
-//! rasteriser of its own — the deprecated `draw_drop_overlay`
-//! compatibility shim over the shared [`super::surface::CgSurface`]
-//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
-//! and vimcode's `develop`); the driver-tier tests below paint through
-//! [`crate::Backend::draw_drop_overlay`] instead.
+//! Painting is handled by the shared
+//! [`crate::primitives::drop_zone::native_surface_paint::paint`].
+//! See that function's documentation for details on how macOS's real
+//! alpha blending differs from Windows's pre-migration CPU-premixed
+//! highlight.
 //!
 //! `DropOverlay::ghost_position` is not rendered — neither GTK nor TUI
 //! paints a ghost label either, so this is parity, not a macOS gap.
@@ -49,8 +41,8 @@ mod tests {
         surface
     }
 
-    /// The impl this replaced had an empty body — the whole frame stayed
-    /// exactly as the caller left it (quadraui#484 §4).
+    /// The frame is initialized empty; this test verifies the highlight
+    /// is rendered and tints the target rect.
     #[test]
     fn highlight_tints_the_target_rect() {
         let overlay = DropOverlay {

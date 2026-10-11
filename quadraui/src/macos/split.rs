@@ -1,16 +1,8 @@
 //! macOS rasteriser for [`crate::Split`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::split::native_surface_paint::paint`] (#864,
-//! `PaintSurface` Phase 2d slice 7/9, child of #811) — see that fn's
-//! module doc for a reported divergence between this module and GTK's:
-//! macOS's `CGContextSetRGBFillColor` (via `ns_fill_rect`) always
-//! honoured a translucent `theme.separator`, while pre-migration GTK
-//! did not — this module's behaviour is unchanged by the migration.
-//! This module now carries [`mac_split_layout`]; the deprecated
-//! `draw_split` compatibility shim over the shared
-//! [`super::surface::CgSurface`] adapter was removed in issue #1109
-//! (zero uses in coord-tui's `main` and vimcode's `develop`).
+//! Painting is in [`crate::primitives::split::native_surface_paint::paint`].
+//! This module carries [`mac_split_layout`]; the deprecated `draw_split`
+//! compatibility shim was removed.
 
 use crate::event::Rect as QRect;
 use crate::primitives::layout_metrics::pixel_split_layout;
@@ -20,7 +12,7 @@ use crate::theme::Theme;
 
 /// Compute the macOS pixel-unit layout for a [`Split`] without painting.
 /// Shares its divider thickness with `gtk_split_layout` /
-/// `win_split_layout` via [`pixel_split_layout`] (issue #1079).
+/// `win_split_layout` via [`pixel_split_layout`].
 pub fn mac_split_layout(split: &Split, x: f64, y: f64, w: f64, h: f64) -> SplitLayout {
     let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
     pixel_split_layout(split, bounds)
@@ -111,14 +103,11 @@ mod tests {
     }
 
     /// Shared body for the divider/first-pane/second-pane hit_test
-    /// round trip, run at both the origin and a non-zero origin
-    /// (quadraui#494 / LESSONS.md "Layout helpers must return coords
-    /// in the same frame across backends"). `mac_split_layout` bakes
-    /// `bounds.x`/`bounds.y` into `first_bounds`/`divider_bounds`/
-    /// `second_bounds` (absolute frame, matching the GTK/TUI twins) —
-    /// call it directly (pure fn, no paint needed) and prove clicks at
-    /// the resulting absolute positions still resolve through
-    /// `hit_test` for all three regions.
+    /// round trip, run at both the origin and a non-zero origin.
+    /// `mac_split_layout` bakes `bounds.x`/`bounds.y` into
+    /// `first_bounds`/`divider_bounds`/`second_bounds` (absolute frame) —
+    /// call it directly and prove clicks at the resulting absolute positions
+    /// still resolve through `hit_test` for all three regions.
     fn hit_test_resolves_divider_and_panes_at(origin_x: f64, origin_y: f64) {
         let split = sample_split(SplitDirection::Horizontal);
         let layout = mac_split_layout(&split, origin_x, origin_y, W as f64, H as f64);
@@ -153,7 +142,7 @@ mod tests {
         hit_test_resolves_divider_and_panes_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494).
+    /// Non-zero-origin regression guard.
     #[test]
     fn hit_test_resolves_divider_and_panes_at_nonzero_origin() {
         hit_test_resolves_divider_and_panes_at(7.0, 13.0);

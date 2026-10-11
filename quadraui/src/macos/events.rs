@@ -1,11 +1,10 @@
 //! AppKit / Cocoa → `quadraui::UiEvent` translation.
 //!
-//! Issue #33 in the macOS backend milestone. Mirrors the shape of
-//! [`crate::gtk::events`]: pure free functions taking primitive
-//! input types so unit tests construct synthetic inputs without
-//! linking AppKit. The QuadraView responder overrides in
-//! [`super::run`] extract the relevant fields from each `NSEvent`
-//! and call into these helpers.
+//! Mirrors the shape of [`crate::gtk::events`]: pure free functions taking
+//! primitive input types so unit tests construct synthetic inputs without
+//! linking AppKit. The QuadraView responder overrides in [`super::run`]
+//! extract the relevant fields from each `NSEvent` and call into these
+//! helpers.
 //!
 //! ## Coordinate convention
 //!
@@ -13,8 +12,7 @@
 //! is responsible for `[view convertPoint:event.locationInWindow
 //! fromView:nil]` before calling. Because `QuadraView` overrides
 //! `isFlipped` to return `true`, top-left is `(0, 0)` and y grows
-//! downward — matching TUI / GTK / quadraui's
-//! [`crate::Point`] convention.
+//! downward — matching TUI / GTK / quadraui's [`crate::Point`] convention.
 //!
 //! ## Scroll-sign convention
 //!
@@ -24,13 +22,6 @@
 //! (positive y = up toward the top of content), so we negate. This
 //! matches the GTK translator's behaviour — see
 //! [`crate::gtk::events::gdk_scroll_to_uievent`].
-//!
-//! ## Scope vs #35
-//!
-//! Window resize / focus translators exist here (acceptance criteria),
-//! but the `NSNotificationCenter` observers that would push them onto
-//! the backend queue land with `MacBackend` in #35. For now the
-//! translators are reachable only from tests.
 
 use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, UiEvent};
 
@@ -236,19 +227,19 @@ pub fn ns_keycode_to_named_key(key_code: u16) -> Option<NamedKey> {
 /// Build a [`UiEvent::WindowResized`] from a resize notification.
 /// `width` / `height` are window content size in points; `scale` is the
 /// `backingScaleFactor`. Called from `macos::run`'s
-/// `viewFrameDidChange:` observer (#486), which dispatches the result
+/// `viewFrameDidChange:` observer, which dispatches the result
 /// synchronously alongside mouse/keyboard events.
 pub fn ns_resize_to_uievent(width: f64, height: f64, scale: f32) -> UiEvent {
     crate::event::window_resized(width as f32, height as f32, scale)
 }
 
 /// Build a [`UiEvent::WindowFocused`] from `windowDidBecomeKey:` /
-/// `windowDidResignKey:`. The observer wiring lands in #35.
+/// `windowDidResignKey:` notifications.
 pub fn ns_focus_to_uievent(focused: bool) -> UiEvent {
     UiEvent::WindowFocused(focused)
 }
 
-/// Build a [`UiEvent::FilesDropped`] (issue #834) from an
+/// Build a [`UiEvent::FilesDropped`] from an
 /// `NSDraggingInfo`'s already-decoded file paths and view-local drop
 /// point. `super::run`'s `performDragOperation:` override (on
 /// `QuadraView`) is the real caller — it reads the file URLs off

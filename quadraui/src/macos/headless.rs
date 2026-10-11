@@ -4,8 +4,8 @@
 //! can paint into and a pixel buffer they can read back, with no
 //! `NSWindow` or display server. Pairs with
 //! [`super::MacBackend::enter_frame_scope`] so paint↔click round-trip
-//! harnesses (added with each rasteriser ticket, #38–#43) can drive
-//! the exact same code paths the live runner uses inside `drawRect:`.
+//! harnesses can drive the exact same code paths the live runner uses
+//! inside `drawRect:`.
 //!
 //! ## Pixel layout
 //!
@@ -182,7 +182,7 @@ impl BitmapSurface {
     /// path. Failures from `open` (no Preview, sandboxed env) are
     /// non-fatal; the PPM file is still on disk.
     ///
-    /// #619: exempt from the crate-wide `print_stderr` deny. This is a
+    /// Exempt from the crate-wide `print_stderr` deny. This is a
     /// manual, `#[ignore]`d-test-only visual-confirmation tool run
     /// directly by a developer at a terminal, not code a host embeds
     /// into a live UI session — the printed path *is* the output the
@@ -371,7 +371,7 @@ mod tests {
 
         let s = BitmapSurface::new(W, H);
 
-        // #1179: matches `QuadraView::drawRect:`'s theme-background
+        // Matches `QuadraView::drawRect:`'s theme-background
         // fill (was a hard-coded dark literal) so the visual output
         // reads like the live runner under the default theme.
         let bg = crate::theme::Theme::default().background;
@@ -399,9 +399,7 @@ mod tests {
             }
         }
 
-        // Core Text label — exercises the #34 path through the test
-        // surface so visual regressions in text rendering show up
-        // here too.
+        // Core Text label rendered against the test surface.
         if let Some(font) = make_font("Menlo", 14.0) {
             // SAFETY: ctx + font valid; `draw_text` documents its
             // pointer requirements.
@@ -425,7 +423,7 @@ mod tests {
         // Drive a paint through `MacBackend::enter_frame_scope` — the
         // exact path future rasteriser tests will use. The closure
         // recovers the stashed CG pointer and paints a blue rect via
-        // raw FFI, the same shape #38–#43 rasterisers will adopt.
+        // raw FFI, the same shape rasterisers will adopt.
         use super::super::MacBackend;
         let mut backend = MacBackend::new();
         let surface = BitmapSurface::new(4, 4);

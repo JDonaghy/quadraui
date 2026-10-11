@@ -31,7 +31,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Instant;
 
-// objc2 0.6 (#796) removed `declare_class!` in favour of `define_class!`
+// objc2 0.6 removed `declare_class!` in favour of `define_class!`
 // (superclass/mutability move from a `ClassType` impl block onto struct
 // attributes), renamed `DeclaredClass` to `DefinedClass`, and deprecated
 // `msg_send_id!` in favour of `msg_send!` (which now performs the same
@@ -90,8 +90,7 @@ define_class!(
             let app = NSApplication::sharedApplication(mtm);
             if let Some(window) = app.keyWindow() {
                 if let Some(view) = window.contentView() {
-                    // `setNeedsDisplay:` is a safe method as of
-                    // objc2-app-kit 0.3 (#796 bump).
+                    // `setNeedsDisplay:` is a safe method.
                     view.setNeedsDisplay(true);
                 }
             }

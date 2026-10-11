@@ -12,37 +12,32 @@
 //!   suit an unbundled CLI host. The osascript route works for both
 //!   bundled and unbundled hosts.
 //!
-//!   Issue #955 extended [`Notification`] with `icon`/`actions`/`silent`/
-//!   `tag`. Only `silent` has anywhere to go on the `osascript` path —
-//!   [`Notification::is_silent`] maps to whether the `display
-//!   notification` command's `sound name` clause is present at all (see
-//!   [`Self::send_notification`]'s own doc; counterintuitively, *no*
-//!   clause means *no* sound, so `silent: false`, the default, is what
-//!   adds one). `icon`, `actions`, and `tag` are silently dropped:
-//!   `display notification` has no icon parameter (it's always
+//!   [`Notification`] fields `icon`, `actions`, and `tag` are silently
+//!   dropped: `display notification` has no icon parameter (it's always
 //!   Script Editor's), no button/action parameter, and no click-through
 //!   channel to report an activation back through at all — GTK is the
 //!   only backend [`crate::UiEvent::NotificationActivated`] fires on
-//!   today (see that variant's own doc). A real fix needs
+//!   today (see that variant's own doc). [`Notification::is_silent`]
+//!   maps to whether the `display notification` command's `sound name`
+//!   clause is present at all (see [`Self::send_notification`]'s own
+//!   doc; counterintuitively, *no* clause means *no* sound, so
+//!   `silent: false`, the default, is what adds one). A real fix needs
 //!   `UNUserNotificationCenter` (`objc2-user-notifications`) behind the
 //!   bundled-`.app` check this module doesn't have a way to perform
-//!   without a live macOS host to build/verify it against — tracked as
-//!   follow-up, not silently faked; `osascript` stays the fallback for
-//!   whichever host lands it, matching this issue's own "keep osascript
-//!   as the unbundled fallback" note. The AppleScript-building helpers
-//!   ([`crate::desktop::display_notification_script`]/
+//!   without a live macOS host to build/verify it against — `osascript`
+//!   stays the fallback for whichever host lands it. The AppleScript-building
+//!   helpers ([`crate::desktop::display_notification_script`]/
 //!   `crate::desktop::applescript_escape`) moved into `crate::desktop`
-//!   by issue #1092, which gave `tui::services` a second `osascript`
-//!   call site (TUI's own macOS notification fallback leg) needing the
-//!   identical logic.
+//!   so `tui::services` could share the identical logic for its own
+//!   macOS notification fallback leg.
 //! - **`open_url`/`open_url_result`** → `open <url>` via
-//!   [`crate::desktop::open_with_default`] (issue #1087) — the
+//!   [`crate::desktop::open_with_default`] — the
 //!   crate-wide opener shared with `tui::services`/`win::services`.
 //!   Equivalent to `NSWorkspace.open(_:)` without needing AppKit
 //!   initialisation. `open_url_result` overrides the trait's `Ok(())`
 //!   default and reports whether `open` genuinely spawned instead of
 //!   `open_url`'s discarded outcome.
-//! - **`shell.*` parity (issue #956)** → `reveal_in_file_manager` uses
+//! - **`shell.*` parity** → `reveal_in_file_manager` uses
 //!   `NSWorkspace::activateFileViewerSelectingURLs`; `open_path` reuses
 //!   the same `open_with_default` call `open_url_result` makes; `move_to_trash`
 //!   delegates to [`crate::desktop::move_to_trash`] — the cross-platform
@@ -50,7 +45,7 @@
 //!   -trashItemAtURL:resultingItemURL:error:` — see that function's doc
 //!   for why every backend shares it; `beep` is the bare `NSBeep` C
 //!   function.
-//! - **Displays (issue #959)** → `displays` reads `NSScreen::screens()`;
+//! - **Displays** → `displays` reads `NSScreen::screens()`;
 //!   `cursor_screen_point` reads `NSEvent::mouseLocation()`. See each
 //!   method's own doc for the exact field mapping and coordinate-system
 //!   note.
@@ -137,7 +132,7 @@ impl PlatformServices for MacPlatformServices {
         }
     }
 
-    /// quadraui#935: a two-line variant of `show_file_open_dialog` above —
+    /// A two-line variant of `show_file_open_dialog` above —
     /// the same `NSOpenPanel`, with the choose-directories/choose-files
     /// pair flipped.
     fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
@@ -156,31 +151,25 @@ impl PlatformServices for MacPlatformServices {
         }
     }
 
-    /// `NSAlert` (quadraui#936) — the macOS half of the native-dialog gap
-    /// #666 left unfiled after shipping the GTK4 `AlertDialog`
-    /// implementation (`gtk::services::GtkPlatformServices::show_message_dialog`,
-    /// this method's closest sibling). `native_button_order` picks which
-    /// order to add buttons in (macOS convention: most-prominent /
-    /// default button added first, since `NSAlert` lays out the
-    /// first-added button trailing/rightmost — see `addButtonWithTitle:`'s
-    /// docs); `severity_to_alert_style` maps `DialogSeverity` onto
-    /// `NSAlertStyle`. Both are free functions below so the mapping is
-    /// unit-testable without presenting anything (this issue's
-    /// acceptance bar) — the modal `runModal()` call itself still needs a
-    /// human on a real Mac.
+    /// `NSAlert` — the macOS native dialog implementation.
+    /// `native_button_order` picks which order to add buttons in (macOS
+    /// convention: most-prominent / default button added first, since
+    /// `NSAlert` lays out the first-added button trailing/rightmost — see
+    /// `addButtonWithTitle:`'s docs); `severity_to_alert_style` maps
+    /// `DialogSeverity` onto `NSAlertStyle`. Both are free functions below
+    /// so the mapping is unit-testable without presenting anything — the
+    /// modal `runModal()` call itself still needs a human on a real Mac.
     fn show_message_dialog(&self, opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
-        // Graceful degrade rather than `expect`'s hard panic (unlike the
-        // file dialogs above): quadraui#926's `install_menu_bar` twin.
-        // Rust's default test harness spawns a fresh OS thread per
-        // `#[test]` fn, so a test that reaches this method off the main
-        // thread must see `None` — the same "no native alert facility"
-        // shape callers already get from `BackendCaps::native_dialogs ==
-        // false` — instead of aborting the whole test process.
-        // `NSAlert`'s methods below (unlike `NSOpenPanel`/`NSSavePanel`'s
-        // `URL()` and this module's own `url_to_path`) are all safe
-        // AppKit wrappers — `MainThreadMarker` still gates *construction*
-        // (`NSAlert::new` takes it by value), which is what actually
-        // enforces the main-thread requirement here.
+        // Graceful degrade rather than `expect`'s hard panic: returns `None` when
+        // called off the main thread instead of aborting the test. Rust's default
+        // test harness spawns a fresh OS thread per `#[test]` fn, so a test
+        // that reaches this method off the main thread must see `None` — the same
+        // "no native alert facility" shape callers already get from
+        // `BackendCaps::native_dialogs == false`. `NSAlert`'s methods below
+        // (unlike `NSOpenPanel`/`NSSavePanel`'s `URL()` and this module's own
+        // `url_to_path`) are all safe AppKit wrappers — `MainThreadMarker` still
+        // gates *construction* (`NSAlert::new` takes it by value), which is what
+        // actually enforces the main-thread requirement here.
         let mtm = MainThreadMarker::new()?;
         let order = native_button_order(&opts.buttons);
         let alert = NSAlert::new(mtm);
@@ -200,15 +189,13 @@ impl PlatformServices for MacPlatformServices {
         Some(opts.buttons[orig].id.clone())
     }
 
-    /// See the module doc's "Notifications" section for why only
-    /// `n.is_silent()` (of #955's four new `Notification` fields) has
-    /// anywhere to go here. [`crate::desktop::display_notification_script`]
-    /// is the pure half, split out the same way `hig_button_order`/
-    /// `system_theme_from_gtk_settings` are in their own backends' sibling
-    /// modules — so the AppleScript text itself is unit-testable without
-    /// a live mac; only the `Command::spawn` below needs one. Shared with
-    /// `tui::services` since issue #1092, which needed the identical
-    /// `osascript` call for its own macOS notification fallback leg.
+    /// Only `is_silent()` of the `Notification` fields has anywhere to go
+    /// on the `osascript` path; `icon`, `actions`, and `tag` are silently
+    /// dropped since `display notification` lacks corresponding parameters.
+    /// [`crate::desktop::display_notification_script`] is the pure logic half
+    /// so the AppleScript text itself is unit-testable without a live mac;
+    /// only the `Command::spawn` below needs one. Shared with `tui::services`
+    /// for its own macOS notification fallback leg.
     fn send_notification(&self, n: Notification) {
         let script = crate::desktop::display_notification_script(&n.title, &n.body, n.is_silent());
         let _ = Command::new("osascript").arg("-e").arg(&script).spawn();
@@ -218,7 +205,7 @@ impl PlatformServices for MacPlatformServices {
         let _ = self.open_url_result(url);
     }
 
-    /// Fallible twin of [`Self::open_url`] (issue #1087), via
+    /// Fallible twin of [`Self::open_url`], via
     /// [`crate::desktop::open_with_default`] — reports whether `open`
     /// genuinely spawned instead of `open_url`'s discarded outcome.
     /// Before this override, `open_url_result` fell to
@@ -231,7 +218,7 @@ impl PlatformServices for MacPlatformServices {
     }
 
     /// `NSWorkspace::activateFileViewerSelectingURLs` on `path`'s
-    /// `file://` URL (issue #956) — "Reveal in Finder." `path.is_dir()`
+    /// `file://` URL — "Reveal in Finder." `path.is_dir()`
     /// decides `fileURLWithPath:isDirectory:`'s bool the same way
     /// `configure_panel`'s directory-URL construction would need to, were
     /// it not always `true` there (a directory *chooser*'s initial
@@ -249,17 +236,16 @@ impl PlatformServices for MacPlatformServices {
         Ok(())
     }
 
-    /// `open <path>` (issue #956) via [`crate::desktop::open_with_default`]
-    /// (issue #1087) — the same call [`Self::open_url_result`] makes;
-    /// macOS's `open(1)` already accepts a filesystem path exactly as
-    /// readily as a URL (it's the command-line front end to
-    /// `NSWorkspace.open(_:)`), so there is nothing path-specific to add
-    /// beyond handing it a path instead of a URL string.
+    /// `open <path>` via [`crate::desktop::open_with_default`] — the same
+    /// call [`Self::open_url_result`] makes. macOS's `open(1)` already
+    /// accepts a filesystem path exactly as readily as a URL (it's the
+    /// command-line front end to `NSWorkspace.open(_:)`), so there is nothing
+    /// path-specific to add beyond handing it a path instead of a URL string.
     fn open_path(&self, path: &Path) -> ServiceResult<()> {
         crate::desktop::open_with_default(path.as_os_str())
     }
 
-    /// [`crate::desktop::move_to_trash`] (issue #956) — see that
+    /// [`crate::desktop::move_to_trash`] — see that
     /// function's doc for why every backend, macOS included, shares this
     /// one `trash`-crate-backed implementation rather than hand-rolling
     /// `NSFileManager::trashItemAtURL_resultingItemURL_error` here.
@@ -267,7 +253,7 @@ impl PlatformServices for MacPlatformServices {
         crate::desktop::move_to_trash(path)
     }
 
-    /// `NSBeep` (issue #956) — a bare AppKit C function, not a method on
+    /// `NSBeep` — a bare AppKit C function, not a method on
     /// any object, so unlike every other AppKit call in this module it
     /// needs no `MainThreadMarker`/receiver of its own.
     fn beep(&self) -> ServiceResult<()> {
@@ -277,16 +263,12 @@ impl PlatformServices for MacPlatformServices {
 
     /// `NSApp.effectiveAppearance` for light/dark,
     /// `NSWorkspace::accessibilityDisplayShouldIncreaseContrast` for high
-    /// contrast, `NSColor::controlAccentColor` for the accent colour
-    /// (quadraui#952). Reads `effectiveAppearance().name()` and checks it
-    /// for `"Dark"` rather than building an `NSArray` and calling
-    /// `NSAppearance::bestMatchFromAppearancesWithNames` (the issue's
-    /// suggested API, and the one apps *drawing* per-appearance content
-    /// should reach for) — for a one-shot query like this, the name
-    /// itself already carries the answer, and every system appearance
-    /// name (`NSAppearanceNameDarkAqua`, and both
-    /// `NSAppearanceNameAccessibilityHighContrast*Dark*` variants)
-    /// contains the substring unambiguously.
+    /// contrast, `NSColor::controlAccentColor` for the accent colour.
+    /// Reads `effectiveAppearance().name()` and checks it for `"Dark"`
+    /// rather than building an `NSArray` and calling
+    /// `NSAppearance::bestMatchFromAppearancesWithNames` — for a one-shot
+    /// query like this, the name itself already carries the answer, and every
+    /// system appearance name contains the substring unambiguously.
     fn system_theme(&self) -> ServiceResult<SystemTheme> {
         let mtm = MainThreadMarker::new().ok_or(BackendError::Unsupported)?;
         let appearance_name = NSApplication::sharedApplication(mtm)
@@ -302,7 +284,7 @@ impl PlatformServices for MacPlatformServices {
         ))
     }
 
-    /// `NSScreen::screens()` (issue #959) — `frame()`/`visibleFrame()` map
+    /// `NSScreen::screens()` — `frame()`/`visibleFrame()` map
     /// straight to [`Display::bounds`]/[`Display::work_area`], and
     /// `backingScaleFactor()` to [`Display::scale`]. `screens()[0]` is
     /// always the screen containing the menu bar (documented AppKit
@@ -329,7 +311,7 @@ impl PlatformServices for MacPlatformServices {
         Ok(out)
     }
 
-    /// `NSEvent::mouseLocation()` (issue #959) — a bare AppKit class
+    /// `NSEvent::mouseLocation()` — a bare AppKit class
     /// method, like [`Self::beep`]'s `NSBeep`, needing no
     /// `MainThreadMarker`/receiver of its own. Returns coordinates in the
     /// same bottom-left-origin, y-up screen space [`Self::displays`]'s
@@ -441,12 +423,13 @@ unsafe fn configure_panel(panel: &NSSavePanel, opts: &FileDialogOptions) {
         .map(|ext| NSString::from_str(ext))
         .collect();
     if !exts.is_empty() {
-        // `NSArray::from_slice` requires `T: IsRetainable`, which
-        // NSString doesn't satisfy (it has an `NSMutableString`
-        // subclass). `from_retained_slice` takes already-`Retained`
-        // handles and sidesteps that bound — replaces objc2-foundation
-        // 0.2's `from_vec` (renamed/reshaped in 0.3, #796; same "already
-        // retained" semantics, slice instead of by-value `Vec`).
+        // `NSArray::from_slice` requires `T: IsRetainable`, which NSString doesn't
+        // satisfy (it has an `NSMutableString` subclass). `from_retained_slice`
+        // takes already-`Retained` handles and sidesteps that bound.
+        // `setAllowedFileTypes:` is deprecated in favour of
+        // `setAllowedContentTypes:` (UTType), but that requires the
+        // UniformTypeIdentifiers framework which objc2 doesn't yet wrap. The
+        // legacy API still works on macOS 11–15.
         let arr = NSArray::from_retained_slice(&exts);
         // `setAllowedFileTypes:` is deprecated in favour of
         // `setAllowedContentTypes:` (UTType), but that requires the
@@ -468,15 +451,7 @@ unsafe fn url_to_path(url: Option<&NSURL>) -> Option<PathBuf> {
     Some(PathBuf::from(path.to_string()))
 }
 
-// `applescript_escape`/`display_notification_script` used to live here as
-// this module's own private helpers (issue #955). Issue #1092 gave
-// `tui::services` a second `osascript` call site — the TUI degrade's
-// macOS notification fallback leg — that needed byte-for-byte the same
-// AppleScript-building logic, so both are now shared out of
-// `crate::desktop` (see that module's "display_notification_script"
-// section) instead of `tui::services` growing its own copy.
-
-/// Order `buttons` for `NSAlert::addButtonWithTitle:` (quadraui#936):
+/// Order `buttons` for `NSAlert::addButtonWithTitle:`:
 /// `NSAlert` lays out the first-added button trailing/rightmost (its own
 /// docs: "arranged from trailing-to-leading edge... Buttons should be
 /// added from most-to-least prominent"), so the default/primary button
@@ -513,7 +488,7 @@ fn native_button_order(buttons: &[MessageDialogButton]) -> Vec<usize> {
 }
 
 /// Pick the `NSButton::setKeyEquivalent` string for `button`, or `None`
-/// to leave `NSAlert`'s own default untouched (quadraui#936).
+/// to leave `NSAlert`'s own default untouched.
 ///
 /// `setKeyEquivalent` only ever holds one string, so a button that is
 /// both `is_default` and `is_cancel` (a single-button "OK" alert — the
@@ -538,7 +513,7 @@ fn key_equivalent_for_button(button: &MessageDialogButton) -> Option<&'static st
     }
 }
 
-/// Map [`DialogSeverity`] onto `NSAlertStyle` (quadraui#936) — shares
+/// Map [`DialogSeverity`] onto `NSAlertStyle` — shares
 /// `win::services::win_show_message_dialog`'s `icon` match's "`Question`
 /// has no dedicated native icon" gap: `NSAlertStyle` (like
 /// `TaskDialogIndirect`'s icon set) has no question-mark style, so
@@ -580,8 +555,8 @@ impl MacClipboard {
 const NO_PASTEBOARD_CONTEXT: &str = "arboard::Clipboard::new (no NSPasteboard session)";
 
 /// Map an `arboard::Error` from a named native call into a
-/// [`BackendError::PlatformFailure`] (issue #954) — the one
-/// implementation shared with `gtk::services` (issue #1087); see
+/// [`BackendError::PlatformFailure`] — the one
+/// implementation shared with `gtk::services`; see
 /// [`crate::desktop::map_arboard_error`]'s own doc for the full
 /// rationale.
 use crate::desktop::map_arboard_error;
@@ -597,9 +572,9 @@ impl Clipboard for MacClipboard {
         }
     }
 
-    /// Decoded RGBA pixels via `arboard::Clipboard::get_image` (issue
-    /// #954) — the `image-data`-featured leg of the same `arboard`
-    /// handle `read_text`/`write_text` already share.
+    /// Decoded RGBA pixels via `arboard::Clipboard::get_image` — the
+    /// `image-data`-featured leg of the same `arboard` handle
+    /// `read_text`/`write_text` already share.
     fn read_image(&self) -> ServiceResult<RgbaImage> {
         let mut inner = self.inner.borrow_mut();
         let cb = inner.as_mut().ok_or(BackendError::PlatformFailure {
@@ -668,7 +643,7 @@ mod tests {
         assert_eq!(svc.platform_name(), "macos");
     }
 
-    /// `NSBeep` (issue #956) — a bare AppKit C function with no receiver
+    /// `NSBeep` — a bare AppKit C function with no receiver
     /// and no window/UI object graph to touch, so unlike
     /// `show_message_dialog`'s `NSAlert::runModal` above this is safe to
     /// call from a spawned test thread without a `MainThreadMarker`.
@@ -685,7 +660,7 @@ mod tests {
         assert_eq!(svc.beep(), Ok(()));
     }
 
-    /// quadraui#959: `displays` needs a `MainThreadMarker` the same way
+    /// `displays` needs a `MainThreadMarker` the same way
     /// `system_theme`/`show_message_dialog` above do, so off the spawned
     /// thread `cargo test` runs every `#[test]` fn on, it reports
     /// `Unsupported` rather than panicking — same shape
@@ -697,7 +672,7 @@ mod tests {
         assert_eq!(svc.displays(), Err(BackendError::Unsupported));
     }
 
-    /// `NSEvent::mouseLocation()` (issue #959) — a bare AppKit class
+    /// `NSEvent::mouseLocation()` — a bare AppKit class
     /// method with no receiver, like `NSBeep` above, so this is safe to
     /// call from a spawned test thread without a `MainThreadMarker` and
     /// always reports a real point.
@@ -707,15 +682,13 @@ mod tests {
         assert!(svc.cursor_screen_point().is_ok());
     }
 
-    /// #1087 acceptance bar: `open_url_result` reports a real failure
-    /// when the platform opener can't even launch, instead of the
-    /// pre-#1087 capability lie (`open_url`'s `Command::spawn` discarded
-    /// its outcome; `open_url_result` fell to the trait's `Ok(())`
-    /// default). `$PATH` is temporarily redirected (guarded by
+    /// `open_url_result` reports a real failure when the platform opener
+    /// can't even launch, instead of silently discarding the outcome.
+    /// `$PATH` is temporarily redirected (guarded by
     /// [`crate::desktop::PATH_OVERRIDE_TEST_LOCK`], and always restored
-    /// via a drop guard even on panic) to a directory containing no
-    /// `open` binary at all, so the real `Command::new("open").spawn()`
-    /// genuinely fails (`ENOENT`) rather than launching anything.
+    /// via a drop guard even on panic) to a directory containing no `open`
+    /// binary at all, so the real `Command::new("open").spawn()` genuinely
+    /// fails (`ENOENT`) rather than launching anything.
     #[test]
     fn open_url_result_reports_failure_when_the_opener_is_missing() {
         let _guard = crate::desktop::PATH_OVERRIDE_TEST_LOCK
@@ -739,24 +712,17 @@ mod tests {
         assert!(svc.open_url_result("https://example.com/1087").is_err());
     }
 
-    // ── Clipboard image/html/file-list/clear (#954) ────────────────────
+    // ── Clipboard image/html/file-list/clear ───────────────────────────
 
-    /// Real `NSPasteboard` round trip through every method #954 added,
-    /// in one `#[test]` fn rather than several: `cargo test` runs
-    /// `#[test]` fns in parallel by default, and separate fns would fight
-    /// over the one real systemwide pasteboard (same reasoning as
-    /// `build_file_dialog_behaviors`'s single-fn consolidation elsewhere
-    /// in this crate, different shared resource). Skips gracefully — like
-    /// `build_file_dialog_behaviors` does for a missing display — on a
-    /// runner with no live `NSPasteboard` session at all, rather than
-    /// failing the whole crate's test run over an environment gap this
-    /// test isn't trying to cover.
+    /// Real `NSPasteboard` round trip through every method added in one
+    /// `#[test]` fn rather than several: `cargo test` runs `#[test]` fns in
+    /// parallel by default, and separate fns would fight over the one real
+    /// systemwide pasteboard. Skips gracefully on a runner with no live
+    /// `NSPasteboard` session at all, rather than failing the whole crate's
+    /// test run over an environment gap this test isn't trying to cover.
     ///
-    /// Consolidating into one fn only removes the race while this fn is
-    /// the crate's *only* real-pasteboard test, which stopped being true
-    /// when `macos::testing`'s Ctrl-C copy test (#803) landed — see
-    /// [`crate::macos::lock_real_pasteboard`] for how that pair raced and
-    /// why both now take the same lock.
+    /// This fn takes the same lock as [`crate::macos::lock_real_pasteboard`]
+    /// to avoid races with other real-pasteboard tests.
     #[allow(clippy::print_stderr)]
     #[test]
     fn clipboard_image_html_file_list_and_clear_round_trip() {
@@ -837,9 +803,9 @@ mod tests {
 
     // `applescript_escape`/`display_notification_script` tests moved to
     // `crate::desktop::display_notification_script_tests` alongside the
-    // functions themselves (issue #1092).
+    // functions themselves.
 
-    // ── system_theme_from_mac_appearance / unit_to_u8 (quadraui#952) ────
+    // ── system_theme_from_mac_appearance / unit_to_u8 ───────────────────
 
     #[test]
     fn dark_aqua_appearance_reports_dark() {
@@ -961,7 +927,7 @@ mod tests {
 
     #[test]
     fn key_equivalent_for_button_both_default_and_cancel_binds_return_not_escape() {
-        // Regression test (quadraui#936 review): a single "OK" button
+        // Regression test: a single "OK" button
         // that carries both flags — the most common message-dialog
         // shape — MUST get Return, not just Escape, or pressing Enter
         // does nothing and the dialog is keyboard-unresponsive on its
@@ -997,15 +963,11 @@ mod tests {
         assert_eq!(severity_to_alert_style(None), NSAlertStyle::Informational);
     }
 
-    /// RED-verify companion (quadraui#936's acceptance bar): off the main
-    /// thread — which is exactly where Rust's default per-test-fn thread
-    /// puts this test — `show_message_dialog` must degrade to `None`
+    /// Off the main thread — which is exactly where Rust's default per-test-fn
+    /// thread puts this test — `show_message_dialog` must degrade to `None`
     /// rather than panic, the same contract the doc comment on
-    /// `show_message_dialog` describes. Before this issue's fix the
-    /// method was an unconditional `None` stub, so this assertion also
-    /// held then; what changed is that it now holds for the *documented
-    /// reason* (no `MainThreadMarker` here) rather than "not implemented
-    /// yet".
+    /// `show_message_dialog` describes. No `MainThreadMarker` is available
+    /// off the main thread, so the method returns `None`.
     #[test]
     fn show_message_dialog_off_main_thread_returns_none_not_panic() {
         let svc = MacPlatformServices::new();

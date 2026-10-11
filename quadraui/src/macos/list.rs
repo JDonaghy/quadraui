@@ -1,16 +1,14 @@
 //! macOS rasteriser for [`crate::ListView`].
 //!
-//! Content painting (background, title, rows, h/v scrollbars) moved to
-//! the shared [`crate::primitives::list::native_surface_paint::paint`]
-//! (#1075, `PaintSurface` Phase 4 slice 2/8) — see that fn's module doc
-//! for what's shared and what stays per-backend.
+//! Content painting (background, title, rows, h/v scrollbars) is shared via
+//! [`crate::primitives::list::native_surface_paint::paint`] — see that fn's
+//! module doc for what's shared and what stays per-backend.
 //!
 //! ## Scope omissions (follow-up)
 //!
-//! - **`bordered` mode** — same status as before this migration: no
-//!   consumer sets it today. The flat header+rows path is fully
-//!   supported; this rasteriser passes `supports_border: false` to the
-//!   shared paint, so it always takes the flat title/inset path
+//! - **`bordered` mode** — no consumer sets it today. The flat header+rows
+//!   path is fully supported; this rasteriser passes `supports_border: false`
+//!   to the shared paint, so it always takes the flat title/inset path
 //!   regardless of [`crate::ListView::bordered`]. The shared paint's
 //!   `base_bg` pick (`surface_bg` when `bordered`, else `background`)
 //!   is *not* gated on `supports_border`, so it still honours
@@ -32,7 +30,7 @@ use crate::theme::Theme;
 
 /// Compute the layout the macOS rasteriser would produce for `list`
 /// at `(w, h)` and `line_height`, including the horizontal-scrollbar
-/// row reservation (#712). Hosts and tests call this to drive
+/// row reservation. Hosts and tests call this to drive
 /// hit-testing without re-deriving row pitch. Title (if any) takes
 /// one `line_height` strip; items use the same.
 ///
@@ -41,12 +39,7 @@ use crate::theme::Theme;
 /// `gtk_list_layout` so both backends reserve identically. `draw_list`
 /// calls this exact function (with its own live-measured `char_width`)
 /// instead of recomputing a second layout at paint time, so paint and
-/// no-paint hit-testing can never drift apart (`PRIMITIVE_RULES.md`
-/// rule 5). Before #712, `draw_list` recomputed independently and this
-/// function had no `char_width` parameter at all, so it could not
-/// compute the reservation — `Backend::list_layout` was one row taller
-/// than what was actually painted whenever `max_content_width` forced a
-/// scrollbar.
+/// no-paint hit-testing can never drift apart.
 ///
 /// `char_width` is used only for the h-scrollbar-overflow threshold
 /// check (`ListView::max_content_width` is in character columns); pass
@@ -63,16 +56,6 @@ use crate::theme::Theme;
 /// matching `tui_list_layout` and `gtk_list_layout`. Hosts must
 /// subtract the list's `area.x` / `area.y` from absolute click coords
 /// before calling [`ListViewLayout::hit_test`].
-///
-/// Unlike an earlier revision of this function, there is no `(x, y)`
-/// parameter to ignore: the output is local by construction, so there
-/// is nothing for an origin to shift and no dead parameter to carry
-/// "for symmetry" (issue #1098 — `Rect`'s unit contract audit flagged
-/// this as the one `*_list_layout` sibling still carrying origin
-/// params its own body never reads; `gtk_list_layout` never had them,
-/// and `win_list_layout` takes a full `Rect` but only reads its
-/// `width`/`height`). Callers that need the list's screen position —
-/// `draw_list`, for clipping — keep tracking `(x, y)` themselves.
 pub fn mac_list_layout(
     list: &ListView,
     w: f64,
@@ -220,9 +203,8 @@ mod tests {
             bordered: false,
             h_scroll: 0,
             max_content_width: None,
-            // Field added to `ListView` after this fixture was written;
-            // it never compiled until quadraui#484 first built the macOS
-            // test target. `false` preserves the fixture's behaviour.
+            // Field was added to `ListView` after this fixture was written.
+            // `false` preserves the fixture's behaviour.
             show_v_scrollbar: false,
         }
     }
@@ -331,17 +313,9 @@ mod tests {
         // regardless of where the list's `rect` sits on screen —
         // matching `tui_list_layout` and `gtk_list_layout`. Hosts
         // subtract `rect.x`/`rect.y` from absolute click coords before
-        // hit_test.
-        //
-        // Regression for #190: prior to that fix, `mac_list_layout`
-        // shifted hit_regions to absolute coords. Exercised here through
-        // `Backend::list_layout` (PRIMITIVE_RULES.md's "every `*_layout`
-        // method needs a non-zero-origin regression test" — `area =
-        // (0, 0)` is exactly the case that hides a LOCAL/ABSOLUTE
-        // mixup). `mac_list_layout` itself dropped its `(x, y)`
-        // parameters in #1098 — they were read by no one, and this
-        // trait-level rect is where a real origin offset actually
-        // flows from.
+        // hit_test. This exercises the contract through
+        // `Backend::list_layout` with a non-zero-origin rect; an
+        // origin offset of (0, 0) hides coordinate mixups.
         let list = sample_list();
         // Rect offset by (0, 60) — typical when a list lives below
         // a header / search input.
@@ -394,21 +368,12 @@ mod tests {
         assert_eq!(layout.hit_test(cx, below_y), ListViewHit::Empty);
     }
 
-    /// Regression for #712: before this fix, `mac_list_layout` had no
-    /// `char_width` parameter and so could not compute the h-scrollbar
-    /// reservation at all, while `draw_list` recomputed a *second*,
-    /// reduced-height layout only at paint time. That meant
-    /// `Backend::list_layout` (routed through `mac_list_layout` alone)
-    /// was one row taller than what `draw_list` actually painted
-    /// whenever `max_content_width` forced a scrollbar — a click router
-    /// driven purely by `list_layout` would mis-resolve the bottom row.
-    ///
-    /// Force that overflow and assert the no-paint `Backend::list_layout`
-    /// call agrees byte-for-byte with the layout `draw_list` resolved
-    /// internally while painting (`paint_via_backend` itself now goes
-    /// through `Backend::list_layout`, so this also proves the trait
-    /// method and `draw_list` never drift apart), and that the
-    /// reservation actually took effect.
+    /// Assert that the h-scrollbar reservation is computed consistently
+    /// between `Backend::list_layout` and `draw_list`. Both must call
+    /// `mac_list_layout` with the same `char_width` to agree on when
+    /// `max_content_width` forces a scrollbar and reduces available height.
+    /// Probes that the no-paint `Backend::list_layout` call matches the
+    /// layout `draw_list` resolves internally while painting.
     #[test]
     fn hscrollbar_reservation_matches_layout_and_paint() {
         let mut list = sample_list();
@@ -446,15 +411,10 @@ mod tests {
         );
     }
 
-    /// #1075 review fix: `gtk::list` and `win::list` each gained a
-    /// driver-tier regression test proving `ListView::show_v_scrollbar`
-    /// is actually painted (it wasn't, on any of the three backends,
-    /// pre-migration); `macos::list` had none. Paints through the real
-    /// `MacBackend::draw_list` with 30 rows in a viewport that can only
-    /// fit a handful, and probes a pixel inside the track rect
-    /// `Backend::list_vscrollbar` resolves — this would fail (background
-    /// colour, nothing painted) against a `draw_list` that never called
-    /// the shared scrollbar paint.
+    /// Verify that `ListView::show_v_scrollbar` is actually painted.
+    /// Paints through the real `MacBackend::draw_list` with 30 rows in
+    /// a viewport that can only fit a handful, and probes a pixel inside
+    /// the track rect `Backend::list_vscrollbar` resolves.
     #[test]
     fn paints_vertical_scrollbar_track_when_enabled() {
         let mut list = ListView {
@@ -487,13 +447,10 @@ mod tests {
         );
     }
 
-    /// #1075 review fix: before this migration, `macos::list::draw_list`
-    /// never painted `ListItem::icon` at all — a real omission called out
-    /// in this module's own doc comment, but left uncovered by any test.
-    /// Compares the inked (non-background) pixel width of a row's band
-    /// with vs. without an icon set; the icon-bearing row must paint
-    /// strictly more ink, proving the shared paint's icon branch actually
-    /// ran through `MacBackend::draw_list`.
+    /// Verify that `ListItem::icon` is painted when present. Compares
+    /// the inked (non-background) pixel width of a row's band with vs.
+    /// without an icon set; the icon-bearing row must paint strictly
+    /// more ink, proving the shared paint's icon branch runs.
     #[test]
     fn paints_item_icon_when_present() {
         use crate::types::Icon;

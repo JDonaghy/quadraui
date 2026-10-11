@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-// objc2 0.6 (#796) removed `declare_class!` in favour of `define_class!`
+// objc2 0.6 removed `declare_class!` in favour of `define_class!`
 // (superclass/mutability move from a `ClassType` impl block onto struct
 // attributes), renamed `DeclaredClass` to `DefinedClass`, and deprecated
 // `msg_send_id!` in favour of `msg_send!` (which now performs the same
@@ -97,8 +97,7 @@ define_class!(
         /// shape.
         #[unsafe(method(quadraMenuAction:))]
         fn quadra_menu_action(&self, sender: &NSMenuItem) {
-            // `tag`/`setNeedsDisplay:` are safe methods as of
-            // objc2-app-kit 0.3 (#796 bump).
+            // `tag` and `setNeedsDisplay:` are safe methods.
             let tag = sender.tag();
             let id = self.ivars().tag_to_id.borrow().get(&tag).cloned();
             if let Some(id) = id {
@@ -120,11 +119,10 @@ define_class!(
 );
 
 impl QuadraMenuTarget {
-    /// `pub(crate)`: reused directly by `super::tray`'s `TrayService::set_menu`
-    /// (issue #953), which builds its own `QuadraMenuTarget` (with
-    /// `MenuKind::Context`, same as `show_context_menu`) so tray-menu
-    /// activations push `UiEvent::ContextMenuItemActivated` through the
-    /// identical `WidgetId` path.
+    /// `pub(crate)`: reused directly by `super::tray`'s `TrayService::set_menu`,
+    /// which builds its own `QuadraMenuTarget` (with `MenuKind::Context`, same as
+    /// `show_context_menu`) so tray-menu activations push
+    /// `UiEvent::ContextMenuItemActivated` through the identical `WidgetId` path.
     pub(crate) fn new(
         mtm: MainThreadMarker,
         events: Rc<RefCell<VecDeque<UiEvent>>>,
@@ -198,7 +196,7 @@ pub(crate) fn install_menu_bar(
         append_top_level_menu(mtm, &main_menu, &target, top, &mut next_tag);
     }
 
-    // #1177: the standard "Enter/Exit Full Screen" item (and its
+    // The standard "Enter/Exit Full Screen" item (and its
     // Ctrl+Cmd+F key equivalent) isn't inserted automatically for a
     // programmatically-built main menu the way it is for a nib-authored
     // one — see `append_full_screen_item`'s doc.
@@ -210,7 +208,7 @@ pub(crate) fn install_menu_bar(
     target
 }
 
-/// Install the standard macOS "Enter Full Screen" menu item (#1177).
+/// Install the standard macOS "Enter Full Screen" menu item.
 ///
 /// Unlike a nib/storyboard-authored main menu, AppKit does **not**
 /// auto-insert this item for a menu built entirely in code via `NSMenu`
@@ -374,8 +372,7 @@ fn append_top_level_menu(
 ) {
     let title = strip_mnemonic(&top.label);
     let container: Retained<NSMenuItem> = NSMenuItem::new(mtm);
-    // `setTitle:`/`setEnabled:` are safe methods as of objc2-app-kit 0.3
-    // (#796 bump).
+    // `setTitle:` and `setEnabled:` are safe methods.
     container.setTitle(&NSString::from_str(&title));
     container.setEnabled(!top.disabled);
     main_menu.addItem(&container);
@@ -410,8 +407,7 @@ fn append_menu_item(
 
     let title: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
     let ns_item: Retained<NSMenuItem> = NSMenuItem::new(mtm);
-    // `setTitle:`/`setEnabled:`/`setState:` are safe methods as of
-    // objc2-app-kit 0.3 (#796 bump).
+    // `setTitle:`, `setEnabled:`, and `setState:` are safe methods.
     ns_item.setTitle(&NSString::from_str(&title));
     ns_item.setEnabled(!item.disabled);
     if let Some(true) = item.checked {
@@ -442,9 +438,8 @@ fn append_menu_item(
     if let Some(ref id) = item.id {
         let tag = *next_tag;
         *next_tag += 1;
-        // `setTag:`/`setKeyEquivalent:` are safe methods as of
-        // objc2-app-kit 0.3 (#796 bump); `setAction:`/`setTarget:` still
-        // require `unsafe` (the target pointer's lifetime/type isn't
+        // `setTag:` and `setKeyEquivalent:` are safe methods; `setAction:` and
+        // `setTarget:` require `unsafe` (the target pointer's lifetime/type isn't
         // statically verified).
         ns_item.setTag(tag);
         target
@@ -539,7 +534,7 @@ fn shift() -> NSEventModifierFlags {
 /// Build a standalone `NSMenu` from `items`, wiring `target`'s
 /// `quadraMenuAction:` selector on every leaf item — the exact
 /// leaf-wiring loop [`show_context_menu`] runs inline below, factored out
-/// so [`super::tray`]'s `TrayService::set_menu` (issue #953) can reuse
+/// so [`super::tray`]'s `TrayService::set_menu` can reuse
 /// the identical `ContextMenu` → `NSMenu` conversion for a tray icon's
 /// attached menu, rather than a second hand-rolled walk of
 /// `ContextMenuItem`. `target` should be a [`QuadraMenuTarget`] built
@@ -602,8 +597,7 @@ pub(crate) fn show_context_menu(
     if let Some(window) = ns_app.keyWindow() {
         if let Some(view) = window.contentView() {
             let location = objc2_foundation::NSPoint::new(anchor_x, anchor_y);
-            // `popUpMenuPositioningItem:atLocation:inView:` is a safe
-            // method as of objc2-app-kit 0.3 (#796 bump).
+            // `popUpMenuPositioningItem:atLocation:inView:` is a safe method.
             ns_menu.popUpMenuPositioningItem_atLocation_inView(None, location, Some(&view));
         }
     }
@@ -766,8 +760,6 @@ mod tests {
         );
     }
 
-    // ── #1177 full-screen menu item / Ctrl+Cmd+F ─────────────────
-
     /// Find `title`'s top-level submenu in `NSApp.mainMenu()`, the same
     /// way a user visually scanning the menu bar would.
     fn find_installed_top_level_menu(
@@ -788,7 +780,7 @@ mod tests {
             .find(|item| item.action() == Some(sel!(toggleFullScreen:)))
     }
 
-    /// #1177: a `MenuBar` with neither a "View" nor a "Window" top-level
+    /// A `MenuBar` with neither a "View" nor a "Window" top-level
     /// menu still ends up with a native "Enter Full Screen" item —
     /// `install_menu_bar` must synthesize a "View" menu to hold it
     /// rather than silently dropping the standard shortcut the way the
@@ -825,7 +817,7 @@ mod tests {
         );
     }
 
-    /// #1177: when the app's own `MenuBar` already has a top-level
+    /// When the app's own `MenuBar` already has a top-level
     /// "View" menu, the full-screen item is appended into *that* menu
     /// (after a separator) instead of creating a redundant second
     /// top-level "View" — matching where Terminal.app / VS Code / most
@@ -878,8 +870,6 @@ mod tests {
             "the app's own View-menu item must survive alongside the injected full-screen item",
         );
     }
-
-    // ── #185 native context menu ─────────────────────────────────
 
     fn context_menu(items: Vec<ContextMenuItem>) -> crate::primitives::context_menu::ContextMenu {
         crate::primitives::context_menu::ContextMenu {

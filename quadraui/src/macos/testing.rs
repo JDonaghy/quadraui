@@ -1,5 +1,4 @@
-//! In-process headless test driver for [`AppLogic`] macOS apps
-//! (quadraui#493).
+//! In-process headless test driver for [`AppLogic`] macOS apps.
 //!
 //! [`MacDriver`] mirrors [`crate::tui::testing::TuiDriver`] /
 //! [`crate::gtk::testing::GtkDriver`]'s surface — `new`, `render`,
@@ -11,17 +10,14 @@
 //! Renders into a headless [`super::headless::BitmapSurface`]
 //! (`CGBitmapContext`) via [`super::backend::MacBackend::enter_frame_scope`]
 //! — no `NSApplication`, no `NSWindow`, no display server. This is the
-//! exact display-free path `macos/headless.rs`'s own
-//! `integrates_with_mac_backend_frame_scope` test already proves works;
-//! `MacDriver` lifts it to the whole-`AppLogic` level, the same way
-//! `GtkDriver` lifted GTK's headless `cairo::ImageSurface` path.
+//! same display-free path `macos/headless.rs`'s own
+//! `integrates_with_mac_backend_frame_scope` test uses.
 //!
 //! ## No drift from production
 //!
 //! [`Self::render`] and [`Self::dispatch`] call the same
 //! [`super::run::render_frame`] / [`super::run::dispatch_event`] the live
-//! `quadraui::macos::run` runner uses (mirroring quadraui#446's GTK split
-//! and quadraui#300's TUI split), so the test path paints and
+//! `quadraui::macos::run` runner uses, so the test path paints and
 //! pre-processes events (caret-blink bump, double-click folding, global
 //! accelerator dispatch, Cmd-V paste) identically to production.
 //!
@@ -31,10 +27,9 @@
 //! exercise real `NSEvent` delivery — raw `NSEvent`/keycode translation
 //! (`macos::events`), IME, or actual `NSResponder` wiring are out of
 //! scope and need a live-window smoke test instead. `MacBackend` adopted
-//! text selection in #803 (`backend_caps` now declares it), so
-//! [`Self::drag`]-based selection scenarios run here same as on GTK/Win —
-//! scrollbar drag is still unsupported (`backend_caps` doesn't declare
-//! it), so [`Self::drag`]-based scenarios that depend on that are still
+//! text selection, so [`Self::drag`]-based selection scenarios run here
+//! same as on GTK/Win — scrollbar drag is still unsupported, so
+//! [`Self::drag`]-based scenarios that depend on that are still
 //! `Anchor`/`ConformanceDriver::backend_caps`-gated the same way they are
 //! on every other backend without it.
 //!
@@ -174,7 +169,7 @@ impl<A: AppLogic> MacDriver<A> {
 
     /// Fire `AppLogic::tick` directly, the same call
     /// [`super::run::QuadraView::dispatch_tick`] makes from either the
-    /// wake-scheduled `Backend::request_frame_in` timer or (quadraui#940)
+    /// wake-scheduled `Backend::request_frame_in` timer or
     /// the repeating `idlePollTick:` idle-poll fallback the live runner
     /// now installs — see that timer's doc for why macOS needed one.
     /// Neither of those native `NSTimer`s exists in this headless driver
@@ -237,12 +232,11 @@ impl<A: AppLogic> MacDriver<A> {
     /// Press a character key with Ctrl held. Cmd, not Ctrl, is the Mac
     /// accelerator convention — see [`dispatch_event`]'s Cmd-V handling
     /// and [`MacBackend::register_accelerator`]'s `macos_universal_binding_modifiers`
-    /// Ctrl→Cmd rewrite for *registered* accelerators — but #803 adopted
-    /// the shared cross-platform text-selection pipeline as-is, so a
-    /// literal Ctrl-C/Ctrl-A now drives copy/select-all the same way it
-    /// does on `GtkDriver`/`TuiDriver`/`WinDriver`. This is a plain
-    /// `KeyPressed` with `ctrl: true`, same shape as every other driver's
-    /// `ctrl_char` — `dispatch_event` resolves it.
+    /// Ctrl→Cmd rewrite for *registered* accelerators, but text selection
+    /// uses the shared cross-platform pipeline, so a literal Ctrl-C/Ctrl-A
+    /// drives copy/select-all the same way it does on `GtkDriver`/`TuiDriver`/
+    /// `WinDriver`. This is a plain `KeyPressed` with `ctrl: true`, same shape
+    /// as every other driver's `ctrl_char` — `dispatch_event` resolves it.
     pub fn ctrl_char(&mut self, c: char) -> Reaction {
         DriverInput::ctrl_char(self, c)
     }
@@ -321,8 +315,8 @@ impl<A: AppLogic> MacDriver<A> {
     }
 
     /// All text painted during the last [`Self::render`], as recorded at
-    /// the [`super::text::draw_text`] choke point (quadraui#493) — shared
-    /// body: [`DriverCore::painted_texts`] (quadraui#814).
+    /// the [`super::text::draw_text`] choke point — shared
+    /// body: [`DriverCore::painted_texts`].
     pub fn painted_texts(&self) -> Vec<&str> {
         self.core.painted_texts()
     }
@@ -330,13 +324,13 @@ impl<A: AppLogic> MacDriver<A> {
     /// True if any painted text contains `needle` — the macOS analogue of
     /// [`crate::tui::testing::TuiDriver::screen_contains`] /
     /// [`crate::gtk::testing::GtkDriver::screen_contains`] — shared body:
-    /// [`DriverCore::screen_contains`] (quadraui#814).
+    /// [`DriverCore::screen_contains`].
     pub fn screen_contains(&self, needle: &str) -> bool {
         self.core.screen_contains(needle)
     }
 
     /// Bounds (points) of the first painted text run containing `needle`
-    /// — shared body: [`DriverCore::find_bounds`] (quadraui#814).
+    /// — shared body: [`DriverCore::find_bounds`].
     pub fn find_bounds(&self, needle: &str) -> Option<crate::Rect> {
         self.core.find_bounds(needle)
     }
@@ -344,7 +338,7 @@ impl<A: AppLogic> MacDriver<A> {
     /// Center coordinates (points) of the first painted text run
     /// containing `needle` — pass straight to [`Self::click`]. `None` if
     /// nothing painted this frame matched. Shared body:
-    /// [`DriverCore::find`] (quadraui#814).
+    /// [`DriverCore::find`].
     pub fn find(&self, needle: &str) -> Option<(f32, f32)> {
         self.core.find(needle)
     }
@@ -353,7 +347,7 @@ impl<A: AppLogic> MacDriver<A> {
 /// The four raw primitives [`DriverInput`]'s default `press`/`type_char`/
 /// `press_named`/`ctrl_char`/`click`/`drag` methods build on — see that
 /// trait's doc for why `dispatch`/`mouse_down`/`mouse_move`/`mouse_up`
-/// stay required (genuinely per-backend) rather than shared (quadraui#708).
+/// stay required (genuinely per-backend) rather than shared.
 impl<A: AppLogic> DriverInput for MacDriver<A> {
     fn dispatch(&mut self, event: UiEvent) -> Reaction {
         self.dispatch(event)
@@ -373,7 +367,7 @@ impl<A: AppLogic> DriverInput for MacDriver<A> {
 }
 
 /// Backs [`ConformanceDriver::click_text_at`]/`drag_text`/`scroll_at`'s
-/// shared pixel-unit bodies (quadraui#708).
+/// shared pixel-unit bodies.
 impl<A: AppLogic> PixelClickConformance for MacDriver<A> {
     const NAME: &'static str = "MacDriver";
 
@@ -412,7 +406,7 @@ impl<A: AppLogic> ConformanceDriver for MacDriver<A> {
 
     fn backend_caps(&self) -> crate::BackendCaps {
         // Straight off the real `MacBackend` this driver wraps — never a
-        // re-statement (quadraui#492).
+        // re-statement.
         crate::Backend::backend_caps(self.core.backend())
     }
 
@@ -512,15 +506,13 @@ mod tests {
         let bounds = driver
             .find_bounds("known-pixel")
             .expect("find_bounds should locate the painted segment");
-        // Unlike `GtkDriver`, `find_bounds` here is backed purely by the
-        // glyph draw position `macos::text::record_if_active` records —
-        // not a re-recorded "logical" fill rect (see this test's own
-        // module-level divergence note and `GtkBackend::draw_status_bar_interactive`'s
-        // comment). Since issue #1155, the shared
-        // `native_surface_paint::paint` insets that draw position by
-        // `PIXEL_EDGE_INSET` (outer bar edge) *and* `PIXEL_SEGMENT_PADDING`
-        // (per-segment text inset), so the lone left segment's label now
-        // starts at their sum, not at the bar's raw origin.
+        // `find_bounds` here is backed purely by the glyph draw position
+        // `macos::text::record_if_active` records — not a re-recorded
+        // "logical" fill rect. The shared `native_surface_paint::paint`
+        // insets that draw position by `PIXEL_EDGE_INSET` (outer bar edge)
+        // *and* `PIXEL_SEGMENT_PADDING` (per-segment text inset), so the
+        // lone left segment's label starts at their sum, not at the bar's
+        // raw origin.
         assert_eq!(
             (bounds.x, bounds.y),
             (
@@ -555,7 +547,7 @@ mod tests {
     /// panicking frame" and "the recovered frame" through the same
     /// `AppLogic` impl. Used by
     /// `render_frame_survives_a_panicking_app_render_and_the_next_frame_still_paints`
-    /// below (#922).
+    /// below.
     struct PanicsOnceThenPaints {
         panicked_yet: std::cell::Cell<bool>,
     }
@@ -589,22 +581,16 @@ mod tests {
         }
     }
 
-    /// Coverage for #922: `render_frame`'s `catch_unwind` around
-    /// `app.render` must (a) survive a panicking render — if it didn't,
-    /// `MacDriver::new` below (which paints the first frame as part of
-    /// construction) would itself panic and fail this test with an
-    /// *uncaught* panic rather than an assertion — and (b) leave
-    /// `MacBackend::enter_frame_scope`'s bracket balanced, so the *next*
-    /// frame still paints.
+    /// `render_frame`'s `catch_unwind` around `app.render` must (a) survive
+    /// a panicking render — if it didn't, `MacDriver::new` (which paints the
+    /// first frame as part of construction) would itself panic — and
+    /// (b) leave `MacBackend::enter_frame_scope`'s bracket balanced, so the
+    /// *next* frame still paints.
     ///
-    /// This drives the real `super::run::render_frame` the live
-    /// `drawRect:` calls — the same production function — but not
-    /// `drawRect:`/objc2's dispatch trampoline itself: that only exists
-    /// on a live `NSView`, which `MacDriver` (like every headless macOS
-    /// test in this module) deliberately never constructs — see
-    /// `BitmapSurface`'s module doc. This is the closest reachable seam;
-    /// see `render_frame`'s "Panic safety" doc for why catching one level
-    /// below the C boundary is still a correct fix.
+    /// This drives the real `super::run::render_frame` the live `drawRect:`
+    /// calls, but not `drawRect:`/objc2's dispatch trampoline itself: that
+    /// only exists on a live `NSView`, which `MacDriver` deliberately never
+    /// constructs. This is the closest reachable seam.
     #[test]
     fn render_frame_survives_a_panicking_app_render_and_the_next_frame_still_paints() {
         // Frame 1 happens inside `MacDriver::new` (it paints the first
@@ -767,7 +753,7 @@ mod tests {
         assert!(driver.exited(), "'q' should make the app exit");
     }
 
-    // ── ActivityBar keyboard-focus redirect (#465) ────────────────────
+    // ── ActivityBar keyboard-focus redirect ───────────────────────────
 
     /// App that paints one [`crate::primitives::activity_bar::ActivityBar`]
     /// whose `is_keyboard_focused` flag is fixed at construction, and
@@ -808,15 +794,13 @@ mod tests {
         }
     }
 
-    /// Regression for #465: while a painted `ActivityBar` declares
-    /// `is_keyboard_focused`, `dispatch_event` must hand the app
+    /// When a painted `ActivityBar` declares `is_keyboard_focused`,
+    /// `dispatch_event` must hand the app
     /// `UiEvent::ActivityBar(bar_id, ActivityBarEvent::KeyPressed { … })`
     /// — the synthesized form `ShellAdapter`'s built-in activity-bar
-    /// navigation (#409) matches on — rather than the raw `KeyPressed`.
+    /// navigation matches on — rather than the raw `KeyPressed`.
     /// TUI (`TuiBackend::apply_dispatch`) and GTK (`gtk::run::dispatch_event`)
-    /// already did this; macOS did not, so every `ShellApp` driven through
-    /// `macos::shell_runner::run_with_shell` silently lost `j`/`k`/`Enter`
-    /// panel navigation.
+    /// already did this; macOS must as well.
     #[test]
     fn keypress_redirects_to_focused_activity_bar() {
         let mut driver = MacDriver::new(
@@ -886,25 +870,12 @@ mod tests {
         );
     }
 
-    // ── Text selection (#803) ────────────────────────────────────────
+    // ── Text selection ───────────────────────────────────────────────
     //
-    // Acceptance coverage for #803's brief: drag a selection through the
-    // full live-runner pipeline (`MacDriver::drag` → `mouse_down`/
-    // `mouse_move`/`mouse_up` → `super::run::dispatch_event`), assert the
-    // rendered highlight actually painted, then Ctrl-C and assert the
-    // real clipboard content. RED before #803's `backend.rs`/`run.rs`
-    // wiring: `register_text_region` was the trait's no-op default, so no
-    // `TextRegion` was ever tracked, `dispatch_click`/`dispatch_mouse_drag`
-    // were never fed one, no `TextSelectionChanged` was ever produced, and
-    // `active_text_selection()` stayed `None` for the drag's entire
-    // duration — the highlight-diff assertion below would have failed
-    // (`before == after`) and the clipboard assertion would have read back
-    // whatever was on the pasteboard before the test ran, not "hello
-    // world". Unverified by execution in this session — this backend only
-    // compiles under `target_os = "macos"` (see `lib.rs`'s `mod macos`
-    // gate), so it can only run for real on `macos.yml`'s `macos-latest`
-    // job; on this Linux host only `cargo check --features macos --target
-    // aarch64-apple-darwin --all-targets` type-checked it.
+    // Drag a selection through the full live-runner pipeline (`MacDriver::drag`
+    // → `mouse_down`/`mouse_move`/`mouse_up` → `super::run::dispatch_event`),
+    // assert the rendered highlight actually paints, then Ctrl-C and assert
+    // the real clipboard content.
 
     const SELECTABLE_LINE: &str = "hello world";
     const SELECTABLE_BG: Color = Color::rgb(10, 10, 10);
@@ -959,9 +930,7 @@ mod tests {
     #[test]
     fn drag_select_paints_highlight_then_ctrl_c_copies_to_clipboard() {
         // The Ctrl-C assertion at the bottom reads the *real* systemwide
-        // `NSPasteboard`, which `macos::services`'s #954 round-trip test
-        // also writes to (and, via `write_image`/`clear`, wipes the text
-        // flavour of). Hold the shared lock for the whole test — see
+        // `NSPasteboard`. Hold the shared lock for the whole test — see
         // `crate::macos::lock_real_pasteboard`.
         let _pasteboard = crate::macos::lock_real_pasteboard();
         let mut driver = MacDriver::new(SelectableApp, W, H);
@@ -1013,17 +982,15 @@ mod tests {
         );
     }
 
-    /// Models vimcode's `PendingFileDialog` pattern (quadraui#940): a
+    /// Models vimcode's `PendingFileDialog` pattern: a
     /// host's event handler can't call `Backend::services().
     /// show_file_open_dialog` directly — that needs the runner-owned
     /// `MacBackend` handle `handle` doesn't have — so it queues the
-    /// request and drains it from `tick` instead (see the issue's
-    /// "Cause" section). `handle` here queues on any `KeyPressed` and
-    /// deliberately returns `Reaction::Continue`, not `Redraw`:
-    /// nothing about the triggering event forces a repaint on its own,
-    /// which is exactly the #940 symptom — on GTK/TUI the next coarse
-    /// idle tick drains `pending` regardless of that, but macOS had no
-    /// such tick at all before this issue.
+    /// request and drains it from `tick` instead. `handle` here queues
+    /// on any `KeyPressed` and deliberately returns `Reaction::Continue`,
+    /// not `Redraw`: nothing about the triggering event forces a repaint
+    /// on its own. On GTK/TUI the next coarse idle tick drains `pending`
+    /// regardless of that, but macOS needs an explicit `tick` call.
     struct DeferredWorkApp {
         pending: std::cell::Cell<bool>,
         drained: std::cell::Cell<bool>,
@@ -1067,21 +1034,15 @@ mod tests {
         }
     }
 
-    /// RED-verify for quadraui#940: before this issue, `MacDriver` had no
-    /// way to invoke `AppLogic::tick` at all. The only two mechanisms
-    /// that ever reached it in production —
-    /// [`crate::backend::Backend::request_frame_in`]'s scheduled
-    /// `NSTimer` and (this same PR) `run_with`'s repeating
-    /// `idlePollTick:` fallback — are both live-`NSApplication` timer
-    /// machinery a headless driver can't run (see the module doc's
-    /// "Limitations" section). Without [`MacDriver::tick`], the exact
-    /// scenario this issue is about — a host that queues deferred work
-    /// in `handle` and marks the frame dirty, with **no further
-    /// input**, and expects it to eventually drain — was simply
-    /// unwritable as a test on this backend.
+    /// `MacDriver` invokes `AppLogic::tick` by calling it directly,
+    /// since the production mechanisms that reach it in live code —
+    /// [`crate::backend::Backend::request_frame_in`]'s scheduled `NSTimer`
+    /// and `run_with`'s repeating `idlePollTick:` — are both
+    /// live-`NSApplication` timer machinery a headless driver cannot run.
+    /// Without this, a host that queues deferred work in `handle` and
+    /// marks the frame dirty, with no further input, cannot be tested.
     ///
-    /// Asserts on the drained work's *observable paint effect*, never on
-    /// a callback merely firing, per the issue's acceptance bar.
+    /// Asserts on the drained work's observable paint effect.
     #[test]
     fn tick_drains_deferred_work_queued_with_no_further_input() {
         let mut driver = MacDriver::new(

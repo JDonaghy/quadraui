@@ -1,17 +1,8 @@
 //! macOS rasteriser for [`crate::primitives::sidebar_panel::SidebarPanel`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
-//! (#862, `PaintSurface` Phase 2d slice 5/9) — see that fn's module doc
-//! for the four named divergences found while unifying
-//! `gtk::draw_sidebar_panel`, `macos::sidebar_panel::draw_sidebar_panel`
-//! and `win::sidebar_panel::draw_sidebar_panel` into one implementation.
-//! This module now only carries [`mac_sidebar_panel_layout`] (pure
-//! layout, still needed by `MacBackend::sidebar_panel_layout` for
-//! no-paint hit-test queries); the deprecated `draw_sidebar_panel`
-//! compatibility shim over the shared [`super::surface::CgSurface`]
-//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
-//! and vimcode's `develop`).
+//! This module carries [`mac_sidebar_panel_layout`] (pure layout, needed by
+//! `MacBackend::sidebar_panel_layout` for hit-test queries). Painting uses the
+//! shared [`crate::primitives::sidebar_panel::native_surface_paint::paint`].
 
 use core_text::font::CTFont;
 
@@ -19,9 +10,8 @@ use crate::primitives::sidebar_panel::{SidebarPanel, SidebarPanelLayout, Sidebar
 use crate::primitives::toolbar::{measure_button, ToolbarItemMeasure};
 
 /// Compute the macOS pixel-unit layout for a `SidebarPanel`. `font`
-/// is required for accurate text measurement — it's a
-/// [`crate::primitives::layout_metrics::TextMeasure`] itself (issue
-/// #1078), so no wrapper struct is needed.
+/// is required for accurate text measurement — it implements
+/// [`crate::primitives::layout_metrics::TextMeasure`].
 pub fn mac_sidebar_panel_layout(
     panel: &SidebarPanel,
     font: &CTFont,
@@ -126,13 +116,11 @@ mod tests {
     }
 
     /// Shared body for the header-click↔toolbar-button round trip, run
-    /// at both the origin and a non-zero origin (quadraui#494 /
-    /// LESSONS.md "Layout helpers must return coords in the same frame
-    /// across backends"). `mac_sidebar_panel_layout` bakes `x`/`y`
-    /// straight into `panel.layout`'s returned bounds (absolute frame,
-    /// matching the GTK/TUI twins) — call it directly (pure fn, no
-    /// paint needed) and prove a click near the header's top-left
-    /// still resolves to the toolbar button through `hit_test`.
+    /// at both the origin and a non-zero origin. `mac_sidebar_panel_layout` bakes
+    /// `x`/`y` straight into `panel.layout`'s returned bounds (absolute frame,
+    /// matching the GTK/TUI twins) — call it directly (pure fn, no paint needed)
+    /// and prove a click near the header's top-left still resolves to the toolbar
+    /// button through `hit_test`.
     fn click_in_header_round_trip_at(origin_x: f64, origin_y: f64) {
         let panel = panel_with_toolbar();
         let f = font();
@@ -149,7 +137,7 @@ mod tests {
         click_in_header_round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494).
+    /// Non-zero-origin regression guard.
     #[test]
     fn click_in_header_resolves_to_toolbar_button_at_nonzero_origin() {
         click_in_header_round_trip_at(7.0, 13.0);

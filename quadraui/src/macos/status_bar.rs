@@ -1,30 +1,17 @@
 //! macOS rasteriser for [`crate::StatusBar`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::status_bar::native_surface_paint::paint`] (#860,
-//! `PaintSurface` Phase 2d slice 3/9) — see that fn's doc for the named
-//! divergences (bold-aware measurement: GTK/Win measured a segment's own
-//! `bold` weight, macOS ignored it; GTK's missing zero-size guard, now
-//! applying the already-fixed quadraui#791 shape uniformly) found while
-//! unifying `gtk::draw_status_bar`, `macos::status_bar::draw_status_bar`
-//! and `win::status_bar::draw_status_bar` into one implementation. This
-//! module now only carries [`mac_status_bar_layout`] (pure layout, still
-//! needed by `MacBackend::status_bar_layout` for no-paint hit-test
-//! queries); the deprecated `draw_status_bar` compatibility shim over
-//! the shared [`super::surface::CgSurface`] adapter was removed in issue
-//! #1109 (zero uses in coord-tui's `main` and vimcode's `develop`).
-//! `MIN_GAP_PX` stays put — it's still [`mac_status_bar_layout`]'s own
-//! measurer constant, untouched by this migration.
+//! Painting is handled by the shared
+//! [`crate::primitives::status_bar::native_surface_paint::paint`].
+//! This module carries [`mac_status_bar_layout`] for layout computation
+//! and hit-test queries; `MIN_GAP_PX` is this module's measurer constant.
 //!
 //! ## Bold segments
 //!
-//! Tracked separately — `bold` on a segment was, and remains, ignored on
-//! this backend: [`PaintSurface::surface_measure_text_styled`]'s default
+//! Bold on a segment is ignored on this backend:
+//! [`PaintSurface::surface_measure_text_styled`]'s default
 //! (drop `bold`, forward to [`PaintSurface::surface_measure_text`])
-//! reproduces this file's pre-#860 measurement exactly, so `MacBackend`
-//! needed no override. Bold support requires materialising a bold
-//! variant of the active font via `CTFontCreateCopyWithSymbolicTraits`
-//! and is out of scope for #38; follow-up after the chrome batch lands.
+//! reproduces this behavior. Bold support requires materialising a bold
+//! variant of the active font via `CTFontCreateCopyWithSymbolicTraits`.
 //!
 //! [`Backend`]: crate::Backend
 //! [`PaintSurface`]: crate::paint_surface::PaintSurface
@@ -44,15 +31,12 @@ use crate::{StatusBar, StatusBarLayout};
 /// its own independent copy of the same value (see that module's doc).
 pub(crate) const MIN_GAP_PX: f32 = 16.0;
 
-/// Compute the layout the shared `paint` would produce for `bar` at
-/// `width` × `line_height`, without painting.
+/// Compute the layout for `bar` at `width` × `line_height`, without painting.
 ///
 /// This is the no-paint twin backing [`crate::Backend::status_bar_layout`].
 /// Hit regions are in **bar-local coordinates** (relative to the bar's
-/// origin), which is why neither `x` nor `y` is a parameter — the
-/// primitive measures from `0.0` and nothing here folds the origin in.
-/// Audited under quadraui#552; see the trait doc for why the status bar
-/// (unlike the tab bar) needed no shift.
+/// origin); the primitive measures from `0.0` and nothing here folds the
+/// origin in.
 pub fn mac_status_bar_layout(
     font: &CTFont,
     width: f64,
@@ -77,7 +61,7 @@ pub fn mac_status_bar_layout(
         let (w, _) = super::text::measure_text(font, &seg.text);
         StatusSegmentMeasure::new(w as f32)
     };
-    // #1155: `layout_padded` (not plain `layout`) so this no-paint twin
+    // `layout_padded` (not plain `layout`) so this no-paint twin
     // agrees with the shared `native_surface_paint::paint`'s outer edge
     // inset + per-segment padding — see that fn's doc.
     bar.layout_padded(
@@ -114,18 +98,11 @@ mod tests {
 
     /// A backend with **both** font slots set to the harness font.
     ///
-    /// Since issue #963 the status bar is chrome: it paints and measures
-    /// through `MacBackend::chrome_font` / `chrome_line_height`, not the
-    /// editor `current_font` these tests used to be the sole consumer of.
-    /// `MacBackend::new` seeds chrome with the ~11pt system UI font, whose
-    /// line height is under half of this module's `H = 24` surface — so a
-    /// harness that set only the editor font would paint a bar that stops
-    /// short of the probes below (that is exactly how
-    /// `empty_bar_falls_back_to_theme_background`, which samples at
-    /// `H / 2`, first caught the switch). Setting both keeps every
-    /// assertion here about status-bar geometry at a known `FONT_SIZE`,
-    /// rather than about whichever metrics the system UI font happens to
-    /// have on the running host.
+    /// The status bar paints and measures through `MacBackend::chrome_font` /
+    /// `chrome_line_height`, not the editor `current_font`. `MacBackend::new`
+    /// seeds chrome with the ~11pt system UI font, whose line height is under
+    /// half of this module's `H = 24` surface. Setting both keeps every
+    /// assertion about status-bar geometry at a known `FONT_SIZE`.
     fn backend_with_test_fonts() -> MacBackend {
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
@@ -239,14 +216,9 @@ mod tests {
     /// Shared body for `round_trip_click_hits_clickable_segment` and its
     /// `_at_nonzero_origin` sibling. Paints `sample_bar()` at
     /// `(origin_x, origin_y)`, then round-trips an absolute click through
-    /// localisation the way a real host (`ScreenLayout` / `AppLogic`)
-    /// does before calling `hit_test`, and — since this file's rasteriser
-    /// DOES use `x`/`y` for paint even though the returned layout is
-    /// bar-local (see module doc comment) — also checks the *painted*
-    /// segment lands at the origin-shifted absolute position. Guards
-    /// against a #44-class paint/layout frame mismatch
-    /// (quadraui#494 / LESSONS.md "Layout helpers must return coords in
-    /// the same frame across backends").
+    /// localisation the way a real host does before calling `hit_test`, and
+    /// checks the *painted* segment lands at the origin-shifted absolute
+    /// position. Guards against a paint/layout frame mismatch.
     fn round_trip_click_hits_clickable_segment_at(origin_x: f32, origin_y: f32) {
         let bar = sample_bar();
         let (surface, layout) = paint_via_backend_at(&bar, origin_x, origin_y);
@@ -390,7 +362,7 @@ mod tests {
 
     /// `Backend::status_bar_layout` must return exactly what
     /// `draw_status_bar` painted — both route through
-    /// `mac_status_bar_layout`, and this pins that (quadraui#484).
+    /// `mac_status_bar_layout`, and this pins that.
     #[test]
     fn layout_twin_matches_the_painted_layout() {
         let bar = sample_bar();
@@ -419,8 +391,7 @@ mod tests {
     }
 
     /// The no-paint twin is also origin-independent: hit regions are
-    /// bar-local, so painting at a non-zero origin does not move them
-    /// (quadraui#552 — audited and ruled out for the status bar).
+    /// bar-local, so painting at a non-zero origin does not move them.
     #[test]
     fn layout_twin_is_bar_local_at_a_nonzero_origin() {
         let bar = sample_bar();

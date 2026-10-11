@@ -4,9 +4,8 @@
 //! The shared [`crate::shell_adapter::ShellAdapter`] owns all runtime logic
 //! (bottom-panel init, panel routing, resize recalc, click dispatch), and
 //! [`crate::shell_adapter::build_shell_adapter`] owns assembling one from a
-//! [`ShellConfig`] — shared across every backend since #497. This module
-//! only wires the adapter into the macOS event loop, mirroring
-//! `tui::shell_runner` / `gtk::shell_runner` (#465).
+//! [`ShellConfig`]. This module only wires the adapter into the macOS event
+//! loop, mirroring `tui::shell_runner` / `gtk::shell_runner`.
 //!
 //! `MacBackend` already implements every `Backend` trait method `AppShell`
 //! renders through (`draw_activity_bar`, `draw_sidebar_panel`,
@@ -14,14 +13,10 @@
 //! work is needed here — this is pure composition, same as the TUI/GTK
 //! runners.
 //!
-//! Before quadraui#933, this always ran through [`super::run::run`], which
-//! hardcodes the generic window title (`"quadraui (macos)"` —
-//! [`ShellConfig::title`] was captured but never actually reached the
-//! AppKit window). `config.title` now reaches the runner via
-//! [`super::run::RunConfig`], mirroring `gtk::shell_runner::run_with_shell`
-//! / `win::shell_runner::run_with_shell`.
+//! `config.title` reaches the runner via [`super::run::RunConfig`], mirroring
+//! `gtk::shell_runner::run_with_shell` / `win::shell_runner::run_with_shell`.
 //!
-//! #947: [`ShellConfig::client_side_titlebar`] reaches the runner the same
+//! [`ShellConfig::client_side_titlebar`] reaches the runner the same
 //! way — copied onto [`RunConfig`] before this module's `config` is moved
 //! into [`build_shell_adapter`], since `RunConfig` (not `ShellConfig`) is
 //! what [`super::run::run_with`]'s window-creation call site actually
@@ -33,7 +28,7 @@ use crate::shell_adapter::build_shell_adapter;
 
 /// Run a [`ShellApp`] with AppShell chrome on the macOS backend.
 ///
-/// #1142: `config.app_icon` (set via [`ShellConfig::with_app_icon`])
+/// `config.app_icon` (set via [`ShellConfig::with_app_icon`])
 /// reaches [`RunConfig::app_icon`] the same way `config.title` /
 /// `config.client_side_titlebar` do — cloned out before `config` moves
 /// into [`build_shell_adapter`], since `RunConfig` (not `ShellConfig`)

@@ -1,17 +1,11 @@
 //! macOS rasteriser for [`crate::MessageList`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::message_list::native_surface_paint::paint`]
-//! (#1084, `PaintSurface` Phase 4 7/8) — see that fn's doc for the full
-//! per-backend divergence survey, most notably: this module used to
-//! ignore [`crate::primitives::message_list::MessageRow::spans`]
-//! entirely, painting every row flat regardless of any rich styling a
-//! caller supplied. [`draw_message_list`] below is now a thin wrapper
-//! over the shared paint, using [`crate::macos::surface::CgSurface`] as
-//! the `PaintSurface` adapter — mirroring
-//! [`crate::win::message_list::draw_message_list`]'s equivalent
-//! migration. `gtk::message_list::draw_message_list` is *not* migrated;
-//! see the shared `paint`'s doc for why.
+//! Painting is delegated to the shared
+//! [`crate::primitives::message_list::native_surface_paint::paint`].
+//! [`draw_message_list`] below is a thin wrapper over the shared paint,
+//! using [`crate::macos::surface::CgSurface`] as the `PaintSurface`
+//! adapter. See the shared `paint`'s doc for the full per-backend
+//! divergence survey.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
@@ -24,10 +18,9 @@ use crate::primitives::message_list::MessageList;
 /// `(x, y)` is the top-left of the message area in points; `w` is
 /// the width — this rasteriser doesn't clip to it (Core Text paints
 /// past the right edge when text overflows), it's used only for the
-/// zero-size guard below, matching this module's pre-#1084 behaviour
-/// (see the shared `paint`'s doc, "Zero-size guard"). `max_y` is the
-/// bottom edge: rows whose top would land at or past `max_y` are
-/// skipped. `line_height` is the per-row point height.
+/// zero-size guard, matching the shared `paint`'s zero-size guard.
+/// `max_y` is the bottom edge: rows whose top would land at or past
+/// `max_y` are skipped. `line_height` is the per-row point height.
 ///
 /// # Safety
 ///
@@ -230,10 +223,7 @@ mod tests {
         assert_eq!((r, g, b), (13, 13, 13));
     }
 
-    /// #1084's RED-before-the-port case: pre-migration,
-    /// `macos::message_list::draw_message_list` never read `row.spans` at
-    /// all, so a styled row painted no differently from a flat one — there
-    /// was no way to even ask this backend to honour per-span colour.
+    /// This test verifies that styled rows paint with per-span colours.
     /// Mirrors `win::message_list`'s `styled_row_paints_per_span_colour`.
     #[test]
     fn styled_row_paints_per_span_colour() {

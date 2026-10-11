@@ -1,17 +1,9 @@
 //! macOS rasteriser for [`crate::ProgressBar`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::progress::native_surface_paint::paint`] (#1085,
-//! `PaintSurface` Phase 4 slice 8/8) — see that fn's doc for the one
-//! named divergence (Windows previously ignored the host's theme
-//! entirely) found while unifying `gtk::progress::draw_progress`,
-//! `macos::progress::draw_progress` and `win::progress::draw_progress`
-//! into one implementation. This module now only carries
-//! [`mac_progress_layout`] (still real, backend-specific pure geometry —
-//! no painting involved); the deprecated `draw_progress` compatibility
-//! shim over the shared [`super::surface::CgSurface`] adapter was
-//! removed in issue #1109 (zero uses in coord-tui's `main` and
-//! vimcode's `develop`).
+//! Painting is handled by the shared
+//! [`crate::primitives::progress::native_surface_paint::paint`].
+//! This module provides [`mac_progress_layout`], the backend-specific
+//! geometry calculation.
 
 #[cfg(test)]
 use core_text::font::CTFont;
@@ -23,7 +15,7 @@ use crate::theme::Theme;
 
 /// Compute the macOS pixel-unit layout for a [`ProgressBar`]. Shares its
 /// cancel-affordance width with `gtk_progress_layout` /
-/// `win_progress_layout` via [`pixel_progress_layout`] (issue #1079).
+/// `win_progress_layout` via [`pixel_progress_layout`].
 pub fn mac_progress_layout(bar: &ProgressBar, x: f64, y: f64, w: f64, h: f64) -> ProgressBarLayout {
     pixel_progress_layout(bar, x as f32, y as f32, w as f32, h as f32)
 }
@@ -112,14 +104,10 @@ mod tests {
         );
     }
 
-    /// Shared body for the cancel-bounds↔hit_test round trip, run at
-    /// both the origin and a non-zero origin (quadraui#494 /
-    /// LESSONS.md "Layout helpers must return coords in the same
-    /// frame across backends"). `mac_progress_layout` bakes `x`/`y`
-    /// straight into the returned `cancel_bounds` (absolute frame,
-    /// matching the GTK/TUI twins) — call it directly (pure fn, no
-    /// paint needed) and prove a click at the resulting absolute
-    /// cancel-bounds position still resolves through `hit_test`.
+    /// Body for testing cancel-bounds layout: `mac_progress_layout`
+    /// bakes `x`/`y` straight into the returned `cancel_bounds` in
+    /// absolute frame coordinates. This test verifies that a click at
+    /// the resulting position resolves through `hit_test`.
     fn cancellable_bar_reserves_cancel_bounds_at(origin_x: f64, origin_y: f64) {
         let bar = ProgressBar {
             id: WidgetId::new("pb"),
@@ -146,7 +134,7 @@ mod tests {
         cancellable_bar_reserves_cancel_bounds_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494).
+    /// Non-zero-origin regression guard.
     #[test]
     fn cancellable_bar_reserves_cancel_bounds_at_nonzero_origin() {
         cancellable_bar_reserves_cancel_bounds_at(7.0, 13.0);

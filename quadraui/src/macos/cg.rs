@@ -1,51 +1,26 @@
 //! Shared CoreGraphics FFI bindings and small paint helpers used by
 //! (most of) the per-primitive rasterisers in [`super`].
 //!
-//! Before this module existed, 28 files under `src/macos/` each
-//! declared their own private `extern "C"` block for the handful of
-//! `CGContext*` entry points every rasteriser needs (save/restore
-//! state, clip, set fill/stroke colour, fill/stroke a rect, stroke a
-//! line), and 24 of them carried their own byte-identical
-//! `color_to_cg`/`fill_rect`/`stroke_rect` copies plus (11 of them) a
-//! `CGRectExt::new_xywh` trait shim for building a `CGRect` from
-//! `(x, y, w, h)` (quadraui#1071). This module is the single source
-//! of truth for all of that; per-file copies are deleted in favour of
-//! a glob import (`use super::cg::*;`) so call sites are unchanged.
-//!
-//! `stroke_line` (and the `CGContextMoveToPoint`/`CGContextAddLineToPoint`/
-//! `CGContextStrokePath` extern decls it alone used) was removed in #1077
-//! once its only caller, `macos::tooltip`'s `TooltipBorder::Sides` arm,
-//! moved onto `PaintSurface::surface_draw_line` (`CgSurface` →
-//! `super::backend::ns_draw_line`) instead. `stroke_rect` (and the
-//! `CGContextSetRGBStrokeColor`/`CGContextSetLineWidth`/`CGContextStrokeRect`
-//! extern decls it alone used) was removed the same way once its last
-//! caller, `macos::rich_text_popup`, moved onto
-//! `PaintSurface::surface_stroke_rect` instead.
+//! This module is the single source of truth for CoreGraphics entry
+//! points (save/restore state, clip, set fill/stroke colour, fill/stroke
+//! a rect) and paint helpers that were previously copy-pasted across
+//! multiple files. Per-file copies are deleted in favour of a glob import
+//! (`use super::cg::*;`) so call sites remain unchanged.
 //!
 //! Not every `src/macos/` file that touches CoreGraphics draws through
 //! here — `backend.rs`, `board.rs`, `headless.rs`, `image.rs`,
 //! `pipeline_view.rs`, `text.rs`, `toolbar.rs`, and a handful of other
-//! small rasterisers (`activity_bar.rs`, `command_center.rs`,
-//! `completions.rs`, `form.rs`, `list.rs`, `menu_bar.rs`, `minimap.rs`,
-//! `progress.rs`, `run.rs`, `text_selection.rs`, `message_list.rs`,
-//! `spinner.rs`) still carry their own copies of some or all of this
+//! small rasterisers still carry their own copies of some or all of this
 //! (some also need extra entry points — `CGContextTranslateCTM`,
 //! path-construction for rounded rects, image drawing, font/text
-//! layout — that this module intentionally does not take on). Folding
-//! those in is tracked as a follow-up once a macOS host can verify
-//! each one; this module covers the rasterisers that were already
-//! byte-identical, which is what quadraui#1071 asks for.
+//! layout — that this module intentionally does not take on).
 //!
-//! ## A divergence found while consolidating (reported per #1071's
-//! ## "report any divergence" instruction, not silently resolved)
+//! ## Note: divergence in `fill_rect` implementations
 //!
-//! `macos/minimap.rs`'s own `fill_rect` (out of scope here, still
-//! local to that file) additionally early-returns on `w <= 0.0 || h <=
-//! 0.0`, which none of the other 20 `fill_rect` copies did. This
-//! module's [`fill_rect`] intentionally matches the *majority* shape
-//! (unguarded) rather than picking `minimap.rs`'s; [`fill_rect_alpha`]
-//! below *does* carry that guard because both of its two source copies
-//! (`editor.rs`, `minimap.rs`) agreed on it.
+//! `macos/minimap.rs`'s `fill_rect` early-returns on `w <= 0.0 || h <=
+//! 0.0`, which the other implementations did not. This module's
+//! [`fill_rect`] matches the majority shape (unguarded). [`fill_rect_alpha`]
+//! does carry that guard because both of its source copies agreed on it.
 
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::sys::CGContextRef;

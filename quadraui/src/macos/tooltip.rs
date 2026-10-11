@@ -1,16 +1,10 @@
 //! macOS rasteriser for [`crate::Tooltip`].
 //!
-//! Content painting moved to the shared
-//! [`crate::primitives::tooltip::native_surface_paint::paint`] (#1077,
-//! `PaintSurface` Phase 4 slice 4/8) — see that fn's module doc for the
-//! one drift it resolved (styled-line span bold/italic/underline; macOS
-//! keeps ignoring all three, unchanged from before this migration — see
-//! [`crate::paint_surface::PaintSurface::surface_draw_text_run_styled`]'s
-//! doc for why the macOS adapter takes that verb's default).
+//! Content painting uses the shared
+//! [`crate::primitives::tooltip::native_surface_paint::paint`].
 //!
-//! [`draw_tooltip`] keeps its pre-#541 signature and renders
-//! `TooltipChrome::default()`; [`draw_tooltip_with_chrome`] takes the
-//! chrome request explicitly.
+//! [`draw_tooltip`] renders `TooltipChrome::default()`; [`draw_tooltip_with_chrome`]
+//! takes the chrome request explicitly.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
@@ -57,7 +51,7 @@ pub unsafe fn draw_tooltip(
 }
 
 /// Draw a [`Tooltip`] at its resolved layout position, with the border
-/// and optional title requested by `chrome` (#541).
+/// and optional title requested by `chrome`.
 ///
 /// `padding_x` is the horizontal padding from the left border to the
 /// start of text — consumers typically pass `char_width`. Halved when
@@ -223,11 +217,7 @@ mod tests {
         assert_eq!((r, g, b), (0, 0, 0));
     }
 
-    // ── #541: explicit border vocabulary — same coverage as
-    // `gtk::tooltip::tests`, since ask 4 was to confirm this backend
-    // wasn't just a bare `fill_rect` call (it turned out to already be a
-    // `stroke_rect`, matching GTK) and to bring it up to the same
-    // vocabulary once confirmed.
+    // Explicit border vocabulary tests, matching `gtk::tooltip::tests`' coverage.
 
     /// A pure-background reference pixel: bottom-right corner, a few
     /// pixels in from both edges — clear of any border stroke (which
@@ -301,12 +291,10 @@ mod tests {
         }
     }
 
-    /// #541 ask 2: a title punches a background-coloured gap through the
-    /// top stroke so it reads as embedded in the border, not a content
-    /// row. Scans the top edge rather than probing one fixed x — the
-    /// title is horizontally centred, so a single dead-centre sample can
-    /// land on a glyph's own ink instead of the cleared pad around it
-    /// (same reasoning as the GTK rasteriser's equivalent test).
+    /// A title punches a background-coloured gap through the top stroke so it
+    /// reads as embedded in the border, not a content row. Scans the top edge
+    /// rather than probing one fixed x — the title is horizontally centred, so a
+    /// single sample can land on a glyph's ink instead of the cleared pad around it.
     #[test]
     fn full_border_title_punches_a_gap_but_leaves_the_rest_of_the_top_edge_stroked() {
         let tip = sample_tooltip();

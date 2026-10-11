@@ -1,17 +1,9 @@
 //! macOS rasteriser for [`crate::Panel`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::panel::native_surface_paint::paint`] (#859,
-//! `PaintSurface` Phase 2d slice 2/9) — see that fn's doc for the named
-//! divergences (unclamped glyph centring vs. win's `.max(0.0)`; GTK's
-//! `set_source` alpha-drop, fixed at the source by #811) found while
-//! unifying `gtk::draw_panel`, `macos::panel::draw_panel` and
-//! `win::panel::draw_panel` into one implementation. This module now
-//! only carries [`mac_panel_layout`] (pure layout, still needed by
-//! `MacBackend::panel_layout` for no-paint hit-test queries); the
-//! deprecated `draw_panel` compatibility shim over the shared
-//! [`super::surface::CgSurface`] adapter was removed in issue #1109
-//! (zero uses in coord-tui's `main` and vimcode's `develop`).
+//! Painting is implemented in the shared
+//! [`crate::primitives::panel::native_surface_paint::paint`] function.
+//! This module provides [`mac_panel_layout`] for pure layout calculations,
+//! used by `MacBackend::panel_layout` for hit-test queries.
 
 #[cfg(test)]
 use core_text::font::CTFont;
@@ -23,7 +15,7 @@ use crate::theme::Theme;
 
 /// Compute the macOS pixel-unit layout for a [`Panel`] without painting.
 /// Shares its action-button width with `gtk_panel_layout` /
-/// `win_panel_layout` via [`pixel_panel_layout`] (issue #1079).
+/// `win_panel_layout` via [`pixel_panel_layout`].
 pub fn mac_panel_layout(
     panel: &Panel,
     x: f64,
@@ -169,13 +161,9 @@ mod tests {
 
     #[test]
     fn hit_test_resolves_action_vs_title_vs_content_at_nonzero_origin() {
-        // Regression for quadraui#494 / LESSONS.md "Layout helpers must
-        // return coords in the same frame across backends": every other
-        // test in this file lays out at origin (0, 0). `mac_panel_
-        // layout` bakes `x`/`y` straight into `bounds` (absolute frame,
-        // matching the GTK/TUI twins) — call it directly (pure fn, no
-        // paint needed) at a non-zero origin and prove action/title/
-        // content clicks still resolve through `hit_test`.
+        // Layout coordinates must be consistent across backends: verify that
+        // `mac_panel_layout` returns absolute frame coordinates and action/title/
+        // content hits resolve correctly at non-zero origins.
         let panel = sample_panel();
         let layout = mac_panel_layout(&panel, 7.0, 13.0, W as f64, H as f64, 16.0);
 

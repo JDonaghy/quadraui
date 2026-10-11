@@ -3,12 +3,6 @@
 //! responder-chain + `drawRect:` model into [`crate::AppLogic`]'s
 //! `setup` / `render` / `handle` shape.
 //!
-//! Issue #35 ties together the foundation work from #32–#34 into the
-//! final `run<A: AppLogic + 'static>(app)` signature. Subsequent
-//! per-primitive rasteriser tickets (#38–#43) fill in the `draw_*`
-//! stubs on [`super::backend::MacBackend`]; nothing in this file
-//! changes when those land.
-//!
 //! ## Type-erasure shape
 //!
 //! `QuadraView` is declared via [`objc2::define_class!`], which
@@ -28,7 +22,7 @@
 //!   `app.handle(ev, &mut *backend)` and returns the reaction. The
 //!   responder dispatches `Reaction` synchronously through
 //!   [`QuadraView::apply_reaction`] — `Redraw` → `setNeedsDisplay`,
-//!   `Exit` → `[NSApp terminate:]`. `Rc`, not `Box` (issue #951): the
+//!   `Exit` → `[NSApp terminate:]`. `Rc`, not `Box`: the
 //!   same closure is also handed to [`QuadraAppDelegate`], so
 //!   `applicationShouldTerminate:` (Cmd-Q / the app-menu Quit item) can
 //!   run the exact `UiEvent::WindowClose` veto decision
@@ -72,7 +66,7 @@ use std::rc::Rc;
 
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::sys::CGContextRef;
-// objc2 0.6 (#796) removed `declare_class!` in favour of `define_class!`
+// objc2 0.6 removed `declare_class!` in favour of `define_class!`
 // (superclass/mutability move from a `ClassType` impl block onto struct
 // attributes), renamed `DeclaredClass` to `DefinedClass`, and deprecated
 // `msg_send_id!` in favour of `msg_send!` (which now performs the same
@@ -98,7 +92,7 @@ use super::events::{
     ns_files_dropped, ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_scroll,
 };
 use super::text::make_font;
-// #1142: reuses the tray icon's AppKit-decoder for the Dock/app-switcher
+// Reuses the tray icon's AppKit-decoder for the Dock/app-switcher
 // icon — see `decode_ns_image`'s doc for why this is a shared pipeline
 // rather than a second decoder.
 use super::tray::decode_ns_image;
@@ -110,7 +104,7 @@ use crate::runtime::{self, ReactionSink, ResizeDebouncer, RESIZE_SETTLE};
 // Re-exported (not just imported) so `macos::testing` — and any other
 // in-crate caller that historically reached `EventOutcome` through this
 // module — keeps working unchanged after the type moved to
-// `crate::runtime` (quadraui#496).
+// `crate::runtime`.
 pub(crate) use crate::runtime::EventOutcome;
 use crate::{ButtonMask, UiEvent};
 
@@ -146,14 +140,9 @@ extern "C" {
 }
 
 /// Fill `rect` with `bg` — the whole-frame backdrop [`QuadraView::draw_rect`]
-/// paints before delegating to the app's own render closure. Extracted
-/// (issue #1179) so it's exercised by a headless [`super::headless::BitmapSurface`]
-/// test with no live `NSView`/`NSWindow`: before #1179 this was inlined at
-/// the one live call site with a hard-coded dark literal
-/// (`(0.12, 0.12, 0.14)` == `#1F1F24`), which is exactly what showed
-/// through unpainted areas (the traffic-light inset, the breadcrumb gap,
-/// under translucent scrollbar tracks) on a light theme. Callers pass the
-/// current [`crate::theme::Theme::background`] instead.
+/// paints before delegating to the app's own render closure.
+/// Extracted so it's exercised by a headless [`super::headless::BitmapSurface`]
+/// test with no live `NSView`/`NSWindow`.
 ///
 /// # Safety
 ///
@@ -174,12 +163,12 @@ pub(crate) unsafe fn fill_frame_background(
 /// AppLogic`; from `define_class!`'s perspective they're just two
 /// `Box<dyn Fn>` smart pointers.
 type PaintFn = Box<dyn Fn(Viewport, CGContextRef) + 'static>;
-/// `Rc`, not `Box` — issue #951 shares one `handle` closure between
+/// `Rc`, not `Box` — the `handle` closure is shared between
 /// `QuadraView` (every responder-method dispatch) and `QuadraAppDelegate`
 /// (`applicationShouldTerminate:`), so both can run the same
 /// `UiEvent::WindowClose` veto decision. See this file's module doc.
 type HandleFn = Rc<dyn Fn(UiEvent) -> Reaction + 'static>;
-/// Bridges `QuadraView::dispatch_tick` to `AppLogic::tick` (quadraui#832)
+/// Bridges `QuadraView::dispatch_tick` to `AppLogic::tick`
 /// — the third leg of the type-erased-closure trio, alongside `paint`/
 /// `handle` above. Fired by [`MacBackend::request_frame_in`]'s
 /// scheduled-wake timer via [`MacBackend::set_tick_callback`] *and* by
@@ -190,13 +179,13 @@ type TickFn = Box<dyn Fn() -> Reaction + 'static>;
 
 // `EventOutcome` — what the caller should do after [`dispatch_event`]
 // handles one event — is defined once in `crate::runtime` and shared by
-// every backend runner (quadraui#496); imported at the top of this file
+// every backend runner; imported at the top of this file
 // (re-exported so `macos::testing` keeps reaching it through this path).
 
 /// Dispatch one already-translated [`UiEvent`] through the app, applying
 /// the shared runner pre-processing pipeline first — same funnel both the
 /// live `QuadraView` responder methods (via [`run`]'s `handle` closure)
-/// and [`super::testing::MacDriver`] (quadraui#493) route through, so a
+/// and [`super::testing::MacDriver`] route through, so a
 /// test exercises the exact pre-processing a real keypress/click gets.
 ///
 /// Pre-processing handled here, in order:
@@ -204,7 +193,7 @@ type TickFn = Box<dyn Fn() -> Reaction + 'static>;
 ///   for ~500ms (`caret_visible`/`caret_pause`), matching AppKit's
 ///   text-field typing convention. macOS-only — no other backend paints
 ///   a blinking caret through this mechanism.
-/// - Modal click dispatch (#493): `MouseDown` routes through
+/// - Modal click dispatch: `MouseDown` routes through
 ///   [`crate::dispatch::dispatch_click`] so the backend's `ModalStack`
 ///   arbitrates first — a click inside an open modal is tagged with the
 ///   modal's `WidgetId`, and a click outside every modal dismisses the
@@ -218,22 +207,22 @@ type TickFn = Box<dyn Fn() -> Reaction + 'static>;
 ///   `MouseDown` routing uses — and the outcomes are folded the way
 ///   `gtk::run`'s click loop folds them: `Exit` wins immediately, else
 ///   `Redraw` wins over `Continue`.
-/// - `MouseMoved` (#803): routes through
+/// - `MouseMoved`: routes through
 ///   [`crate::dispatch::dispatch_mouse_drag`] so an in-progress
 ///   `TextSelection`/scrollbar/split-divider drag (armed by the
 ///   `MouseDown` branch above) emits its synthetic event alongside the
 ///   plain `MouseMoved`, mirroring `gtk::run`'s motion controller /
 ///   `win::run::route_mouse_move`.
-/// - `MouseUp` (#803): routes through [`crate::dispatch::dispatch_mouse_up`]
+/// - `MouseUp`: routes through [`crate::dispatch::dispatch_mouse_up`]
 ///   so an in-progress drag ends cleanly.
 ///
 /// Everything else — double-click folding, ActivityBar keyboard-focus
-/// redirect, Tab/Shift+Tab focus cycling (#830), global accelerator
+/// redirect, Tab/Shift+Tab focus cycling, global accelerator
 /// rewrite, Ctrl-C copy, Cmd-V/Cmd-Shift-V
 /// paste, middle-click PRIMARY-selection paste (a no-op on macOS — see
 /// [`crate::backend::Clipboard::read_primary_selection`]'s default),
 /// Ctrl-A select-all, selection-display clearing, `TextSelectionChanged`
-/// — lives in [`crate::runtime::preprocess_event`] (quadraui#813), shared
+/// — lives in [`crate::runtime::preprocess_event`], shared
 /// with TUI/GTK/Windows; see that function's doc for the exact priority
 /// order and `MacBackend`'s `PreprocessBackend` impl for macOS's one
 /// documented difference: pasting on Cmd-V rather than Ctrl-V, the
@@ -255,11 +244,11 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         caret_pause.set(std::time::Instant::now() + std::time::Duration::from_millis(500));
     }
 
-    // Modal click dispatch (#493): every mouse-down consults the
+    // Modal click dispatch: every mouse-down consults the
     // `ModalStack` via the shared dispatch layer before the app sees it,
     // so a click inside an open dialog stays inside the dialog and a
     // click outside dismisses it — instead of falling straight through
-    // to whatever widget is underneath. `route_pointer` (issue #1088) may
+    // to whatever widget is underneath. `route_pointer` may
     // return 0..n events (e.g. dismiss emits `MouseDown` +
     // `Palette(Closed)`); each goes through the shared `preprocess_event`
     // (which folds double-clicks, clears the selection display, etc. —
@@ -285,7 +274,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
             if matches!(step, EventOutcome::Exit) {
                 return EventOutcome::Exit;
             }
-            // quadraui#832: keep the *earliest* `RedrawAfter` deadline seen
+            // Keep the *earliest* `RedrawAfter` deadline seen
             // in this batch rather than the first non-`Continue` one — see
             // `EventOutcome::merge`'s doc for why that distinction matters.
             outcome = outcome.merge(step);
@@ -293,7 +282,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         return outcome;
     }
 
-    // #803: route a `MouseMoved` through `route_pointer` (issue #1088) so
+    // Route a `MouseMoved` through `route_pointer` so
     // an in-progress `TextSelection`/scrollbar/split-divider drag (armed
     // by the `MouseDown` branch above) emits its synthetic event
     // (`TextSelectionChanged`/`ScrollOffsetChanged`/`SplitDividerDragged`)
@@ -328,14 +317,14 @@ pub(crate) fn dispatch_event<A: AppLogic>(
             if matches!(step, EventOutcome::Exit) {
                 return EventOutcome::Exit;
             }
-            // quadraui#832: earliest `RedrawAfter` wins — see
+            // Earliest `RedrawAfter` wins — see
             // `EventOutcome::merge`'s doc.
             outcome = outcome.merge(step);
         }
         return outcome;
     }
 
-    // #803: route a `MouseUp` through `route_pointer` (issue #1088) so an
+    // Route a `MouseUp` through `route_pointer` so an
     // in-progress drag ends cleanly — mirrors gtk::run's
     // `connect_released` / win::run::route_mouse_up. `dispatch_mouse_up`
     // always returns exactly one `MouseUp` (see its doc), rewritten with
@@ -360,7 +349,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     }
 
     // Everything else — double-click folding, ActivityBar redirect,
-    // Tab/Shift+Tab focus cycling (#830), accelerators,
+    // Tab/Shift+Tab focus cycling, accelerators,
     // Ctrl-C/Cmd-V/middle-click/Ctrl-A, selection-display
     // clearing, TextSelectionChanged — is the shared pipeline. See this
     // function's doc.
@@ -371,10 +360,10 @@ pub(crate) fn dispatch_event<A: AppLogic>(
 /// `end_frame` — the exact body `run`'s `paint` closure used to run
 /// inline, extracted so it never depends on a live `NSView`, only a
 /// [`Viewport`] + a borrowed `CGContextRef`. Shared by the live runner and
-/// [`super::testing::MacDriver`] (quadraui#493) — mirrors
+/// [`super::testing::MacDriver`] — mirrors
 /// [`crate::gtk::run::render_frame`].
 ///
-/// # Panic safety (#922)
+/// # Panic safety
 ///
 /// `drawRect:` (below) runs this from inside objc2's `define_class!`
 /// dispatch trampoline — a C ABI callback that cannot unwind — so
@@ -406,10 +395,8 @@ pub(crate) fn render_frame<A: AppLogic>(
     ctx: CGContextRef,
 ) {
     backend.begin_frame(viewport);
-    // Issue #830: resolve the currently-focused widget's rect (if any)
+    // Resolve the currently-focused widget's rect (if any)
     // from this frame's tab stops before entering the frame scope.
-    // `focused_stop_rect` (issue #1088) is the one implementation of this
-    // lookup; every runner used to carry its own copy.
     let focus_ring_rect =
         runtime::focused_stop_rect(backend, app, <A as AppLogic>::AreaId::default());
     backend.enter_frame_scope(ctx, |b| {
@@ -426,7 +413,7 @@ pub(crate) fn render_frame<A: AppLogic>(
             // have left inconsistent.
             return;
         }
-        // After app.render: paint the focus-ring convention (#830), same
+        // After app.render: paint the focus-ring convention, same
         // reasoning as `apply_selection_highlight` below for staying
         // inside this closure — `MacBackend::current_cg` is only
         // non-null here.
@@ -434,7 +421,7 @@ pub(crate) fn render_frame<A: AppLogic>(
             b.draw_focus_ring(rect);
         }
         // After app.render: overlay the text-selection highlight on top of
-        // the rendered content (#803) — mirrors gtk::run::render_frame's
+        // the rendered content — mirrors gtk::run::render_frame's
         // `apply_selection_highlight(cr)` call and win::run::render_frame's
         // `apply_selection_highlight()` call, both made at this same point
         // in the frame. Stays inside this closure (unlike GTK/Win, which
@@ -453,15 +440,15 @@ pub(crate) struct QuadraViewIvars {
     last_viewport: Cell<Viewport>,
     /// Concrete (not type-erased) — unlike `paint`/`handle`, `MacBackend`
     /// doesn't depend on the app's `A: AppLogic`, so responder methods
-    /// can reach it directly. Used by `mouseDown:` (#498) to stash the
+    /// can reach it directly. Used by `mouseDown:` to stash the
     /// raw press `NSEvent` for `Backend::begin_window_drag` before the
     /// press is translated to a portable `UiEvent`.
     backend: Rc<RefCell<MacBackend>>,
     paint: PaintFn,
     handle: HandleFn,
-    /// See [`TickFn`]'s doc (quadraui#832).
+    /// See [`TickFn`]'s doc.
     tick: TickFn,
-    /// Resize-settle debounce state (quadraui#780) — see
+    /// Resize-settle debounce state — see
     /// [`crate::runtime::ResizeDebouncer`]'s doc. `view_frame_did_change`
     /// calls `note()` on every AppKit frame-change notification;
     /// `resize_debounce_fired` calls `take()` once `resize_timer` proves
@@ -474,7 +461,7 @@ pub(crate) struct QuadraViewIvars {
     /// `WM_SIZE`/`WM_TIMER` arms) and GTK's cancel-and-reschedule
     /// `glib::SourceId`.
     resize_timer: RefCell<Option<Retained<NSTimer>>>,
-    /// One-shot double-dispatch guard (issue #951 review fix) — shared
+    /// One-shot double-dispatch guard — shared
     /// with [`QuadraAppDelegateIvars::exit_gate`] via the same `Rc`
     /// (constructed once in [`run_with`]). Marked granted by
     /// [`QuadraView::evaluate_window_should_close`] the moment it resolves
@@ -488,11 +475,11 @@ pub(crate) struct QuadraViewIvars {
 
 define_class!(
     /// Quadraui's custom `NSView`. `drawRect:` resolves viewport +
-    /// CG context, paints a debug background (theme-defaulted grey
-    /// + a #34 smoke label), then delegates to the stored `paint`
-    /// closure so the active [`AppLogic`] can render on top.
-    /// Responder methods translate `NSEvent` → [`UiEvent`] and route
-    /// through the stored `handle` closure for `AppLogic::handle`.
+    /// CG context, paints the frame background,
+    /// then delegates to the stored `paint` closure so the active
+    /// [`AppLogic`] can render on top. Responder methods translate
+    /// `NSEvent` → [`UiEvent`] and route through the stored `handle`
+    /// closure for `AppLogic::handle`.
     //
     // SAFETY:
     // - NSView is documented to be subclassable for custom drawing.
@@ -524,9 +511,9 @@ define_class!(
             );
             self.ivars().last_viewport.set(viewport);
 
-            // `currentContext` is a safe method as of objc2-app-kit 0.3
-            // (#796 bump). `drawRect:` is always invoked inside a valid
-            // graphics scope, so it always returns `Some` here.
+            // `currentContext` is a safe method. `drawRect:` is always
+            // invoked inside a valid graphics scope, so it always returns
+            // `Some` here.
             let Some(gctx) = NSGraphicsContext::currentContext() else {
                 return;
             };
@@ -548,16 +535,9 @@ define_class!(
 
             // Background fill so the area between rasterised chrome
             // (e.g. tab_bar at the top + status_bar at the bottom) has
-            // a consistent backdrop until content rasterisers (#39+)
-            // fill the middle. Removed once content rasterisers paint
-            // the full client area.
-            //
-            // #1179: this used to be a hard-coded dark literal
-            // (0.12, 0.12, 0.14 == #1F1F24), which showed through on
-            // light themes (behind the traffic lights, in the
-            // breadcrumb/status-bar gap, under translucent scrollbar
-            // tracks). Use the current theme's background instead so
-            // unpainted areas match the theme, not a fixed dark shade.
+            // a consistent backdrop until all content is rasterised.
+            // Use the current theme's background instead of a fixed shade
+            // so unpainted areas match the theme.
             let bg = self.ivars().backend.borrow().current_theme().background;
             // SAFETY: `cg_ref` is a non-null `CGContextRef` borrowed
             // for the duration of this call.
@@ -570,7 +550,7 @@ define_class!(
             // `end_frame` orchestration so this method doesn't need
             // to know anything about the concrete `A`.
             //
-            // #922: `drawRect:` is objc2's `define_class!`-generated
+            // `drawRect:` is objc2's `define_class!`-generated
             // dispatch trampoline invoking this method directly — a C ABI
             // callback that cannot unwind. `catch_unwind` here is the
             // outermost guard for everything `paint` does (the primary
@@ -581,8 +561,7 @@ define_class!(
             // for anything else `paint` runs (queued-event draining,
             // `tab_stops`, `begin_frame`/`end_frame`) so a panic there
             // degrades to "this frame is blank" instead of aborting the
-            // host process (quadraui#922, following the real vimcode#896
-            // incident this exact method used to be unable to survive).
+            // host process.
             if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 (self.ivars().paint)(viewport, cg_ref);
             })) {
@@ -609,7 +588,7 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn objc_mouse_down(&self, event: &NSEvent) {
-            // #498: stash the raw press before it's translated to a
+            // Stash the raw press before it's translated to a
             // portable `UiEvent`, so `Backend::begin_window_drag` (called
             // later, from `AppLogic::handle`, if the app decides this
             // press landed in its CSD titlebar band) has the
@@ -734,7 +713,7 @@ define_class!(
             }
         }
 
-        // ── Window resize (#486) ─────────────────────────────────
+        // ── Window resize ────────────────────────────────────────
 
         /// Registered (in [`run`]) as the observer for
         /// `NSViewFrameDidChangeNotification`, which fires whenever this
@@ -806,7 +785,7 @@ define_class!(
             }
         }
 
-        // ── Idle-poll fallback tick (issue #940) ─────────────────────
+        // ── Idle-poll fallback tick ──────────────────────────────────
         //
         // Target of [`run_with`]'s repeating `NSTimer`, armed at
         // `crate::runtime::IDLE_POLL_CEILING` (250ms) — mirrors GTK's
@@ -824,7 +803,7 @@ define_class!(
             self.dispatch_tick();
         }
 
-        // ── HiDPI runtime change (issue #834) ───────────────────────
+        // ── HiDPI runtime change ────────────────────────────────────
         //
         // Registered (in [`run`]) as the observer for
         // `NSWindowDidChangeBackingPropertiesNotification`, which AppKit
@@ -836,7 +815,7 @@ define_class!(
         // drag does. `drawRect:` already re-reads `backingScaleFactor()`
         // fresh on every paint (see its doc), so dispatching this and
         // letting the shared `crate::runtime::preprocess_event` force a
-        // redraw (issue #834) is sufficient to re-measure — no separate
+        // redraw is sufficient to re-measure — no separate
         // cached-scale field to update here the way `WinBackend`/
         // `GtkBackend` need.
         #[unsafe(method(windowDidChangeBackingProperties:))]
@@ -848,7 +827,7 @@ define_class!(
             self.dispatch(UiEvent::DpiChanged(scale as f32));
         }
 
-        // ── OS file drop (issue #834) ────────────────────────────────
+        // ── OS file drop ─────────────────────────────────────────────
         //
         // `NSDraggingDestination`'s methods are informal/optional
         // protocol overrides on `NSView` — AppKit dispatches them by
@@ -917,7 +896,7 @@ define_class!(
     // `NSObject` subclass — already states below).
     unsafe impl NSObjectProtocol for QuadraView {}
 
-    // ── Window close (issue #951) ────────────────────────────────────
+    // ── Window close ─────────────────────────────────────────────────
     //
     // Before this, the red traffic-light button, Cmd-W, and the
     // AppKit-native "Close" menu item all closed the window directly —
@@ -985,7 +964,7 @@ impl QuadraView {
     }
 
     /// The accept/reject answer both `draggingEntered:` and
-    /// `draggingUpdated:` give AppKit (issue #834): `Copy` for a drag
+    /// `draggingUpdated:` give AppKit: `Copy` for a drag
     /// carrying at least one file URL, `None` for anything else — a
     /// text or colour drag gets no drop cursor and never reaches
     /// `performDragOperation:`.
@@ -1001,7 +980,7 @@ impl QuadraView {
         }
     }
 
-    /// Panic-guarded wrapper around [`Self::dropped_paths`] (#922).
+    /// Panic-guarded wrapper around [`Self::dropped_paths`].
     ///
     /// `draggingEntered:`/`draggingUpdated:` (via [`Self::drag_operation`])
     /// and `performDragOperation:` are, like `drawRect:` and the responder
@@ -1033,8 +1012,8 @@ impl QuadraView {
         }
     }
 
-    /// Decode a drag's file-URL pasteboard items into filesystem paths
-    /// (issue #834). Empty (not an error) for a drag that carries no
+    /// Decode a drag's file-URL pasteboard items into filesystem paths.
+    /// Empty (not an error) for a drag that carries no
     /// `NSPasteboardTypeFileURL` item — e.g. a text or color drag —
     /// which `draggingEntered:`/`performDragOperation:` both treat as
     /// "reject this drag." Never call this directly from a
@@ -1065,7 +1044,7 @@ impl QuadraView {
     /// Route a translated [`UiEvent`] through `AppLogic::handle` and
     /// act on the returned [`Reaction`].
     ///
-    /// # Panic safety (#922)
+    /// # Panic safety
     ///
     /// Every responder override in the `define_class!` block above that
     /// ends up feeding `AppLogic::handle` (`mouseDown:`, `keyDown:`,
@@ -1103,7 +1082,7 @@ impl QuadraView {
         self.apply_reaction(reaction);
     }
 
-    /// Backing logic for `windowShouldClose:` (issue #951) — the
+    /// Backing logic for `windowShouldClose:` — the
     /// `NSWindowDelegate` override above. Deliberately separate from
     /// [`Self::dispatch`]: that method always runs [`Self::apply_reaction`]
     /// and returns nothing, but `windowShouldClose:` must hand AppKit a
@@ -1121,7 +1100,7 @@ impl QuadraView {
     /// explicitly return `Reaction::Exit` from its `WindowClose` handler
     /// to let the window close at all.
     ///
-    /// # Panic safety (#922)
+    /// # Panic safety
     ///
     /// Same C-ABI-boundary guard as [`Self::dispatch`], with one
     /// difference in the fallback: a caught panic here vetoes the close
@@ -1129,9 +1108,9 @@ impl QuadraView {
     /// "apply nothing" behaviour, because `Reaction::Continue` already
     /// means "veto" for this method — closing the window anyway after
     /// `handle` panicked would silently skip the very unsaved-changes
-    /// guard this issue exists to make reliable.
+    /// guard this method exists to make reliable.
     ///
-    /// # One-shot guard against a second dispatch (issue #951 review fix)
+    /// # One-shot guard against a second dispatch
     ///
     /// When this returns `true` and this is the app's last open window,
     /// AppKit doesn't stop here — `applicationShouldTerminateAfterLastWindowClosed:`
@@ -1184,16 +1163,16 @@ impl QuadraView {
         }
     }
 
-    /// Fire `AppLogic::tick` and act on the returned [`Reaction`]
-    /// (quadraui#832). The [`MacBackend::set_tick_callback`] target a
+    /// Fire `AppLogic::tick` and act on the returned [`Reaction`].
+    /// The [`MacBackend::set_tick_callback`] target a
     /// [`MacBackend::request_frame_in`] timer invokes once its delay
-    /// elapses, *and* (quadraui#940) the target of `run_with`'s own
+    /// elapses, *and* the target of `run_with`'s own
     /// repeating `idlePollTick:` timer — see that timer's doc for why a
     /// wake-only path alone wasn't enough. Mirrors [`Self::dispatch`]'s
     /// "translate, then apply" shape for the tick path instead of an
     /// event.
     ///
-    /// Guarded the same way as [`Self::dispatch`] (#922) — this is also
+    /// Guarded the same way as [`Self::dispatch`] — this is also
     /// invoked directly from an objc2/AppKit callback (the `NSTimer`
     /// target set up in [`run`]), the same non-unwindable boundary.
     fn dispatch_tick(&self) {
@@ -1213,7 +1192,7 @@ impl QuadraView {
     }
 
     /// Apply a [`Reaction`] — delegates to the shared
-    /// [`runtime::apply_outcome`] (quadraui#496) via this view's
+    /// [`runtime::apply_outcome`] via this view's
     /// [`ReactionSink`] impl below.
     fn apply_reaction(&self, reaction: Reaction) {
         runtime::apply_outcome(reaction, self);
@@ -1271,7 +1250,7 @@ impl ReactionSink for QuadraView {
     }
 }
 
-/// `QuadraAppDelegate`'s ivars — the shared `handle` closure (issue #951),
+/// `QuadraAppDelegate`'s ivars — the shared `handle` closure,
 /// so `applicationShouldTerminate:` can run the exact same
 /// `UiEvent::WindowClose` veto decision `QuadraView::windowShouldClose:`
 /// runs. See [`HandleFn`]'s doc for why this is an `Rc`, not a `Box`.
@@ -1287,10 +1266,9 @@ pub(crate) struct QuadraAppDelegateIvars {
 
 define_class!(
     /// `NSApplicationDelegate` — terminates the process when the last
-    /// window closes (red traffic-light → exit), and (issue #951) asks
+    /// window closes (red traffic-light → exit), and asks
     /// the app before honouring Cmd-Q / the auto-prepended app-menu Quit
-    /// item / a Dock "Quit". #36 may extend this further with
-    /// notification + URL-scheme handling.
+    /// item / a Dock "Quit".
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "QuadraUiAppDelegate"]
@@ -1305,8 +1283,7 @@ define_class!(
             true
         }
 
-        // ── Cmd-Q / menu Quit, and the last-window-closed follow-up
-        //    (issue #951) ────────────────────────────────────────────
+        // ── Cmd-Q / menu Quit, and the last-window-closed follow-up ──
         //
         // `[NSApp terminate:]` — which Cmd-Q and the auto-prepended app
         // menu's Quit item both send directly — asks the delegate this
@@ -1315,11 +1292,11 @@ define_class!(
         // one `windowShouldClose:` the way an ordinary window-manager
         // close does. Left unhandled, an app's unsaved-changes guard
         // (written against `UiEvent::WindowClose`) would run for the
-        // traffic-light button but not for Cmd-Q — exactly the second
-        // hole this issue's brief calls out. Dispatching the same event
-        // here and vetoing on anything but `Reaction::Exit` closes it.
+        // traffic-light button but not for Cmd-Q — a gap this method
+        // closes by dispatching the same event here and vetoing on
+        // anything but `Reaction::Exit`.
         //
-        // This method is *also* reached two other ways, both *after* the
+        // This method is also reached two other ways, both *after* the
         // app has already granted an exit: (1) closing the app's last
         // window via the traffic light returns `true` from
         // `windowShouldClose:`, and because
@@ -1335,7 +1312,7 @@ define_class!(
             self.evaluate_should_terminate()
         }
 
-        // ── Deep links / file associations (issue #957) ────────────
+        // ── Deep links / file associations ─────────────────────────
         //
         // Fires for any URL this app is asked to open — a registered
         // `CFBundleURLTypes` scheme (`myapp://...`, an OAuth-callback
@@ -1345,28 +1322,18 @@ define_class!(
         // and at runtime (the app is already running and gets
         // reactivated with a new one; macOS's own single-instance
         // activation for a bundled `.app` is what delivers that
-        // reactivation, not any mechanism quadraui installs itself —
-        // see `UiEvent::OpenRequested`'s doc for why there's no
-        // separate `single_instance` knob on this backend's
-        // `RunConfig`). Per Apple's own doc on this method,
+        // reactivation, not any mechanism quadraui installs itself).
+        // Per Apple's own doc on this method,
         // implementing it means `application:openFiles:` below is
-        // never actually called — kept anyway (issue #957 asks for
-        // both) as a defensive fallback.
+        // never actually called — kept anyway as a defensive fallback.
         //
         // **Known gap**: this only fires once AppKit has finished
         // enough of its own launch sequence to deliver the delegate
         // callback. A URL that arrives *before* that point (a cold
         // launch racing Launch Services) needs a raw
         // `NSAppleEventManager`/`kAEGetURL` handler registered even
-        // earlier — issue #957 asks for this too, but it needs the
-        // `objc2-core-services` crate (for `AEEventClass`/`AEEventID`/
-        // `kAEGetURL`), which isn't a dependency of this crate yet and
-        // could not be added and verified in this pass (no macOS host
-        // available here to build/test against — see this file's
-        // module doc and `.github/workflows/macos.yml`'s header for
-        // why that verification can only happen on a real
-        // `macos-latest` runner). Tracked as a follow-up rather than
-        // guessed at blind.
+        // earlier — that requires the `objc2-core-services` crate,
+        // which was not available at the time of this implementation.
         #[unsafe(method(application:openURLs:))]
         fn application_open_urls(&self, _application: &NSApplication, urls: &NSArray<NSURL>) {
             self.dispatch_open_requested(ns_urls_to_open_requested(urls));
@@ -1374,8 +1341,7 @@ define_class!(
 
         /// See `application_open_urls`'s doc — per Apple's documented
         /// contract this is never actually invoked while that method is
-        /// implemented, but issue #957 asks for both, so it's wired the
-        /// same way as a defensive fallback.
+        /// implemented, but it is wired the same way as a defensive fallback.
         #[unsafe(method(application:openFiles:))]
         fn application_open_files(&self, _sender: &NSApplication, filenames: &NSArray<NSString>) {
             self.dispatch_open_requested(ns_filenames_to_open_requested(filenames));
@@ -1395,7 +1361,7 @@ impl QuadraAppDelegate {
     /// relying on `QuadraView::windowShouldClose:`, and for the second
     /// path (last-window-closed) that also reaches this method.
     ///
-    /// # One-shot guard against a second dispatch (issue #951 review fix)
+    /// # One-shot guard against a second dispatch
     ///
     /// Delegates the whole decision to [`ExitGate::terminate_reply`],
     /// which consults [`QuadraAppDelegateIvars::exit_gate`] before
@@ -1411,7 +1377,7 @@ impl QuadraAppDelegate {
     /// unmarked for that gesture and it dispatches fresh exactly as
     /// before.
     ///
-    /// # Panic safety (#922)
+    /// # Panic safety
     ///
     /// Same C-ABI-boundary guard as [`QuadraView::dispatch`]: this is
     /// invoked directly from objc2's dispatch trampoline off AppKit's
@@ -1420,7 +1386,7 @@ impl QuadraAppDelegate {
     /// [`QuadraView::evaluate_window_should_close`] uses for the
     /// identical case.
     ///
-    /// # Known asymmetry: non-`Exit` side effects (review non-blocker)
+    /// # Known asymmetry: non-`Exit` side effects
     ///
     /// For a *fresh* dispatch (the guard above didn't short-circuit — a
     /// standalone Cmd-Q/menu-Quit, unrelated to any window close), this
@@ -1459,13 +1425,13 @@ impl QuadraAppDelegate {
         })
     }
 
-    /// Dispatch a [`UiEvent::OpenRequested`] (issue #957) through the
+    /// Dispatch a [`UiEvent::OpenRequested`] through the
     /// shared `handle` closure — the delegate-side counterpart of
     /// [`QuadraView::dispatch`], for the two entry points
     /// (`application:openURLs:`/`application:openFiles:`) that reach
     /// this delegate directly instead of through the view.
     ///
-    /// # Panic safety (#922)
+    /// # Panic safety
     ///
     /// Entered directly from AppKit's delegate dispatch trampoline — a
     /// C ABI boundary that cannot unwind — same posture as
@@ -1487,7 +1453,7 @@ impl QuadraAppDelegate {
 }
 
 /// Translate `application:openURLs:`'s `NSArray<NSURL>` into
-/// [`UiEvent::OpenRequested`] (issue #957). `NSURL::isFileURL` splits
+/// [`UiEvent::OpenRequested`]. `NSURL::isFileURL` splits
 /// each entry the same way `gtk::run`'s `connect_open` splits
 /// `gio::File::path()` vs `File::uri()`: a local file URL becomes a
 /// `files` entry (`NSURL::path`); anything else (a custom app scheme, an
@@ -1528,21 +1494,17 @@ fn ns_filenames_to_open_requested(filenames: &NSArray<NSString>) -> UiEvent {
 }
 
 /// The veto rule `QuadraView::windowShouldClose:` applies to whatever
-/// [`Reaction`] the app's `UiEvent::WindowClose` handler returns (issue
-/// #951): only `Reaction::Exit` lets AppKit's close proceed. Pulled out
-/// as a pure function — same reasoning as [`window_title`]/
-/// [`window_style_mask`] (quadraui#933/#947) — so the actual veto
-/// decision is unit-testable without a live `NSWindow`/`NSView`, which
-/// can't be constructed or exercised outside a real `macos-latest` host
-/// (see this file's module doc and `.github/workflows/macos.yml`'s
-/// header for why).
+/// [`Reaction`] the app's `UiEvent::WindowClose` handler returns: only
+/// `Reaction::Exit` lets AppKit's close proceed. Pulled out as a pure
+/// function so the actual veto decision is unit-testable without a live
+/// `NSWindow`/`NSView`, which can't be constructed outside a real host.
 fn window_should_close_for_reaction(reaction: Reaction) -> bool {
     matches!(reaction, Reaction::Exit)
 }
 
 /// Same rule as [`window_should_close_for_reaction`], answered in the
 /// shape `applicationShouldTerminate:` needs instead of a bare `bool`
-/// (issue #951) — the Cmd-Q / menu-Quit twin of the traffic-light veto.
+/// — the Cmd-Q / menu-Quit twin of the traffic-light veto.
 /// Deliberately never returns `NSApplicationTerminateReply::TerminateLater`:
 /// that variant exists for a delegate that needs to run an async sheet
 /// before answering (see its doc), which no quadraui backend does today —
@@ -1558,15 +1520,15 @@ fn terminate_reply_for_reaction(reaction: Reaction) -> NSApplicationTerminateRep
 }
 
 /// The one-shot double-dispatch guard shared by [`QuadraView`] and
-/// [`QuadraAppDelegate`] (issue #951 review fixes).
+/// [`QuadraAppDelegate`].
 ///
 /// # The problem
 ///
 /// `applicationShouldTerminate:` is the *only* hook AppKit offers for
-/// Cmd-Q / the app-menu Quit item, so #951 has to implement it to make
-/// `UiEvent::WindowClose` reliable. But once implemented, it is reached
-/// by three routes, and only one of them is a fresh user request the app
-/// hasn't answered yet:
+/// Cmd-Q / the app-menu Quit item, so this backend must implement it to
+/// make `UiEvent::WindowClose` reliable. But once implemented, it is
+/// reached by three routes, and only one of them is a fresh user request
+/// the app hasn't answered yet:
 ///
 /// | Route | App already decided? |
 /// |---|---|
@@ -1599,7 +1561,7 @@ fn terminate_reply_for_reaction(reaction: Reaction) -> NSApplicationTerminateRep
 /// without consulting the delegate" entry point, so macOS records the
 /// grant instead.
 ///
-/// # Lifetime and multi-window (review non-blocker)
+/// # Lifetime and multi-window
 ///
 /// The flag is set once and never reset. That is correct *only* because
 /// [`run_with`] builds exactly one `NSWindow`/[`QuadraView`]: every route
@@ -1611,10 +1573,8 @@ fn terminate_reply_for_reaction(reaction: Reaction) -> NSApplicationTerminateRep
 /// `WindowClose` opinion on a genuinely unrelated Cmd-Q later on.
 ///
 /// Kept as a plain non-`objc2` struct (like [`window_should_close_for_reaction`]
-/// and [`window_title`]/[`window_style_mask`], quadraui#933/#947) so the
-/// guard protocol is unit-testable without a live `NSWindow`/
-/// `NSApplication`, neither of which can be constructed outside a real
-/// `macos-latest` host — see this file's module doc.
+/// and [`window_title`]/[`window_style_mask`]) so the guard protocol
+/// is unit-testable without a live `NSWindow`/`NSApplication`.
 #[derive(Debug, Default)]
 pub(crate) struct ExitGate {
     /// `true` once the app has granted an exit through *any* route (see
@@ -1662,18 +1622,18 @@ impl ExitGate {
 /// needs its own window title to reach the real AppKit window instead of
 /// always showing `"quadraui (macos)"` — mirrors `gtk::run::RunConfig` /
 /// `win::run::RunConfig`, minus the GTK-specific `app_id`/`icon_name`
-/// fields AppKit has no equivalent concept for (quadraui#933).
+/// fields AppKit has no equivalent concept for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunConfig {
     /// Window title shown by the titlebar, Mission Control, and the Dock.
     pub title: String,
-    /// Mirrors [`crate::shell::ShellConfig::client_side_titlebar`] (#947)
+    /// Mirrors [`crate::shell::ShellConfig::client_side_titlebar`]
     /// — `false` (the default) reproduces the exact style mask this
-    /// module hardcoded before #947. See [`window_style_mask`] for what
+    /// module hardcoded before. See [`window_style_mask`] for what
     /// setting it changes.
     pub client_side_titlebar: bool,
     /// App icon applied via `NSApplication::setApplicationIconImage`
-    /// right after `setActivationPolicy` in [`run_with`] — issue #1142.
+    /// right after `setActivationPolicy` in [`run_with`].
     /// `None` (the default) reproduces every pre-#1142 launch: no call
     /// at all, so a bare unbundled binary keeps showing the generic
     /// executable icon in the Dock and Cmd-Tab switcher. Set via
@@ -1693,7 +1653,7 @@ impl RunConfig {
         }
     }
 
-    /// Opt into the client-side-titlebar style mask (#947) — see
+    /// Opt into the client-side-titlebar style mask — see
     /// [`crate::shell::ShellConfig::client_side_titlebar`] for the
     /// mechanism and why the native traffic lights stay put on macOS.
     pub fn with_client_side_titlebar(mut self, enabled: bool) -> Self {
@@ -1702,8 +1662,7 @@ impl RunConfig {
     }
 
     /// Set the Dock/app-switcher icon applied via
-    /// `NSApplication::setApplicationIconImage` — see [`Self::app_icon`]
-    /// (#1142).
+    /// `NSApplication::setApplicationIconImage` — see [`Self::app_icon`].
     pub fn with_app_icon(mut self, icon: ImageSource) -> Self {
         self.app_icon = Some(icon);
         self
@@ -1711,8 +1670,8 @@ impl RunConfig {
 }
 
 impl Default for RunConfig {
-    /// Mirrors [`run`]'s previously-hardcoded window title, so
-    /// `run_with(app, RunConfig::default())` and `run(app)` behave
+    /// Default title reproduces the previously-hardcoded window title,
+    /// so `run_with(app, RunConfig::default())` and `run(app)` behave
     /// identically.
     fn default() -> Self {
         Self {
@@ -1725,7 +1684,7 @@ impl Default for RunConfig {
 
 /// The window title [`run_with`] sets via `NSWindow::setTitle` — pulled
 /// out of the AppKit call site so the config→window-creation seam is
-/// testable off the main thread (quadraui#933). Window creation itself
+/// testable off the main thread. Window creation itself
 /// still needs a live `NSApplication` on the real main thread and can't be
 /// exercised by a plain `#[test]`; this function is the pure "which string
 /// do we hand AppKit" decision, mirroring the split `macos::backend`'s
@@ -1736,7 +1695,7 @@ fn window_title(config: &RunConfig) -> String {
 
 /// The `NSWindow` style mask [`run_with`]'s window-creation call site
 /// applies — pulled out for the same off-main-thread testability reason as
-/// [`window_title`] (quadraui#933/#947): `NSWindowStyleMask` is a plain
+/// [`window_title`]: `NSWindowStyleMask` is a plain
 /// `NSUInteger` bitflags wrapper (see its `objc2_app_kit` definition), so
 /// comparing bit patterns needs no live `NSApplication`, unlike window
 /// *construction* itself.
@@ -1767,7 +1726,7 @@ fn window_style_mask(config: &RunConfig) -> NSWindowStyleMask {
 
 /// Open an AppKit window, install a [`MacBackend`], and drive `app`
 /// against it, using the default [`RunConfig`] (a generic window title).
-/// See [`run_with`] to set a custom title (quadraui#933) — needed by any
+/// See [`run_with`] to set a custom title — needed by any
 /// app that isn't quadraui itself. Returns when the user closes the
 /// window (red traffic-light) or `app.handle` returns [`Reaction::Exit`].
 ///
@@ -1798,7 +1757,7 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
 }
 
 /// Same as [`run`], but with a caller-supplied [`RunConfig`] (window
-/// title) instead of the generic quadraui default (quadraui#933).
+/// title) instead of the generic quadraui default.
 ///
 /// **Must be called from the main thread** — enforced by the
 /// [`MainThreadMarker::new`] check at entry.
@@ -1874,7 +1833,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
             ) {
                 EventOutcome::Continue => Reaction::Continue,
                 EventOutcome::Redraw => Reaction::Redraw,
-                // quadraui#832: pass the deadline through unchanged —
+                // Pass the deadline through unchanged —
                 // `dispatch`/`apply_reaction` routes it to
                 // `ReactionSink::request_frame_in` exactly like any other
                 // `Reaction::RedrawAfter`.
@@ -1884,10 +1843,9 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
         })
     };
 
-    // ── App tick hook (quadraui#832) ──────────────────────────────
+    // ── App tick hook ─────────────────────────────────────────────
     // Bridges `QuadraView::dispatch_tick` to `AppLogic::tick` — see
-    // `TickFn`'s doc for why this exists at all (macOS never called
-    // `tick` before #832).
+    // `TickFn`'s doc for what this closure does.
     let tick: TickFn = {
         let app = app.clone();
         let backend = backend.clone();
@@ -1902,7 +1860,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     let ns_app = NSApplication::sharedApplication(mtm);
     let _ = ns_app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
 
-    // #1142: `config.app_icon` (from `ShellConfig::with_app_icon`) becomes
+    // `config.app_icon` (from `ShellConfig::with_app_icon`) becomes
     // the Dock/app-switcher icon — right after `setActivationPolicy`,
     // before the window opens, so the icon is already in place by the
     // time the app first appears in the Dock rather than flashing the
@@ -1922,17 +1880,16 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
         }
     }
 
-    // #951: the app delegate needs its own handle to `handle` (Cmd-Q /
+    // The app delegate needs its own handle to `handle` (Cmd-Q /
     // menu Quit routes through `applicationShouldTerminate:`, not
     // through any window's `windowShouldClose:`) — `handle` is `Rc`-
     // shared for exactly this, see `HandleFn`'s doc. Cloned here, before
     // `QuadraView::new` below moves the original into the view's ivars.
     //
-    // The `ExitGate` is the one-shot double-dispatch guard (issue #951
-    // review fixes — see its own doc for the three routes into
-    // `applicationShouldTerminate:` and which two it suppresses). Shared
-    // the same way as `handle`: cloned into the delegate here, moved into
-    // the view below.
+    // The `ExitGate` is the one-shot double-dispatch guard (see its
+    // doc for the three routes into `applicationShouldTerminate:` and
+    // which two it suppresses). Shared the same way as `handle`: cloned
+    // into the delegate here, moved into the view below.
     let exit_gate = Rc::new(ExitGate::default());
     let delegate = QuadraAppDelegate::new(mtm, handle.clone(), exit_gate.clone());
     let delegate_proto = ProtocolObject::from_ref(&*delegate);
@@ -1950,7 +1907,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
         ]
     };
     window.setTitle(&NSString::from_str(&window_title(&config)));
-    // #947: client-side titlebar — keep the native traffic lights (they
+    // Client-side titlebar — keep the native traffic lights (they
     // come along with `NSWindowStyleMask::Titled`, which
     // `window_style_mask` still sets) but hide the native title text and
     // stop the titlebar drawing an opaque background, so an app-painted
@@ -1963,7 +1920,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
         window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
     }
 
-    // #498: stash the window handle so `Backend::begin_window_drag` /
+    // Stash the window handle so `Backend::begin_window_drag` /
     // `Backend::toggle_window_maximize` / `Backend::set_cursor` have
     // something to drive. Harmless for apps that never call them
     // (default no-op on every other backend, and macOS apps that don't
@@ -1974,14 +1931,14 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     window.setContentView(Some(&view));
     window.setAcceptsMouseMovedEvents(true);
     window.makeFirstResponder(Some(view.as_super()));
-    // #951: the view doubles as its own window delegate so
+    // The view doubles as its own window delegate so
     // `windowShouldClose:` (the red traffic-light button, Cmd-W, the
     // native "Close" menu item) can veto the close via `UiEvent::WindowClose`
     // — see `QuadraView`'s `NSWindowDelegate` impl above.
     window.setDelegate(Some(ProtocolObject::from_ref(&*view)));
     window.makeKeyAndOrderFront(None);
 
-    // OS file drop (issue #834): opt the view into `NSDraggingDestination`
+    // OS file drop: opt the view into `NSDraggingDestination`
     // for file-URL drags. Without this call `draggingEntered:`/
     // `performDragOperation:` are simply never invoked — AppKit only
     // considers a view a drop target for the pasteboard types it
@@ -1992,19 +1949,19 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     let dragged_types: Retained<NSArray<NSString>> = NSArray::from_slice(&[file_url_type]);
     view.registerForDraggedTypes(&dragged_types);
 
-    // Issue #831: install the wake target `MacBackend::waker()` invokes
+    // Install the wake target `MacBackend::waker()` invokes
     // (via `dispatch2::DispatchQueue::main().exec_async`) when a
     // background thread delivers a `UiEvent::User` — schedule the same
     // repaint request any other event's `Reaction::Redraw` would, so
-    // `poll_events` (drained from inside the `paint` closure above) gets a
-    // chance to observe the queued payload promptly instead of waiting for
-    // unrelated user input or a timer to trigger the next `drawRect:`.
+    // `poll_events` (drained from inside the `paint` closure above) gets
+    // a chance to observe the queued payload promptly instead of waiting
+    // for unrelated user input or a timer to trigger the next `drawRect:`.
     let view_for_wake = view.clone();
     backend
         .borrow()
         .set_wake_callback(Rc::new(move || view_for_wake.request_redraw()), mtm);
 
-    // quadraui#832: install the tick target `MacBackend::request_frame_in`'s
+    // Install the tick target `MacBackend::request_frame_in`'s
     // scheduled timer invokes once its delay elapses — mirrors the wake
     // wiring immediately above, but reaches `dispatch_tick` (fires
     // `AppLogic::tick`) instead of a bare repaint request.
@@ -2013,7 +1970,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
         .borrow()
         .set_tick_callback(Rc::new(move || view_for_tick.dispatch_tick()), mtm);
 
-    // WindowResized wiring (#486): opt the view into frame-change
+    // WindowResized wiring: opt the view into frame-change
     // notifications and observe them on itself via `viewFrameDidChange:`.
     // SAFETY: `view` is a valid, retained `QuadraView` (an `NSObject`
     // subclass) for the lifetime of the app; the observer registration
@@ -2034,7 +1991,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
         );
     }
 
-    // quadraui#940: coarse idle-poll fallback — see `idlePollTick:`'s doc
+    // Coarse idle-poll fallback — see `idlePollTick:`'s doc
     // on `QuadraView` and `crate::runtime::IDLE_POLL_CEILING`'s doc for
     // the full rationale. Mirrors `gtk::run::run_with`'s
     // `glib::timeout_add_local(IDLE_POLL_CEILING, ...)` install site:
@@ -2053,7 +2010,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
         )
     };
 
-    // HiDPI runtime change (issue #834): unlike the frame-change
+    // HiDPI runtime change: unlike the frame-change
     // notification above (which the *view* posts about itself), it's the
     // *window* that posts `NSWindowDidChangeBackingPropertiesNotification`
     // — the drag-to-a-different-DPI-monitor / live scaling-setting-change
@@ -2071,7 +2028,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
         );
     }
 
-    // Drive the InlineInput caret blink (#188). The pair is held as
+    // Drive the InlineInput caret blink. The pair is held as
     // locals for the lifetime of the app — when this function
     // eventually returns, the NSTimer's `Retained` drops, the timer
     // is released by the run loop, and the target finalises.
@@ -2104,14 +2061,13 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
 fn _unused_imports(_p: *mut c_void) {}
 
 /// Coverage for [`RunConfig`] / [`window_title`] / [`window_style_mask`]
-/// (quadraui#933, #947) — display-free, since all three are plain Rust
-/// (or, for `window_style_mask`, plain-Rust-comparable `NSWindowStyleMask`
-/// bit patterns) with no live-AppKit dependency. `run_with`'s actual
-/// wiring (title → `NSWindow::setTitle`, and the
-/// `setTitlebarAppearsTransparent`/`setTitleVisibility` pair #947 added)
-/// can't be exercised without a live main-thread `NSApplication`; that's
-/// covered by the operator-run smoke tier instead, same posture as
-/// `gtk::run::run_config_tests` / `win::run::tests`.
+/// — display-free, since all three are plain Rust (or, for `window_style_mask`,
+/// plain-Rust-comparable `NSWindowStyleMask` bit patterns) with no
+/// live-AppKit dependency. `run_with`'s actual wiring (title → `NSWindow::setTitle`,
+/// and the `setTitlebarAppearsTransparent`/`setTitleVisibility` pair) can't be
+/// exercised without a live main-thread `NSApplication`; that's covered by the
+/// operator-run smoke tier instead, same posture as `gtk::run::run_config_tests` /
+/// `win::run::tests`.
 #[cfg(test)]
 mod run_config_tests {
     use super::*;
@@ -2130,7 +2086,7 @@ mod run_config_tests {
 
     #[test]
     fn new_defaults_client_side_titlebar_to_false() {
-        // #947: every pre-existing `RunConfig::new(title)` call site
+        // Every pre-existing `RunConfig::new(title)` call site
         // (including `shell_runner::run_with_shell` before it started
         // threading `ShellConfig::client_side_titlebar` through) must keep
         // getting today's style mask, not silently opt into the new one.
@@ -2143,7 +2099,7 @@ mod run_config_tests {
         assert!(config.client_side_titlebar);
     }
 
-    /// #1142: a fresh `RunConfig` sets no app icon — every existing
+    /// A fresh `RunConfig` sets no app icon — every existing
     /// consumer keeps the pre-#1142 behaviour (no
     /// `setApplicationIconImage` call at all).
     #[test]
@@ -2152,7 +2108,7 @@ mod run_config_tests {
         assert_eq!(RunConfig::default().app_icon, None);
     }
 
-    /// #1142: `with_app_icon` stores the source verbatim for
+    /// `with_app_icon` stores the source verbatim for
     /// `run_with`'s AppKit-bootstrap call site to decode via
     /// `macos::tray::decode_ns_image`.
     #[test]
@@ -2166,18 +2122,17 @@ mod run_config_tests {
         // `run(app)` used to always show a `"quadraui (macos)"` window
         // title; `RunConfig::default()` must reproduce that exact value
         // so `run(app)` staying `run_with(app, RunConfig::default())`
-        // (see both functions above) doesn't change existing behaviour.
+        // doesn't change existing behaviour.
         assert_eq!(RunConfig::default().title, "quadraui (macos)");
     }
 
-    /// The actual regression this issue fixes: before quadraui#933,
-    /// `run_with`'s window-creation call site handed AppKit the literal
-    /// `"quadraui (macos)"` no matter what the caller configured. This
-    /// pins `window_title` — the pure function that call site now
-    /// delegates to — to `config.title`, so a future edit that goes back
-    /// to hardcoding the string at that call site (bypassing this
-    /// function, or reintroducing a literal inside it) fails here instead
-    /// of only being discoverable by running a real app.
+    /// Before quadraui#933, `run_with`'s window-creation call site
+    /// handed AppKit the literal `"quadraui (macos)"` no matter what the
+    /// caller configured. This pins `window_title` — the pure function
+    /// that call site now delegates to — to `config.title`, so a future
+    /// edit that goes back to hardcoding the string at that call site
+    /// (bypassing this function, or reintroducing a literal inside it)
+    /// fails here instead of only being discoverable by running a real app.
     #[test]
     fn window_title_comes_from_config_not_a_literal() {
         let config = RunConfig::new("vimcode");
@@ -2189,10 +2144,10 @@ mod run_config_tests {
         );
     }
 
-    /// #947's regression guard: with `client_side_titlebar` unset, the
-    /// style mask [`window_style_mask`] returns must stay byte-identical
-    /// to what `run_with`'s call site hardcoded before this issue —
-    /// exactly `Titled | Closable | Resizable | Miniaturizable`, no
+    /// With `client_side_titlebar` unset, the style mask
+    /// [`window_style_mask`] returns must stay byte-identical to what
+    /// `run_with`'s call site hardcoded before — exactly
+    /// `Titled | Closable | Resizable | Miniaturizable`, no
     /// `FullSizeContentView` bit.
     #[test]
     fn style_mask_unset_matches_pre_947_hardcoded_mask() {
@@ -2205,12 +2160,10 @@ mod run_config_tests {
         assert!(!window_style_mask(&config).contains(NSWindowStyleMask::FullSizeContentView));
     }
 
-    /// #947: `client_side_titlebar` ORs in `FullSizeContentView` on top of
-    /// the base mask above — it must not drop `Titled`/`Closable`/
+    /// `client_side_titlebar` ORs in `FullSizeContentView` on top of
+    /// the base mask — it must not drop `Titled`/`Closable`/
     /// `Resizable`/`Miniaturizable`, since dropping `Titled` in particular
-    /// would take the native traffic lights away entirely, which is
-    /// exactly the "keep them native" contract #947 requires (unlike
-    /// GTK's `set_decorated(false)` "undecorated" model).
+    /// would take the native traffic lights away entirely.
     #[test]
     fn style_mask_set_adds_full_size_content_view_without_losing_the_rest() {
         let config = RunConfig::new("kubeui").with_client_side_titlebar(true);
@@ -2223,7 +2176,7 @@ mod run_config_tests {
     }
 }
 
-/// Headless coverage for [`fill_frame_background`] (issue #1179) — the
+/// Headless coverage for [`fill_frame_background`] — the
 /// whole-frame backdrop `QuadraView::draw_rect` paints before delegating
 /// to the app's own render closure. Uses
 /// [`super::headless::BitmapSurface`] rather than a live `NSView`, so it
@@ -2239,7 +2192,7 @@ mod background_fill_tests {
     /// A light theme's background must show through verbatim — this is
     /// the exact regression #1179 reports: pre-fix, this pixel would be
     /// `#1F1F24` (31, 31, 36) regardless of the theme, because the fill
-    /// colour was a hard-coded literal instead of `bg`.
+    /// colour was a hard-coded literal instead of the theme background.
     #[test]
     fn fill_frame_background_paints_the_given_background_not_a_fixed_dark_literal() {
         const W: u32 = 120;
@@ -2255,10 +2208,9 @@ mod background_fill_tests {
             fill_frame_background(surface.context_ptr(), rect, light_bg);
         }
 
-        // Sample a point that stands in for the traffic-light inset
-        // (top-left corner, where #947's `titlebar_control_inset` lives)
-        // and one that stands in for the breadcrumb/status-bar gap and
-        // scrollbar gutter — every unpainted pixel, not just the centre.
+        // Sample points across the window: traffic-light inset (top-left),
+        // breadcrumb/status-bar gap, and scrollbar gutter — verifying every
+        // unpainted pixel uses the correct background color.
         for (x, y, label) in [
             (10, 10, "traffic-light inset"),
             (5, H - 3, "breadcrumb/status-bar gap"),
@@ -2275,34 +2227,19 @@ mod background_fill_tests {
     }
 }
 
-/// Coverage for issue #951 — macOS never emitted `UiEvent::WindowClose`,
-/// so an app's unsaved-changes guard (written against D-010's "required
-/// on every windowed backend" contract) silently never ran. Three axes:
-///
-/// - [`window_should_close_for_reaction`] / [`terminate_reply_for_reaction`]
-///   are the actual veto *decision* `windowShouldClose:` /
-///   `applicationShouldTerminate:` apply, pulled out as pure functions
-///   (same split as [`window_title`]/[`window_style_mask`], quadraui#933/
-///   #947) specifically so this decision has real unit coverage: neither
-///   method itself can run here, or anywhere outside a live
-///   `macos-latest` host (see this file's module doc) — `windowShouldClose:`
-///   needs a real `NSWindow`/`NSView` pair, `applicationShouldTerminate:`
-///   a real `NSApplication`.
-/// - `dispatch_event(UiEvent::WindowClose, …)` needs neither: it's the
-///   same headless call [`super::testing::MacDriver::dispatch`] makes,
-///   proving the event reaches `app.handle` unrewritten and unswallowed
-///   before either live entry point's veto logic ever runs — mirrors
-///   `gtk::run`'s `#2244` `WindowClose` dispatch coverage almost exactly.
-/// - [`ExitGate`] is the one-shot double-dispatch guard added in review
-///   (both a traffic-light close of the app's last window *and* any
-///   `Reaction::Exit` → `request_exit` → `[NSApp terminate:]` also reach
-///   `applicationShouldTerminate:` — see [`ExitGate`]'s own doc), pulled
-///   out the same way so the guard protocol has unit coverage without
-///   needing the live AppKit interaction that motivated it, which — like
-///   the two decisions above — can't be exercised outside a real host.
-///   [`ExitGate::terminate_reply`] takes the dispatch as a closure
-///   precisely so these tests can assert the app is *not called again*,
-///   rather than only that its answer was ignored.
+/// macOS event-dispatch logic: the [`window_should_close_for_reaction`]
+/// and [`terminate_reply_for_reaction`] functions decide whether to permit
+/// window close or app termination based on the reaction; [`ExitGate`]
+/// ensures a double-dispatch guard prevents redundant termination when both
+/// a traffic-light close and `Reaction::Exit` arrive. These are pulled out
+/// as pure functions (same pattern as [`window_title`]/[`window_style_mask`])
+/// so the decision logic has unit coverage without needing a live
+/// `NSWindow`/`NSView` pair or real `NSApplication`. `dispatch_event`
+/// delivers `UiEvent::WindowClose` the same way [`super::testing::MacDriver::dispatch`]
+/// does, proving the event reaches `app.handle` unrewritten before veto logic
+/// runs. [`ExitGate::terminate_reply`] takes the dispatch as a closure so
+/// tests can assert the app is not called again rather than only that its
+/// answer was ignored.
 #[cfg(test)]
 mod window_close_tests {
     use super::*;
@@ -2609,15 +2546,13 @@ mod window_close_tests {
     }
 }
 
-/// Coverage for #803: `dispatch_event`'s `MouseDown`/`MouseMoved`/`MouseUp`
+/// Coverage for `dispatch_event`'s `MouseDown`/`MouseMoved`/`MouseUp`
 /// text-selection routing plus its Ctrl-C/Ctrl-A/`TextSelectionChanged`
-/// pre-processing. None of this needs a live `CGContext` or a running
+/// pre-processing. None of this needs a live `CGContext` or running
 /// `NSApplication` — the state machine and `dispatch_event` are plain Rust
-/// logic once a `MacBackend` exists — mirroring `win::run`'s identical
-/// `text_selection_dispatch_tests` module (#741) almost line for line;
-/// `MacBackend::new()`'s default metrics (16.0 line height, 8.0 char
-/// width) match `WinBackend::new()`'s exactly, so the same pixel math
-/// applies unchanged.
+/// logic once a `MacBackend` exists. `MacBackend::new()`'s default metrics
+/// (16.0 line height, 8.0 char width) match other backends exactly, so the
+/// same pixel math applies unchanged.
 #[cfg(test)]
 mod text_selection_dispatch_tests {
     use super::*;
@@ -2675,8 +2610,7 @@ mod text_selection_dispatch_tests {
     }
 
     /// End-to-end round trip: click-drag across a registered `TextRegion`,
-    /// then Ctrl-C — the exact sequence `panel.drag_select_copy` (the
-    /// Tier-1 scenario #803 unblocks on macOS) drives.
+    /// then Ctrl-C — the sequence for text selection and copy.
     #[test]
     fn drag_select_then_ctrl_c_copies_the_selection() {
         let mut backend = MacBackend::new();
@@ -2837,7 +2771,7 @@ mod text_selection_dispatch_tests {
         assert!(backend.active_text_selection().is_some());
     }
 
-    /// quadraui#813: before this, `macos::run::dispatch_event` had no
+    /// Before this, `macos::run::dispatch_event` had no
     /// middle-click step at all — only GTK read the PRIMARY selection.
     /// `MacClipboard` never overrides
     /// [`crate::backend::Clipboard::read_primary_selection`] (macOS has

@@ -1,15 +1,10 @@
 //! macOS rasteriser for [`crate::primitives::toolbar::Toolbar`].
 //!
 //! `mac_toolbar_layout` stays here — it needs Core Text's own
-//! measurement to size each item. Content painting moved to the shared
-//! [`crate::primitives::toolbar::native_surface_paint::paint`] (#1081,
-//! `PaintSurface` Phase 4 slice 5/8), which also **closes this
-//! backend's own square-corner gap**: pre-migration macOS painted the
-//! hover/pressed/active highlight as a plain rectangle (Core Graphics
-//! has no rounded-rect-fill convenience this file used to reach for).
-//! The shared `paint` now fills a real rounded pill via
-//! [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]
-//! (#1073) — see that fn's module doc for the full drift it resolved.
+//! measurement to size each item. Content painting uses the shared
+//! [`crate::primitives::toolbar::native_surface_paint::paint`], which
+//! fills hover/pressed/active highlights via
+//! [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`].
 //! Per D6: layout policy lives in [`crate::primitives::toolbar::Toolbar::layout`];
 //! this rasteriser now only builds the [`super::surface::CgSurface`]
 //! adapter and delegates paint.
@@ -25,10 +20,7 @@ use crate::theme::Theme;
 use crate::types::WidgetId;
 
 /// Compute the macOS pixel-unit layout for a [`Toolbar`] without
-/// painting. `font` is required for accurate text measurement — it's a
-/// [`crate::primitives::layout_metrics::TextMeasure`] itself (issue
-/// #1078), so no wrapper struct is needed the way `macos::form`/
-/// `macos::toolbar` each used to define their own `CtFontMeasure`.
+/// painting. `font` is required for accurate text measurement.
 pub fn mac_toolbar_layout(
     bar: &Toolbar,
     font: &CTFont,
@@ -84,7 +76,7 @@ pub unsafe fn draw_toolbar(
 }
 
 /// [`draw_toolbar`], plus [`ToolbarPaintOptions`]: `options.valign`
-/// (issue #260) resolves where button/label text paints within a slot
+/// resolves where button/label text paints within a slot
 /// taller than one line.
 ///
 /// # Safety
@@ -209,10 +201,8 @@ mod tests {
     }
 
     /// Like [`paint_via_backend_at`] but with an explicit
-    /// [`crate::primitives::toolbar::ToolbarPaintOptions`] — issue #260's
-    /// `valign` multi-row paint tests use this to paint the same bar at
-    /// the same slot once per [`crate::primitives::toolbar::ToolbarVAlign`]
-    /// variant.
+    /// [`crate::primitives::toolbar::ToolbarPaintOptions`] to test
+    /// each [`crate::primitives::toolbar::ToolbarVAlign`] variant.
     fn paint_via_backend_with_options(
         bar: &Toolbar,
         x: f32,
@@ -263,18 +253,9 @@ mod tests {
 
     #[test]
     fn round_trip_click_hits_enabled_button_at_nonzero_origin() {
-        // Regression for quadraui#494 / LESSONS.md "Layout helpers must
-        // return coords in the same frame across backends": the
-        // origin-(0,0) test above can't distinguish a `Toolbar::layout`
-        // that (correctly) bakes `x`/`y` into `bounds` from one that
-        // (incorrectly) ignores them — both look identical when
-        // x == y == 0. Paint at a non-zero origin and confirm both the
-        // painted button position and the `hit_test` round trip agree
-        // on the same absolute frame. This file has no `#[cfg(test)]`
-        // module prior to quadraui#494; unlike sibling files' nonzero-
-        // origin regressions this isn't a refactor of a pre-existing
-        // test, so it's written fresh per LESSONS.md's guidance and is
-        // unverified by the compiler in this sandbox (no macOS target).
+        // Test that layout returns coordinates in the same frame as paint:
+        // both the painted button position and the `hit_test` round trip
+        // must agree on the same absolute frame at a non-zero origin.
         let bar = sample_bar();
         let origin_x = 7.0_f32;
         let origin_y = 13.0_f32;
@@ -305,7 +286,7 @@ mod tests {
         );
     }
 
-    /// #1081 regression: pre-migration macOS painted the hover/pressed/
+    /// Pre-migration macOS painted the hover/pressed/
     /// active highlight as a plain square rect (Core Graphics had no
     /// rounded-fill convenience this file reached for) — the shared
     /// `native_surface_paint::paint` now fills a real rounded pill via
@@ -348,21 +329,10 @@ mod tests {
             "highlight corner pixel should NOT be filled — rounded corner (quadraui#1081), not square",
         );
 
-        // The inset rect must still be filled solid in the highlight
-        // colour somewhere away from the corners — proves this isn't
-        // just "nothing painted". Deliberately NOT the button's exact
-        // geometric centre: that's also where the "On" label's own
-        // text is centred (`tx = item.x + (item.width - tw) / 2`), and
-        // on a real macOS host CoreText's font smoothing anti-aliases
-        // glyph ink into the surrounding highlight fill, so the centre
-        // pixel is a blend of `theme.foreground` and `theme.selected_bg`
-        // — not pure `theme.selected_bg` (quadraui#1081 smoke-test
-        // fixup: this exact assertion previously read `(195, 196, 201)`
-        // instead of `theme.selected_bg`'s `(50, 60, 90)` on a real Mac).
-        // `measure_button`'s `ACTION_H_PAD = 8.0` guarantees the text
-        // always starts `item.x + 8` regardless of font/glyph metrics
-        // (`item.width == text_width + 2 * ACTION_H_PAD`, so
-        // `tx == item.x + ACTION_H_PAD`), so the strip
+        // The inset rect must be filled solid in the highlight colour
+        // somewhere away from the corners — proves something was painted.
+        // Avoid the button's exact centre (text is centred there too).
+        // `measure_button`'s `ACTION_H_PAD = 8.0` means the strip
         // `[item.x + 2, item.x + 8)` — between the inset's left edge
         // and where the label starts — is always text-free. `+ 5.0`
         // sits in the middle of that strip; the y stays at mid-height,
@@ -382,12 +352,10 @@ mod tests {
         );
     }
 
-    // ── #260: `ToolbarVAlign` ────────────────────────────────────────────
-
-    /// Multi-row paint test (issue #260's test plan): paint the same bar
-    /// into the same tall slot once per [`crate::primitives::toolbar::ToolbarVAlign`]
-    /// variant and confirm the row of the first painted (non-background)
-    /// pixel moves accordingly — `Top` paints highest, `Bottom` lowest.
+    /// Multi-row paint test: paint the same bar into the same tall slot
+    /// once per [`crate::primitives::toolbar::ToolbarVAlign`] variant and
+    /// confirm the row of the first painted (non-background) pixel moves
+    /// accordingly — `Top` paints highest, `Bottom` lowest.
     #[test]
     fn multi_row_valign_moves_painted_text_vertically() {
         use crate::primitives::toolbar::ToolbarVAlign;

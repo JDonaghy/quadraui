@@ -5,12 +5,9 @@
 //! the given area. Returns [`CommandCenterLayout`] for caller click
 //! dispatch.
 //!
-//! ## Scope omissions (follow-up)
-//!
-//! - **Rounded search-box border** — GTK strokes a 4 px-radius
-//!   rounded rect. macOS for #38 draws a 1-pt straight rectangle
-//!   border (CG path API needed for proper rounded corners). Visual
-//!   parity tracked separately; geometry + hit regions identical.
+//! The search-box border is a 1-pt straight rectangle (CG path API
+//! needed for proper rounded corners). Geometry and hit regions match
+//! the GTK implementation.
 
 use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
@@ -288,14 +285,9 @@ mod tests {
 
     #[test]
     fn hit_test_resolves_back_forward_search_at_nonzero_origin() {
-        // Regression for quadraui#494 / LESSONS.md "Layout helpers must
-        // return coords in the same frame across backends": every other
-        // test in this file lays out at origin (0, 0). `mac_command_
-        // center_layout` bakes `x`/`y` straight into `back_bounds` /
-        // `forward_bounds` / `search_bounds` (absolute frame, matching
-        // the GTK/TUI twins) — call it directly (pure fn, no paint
-        // needed) at a non-zero origin and prove clicks at the
-        // resulting absolute bounds still resolve through `hit_test`.
+        // Layout helpers must return coords in the same frame across backends:
+        // `mac_command_center_layout` bakes `x`/`y` straight into the bounds
+        // (absolute frame, matching the GTK/TUI twins). Test non-zero origin.
         let cc = sample_cc();
         let f = font();
         let layout = mac_command_center_layout(&cc, &f, 7.0, 13.0, W as f64, H as f64);

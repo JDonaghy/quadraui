@@ -7,7 +7,7 @@
 //! Returns a [`TabBarHits`] carrying per-tab + per-segment screen
 //! bounds for the caller's click dispatch.
 //!
-//! ## Scope omissions (follow-up after the #38 chrome batch)
+//! ## Scope omissions
 //!
 //! - **Italic preview tabs** — needs an italic-variant `CTFont` via
 //!   `CTFontCreateCopyWithSymbolicTraits`. Same dependency as bold
@@ -16,33 +16,28 @@
 //!   active font.
 //! - **Rounded close-button hover background** — the GTK rasteriser
 //!   draws a 3 px rounded rect under the close glyph on hover. macOS
-//!   uses a simpler approach for #38: tint the close glyph itself
-//!   (`theme.foreground`) when hovered. Visual parity with GTK is
-//!   tracked separately.
+//!   uses a simpler approach: tint the close glyph itself
+//!   (`theme.foreground`) when hovered.
 //!
-//! ## Still a per-backend paint loop (#1081 did NOT migrate `TabBar`)
+//! ## Per-backend paint loop
 //!
 //! Unlike `macos::menu_bar` / `macos::toolbar` / `macos::activity_bar`,
-//! which `PaintSurface` Phase 4 slice 5/8 collapsed into
-//! `primitives::<name>::native_surface_paint::paint`, every pixel this
-//! module paints is still Core Graphics-specific and still triplicated
-//! with `gtk::tab_bar` / `win::tab_bar`. Of the five rows in that drift
-//! table, macOS matches GTK on two — active-tab background and active-tab
-//! top accent (rounded, y-inset chip; 1 px accent on the chip's own inset
-//! top edge) — and drifts on three: the two "Scope omissions" above
-//! (close-button hover backdrop, italic preview tabs) plus
+//! every pixel this module paints is still Core Graphics-specific and
+//! still triplicated with `gtk::tab_bar` / `win::tab_bar`. Of the five
+//! rows in the drift table, macOS matches GTK on two — active-tab
+//! background and active-tab top accent (rounded, y-inset chip; 1 px
+//! accent on the chip's own inset top edge) — and drifts on three:
+//! the two "Scope omissions" above plus
 //! [`crate::primitives::tab_bar::TabFrame::Brackets`] framing. Windows
 //! drifts on all five rows. **This backend is the blocker**:
-//! `mac_tab_bar_layout_icons` /
-//! `mac_tab_bar_native_layout_icons` below still derive geometry
-//! themselves instead of going through the shared
-//! [`crate::primitives::layout_metrics::pixel_tab_bar_layout`] that
-//! `gtk::tab_bar` and `win::tab_bar` already use, and they size
+//! `mac_tab_bar_layout_icons` / `mac_tab_bar_native_layout_icons`
+//! below still derive geometry themselves instead of going through the
+//! shared [`crate::primitives::layout_metrics::pixel_tab_bar_layout`]
+//! that `gtk::tab_bar` and `win::tab_bar` already use, and they size
 //! `close_bounds` by a different convention (`CLOSE_PAD` around the
 //! glyph, rather than `tab_inner_gap + close_glyph_w` before it). See
-//! [`crate::primitives::tab_bar`]'s "`PaintSurface` migration status"
-//! section for the full drift table and why #1081 stays open rather than
-//! closing as complete.
+//! [`crate::primitives::tab_bar`]'s drift documentation for the full
+//! table and remaining work.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
@@ -51,12 +46,9 @@ use super::cg::*;
 
 use super::backend::ns_fill_rounded_rect;
 use super::text::{draw_text, measure_text};
-// `TabBarHits` is `#[deprecated]` (issue #823) — this whole module's job is
-// still converting a computed `TabBarLayout` into one per paint/no-paint
-// call (see `mac_tab_bar_layout_icons`'s doc — issue #1080 made it derive
-// from `mac_tab_bar_native_layout_icons` instead of independently
-// recomputing the same geometry, per #504's original audit), so the
-// import needs the same allow every use site below does.
+// `TabBarHits` is `#[deprecated]` — this module converts a computed
+// `TabBarLayout` into one per paint/no-paint call, so the import needs
+// the same allow every use site below does.
 use crate::event::Rect;
 use crate::primitives::tab_bar::{
     tab_icon_at, TabBarHit, TabBarLayout, TabIcon, VisibleSegment, VisibleTab,
@@ -82,7 +74,7 @@ const ACCENT_HEIGHT: f64 = 1.0;
 const CELL_WIDTH_SAMPLE: &str = "ABCDabcd0123.:_";
 /// Slack added either side of the close glyph when building its hit box.
 const CLOSE_PAD: f64 = 2.0;
-/// Gap between a tab's icon glyph (see [`TabIcon`]) and its label (#926).
+/// Gap between a tab's icon glyph (see [`TabIcon`]) and its label.
 /// Same value as [`crate::gtk::tab_bar`]'s `TAB_ICON_GAP`, so a decorated
 /// tab is the same shape on both pixel backends.
 const TAB_ICON_GAP: f64 = 6.0;
@@ -133,15 +125,43 @@ pub(crate) fn mac_tab_icon_extras(
         .collect()
 }
 
+/// Per-tab extra width (points) reserved for an icon glyph plus
+/// [`TAB_ICON_GAP`], indexed like `bar.tabs`. `0.0` for every tab without
+/// an icon, so an icon-less tab keeps byte-identical width and hit-test
+/// geometry to the pre-#926 rasteriser (and `&[]` reproduces it exactly).
+///
+/// This is the CoreText icon-width pass. Every geometry consumer goes
+/// through it — [`mac_tab_bar_layout_icons`],
+/// [`mac_tab_bar_native_layout_icons`] and [`draw_tab_bar_icons`]'s paint
+/// loop — which keeps a tab's close-button hit box on the glyph it draws
+/// once an icon shifts the label right.
+///
+/// # Font choice — the current font, not a swapped-in icon family
+///
+/// Unlike GTK (`gtk::tab_bar::tab_icon_font`, which replaces the family
+/// with `Symbols Nerd Font`), macOS measures and paints the glyph with
+/// whatever font [`crate::Backend::set_current_font`] installed. That is
+/// this backend's established convention for every other glyph it draws —
+/// see [`super::activity_bar::draw_activity_bar`]'s doc, which makes the
+/// same choice for [`crate::Icon`] — and it is what keeps measure and
+/// paint using one font by construction: a family swap here would need
+/// the same swap in the paint loop or the reservation would not match the
+/// ink. A caller whose font carries no icon codepoints gets tofu of the
+/// measured width, not misplaced hit boxes.
+#[allow(deprecated)]
+pub fn mac_tab_bar_layout(font: &CTFont, width: f64, bar: &TabBar) -> TabBarHits {
+    mac_tab_bar_layout_icons(font, width, bar, &[])
+}
+
 /// Compute the [`TabBarHits`] [`draw_tab_bar`] would produce for `bar` at
 /// `width`, without painting.
 ///
 /// This is the single measurement path: [`draw_tab_bar`] calls it too and
 /// paints from its output, so the no-paint twin backing
 /// [`crate::Backend::tab_bar_layout`] cannot drift from what was painted.
-/// Since #926 both spellings go through [`mac_tab_bar_layout_icons`] with
-/// an empty icon sidecar, which is equivalent point for point — pass a
-/// real sidecar to that function to decorate tabs.
+/// Both spellings go through [`mac_tab_bar_layout_icons`] with an empty
+/// icon sidecar, which is equivalent point for point — pass a real sidecar
+/// to that function to decorate tabs.
 ///
 /// # Coordinate space — bar-relative here; callers shift to absolute
 ///
@@ -153,45 +173,15 @@ pub(crate) fn mac_tab_icon_extras(
 /// owes it — [`crate::macos::MacBackend::draw_tab_bar_icons`]'s paint path
 /// and [`crate::macos::MacBackend::tab_bar_layout_icons`]'s no-paint twin —
 /// runs this function's output through
-/// [`crate::backend::shift_tab_bar_hits`] with `rect.x` (issue #552 /
-/// #934), the same TUI / GTK convention. `MacBackend::draw_tab_bar_icons`
-/// additionally wraps its CGContext in `CGContextTranslateCTM(ctx, rect.x,
-/// rect.y)` before calling [`draw_tab_bar_icons`] below, so the ink lands
-/// at the shifted hits' position too — mirroring
-/// `GtkBackend::draw_activity_bar`'s `cr.translate` and this crate's own
-/// `MacBackend::draw_activity_bar`. What this function guarantees is the
-/// invariant that is actually load-bearing: `tab_bar_layout` returns
-/// exactly what `draw_tab_bar` painted, once both are shifted the same way.
-#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-pub fn mac_tab_bar_layout(font: &CTFont, width: f64, bar: &TabBar) -> TabBarHits {
-    mac_tab_bar_layout_icons(font, width, bar, &[])
-}
-
-/// [`mac_tab_bar_layout`] with a per-tab icon sidecar (#926).
-///
-/// `icons` is parallel to `bar.tabs` (see
-/// [`crate::Backend::tab_bar_layout_icons`]) — entry `i` decorates tab
-/// `i`, a `None` or missing entry means "no icon", and `&[]` reproduces
-/// [`mac_tab_bar_layout`] point for point. Each decorated tab reserves
-/// [`mac_tab_icon_extras`]' width ahead of its label, which shifts that
-/// tab's label *and* its close-glyph hit box right by the same amount.
-///
-/// # Issue #1080: derived from [`mac_tab_bar_native_layout_icons`]
-///
-/// Before #1080 this function independently recomputed every slot/
-/// close-box expression [`mac_tab_bar_native_layout_icons`] also
-/// computes, the second of macOS's two near-identical composition copies
-/// this issue's "~9 near-identical copies" count includes. Since both
-/// functions build the *exact same* geometry (the pre-#1080
-/// `native_layout_agrees_with_hits_layout` test pinned that equivalence
-/// byte-for-byte), this now derives its `TabBarHits` directly from the
-/// canonical `TabBarLayout` composition via
-/// [`crate::backend::tab_bar_hits_from_layout`], instead of maintaining
-/// a second copy of the same arithmetic. `height` only feeds
-/// `TabBarLayout::visible_tabs[].bounds.height`, never the x-geometry
-/// `tab_bar_hits_from_layout` reads, so a nominal value is safe to pass
-/// here where no real row height is available.
-#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+/// [`crate::backend::shift_tab_bar_hits`] with `rect.x`, the same TUI /
+/// GTK convention. `MacBackend::draw_tab_bar_icons` additionally wraps its
+/// CGContext in `CGContextTranslateCTM(ctx, rect.x, rect.y)` before calling
+/// [`draw_tab_bar_icons`] below, so the ink lands at the shifted hits'
+/// position too — mirroring `GtkBackend::draw_activity_bar`'s `cr.translate`
+/// and this crate's own `MacBackend::draw_activity_bar`. What this function
+/// guarantees is the invariant that is actually load-bearing: `tab_bar_layout`
+/// returns exactly what `draw_tab_bar` painted, once both are shifted the same way.
+#[allow(deprecated)]
 pub fn mac_tab_bar_layout_icons(
     font: &CTFont,
     width: f64,
@@ -201,9 +191,7 @@ pub fn mac_tab_bar_layout_icons(
     let native = mac_tab_bar_native_layout_icons(font, width, 1.0, bar, icons);
     let mut hits = crate::backend::tab_bar_hits_from_layout(&native, bar);
     // `mac_tab_bar_native_layout_icons`'s `resolved_scroll_offset` is the
-    // same "engine feedback" value this function used to compute
-    // independently (see that function's own scroll-offset comment: it's
-    // never applied to *this* frame's `visible_tabs`, only reported back).
+    // scroll-offset value this function reports back as engine feedback.
     hits.correct_scroll_offset = native.resolved_scroll_offset;
 
     // Cell-width estimation: 15-char sample width / 15 → average glyph
@@ -222,25 +210,18 @@ pub fn mac_tab_bar_layout_icons(
     hits
 }
 
-/// Compute the [`TabBarLayout`] [`draw_tab_bar`] paints, without
-/// painting — issue #919's `TabBarLayout`-returning counterpart to
-/// [`mac_tab_bar_layout`], backing [`crate::Backend::resolve_tab_bar_layout`].
+/// Compute the [`TabBarLayout`] [`draw_tab_bar`] paints, without painting.
 ///
 /// # This is the canonical composition — `mac_tab_bar_layout` derives from it
 ///
 /// Every other backend derives its `TabBarHits` by calling
 /// [`crate::TabBar::layout`] (the shared D6 layout API) and narrowing the
 /// resulting `TabBarLayout` down via
-/// [`crate::backend::tab_bar_hits_from_layout`]. macOS never adopted that
-/// path either (#504's audit noted it measures and positions tabs by
-/// hand, one `f64` tuple at a time) — but as of #1080,
-/// [`mac_tab_bar_layout_icons`] no longer keeps its own independent copy
-/// of this arithmetic: it calls this function and narrows the result via
-/// [`crate::backend::tab_bar_hits_from_layout`], the same pattern
-/// `gtk`/`win` use. `native_layout_agrees_with_hits_layout` (below), which
-/// used to pin two independently-computed geometries against each other,
-/// now pins a derived value against its own source — still worth keeping
-/// as a regression guard on the derivation itself.
+/// [`crate::backend::tab_bar_hits_from_layout`]. macOS measures and
+/// positions tabs by hand, one `f64` tuple at a time, but as of now
+/// [`mac_tab_bar_layout_icons`] calls this function and narrows the result
+/// via [`crate::backend::tab_bar_hits_from_layout`], the same pattern
+/// `gtk`/`win` use.
 ///
 /// # Coordinate space — bar-relative, matching `mac_tab_bar_layout`
 ///
@@ -260,7 +241,7 @@ pub fn mac_tab_bar_native_layout(
     mac_tab_bar_native_layout_icons(font, width, height, bar, &[])
 }
 
-/// [`mac_tab_bar_native_layout`] with a per-tab icon sidecar (#926) — the
+/// [`mac_tab_bar_native_layout`] with a per-tab icon sidecar — the
 /// `TabBarLayout`-returning twin of [`mac_tab_bar_layout_icons`], backing
 /// [`crate::Backend::resolve_tab_bar_layout_icons`].
 ///
@@ -306,8 +287,7 @@ pub fn mac_tab_bar_native_layout_icons(
         }
     };
 
-    // #926's icon-width pass — same call, same values as
-    // `mac_tab_bar_layout_icons`'.
+    // Icon-width pass — same call, same values as `mac_tab_bar_layout_icons`'.
     let icon_extras = mac_tab_icon_extras(font, bar.tabs.len(), icons);
 
     // Pre-measure every tab's full slot width — used for scroll-offset
@@ -428,7 +408,7 @@ pub fn mac_tab_bar_native_layout_icons(
 /// the call (typical: the frame-scope pointer stashed on
 /// [`super::MacBackend`]). Calling with a freed or null pointer is UB.
 #[allow(clippy::too_many_arguments)]
-#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+#[allow(deprecated)]
 pub unsafe fn draw_tab_bar(
     ctx: CGContextRef,
     font: &CTFont,
@@ -454,8 +434,7 @@ pub unsafe fn draw_tab_bar(
     )
 }
 
-/// [`draw_tab_bar`] plus per-tab icon glyphs (#926, closing the #620
-/// follow-up gap on macOS).
+/// [`draw_tab_bar`] plus per-tab icon glyphs.
 ///
 /// `icons` is a sidecar slice parallel to `bar.tabs` (see
 /// [`crate::Backend::draw_tab_bar_icons`]) — entry `i` decorates tab `i`,
@@ -474,13 +453,12 @@ pub unsafe fn draw_tab_bar(
 /// `(0, y_offset, width, row_height)` in `ctx`'s *current* coordinate
 /// space and returns bar-relative `TabBarHits`. It does not take an
 /// `x_offset` — [`crate::macos::MacBackend::draw_tab_bar_icons`] instead
-/// wraps this call in `CGContextTranslateCTM(ctx, rect.x, rect.y)` (issue
-/// #934) so the ink lands at the bar's real screen position, and
-/// separately shifts the returned hits by `rect.x` via
-/// [`crate::backend::shift_tab_bar_hits`] so they still describe exactly
-/// what was painted. Mirrors `MacBackend::draw_activity_bar`'s identical
-/// CTM-translate treatment of the (also bar-relative)
-/// `super::activity_bar::draw_activity_bar`.
+/// wraps this call in `CGContextTranslateCTM(ctx, rect.x, rect.y)` so the
+/// ink lands at the bar's real screen position, and separately shifts the
+/// returned hits by `rect.x` via [`crate::backend::shift_tab_bar_hits`] so
+/// they still describe exactly what was painted. Mirrors
+/// `MacBackend::draw_activity_bar`'s identical CTM-translate treatment of
+/// the (also bar-relative) `super::activity_bar::draw_activity_bar`.
 ///
 /// # Safety
 ///
@@ -488,7 +466,7 @@ pub unsafe fn draw_tab_bar(
 /// call (typical: the frame-scope pointer stashed on [`super::MacBackend`]).
 /// Calling with a freed or null pointer is UB.
 #[allow(clippy::too_many_arguments)]
-#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+#[allow(deprecated)]
 pub unsafe fn draw_tab_bar_icons(
     ctx: CGContextRef,
     font: &CTFont,
@@ -576,7 +554,7 @@ pub unsafe fn draw_tab_bar_icons(
             }
         }
 
-        // Icon glyph (#926), at the tab's leading edge in its own colour.
+        // Icon glyph, at the tab's leading edge in its own colour.
         // `icon_extras[tab_idx]` is the glyph's measured width plus
         // `TAB_ICON_GAP`, so the label below starts one gap past the ink.
         let icon_extra = icon_extras[tab_idx];
@@ -677,23 +655,20 @@ mod tests {
         make_font("Menlo", FONT_SIZE).expect("Menlo installed")
     }
 
-    /// A backend whose *editor* and *chrome* fonts are both this
-    /// module's `font()`.
+    /// A backend whose *editor* and *chrome* fonts are both this module's
+    /// `font()`.
     ///
-    /// Issue #1003 moved the tab bar onto the chrome font
-    /// (`ChromePrimitive::TabBar`): `draw_tab_bar`/`draw_tab_bar_icons`
-    /// and their no-paint `tab_bar_layout*` twins now measure and paint
-    /// through `MacBackend::chrome_font`, which `MacBackend::new` seeds
-    /// with the ~11pt **system UI** font. A harness that set only the
-    /// editor font would therefore paint at a size no assertion here
-    /// knows about, while the `mac_tab_bar_layout*`/`mac_tab_icon_extras`
-    /// expectations several tests compute directly still used `font()` —
-    /// the two would disagree about every slot boundary and glyph
-    /// position. Setting both keeps every assertion in this module about
-    /// tab-bar geometry at a known `FONT_SIZE`, rather than about
-    /// whichever metrics the system UI font happens to have on the
-    /// running host. Same fix, same reason, as
-    /// `macos::status_bar`'s `backend_with_test_fonts` (#963).
+    /// The tab bar now uses the chrome font (`ChromePrimitive::TabBar`):
+    /// `draw_tab_bar`/`draw_tab_bar_icons` and their no-paint `tab_bar_layout*`
+    /// twins now measure and paint through `MacBackend::chrome_font`, which
+    /// `MacBackend::new` seeds with the ~11pt **system UI** font. A harness
+    /// that set only the editor font would therefore paint at a size no
+    /// assertion here knows about, while the `mac_tab_bar_layout*`/
+    /// `mac_tab_icon_extras` expectations several tests compute directly
+    /// still used `font()` — the two would disagree about every slot boundary
+    /// and glyph position. Setting both keeps every assertion in this module
+    /// about tab-bar geometry at a known `FONT_SIZE`, rather than about
+    /// whichever metrics the system UI font happens to have on the running host.
     fn backend_with_test_fonts() -> MacBackend {
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
@@ -732,7 +707,7 @@ mod tests {
     /// and return `(surface, hits)` for inspection. Mirrors the
     /// status_bar harness so future chrome tests follow the same
     /// shape.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn paint_via_backend(
         bar: &TabBar,
         hovered_close: Option<usize>,
@@ -752,7 +727,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn active_tab_paints_active_bg() {
         // The active tab's bg differs from `tab_bar_bg`. Probe the
         // vertical middle of the row, past the leading padding — safely
@@ -863,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn active_accent_paints_at_top_of_active_tab_chip() {
         // The accent strip paints on the chip's own inset top edge,
         // mirroring `gtk::tab_bar`'s treatment, rather than the strip's
@@ -895,7 +870,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn close_bounds_round_trip_via_hits_struct() {
         // Round-trip: paint, then sample a coordinate inside the
         // reported close-bounds and assert the hits struct's bounds
@@ -927,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn dirty_tab_uses_filled_circle_glyph() {
         // `is_dirty` swaps the close glyph for a codicon filled circle
         // (`crate::codicon::DIRTY`). We can't easily compare glyph
@@ -987,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn non_closable_tab_has_no_close_bounds_even_when_bar_show_close_is_true() {
         // Regression: `bar.show_tab_close = true` is a bar-level flag, but
         // individual tabs may opt out via `is_closable = false`. The macOS
@@ -1042,7 +1017,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn empty_bar_paints_only_tab_bar_bg() {
         let bar = TabBar {
             id: WidgetId::new("empty"),
@@ -1068,11 +1043,11 @@ mod tests {
 
     /// `Backend::tab_bar_layout` must return exactly what
     /// `draw_tab_bar` painted — both route through `mac_tab_bar_layout`,
-    /// and this pins that (quadraui#484). See that function's docs for
-    /// the known bar-relative-vs-absolute divergence (#552); what is
+    /// and this pins that. See that function's docs for
+    /// the known bar-relative-vs-absolute divergence; what is
     /// guaranteed here is that layout == paint.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn layout_twin_matches_the_painted_hits() {
         let bar = sample_bar();
         let (_surface, painted) = paint_via_backend(&bar, None);
@@ -1090,17 +1065,15 @@ mod tests {
         );
     }
 
-    /// Issue #919: `mac_tab_bar_native_layout` — the new `TabBarLayout`-
-    /// returning function backing `Backend::resolve_tab_bar_layout` —
-    /// must report exactly the same geometry `mac_tab_bar_layout`
-    /// (the deprecated `TabBarHits`-returning one) does, since the two
-    /// duplicate rather than share their measurement code (see
-    /// `mac_tab_bar_native_layout`'s doc for why). Converting the new
-    /// function's `TabBarLayout` through the shared
-    /// `tab_bar_hits_from_layout` helper and comparing field-by-field
-    /// against the old function's direct output pins the two together.
+    /// `mac_tab_bar_native_layout` — the `TabBarLayout`-returning function
+    /// backing `Backend::resolve_tab_bar_layout` — must report exactly the
+    /// same geometry `mac_tab_bar_layout` (the deprecated `TabBarHits`-returning
+    /// one) does, since the two duplicate rather than share their measurement
+    /// code. Converting the new function's `TabBarLayout` through the shared
+    /// `tab_bar_hits_from_layout` helper and comparing field-by-field against
+    /// the old function's direct output pins the two together.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn native_layout_agrees_with_hits_layout() {
         let bar = sample_bar();
         let f = font();
@@ -1131,7 +1104,7 @@ mod tests {
     /// glyph the rasteriser actually drew — the paint↔click round trip
     /// the shared `mac_tab_bar_layout` exists to guarantee.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn close_box_centre_is_where_the_glyph_was_painted() {
         let bar = sample_bar();
         let (surface, hits) = paint_via_backend(&bar, None);
@@ -1161,12 +1134,12 @@ mod tests {
         );
     }
 
-    /// A helper for the #926 icon tests: drive a paint through the full
-    /// `MacBackend::draw_tab_bar_icons` path with a real sidecar and
-    /// return `(surface, hits)`. Deliberately the icon-carrying twin of
+    /// A helper for icon tests: drive a paint through the full
+    /// `MacBackend::draw_tab_bar_icons` path with a real sidecar and return
+    /// `(surface, hits)`. Deliberately the icon-carrying twin of
     /// [`paint_via_backend`], so a test can compare the two outputs and
     /// attribute every delta to the icon reservation.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn paint_icons_via_backend(
         bar: &TabBar,
         icons: &[Option<TabIcon>],
@@ -1207,15 +1180,12 @@ mod tests {
         ]
     }
 
-    /// Issue #931: `draw_tab_bar_icons` used to abort the whole process
-    /// (via a `debug_assert!` that unwound across the AppKit `drawRect:`
-    /// frame, which AppKit can't catch) on the first frame that painted a
-    /// **non-empty** icon sidecar — exactly the input a default
-    /// `use_nerd_fonts = true` app hits on frame one. Reaching the
-    /// assertions below at all is that regression test; #926 then made the
-    /// sidecar actually *do* something, which the width assertions pin.
+    /// `draw_tab_bar_icons` with a non-empty icon sidecar must not abort;
+    /// reaching the assertions below at all is that regression test. The width
+    /// assertions pin that the sidecar actually does something: the decorated
+    /// tab is wider than its icon-less self.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn draw_tab_bar_icons_with_non_empty_sidecar_does_not_abort() {
         let bar = sample_bar();
         let icons = sample_icons();
@@ -1223,7 +1193,7 @@ mod tests {
         let (_surface, hits) = paint_icons_via_backend(&bar, &icons, None);
         let (_icon_less_surface, icon_less_hits) = paint_via_backend(&bar, None);
 
-        // #926: the decorated tab is wider than its icon-less self by
+        // The decorated tab is wider than its icon-less self by
         // exactly the CoreText-measured glyph width plus `TAB_ICON_GAP`.
         let expected_extra = mac_tab_icon_extras(&font(), bar.tabs.len(), &icons)[0];
         assert!(
@@ -1257,14 +1227,12 @@ mod tests {
         );
     }
 
-    /// Same #931 non-abort guarantee for the layout-only twins
-    /// (`draw_tab_bar_icons_layout`, `tab_bar_layout_icons`,
-    /// `resolve_tab_bar_layout_icons`) — none of these paint, but all four
-    /// shared the same `debug_assert!` guard before the fix — plus #926's
-    /// requirement that all four agree with the *painted* geometry once a
-    /// sidecar is present, not merely with each other.
+    /// The layout-only twins (`draw_tab_bar_icons_layout`, `tab_bar_layout_icons`,
+    /// `resolve_tab_bar_layout_icons`) must not abort, and all four must agree
+    /// with the *painted* geometry once a sidecar is present, not merely with
+    /// each other.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn layout_only_icon_twins_agree_with_the_icon_paint() {
         let bar = sample_bar();
         let icons = sample_icons();
@@ -1312,13 +1280,13 @@ mod tests {
         );
     }
 
-    /// Issue #926's headline guarantee: with an icon present, a click at
-    /// the centre of the reported close box still lands on the `×` the
-    /// rasteriser drew. This is precisely what a *paint-only* icon fix
-    /// would break — the glyph shifts right while the hit box stays put —
-    /// and why the reservation has to live in the shared measurement pass.
+    /// With an icon present, a click at the centre of the reported close box
+    /// still lands on the `×` the rasteriser drew. This is precisely what a
+    /// *paint-only* icon fix would break — the glyph shifts right while the hit
+    /// box stays put — and why the reservation has to live in the shared
+    /// measurement pass.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn close_box_still_lands_on_the_close_glyph_with_an_icon_present() {
         let bar = sample_bar();
         let icons = sample_icons();
@@ -1361,12 +1329,12 @@ mod tests {
         );
     }
 
-    /// The icon glyph paints at the tab's leading edge, ahead of the
-    /// label, in its own [`TabIcon::color`] rather than the tab foreground
-    /// (#926) — the "identity colour survives an inactive tab" half of the
-    /// `TabIcon` contract the TUI and GTK rasterisers already honour.
+    /// The icon glyph paints at the tab's leading edge, ahead of the label, in
+    /// its own [`TabIcon::color`] rather than the tab foreground — the
+    /// "identity colour survives an inactive tab" half of the `TabIcon`
+    /// contract the TUI and GTK rasterisers already honour.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn icon_glyph_paints_before_the_label_in_its_own_colour() {
         let bar = sample_bar();
         let icons = sample_icons();
@@ -1413,11 +1381,9 @@ mod tests {
     }
 
     /// An empty sidecar must reproduce the icon-less rasteriser *pixel for
-    /// pixel* — `draw_tab_bar` is now literally `draw_tab_bar_icons(..,
-    /// &[])`, and this is what keeps #926 a behaviour change only for
-    /// callers that actually pass icons.
+    /// pixel* — `draw_tab_bar` is now literally `draw_tab_bar_icons(.., &[])`.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn empty_sidecar_is_pixel_identical_to_the_icon_less_paint() {
         let bar = sample_bar();
         let (icon_surface, icon_hits) = paint_icons_via_backend(&bar, &[], None);
@@ -1441,7 +1407,7 @@ mod tests {
     /// `tab_icon_at` treats a missing entry as "no icon", the convention
     /// every backend's sidecar handling shares.
     #[test]
-    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    #[allow(deprecated)]
     fn short_and_overlong_sidecars_are_tolerated() {
         let bar = sample_bar();
         let f = font();
@@ -1552,10 +1518,9 @@ mod tests {
     }
 
     /// `mac_tab_bar_native_layout_icons` and `mac_tab_bar_layout_icons`
-    /// duplicate their measurement code (see the former's doc), so #919's
-    /// agreement test has to hold with a sidecar present too — #926's
-    /// reservation is applied in two places and this is what stops the two
-    /// from drifting.
+    /// duplicate their measurement code, so this test verifies they agree
+    /// with a sidecar present — the reservation must be applied in both places
+    /// to keep the implementations from drifting.
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn native_layout_agrees_with_hits_layout_with_icons() {
@@ -1576,18 +1541,14 @@ mod tests {
         assert_eq!(hits.correct_scroll_offset, native.resolved_scroll_offset);
     }
 
-    /// Issue #934 RED-verify: before the fix, `MacBackend::draw_tab_bar`
-    /// forwarded `rect.width` / `rect.y` into a rasteriser that always
-    /// painted its background flush against the CGContext's absolute
-    /// `x = 0`, ignoring `rect.x` entirely — colliding with whatever sits
-    /// to the left of the tab bar's real position (a sidebar, on the
-    /// reported bug). Painting at a `rect.x` that models a sidebar's
-    /// right edge must leave that sidebar column untouched and start the
-    /// tab bar's background exactly at `rect.x`.
+    /// `MacBackend::draw_tab_bar` must paint the tab bar background at `rect.x`,
+    /// not at the window origin. This test verifies that painting at a non-zero
+    /// `rect.x` (representing, for example, a sidebar's right edge) leaves the
+    /// area to the left untouched and starts the tab bar's background exactly
+    /// at `rect.x`.
     ///
-    /// Uses an empty bar (no tabs) so the whole strip is uniformly
-    /// `tab_bar_bg` — same reasoning as [`empty_bar_paints_only_tab_bar_bg`]
-    /// — so a probe anywhere in the strip can't land on an active tab's
+    /// Uses an empty bar (no tabs) so the whole strip is uniformly `tab_bar_bg`,
+    /// so a probe anywhere in the strip can't land on an active tab's
     /// differently-coloured slot instead.
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
@@ -1662,11 +1623,10 @@ mod tests {
         );
     }
 
-    /// Same invariant as [`layout_twin_matches_the_painted_hits`] above,
-    /// pinned at a non-zero `rect.x` — the case that #934 regressed on
-    /// before this fix (paint and no-paint must still agree once both are
-    /// shifted to the absolute contract `Backend::tab_bar_layout`
-    /// documents).
+    /// The layout must match the painted hits at non-zero `rect.x`, with the
+    /// same invariant as [`layout_twin_matches_the_painted_hits`] — paint and
+    /// layout must agree once both are shifted to the absolute contract that
+    /// `Backend::tab_bar_layout` documents.
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn layout_twin_matches_the_painted_hits_at_nonzero_origin() {
@@ -1691,13 +1651,10 @@ mod tests {
         assert_eq!(painted.slot_positions, computed.slot_positions);
         assert_eq!(painted.close_bounds, computed.close_bounds);
         assert_eq!(painted.right_segment_bounds, computed.right_segment_bounds);
-        // Non-blocking review note (#934 iteration 1): the zero-origin
-        // sibling `layout_twin_matches_the_painted_hits` also checks
-        // `available_cols`/`correct_scroll_offset` equality — neither
-        // depends on `rect.x` (both are pure functions of `rect.width` and
-        // the bar's own tab widths), but asserting them here too keeps
-        // this non-zero-origin case exercising the same fields the
-        // zero-origin case does, rather than a strict subset of them.
+        // Check `available_cols` and `correct_scroll_offset` too; these are pure
+        // functions of `rect.width` and the bar's tab widths, independent of `rect.x`,
+        // but exercising them here keeps this non-zero-origin case consistent with
+        // the zero-origin case.
         assert_eq!(painted.available_cols, computed.available_cols);
         assert_eq!(
             painted.correct_scroll_offset,
@@ -1708,27 +1665,11 @@ mod tests {
         assert!(painted.slot_positions[0].0 >= SIDEBAR_W as f64);
     }
 
-    /// Issue #934 review follow-up: the reported "editor toolbar" symptom
-    /// (three controls — split / actions / overflow — floating at the
-    /// wrong position) is not `crate::primitives::toolbar::Toolbar` (that
-    /// rasteriser, audited separately, already bakes `rect.x`/`rect.y`
-    /// absolutely and was never broken). It is `TabBar::right_segments` —
-    /// see `crate::primitives::tab_bar`'s module doc ("split buttons, diff
-    /// toolbar, overflow menu") — which paints through the exact same
-    /// `super::draw_tab_bar_icons` call, inside the exact same
-    /// `CGContextTranslateCTM(ctx, rect.x, 0.0)` wrap, that
-    /// [`tab_bar_paints_at_rect_x_not_at_window_origin`] proved fixes the
-    /// tabs. No test before this one exercised a non-empty
-    /// `right_segments` at a non-zero `rect.x`, so the fix's coverage of
-    /// this specific reported symptom was accidental, not verified.
-    ///
-    /// RED-verified by construction: pre-fix,
-    /// `MacBackend::draw_tab_bar`/`tab_bar_layout` never shifted
-    /// `TabBarHits` by `rect.x` at all (`shift_tab_bar_hits` didn't exist
-    /// yet), so `hits.right_segment_bounds[0]` would equal the bar-relative
-    /// `(rel_start, rel_end)` computed below, not `(rel_start + rect.x,
-    /// rel_end + rect.x)` — the `assert_eq!` fails pre-fix by exactly
-    /// `SIDEBAR_W`.
+    /// The reported symptom (controls in `TabBar::right_segments` floating at
+    /// the wrong position) occurs because `right_segments` paints through the
+    /// same `draw_tab_bar_icons` call inside the same `CGContextTranslateCTM`
+    /// wrap as the tabs themselves. This test verifies that `right_segment_bounds`
+    /// are shifted by `rect.x` just like the tab slot positions.
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn right_segments_are_shifted_by_rect_x_like_the_tabs() {
