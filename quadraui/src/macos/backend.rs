@@ -1222,6 +1222,34 @@ fn native_menu_bar_layout(rect: Rect) -> MenuBarLayout {
     }
 }
 
+/// Defensive clamp for [`MacBackend::draw_editor`] (`#1496`): both
+/// `editor.rect` and `viewport` are already in points (see [`Viewport`]'s
+/// doc), so no scale conversion is needed — this only ever shrinks
+/// `editor.rect`'s right/bottom edge back inside `viewport`, never moves
+/// its origin or grows it.
+///
+/// Returns `None` when `editor.rect` already fits (the overwhelmingly
+/// common case — no clone), and `None` rather than clamping at all when
+/// `viewport` is the all-zero default (`MacBackend::new` before its first
+/// `begin_frame`), so a backend used outside the normal
+/// `begin_frame` → `enter_frame_scope` → `draw_editor` sequence keeps
+/// today's unclamped behaviour instead of silently painting nothing.
+fn clamp_editor_rect_to_viewport(editor: &Editor, viewport: Viewport) -> Option<Editor> {
+    if viewport.width <= 0.0 || viewport.height <= 0.0 {
+        return None;
+    }
+    let rect = editor.rect;
+    let max_width = (viewport.width - rect.x).max(0.0);
+    let max_height = (viewport.height - rect.y).max(0.0);
+    if rect.width <= max_width && rect.height <= max_height {
+        return None;
+    }
+    let mut clamped = editor.clone();
+    clamped.rect.width = rect.width.min(max_width);
+    clamped.rect.height = rect.height.min(max_height);
+    Some(clamped)
+}
+
 impl Default for MacBackend {
     fn default() -> Self {
         Self::new()
@@ -3076,6 +3104,21 @@ impl Backend for MacBackend {
         let line_height = self.current_line_height;
         let char_width = self.current_char_width;
         let v_scrollbar_w = self.editor_v_scrollbar_w;
+        // `editor.rect` is the sole geometry
+        // `draw_editor_with_options_and_v_scrollbar_w` reads (see that
+        // function's module doc) — this trait method's own `_rect`
+        // argument is unused by design, same as `GtkBackend::draw_editor`
+        // (see `Backend::draw_editor`'s doc for the caller invariant that
+        // the two are expected to agree). When a host's `editor.rect`
+        // disagrees with this backend's real window bounds (`#1496`: a
+        // host-side rounding/DPI mismatch left `editor.rect` wider than
+        // the window), painting straight into it lays the reserved
+        // scrollbar column mostly or wholly past the right edge, leaving
+        // only a sliver visible. Clamp a defensive copy so nothing this
+        // rasteriser paints — least of all the scrollbar track — can
+        // extend past the real viewport.
+        let clamped = clamp_editor_rect_to_viewport(editor, self.viewport);
+        let editor = clamped.as_ref().unwrap_or(editor);
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::editor::draw_editor_with_options_and_v_scrollbar_w(
