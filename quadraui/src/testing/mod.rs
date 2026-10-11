@@ -613,6 +613,33 @@ pub trait ConformanceDriver: Sized {
 // was byte-for-byte identical across all three, so there was only one
 // reasonable choice.
 
+// Crate-internal test switch for `Backend::tree_paints_own_scrollbar`, kept
+// off `RecordingBackend`'s public fields: that struct is exhaustively
+// constructible, so any new field is a semver break (cargo-semver-checks).
+#[cfg(test)]
+thread_local! {
+    static TREE_PAINTS_OWN_SCROLLBAR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Makes every `RecordingBackend` on this thread report
+/// `tree_paints_own_scrollbar() == value` until the guard drops.
+#[cfg(test)]
+pub(crate) struct TreePaintsOwnScrollbar(bool);
+
+#[cfg(test)]
+impl TreePaintsOwnScrollbar {
+    pub(crate) fn set(value: bool) -> Self {
+        Self(TREE_PAINTS_OWN_SCROLLBAR.with(|c| c.replace(value)))
+    }
+}
+
+#[cfg(test)]
+impl Drop for TreePaintsOwnScrollbar {
+    fn drop(&mut self) {
+        TREE_PAINTS_OWN_SCROLLBAR.with(|c| c.set(self.0));
+    }
+}
+
 /// A batteries-included, fully-implemented [`Backend`] for unit tests
 /// that need *some* backend to hand a controller — not a specific
 /// backend's real rendering. Reports an 80×24, TUI-cell-shaped viewport
@@ -657,12 +684,6 @@ pub struct RecordingBackend {
     /// honestly fabricate, so it's included rather than
     /// `unimplemented!()`.
     pub focus: crate::focus::FocusManager,
-    /// Reported by [`Backend::tree_paints_own_scrollbar`]. `false` by
-    /// default, matching TUI. Set to `true` to exercise the branch
-    /// GTK/macOS/Win take, where [`Backend::draw_tree`] already paints
-    /// an overlay scrollbar and a host must not also call
-    /// [`Backend::draw_scrollbar`] for the same tree.
-    pub tree_paints_own_scrollbar: bool,
 }
 
 impl Default for RecordingBackend {
@@ -677,7 +698,6 @@ impl Default for RecordingBackend {
             line_height: 1.0,
             char_width: 1.0,
             focus: crate::focus::FocusManager::new(),
-            tree_paints_own_scrollbar: false,
         }
     }
 }
@@ -1093,7 +1113,14 @@ impl crate::Backend for RecordingBackend {
         tree.vscrollbar(rect, self.line_height())
     }
     fn tree_paints_own_scrollbar(&self) -> bool {
-        self.tree_paints_own_scrollbar
+        #[cfg(test)]
+        {
+            TREE_PAINTS_OWN_SCROLLBAR.with(std::cell::Cell::get)
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
     }
     fn form_layout(&self, _r: Rect, _f: &crate::Form) -> crate::primitives::form::FormLayout {
         unimplemented!("RecordingBackend has no Form layout algorithm")
