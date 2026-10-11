@@ -357,7 +357,12 @@ impl TreeView {
     ///   on pixel backends. Deliberately independent of `row_height`:
     ///   VS Code's list/tree scrollbar is a fixed 10px regardless of row
     ///   pitch.
-    pub fn vscrollbar_with_track_width(&self, area: Rect, row_height: f32, track_width: f32) -> Option<Scrollbar> {
+    pub fn vscrollbar_with_track_width(
+        &self,
+        area: Rect,
+        row_height: f32,
+        track_width: f32,
+    ) -> Option<Scrollbar> {
         if row_height <= 0.0 || track_width <= 0.0 {
             return None;
         }
