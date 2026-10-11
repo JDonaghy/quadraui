@@ -615,12 +615,17 @@ pub(crate) mod native_surface_paint {
                     def_fg
                 };
                 let (sw, sh) = surface.surface_measure_text_styled(&span.text, span.bold);
-                let (paint_text, paint_w) = if !needs_ellipsis || sw <= remaining {
-                    (span.text.clone(), sw)
+                let (paint_text, paint_w, truncated) = if !needs_ellipsis || sw <= remaining {
+                    (span.text.clone(), sw, false)
                 } else {
-                    crate::paint_surface::fit_text_prefix(surface, &span.text, span.bold, remaining)
+                    let (t, w) = crate::paint_surface::fit_text_prefix(
+                        surface, &span.text, span.bold, remaining,
+                    );
+                    (t, w, true)
                 };
-                if paint_w <= 0.0 {
+                if truncated && paint_w <= 0.0 {
+                    // Truncation left no room even for an ellipsis-only
+                    // prefix, so every later span is fully overflowed too.
                     break;
                 }
                 if let Some(sbg) = span.bg {
@@ -748,7 +753,9 @@ pub(crate) mod native_surface_paint {
         use crate::backend::ImagePaintResult;
         use crate::event::{Point, Viewport};
         use crate::primitives::tree::TreeRow;
-        use crate::types::{Badge, Color, SelectionMode, StyledText, TreeStyle, WidgetId};
+        use crate::types::{
+            Badge, Color, SelectionMode, StyledSpan, StyledText, TreeStyle, WidgetId,
+        };
         use crate::Image;
 
         /// Records every fill + text-run call — mirrors
@@ -1152,6 +1159,39 @@ pub(crate) mod native_surface_paint {
             assert!(
                 surface.texts.iter().any(|(_, t, _)| t == "U"),
                 "badge text should still paint when the label is ellipsized, got texts: {:?}",
+                surface.texts
+            );
+        }
+
+        /// A span whose own `text` is simply `""` (a legitimate pattern —
+        /// see `compose::help_layer`'s `StyledSpan::plain("")`) must not be
+        /// mistaken for a span truncated to nothing: its natural zero
+        /// width must not stop later, non-overflowing spans in the same
+        /// row from painting.
+        #[test]
+        fn empty_leading_span_does_not_swallow_later_spans() {
+            let mut row = leaf(0, "placeholder");
+            row.text = StyledText {
+                spans: vec![StyledSpan::plain(""), StyledSpan::plain("ok")],
+            };
+            let tree = make_tree(vec![row]);
+            let layout =
+                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+            );
+
+            assert!(
+                surface.texts.iter().any(|(_, t, _)| t == "ok"),
+                "a span after an empty, non-truncated span must still paint, got texts: {:?}",
                 surface.texts
             );
         }

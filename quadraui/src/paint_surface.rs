@@ -490,6 +490,11 @@ pub trait PaintSurface {
 /// text-shaping backend behind [`PaintSurface`] does (Pango on GTK, Core
 /// Text on macOS, DirectWrite on Windows) — that appending characters never
 /// *decreases* measured width.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub(crate) fn fit_text_prefix(
     surface: &dyn PaintSurface,
     text: &str,
@@ -732,9 +737,19 @@ mod tests {
 
     /// A deterministic 8px-per-char measurer, so `fit_text_prefix`'s
     /// binary search can be checked against hand-computed widths.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[derive(Default)]
     struct WidthSurface;
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     impl PaintSurface for WidthSurface {
         fn surface_begin_frame(&mut self, _viewport: Viewport) {}
         fn surface_end_frame(&mut self) {}
@@ -762,6 +777,11 @@ mod tests {
         }
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn fit_text_prefix_returns_whole_text_unchanged_budget_irrelevant_when_caller_checks_first() {
         // `fit_text_prefix` always appends `…`, even when the full text
@@ -774,6 +794,11 @@ mod tests {
         assert_eq!(w, 3.0 * 8.0);
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn fit_text_prefix_finds_longest_fitting_prefix() {
         let surface = WidthSurface;
@@ -785,6 +810,11 @@ mod tests {
         assert_eq!(w, 48.0);
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn fit_text_prefix_with_budget_too_small_for_even_the_ellipsis_returns_empty() {
         let surface = WidthSurface;
@@ -793,6 +823,11 @@ mod tests {
         assert_eq!(w, 0.0);
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn fit_text_prefix_with_budget_for_only_the_ellipsis_returns_bare_ellipsis() {
         let surface = WidthSurface;
