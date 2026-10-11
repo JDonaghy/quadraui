@@ -478,6 +478,56 @@ pub trait PaintSurface {
     fn surface_draw_image(&mut self, rect: Rect, image: &Image) -> ImagePaintResult;
 }
 
+/// Find the longest prefix of `text` (snapped to a `char` boundary) whose
+/// measured width, with a trailing `…` appended, fits within `max_width`.
+///
+/// Returns the prefix-plus-ellipsis string and its measured width. If even
+/// a bare `…` does not fit, returns an empty string and width `0.0`. If the
+/// whole of `text` already fits in `max_width`, callers should paint `text`
+/// directly instead of calling this — it always appends `…`.
+///
+/// Binary-searches over `char` count rather than bytes, assuming — as every
+/// text-shaping backend behind [`PaintSurface`] does (Pango on GTK, Core
+/// Text on macOS, DirectWrite on Windows) — that appending characters never
+/// *decreases* measured width.
+pub(crate) fn fit_text_prefix(
+    surface: &dyn PaintSurface,
+    text: &str,
+    bold: bool,
+    max_width: f32,
+) -> (String, f32) {
+    const ELLIPSIS: char = '…';
+    let (ellipsis_w, _) = surface.surface_measure_text_styled(&ELLIPSIS.to_string(), bold);
+    if ellipsis_w > max_width {
+        return (String::new(), 0.0);
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut lo = 0usize;
+    let mut hi = chars.len();
+    // Invariant: `lo` chars plus the ellipsis is known to fit; `hi` is
+    // known not to (or is the full length, still unproven).
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        let prefix: String = chars[..mid].iter().collect();
+        let candidate = format!("{prefix}{ELLIPSIS}");
+        let (w, _) = surface.surface_measure_text_styled(&candidate, bold);
+        if w <= max_width {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    if lo == 0 {
+        return (ELLIPSIS.to_string(), ellipsis_w);
+    }
+    let prefix: String = chars[..lo].iter().collect();
+    let candidate = format!("{prefix}{ELLIPSIS}");
+    let (w, _) = surface.surface_measure_text_styled(&candidate, bold);
+    (candidate, w)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -678,5 +728,76 @@ mod tests {
         let rect = Rect::new(1.0, 2.0, 30.0, 40.0);
         surface.surface_stroke_rounded_rect(rect, 6.0, Color::rgb(9, 9, 9), 1.5);
         assert_eq!(surface.strokes, vec![(rect, Color::rgb(9, 9, 9), 1.5)]);
+    }
+
+    /// A deterministic 8px-per-char measurer, so `fit_text_prefix`'s
+    /// binary search can be checked against hand-computed widths.
+    #[derive(Default)]
+    struct WidthSurface;
+
+    impl PaintSurface for WidthSurface {
+        fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> Viewport {
+            Viewport::new(0.0, 0.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            14.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            8.0
+        }
+        fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+            (text.chars().count() as f32 * 8.0, 14.0)
+        }
+        fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+        fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+        fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+        fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+        fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _w: f32) {}
+        fn surface_push_clip(&mut self, _rect: Rect) {}
+        fn surface_pop_clip(&mut self) {}
+        fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+            ImagePaintResult::Unsupported
+        }
+    }
+
+    #[test]
+    fn fit_text_prefix_returns_whole_text_unchanged_budget_irrelevant_when_caller_checks_first() {
+        // `fit_text_prefix` always appends `…`, even when the full text
+        // would fit — callers are expected to check the unclipped width
+        // first and only call this once it doesn't. Documented here so a
+        // future caller doesn't assume otherwise.
+        let surface = WidthSurface;
+        let (fitted, w) = fit_text_prefix(&surface, "ab", false, 100.0);
+        assert_eq!(fitted, "ab…");
+        assert_eq!(w, 3.0 * 8.0);
+    }
+
+    #[test]
+    fn fit_text_prefix_finds_longest_fitting_prefix() {
+        let surface = WidthSurface;
+        // "hello world" is 11 chars * 8px = 88px. A 50px budget fits a
+        // prefix of 5 chars plus the ellipsis (6 * 8 = 48px) but not 6
+        // chars plus ellipsis (7 * 8 = 56px).
+        let (fitted, w) = fit_text_prefix(&surface, "hello world", false, 50.0);
+        assert_eq!(fitted, "hello…");
+        assert_eq!(w, 48.0);
+    }
+
+    #[test]
+    fn fit_text_prefix_with_budget_too_small_for_even_the_ellipsis_returns_empty() {
+        let surface = WidthSurface;
+        let (fitted, w) = fit_text_prefix(&surface, "hello world", false, 4.0);
+        assert_eq!(fitted, "");
+        assert_eq!(w, 0.0);
+    }
+
+    #[test]
+    fn fit_text_prefix_with_budget_for_only_the_ellipsis_returns_bare_ellipsis() {
+        let surface = WidthSurface;
+        let (fitted, w) = fit_text_prefix(&surface, "hello world", false, 8.0);
+        assert_eq!(fitted, "…");
+        assert_eq!(w, 8.0);
     }
 }
