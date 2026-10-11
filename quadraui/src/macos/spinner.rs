@@ -168,12 +168,10 @@ mod tests {
     }
 
     /// Shared body for the click↔hit_test round trip, run at both the
-    /// origin and a non-zero origin (quadraui#494 / LESSONS.md "Layout
-    /// helpers must return coords in the same frame across backends").
-    /// `mac_spinner_layout` bakes `x`/`y` straight into `bounds`
-    /// (absolute frame, matching the GTK/TUI twins) — call it directly
-    /// (pure fn, no paint needed) and prove a click at the resulting
-    /// absolute bounds position still resolves through `hit_test`.
+    /// origin and a non-zero origin. `mac_spinner_layout` bakes `x`/`y`
+    /// straight into `bounds` (absolute frame, matching the GTK/TUI twins)
+    /// — call it directly (pure fn, no paint needed) and prove a click at
+    /// the resulting absolute bounds position still resolves through `hit_test`.
     fn hit_test_inside_bounds_returns_body_at(origin_x: f64, origin_y: f64) {
         let spinner = sample_spinner();
         let f = font();
@@ -194,7 +192,7 @@ mod tests {
         hit_test_inside_bounds_returns_body_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494).
+    /// Non-zero-origin regression guard.
     #[test]
     fn hit_test_inside_bounds_returns_body_at_nonzero_origin() {
         hit_test_inside_bounds_returns_body_at(7.0, 13.0);

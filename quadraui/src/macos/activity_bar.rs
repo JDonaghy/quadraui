@@ -2,56 +2,40 @@
 //!
 //! Vertical strip of icon rows. Layout (row positions, top-vs-bottom
 //! placement) is the shared [`crate::primitives::activity_bar::ActivityBar::layout`]
-//! (matching `gtk::activity_bar` / `win::activity_bar`, since #1081 — see
-//! below). Content painting moved to the shared
-//! [`crate::primitives::activity_bar::native_surface_paint::paint`]
-//! (#1081, `PaintSurface` Phase 4 slice 5/8) — see that fn's module doc
-//! for the drift it resolved, including two real gaps this backend used
-//! to have (no keyboard-selection highlight at all, and a private
-//! `row_plan` helper that ordered `visible_items` differently from GTK/
-//! Windows — this module's own doc used to flag that as a "known
-//! divergence, deliberately left alone"; unifying onto one `paint`
-//! finally resolves it rather than parking it again).
+//! (matching `gtk::activity_bar` / `win::activity_bar`). Content painting uses the
+//! shared [`crate::primitives::activity_bar::native_surface_paint::paint`] — see
+//! that fn's module doc for details.
 //!
 //! Uses the backend's active `CTFont` for icon rendering — apps that
 //! want Nerd-Font icons install a glyph-bearing font via
 //! [`super::MacBackend::set_current_font`] in `setup()` — but **not**
-//! at that font's own size. Issue #1157: the icon glyph always paints
-//! at [`crate::ActivityBarStyle::resolved_icon_size_px`] (defaulting to
+//! at that font's own size. The icon glyph always paints at
+//! [`crate::ActivityBarStyle::resolved_icon_size_px`] (defaulting to
 //! [`crate::primitives::activity_bar::DEFAULT_ACTIVITY_ICON_SIZE_PX`],
 //! VS-Code parity), via [`core_text::font::CTFont::clone_with_font_size`]
 //! on whatever font the caller passed in — a same-family, same-fallback
-//! clone at a fixed size, so the icon no longer tracks the editor or
-//! chrome font's own size the way it did before this issue (first via
-//! `current_font`, then, post-#1003, via `chrome_font`). `size` in
-//! `clone_with_font_size` is Core Text points, which on macOS are
-//! already device-independent pixels 1:1 (unlike GTK's Pango / Win-GUI's
-//! DirectWrite, both of which apply the legacy 96/72 dpi point-to-pixel
-//! ratio — see `crate::gtk::activity_bar::activity_bar_icon_font`'s doc),
-//! so `resolved_icon_size_px()` is used here without conversion.
+//! clone at a fixed size. `size` in `clone_with_font_size` is Core Text
+//! points, which on macOS are already device-independent pixels 1:1 (unlike
+//! GTK's Pango / Win-GUI's DirectWrite, both of which apply the legacy 96/72
+//! dpi point-to-pixel ratio — see `crate::gtk::activity_bar::activity_bar_icon_font`'s
+//! doc), so `resolved_icon_size_px()` is used here without conversion.
 //!
 //! Returns per-row [`ActivityBarRowHit`]s so callers can route clicks
 //! and query tooltips against the same frame's painted positions.
 //!
-//! # Coordinate space (issue #552 / #934)
+//! # Coordinate space
 //!
 //! Spans are **bar-relative**, matching the [`crate::Backend::draw_activity_bar`]
 //! contract: this function paints into `(0, 0, width, height)` and is never
-//! handed the bar's origin at all, so it *cannot* fold the origin in — the
-//! mistake the TUI rasteriser made. That part was audited under #552 and is
-//! still compliant; no change needed here.
+//! handed the bar's origin at all, so it *cannot* fold the origin in.
 //!
-//! What #552's audit missed: painting into `(0, 0, width, height)` only
-//! lands at the bar's *actual* screen position if the caller separately
-//! places the CGContext's origin there first. Before #934,
-//! `MacBackend::draw_activity_bar[_with_style]` called straight into this
-//! module with no such adjustment, so every frame painted the strip at the
-//! CGContext's literal `(0, 0)` regardless of where `rect` said the bar
-//! should be. Those two methods now wrap this module's calls in
-//! `CGContextTranslateCTM(ctx, rect.x, rect.y)` (save/translate/restore),
-//! mirroring `GtkBackend::draw_activity_bar`'s `cr.translate(rect.x,
-//! rect.y)` — this module itself needed no change, since bar-relative paint
-//! is exactly what a translated context wants.
+//! Painting into `(0, 0, width, height)` only lands at the bar's *actual*
+//! screen position if the caller separately places the CGContext's origin there
+//! first. `MacBackend::draw_activity_bar[_with_style]` wraps this module's
+//! calls in `CGContextTranslateCTM(ctx, rect.x, rect.y)` (save/translate/restore),
+//! mirroring `GtkBackend::draw_activity_bar`'s `cr.translate(rect.x, rect.y)` —
+//! this module itself needed no change, since bar-relative paint is exactly
+//! what a translated context wants.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
@@ -70,13 +54,11 @@ pub const ACTIVITY_ROW_PX: f64 = 48.0;
 ///
 /// No-paint twin backing [`crate::Backend::activity_bar_layout`]. Spans
 /// are **bar-relative** — `y_start` / `y_end` measured from the top edge
-/// of the bar, first row at `0.0` — exactly as the trait requires
-/// (quadraui#552). Delegates to the shared
-/// [`crate::primitives::activity_bar::ActivityBar::layout`] (#1081) —
-/// same call `draw_activity_bar` makes internally, so the two can't
-/// drift apart, and `visible_items` order now matches
-/// `gtk::activity_bar` / `win::activity_bar` (bottom-pinned items
-/// first) instead of this module's old top-first `row_plan`.
+/// of the bar, first row at `0.0` — exactly as the trait requires.
+/// Delegates to the shared [`crate::primitives::activity_bar::ActivityBar::layout`] —
+/// same call `draw_activity_bar` makes internally, so the two cannot
+/// drift apart, and `visible_items` order matches `gtk::activity_bar` /
+/// `win::activity_bar` (bottom-pinned items first).
 pub fn mac_activity_bar_layout(
     width: f64,
     height: f64,
@@ -106,11 +88,10 @@ pub fn mac_activity_bar_layout(
 ///
 /// Equivalent to [`draw_activity_bar_with_style`] with
 /// `ActivityBarStyle::default()`, i.e. no active-row fill — see that
-/// function for the full behaviour and #658's reasoning for why the fill
-/// lives in a separate style value rather than a field on [`ActivityBar`].
+/// function for the full behaviour.
 ///
 /// `nerd_fonts_enabled` picks which half of each item's [`crate::Icon`]
-/// paints — `glyph` when `true`, `fallback` when `false` (issue #683).
+/// paints — `glyph` when `true`, `fallback` when `false`.
 /// Unlike GTK's hardcoded "Symbols Nerd Font", macOS paints with whatever
 /// font `set_current_font` installed (see this module's header), so a
 /// caller that hasn't installed a glyph-bearing font should pass `false`
@@ -145,8 +126,8 @@ pub unsafe fn draw_activity_bar(
     )
 }
 
-/// [`draw_activity_bar`] with an explicit [`ActivityBarStyle`] request
-/// (#658). `ActivityBarStyle::default()` reproduces [`draw_activity_bar`]
+/// [`draw_activity_bar`] with an explicit [`ActivityBarStyle`] request.
+/// `ActivityBarStyle::default()` reproduces [`draw_activity_bar`]
 /// pixel for pixel.
 ///
 /// # Safety
@@ -168,7 +149,7 @@ pub unsafe fn draw_activity_bar_with_style(
     CGContextSaveGState(ctx);
 
     let layout = bar.layout(width as f32, height as f32, ACTIVITY_ROW_PX as f32);
-    // #1157: paint the icon glyph at a fixed, VS-Code-parity size,
+    // Paint the icon glyph at a fixed, VS-Code-parity size,
     // independent of whatever size `font` itself carries — see this
     // module's doc for why `clone_with_font_size` needs no pt/px
     // conversion on macOS the way GTK/Win-GUI do.
@@ -268,7 +249,7 @@ mod tests {
 
     /// Like [`paint_via_backend`] but paints into a canvas larger than the
     /// bar itself, at an arbitrary `(x, y)` origin — models the bar sitting
-    /// below a title bar and/or right of other chrome (issue #934).
+    /// below a title bar and/or right of other chrome.
     fn paint_via_backend_at(
         bar: &ActivityBar,
         hovered: Option<usize>,
@@ -318,7 +299,7 @@ mod tests {
     }
 
     /// Bounding-box height (device px) of every non-background pixel
-    /// within row `[y0, y1)` — used by the #1157 icon-size tests below.
+    /// within row `[y0, y1)` — used by icon-size tests.
     /// Excludes the bar's own 1pt right-edge separator column
     /// (`x == W - 1`), which is unconditional and would otherwise swamp
     /// a glyph-only ink measurement.
@@ -340,7 +321,7 @@ mod tests {
         found.map_or(0, |(min_y, max_y)| max_y - min_y + 1)
     }
 
-    /// #1157: the icon glyph's ink size follows
+    /// The icon glyph's ink size follows
     /// `ActivityBarStyle::icon_size_px`, not the backend's `chrome_font`
     /// size — the regression this issue reports ("icon size follows the
     /// active font"), fixed by resizing whatever font is passed in
@@ -437,10 +418,10 @@ mod tests {
         );
     }
 
-    /// #658 acceptance: `style.active_bg: Some(..)` + `active_accent: None`
+    /// `style.active_bg: Some(..)` + `active_accent: None`
     /// paints a filled active row with **zero** accent-line pixels — the
     /// legacy 2-pt left-edge strip (x ∈ [0, 2)) must show the fill colour,
-    /// not any accent tint. macOS parity with the GTK/TUI acceptance tests.
+    /// not any accent tint.
     #[test]
     fn active_bg_fills_row_with_zero_accent_pixels_when_accent_is_none() {
         let mut bar = sample_bar();
@@ -470,7 +451,7 @@ mod tests {
         // was painted. Verify each region's y-span matches the
         // ACTIVITY_ROW_PX grid AND its id matches the item.
         //
-        // #1081: `visible_items` order is now bottom-pinned-first (the
+        // `visible_items` order is now bottom-pinned-first (the
         // shared `ActivityBar::layout`'s order — matching
         // `gtk::activity_bar` / `win::activity_bar`), not this module's
         // old top-first `row_plan` order. Only the *order* of these
@@ -506,7 +487,7 @@ mod tests {
         );
     }
 
-    /// #1081 regression: pre-migration macOS's `draw_row` closure had no
+    /// Pre-migration macOS's `draw_row` closure had no
     /// `is_keyboard_selected` branch at all — arrow-key navigation was
     /// completely invisible on this backend (`ActivityItem::is_keyboard_selected`'s
     /// own doc already admitted "Both the TUI and GTK rasterizers honour
@@ -556,19 +537,15 @@ mod tests {
     fn hover_lightens_row_background() {
         let bar = sample_bar();
         // Hover `visible_items[1]` — the explorer row (`ActivityBar::layout`
-        // orders bottom-pinned items first as of #1081, so index 1 is the
-        // first top item, not `search` as it was under this module's old
-        // top-first `row_plan`). Hover paints unconditionally regardless of
-        // `is_active`, and the default style has no `active_bg`, so the
-        // probed pixel is still the plain hover tint either way.
+        // orders bottom-pinned items first, so index 1 is the first top item).
+        // Hover paints unconditionally regardless of `is_active`, and the
+        // default style has no `active_bg`, so the probed pixel is still the
+        // plain hover tint either way.
         let (surface, _) = paint_via_backend(&bar, Some(1));
         let theme = Theme::default();
         let expected = theme.tab_bar_bg.lighten(0.10);
         // Explorer paints at y ∈ [0, 48) — probe deep into that row,
-        // away from the glyph centre. (Not `ACTIVITY_ROW_PX + 4`: that
-        // offset would land in `search`'s row, which the #1081 reorder
-        // moved out from under `hovered_idx == Some(1)` — see the
-        // comment above.)
+        // away from the glyph centre.
         let (r, g, b, _) = surface.pixel(W - 6, 4);
         assert_eq!(
             (r, g, b),
@@ -579,7 +556,7 @@ mod tests {
 
     /// `Backend::activity_bar_layout` must return exactly what
     /// `draw_activity_bar` painted — both walk the same
-    /// `ActivityBar::layout`, and this pins that (quadraui#484).
+    /// `ActivityBar::layout`, and this pins that.
     #[test]
     fn layout_twin_matches_the_painted_rows() {
         let bar = sample_bar();
@@ -599,8 +576,7 @@ mod tests {
     }
 
     /// Spans are bar-relative: every row's `y_start` is unchanged
-    /// regardless of where the bar sits, and the no-paint twin agrees
-    /// (quadraui#552).
+    /// regardless of where the bar sits, and the no-paint twin agrees.
     #[test]
     fn layout_twin_spans_are_bar_relative_at_a_nonzero_origin() {
         let bar = sample_bar();
@@ -610,10 +586,9 @@ mod tests {
         let moved = backend.activity_bar_layout(QRect::new(23.0, 41.0, W as f32, H as f32), &bar);
 
         assert_eq!(at_origin.len(), moved.len());
-        // `at_origin[0]` is the bottom-pinned `settings` item since
-        // #1081 (`ActivityBar::layout` orders bottom-pinned items
-        // first — see `row_hits_cover_painted_rows` above), so its
-        // bar-relative `y_start` is `H - ACTIVITY_ROW_PX`, not `0.0`.
+        // `at_origin[0]` is the bottom-pinned `settings` item (`ActivityBar::layout`
+        // orders bottom-pinned items first), so its bar-relative `y_start` is
+        // `H - ACTIVITY_ROW_PX`, not `0.0`.
         assert!((at_origin[0].y_start - (H as f32 - ACTIVITY_ROW_PX as f32)).abs() < 0.001);
         for (a, m) in at_origin.iter().zip(moved.iter()) {
             assert!(
@@ -626,14 +601,12 @@ mod tests {
         }
     }
 
-    /// Issue #934 RED-verify: before the fix, `MacBackend::draw_activity_bar`
-    /// forwarded only `rect.width` / `rect.height` into this bar-relative
-    /// rasteriser, with no CTM translate to place it at `rect`'s actual
-    /// origin — so the strip always painted at the CGContext's literal
-    /// `(0, 0)`, no matter where the caller said it should sit (e.g. below
-    /// a title bar, as on the reported bug). Painting at a non-zero origin
-    /// must leave `(0, 0)` untouched and land the strip's background +
-    /// right-edge separator exactly at `(rect.x, rect.y)`.
+    /// `MacBackend::draw_activity_bar` forwards only `rect.width` /
+    /// `rect.height` into this bar-relative rasteriser, wrapping the call
+    /// in `CGContextTranslateCTM` to place it at `rect`'s actual origin —
+    /// painting at a non-zero origin must leave `(0, 0)` untouched and
+    /// land the strip's background + right-edge separator exactly at
+    /// `(rect.x, rect.y)`.
     #[test]
     fn background_paints_at_rect_origin_not_at_window_origin() {
         const ORIGIN_X: f32 = 30.0;
@@ -674,14 +647,10 @@ mod tests {
             "right-edge separator should shift with the bar's origin",
         );
 
-        // Hit regions stay bar-relative (issue #552's audited contract) —
-        // the CTM translate must not leak into the returned spans.
-        // `regions[0]` is the bottom-pinned `settings` item since #1081
-        // (`ActivityBar::layout` orders bottom-pinned items first — see
-        // `row_hits_cover_painted_rows` above), so its bar-relative
-        // `y_start` is `H - ACTIVITY_ROW_PX`, not `0.0`; if the CTM
-        // translate had leaked into the returned span it would read
-        // `H - ACTIVITY_ROW_PX + ORIGIN_Y` instead.
+        // Hit regions stay bar-relative — the CTM translate must not leak
+        // into the returned spans. `regions[0]` is the bottom-pinned `settings`
+        // item (`ActivityBar::layout` orders bottom-pinned items first), so its
+        // bar-relative `y_start` is `H - ACTIVITY_ROW_PX`, not `0.0`.
         assert_eq!(regions[0].y_start, H as f32 - ACTIVITY_ROW_PX as f32);
     }
 }

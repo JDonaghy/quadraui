@@ -31,7 +31,7 @@
 //!
 //! ## Scope omissions (follow-up)
 //!
-//! Deferred to subsequent tickets (#943); each ships when a
+//! Deferred to subsequent tickets; each ships when a
 //! kubeui-class consumer exercises it on macOS:
 //!
 //! - **Diagnostics + spell underlines** — wavy/dotted underlines via
@@ -510,7 +510,7 @@ fn char_byte_offset(s: &str, col: usize) -> usize {
 /// Core Text glyph-run measurement in place of Pango's
 /// `index_to_pos`/`pixel_size`. Column math — including
 /// ghost-continuation / diff-padding row skipping and wrapped-segment
-/// offsetting — comes from [`EditorSelection::cols_on`] (#1082); this
+/// offsetting — comes from [`EditorSelection::cols_on`]; this
 /// function only converts the returned columns to pixel positions.
 #[allow(clippy::too_many_arguments)]
 unsafe fn draw_visual_selection(
@@ -859,12 +859,11 @@ mod tests {
         );
     }
 
-    /// Regression for issue #503: syntax-highlighting `StyledSpan`
-    /// byte offsets were only `.min(len)`-clamped, not snapped to a
-    /// char boundary — a span landing mid-multibyte-character (é / CJK
-    /// / emoji) used to panic `&line.raw_text[..start]` /
-    /// `[start..end]`. Also exercises a multibyte cursor column via
-    /// `char_byte_offset`.
+    /// `StyledSpan` byte offsets must be snapped to char boundaries.
+    /// A span landing mid-multibyte-character (é / CJK / emoji)
+    /// could panic `&line.raw_text[..start]` / `[start..end]`.
+    /// This test exercises multibyte spans and a multibyte cursor
+    /// column via `char_byte_offset`.
     #[test]
     fn multibyte_span_and_cursor_do_not_panic() {
         // "café🎉 beta" — byte 4 sits inside the 2-byte 'é' (starts at
@@ -943,11 +942,9 @@ mod tests {
         a.abs_diff(b) <= tol
     }
 
-    /// Issue #943: `editor.selection` was never read by the macOS
-    /// rasteriser — visual-mode / mouse selection painted nothing.
-    /// Probe a pixel inside a `Line`-kind selection and assert it
-    /// reads as `theme.selection` alpha-blended over the background,
-    /// not the plain background.
+    /// `editor.selection` must be read by the rasteriser.
+    /// A `Line`-kind selection should paint `theme.selection`
+    /// alpha-blended over the background, not the plain background.
     #[test]
     fn line_selection_paints_over_background() {
         let mut editor = editor_with_cursor("let x = 1;", CursorShape::Bar, 99);
@@ -984,10 +981,9 @@ mod tests {
         );
     }
 
-    /// Issue #943: `yank_highlight` was set on `Editor` but never read
-    /// — `yy` flashed on TUI and did nothing on macOS. Assert the
-    /// yank overlay paints its own themed colour (distinct from a
-    /// plain `editor.selection` overlay).
+    /// `yank_highlight` on `Editor` must be read by the rasteriser.
+    /// The yank overlay paints its own themed colour,
+    /// distinct from a plain `editor.selection` overlay.
     #[test]
     fn yank_highlight_paints_distinct_color() {
         let mut editor = editor_with_cursor("let x = 1;", CursorShape::Bar, 99);
@@ -1058,10 +1054,10 @@ mod tests {
         );
     }
 
-    /// Issue #943: diff backgrounds (`DiffLine::Added` /
-    /// `Removed` / `Padding`) were never painted on macOS. Also
-    /// verifies diff status takes priority over cursorline, matching
-    /// `crate::gtk::editor::draw_editor`'s priority order.
+    /// Diff backgrounds (`DiffLine::Added` / `Removed` / `Padding`)
+    /// must be painted by the rasteriser. Diff status takes priority
+    /// over cursorline, matching `crate::gtk::editor::draw_editor`'s
+    /// priority order.
     #[test]
     fn diff_added_background_overrides_cursorline() {
         let mut line = one_line("added line");

@@ -1,5 +1,4 @@
-//! Core Graphics / Core Text rasteriser for [`crate::primitives::minimap::Minimap`]
-//! (#961).
+//! Core Graphics / Core Text rasteriser for [`crate::primitives::minimap::Minimap`].
 //!
 //! Mirrors `gtk::minimap`/`win::minimap`'s technique: rows tile at a fixed
 //! pitch ([`crate::primitives::minimap::ROW_PITCH_PX`],
@@ -12,13 +11,11 @@
 //! covers it — the same VS Code `renderCharacters: false` silhouette
 //! `gtk::minimap`/`win::minimap` paint.
 //!
-//! #382 scoped macOS's Core Graphics/Core Text paint calls out of scope,
-//! and #738 lifted the shared legibility/render-mode thresholds and
-//! geometry constants into [`crate::primitives::minimap`] specifically so
-//! this rasteriser (like `win::minimap` before it) can consume them
+//! Shared legibility/render-mode thresholds and geometry constants live in
+//! [`crate::primitives::minimap`] so this rasteriser can consume them
 //! without re-deriving anything. Only the actual paint calls — fill
 //! rects, `CTLine` glyph runs via [`super::text::draw_text`], and the clip
-//! bracket — are backend-specific here (#961).
+//! bracket — are backend-specific here.
 //!
 //! [`MinimapRenderMode::Characters`] is unreachable through
 //! [`draw_minimap`]'s own fixed pitch ([`MinimapScale::One`]:
@@ -26,7 +23,7 @@
 //! branch is exercised directly in this module's tests instead, mirroring
 //! `gtk::minimap`'s own
 //! `characters_branch_truncates_to_the_column_capacity_before_shaping`
-//! test. At [`MinimapScale::Two`] (issue #1143) the row pitch (4 pt)
+//! test. At [`MinimapScale::Two`] the row pitch (4 pt)
 //! clears the floor, and [`draw_minimap_cached`] — what
 //! [`super::backend::MacBackend::draw_minimap`] actually calls — paints
 //! real glyph *shapes* via a downsampled Core Text atlas (see the "Glyph
@@ -34,17 +31,16 @@
 //!
 //! Colour lookups (both branches) walk `syntax_spans` once per paint via
 //! [`SpanCursor`], not once per row — same O(rows + spans) merge-walk
-//! `gtk::minimap`/`win::minimap` use (#667 pt. 4).
+//! `gtk::minimap`/`win::minimap` use.
 //!
-//! # Glyph atlas (#1153)
+//! # Glyph atlas
 //!
-//! Mirrors `gtk::minimap`'s #1035 atlas technique: [`MinimapCharAtlas`]/
-//! [`MinimapAtlasCache`] are backend-agnostic (they live in
-//! [`crate::primitives::minimap`] already, built for GTK's Pango sample
-//! sheet), so this rasteriser reuses them unchanged rather than growing a
-//! parallel Core Text-flavoured atlas type. [`build_char_atlas`] shapes
-//! every sampled ASCII character once, *large* and bold, into one sample
-//! sheet ([`render_char_sample_sheet`], via [`super::text::draw_text`]
+//! [`MinimapCharAtlas`]/[`MinimapAtlasCache`] are backend-agnostic (they
+//! live in [`crate::primitives::minimap`] already, built for GTK's Pango
+//! sample sheet), so this rasteriser reuses them unchanged rather than
+//! growing a parallel Core Text-flavoured atlas type. [`build_char_atlas`]
+//! shapes every sampled ASCII character once, *large* and bold, into one
+//! sample sheet ([`render_char_sample_sheet`], via [`super::text::draw_text`]
 //! onto an offscreen [`BitmapSurface`]) and hands the alpha bytes to
 //! [`MinimapCharAtlas::from_alpha_sheet`], which box-filter-downsamples
 //! each cell to the target device-pixel tile — exactly the pipeline
@@ -52,7 +48,7 @@
 //! describe. [`draw_minimap_cached`] then blits each row's tiles
 //! ([`paint_row_atlas`]/`blit_alpha_tile`) instead of shaping a run at the
 //! target pitch with the backend's single [`CTFont`] — the bug this
-//! section fixes (#1153): that full-size shape doesn't fit its row band
+//! section fixes: that full-size shape doesn't fit its row band
 //! at all, and stacks illegibly across neighbouring rows.
 //!
 //! Unlike GTK's `mask_surface` single-call blit, this rasteriser paints
@@ -80,24 +76,16 @@ use crate::theme::Theme;
 use crate::types::Color;
 
 /// Compute the macOS point-unit layout for a [`Minimap`] without painting, at
-/// [`MinimapScale::One`] — the pre-#1143 fixed pitch. Kept exactly as-is for
-/// source compatibility with any caller reaching this free function
-/// directly; every real paint path goes through
-/// [`MacBackend::minimap_layout`]'s [`mac_minimap_layout_scaled`] instead, so
-/// it can honor [`crate::backend::Backend::minimap_scale`] (issue #1143).
-///
-/// [`MacBackend::minimap_layout`]: crate::macos::MacBackend
+/// [`MinimapScale::One`]. This function is kept for source compatibility;
+/// [`mac_minimap_layout_scaled`] is what actual paint paths use to honor
+/// [`crate::backend::Backend::minimap_scale`].
 pub fn mac_minimap_layout(minimap: &Minimap, rect: Rect) -> MinimapLayout {
     mac_minimap_layout_scaled(minimap, rect, MinimapScale::One)
 }
 
-/// [`mac_minimap_layout`], but at an explicit [`MinimapScale`] (issue
-/// #1143) — what [`MacBackend::minimap_layout`] actually calls. Shares
+/// [`mac_minimap_layout`], but at an explicit [`MinimapScale`]. Shares
 /// its `lines_per_row`/sizing formula with `gtk_minimap_layout_scaled` /
-/// `win_minimap_layout_scaled` via [`pixel_minimap_layout_scaled`] (issue
-/// #1079).
-///
-/// [`MacBackend::minimap_layout`]: crate::macos::MacBackend
+/// `win_minimap_layout_scaled` via [`pixel_minimap_layout_scaled`].
 pub(crate) fn mac_minimap_layout_scaled(
     minimap: &Minimap,
     rect: Rect,
@@ -107,24 +95,18 @@ pub(crate) fn mac_minimap_layout_scaled(
 }
 
 /// Draw a [`Minimap`] into `rect` (points, target-relative) on `ctx`, at
-/// [`MinimapScale::One`] — the pre-#1143 fixed pitch. Kept exactly as-is
-/// for source compatibility with any caller reaching this free function
-/// directly (mirrors [`crate::gtk::minimap::draw_minimap`]'s own pre-#1035
-/// shim doc); every real paint path goes through
-/// [`MacBackend::draw_minimap`]'s [`draw_minimap_cached`] instead, so it
-/// can honor [`crate::backend::Backend::minimap_scale`] (issue #1143) and
-/// paint through the glyph atlas (issue #1153). Returns the resolved
-/// [`MinimapLayout`] for host click dispatch (`layout.hit_test(x, y)` ->
-/// [`crate::primitives::minimap::MinimapHit`]) — same contract as the
-/// GTK/Win-GUI/TUI twins' `draw_minimap`.
+/// [`MinimapScale::One`]. This function is kept for source compatibility;
+/// [`draw_minimap_cached`] is what actual paint paths use to honor
+/// [`crate::backend::Backend::minimap_scale`] and paint through the glyph
+/// atlas. Returns the resolved [`MinimapLayout`] for host click dispatch
+/// (`layout.hit_test(x, y)` -> [`crate::primitives::minimap::MinimapHit`]) —
+/// same contract as the GTK/Win-GUI/TUI twins' `draw_minimap`.
 ///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of this
 /// call (typical: the frame-scope pointer stashed on
 /// [`super::MacBackend`]). Calling with a freed or null pointer is UB.
-///
-/// [`MacBackend::draw_minimap`]: crate::macos::MacBackend
 pub unsafe fn draw_minimap(
     ctx: CGContextRef,
     font: &CTFont,
@@ -135,7 +117,7 @@ pub unsafe fn draw_minimap(
     draw_minimap_scaled(ctx, font, rect, minimap, theme, MinimapScale::One)
 }
 
-/// [`draw_minimap`], but at an explicit [`MinimapScale`] (issue #1143).
+/// [`draw_minimap`], but at an explicit [`MinimapScale`].
 /// Kept exactly as it always behaved — still shapes the `Characters`
 /// branch with the backend's single configured, editor-size [`CTFont`]
 /// via [`paint_row_glyphs`] rather than the downsampled atlas — for
@@ -183,11 +165,11 @@ pub(crate) unsafe fn draw_minimap_scaled(
 }
 
 /// Draw a [`Minimap`] using a cached [`MinimapCharAtlas`] for real
-/// character shapes (issue #1153), instead of [`draw_minimap_scaled`]'s
+/// character shapes, instead of [`draw_minimap_scaled`]'s
 /// editor-size-font shim. `atlas_cache` should be a field the caller
 /// keeps alive across frames — [`super::backend::MacBackend`] owns one,
-/// the same way [`crate::gtk::backend::GtkBackend`] owns its own
-/// (#1035). `dpi_scale` sizes each glyph tile to real device pixels
+/// the same way [`crate::gtk::backend::GtkBackend`] owns its own.
+/// `dpi_scale` sizes each glyph tile to real device pixels
 /// (`self.viewport.scale` on `MacBackend` — Core Graphics' own DPI ratio,
 /// same role GTK's `dpi_scale` field plays): a `scale` cell at
 /// `dpi_scale` 2.0 gets twice the real device pixels of glyph detail a
@@ -251,15 +233,13 @@ pub(crate) unsafe fn draw_minimap_cached(
 /// Shared skeleton for [`draw_minimap_scaled`]/[`draw_minimap_cached`]:
 /// computes the layout, paints the background and viewport highlight,
 /// clips to the strip, then calls `paint_row` once per visible row via
-/// one [`SpanCursor`] merge-walk (#667 pt. 4). Returns early (no clip, no
-/// callback invocations) when the layout has nothing to paint — mirrors
-/// `gtk::minimap::paint_minimap_rows`.
+/// one [`SpanCursor`] merge-walk. Returns early (no clip, no
+/// callback invocations) when the layout has nothing to paint.
 ///
-/// `paint_row` gets each row's own pitch (`vline.bounds.height`, post-cap
-/// — see the old `draw_minimap_scaled` comment on why this beats
-/// recomputing `h / visible_lines.len()`), even though every row shares
-/// one pitch under [`crate::primitives::minimap::MinimapSizing::FixedPitch`],
-/// plus `scale`'s own [`MinimapScale::cell_w_px`] (issue #1143), so a
+/// `paint_row` gets each row's own pitch (`vline.bounds.height`, post-cap),
+/// even though every row shares one pitch under
+/// [`crate::primitives::minimap::MinimapSizing::FixedPitch`],
+/// plus `scale`'s own [`MinimapScale::cell_w_px`], so a
 /// row's per-column paint walk steps by the right cell width without
 /// re-deriving it from `scale` itself.
 ///
@@ -313,8 +293,7 @@ unsafe fn paint_minimap_rows(
     // Clip all row painting to the strip: a below-floor colour-block walk
     // is already width-bounded by `COLUMN_CAPACITY`, but a strip narrower
     // than that capacity must still not bleed into whatever the host
-    // painted beside the minimap (mirrors `gtk::draw_minimap`'s
-    // `cr.clip()`/`win::draw_minimap`'s clip bracket, #663).
+    // painted beside the minimap.
     CGContextSaveGState(ctx);
     CGContextClipToRect(
         ctx,
@@ -327,7 +306,7 @@ unsafe fn paint_minimap_rows(
     );
 
     // One merge-walk over `syntax_spans` for the whole paint, not one
-    // linear rescan per row (#667 pt. 4) -- `visible_lines` is always
+    // linear rescan per row — `visible_lines` is always
     // ascending in `start_line_idx`, matching `SpanCursor`'s own
     // non-decreasing-query requirement.
     let mut spans = SpanCursor::new(&minimap.syntax_spans);
@@ -353,10 +332,8 @@ unsafe fn paint_minimap_rows(
 }
 
 /// `Characters` branch: paint `text` with the backend's single configured
-/// [`CTFont`] — see the module doc's divergence note for why this doesn't
-/// vary the font size per `row_px` the way `gtk::minimap::paint_row_glyphs`
-/// does. Still bounds its cost to [`COLUMN_CAPACITY`] characters (#667 pt.
-/// 3), and still colours the row from its own `row_spans` — the first
+/// [`CTFont`]. Still bounds its cost to [`COLUMN_CAPACITY`] characters,
+/// and still colours the row from its own `row_spans` — the first
 /// span's colour wins (Core Text needs a per-run colour attribute for true
 /// mixed-colour text within one `CTLine`, out of scope for a branch this
 /// rasteriser's own fixed pitch never reaches).
@@ -397,12 +374,11 @@ fn paint_row_glyphs(
 /// `ColumnBlocks` branch: paint one `cell_w`-wide block per non-blank
 /// character column of `text`, each coloured by whichever span covers it —
 /// VS Code's `renderCharacters: false` look, which (unlike a single
-/// per-line bar) preserves the line's indent and internal-gap silhouette
-/// (#667 pt. 2). Stops after [`COLUMN_CAPACITY`] columns, so a
-/// pathologically long line costs no more to paint than a short one.
-/// `cell_w` is [`MinimapScale::cell_w_px`] (issue #1143) — `1.0` at the
-/// pre-#1143 default [`MinimapScale::One`], matching this function's
-/// original hardcoded block width byte for byte.
+/// per-line bar) preserves the line's indent and internal-gap silhouette.
+/// Stops after [`COLUMN_CAPACITY`] columns, so a pathologically long line
+/// costs no more to paint than a short one. `cell_w` is
+/// [`MinimapScale::cell_w_px`] — `1.0` at [`MinimapScale::One`],
+/// matching this function's original hardcoded block width byte for byte.
 fn paint_row_blocks(
     ctx: CGContextRef,
     vline: &VisibleMinimapLine,
@@ -509,7 +485,7 @@ fn render_char_sample_sheet(family: &str) -> Option<Vec<u8>> {
     // pushes into it) and `take_text_run_sink` below discards that scratch
     // vec and restores whatever sink (`None` or a live outer recording)
     // was active before -- same hazard `gtk::minimap::render_char_sample_sheet`
-    // documents hitting for its own sample sheet (quadraui#1035 review),
+    // documents hitting for its own sample sheet,
     // just worked around differently since macOS's `draw_text` has no
     // separate non-recording twin to call instead.
     let prev_sink = crate::testing::install_text_run_sink();
@@ -549,10 +525,9 @@ fn render_char_sample_sheet(family: &str) -> Option<Vec<u8>> {
 /// Paint one row using `atlas`'s pre-downsampled alpha tiles: blit a tile
 /// per non-blank character, tinted by whichever span covers it — no
 /// shaping, matching [`paint_row_blocks`]'s own column-capacity bound
-/// (#667 pt. 3) and whitespace skip, but painting real glyph shapes
-/// instead of solid blocks. `cell_w` (issue #1143's
-/// [`MinimapScale::cell_w_px`]) is the logical column advance — `col as
-/// f64 * cell_w`, not a bare `col as f64` — so a wider
+/// and whitespace skip, but painting real glyph shapes instead of solid
+/// blocks. `cell_w` is [`MinimapScale::cell_w_px`] — the logical column
+/// advance — `col as f64 * cell_w`, not a bare `col as f64` — so a wider
 /// [`MinimapScale::Two`] cell doesn't overlap its neighbour.
 #[allow(clippy::too_many_arguments)]
 fn paint_row_atlas(
@@ -725,7 +700,7 @@ mod tests {
         make_font("Menlo", 10.0).expect("Menlo should be installed on every macOS host")
     }
 
-    /// #1143: `MinimapScale::Two`'s row pitch (4pt) clears
+    /// `MinimapScale::Two`'s row pitch (4pt) clears
     /// `LEGIBILITY_FLOOR_PX`, so unlike the `MinimapScale::One` default
     /// (which never reaches it) `draw_minimap_scaled` must actually take
     /// the `Characters` branch and paint real Core Text glyphs at this
@@ -775,10 +750,9 @@ mod tests {
     }
 
     /// C0 smoke: `draw_minimap` must actually paint pixels + return a
-    /// click-routable layout rather than doing nothing (#961's acceptance
-    /// bar). The default fixed pitch stays below the legibility floor, so
-    /// this exercises `ColumnBlocks`, not glyph shaping — the
-    /// "non-background pixel actually painted" check every other `macos::`
+    /// click-routable layout. The default fixed pitch stays below the
+    /// legibility floor, so this exercises `ColumnBlocks`, not glyph shaping —
+    /// the "non-background pixel actually painted" check every other `macos::`
     /// C0 smoke uses stands in for "text_ok" here.
     #[test]
     fn draw_minimap_paints_column_blocks_and_returns_layout() {
@@ -809,9 +783,9 @@ mod tests {
         assert!(painted_any, "expected draw_minimap to paint visible blocks");
     }
 
-    /// Paint↔click round trip at a non-zero origin — #505's LOCAL/ABSOLUTE
-    /// mixup regression guard, mirrored from `macos::board`/`win::minimap`'s
-    /// own nonzero-origin tests.
+    /// Paint↔click round trip at a non-zero origin — tests the invariant
+    /// that LOCAL coordinates are used consistently, mirrored from
+    /// `macos::board`/`win::minimap`'s own nonzero-origin tests.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         let origin_x = 7.0_f32;
@@ -947,9 +921,9 @@ mod tests {
         assert!(painted_any, "expected the Characters branch to paint text");
     }
 
-    // ── glyph atlas (#1153) ──────────────────────────────────────────────
+    // ── glyph atlas ──────────────────────────────────────────────────────
 
-    /// Regression guard for #1153: at [`MinimapScale::Two`], the pre-fix
+    /// Regression guard: at [`MinimapScale::Two`], the pre-atlas
     /// `Characters` branch (`paint_row_glyphs`, still what
     /// [`draw_minimap_scaled`] uses) shapes with the backend's single
     /// full editor-size [`CTFont`] — nowhere near small enough to fit a
@@ -999,8 +973,7 @@ mod tests {
         );
 
         // Row 1 (blank) must stay fully background across its whole band
-        // -- any ink there is row 0's glyph tiles bleeding past their own
-        // row, exactly the #1153 bug.
+        // — any ink there is row 0's glyph tiles bleeding past their own row.
         for y in row_h..h {
             for x in 0..w {
                 let (r, g, b, _) = surface.pixel(x, y);
@@ -1027,10 +1000,9 @@ mod tests {
         assert!(painted_row0, "expected row 0 to paint something");
     }
 
-    /// #1143's own acceptance bar, now proven for the fixed atlas path:
-    /// at [`MinimapScale::Two`], a row of real code paints *shapes* --
+    /// At [`MinimapScale::Two`], a row of real code paints *shapes* —
     /// non-uniform pixel values across a character's own cell, not a
-    /// solid, uniformly-coloured block -- mirroring
+    /// solid, uniformly-coloured block — mirroring
     /// `gtk::minimap::scale_two_atlas_mode_paints_a_shape_and_leaves_blank_columns_empty`.
     #[test]
     fn atlas_mode_paints_a_shape_not_a_solid_block() {
@@ -1082,16 +1054,14 @@ mod tests {
         );
     }
 
-    /// Regression guard for the #1035 review finding, ported to macOS
-    /// (#1153): the sample sheet [`render_char_sample_sheet`] shapes each
-    /// ASCII glyph into is a private, throwaway surface (never real
-    /// screen content), but `crate::testing`'s text-run sink is a
-    /// **thread-local**, not scoped to any particular `CGContextRef` --
-    /// so if this function ever stopped pausing/discarding recording
-    /// around its `draw_text` calls, every atlas cache miss during a
-    /// `MacDriver`-based test (guaranteed on a fresh backend's first
-    /// paint) would silently append all `ATLAS_CHAR_COUNT` sample
-    /// glyphs' bogus bounds to the shared sink that backs
+    /// The sample sheet [`render_char_sample_sheet`] shapes each ASCII glyph
+    /// into is a private, throwaway surface (never real screen content), but
+    /// `crate::testing`'s text-run sink is a **thread-local**, not scoped to
+    /// any particular `CGContextRef` — so if this function ever stopped
+    /// pausing/discarding recording around its `draw_text` calls, every atlas
+    /// cache miss during a `MacDriver`-based test (guaranteed on a fresh
+    /// backend's first paint) would silently append all `ATLAS_CHAR_COUNT`
+    /// sample glyphs' bogus bounds to the shared sink that backs
     /// `MacDriver::find`/`screen_contains`.
     #[test]
     fn render_char_sample_sheet_does_not_pollute_the_text_run_sink() {

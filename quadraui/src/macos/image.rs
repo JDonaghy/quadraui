@@ -1,24 +1,10 @@
-//! Core Graphics / ImageIO rasteriser for [`crate::primitives::image::Image`]
-//! (#962).
+//! Core Graphics / ImageIO rasteriser for [`crate::primitives::image::Image`].
 //!
-//! #662 scoped the `Image` rasteriser to GTK only for its first pass;
-//! #739 ported it to Win-GUI via WIC. macOS's own gap sat open the
-//! longest: #802 replaced a reachable `todo!()` here with an honest
-//! [`ImagePaintResult::Unsupported`], but that made macOS the *only*
-//! backend that painted nothing at all for an unrecognised source — TUI
-//! at least paints `image.fallback_text` for its own categorical
-//! `Unsupported` case (see [`crate::backend::Backend::draw_image`]'s doc
-//! comment). This module closes that gap with a real decoder.
-//!
-//! Port of [`crate::win::image::draw_image`], which is itself a port of
-//! [`crate::gtk::image::draw_image`]: decode `image.source`'s encoded
-//! bytes through the platform's native image decoder — `CGImageSource`
-//! (ImageIO) here, WIC there, `gdk_pixbuf` in GTK — then paint the
-//! decoded bitmap into `image.layout(rect)`'s resolved target rect. Same
-//! collapse-to-`Unsupported` posture on any decode failure (missing
+//! Decodes `image.source`'s encoded bytes through `CGImageSource` (ImageIO),
+//! then paints the decoded bitmap into `image.layout(rect)`'s resolved target
+//! rect. Same collapse-to-`Unsupported` posture on any decode failure (missing
 //! file, corrupt bytes, unrecognised format): `CGImageSourceCreateImageAtIndex`
-//! reports all of these the same way, as a null return, and this
-//! rasteriser doesn't distinguish further.
+//! reports all of these the same way, as a null return.
 //!
 //! Painting is always clipped to the caller's `rect` — the only
 //! [`crate::primitives::image::ImageFit`] variants that can extend past
@@ -28,32 +14,26 @@
 //! every other clipping rasteriser in `macos::` uses — rather than
 //! hand-rolling a third clip helper.
 //!
-//! # Decode cache (#1014)
+//! # Decode cache
 //!
 //! [`draw_image`] is `pub` inside a `pub mod` — reachable externally as
-//! `quadraui::macos::image::draw_image` — so #1014 cannot change its
-//! signature without risking a break for whatever external code already
-//! calls it directly (see `CLAUDE.md`'s *Downstream consumers* section:
-//! nothing pins a version of this crate, so a breaking change here is
-//! live in a consumer's build the moment it merges). `draw_image` itself
-//! therefore stays exactly as it always has — uncached, one decode per
-//! call — and the caching lives in a sibling, crate-internal
-//! [`draw_image_cached`] that [`MacBackend::draw_image`] (the `Backend`
-//! trait method, which downstream never implements itself — see
-//! `CLAUDE.md`) calls instead. Both share the same post-decode
-//! clip/counter-flip/draw tail, [`paint_cg_image`].
+//! `quadraui::macos::image::draw_image` — so it cannot change its
+//! signature without risking a break for external code already calling it
+//! directly. `draw_image` itself therefore stays exactly as it always has —
+//! uncached, one decode per call — and the caching lives in a sibling,
+//! crate-internal [`draw_image_cached`] that [`MacBackend::draw_image`]
+//! (the `Backend` trait method) calls instead. Both share the same
+//! post-decode clip/counter-flip/draw tail, [`paint_cg_image`].
 //!
 //! Unlike GTK's `gdk_pixbuf::Pixbuf::scale_simple` (which produces an
 //! already-scaled bitmap sized for one particular target rect),
 //! `CGContextDrawImage` stretches a `CGImage` into whatever destination
-//! rect it's given at draw time — so, unlike
-//! [`crate::gtk::image::draw_image_cached`]'s cache, the decoded
-//! `CGImage` here is genuinely reusable across every target size a
-//! source is ever painted at, not just repeats of the same size.
-//! [`draw_image_cached`] caches the raw decode keyed on source only
-//! (width/height pinned to `0` in the [`crate::image_cache::ImageCache`]
-//! key — see the call site). See [`paint_cg_image`]'s doc for the
-//! counter-flip both entry points share.
+//! rect it's given at draw time — so the decoded `CGImage` here is
+//! genuinely reusable across every target size a source is ever painted
+//! at, not just repeats of the same size. [`draw_image_cached`] caches
+//! the raw decode keyed on source only (width/height pinned to `0` in the
+//! [`crate::image_cache::ImageCache`] key — see the call site). See
+//! [`paint_cg_image`]'s doc for the counter-flip both entry points share.
 //!
 //! # Why raw FFI for `CGImageSource`
 //!
@@ -211,7 +191,7 @@ pub unsafe fn draw_image(ctx: CGContextRef, rect: Rect, image: &Image) -> ImageP
 }
 
 /// Paint `image` within `rect` (points, target-relative), decoding
-/// through `cache` (#1014) — see the module docs. `scale` is folded into
+/// through `cache` — see the module docs. `scale` is folded into
 /// the cache key alongside the (pinned-to-`0`) size for consistency with
 /// every other backend's [`ImageCache`] key, even though this backend's
 /// decode doesn't actually depend on either. Crate-internal:
@@ -421,10 +401,7 @@ mod tests {
         ImageCache::with_capacity(4)
     }
 
-    /// The impl this replaces reported `Unsupported` unconditionally
-    /// (quadraui#802) — macOS was the only backend that painted nothing
-    /// at all for `draw_image`. #962's positive replacement: a decodable
-    /// source must actually paint pixels and report `Painted`.
+    /// A decodable source must paint pixels and report `Painted`.
     #[test]
     fn draw_image_from_bytes_paints_real_pixels() {
         let surface = BitmapSurface::new(W, H);
@@ -450,12 +427,8 @@ mod tests {
         );
     }
 
-    /// Corrupt / missing sources must still degrade to `Unsupported`
-    /// rather than panicking — replaces #802's
-    /// `mac_draw_image_reports_unsupported`/
-    /// `draw_image_does_not_panic_and_reports_unsupported` coverage now
-    /// that there's a real decode path to fail out of, rather than an
-    /// unconditional stub.
+    /// Corrupt or missing sources must degrade to `Unsupported`
+    /// rather than panicking.
     #[test]
     fn draw_image_from_missing_path_reports_unsupported() {
         let surface = BitmapSurface::new(W, H);
@@ -544,7 +517,7 @@ mod tests {
         assert_eq!(result, ImagePaintResult::Unsupported);
     }
 
-    /// A cache hit must skip re-decoding entirely (issue #1014) — this
+    /// A cache hit must skip re-decoding entirely — this
     /// backend keys on source alone (see the module docs' "Decode cache"
     /// section), so painting the *same* source at two different target
     /// sizes should still hit the cache the second time. Proven the same
@@ -608,8 +581,8 @@ mod tests {
     }
 
     /// `ImageFit::Cover` can extend past `rect` on one axis — painting
-    /// must still stay clipped to it, mirroring `win::image`'s /
-    /// `gtk::image`'s own clip contract (quadraui#962's acceptance bar).
+    /// must still stay clipped to it, mirroring `win::image`'s and
+    /// `gtk::image`'s own clip contract.
     #[test]
     fn cover_fit_is_clipped_to_rect() {
         let surface = BitmapSurface::new(W, H);
@@ -649,15 +622,14 @@ mod tests {
         );
     }
 
-    /// Catches the orientation bug flagged in review of #962: without the
-    /// counter-flip documented on `draw_image` (mirroring
+    /// Without the counter-flip documented on `draw_image` (mirroring
     /// `macos::text::draw_text_impl`'s text-matrix flip),
     /// `CGContextDrawImage` paints upside down inside this backend's
     /// permanently-flipped, top-left-origin context. `tiny_png_bytes`'s
-    /// uniform fill can't detect that — a mirrored image is pixel-for-
-    /// pixel identical to the original along any horizontal scanline.
-    /// `two_tone_png_bytes` (red top half, blue bottom half in raster
-    /// row order) fails this assertion if the flip is missing or
+    /// uniform fill cannot detect orientation — a mirrored image is
+    /// pixel-for-pixel identical to the original along any horizontal
+    /// scanline. `two_tone_png_bytes` (red top half, blue bottom half in
+    /// raster row order) fails this assertion if the flip is missing or
     /// backwards.
     #[test]
     fn draw_image_orientation_matches_raster_row_order() {

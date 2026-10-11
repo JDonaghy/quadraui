@@ -8,24 +8,13 @@
 //!
 //! Mirrors the layout of [`crate::gtk`] and [`crate::tui`]: a `run`
 //! entry point owns window + run-loop bootstrap, and per-primitive
-//! rasterisers live as sibling modules. This pre-foundation milestone
-//! (#32) only ships the bootstrap — events (#33), Core Text (#34), the
-//! `MacBackend` trait impl (#35), and the per-primitive rasterisers
-//! (#38–#43) land in follow-up issues.
-//!
-//! Per the [milestone description][milestone]: "Every existing
-//! `AppLogic`-driven example runs on macOS unchanged once this
-//! milestone ships." The trait integration that delivers that promise
-//! lands in #35; #32 proves the AppKit + CG plumbing in isolation.
-//!
-//! [milestone]: https://github.com/JDonaghy/quadraui/milestone/4
+//! rasterisers live as sibling modules.
 
 pub mod activity_bar;
 pub mod backend;
 pub mod board;
 pub(crate) mod caret_blink;
-// Shared CoreGraphics FFI bindings + fill/stroke/rect helpers
-// (quadraui#1071) — internal, not part of the public `macos` surface.
+// Shared CoreGraphics FFI bindings + fill/stroke/rect helpers.
 mod cg;
 pub mod chart;
 pub mod command_center;
@@ -61,9 +50,7 @@ pub mod spinner;
 pub mod split;
 pub mod split_tree;
 pub mod status_bar;
-// Shared `PaintSurface` adapter over a bare `CGContextRef` (issue
-// #1072). `mod`, not `pub mod`: internal decomposition only, mirroring
-// `cg`'s visibility above.
+// Shared `PaintSurface` adapter over a bare `CGContextRef`.
 mod surface;
 pub mod tab_bar;
 pub mod terminal;
@@ -71,7 +58,7 @@ pub mod testing;
 pub mod text;
 pub mod text_display;
 pub mod text_input;
-// Text-selection highlight painting (#803) — the CoreGraphics twin of
+// Text-selection highlight painting — the CoreGraphics twin of
 // `gtk::backend`'s Cairo `fill()` / `win::backend`'s Direct2D
 // `FillRectangle` call. `pub(crate)`, not `pub`: only `MacBackend::
 // apply_selection_highlight` calls into it, mirroring `menu_bar_install`'s
@@ -81,7 +68,7 @@ pub mod toast;
 pub mod toolbar;
 pub mod tooltip;
 pub mod tree;
-// Tray / status-bar icon control (#953) — `NSStatusBar`/`NSStatusItem`
+// Tray / status-bar icon control — `NSStatusBar`/`NSStatusItem`
 // glue for `Backend::tray`. `pub(crate)`, not `pub`: only
 // `impl TrayService for MacBackend` (`backend.rs`) calls into it,
 // mirroring `menu_bar_install`'s visibility above.
@@ -127,31 +114,14 @@ pub use tree::{draw_tree, mac_tree_layout};
 /// **one real systemwide `NSPasteboard`**.
 ///
 /// `cargo test` runs `#[test]` fns on a pool of spawned threads, so any
-/// two tests that write to the OS clipboard race each other — and the
-/// loser reads back whatever the winner just wrote (or, after a
-/// `write_image`/`clear`, no text at all).
+/// two tests that write to the OS clipboard race each other.
 ///
-/// [`services::tests::clipboard_image_html_file_list_and_clear_round_trip`]
-/// originally handled this by consolidating every #954 clipboard
-/// assertion into a *single* `#[test]` fn, which is only sufficient
-/// while that fn is the sole real-pasteboard user in the crate. It
-/// stopped being the sole user when
-/// [`testing::tests::drag_select_paints_highlight_then_ctrl_c_copies_to_clipboard`]
-/// (#803) started asserting that Ctrl-C reaches the real clipboard, and
-/// the pair then raced: `write_image` replaces the pasteboard contents
-/// with image-only data, so a `read_text()` landing just after it sees
-/// `None`. That is exactly how quadraui#965 failed on `macos-latest` —
-/// its 21 new `compose::file_picker` tests changed nothing about either
-/// clipboard test, but did change the scheduler's interleaving enough to
-/// make the pre-existing race lose.
-///
-/// A "one fn per shared resource" rule can't survive a second caller in
-/// a different module, so the invariant lives here instead: **anything
-/// that reads or writes the real pasteboard takes this lock first**, for
-/// its whole read/write sequence, and holds it until the assertions are
-/// done. Poisoning is recovered from rather than propagated — one
-/// already-failing clipboard test should report its own failure, not
-/// convert every other clipboard test into a second red line.
+/// The invariant: **anything that reads or writes the real pasteboard
+/// takes this lock first**, for its whole read/write sequence, and holds
+/// it until the assertions are done. Poisoning is recovered from rather
+/// than propagated — one already-failing clipboard test should report its
+/// own failure, not convert every other clipboard test into a second red
+/// line.
 #[cfg(test)]
 static REAL_PASTEBOARD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

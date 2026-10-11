@@ -1,12 +1,6 @@
 //! Core Text infrastructure — font creation, metrics, text measurement
 //! and rendering against a borrowed `CGContextRef`.
 //!
-//! Issue #34 in the macOS backend milestone. Free-standing helpers that
-//! `MacBackend` (landing in #35) will glue to the `Backend` trait
-//! `current_line_height` / `current_char_width` stash. For #34 they
-//! live as standalone functions so the smoke harness in
-//! [`super::run`] can paint text without an enclosing backend.
-//!
 //! ## Coordinate convention for `draw_text`
 //!
 //! Callers pass `(x, y)` in **view-local points with top-left origin**
@@ -91,9 +85,7 @@ pub fn make_font(family: &str, size_pt: f64) -> Option<CTFont> {
 /// happened. Every caller that means "install this family, or fall back
 /// to *my* chosen default" (rather than "or fall back to whatever Core
 /// Text feels like") therefore has to compare the resolved font's own
-/// name against the request — that check is this function (issue #963:
-/// without it `set_ui_font("Bogus 12")` silently installed Helvetica as
-/// the chrome font instead of degrading to [`system_ui_font`]).
+/// name against the request — that check is this function.
 ///
 /// A request matches if it equals (ASCII-case-insensitively) either the
 /// resolved font's family name (`"Menlo"`, `"Helvetica"`) or its
@@ -108,12 +100,11 @@ pub fn make_font_exact(family: &str, size_pt: f64) -> Option<CTFont> {
 }
 
 /// Build the CoreText system UI font (`kCTFontSystemFontType`) at
-/// `size_pt` — [`super::backend::MacBackend`]'s default `chrome_font`
-/// before any [`crate::Backend::set_ui_font`] call overrides it (issue
-/// #963). This is the CoreText analogue of GTK's `"Sans 11"` / Win-GUI's
-/// `"Segoe UI"` chrome default: a proportional face reserved for UI
-/// chrome, distinct from whatever monospace family the app installs as
-/// the editor font via [`super::backend::MacBackend::set_current_font`].
+/// `size_pt` — the default `chrome_font` before any
+/// [`crate::Backend::set_ui_font`] call overrides it. This is the CoreText
+/// analogue of GTK's `"Sans 11"` / Win-GUI's `"Segoe UI"` chrome default:
+/// a proportional face reserved for UI chrome, distinct from whatever
+/// monospace family the app installs as the editor font.
 ///
 /// Unlike [`make_font`], this can't fail to resolve a family — Core Text
 /// always has *a* system font — so it returns a `CTFont` directly rather
@@ -126,7 +117,7 @@ pub fn system_ui_font(size_pt: f64) -> CTFont {
 /// (`kCTFontUserFixedPitchFontType`) at `size_pt` — the CoreText analogue
 /// of GTK/fontconfig's `Monospace` alias and Win-GUI's `Consolas`
 /// default, and the resolution target for
-/// [`crate::GenericFamily::Monospace`] on this backend (issue #1023).
+/// [`crate::GenericFamily::Monospace`] on this backend.
 /// Distinct from [`system_ui_font`], which resolves
 /// [`crate::GenericFamily::SansSerif`]/[`crate::GenericFamily::SystemUi`]
 /// instead — the two generic requests must land on different native
@@ -141,7 +132,7 @@ pub fn system_monospace_font(size_pt: f64) -> CTFont {
     font::new_ui_font_for_language(font::kCTFontUserFixedPitchFontType, size_pt, None)
 }
 
-// ── Nerd-Font fallback (issue #929) ─────────────────────────────────────
+// ── Nerd-Font fallback ──────────────────────────────────────────────────
 //
 // macOS has no equivalent of GTK/Pango's implicit per-character font
 // cascade (`crate::gtk::with_nerd_font_fallback`) — a `CTFont` built by
@@ -379,19 +370,15 @@ fn cascade_descriptor_for(family: &str) -> CTFontDescriptor {
 
 /// Register `bytes` (raw TTF/OTF font data) with Core Text for the
 /// lifetime of this process via `CTFontManagerRegisterGraphicsFont` — no
-/// filesystem write, no user font directory, matching
-/// [`crate::Backend::register_font_from_memory`]'s contract (issue
-/// #929). Returns the family name Core Text resolves the font to, or
-/// `None` if `bytes` isn't a font Core Graphics can parse, or
-/// registration itself fails (e.g. a duplicate PostScript name already
-/// registered in this process).
+/// filesystem write, no user font directory. Returns the family name Core
+/// Text resolves the font to, or `None` if `bytes` isn't a font Core
+/// Graphics can parse, or registration itself fails (e.g. a duplicate
+/// PostScript name already registered in this process).
 ///
 /// `CTFontManagerRegisterGraphicsFont` (unlike
-/// `CTFontManagerRegisterFontsForURL`, whose scope parameter this method
-/// would otherwise need to thread through) has no registration-scope
-/// argument at all — every font it registers is process-local for as
-/// long as the process runs, which is exactly the lifetime this method
-/// promises.
+/// `CTFontManagerRegisterFontsForURL`) has no registration-scope
+/// argument — every font it registers is process-local for as long as
+/// the process runs.
 pub fn register_font_from_memory(bytes: &[u8]) -> Option<String> {
     let provider = CGDataProvider::from_buffer(Arc::new(bytes.to_vec()));
     let cgfont = CGFont::from_data_provider(provider).ok()?;
@@ -506,15 +493,9 @@ pub fn measure_text(font: &CTFont, text: &str) -> (f64, f64) {
     )
 }
 
-/// Issue #1078: a direct impl rather than a per-module wrapper struct —
-/// before this, `macos::form::CtFontMeasure` and `macos::toolbar::CtFontMeasure`
-/// were byte-identical one-line adapters (`measure_text(font, text).0`)
-/// over this exact type, and `macos::sidebar_panel` imported the
-/// `toolbar` one only because there had to be a canonical copy
-/// *somewhere*. Implementing [`crate::primitives::layout_metrics::TextMeasure`]
-/// on `CTFont` itself means every layout fn that needs a `&dyn
-/// TextMeasure` can pass a live `&CTFont` straight through — no wrapper,
-/// no duplicate to drift. Mirrors `win::text::DWrite`'s identical fix.
+/// Implements [`crate::primitives::layout_metrics::TextMeasure`] on `CTFont`
+/// so every layout function that needs a `&dyn TextMeasure` can pass a
+/// live `&CTFont` directly — no wrapper struct needed.
 impl crate::primitives::layout_metrics::TextMeasure for CTFont {
     fn width_of(&self, text: &str) -> f32 {
         measure_text(self, text).0 as f32
@@ -549,7 +530,7 @@ pub unsafe fn draw_text(
 /// shrink a double-width glyph (CJK / emoji) so it fills its two-column
 /// cell box exactly — the scale factor comes from
 /// [`crate::terminal_style::wide_glyph_x_scale`], the same decision GTK's
-/// `cr.scale(scale_x, 1.0)` applies via Cairo's CTM (#500, #703). Core
+/// `cr.scale(scale_x, 1.0)` applies via Cairo's CTM. Core
 /// Text has no per-draw scale parameter, but the text matrix's `a`
 /// component scales every glyph outline in the run horizontally with no
 /// extra CG calls — `scale_x == 1.0` renders identically to [`draw_text`].
@@ -620,20 +601,13 @@ unsafe fn draw_text_impl(
     CGContextRestoreGState(ctx);
 }
 
-// ── Text-run recording (quadraui#493) ───────────────────────────────────
+// ── Text-run recording ──────────────────────────────────────────────────
 //
-// `draw_text` is the single choke point every rasteriser in `super`
-// paints text through — ~100 call sites spread across `activity_bar.rs`,
-// `data_table.rs`, `form.rs`, `dialog.rs`, … — so recording *here*, rather
-// than threading a recorder through every one of them, is what lets
-// `MacDriver`'s `FrameInventory::text_runs` (quadraui#488/#490/#493) exist
-// without touching any of those call sites. `draw_text` only ever has a
-// borrowed `CGContextRef` in scope (see this module's "Why direct
-// CoreGraphics FFI" note above), no `&mut MacBackend` to stash a `Vec`
-// on — so recording goes through the thread-local sink shared by every
-// backend ([`crate::testing`], lifted here by quadraui#721 from a private
-// `thread_local!` this module used to own; see that module's doc for why
-// it's shared now).
+// `draw_text` is the single choke point every rasteriser paints text
+// through, so recording here lets the frame inventory track text runs
+// without threading a recorder through every call site. `draw_text` only
+// ever has a borrowed `CGContextRef` in scope, so recording goes through
+// the thread-local sink shared by every backend ([`crate::testing`]).
 
 /// Start recording every subsequent [`draw_text`] call as a [`TextRun`]
 /// until [`stop_recording_text`] is called.
@@ -641,10 +615,8 @@ unsafe fn draw_text_impl(
 /// this pair when
 /// [`super::backend::MacBackend::set_painted_text_recording`] is on.
 pub(crate) fn start_recording_text() {
-    // `MacBackend::enter_frame_scope` calls don't nest, so the previous
-    // sink (always `None` in practice) is discarded rather than threaded
-    // through — mirrors this function's pre-#721 behaviour, which
-    // unconditionally replaced whatever was there.
+    // `MacBackend::enter_frame_scope` calls don't nest, so any previous
+    // sink is discarded rather than threaded through.
     let _ = crate::testing::install_text_run_sink();
 }
 
@@ -780,7 +752,7 @@ mod tests {
     }
 
     /// Pins the Core Text substitution gotcha [`make_font_exact`] exists
-    /// for (issue #963): plain [`make_font`] answers an unknown family
+    /// for: plain [`make_font`] answers an unknown family
     /// with a *usable font from a different family* rather than `None`,
     /// so only the checked variant can tell a caller "that family isn't
     /// here, use your own fallback".
@@ -906,7 +878,7 @@ mod tests {
         );
     }
 
-    // ── Text-run recording (quadraui#493) ────────────────────────────
+    // ── Text-run recording ───────────────────────────────────────────
 
     #[test]
     fn draw_text_records_nothing_when_not_recording() {
@@ -981,7 +953,7 @@ mod tests {
         assert!(stop_recording_text().is_empty());
     }
 
-    // ── Nerd-Font fallback (issue #929) ──────────────────────────────
+    // ── Nerd-Font fallback ───────────────────────────────────────────
 
     /// `font_with_fallback` must actually attach a
     /// `kCTFontCascadeListAttribute` to the returned font's descriptor —

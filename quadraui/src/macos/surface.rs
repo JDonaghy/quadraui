@@ -1,14 +1,6 @@
-//! The one shared [`PaintSurface`] adapter over a bare `CGContextRef`,
-//! consolidating the 10 private per-file `Raw*Surface` copies that #811's
-//! Phase 2d slices each left behind (issue #1072). Every one of those
-//! copies differed from its neighbours only in struct name and
-//! `unreachable!` panic strings — unlike the GTK side of the same issue,
-//! macOS has **no fill-translucency divergence to preserve**: all 10 old
-//! adapters filled through `super::backend::ns_fill_rect`, which already
-//! honours `color.a` with a real alpha blend (the quadraui#791 fix,
-//! predating this issue — several of the old adapters' doc comments call
-//! this out explicitly as *not* sharing GTK's opaque-fill bug). So this
-//! module needs only one axis of variation:
+//! The one shared [`PaintSurface`] adapter over a bare `CGContextRef`.
+//! Every adapter fills through `super::backend::ns_fill_rect`, which honours
+//! `color.a` with a real alpha blend. This module varies only in one axis:
 //!
 //! - **`font` presence.** [`crate::Scrollbar`], [`crate::DropOverlay`],
 //!   [`crate::Split`] and [`crate::SplitTree`] paint with `ctx` alone (no
@@ -17,30 +9,19 @@
 //!   [`crate::ToastOverlay`] and [`crate::Panel`] paint text too and need a
 //!   live `&CTFont`. [`CgSurface::font`] is `Option` so one struct covers
 //!   both — [`Self::font_or_panic`] panics only if a text verb is reached
-//!   with `font: None`, exactly mirroring what the old per-file
-//!   `unreachable!("... has no text measurement")` arms already
-//!   guaranteed (those primitives' `paint` fns never call a text verb).
+//!   with `font: None`, which never happens in practice.
 //!
 //! Every other verb (`surface_stroke_rect`, `surface_draw_text_run`,
 //! `surface_draw_line`, `surface_push_clip`/`surface_pop_clip`,
-//! `surface_draw_image`) was already byte-identical across every adapter
-//! that implemented it for real (the rest `unreachable!()`d because their
-//! primitive's `paint` never calls it) — this module implements all of
-//! them unconditionally; the primitives that never call a given verb
-//! simply never reach that code, so this is not a behaviour change.
+//! `surface_draw_image`) is implemented unconditionally; primitives that
+//! never call a given verb simply never reach that code.
 //! `surface_measure_text_styled`/`surface_draw_text_run_styled` (bold-aware)
-//! take the trait's default everywhere on macOS — matching every one of
-//! the 10 old adapters, none of which overrode either (see
-//! `macos::status_bar`'s old adapter doc, "Bold segments": macOS ignores
-//! a segment's own `bold` weight, unlike GTK/Win).
+//! take the trait's default everywhere on macOS — macOS ignores a segment's
+//! own `bold` weight, unlike GTK/Win.
 //!
 //! `surface_draw_image` returns [`ImagePaintResult::Unsupported`]
-//! uniformly, matching `MacBackend::draw_image`'s own contract (no
-//! `NSImage` decoder wired up yet, #802) and `macos::form`'s old adapter
-//! (the only one of the 10 that didn't `unreachable!()` here); no
-//! primitive that uses this adapter ever paints an image, so this is a
-//! strictly safer default than the panic the other nine copies carried,
-//! not a behaviour change for any live call site.
+//! uniformly, matching `MacBackend::draw_image`'s contract (no decoder
+//! wired up yet); no primitive using this adapter paints an image.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
@@ -107,7 +88,7 @@ impl PaintSurface for CgSurface<'_> {
         unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
     }
 
-    /// #1073: `ns_fill_rounded_rect`'s twin of [`Self::surface_fill_rect`]
+    /// `ns_fill_rounded_rect`'s twin of [`Self::surface_fill_rect`]
     /// above — same SAFETY contract.
     fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
         // SAFETY: see `surface_fill_rect`.
@@ -182,7 +163,7 @@ impl PaintSurface for CgSurface<'_> {
 
     fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
         // Matches `MacBackend::draw_image`: no `NSImage` decoder wired up
-        // yet (#802).
+        // yet.
         ImagePaintResult::Unsupported
     }
 }

@@ -1,17 +1,9 @@
 //! macOS rasteriser for [`crate::primitives::pipeline_view::PipelineView`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::pipeline_view::native_surface_paint::paint`]
-//! (#1085, `PaintSurface` Phase 4 slice 8/8) — see that fn's doc for the
-//! seven named divergences found while unifying
-//! `gtk::pipeline_view::draw_pipeline_view`,
-//! `macos::pipeline_view::draw_pipeline_view` and
-//! `win::pipeline_view::draw_pipeline_view` into one implementation. This
-//! module now only carries [`mac_pipeline_view_layout`] (still real,
-//! backend-specific pure geometry — no painting involved); the
-//! deprecated `draw_pipeline_view` compatibility shim over the shared
-//! [`super::surface::CgSurface`] adapter was removed in issue #1109
-//! (zero uses in coord-tui's `main` and vimcode's `develop`).
+//! Painting is implemented in the shared
+//! [`crate::primitives::pipeline_view::native_surface_paint::paint`].
+//! This module carries [`mac_pipeline_view_layout`], the backend-specific
+//! pure geometry for pipeline view layout.
 
 #[cfg(test)]
 use core_text::font::CTFont;
@@ -23,7 +15,7 @@ use crate::theme::Theme;
 
 /// Compute the macOS pixel-unit layout for a [`PipelineView`]. Shares its
 /// geometry with `gtk_pipeline_view_layout` / `win_pipeline_view_layout`
-/// via [`pixel_pipeline_view_layout`] (issue #1079).
+/// via [`pixel_pipeline_view_layout`].
 pub fn mac_pipeline_view_layout(
     view: &PipelineView,
     x: f64,
@@ -97,9 +89,7 @@ mod tests {
         assert_eq!(layout.stages.len(), 2);
     }
 
-    /// Regression for #1085 divergence 4: macOS previously painted no
-    /// tint at all behind the action button — this fixture's stage 1
-    /// ("Test") has an action, so its `action_bounds` must now show a
+    /// When a stage has an action button, its `action_bounds` displays a
     /// visible `accent_bg` tint rather than the plain box background.
     #[test]
     fn action_button_paints_a_translucent_accent_tint() {
@@ -162,17 +152,13 @@ mod tests {
     }
 
     /// Shared body for the action↔click round trip, run at both the
-    /// origin and a non-zero origin (quadraui#494 / LESSONS.md "Layout
-    /// helpers must return coords in the same frame across backends").
-    /// `mac_pipeline_view_layout` bakes `x`/`y` straight into the
-    /// returned bounds (absolute frame, matching the GTK/TUI twins) —
-    /// and *also* adds
+    /// origin and a non-zero origin. `mac_pipeline_view_layout` bakes
+    /// `x`/`y` straight into the returned bounds (absolute frame, matching
+    /// the GTK/TUI twins) and also adds
     /// [`crate::primitives::layout_metrics::pixel::PIPELINE_FOCUS_INDICATOR_H`]
-    /// to `y` itself before laying out, an extra reason a non-zero-origin
-    /// regression is plausible here. Deriving `ab`/`bb` from the layout
-    /// (not hardcoding them) means this exercises whatever origin math
-    /// the function actually does, at any origin. Calls
-    /// `mac_pipeline_view_layout` directly (pure fn, no font/paint
+    /// to `y` itself before laying out. Deriving `ab`/`bb` from the layout
+    /// (not hardcoding them) exercises the origin math across backends.
+    /// Calls `mac_pipeline_view_layout` directly (pure fn, no font/paint
     /// dependency — it forwards to `PipelineView::layout`, which is
     /// plain geometry).
     fn layout_hit_test_action_round_trip_at(origin_x: f64, origin_y: f64) {
@@ -207,7 +193,7 @@ mod tests {
         layout_hit_test_action_round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494).
+    /// Non-zero-origin regression guard.
     #[test]
     fn layout_hit_test_action_round_trip_at_nonzero_origin() {
         layout_hit_test_action_round_trip_at(7.0, 13.0);
@@ -238,7 +224,7 @@ mod tests {
         layout_hit_test_body_round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494).
+    /// Non-zero-origin regression guard.
     #[test]
     fn layout_hit_test_body_round_trip_at_nonzero_origin() {
         layout_hit_test_body_round_trip_at(7.0, 13.0);

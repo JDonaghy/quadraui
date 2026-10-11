@@ -186,14 +186,9 @@ mod tests {
 
     /// Like [`layout_for`] but anchors the cursor + viewport at an
     /// arbitrary `(origin_x, origin_y)` instead of always `(0, 0)`.
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md
-    /// "Layout helpers must return coords in the same frame across
-    /// backends"): `Completions::layout` already threads
-    /// `viewport.x`/`viewport.y` through to absolute placement math (it
-    /// was never the #494 gap), but this test module only ever
-    /// exercised a `(0, 0)`-origin viewport, so a placement regression
-    /// at a real (non-zero) editor/panel origin would have gone
-    /// undetected.
+    /// Layout helpers must return coordinates in the same frame across
+    /// backends; this method tests non-zero origins to catch placement
+    /// regressions that a `(0, 0)`-origin viewport would not detect.
     fn layout_for_at(c: &Completions, origin_x: f32, origin_y: f32) -> CompletionsLayout {
         c.layout(
             origin_x + 20.0,
@@ -264,8 +259,8 @@ mod tests {
         );
     }
 
-    /// Shared body for `hit_test_resolves_visible_items` — see
-    /// [`layout_for_at`] for the quadraui#494 non-zero-origin rationale.
+    /// Shared body for `hit_test_resolves_visible_items`, testing
+    /// non-zero origins to catch placement regressions.
     fn hit_test_resolves_visible_items_at(origin_x: f32, origin_y: f32) {
         let c = sample();
         let l = layout_for_at(&c, origin_x, origin_y);
@@ -285,7 +280,7 @@ mod tests {
         hit_test_resolves_visible_items_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494): same round trip,
+    /// Non-zero-origin regression guard: same round trip,
     /// with the popup's cursor + viewport anchored at a shifted origin.
     #[test]
     fn hit_test_resolves_visible_items_at_nonzero_origin() {

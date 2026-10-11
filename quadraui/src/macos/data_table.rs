@@ -1,21 +1,13 @@
 //! macOS rasteriser for [`crate::DataTable`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::data_table::native_surface_paint::paint`] (#1084,
-//! `PaintSurface` Phase 4 7/8) — see that fn's doc for the full
-//! per-backend divergence survey this closed, most notably: this module
-//! used to paint a fully opaque `selection_bg` pixel for the selected row
-//! (no alpha blending at all — a documented "Scope omission" prior to
-//! this migration) and hand-rolled flat, non-hover-aware scrollbar fills
-//! instead of the shared, translucent
-//! [`crate::primitives::scrollbar::native_surface_paint::paint`]
-//! `gtk::data_table` already used. [`draw_data_table`] below is now a
-//! thin wrapper over the shared paint, using
-//! [`crate::macos::surface::CgSurface`] as the `PaintSurface` adapter —
-//! mirroring [`crate::win::data_table::draw_data_table`]'s equivalent
-//! migration. `gtk::data_table::draw_data_table` is *not* migrated; see
-//! the shared `paint`'s doc for why. [`mac_data_table_layout`] (pure
-//! geometry, no paint) is untouched.
+//! Painting uses the shared
+//! [`crate::primitives::data_table::native_surface_paint::paint`] —
+//! see that function's documentation for the full per-backend
+//! divergence survey. [`draw_data_table`] is a thin wrapper over the
+//! shared paint, using [`crate::macos::surface::CgSurface`] as the
+//! `PaintSurface` adapter, mirroring
+//! [`crate::win::data_table::draw_data_table`]'s equivalent approach.
+//! [`mac_data_table_layout`] (pure geometry, no paint) handles layout.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
@@ -30,7 +22,7 @@ use crate::DataTableLayout;
 /// path (and `font: &CTFont` passed straight through as `&dyn
 /// TextMeasure` — `CTFont` implements it directly, see `macos::text`'s
 /// module doc) with `gtk_data_table_layout` / `win_data_table_layout`
-/// via [`pixel_data_table_layout`] (issue #1079).
+/// via [`pixel_data_table_layout`].
 pub fn mac_data_table_layout(
     table: &DataTable,
     font: &CTFont,
@@ -149,13 +141,9 @@ mod tests {
         paint_via_backend_themed(table, hovered, Theme::default())
     }
 
-    /// Like [`paint_via_backend`], but with an explicit theme — used by
-    /// tests that need a deterministic (non-translucent) tint colour to
-    /// assert an exact pixel match against, since #1084 made the
-    /// selection/hover row tints real alpha blends over whatever the
-    /// surface already held (see this module's doc). Mirrors
-    /// `macos::command_line`'s `selection_paints_highlight_behind_text`
-    /// test, which sets `selection_alpha: 1.0` for the same reason.
+    /// Like [`paint_via_backend`], but with an explicit theme. Tests use
+    /// this with `selection_alpha: 1.0` to ensure exact pixel matching,
+    /// since the selection/hover row tints are now real alpha blends.
     fn paint_via_backend_themed(
         table: &DataTable,
         hovered: Option<usize>,
@@ -213,11 +201,9 @@ mod tests {
 
     #[test]
     fn selected_row_paints_selection_bg() {
-        // `selection_alpha: 1.0` makes the (now real, #1084) alpha blend
-        // an opaque replace, so the exact-colour assertion below still
-        // pins the right colour without needing to reason about
-        // compositing math against the surface's initial transparent
-        // fill.
+        // `selection_alpha: 1.0` makes the alpha blend opaque, so the
+        // exact-colour assertion below pins the right colour without
+        // needing to reason about compositing math.
         let table = sample_table();
         let theme = Theme {
             selection_alpha: 1.0,
@@ -237,15 +223,11 @@ mod tests {
         );
     }
 
-    /// #1084's RED-before-the-port case: pre-migration,
-    /// `macos::data_table::draw_data_table` painted the selected row's
-    /// tint as a fully opaque `fill_rect(..., theme.selection_bg)` — its
-    /// own module doc named this outright ("macOS paints a solid
-    /// `selection_bg` pixel today"). At the crate's real default
-    /// `selection_alpha` (`0.50`), painting over the surface's initial
-    /// fully-transparent-black fill must now read back *darker* than the
-    /// pure `selection_bg` colour — proof the shared `paint` is
-    /// compositing a translucent tint, not replacing the pixel outright.
+    /// Verify that the selected row's tint is translucent at the real
+    /// default `selection_alpha` (`0.50`). Painting the tint over the
+    /// surface's initial fully-transparent fill must read back darker
+    /// than the pure `selection_bg` colour, proving the shared `paint`
+    /// composites a translucent tint rather than replacing the pixel.
     #[test]
     fn selected_row_tint_is_translucent_at_the_real_default_alpha() {
         let table = sample_table();
@@ -309,19 +291,12 @@ mod tests {
 
     #[test]
     fn layout_returns_local_coords_when_area_offset() {
-        // Cross-backend contract: `mac_data_table_layout` explicitly
-        // discards `x`/`y` (`let _ = (x, y);` in the fn body) — the
-        // returned bounds are LOCAL (origin 0, 0) regardless of where
-        // the table is painted, matching the tree/form/list/palette
-        // family (unlike chart/command_center/menu_bar/panel/msv in
-        // this same batch, which bake x/y into their bounds). Only
-        // `draw_data_table`'s paint path adds `x`/`y` back in.
-        //
-        // Regression guard for quadraui#494 / LESSONS.md "Layout
-        // helpers must return coords in the same frame across
-        // backends": prove the origin genuinely has no effect on the
-        // returned layout, then round-trip a click through hit_test —
-        // callers never localise here since bounds are already local.
+        // Cross-backend contract: `mac_data_table_layout` returns LOCAL
+        // coordinates (origin 0, 0) regardless of where the table is
+        // painted, matching the tree/form/list/palette family. Only
+        // `draw_data_table`'s paint path adds x/y back in. Verify the
+        // origin has no effect on the returned layout, then round-trip a
+        // click through hit_test.
         let table = sample_table();
         let f = font();
         let layout_origin = mac_data_table_layout(&table, &f, 0.0, 0.0, W as f64, H as f64, 16.0);

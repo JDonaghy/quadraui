@@ -1,10 +1,8 @@
 //! macOS rasteriser for [`crate::ContextMenu`].
 //!
-//! Content painting moved to the shared
+//! Content painting uses the shared
 //! [`crate::primitives::context_menu::native_surface_paint::paint`]
-//! (#1077, `PaintSurface` Phase 4 slice 4/8) — see that fn's module
-//! doc for the two small drifts it resolved (box corner rounding,
-//! separator stroke weight). Returns per-clickable hit rectangles as
+//! function. Returns per-clickable hit rectangles as
 //! `Vec<(Rect, WidgetId)>` so the caller's click handler can resolve
 //! menu clicks without re-running layout.
 

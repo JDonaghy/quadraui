@@ -1,18 +1,10 @@
 //! macOS (Core Graphics + Core Text) rasteriser for
 //! [`crate::primitives::board::BoardModel`].
 //!
-//! Painting moved to the shared
-//! [`crate::primitives::board::native_surface_paint::paint`] (#1085,
-//! `PaintSurface` Phase 4 slice 8/8) — see that fn's doc for the four
-//! named divergences (column-header overflow; card-title wrapping;
-//! rounded vs. straight card borders; per-element font size) found
-//! while unifying `gtk::board::draw_board`, `macos::board::draw_board`
-//! and `win::board::draw_board` into one implementation. This module now
-//! only carries [`mac_board_layout`] (still real, backend-specific pure
-//! geometry — no painting involved); the deprecated `draw_board`
-//! compatibility shim over the shared [`super::surface::CgSurface`]
-//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
-//! and vimcode's `develop`).
+//! Painting is handled by the shared
+//! [`crate::primitives::board::native_surface_paint::paint`] function — see that fn's doc
+//! for implementation details. This module carries [`mac_board_layout`], the
+//! backend-specific pure geometry computation (no painting involved).
 
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::layout_metrics::pixel_board_layout;
@@ -21,9 +13,8 @@ use crate::theme::Theme;
 
 /// Compute the macOS point-unit layout for a [`BoardModel`] without
 /// painting. `x` / `y` are baked into every returned rect (absolute
-/// frame), matching the GTK twin. Shares its column/card measure with
-/// `gtk_board_layout` / `win_board_layout` via [`pixel_board_layout`]
-/// (issue #1079).
+/// frame). Shares its column/card measure with `gtk_board_layout` and
+/// `win_board_layout` via [`pixel_board_layout`].
 pub fn mac_board_layout(model: &BoardModel, x: f64, y: f64, w: f64, h: f64) -> BoardLayout {
     pixel_board_layout(model, x as f32, y as f32, w as f32, h as f32)
 }
@@ -132,14 +123,8 @@ mod tests {
         );
     }
 
-    /// Regression for #1085 divergence 1: an overlong header title now
-    /// hard-clips to its own header strip instead of bleeding into the
-    /// next column — previously unclipped on macOS (`CGContextClipToRect`
-    /// bracketed the header draw, but a title wider than the *entire*
-    /// board would still have escaped since the clip was already scoped
-    /// to `header_bounds`; the real observable regression this guards is
-    /// the shared `paint`'s hard-clip staying in force after the #1085
-    /// port, not a behaviour change on this backend specifically).
+    /// Header titles hard-clip to their own column strip and do not bleed
+    /// into adjacent columns.
     #[test]
     fn overlong_header_title_does_not_paint_past_its_own_column() {
         let mut model = sample_model();
@@ -206,10 +191,7 @@ mod tests {
         );
     }
 
-    /// Regression for #1085 divergence 3: the card border is a straight
-    /// rectangle on every backend now, so the extreme corner pixel (which
-    /// a rounded-rect border would have left unstroked) is stroked in
-    /// `border_fg` here.
+    /// Card borders are straight rectangles, not rounded.
     #[test]
     fn card_border_is_a_straight_rect_not_a_rounded_one() {
         let model = sample_model();
@@ -282,7 +264,7 @@ mod tests {
         paint_click_round_trip_at(0.0, 0.0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494, LESSONS.md:159-181).
+    /// Non-zero-origin coordinates are handled correctly.
     #[test]
     fn paint_click_round_trip_at_nonzero_origin() {
         paint_click_round_trip_at(31.0, 17.0);

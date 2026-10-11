@@ -24,7 +24,7 @@
 //! through the app's [`crate::runner::AppLogic`] synchronously —
 //! including the accelerator-match / double-click-fold / paste-
 //! interception pre-processing `run`'s `handle` closure applies before
-//! `AppLogic::handle` sees the event (#486). The queue here exists for
+//! `AppLogic::handle` sees the event. The queue here exists for
 //! parity with [`Backend`] callers that prefer the poll API and for
 //! backend-side producers (native menu activations, context-menu
 //! results). `WindowResized` (from the `NSViewFrameDidChangeNotification`
@@ -86,10 +86,9 @@ use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
-// `TabBarHits` is `#[deprecated]` (issue #823) — this backend still
-// constructs it directly (per #504's audit: `macos::tab_bar` has no
-// intermediate `TabBarLayout` to source native coordinates from), so the
-// import needs the same allow every use site below does.
+// `TabBarHits` is deprecated — this backend constructs it directly
+// (per the audit: `macos::tab_bar` has no intermediate `TabBarLayout`),
+// so the import needs the same allow every use site below does.
 #[allow(deprecated)]
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::text_display::TextDisplayLayout;
@@ -114,12 +113,12 @@ use super::services::MacPlatformServices;
 ///   Updated each frame from the active `QuadraView`'s bounds.
 /// - `modal_stack` — pushed by hosts on modal open, popped on close.
 /// - `core` — registered keybindings + text-selection bookkeeping,
-///   consolidated into [`crate::backend_core::BackendCore`] (#1090).
+///   consolidated into [`crate::backend_core::BackendCore`].
 ///   [`Self::match_keypress`] resolves a native keypress against the
-///   registered bindings (#486). [`run`][super::run]'s `handle` closure
+///   registered bindings. [`run`][super::run]'s `handle` closure
 ///   rewrites a matching `KeyPressed` into `Accelerator` before
 ///   `AppLogic::handle` sees it.
-/// - `double_click` — folds a `MouseDown` into `DoubleClick` (#486); see
+/// - `double_click` — folds a `MouseDown` into `DoubleClick`; see
 ///   [`Self::fold_double_click`].
 /// - `events` — adapter queue. [`run`][super::run]'s responder methods
 ///   dispatch synchronously today; the queue is used for backend-side
@@ -130,7 +129,7 @@ use super::services::MacPlatformServices;
 ///   per-app *editor* font state. Apps set these once in `setup()` via
 ///   [`Self::set_current_font`].
 /// - `chrome_font` / `chrome_line_height` / `chrome_char_width` — the
-///   independent *chrome* (UI) font state (issue #963), defaulting to the
+///   independent *chrome* (UI) font state, defaulting to the
 ///   CoreText system UI font. Set via [`Self::set_chrome_font`]
 ///   (`Backend::set_ui_font`'s inherent twin).
 pub struct MacBackend {
@@ -138,18 +137,18 @@ pub struct MacBackend {
     /// `Rc<RefCell<>>` (not a plain field) so [`Backend::modal_stack_handle`]
     /// can hand back a handle that outlives any single `&mut self`
     /// borrow — the shape `GtkBackend` and `TuiBackend` already use for
-    /// this (quadraui#699).
+    /// this.
     modal_stack: Rc<RefCell<ModalStack>>,
     /// See `modal_stack`'s doc comment — same rationale.
     drag_state: Rc<RefCell<DragState>>,
-    /// Accelerator registry + text-selection bookkeeping (#1090) — see
+    /// Accelerator registry + text-selection bookkeeping — see
     /// [`crate::backend_core::BackendCore`]'s module doc. Replaces the
     /// formerly macOS-local `accelerators`/`parsed_accelerators` fields
     /// verbatim, plus (below) the formerly separate `text_selection`
     /// field.
     core: crate::backend_core::BackendCore,
     /// Folds a `MouseDown` `NSEvent` into `DoubleClick` when it lands
-    /// within the time/position window of the previous click (#486).
+    /// within the time/position window of the previous click.
     /// `macos::run` dispatches synchronously per `NSEvent`, so this
     /// runs on one event at a time via `Self::fold_double_click`
     /// rather than `TuiBackend`'s per-poll batch.
@@ -163,9 +162,9 @@ pub struct MacBackend {
     current_theme: Theme,
     /// Captured once per frame, mirroring `current_theme` — see
     /// [`crate::Style`]'s module doc for why this is a separate field
-    /// rather than folded into `Theme` (issue #1133).
+    /// rather than folded into `Theme`.
     current_style: crate::Style,
-    /// Decoded-`CGImage` cache for [`Backend::draw_image`] (issue #1014)
+    /// Decoded-`CGImage` cache for [`Backend::draw_image`]
     /// — see [`crate::image_cache`]'s module doc and
     /// [`super::image::draw_image`]'s "Decode cache" section for why
     /// this backend keys on source only (a `CGImage` decode is reused at
@@ -173,10 +172,10 @@ pub struct MacBackend {
     /// across frames, mirroring `GtkBackend::image_cache`.
     image_cache: crate::image_cache::ImageCache<CGImage>,
     /// Downsampled Core Text glyph atlas for [`Backend::draw_minimap`]'s
-    /// [`MinimapRenderMode::Characters`] branch (issue #1153) — see
+    /// [`MinimapRenderMode::Characters`] branch — see
     /// [`super::minimap`]'s "Glyph atlas" module doc section and
     /// [`crate::primitives::minimap::MinimapAtlasCache`]'s doc. Survives
-    /// across frames, mirroring `GtkBackend::minimap_atlas_cache` (#1035).
+    /// across frames, mirroring `GtkBackend::minimap_atlas_cache`.
     ///
     /// [`MinimapRenderMode::Characters`]: crate::primitives::minimap::MinimapRenderMode::Characters
     minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache,
@@ -185,9 +184,9 @@ pub struct MacBackend {
     /// measurement. Wrapped in `Option` so apps that don't paint
     /// text can skip the setup call.
     ///
-    /// Issue #1117: every `draw_*`/`surface_*` call site that reads this
+    /// Every `draw_*`/`surface_*` call site that reads this
     /// falls back to `chrome_font` — never `None` — when it's unset,
-    /// instead of `.expect()`-panicking. A host that forgets
+    /// instead of panicking. A host that forgets
     /// `set_current_font` gets editor text rendered in the chrome font
     /// rather than an abort; `set_current_font` still overrides it the
     /// moment it's called, same as before.
@@ -198,9 +197,8 @@ pub struct MacBackend {
     /// [`Backend::set_editor_v_scrollbar_width`]; `None` = one
     /// `current_char_width` wide.
     editor_v_scrollbar_w: Option<f32>,
-    /// Chrome (UI) font — issue #963's fix for macOS being the only
-    /// pixel backend where `set_ui_font` was a silent no-op and every
-    /// piece of chrome (status bar today; more rasterisers follow-up)
+    /// Chrome (UI) font — macOS is the only pixel backend where
+    /// `set_ui_font` was a silent no-op and every piece of chrome
     /// painted in `current_font`, the *editor* font, instead. Unlike
     /// `current_font`, this is never `None`: [`Self::new`] seeds it with
     /// the CoreText system UI font so chrome already looks right before
@@ -209,8 +207,7 @@ pub struct MacBackend {
     /// editor font falling back to "no font at all". Set via
     /// [`Self::set_chrome_font`]; never touched by
     /// [`Self::set_current_font`]/[`Backend::set_editor_font`] — see
-    /// #912 for the metric-mismatch hazard that separation exists to
-    /// avoid.
+    /// the metric-mismatch hazard that separation exists to avoid.
     chrome_font: CTFont,
     /// Cached [`super::text::font_metrics`] line height for
     /// `chrome_font`, in points — the chrome twin of
@@ -220,10 +217,10 @@ pub struct MacBackend {
     /// Cached `char_width` for `chrome_font` — the chrome twin of
     /// `current_char_width`.
     chrome_char_width: f64,
-    /// Family last set via [`Backend::set_nerd_font_fallback`] (issue
-    /// #929), if any. Applied to `current_font` immediately if one is
-    /// already set (see [`Self::set_nerd_font_fallback`]), and consulted
-    /// by [`Self::set_current_font`] so a later `set_current_font` call
+    /// Family last set via [`Backend::set_nerd_font_fallback`], if any.
+    /// Applied to `current_font` immediately if one is already set
+    /// (see [`Self::set_nerd_font_fallback`]), and consulted by
+    /// [`Self::set_current_font`] so a later `set_current_font` call
     /// (e.g. a runtime font-preference change) doesn't silently drop a
     /// fallback that was configured first — the two setters can land in
     /// either order.
@@ -242,7 +239,7 @@ pub struct MacBackend {
     /// backend that never takes the native path (e.g. `Custom` style),
     /// which never reads this field.
     last_native_menu_bar: Option<MenuBar>,
-    /// Tray/status-bar icon state (issue #953) — see [`super::tray`]'s
+    /// Tray/status-bar icon state — see [`super::tray`]'s
     /// module doc and `impl TrayService for MacBackend` below.
     tray: super::tray::MacTrayState,
     /// Whether `InlineInput` carets should currently paint their stroke
@@ -261,7 +258,7 @@ pub struct MacBackend {
     /// [`Backend::begin_frame`]. Mirrors `GtkBackend::zones` /
     /// `TuiBackend::zones`. Read by
     /// [`crate::testing::FrameInventory::zones`] via
-    /// [`super::testing::MacDriver::inventory`] (quadraui#493).
+    /// [`super::testing::MacDriver::inventory`].
     zones: Vec<ZoneRec>,
     /// Whether [`Self::enter_frame_scope`] should wrap its closure in
     /// [`super::text::start_recording_text`] / `stop_recording_text` and
@@ -278,13 +275,13 @@ pub struct MacBackend {
     /// [`Backend::draw_activity_bar`], cleared by [`Backend::begin_frame`]
     /// (same per-frame lifecycle as `zones`), read by
     /// [`super::run::dispatch_event`] to redirect the next `KeyPressed`
-    /// into the bar. Mirrors `GtkBackend::focused_activity_bar` (#465).
+    /// into the bar. Mirrors `GtkBackend::focused_activity_bar`.
     focused_activity_bar: Option<WidgetId>,
-    /// [`crate::backend::Backend::minimap_scale`]'s backing field (issue
-    /// #1143) — read by [`Backend::draw_minimap`]/[`Backend::minimap_layout`]
-    /// to resolve the row pitch (and per-column width) a paint or layout
-    /// call uses. Defaults to [`crate::primitives::minimap::MinimapScale::One`],
-    /// the pre-#1143 fixed pitch, so a host that never calls
+    /// [`crate::backend::Backend::minimap_scale`]'s backing field — read by
+    /// [`Backend::draw_minimap`]/[`Backend::minimap_layout`] to resolve
+    /// the row pitch (and per-column width) a paint or layout call uses.
+    /// Defaults to [`crate::primitives::minimap::MinimapScale::One`],
+    /// the fixed pitch, so a host that never calls
     /// [`Backend::set_minimap_scale`] sees no behaviour change.
     minimap_scale: crate::primitives::minimap::MinimapScale,
     /// Top-level window handle, set once by `macos::run::run` via
@@ -292,7 +289,7 @@ pub struct MacBackend {
     /// constructing the window (and in unit tests, which never call
     /// it). Backs [`Backend::begin_window_drag`] /
     /// [`Backend::toggle_window_maximize`] / [`Backend::set_cursor`]
-    /// (#498) — mirrors `GtkBackend::window`.
+    /// — mirrors `GtkBackend::window`.
     window: Option<Retained<NSWindow>>,
     /// Raw press `NSEvent`, stashed by `macos::run`'s `mouseDown:`
     /// responder before the press is translated to a portable
@@ -300,7 +297,7 @@ pub struct MacBackend {
     /// `.take()`) — `performWindowDragWithEvent:` requires the
     /// *originating* mouse-down event, not a synthesized one.
     ///
-    /// Stored in the shared [`crate::desktop::WindowDragArm`] (#498)
+    /// Stored in the shared [`crate::desktop::WindowDragArm`]
     /// purely as an arm/take stash: unlike `GtkBackend`'s
     /// `armed_window_drag`, there's no threshold-gated commit step
     /// here, because AppKit's `performWindowDragWithEvent:` already
@@ -318,17 +315,20 @@ pub struct MacBackend {
     /// [`Backend::set_nerd_fonts`]'s own doc gives for keeping TUI's
     /// default at `false`.
     nerd_fonts_enabled: bool,
-    /// Single owner of keyboard focus (issue #830) — see
+    /// Single owner of keyboard focus — see
     /// [`crate::focus`]'s module doc. Mutated only by the shared
     /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
     /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
     /// read elsewhere via [`Backend::focus_manager`].
     focus: crate::focus::FocusManager,
-    /// Thread-safe inbox for [`crate::UiEvent::User`] payloads (issue
-    /// #831) — see [`crate::runtime::UserEventQueue`]'s doc. [`Self::waker`]
-    /// clones this `Arc` into the closure it hands out; [`Self::poll_events`]
-    /// drains it into `UiEvent::User` alongside `events`, on the AppKit
-    /// main thread, same as any other queued event.
+    /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`.
+    /// Picks `Icon::glyph` vs `Icon::fallback` in `draw_activity_bar` and
+    /// `draw_tree`. Set via [`Backend::set_nerd_fonts`]; defaults to `true`
+    /// on this backend — see `GtkBackend`'s matching field doc for why a
+    /// GUI backend with the bundled codicon font always available carries
+    /// none of the "terminal with no Nerd Font installed" risk
+    /// [`Backend::set_nerd_fonts`]'s own doc gives for keeping TUI's
+    /// default at `false`.
     user_events: Arc<crate::runtime::UserEventQueue>,
     /// Set once by `macos::run::run` via [`Self::set_wake_callback`],
     /// right after the `QuadraView` exists — see that method's doc for
@@ -337,17 +337,15 @@ pub struct MacBackend {
     /// constructed directly by a test, never handed to `macos::run`);
     /// `waker()`'s returned closure is a documented no-op in that case.
     wake_callback: WakeCallback,
-    /// Set once by `macos::run::run` via [`Self::set_tick_callback`]
-    /// (quadraui#832), right after the `QuadraView` exists — same shape
-    /// as [`Self::wake_callback`], but wired to `view.dispatch_tick()`
-    /// (fires `AppLogic::tick`) instead of a bare repaint request.
-    /// [`Self::request_frame_in`]'s `DispatchQueue::main().after` closure
-    /// looks this up when the scheduled delay elapses. `None` until then,
-    /// same "no-op, not a panic" posture as `wake_callback`.
+    /// Thread-safe inbox for [`crate::UiEvent::User`] payloads — see
+    /// [`crate::runtime::UserEventQueue`]'s doc. [`Self::waker`] clones
+    /// this `Arc` into the closure it hands out; [`Self::poll_events`]
+    /// drains it into `UiEvent::User` alongside `events`, on the AppKit
+    /// main thread, same as any other queued event.
     tick_callback: WakeCallback,
 }
 
-/// The wake-target [`MacBackend::waker`] invokes (issue #831) — see
+/// The wake-target [`MacBackend::waker`] invokes — see
 /// [`MacBackend::set_wake_callback`]'s doc for what installs it and why
 /// it's shaped this way. Named to keep `MacBackend`'s field declaration
 /// (and `clippy::type_complexity`) readable — mirrors
@@ -359,42 +357,37 @@ pub struct MacBackend {
 /// thread-local keyed by an integer id.
 type WakeCallback = Arc<std::sync::OnceLock<MainThreadBound<Rc<dyn Fn()>>>>;
 
-/// Position tolerance, in points, for [`MacBackend::fold_double_click`]'s
-/// [`DoubleClickDetector`].
-///
-/// `ns_mouse_down` (`macos/events.rs`) passes raw `NSEvent` `x`/`y`
-/// straight through — unlike TUI's whole character cells, these are
-/// point-precision, so the detector's default radius
-/// (`crate::dispatch::DOUBLE_CLICK_RADIUS`, 1.5 — tuned for TUI's
-/// integral cell grid) is far tighter than two real mouse/trackpad
-/// clicks can reliably land within. `4.0` points is a rough approximation
-/// of AppKit's own double-click hit region; it's a heuristic, not a
-/// measured constant, since there's no public API exposing the system's
-/// actual tolerance the way `NSEvent.clickCount` would sidestep this
-/// entirely (see the #486 review's non-blocking note — reading
-/// `clickCount` natively remains the more robust fix and should be
-/// revisited, ideally verified on real hardware).
+/// Set once by `macos::run::run` via [`Self::set_tick_callback`],
+/// right after the `QuadraView` exists — same shape as
+/// [`Self::wake_callback`], but wired to `view.dispatch_tick()`
+/// (fires `AppLogic::tick`) instead of a bare repaint request.
+/// [`Self::request_frame_in`]'s `DispatchQueue::main().after` closure
+/// looks this up when the scheduled delay elapses. `None` until then,
+/// same "no-op, not a panic" posture as `wake_callback`.
 const MAC_DOUBLE_CLICK_RADIUS: f32 = 4.0;
 
 /// Default chrome (UI) font size in points, paired with the CoreText
 /// system UI font [`MacBackend::new`] installs as `chrome_font` before
 /// any [`Backend::set_ui_font`] call — matches GTK's `"Sans 11"` /
-/// Win-GUI's `DEFAULT_UI_FONT_SIZE_PT` default (issue #963).
+/// Win-GUI's `DEFAULT_UI_FONT_SIZE_PT` default.
 const DEFAULT_UI_FONT_SIZE_PT: f64 = 11.0;
 
 /// What [`parse_ui_font_desc`] resolved a font description's family
 /// portion to.
 enum ParsedFamily {
-    /// A CSS/Pango generic token (issue #1023) — always resolvable, since
+    /// A CSS/Pango generic token — always resolvable, since
     /// it names a native system role rather than an installed family; see
     /// [`GenericFamily`].
     Generic(GenericFamily),
-    /// A concrete family name that [`super::text::make_font_exact`]
-    /// confirmed is actually installed, or — if nothing in `desc`'s
-    /// comma-separated family list resolved — the first candidate,
-    /// unchecked, for the caller to make its own final degrade decision
-    /// against (matching this function's pre-#1023 contract for a single
-    /// unresolvable family).
+    /// Position tolerance, in points, for [`MacBackend::fold_double_click`]'s
+    /// [`DoubleClickDetector`].
+    ///
+    /// `ns_mouse_down` (`macos/events.rs`) passes raw `NSEvent` `x`/`y`
+    /// straight through — unlike TUI's whole character cells, these are
+    /// point-precision, so the detector's default radius is far tighter
+    /// than two real mouse/trackpad clicks can reliably land within.
+    /// `4.0` points is a rough approximation of AppKit's own double-click
+    /// hit region; it's a heuristic, not a measured constant.
     Named(String),
 }
 
@@ -402,31 +395,26 @@ enum ParsedFamily {
 /// documented shape, e.g. `"Sans 13"`) into a Core-Text-ready
 /// `(family, size_pt)` pair — the same convention
 /// `win::backend::parse_ui_font_desc` implements for the identical trait
-/// contract (issue #963 ports Win-GUI's #724 shape onto macOS). A
-/// trailing whitespace-separated numeric token is the point size,
-/// defaulting to [`DEFAULT_UI_FONT_SIZE_PT`] when `desc` carries none —
-/// a bare comma-separated fallback list (`"SF Pro Text, Helvetica Neue,
-/// Sans"`, no size at all) is a real shape `Backend::set_ui_font`
+/// contract. A trailing whitespace-separated numeric token is the point
+/// size, defaulting to [`DEFAULT_UI_FONT_SIZE_PT`] when `desc` carries
+/// none — a bare comma-separated fallback list (`"SF Pro Text, Helvetica
+/// Neue, Sans"`, no size at all) is a real shape `Backend::set_ui_font`
 /// callers use, not a parse failure.
 ///
 /// `desc`'s family portion is a Pango-style comma-separated fallback
-/// list (issue #1023): everything before the size is split on `,`, each
-/// candidate trimmed, and tried in order — a CSS/Pango generic token
+/// list: everything before the size is split on `,`, each candidate
+/// trimmed, and tried in order — a CSS/Pango generic token
 /// ([`GenericFamily::parse`]) always resolves; a concrete name resolves
 /// if [`super::text::make_font_exact`] confirms Core Text has it
 /// installed. The first candidate that resolves either way wins, the
-/// same semantics Pango/fontconfig give a comma family list. Before this
-/// fix, `rfind(' ')` alone treated the whole list as one (unmatchable)
-/// literal family name.
+/// same semantics Pango/fontconfig give a comma family list.
 ///
-/// Because trying each candidate is now this function's job (it is the
-/// only place that has the whole ordered list to retry against), it
-/// calls [`super::text::make_font_exact`] itself rather than leaving
-/// every installed-family check to the caller the way the pre-#1023
-/// version did. The caller ([`MacBackend::set_ui_font`]) still owns the
-/// *final* degrade decision — what to do when not one candidate in the
-/// list resolved — via [`ParsedFamily::Named`]'s unchecked-fallback
-/// case.
+/// Because trying each candidate is now this function's job, it calls
+/// [`super::text::make_font_exact`] itself rather than leaving every
+/// installed-family check to the caller. The caller ([`MacBackend::set_ui_font`])
+/// still owns the *final* degrade decision — what to do when not one
+/// candidate in the list resolved — via [`ParsedFamily::Named`]'s
+/// unchecked-fallback case.
 ///
 /// Returns `None` only when `desc` is empty/whitespace-only, or its
 /// family portion is empty (e.g. `desc` is just a bare size).
@@ -486,9 +474,9 @@ fn parse_ui_font_desc(desc: &str) -> Option<(ParsedFamily, f64)> {
 /// native menu path) and `crate::accelerator::render_binding` (the
 /// display/tooltip path) both already render these as **Cmd** on macOS,
 /// so a `MacBackend::match_keypress` that compared the raw Ctrl
-/// `ParsedBinding` against a real Cmd keypress would never fire (#486
-/// review). Swap Ctrl for Cmd here so registration, native-menu
-/// resolution, and rendering all agree.
+/// `ParsedBinding` against a real Cmd keypress would never fire.
+/// Swap Ctrl for Cmd here so registration, native-menu resolution,
+/// and rendering all agree.
 ///
 /// `KeyBinding::Literal` bindings are left untouched — the app author
 /// already chose the exact modifier they want (e.g. `<C-s>` for a
@@ -506,7 +494,7 @@ fn macos_universal_binding_modifiers(
 }
 
 /// Which of AppKit's three usable public cursor singletons a
-/// [`PointerShape`] resolves to (#498).
+/// [`PointerShape`] resolves to.
 ///
 /// This exists so the *mapping decision* — the part with an opinion in
 /// it, and the part a regression can silently change — is a plain Rust
@@ -538,9 +526,9 @@ enum MacCursorKind {
 /// AppKit's own `NSUnionRect` C function, which `objc2-foundation`
 /// doesn't bind, reimplemented here in pure Rust so
 /// [`MacBackend::titlebar_control_inset`] can union the
-/// Close/Miniaturize/Zoom button frames without an `unsafe` FFI call
-/// (issue #1154). Pure and AppKit-free on purpose, like [`mac_cursor_kind`]
-/// above — trivially unit-testable without a live `NSWindow`.
+/// Close/Miniaturize/Zoom button frames without an `unsafe` FFI call.
+/// Pure and AppKit-free on purpose — trivially unit-testable without
+/// a live `NSWindow`.
 fn union_ns_rect(a: NSRect, b: NSRect) -> NSRect {
     let min_x = a.origin.x.min(b.origin.x);
     let min_y = a.origin.y.min(b.origin.y);
@@ -555,7 +543,7 @@ fn union_ns_rect(a: NSRect, b: NSRect) -> NSRect {
     }
 }
 
-/// Map a [`PointerShape`] to the [`MacCursorKind`] it should show (#498).
+/// Map a [`PointerShape`] to the [`MacCursorKind`] it should show.
 /// Mirrors `gtk::backend::pointer_shape_cursor_name`, but `NSCursor`'s
 /// public API (`objc2-app-kit`'s binding of it — see
 /// `MacBackend::set_cursor`) only exposes horizontal
@@ -584,18 +572,16 @@ fn mac_cursor_kind(shape: PointerShape) -> MacCursorKind {
 }
 
 /// Vend the shared `NSCursor` singleton for a [`PointerShape`], via
-/// [`mac_cursor_kind`] (#498). The only AppKit-touching half of the
+/// [`mac_cursor_kind`]. The only AppKit-touching half of the
 /// mapping; see [`MacCursorKind`] for why the two halves are separate.
 fn mac_cursor_for_shape(shape: PointerShape) -> Retained<NSCursor> {
-    // `resizeUpDownCursor`/`resizeLeftRightCursor` were deprecated in the
-    // AppKit SDK objc2-app-kit 0.3 (#796 bump) now ships bindings for, in
-    // favour of `rowResizeCursorInDirections:`/`columnResizeCursorInDirections:`
-    // (divider-drag) or `frameResizeCursorFromPosition:inDirections:`
-    // (rectangular-frame resize) — neither is a drop-in replacement (both
-    // take a directions argument this call site has no opinion on), so
-    // this keeps the simple singleton for now rather than guessing at the
-    // right direction set. The legacy cursors still work on every macOS
-    // version quadraui supports.
+    // `resizeUpDownCursor`/`resizeLeftRightCursor` are deprecated in AppKit
+    // in favour of `rowResizeCursorInDirections:`/`columnResizeCursorInDirections:`
+    // (divider-drag) or `frameResizeCursorFromPosition:inDirections:` (rectangular
+    // resize) — neither is a drop-in replacement (both take a directions
+    // argument this call site has no opinion on), so this keeps the simple
+    // singleton for now rather than guessing at the right direction set.
+    // The legacy cursors still work on every macOS version quadraui supports.
     #[allow(deprecated)]
     match mac_cursor_kind(shape) {
         MacCursorKind::Arrow => NSCursor::arrowCursor(),
@@ -617,7 +603,7 @@ impl MacBackend {
         // applies identically here.
         super::text::ensure_codicon_registered();
 
-        // Seed chrome with the CoreText system UI font (issue #963) so
+        // Seed chrome with the CoreText system UI font so
         // chrome paints correctly before any `set_ui_font` call — see
         // `chrome_font`'s field doc. Wrapped with the bundled codicon
         // cascade so built-in chrome glyphs (tab dirty/close) resolve
@@ -674,13 +660,13 @@ impl MacBackend {
     /// Store the top-level window handle. Called once by
     /// `macos::run::run` right after the window is constructed. Backs
     /// [`Backend::begin_window_drag`] / [`Backend::toggle_window_maximize`]
-    /// / [`Backend::set_cursor`] (#498) — mirrors `GtkBackend::set_window`.
+    /// / [`Backend::set_cursor`] — mirrors `GtkBackend::set_window`.
     pub(crate) fn set_window(&mut self, window: Retained<NSWindow>) {
         self.window = Some(window);
     }
 
     /// Install the closure [`Backend::waker`]'s returned handle invokes on
-    /// the AppKit main thread (issue #831). `macos::run::run` calls this
+    /// the AppKit main thread. `macos::run::run` calls this
     /// once, right after constructing the `QuadraView`, with a closure
     /// that calls `view.setNeedsDisplay(true)` — the same
     /// `ReactionSink::request_redraw` path `EventOutcome::Redraw` already
@@ -696,7 +682,7 @@ impl MacBackend {
     }
 
     /// Install the closure [`Self::request_frame_in`]'s scheduled-wake
-    /// timer invokes once its delay elapses (quadraui#832).
+    /// timer invokes once its delay elapses.
     /// `macos::run::run` calls this once, right after constructing the
     /// `QuadraView`, with a closure that calls `view.dispatch_tick()` —
     /// firing `AppLogic::tick` and applying its `Reaction`, same as
@@ -754,10 +740,9 @@ impl MacBackend {
     ///
     /// If [`Backend::set_nerd_font_fallback`] was already called, `font`
     /// gets that fallback family applied (via
-    /// [`super::text::font_with_builtin_fallback`]) before it's stored — issue
-    /// #929, and the reason `set_nerd_font_fallback`/`set_current_font`
-    /// can land in either order: whichever runs second re-applies the
-    /// other's effect instead of silently dropping it.
+    /// [`super::text::font_with_builtin_fallback`]) before it's stored.
+    /// Whichever of `set_nerd_font_fallback`/`set_current_font` runs
+    /// second re-applies the other's effect instead of silently dropping it.
     pub fn set_current_font(&mut self, font: CTFont) {
         // `font_with_builtin_fallback` always appends the bundled
         // codicon family, plus `nerd_font_fallback_family` ahead of it
@@ -775,21 +760,19 @@ impl MacBackend {
 
     /// Install the chrome (UI) font and refresh `chrome_line_height` /
     /// `chrome_char_width` from its metrics — the chrome twin of
-    /// [`Self::set_current_font`] (issue #963).
+    /// [`Self::set_current_font`].
     ///
-    /// Issue #1003: unlike the #963-era doc this replaces, `chrome_font`
-    /// now *does* consult [`Self::nerd_font_fallback_family`] — the same
-    /// `font_with_fallback` cascade [`Self::set_current_font`] applies.
-    /// Bringing `draw_tree`/`draw_tab_bar_icons`/`draw_activity_bar_with_style`/
-    /// `draw_toolbar_interactive`/`draw_sidebar_panel_interactive` to
-    /// chrome-font parity with GTK (#1003) means their icon glyphs now
+    /// Unlike previous versions, `chrome_font` now *does* consult
+    /// [`Self::nerd_font_fallback_family`] — the same `font_with_fallback`
+    /// cascade [`Self::set_current_font`] applies. Icon glyphs in
+    /// `draw_tree`/`draw_tab_bar_icons`/`draw_activity_bar_with_style`/
+    /// `draw_toolbar_interactive`/`draw_sidebar_panel_interactive` now
     /// paint through `chrome_font`, not `current_font` — without this,
     /// a host that calls `set_nerd_font_fallback` would see icon glyphs
     /// render correctly in the editor but as tofu in every chrome
     /// primitive, since `chrome_font` would never have received the
     /// fallback cascade. Mirrors `GtkBackend::chrome_font_description`,
-    /// which has applied `with_nerd_font_fallback` at every #624 call
-    /// site since #929.
+    /// which has applied `with_nerd_font_fallback` at every call site.
     pub fn set_chrome_font(&mut self, font: CTFont) {
         // See `set_current_font`'s matching comment —
         // `font_with_builtin_fallback` always carries the bundled
@@ -811,18 +794,16 @@ impl MacBackend {
     /// Normally this backend derives `current_line_height` itself, from
     /// the real `CTFont` metrics, inside [`Self::set_current_font`] —
     /// unlike `GtkBackend`, which is *told* its metrics because Pango
-    /// layout only happens host-side. That asymmetry was flagged (issue
-    /// #934) as a real hazard: a host that computes its own chrome layout
-    /// generically across backends — sizing a header row, a toolbar strip,
-    /// or the first painted line's offset from a *portable* line-height
-    /// value — has no way to align that value with what `MacBackend`
-    /// actually paints with, because `GtkBackend`/`WinBackend` accept the
-    /// override and `MacBackend` silently ignored it (there was no method
-    /// to call). This setter closes that gap: a host that measures its own
-    /// notion of line height (or wants pixel-for-pixel parity with a
-    /// GTK/Win sibling build) can push it here, same call shape as the
-    /// other two backends, instead of being stuck with whatever
-    /// `set_current_font` derived.
+    /// layout only happens host-side. A host that computes its own chrome
+    /// layout generically across backends — sizing a header row, a toolbar
+    /// strip, or the first painted line's offset from a *portable*
+    /// line-height value — has no way to align that value with what
+    /// `MacBackend` actually paints with, because `GtkBackend`/`WinBackend`
+    /// accept the override and `MacBackend` silently ignored it. This
+    /// setter closes that gap: a host that measures its own notion of line
+    /// height (or wants pixel-for-pixel parity with a GTK/Win sibling build)
+    /// can push it here, same call shape as the other two backends, instead
+    /// of being stuck with whatever `set_current_font` derived.
     ///
     /// Does not touch `current_font` itself — glyph baseline positioning
     /// inside [`super::text::draw_text`] still uses `font.ascent()`
@@ -917,8 +898,8 @@ impl MacBackend {
     /// `UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { … })`
     /// instead of reaching `AppLogic::handle` as a raw key. The macOS twin
     /// of `GtkBackend::focused_activity_bar_id` / `TuiBackend`'s
-    /// `apply_dispatch` translation (#465) — without it, `ShellAdapter`'s
-    /// built-in activity-bar keyboard navigation (#409) is unreachable on
+    /// `apply_dispatch` translation — without it, `ShellAdapter`'s
+    /// built-in activity-bar keyboard navigation is unreachable on
     /// this backend.
     pub(crate) fn focused_activity_bar_id(&self) -> Option<&WidgetId> {
         self.focused_activity_bar.as_ref()
@@ -937,7 +918,7 @@ impl MacBackend {
         self.current_cg_ptr.get() as CGContextRef
     }
 
-    // ── Accelerator matching (#486) ──────────────────────────────────
+    // ── Accelerator matching ─────────────────────────────────────────
 
     /// Look up a registered `Global`-scope accelerator for a
     /// `(key, modifiers)` pair. Mirrors `TuiBackend::match_keypress` /
@@ -957,7 +938,7 @@ impl MacBackend {
         self.core.match_keypress(key, modifiers)
     }
 
-    // ── Double-click folding (#486) ──────────────────────────────────
+    // ── Double-click folding ─────────────────────────────────────────
 
     /// Fold a `MouseDown` into `DoubleClick` if it lands within the
     /// detector's time/position window of the previous click. Every
@@ -970,7 +951,7 @@ impl MacBackend {
         ev
     }
 
-    // ── Text selection (#803) ────────────────────────────────────────
+    // ── Text selection ───────────────────────────────────────────────
     //
     // The region registry + active-selection state machine lives in
     // [`crate::text_selection::TextSelectionState`] — the same shared
@@ -982,20 +963,18 @@ impl MacBackend {
     // `crate::text_selection::extract_lines_pixel` — same helper GTK/Win
     // use, since macOS is pixel-based too) is a thin delegation. Mirrors
     // `WinBackend`'s identically-named, identically-shaped block in
-    // `win/backend.rs` (#741).
+    // `win/backend.rs`.
 
     /// Every `TextRegion` registered so far this frame. Test-only since
-    /// #1088 — `macos::run` used to read this (and a now-deleted
-    /// `track_focused_text_region`) as two separate accessor calls before
-    /// a `dispatch_click` call it built inline; both now go through
-    /// [`Self::text_selection_state_mut`] instead.
+    /// text selection queries now go through [`Self::text_selection_state_mut`]
+    /// instead.
     #[cfg(test)]
     pub(crate) fn text_regions(&self) -> &[TextRegion] {
         &self.core.text_selection.text_regions
     }
 
     /// Mutable access to the whole [`crate::text_selection::TextSelectionState`]
-    /// — the shape [`crate::dispatch::route_pointer`] (issue #1088) needs
+    /// — the shape [`crate::dispatch::route_pointer`] needs
     /// to both read `text_regions` and call `track_focused_text_region`
     /// without two separate accessor calls. Mirrors
     /// `GtkBackend::text_selection_state_mut`.
@@ -1082,7 +1061,7 @@ impl MacBackend {
     ///
     /// The rect resolution is
     /// [`crate::backend_core::BackendCore::selection_highlight_rects`] —
-    /// shared with `GtkBackend`/`WinBackend`'s twins (#1090); only the
+    /// shared with `GtkBackend`/`WinBackend`'s twins; only the
     /// real `CGContextFillRect` calls in
     /// [`super::text_selection::draw_selection_highlight`] are macOS-
     /// specific real toolkit code.
@@ -1108,10 +1087,9 @@ impl MacBackend {
     }
 
     /// Shared body of [`Backend::draw_status_bar_interactive`] /
-    /// [`Backend::draw_status_bar_interactive_scaled`] (issue #1045 item
-    /// 2). `font_scale` multiplies `chrome_font`'s point size for this
-    /// paint only — `1.0` is the unscaled case, byte-for-byte the
-    /// pre-#1045 body of `draw_status_bar_interactive`.
+    /// [`Backend::draw_status_bar_interactive_scaled`]. `font_scale`
+    /// multiplies `chrome_font`'s point size for this paint only — `1.0`
+    /// is the unscaled case.
     ///
     /// Temporarily swaps `chrome_font`/`chrome_line_height`/
     /// `chrome_char_width` (restored in every case, including the
@@ -1159,14 +1137,11 @@ impl MacBackend {
         // impl happens to default to, is what this paint must use. See
         // `ChromeSurface`'s doc.
         let theme = self.current_theme;
-        // #1179: was `self.chrome_line_height`, so a caller that hands
-        // this a `rect` taller than the chrome font's own line height
-        // (e.g. vimcode's fixed-height breadcrumb row) got a background
-        // fill short of `rect.height` — the theme's clear colour (or,
-        // pre-#1179, a hard-coded dark literal) showed through the
-        // leftover strip. `paint` fills exactly the height it's given,
-        // so pass the rect's own height, matching `WinBackend`'s
-        // already-correct call.
+        // Pass the rect's own height, not just the chrome line height,
+        // so a caller that hands this a `rect` taller than the chrome
+        // font's own line height (e.g. a fixed-height breadcrumb row)
+        // gets a background fill that covers `rect.height` entirely,
+        // matching `WinBackend`'s already-correct call.
         let line_height = rect.height;
         let mut surface = ChromeSurface { backend: self };
         let layout = crate::primitives::status_bar::native_surface_paint::paint(
@@ -1323,12 +1298,12 @@ impl Backend for MacBackend {
         // during this render pass if a bar is still keyboard-focused. Same
         // per-frame lifecycle as `zones`, matching `GtkBackend::begin_frame`.
         self.focused_activity_bar = None;
-        // #455: clear last frame's modal paint marks so this frame has
+        // Clear last frame's modal paint marks so this frame has
         // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
         self.modal_stack.borrow_mut().reset_frame_paint();
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger. Mirrors `GtkBackend`/`TuiBackend`/
-        // `WinBackend`'s identical `begin_frame` clear (#741, #803).
+        // `WinBackend`'s identical `begin_frame` clear.
         self.core.begin_frame();
     }
 
@@ -1337,10 +1312,10 @@ impl Backend for MacBackend {
         // this method exists for parity with backends that need an
         // explicit flush.
         //
-        // #455: in debug builds, warn about any modal that's registered
+        // In debug builds, warn about any modal that's registered
         // in the ModalStack (and therefore hit-testable) but that this
         // frame's `AppLogic::render` never painted — the "registered but
-        // invisible" defect class (vimcode#587) made detectable instead
+        // invisible" defect class made detectable instead
         // of silently shipping.
         #[cfg(debug_assertions)]
         for id in self.modal_stack.borrow().unpainted_ids() {
@@ -1373,13 +1348,13 @@ impl Backend for MacBackend {
     }
 
     /// Register `bytes` with Core Text via
-    /// [`super::text::register_font_from_memory`] (issue #929) — no
+    /// [`super::text::register_font_from_memory`] — no
     /// filesystem write, process-lifetime only.
     fn register_font_from_memory(&mut self, bytes: &[u8]) -> Option<Vec<String>> {
         super::text::register_font_from_memory(bytes).map(|name| vec![name])
     }
 
-    /// Answers via [`super::text::make_font_exact`] (issue #1024): Core
+    /// Answers via [`super::text::make_font_exact`]: Core
     /// Text substitutes Helvetica for an unknown family rather than
     /// failing, so plain `CTFontCreateWithName` success can't mean
     /// "installed" — `make_font_exact` already carries the "resolved
@@ -1393,12 +1368,11 @@ impl Backend for MacBackend {
     /// Store `family` as the Nerd-Font (or other PUA-codepoint) fallback
     /// and, if [`Self::set_current_font`] already installed a font,
     /// re-apply it immediately via [`super::text::font_with_builtin_fallback`]
-    /// (issue #929) — see that method's doc for why the two setters can
-    /// land in either order without either effect being lost.
+    /// — the two setters can land in either order without either effect
+    /// being lost.
     ///
-    /// Issue #1003: also re-applies to `chrome_font` (`set_chrome_font`'s
-    /// doc explains why chrome icon glyphs need the same cascade as
-    /// editor ones now).
+    /// Also re-applies to `chrome_font` so chrome icon glyphs have the
+    /// same cascade as editor ones.
     fn set_nerd_font_fallback(&mut self, family: &str) {
         self.nerd_font_fallback_family = Some(family.to_string());
         // A cascade list is a full replacement, not an append, so it is
@@ -1412,25 +1386,24 @@ impl Backend for MacBackend {
         self.chrome_font = super::text::font_with_builtin_fallback(&self.chrome_font, Some(family));
     }
 
-    /// Maps onto the existing [`Self::set_current_font`] machinery
-    /// (issue #963) — `current_font` already *is* "the editor font" on
-    /// this backend; there was previously just no `Backend`-trait-level
-    /// way to reach it by (family, size) the way GTK/Win-GUI expose. If
-    /// `family` doesn't resolve to an installed Core Text family, this
-    /// silently keeps whatever font was already installed rather than
-    /// panicking or clearing it — same "degrade, don't fail" posture
-    /// [`super::text::font_with_fallback`]'s doc already documents for
-    /// this backend's font handling generally. That "doesn't resolve"
-    /// check goes through [`super::text::make_font_exact`], not plain
-    /// `make_font`: Core Text substitutes Helvetica for an unknown
-    /// family instead of failing, so the plain constructor would install
-    /// Helvetica as the *editor* font here rather than keeping the
-    /// caller's previous monospace face.
+    /// Maps onto the existing [`Self::set_current_font`] machinery —
+    /// `current_font` already *is* "the editor font" on this backend;
+    /// there was previously just no `Backend`-trait-level way to reach it
+    /// by (family, size) the way GTK/Win-GUI expose. If `family` doesn't
+    /// resolve to an installed Core Text family, this silently keeps
+    /// whatever font was already installed rather than panicking or
+    /// clearing it — same "degrade, don't fail" posture
+    /// [`super::text::font_with_fallback`]'s doc already documents.
+    /// That "doesn't resolve" check goes through
+    /// [`super::text::make_font_exact`], not plain `make_font`: Core Text
+    /// substitutes Helvetica for an unknown family instead of failing,
+    /// so the plain constructor would install Helvetica as the *editor*
+    /// font here rather than keeping the caller's previous monospace face.
     fn set_editor_font(&mut self, family: &str, size_pt: f32) {
-        // Issue #1023: a CSS/Pango generic token (`"monospace"`, …)
-        // always resolves to a native system font rather than going
-        // through the installed-family check below — there is no
-        // "family" to look up, only a system role to build directly.
+        // A CSS/Pango generic token (`"monospace"`, …) always resolves
+        // to a native system font rather than going through the
+        // installed-family check below — there is no "family" to look up,
+        // only a system role to build directly.
         let font = match GenericFamily::parse(family) {
             Some(GenericFamily::Monospace) => {
                 Some(super::text::system_monospace_font(size_pt as f64))
@@ -1450,12 +1423,12 @@ impl Backend for MacBackend {
         }
     }
 
-    /// Chrome twin of [`Self::set_editor_font`] (issue #963) — installs
+    /// Chrome twin of [`Self::set_editor_font`] — installs
     /// `font_desc` (Pango-style, e.g. `"Sans 13"`) as `chrome_font` via
     /// [`Self::set_chrome_font`], parsed by [`parse_ui_font_desc`]. Never
     /// touches `current_font`/`current_line_height`/`current_char_width`
-    /// — keeping editor and chrome metrics from the same font is exactly
-    /// the #912 hazard this separation exists to avoid.
+    /// — keeping editor and chrome metrics from the same font avoids
+    /// the metric-mismatch hazard this separation exists to protect against.
     ///
     /// Degrades to the CoreText system UI font (at the requested size, or
     /// [`DEFAULT_UI_FONT_SIZE_PT`] if `font_desc` doesn't parse at all)
@@ -1486,7 +1459,7 @@ impl Backend for MacBackend {
         self.set_chrome_font(font);
     }
 
-    /// macOS's platform-native convention (issue #1156): `Menlo 12`
+    /// macOS's platform-native convention: `Menlo 12`
     /// for editor content — VS Code's own macOS default, and a
     /// concrete literal rather than a live CoreText query, since
     /// `system_monospace_font`'s `kCTFontUserFixedPitchFontType`
@@ -1509,13 +1482,12 @@ impl Backend for MacBackend {
 
     fn poll_events(&mut self) -> Vec<UiEvent> {
         let mut out: Vec<UiEvent> = self.events.borrow_mut().drain(..).collect();
-        // Issue #831: fold in any `UiEvent::User` payloads a background
-        // thread queued via `waker()` since the last drain. Unconditional,
-        // matching `TuiBackend`/`GtkBackend::poll_events` — `macos::run`'s
-        // `paint` closure calls this on every repaint, and `waker()`'s
-        // `DispatchQueue::main().exec_async` nudge (see that method's doc)
-        // schedules exactly such a repaint out-of-band the moment a
-        // background thread wakes.
+        // Fold in any `UiEvent::User` payloads a background thread queued
+        // via `waker()` since the last drain. Unconditional, matching
+        // `TuiBackend`/`GtkBackend::poll_events` — `macos::run`'s `paint`
+        // closure calls this on every repaint, and `waker()`'s
+        // `DispatchQueue::main().exec_async` nudge schedules exactly such
+        // a repaint out-of-band the moment a background thread wakes.
         self.user_events.drain_into(&mut out);
         out
     }
@@ -1541,8 +1513,7 @@ impl Backend for MacBackend {
     /// unrelated user input or timer would never repaint at all, so a
     /// background result would sit in the queue forever with nothing to
     /// surface it. `dispatch2::DispatchQueue::main().exec_async` is GCD's
-    /// own thread-safe "run this on the main thread" primitive — the piece
-    /// #831 found missing crate-wide.
+    /// own thread-safe "run this on the main thread" primitive.
     ///
     /// The dispatched closure can't touch `Rc<RefCell<MacBackend>>`/
     /// `Rc<RefCell<App>>`/the `QuadraView` directly (none are `Send`, and
@@ -1562,10 +1533,9 @@ impl Backend for MacBackend {
     /// value in a `ManuallyDrop` and re-dispatches `T`'s destructor back
     /// to the main thread via `run_on_main`. The other two backends dodge
     /// the question instead of answering it — GTK keeps its `Rc` in a
-    /// main-thread thread-local and sends only an integer id
-    /// (`gtk::backend::WAKE_CALLBACKS`), and Windows needs no wrapper at
-    /// all because `wndproc` already holds the state its `PostMessageW`
-    /// wake dispatches through.
+    /// main-thread thread-local and sends only an integer id, and Windows
+    /// needs no wrapper at all because `wndproc` already holds the state
+    /// its `PostMessageW` wake dispatches through.
     fn waker(&self) -> Arc<dyn Fn(UserPayload) + Send + Sync> {
         let queue = Arc::clone(&self.user_events);
         let wake_callback = Arc::clone(&self.wake_callback);
@@ -1589,7 +1559,7 @@ impl Backend for MacBackend {
     }
 
     /// See [`Backend::request_frame_in`]'s doc for the cross-backend
-    /// contract (quadraui#832). Runs synchronously on the main thread
+    /// contract. Runs synchronously on the main thread
     /// (called directly from event/tick handling, never from a
     /// background thread), but still needs [`Self::tick_callback`]'s
     /// `MainThreadBound` indirection rather than capturing `view`/`app`
@@ -1637,7 +1607,7 @@ impl Backend for MacBackend {
         self.core.unregister_accelerator(id);
     }
 
-    /// #1187: persists via `self.core`, same one-liner delegation as the
+    /// Persists via `self.core`, same one-liner delegation as the
     /// accelerator methods above. `Auto` (the default) resolves to
     /// `Native` here since [`Self::backend_caps`] declares
     /// `native_menu: true` — see [`crate::backend::MenuStyle::resolve`].
@@ -1649,18 +1619,16 @@ impl Backend for MacBackend {
         self.core.set_menu_style(style);
     }
 
-    /// Issue #930: this used to `.expect()` the `MainThreadMarker`, which
-    /// panics whenever called off the main thread. Every *real* call site
-    /// (`macos::shell_runner`) is already on the main thread, so that
-    /// never fired in production — but Rust's test runner hands every
-    /// `#[test]` fn its own spawned thread, so any harness driving
-    /// `ShellApp::setup` through a call to this method panicked, taking
-    /// down a `setup()` that has nothing else to do with menus. The five
-    /// sibling helpers in [`super::menu_bar_install`] already degrade
-    /// gracefully (`let Some(mtm) = MainThreadMarker::new() else { ... }`)
-    /// instead of panicking; this matches that shape — a silent no-op
-    /// off the main thread, same posture as `request_frame_in`'s
-    /// "no callback yet" no-op above.
+    /// This used to `.expect()` the `MainThreadMarker`, which panics
+    /// whenever called off the main thread. Every *real* call site
+    /// (`macos::shell_runner`) is already on the main thread — but Rust's
+    /// test runner hands every `#[test]` fn its own spawned thread, so any
+    /// harness driving `ShellApp::setup` through a call to this method
+    /// panicked, taking down a `setup()` that has nothing else to do with
+    /// menus. The sibling helpers in [`super::menu_bar_install`] already
+    /// degrade gracefully instead of panicking; this matches that shape —
+    /// a silent no-op off the main thread, same posture as
+    /// `request_frame_in`'s "no callback yet" no-op.
     fn install_menu_bar(&mut self, bar: &crate::primitives::menu_bar::MenuBar) {
         let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
             return;
@@ -1671,7 +1639,7 @@ impl Backend for MacBackend {
         self.menu_target = Some(target);
     }
 
-    /// See [`Self::install_menu_bar`]'s doc (#930) — same off-main-thread
+    /// See [`Self::install_menu_bar`]'s doc — same off-main-thread
     /// degradation, same rationale.
     fn show_context_menu(
         &mut self,
@@ -1716,7 +1684,7 @@ impl Backend for MacBackend {
         &self.services
     }
 
-    /// #1101: `MacBackend` implements [`PaintSurface`] directly (see this
+    /// `MacBackend` implements [`PaintSurface`] directly (see this
     /// module's own `impl PaintSurface for MacBackend` block below), so
     /// this always answers `Some(self)` — never the `None` default
     /// `Backend::paint_surface` falls back to.
@@ -1728,7 +1696,7 @@ impl Backend for MacBackend {
         self.zones.push(ZoneRec { id, bounds });
     }
 
-    // ─── Text selection (#803) ──────────────────────────────────────────
+    // ─── Text selection ─────────────────────────────────────────────────
 
     /// Overrides the trait's no-op default — see [`Self::text_regions`]
     /// and `crate::text_selection::TextSelectionState`. Mirrors
@@ -1743,7 +1711,7 @@ impl Backend for MacBackend {
         self.cancel_text_selection_drag_impl();
     }
 
-    /// quadraui#492: honest per-method, not aspirational.
+    /// Honest per-method, not aspirational.
     ///
     /// - `mouse` / `scroll` / `drag`: `macos::run`'s view subclass forwards
     ///   `mouseDown:`/`mouseUp:`/`scrollWheel:`/`mouseDragged:` through
@@ -1751,48 +1719,40 @@ impl Backend for MacBackend {
     /// - `native_menu`: `install_menu_bar` / `show_context_menu` are both
     ///   overridden below (`NSMenu`).
     /// - `file_dialogs` / `folder_dialogs` / `notifications`:
-    ///   `MacPlatformServices` uses real `NSOpenPanel`/`NSSavePanel` (the
-    ///   former in both file-picking and, since quadraui#935,
-    ///   directory-picking mode) and `osascript` notifications
-    ///   (`src/macos/services.rs`), not stubs.
-    /// - `native_dialogs` (quadraui#936): `MacPlatformServices::show_message_dialog`
-    ///   now shows a real `NSAlert` and returns the chosen button's id —
+    ///   `MacPlatformServices` uses real `NSOpenPanel`/`NSSavePanel`
+    ///   and `osascript` notifications (`src/macos/services.rs`), not stubs.
+    /// - `native_dialogs`: `MacPlatformServices::show_message_dialog`
+    ///   shows a real `NSAlert` and returns the chosen button's id —
     ///   see `src/macos/services.rs`. Like Win-GUI's equivalent
-    ///   declaration (`win/backend.rs`, #744), `CAP_CONTRACTS`'s
-    ///   `native_dialogs` entry is `Unprovable` (there is no no-op
-    ///   default `show_message_dialog` diverges from — every backend
-    ///   implements it), so this declaration isn't source-checked by the
-    ///   honesty test; it's true because the alert is real.
+    ///   declaration, `CAP_CONTRACTS`'s `native_dialogs` entry is
+    ///   `Unprovable` (every backend implements it), so this declaration
+    ///   isn't source-checked by the honesty test; it's true because the
+    ///   alert is real.
     /// - `window_chrome`: `begin_window_drag` / `toggle_window_maximize`
     ///   are overridden below, via the shared `crate::desktop::WindowDragArm`
-    ///   (#498) — `CAP_CONTRACTS`'s `window_chrome` cap only requires
-    ///   *any* of the three CSD methods, and these two satisfy it.
+    ///   — `CAP_CONTRACTS`'s `window_chrome` cap only requires *any* of
+    ///   the three CSD methods, and these two satisfy it.
     ///   `begin_window_resize` stays the trait's no-op default: the
     ///   vendored `objc2-app-kit` binding has no public "begin native
     ///   edge-resize" primitive (unlike `performWindowDragWithEvent:` /
     ///   `zoom:`), and a manual `setFrame_display`-driven implementation
     ///   would need live mouse-motion wiring through `QuadraView` that
     ///   doesn't exist yet — a real gap, tracked as follow-up rather than
-    ///   guessed at blind (no macOS host in this dev loop to verify the
-    ///   geometry math against).
+    ///   guessed at blind.
     /// - `pointer_cursor`: `set_cursor` is overridden below, via
     ///   `crate::desktop`'s `PointerShape`/`ResizeEdge` scaffold.
-    /// - `text_selection` (#803): `register_text_region`/
+    /// - `text_selection`: `register_text_region`/
     ///   `cancel_text_selection_drag` are both overridden above, backed by
-    ///   the shared `crate::text_selection::TextSelectionState`
+    ///   the shared `crate::text_selection::TextSelectionState` that
     ///   `GtkBackend`/`TuiBackend`/`WinBackend` also embed —
     ///   `macos::run::dispatch_event` wires drag-select and Ctrl-C through
-    ///   the same pipeline, so `panel.drag_select_copy` (which
-    ///   `requires: ["text_selection"]`) now runs against `MacDriver`
-    ///   instead of skipping. Before #803 this backend declared neither
-    ///   `register_text_region` nor a drag pipeline for it, so the cap
-    ///   stayed unset (see #493's original note, now stale).
-    /// - `app_font_registration` (#929): `register_font_from_memory` /
+    ///   the same pipeline.
+    /// - `app_font_registration`: `register_font_from_memory` /
     ///   `set_nerd_font_fallback` are both overridden above, backed by
     ///   real `CTFontManagerRegisterGraphicsFont` /
     ///   `CTFontCreateCopyWithAttributes` calls in `super::text` rather
     ///   than the trait's no-op default.
-    /// - `generic_font_families` (#1023): `set_editor_font`/`set_ui_font`
+    /// - `generic_font_families`: `set_editor_font`/`set_ui_font`
     ///   are both overridden above and resolve CSS/Pango generic family
     ///   tokens to a real CoreText font (`super::text::system_monospace_font`/
     ///   `system_ui_font`) instead of discarding an unresolvable literal
@@ -1813,18 +1773,18 @@ impl Backend for MacBackend {
             text_selection: true,
             app_font_registration: true,
             native_dialogs: true,
-            // `generic_font_families` (issue #1023): `set_editor_font`/
+            // `generic_font_families`: `set_editor_font`/
             // `set_ui_font` are both overridden above and now resolve
             // CSS/Pango generic tokens to a real CoreText font
             // (`super::text::system_monospace_font`/`system_ui_font`)
             // instead of an unresolvable literal family name.
             generic_font_families: true,
-            // `window` (issue #950) is overridden below and returns
+            // `window` is overridden below and returns
             // `Some` once `set_window` has stashed a real `NSWindow` —
             // see `impl WindowControl for MacBackend`'s doc for the
             // AppKit calls backing each method.
             window_control: true,
-            // `tray` (issue #953) is overridden below and always returns
+            // `tray` is overridden below and always returns
             // `Some` — see `impl TrayService for MacBackend`'s doc for
             // the `NSStatusBar`/`NSStatusItem` calls backing each method.
             tray: true,
@@ -1832,7 +1792,7 @@ impl Backend for MacBackend {
         }
     }
 
-    // ─── Window chrome (CSD, #498) ──────────────────────────────────────
+    // ─── Window chrome (CSD) ──────────────────────────────────────────
     //
     // See `backend_caps`'s doc above for exactly which of the three
     // window-chrome methods are overridden and why.
@@ -1886,22 +1846,20 @@ impl Backend for MacBackend {
         if self.window.is_none() {
             return false;
         }
-        // `NSCursor::set` is a safe method as of objc2-app-kit 0.3 (#796
-        // bump) — previously `unsafe`, documented safe to call any time
-        // this view's window is key; called from `AppLogic::handle` (via
-        // `Backend::set_cursor`), which only ever runs on the main thread
-        // inside the live AppKit run loop.
+        // `NSCursor::set` is a safe method — called from `AppLogic::handle`
+        // (via `Backend::set_cursor`), which only ever runs on the main
+        // thread inside the live AppKit run loop.
         mac_cursor_for_shape(shape).set();
         true
     }
 
-    // ─── Window control (issue #950) ────────────────────────────────────
+    // ─── Window control ─────────────────────────────────────────────────
     fn window(&mut self) -> Option<&mut dyn crate::backend::WindowControl> {
         self.window.as_ref()?;
         Some(self)
     }
 
-    // ─── Tray / status-bar icon (issue #953) ────────────────────────────
+    // ─── Tray / status-bar icon ─────────────────────────────────────────
     /// Unlike [`Self::window`], not gated on any prior state — an
     /// `NSStatusItem` is created lazily, on first [`TrayService::set_icon`]
     /// call (see `impl TrayService for MacBackend`'s doc), so there is no
@@ -1911,7 +1869,7 @@ impl Backend for MacBackend {
         Some(self)
     }
 
-    /// #947: reports the region AppKit's native traffic-light controls
+    /// Reports the region AppKit's native traffic-light controls
     /// (close/minimize/zoom) occupy, in `QuadraView`'s own top-left-origin,
     /// y-down coordinate space — the same space every other `Rect` this
     /// trait hands back (and receives, e.g. `draw_focus_ring`) already
@@ -1923,7 +1881,7 @@ impl Backend for MacBackend {
     /// button frames**, each converted individually into window
     /// coordinates, rather than from
     /// `standardWindowButton(NSWindowButton::CloseButton)`'s immediate
-    /// superview (issue #1154).
+    /// superview.
     ///
     /// That superview is AppKit's own private container view for the
     /// three-button cluster — but on a *real* (non-headless) window it
@@ -1963,7 +1921,7 @@ impl Backend for MacBackend {
             let Some(button) = window.standardWindowButton(kind) else {
                 continue;
             };
-            // #1177: in native full screen (or mid-zoom-transition),
+            // In native full screen (or mid-zoom-transition),
             // AppKit hides the traffic-light cluster (or its private
             // titlebar ancestor) rather than removing it — the button
             // objects (and their stale `frame()`s) still exist. Treat a
@@ -2018,7 +1976,7 @@ impl Backend for MacBackend {
         self.current_char_width as f32
     }
 
-    /// Forwards to [`Self::set_current_line_height`] (issue #1086) — the
+    /// Forwards to [`Self::set_current_line_height`] — the
     /// `Backend`-trait-object-reachable twin of that inherent method, the
     /// macOS counterpart of `GtkBackend`'s / `WinBackend`'s overrides of
     /// the same trait method.
@@ -2033,23 +1991,22 @@ impl Backend for MacBackend {
     }
 
     /// `chrome_char_width`, not `current_char_width` — [`Self::draw_list`]
-    /// paints row text with `chrome_font` (issue #1003), and
+    /// paints row text with `chrome_font`, and
     /// `chrome_char_width` is that font's real advance, kept in sync by
     /// [`Self::set_chrome_font`] whenever [`Backend::set_ui_font`]
     /// changes it. This is exactly the metric-mismatch hazard `chrome_font`
-    /// / `current_font`'s separate cached widths exist to avoid (#912) —
+    /// / `current_font`'s separate cached widths exist to avoid —
     /// see `chrome_font`'s field doc.
     fn list_char_width(&self) -> f32 {
         self.chrome_char_width as f32
     }
 
     /// Real Core Text measurement via [`super::text::measure_text`]
-    /// against `chrome_font`/`current_font` (quadraui#1132) — the same
-    /// per-role `CTFont` resolution
-    /// [`Self::surface_draw_text_run_with_role`] already uses (#1073),
-    /// including its #1117 "falls back to `chrome_font`, never panics"
-    /// behaviour for [`crate::FontRole::Editor`] before
-    /// [`Self::set_current_font`] has been called.
+    /// against `chrome_font`/`current_font` — the same per-role `CTFont`
+    /// resolution [`Self::surface_draw_text_run_with_role`] uses,
+    /// including its "falls back to `chrome_font`, never panics" behaviour
+    /// for [`crate::FontRole::Editor`] before [`Self::set_current_font`]
+    /// has been called.
     fn measure_text(&self, text: &str, role: crate::FontRole) -> (f32, f32) {
         let font = match role {
             crate::FontRole::Chrome => &self.chrome_font,
@@ -2067,18 +2024,15 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_tree called outside enter_frame_scope",
         );
-        // Issue #1003: row labels/badges/chevrons are chrome
-        // (`ChromePrimitive::Tree`), not editor content — paint through
-        // `chrome_font`, matching `GtkBackend::draw_tree`'s #624 swap.
-        // Unlike `current_font`, `chrome_font` is never `None` (seeded at
-        // construction — see its field doc), so there is no "no font yet"
-        // fallback branch to keep. `line_height` deliberately stays
-        // `current_line_height` (the editor pitch) — mirroring
-        // `GtkBackend::draw_tree`, which passes its own
-        // `self.current_line_height` unchanged; row pitch tracking
-        // `chrome_font`'s metrics is the pre-existing, deliberately
-        // deferred half of #624's gap (see `GtkBackend::draw_context_menu`'s
-        // comment), not something this fix introduces or closes.
+        // Row labels/badges/chevrons are chrome (`ChromePrimitive::Tree`),
+        // not editor content — paint through `chrome_font`, matching
+        // `GtkBackend::draw_tree`. Unlike `current_font`, `chrome_font` is
+        // never `None` (seeded at construction), so there is no "no font yet"
+        // fallback branch. `line_height` deliberately stays `current_line_height`
+        // (the editor pitch) — mirroring `GtkBackend::draw_tree`, which
+        // passes its own `self.current_line_height` unchanged; row pitch
+        // tracking `chrome_font`'s metrics is a deliberately deferred part
+        // of chrome parity, not something this fix introduces or closes.
         let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
@@ -2104,10 +2058,9 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_list called outside enter_frame_scope",
         );
-        // Issue #1003: the list is chrome (`ChromePrimitive::List`) — see
-        // `draw_tree`'s comment just above for why this reads
-        // `chrome_font` instead of `current_font` while `line_height`
-        // deliberately stays the editor pitch.
+        // The list is chrome (`ChromePrimitive::List`) — see `draw_tree`'s
+        // comment above for why this reads `chrome_font` instead of
+        // `current_font` while `line_height` deliberately stays the editor pitch.
         let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
@@ -2209,7 +2162,7 @@ impl Backend for MacBackend {
         )
     }
     fn list_layout(&self, rect: Rect, list: &ListView) -> crate::ListViewLayout {
-        // No font-role change here (issue #1003): `mac_list_layout` takes
+        // No font-role change here: `mac_list_layout` takes
         // no font at all, only pitch — same `current_line_height`/
         // `current_char_width` `GtkBackend::list_layout` uses.
         super::list::mac_list_layout(
@@ -2220,7 +2173,7 @@ impl Backend for MacBackend {
             self.current_char_width,
         )
     }
-    /// #808: shared field-kind painting lives in
+    /// Shared field-kind painting lives in
     /// [`crate::primitives::form::paint`] now — see that fn's doc for why
     /// `FieldKind::Toolbar` is the one variant painted here instead,
     /// after `paint` releases its exclusive borrow of `self`.
@@ -2277,7 +2230,7 @@ impl Backend for MacBackend {
         }
     }
     fn draw_palette(&mut self, rect: Rect, palette: &Palette) {
-        // #455: see `modal_stack.rs`'s "Paint-consistency detection" docs —
+        // See `modal_stack.rs`'s "Paint-consistency detection" docs —
         // records that this palette's surface was actually painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&palette.id);
         let ctx = self.current_cg();
@@ -2378,14 +2331,12 @@ impl Backend for MacBackend {
         self.status_bar_paint_scaled(rect, bar, interaction, 1.0)
     }
 
-    /// Issue #1045 item 2: same paint as [`Self::draw_status_bar_interactive`],
-    /// scaling only this call's chrome font size — see
-    /// [`crate::Backend::draw_status_bar_interactive_scaled`]'s doc for the
-    /// full rationale. Both this and the unscaled method above funnel
-    /// through [`Self::status_bar_paint_scaled`] (defined in the earlier
-    /// inherent `impl MacBackend` block — a trait impl block may only
-    /// contain that trait's own items) so a fix to one applies to both;
-    /// `1.0` there is exactly the unscaled call with no scaling applied.
+    /// Same paint as [`Self::draw_status_bar_interactive`], scaling only
+    /// this call's chrome font size — see
+    /// [`crate::Backend::draw_status_bar_interactive_scaled`]'s doc for
+    /// the full rationale. Both this and the unscaled method above funnel
+    /// through [`Self::status_bar_paint_scaled`] so a fix to one applies
+    /// to both; `1.0` there is exactly the unscaled call with no scaling.
     fn draw_status_bar_interactive_scaled(
         &mut self,
         rect: Rect,
@@ -2403,19 +2354,14 @@ impl Backend for MacBackend {
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits {
         // Icon-less spelling of `draw_tab_bar_icons` — an empty sidecar
-        // reproduces this bar pixel for pixel (#926), so the two share
+        // reproduces this bar pixel for pixel, so the two share
         // one implementation rather than two paint paths that can drift.
         self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
     }
-    /// Per-tab icon glyphs (#620), implemented on macOS as of #926:
-    /// [`super::tab_bar::mac_tab_icon_extras`] measures each glyph with
-    /// CoreText and every geometry consumer reserves that width, so a
-    /// decorated tab's label and close-button hit box shift together and
-    /// a click on the painted × still closes the tab. Before #926 this
-    /// forwarded to the icon-less rasteriser (dropping the glyphs) behind
-    /// a `debug_assert!` that killed the host process on its first
-    /// decorated frame (#931 replaced the assert; this closes the gap it
-    /// was guarding).
+    /// Per-tab icon glyphs, implemented on macOS via [`super::tab_bar::mac_tab_icon_extras`]
+    /// which measures each glyph with CoreText and every geometry consumer
+    /// reserves that width, so a decorated tab's label and close-button hit
+    /// box shift together and a click on the painted × still closes the tab.
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar_icons(
         &mut self,
@@ -2429,25 +2375,22 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_tab_bar called outside enter_frame_scope",
         );
-        // Issue #1003: tab labels are chrome (`ChromePrimitive::TabBar`)
-        // — see `draw_tree`'s comment. This one root method covers
-        // `draw_tab_bar`/`draw_tab_bar_with_chrome` too: both delegate
-        // here with an empty icon sidecar (`Backend::draw_tab_bar_with_chrome`'s
-        // default body forwards to `draw_tab_bar`, which forwards here).
+        // Chrome primitives are drawn through `chrome_font` — see
+        // `draw_tree`'s comment. This method covers both `draw_tab_bar`
+        // and `draw_tab_bar_with_chrome`: both delegate here with
+        // an empty icon sidecar.
         let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         // SAFETY: `ctx` is non-null inside the frame scope.
-        // `super::tab_bar::draw_tab_bar_icons` already honours `rect.y`
+        // `super::tab_bar::draw_tab_bar_icons` honours `rect.y`
         // via its own `y_offset` parameter, but is never handed `rect.x`
-        // and always paints/measures from `x = 0` — issue #934. The
-        // `CGContextTranslateCTM` X-only shift is what places the ink at
-        // `rect.x` (mirroring `Self::draw_activity_bar`'s CTM treatment of
-        // that other bar-relative-in-both-axes rasteriser); `y_offset`
-        // stays `rect.y` as before, unaffected. `shift_tab_bar_hits`
-        // afterward is what makes the *returned* `TabBarHits` honour
-        // `Backend::tab_bar_layout`'s documented absolute-x contract,
-        // matching the TUI/GTK convention.
+        // and always paints/measures from `x = 0`. The
+        // `CGContextTranslateCTM` X-only shift places the ink at
+        // `rect.x` (mirroring `Self::draw_activity_bar`'s CTM treatment);
+        // `y_offset` stays `rect.y` as before. `shift_tab_bar_hits`
+        // afterward makes the returned `TabBarHits` honour
+        // `Backend::tab_bar_layout`'s documented absolute-x contract.
         unsafe {
             CGContextSaveGState(ctx);
             CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
@@ -2468,30 +2411,28 @@ impl Backend for MacBackend {
             hits
         }
     }
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::draw_tab_bar`] above. Paints exactly as that method does
+    /// `TabBarLayout`-returning counterpart to
+    /// [`Self::draw_tab_bar`]. Paints exactly as that method does
     /// (discarding the deprecated `TabBarHits` it returns), then
     /// separately resolves the real `TabBarLayout` via
     /// [`super::tab_bar::mac_tab_bar_native_layout_icons`] — see that
     /// function's doc for why macOS can't share one measurement path
     /// between its `TabBarHits` and `TabBarLayout` accessors the way
-    /// TUI/GTK/Win do. Both halves happen inside
-    /// [`Self::draw_tab_bar_icons_layout`], which this forwards to with
-    /// an empty sidecar (#926).
+    /// TUI/GTK/Win do.
     fn draw_tab_bar_layout(
         &mut self,
         rect: Rect,
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
     ) -> TabBarLayout {
-        // Icon-less spelling of `draw_tab_bar_icons_layout` (#926) — see
+        // Icon-less spelling of `draw_tab_bar_icons_layout` — see
         // `draw_tab_bar` above for why the empty sidecar shares one path.
         self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
     }
     /// `TabBarLayout`-returning counterpart to
     /// [`Self::draw_tab_bar_icons`] — same CoreText icon-width pass
-    /// (#926), applied to both the paint and the separately-computed
-    /// [`super::tab_bar::mac_tab_bar_native_layout_icons`] below so the
+    /// applied to both the paint and the separately-computed
+    /// [`super::tab_bar::mac_tab_bar_native_layout_icons`] so the
     /// returned layout describes the pixels this call just painted.
     fn draw_tab_bar_icons_layout(
         &mut self,
@@ -2505,8 +2446,8 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_tab_bar_layout called outside enter_frame_scope",
         );
-        // Issue #1003: `TabBarLayout`-returning twin of
-        // `draw_tab_bar_icons` — see that method's comment.
+        // Chrome primitives are drawn through `chrome_font` — see
+        // `draw_tab_bar_icons`' comment.
         let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
@@ -2547,7 +2488,7 @@ impl Backend for MacBackend {
         hovered_idx: Option<usize>,
     ) -> Vec<ActivityBarRowHit> {
         // Track keyboard focus so `run::dispatch_event` can redirect the
-        // next `KeyPressed` into this bar (#465) — same contract
+        // next `KeyPressed` into this bar — same contract
         // `GtkBackend::draw_activity_bar` implements.
         if bar.is_keyboard_focused {
             self.focused_activity_bar = Some(bar.id.clone());
@@ -2557,28 +2498,18 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_activity_bar called outside enter_frame_scope",
         );
-        // Issue #1003: this is the mandatory, non-default `Backend`
-        // method — `AppShell::render` (`compose/app_shell.rs`) and
-        // `ScreenLayout::draw`'s `Surface::ActivityBar` arm
-        // (`frame.rs`) both call this method directly, never
-        // `draw_activity_bar_with_style`, whose own trait-level default
-        // just forwards back to this one. So this is the method real
-        // hosts actually reach, and it painted its icon glyph through
-        // `current_font` (the editor font) — the exact headline symptom
-        // this issue was filed over — even after
-        // `draw_activity_bar_with_style` below was fixed to read
-        // `chrome_font`. Route through `chrome_font` here too, matching
-        // that fix and every other chrome primitive's swap (see
-        // `draw_tree`'s comment). Unlike `current_font`, `chrome_font`
-        // is never `None` (seeded at construction — see its field doc),
-        // so there is no "no font yet" fallback to preserve.
+        // Chrome primitives are drawn through `chrome_font` —
+        // `draw_tree`'s comment explains the swap. This is the mandatory,
+        // non-default method real hosts reach. It painted its icon glyph
+        // through `current_font` (the editor font) until fixed to use
+        // `chrome_font`, matching every other chrome primitive's swap.
         let font = &self.chrome_font;
         let theme = self.current_theme;
         // SAFETY: ctx non-null inside frame scope. `super::activity_bar`'s
-        // rasteriser is bar-relative by contract (issue #552) — it always
+        // rasteriser is bar-relative by contract — it always
         // paints into `(0, 0, width, height)` and returns bar-relative hit
         // spans — so the CTM translate below is what actually places the
-        // ink at `rect`'s absolute origin (issue #934), matching
+        // ink at `rect`'s absolute origin, matching
         // `GtkBackend::draw_activity_bar`'s `cr.translate(rect.x, rect.y)`.
         // The returned `ActivityBarRowHit`s are untouched by the
         // translate — they stay bar-relative, per contract.
@@ -2616,21 +2547,15 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_activity_bar_with_style called outside enter_frame_scope",
         );
-        // Issue #1003: despite this method's name appearing in the
-        // original audit's "already correct" column, it painted its icon
-        // glyph through `current_font` (the editor font) exactly like
-        // the other 14 — a bar whose icon size tracked the user's
-        // editor-font size, not the fixed chrome size every other chrome
-        // primitive uses. `ChromePrimitive::ActivityBar` — see
-        // `draw_tree`'s comment for the swap. `draw_activity_bar` above
-        // (the mandatory, non-default method real hosts call — see its
-        // comment) needed the identical fix; this one is fixed too so
-        // the two methods agree.
+        // Chrome primitives are drawn through `chrome_font` —
+        // `draw_tree`'s comment explains the swap. This method also paints
+        // its icon glyph through `chrome_font`, matching `draw_activity_bar`
+        // above and every other chrome primitive.
         let font = &self.chrome_font;
         let theme = self.current_theme;
         // SAFETY: ctx non-null inside frame scope. See `draw_activity_bar`
         // above for why the CTM translate is what makes this bar-relative
-        // rasteriser paint at `rect`'s absolute origin (issue #934).
+        // rasteriser paint at `rect`'s absolute origin.
         unsafe {
             CGContextSaveGState(ctx);
             CGContextTranslateCTM(ctx, rect.x as f64, rect.y as f64);
@@ -2654,13 +2579,8 @@ impl Backend for MacBackend {
         // No-paint twin of `draw_status_bar`: same `mac_status_bar_layout`
         // call, so hit regions match the painted frame exactly. Hit
         // regions are bar-local, so `rect.x` / `rect.y` are deliberately
-        // not folded in (quadraui#552 — audited, no change needed).
-        //
-        // Issue #963: measures against `chrome_font`/`chrome_line_height`,
-        // matching `draw_status_bar_interactive`'s `ChromeSurface` switch
-        // above — unlike `current_font`, `chrome_font` is never `None`
-        // (seeded at construction, see its field doc), so this no longer
-        // needs a "called before a font was installed" fallback branch.
+        // not folded in. Measures against `chrome_font`/`chrome_line_height`,
+        // matching `draw_status_bar_interactive`'s resolution.
         super::status_bar::mac_status_bar_layout(
             &self.chrome_font,
             rect.width as f64,
@@ -2674,7 +2594,7 @@ impl Backend for MacBackend {
         // No-paint twin of `draw_tab_bar`, routed through the same
         // `mac_tab_bar_layout_icons` + `shift_tab_bar_hits` pair
         // `tab_bar_layout_icons` below uses, so both agree on the
-        // documented absolute contract (issue #552 / #934).
+        // documented absolute contract.
         self.tab_bar_layout_icons(rect, bar, &[])
     }
 
@@ -2682,7 +2602,7 @@ impl Backend for MacBackend {
     /// same [`super::tab_bar::mac_tab_bar_layout_icons`] with the same
     /// sidecar — so the load-bearing macOS invariant (`tab_bar_layout*`
     /// returns exactly what `draw_tab_bar*` painted) holds for decorated
-    /// tabs too, not just icon-less ones (#926).
+    /// tabs too, not just icon-less ones.
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout_icons(
         &self,
@@ -2690,18 +2610,15 @@ impl Backend for MacBackend {
         bar: &TabBar,
         icons: &[Option<crate::TabIcon>],
     ) -> TabBarHits {
-        // Issue #1003: no-paint twin of `draw_tab_bar_icons` — must
-        // agree with what that method painted, so it measures against
-        // `chrome_font` too. The old `current_font.is_none()` fallback
-        // is gone: `chrome_font` is never `None` (seeded at
-        // construction — see its field doc).
+        // No-paint twin of `draw_tab_bar_icons` — must agree with what
+        // that method painted, so it measures against `chrome_font` too.
         let mut hits = super::tab_bar::mac_tab_bar_layout_icons(
             &self.chrome_font,
             rect.width as f64,
             bar,
             icons,
         );
-        // Bar-relative → target-surface-absolute (issue #934), the same
+        // Bar-relative → target-surface-absolute, the same
         // shift `Self::draw_tab_bar_icons` applies to its own returned
         // hits after painting, so a caller that measures here and paints
         // there sees one agreed geometry.
@@ -2709,20 +2626,18 @@ impl Backend for MacBackend {
         hits
     }
 
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::tab_bar_layout`] above, routed through
-    /// [`super::tab_bar::mac_tab_bar_native_layout_icons`] (via
-    /// [`Self::resolve_tab_bar_layout_icons`] with an empty sidecar,
-    /// #926) — see that function's doc for why macOS can't share one
-    /// measurement path between its `TabBarHits` and `TabBarLayout`
-    /// accessors.
+    /// `TabBarLayout`-returning counterpart to
+    /// [`Self::tab_bar_layout`], routed through
+    /// [`super::tab_bar::mac_tab_bar_native_layout_icons`] — see that
+    /// function's doc for why macOS can't share one measurement path
+    /// between its `TabBarHits` and `TabBarLayout` accessors.
     fn resolve_tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarLayout {
         self.resolve_tab_bar_layout_icons(rect, bar, &[])
     }
 
     /// No-paint twin of [`Self::draw_tab_bar_icons_layout`], routed
     /// through [`super::tab_bar::mac_tab_bar_native_layout_icons`] with
-    /// the same sidecar (#926) — so a consumer that measures with this
+    /// the same sidecar — so a consumer that measures with this
     /// and paints with `draw_tab_bar_icons` gets one agreed geometry.
     fn resolve_tab_bar_layout_icons(
         &self,
@@ -2730,8 +2645,8 @@ impl Backend for MacBackend {
         bar: &TabBar,
         icons: &[Option<crate::TabIcon>],
     ) -> TabBarLayout {
-        // Issue #1003: no-paint twin of `draw_tab_bar_icons_layout` —
-        // see `tab_bar_layout_icons`'s comment just above.
+        // No-paint twin of `draw_tab_bar_icons_layout` — must agree with
+        // what that method painted, so it measures against `chrome_font` too.
         super::tab_bar::mac_tab_bar_native_layout_icons(
             &self.chrome_font,
             rect.width as f64,
@@ -2743,13 +2658,12 @@ impl Backend for MacBackend {
 
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
         // No-paint twin of `draw_activity_bar`; both walk the same
-        // `ActivityBar::layout` (#1081, replacing this module's old
-        // private `row_plan` helper), so the returned bar-relative spans
-        // are exactly the rows that were painted (quadraui#552).
+        // activity-bar layout, so the returned bar-relative spans
+        // are exactly the rows that were painted.
         super::activity_bar::mac_activity_bar_layout(rect.width as f64, rect.height as f64, bar)
     }
 
-    /// #810: shared cell-grid painting lives in
+    /// Shared cell-grid painting lives in
     /// [`crate::primitives::terminal::paint`] now — see that fn's doc
     /// for the divergences resolved while unifying
     /// `gtk::terminal::draw_terminal_cells`,
@@ -2805,21 +2719,21 @@ impl Backend for MacBackend {
             crate::primitives::scrollbar::native_surface_paint::paint(&sb, self, &theme);
         }
     }
-    /// #810: shared divider painting lives in
+    /// Shared divider painting lives in
     /// [`crate::primitives::terminal::paint_divider`] now.
     fn draw_terminal_divider(&mut self, rect: Rect) {
         let theme = self.current_theme;
         crate::primitives::terminal::paint_divider(self, rect.x, rect.y, rect.height, &theme);
     }
-    /// #996: see `Backend::draw_solid_fill`'s doc — a pixel backend can
+    /// See `Backend::draw_solid_fill`'s doc — a pixel backend can
     /// honor `rect` exactly via `PaintSurface::surface_fill_rect`.
     fn draw_solid_fill(&mut self, rect: Rect, color: Color) {
         self.surface_fill_rect(rect, color);
-        // #492: chrome-only paint (no text of its own) — see
+        // Chrome-only paint (no text of its own) — see
         // `TuiBackend::draw_solid_fill`'s identical registration for why.
         self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
     }
-    /// #810: shared text-display painting lives in
+    /// Shared text-display painting lives in
     /// [`crate::primitives::text_display::paint`] now — see that fn's
     /// doc for the divergence resolved while unifying
     /// `gtk::text_display::draw_text_display`,
@@ -2844,12 +2758,8 @@ impl Backend for MacBackend {
     fn draw_command_line(&mut self, rect: Rect, cmd: &CommandLine) {
         self.draw_command_line_selection(rect, cmd, None);
     }
-    /// #1083: real selection-highlight paint via the shared
-    /// `primitives::command_line::native_surface_paint::paint` —
-    /// previously ignored `selection` entirely and forwarded to the
-    /// plain (unhighlighted) paint, the gap issue #1001 scoped out of
-    /// this backend and left as a documented follow-up. See
-    /// `macos::command_line`'s module doc.
+    /// Real selection-highlight paint via the shared
+    /// `primitives::command_line::native_surface_paint::paint`.
     fn draw_command_line_selection(
         &mut self,
         rect: Rect,
@@ -2899,7 +2809,7 @@ impl Backend for MacBackend {
             self.current_char_width,
         )
     }
-    /// #1093: was a layout-only stub — no background, text, or cursor
+    /// Was a layout-only stub — no background, text, or cursor
     /// ever painted. Now builds the layout via
     /// [`super::text_input::mac_text_input_layout`] and hands it to the
     /// shared [`crate::primitives::text_input::paint`] through this
@@ -2990,15 +2900,15 @@ impl Backend for MacBackend {
         menu: &ContextMenu,
         layout: &ContextMenuLayout,
     ) -> Vec<(Rect, WidgetId)> {
-        // #455: see draw_palette for why this happens before the CG borrow.
+        // See draw_palette for why this happens before the CG borrow.
         self.modal_stack.borrow_mut().mark_painted(&menu.id);
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
             "MacBackend::draw_context_menu called outside enter_frame_scope",
         );
-        // Issue #1003: the context menu is chrome
-        // (`ChromePrimitive::ContextMenu`) — see `draw_tree`'s comment.
+        // Chrome primitives are drawn through `chrome_font` —
+        // `draw_tree`'s comment explains the swap.
         let font = &self.chrome_font;
         let theme = self.current_theme;
         let style = self.style();
@@ -3021,16 +2931,16 @@ impl Backend for MacBackend {
         )
     }
     fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect> {
-        // #455: see draw_palette for why this happens before the CG borrow.
+        // See draw_palette for why this happens before the CG borrow.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
             "MacBackend::draw_dialog called outside enter_frame_scope",
         );
-        // Issue #1003: the dialog chrome (title, buttons) is
-        // `ChromePrimitive::Dialog` — see `draw_tree`'s comment for the
-        // font swap and why `line_height` stays the editor pitch.
+        // Chrome primitives are drawn through `chrome_font` —
+        // `draw_tree`'s comment explains the swap and why `line_height`
+        // stays the editor pitch.
         let font = &self.chrome_font;
         let theme = self.current_theme;
         let style = self.style();
@@ -3079,7 +2989,7 @@ impl Backend for MacBackend {
         float: &crate::primitives::float::Float,
         layout: &crate::primitives::float::FloatLayout,
     ) {
-        // #455: see draw_palette for why this happens before the CG borrow.
+        // See draw_palette for why this happens before the CG borrow.
         self.modal_stack.borrow_mut().mark_painted(&float.id);
         let theme = self.current_theme;
         crate::primitives::float::native_surface_paint::paint(float, layout, self, &theme);
@@ -3094,13 +3004,11 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_multi_section_view called outside enter_frame_scope",
         );
-        // Issue #1003: section headers and Tree/List body rows are
-        // sidebar chrome (`ChromePrimitive::MultiSectionView`), not
-        // editor content — mirrors `GtkBackend::draw_multi_section_view`'s
-        // #416 font swap, which likewise only swaps the *font* here and
-        // leaves `line_height`/`char_width` (below) reading the editor
-        // values, since embedded `SectionBody::Chart`/editor-adjacent
-        // content still measures against those.
+        // Section headers and Tree/List body rows are sidebar chrome
+        // (`ChromePrimitive::MultiSectionView`). The font swaps to chrome,
+        // but `line_height`/`char_width` stay editor values, since
+        // embedded `SectionBody::Chart`/editor-adjacent content measures
+        // against those.
         let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
@@ -3130,22 +3038,16 @@ impl Backend for MacBackend {
         super::multi_section_view::mac_msv_metrics(self.current_line_height, false)
     }
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
-        // No font-role change here (issue #1003) — see `list_layout`'s
+        // No font-role change here — see `list_layout`'s
         // comment above; `mac_tree_layout` only takes pitch, and
         // `GtkBackend::tree_layout` passes its own editor
         // `current_line_height` too.
         super::tree::mac_tree_layout(tree, rect, self.current_line_height)
     }
     fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<crate::Scrollbar> {
-        // macOS tree vertical-scrollbar rasteriser not yet implemented
-        // (#1043). Delegate to the primitive's geometry method, but
-        // using the same per-row pitch `Self::tree_layout` (via
-        // `mac_tree_layout`/`layout_metrics::tree_layout`) actually
-        // paints — not the raw `line_height`. Unlike `ListView` (whose
-        // items really are `line_height` tall, see
-        // `MacBackend::list_vscrollbar`), `TreeView` rows pitch at
-        // `line_height * 1.4` (or `TreeStyle::row_height`); see
-        // `layout_metrics::tree_row_pitch`'s doc.
+        // macOS tree vertical-scrollbar rasteriser uses the same per-row
+        // pitch `Self::tree_layout` paints — `line_height * 1.4`
+        // (or `TreeStyle::row_height`), not the raw `line_height`.
         let row_h =
             crate::primitives::layout_metrics::tree_row_pitch(tree, self.current_line_height);
         tree.vscrollbar(rect, row_h as f32)
@@ -3215,8 +3117,8 @@ impl Backend for MacBackend {
         }
     }
     fn draw_rich_text_popup(&mut self, popup: &RichTextPopup, layout: &RichTextPopupLayout) {
-        // Issue #1003: the rich-text popup is chrome
-        // (`ChromePrimitive::RichTextPopup`) — see `draw_tree`'s comment.
+        // Chrome primitives are drawn through `chrome_font` —
+        // `draw_tree`'s comment explains the swap.
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
@@ -3426,10 +3328,8 @@ impl Backend for MacBackend {
     }
     fn draw_toast_overlay(&mut self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
         // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
-        // each debug_assert/expect their own frame + font internally —
-        // see `Self::surface_fill_rect`/`Self::surface_measure_text` — so
-        // this method needs no separate ctx/font fetch of its own,
-        // matching `Self::draw_status_bar`'s #860 shape.
+        // each debug_assert their own frame + font internally, so
+        // this method needs no separate ctx/font fetch of its own.
         let theme = self.current_theme;
         let style = self.style();
         let line_height = self.current_line_height as f32;
@@ -3462,7 +3362,7 @@ impl Backend for MacBackend {
             self.current_line_height,
         )
     }
-    /// #1085: paint via the shared
+    /// Paint via the shared
     /// [`crate::primitives::pipeline_view::native_surface_paint::paint`]
     /// — see that fn's doc for the seven named divergences found while
     /// unifying `gtk::pipeline_view::draw_pipeline_view`,
@@ -3489,13 +3389,8 @@ impl Backend for MacBackend {
             rect.height as f64,
         )
     }
-    /// #1085: paint via the shared
-    /// [`crate::primitives::progress::native_surface_paint::paint`] —
-    /// see that fn's doc for the one named divergence (Windows
-    /// previously ignored the host's theme entirely) found while
-    /// unifying `gtk::progress::draw_progress`,
-    /// `macos::progress::draw_progress` and `win::progress::draw_progress`
-    /// into one implementation.
+    /// Paint via the shared
+    /// [`crate::primitives::progress::native_surface_paint::paint`].
     fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
         let theme = self.current_theme;
         let style = self.style();
@@ -3537,12 +3432,9 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_command_center called outside enter_frame_scope",
         );
-        // Issue #1003: the command centre's back/forward arrows and
-        // search label are chrome (`ChromePrimitive::CommandCenter`) —
-        // see `draw_tree`'s comment for the font swap and why
-        // `line_height` (used only for vertical centring) stays the
-        // editor pitch, matching `GtkBackend::draw_command_center`'s
-        // #637 comment.
+        // Chrome primitives are drawn through `chrome_font` —
+        // `draw_tree`'s comment explains the swap. `line_height` stays
+        // the editor pitch (used only for vertical centring).
         let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
@@ -3562,8 +3454,8 @@ impl Backend for MacBackend {
         }
     }
     fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
-        // Issue #1003: no-paint twin of `draw_command_center` — must
-        // agree with what that method painted.
+        // No-paint twin of `draw_command_center` — must agree with what
+        // that method painted.
         let font = &self.chrome_font;
         super::command_center::mac_command_center_layout(
             cc,
@@ -3574,7 +3466,7 @@ impl Backend for MacBackend {
             rect.height as f64,
         )
     }
-    /// #810: shared chart painting lives in
+    /// Shared chart painting lives in
     /// [`crate::primitives::chart::paint`] now — see that fn's doc for
     /// the divergences resolved while unifying `gtk::chart::draw_chart`,
     /// `macos::chart::draw_chart` and `win::chart::draw_chart` into one
@@ -3631,8 +3523,8 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_toolbar called outside enter_frame_scope",
         );
-        // Issue #1003: action labels and icon glyphs are chrome
-        // (`ChromePrimitive::Toolbar`) — see `draw_tree`'s comment.
+        // Chrome primitives are drawn through `chrome_font` —
+        // `draw_tree`'s comment explains the swap.
         let font = &self.chrome_font;
         let theme = self.current_theme;
         // SAFETY: ctx is non-null inside the frame scope.
@@ -3658,13 +3550,8 @@ impl Backend for MacBackend {
         rect: Rect,
         bar: &crate::primitives::toolbar::Toolbar,
     ) -> crate::primitives::toolbar::ToolbarLayout {
-        // Issue #1003: no-paint twin of `draw_toolbar_interactive` — must
-        // agree with what that method painted, so it measures against
-        // `chrome_font` too. The old `current_font.is_none()` fallback
-        // (a `char_width`-only estimate) is gone: `chrome_font` is never
-        // `None` (seeded at construction — see its field doc), so the
-        // "no font installed yet" case this was guarding against cannot
-        // happen for chrome.
+        // No-paint twin of `draw_toolbar_interactive` — must agree with
+        // what that method painted, so it measures against `chrome_font` too.
         super::toolbar::mac_toolbar_layout(
             bar,
             &self.chrome_font,
@@ -3712,7 +3599,7 @@ impl Backend for MacBackend {
         )
     }
 
-    /// #866: paint via the shared
+    /// Paint via the shared
     /// [`crate::primitives::diff_view::native_surface_paint::paint`] —
     /// see that fn's doc for the two named divergences (row/header text
     /// vertical alignment; header-label ellipsize vs. hard-clip) found
@@ -3725,10 +3612,8 @@ impl Backend for MacBackend {
         view: &crate::primitives::diff_view::DiffView,
     ) -> crate::primitives::diff_view::DiffViewLayout {
         // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
-        // each debug_assert their own `!ctx.is_null()` internally — see
-        // `Self::surface_fill_rect` — so this method needs no separate
-        // ctx/font fetch of its own, matching `Self::draw_status_bar`'s
-        // #860 shape.
+        // each debug_assert their own `!ctx.is_null()` internally, so
+        // this method needs no separate ctx/font fetch of its own.
         //
         // `DiffView` is editor-class — see `draw_terminal`'s comment /
         // `EditorSurface`'s doc.
@@ -3767,20 +3652,9 @@ impl Backend for MacBackend {
         )
     }
 
-    /// Override of the trait's no-op default (`Backend::draw_board`),
-    /// which returns an empty `BoardLayout` and paints nothing.
-    ///
-    /// The compiler cannot report the missing override — that default is
-    /// exactly why macOS silently painted an empty board — so this is
-    /// implemented ahead of quadraui#600 removing the default. When #600
-    /// lands, this method is already here and the lane does not regress.
-    /// #1085: paint via the shared
-    /// [`crate::primitives::board::native_surface_paint::paint`] — see
-    /// that fn's doc for the four named divergences (column-header
-    /// overflow; card-title wrapping; rounded vs. straight card borders;
-    /// per-element font size) found while unifying
-    /// `gtk::board::draw_board`, `macos::board::draw_board` and
-    /// `win::board::draw_board` into one implementation.
+    /// Override of the trait's no-op default, which returns an empty
+    /// `BoardLayout` and paints nothing. Paint via the shared
+    /// [`crate::primitives::board::native_surface_paint::paint`].
     fn draw_board(&mut self, rect: Rect, model: &BoardModel) -> BoardLayout {
         let theme = self.current_theme;
         crate::primitives::board::native_surface_paint::paint(model, self, &theme, rect)
@@ -3796,35 +3670,14 @@ impl Backend for MacBackend {
         )
     }
 
-    /// #382 scoped the `Minimap` rasteriser to GTK (fixed-pitch colour
-    /// blocks, #667) and TUI (braille) only — macOS was explicitly out of
-    /// scope until this backend carries the rest of the editor chrome.
-    /// #738 added the third rasteriser (Win-GUI) and, along with it, lifted
-    /// the legibility/render-mode threshold and span-lookup helpers a
-    /// macOS rasteriser would otherwise have had to reinvent
-    /// ([`crate::primitives::minimap::is_legible`] /
-    /// `render_mode` / `minimap_font_px` / `SpanCursor` / `color_at_column`
-    /// / `truncate_to_columns`) — `super::minimap::draw_minimap` consumes
-    /// those directly, same as `gtk::minimap` and `win::minimap` do (#961).
-    ///
-    /// Before #961 this was a reachable `todo!()`-turned-honest-no-paint —
-    /// `super::minimap::mac_minimap_layout` always computed the real
-    /// [`MinimapLayout`](crate::primitives::minimap::MinimapLayout) (the
-    /// same `Minimap::layout_with_sizing` call GTK/Win-GUI make, not a
-    /// stub), so hit-testing/click-routing already worked correctly; only
-    /// the pixels were missing (#802). Now the Core Graphics/Core Text
-    /// paint calls (fill rects, `CTLine` glyph runs, the clip bracket) —
-    /// the same shape and size of backend-specific work #738 did for
-    /// Win-GUI, not a shim over shared logic — actually run, and
-    /// [`MinimapPaintResult::painted`](crate::backend::MinimapPaintResult::painted)
-    /// reports `true`.
-    ///
-    /// Calls [`super::minimap::draw_minimap_cached`], not the plain
-    /// [`super::minimap::draw_minimap_scaled`] — issue #1153's fix: at
-    /// [`crate::primitives::minimap::MinimapScale::Two`] the row pitch
-    /// clears the legibility floor, and only the cached, atlas-backed
-    /// paint path shapes glyphs small enough to actually fit their own
-    /// row band instead of the backend's full editor-size font.
+    /// Paints through [`super::minimap::draw_minimap_cached`] (Core
+    /// Graphics fills and `CTLine` glyph runs), using the shared
+    /// `crate::primitives::minimap` legibility and span helpers GTK and
+    /// Win-GUI also use. Only the cached, atlas-backed path shapes glyphs
+    /// small enough to fit their row band once
+    /// [`crate::primitives::minimap::MinimapScale::Two`] clears the
+    /// legibility floor; the plain `draw_minimap_scaled` would use the
+    /// full editor-size font.
     fn draw_minimap(
         &mut self,
         rect: Rect,
@@ -3877,21 +3730,9 @@ impl Backend for MacBackend {
         self.minimap_scale = scale;
     }
 
-    /// #662 scoped the `Image` rasteriser to GTK only for its first
-    /// pass, and #802 replaced macOS's reachable `todo!()` with an
-    /// honest [`ImagePaintResult::Unsupported`] — a panic an app calling
-    /// `Backend::draw_image` generically could hit on macOS alone. That
-    /// made macOS the only backend painting nothing at all for an image
-    /// (TUI at least paints `image.fallback_text`); #962 closes the gap
-    /// with a real Core Graphics/ImageIO decode-and-paint
-    /// (`super::image::draw_image`), the same shape and size of
-    /// backend-specific work #739 did for Win-GUI. #1014 adds the decode
-    /// cache — via `super::image::draw_image_cached`, the crate-internal
-    /// sibling of the public `super::image::draw_image`, since this
-    /// trait method's own signature (and thus its ability to call
-    /// whichever free function it likes) isn't part of the downstream
-    /// contract the way that public function's signature is (see
-    /// `super::image`'s module docs).
+    /// The macOS `Image` rasteriser uses Core Graphics/ImageIO to
+    /// decode and paint images, the same shape of backend-specific work
+    /// that Win-GUI does. This backend also maintains a decode cache.
     fn draw_image(
         &mut self,
         rect: Rect,
@@ -3913,7 +3754,7 @@ impl Backend for MacBackend {
     }
 }
 
-/// macOS's `WindowControl` surface (issue #950), backed by exactly the
+/// macOS's `WindowControl` surface, backed by exactly the
 /// `NSWindow` methods the issue's own design note names:
 /// `setTitle`/`setContentSize`/`setContentMinSize`/`setContentMaxSize`/
 /// `setLevel(NSFloatingWindowLevel)`/`toggleFullScreen:`/`miniaturize:`/
@@ -4029,7 +3870,7 @@ impl WindowControl for MacBackend {
         Ok(())
     }
 
-    /// `NSWindow::isZoomed` (issue #1022) — AppKit's own maximize-state
+    /// `NSWindow::isZoomed` — AppKit's own maximize-state
     /// query, the same notion [`Backend::toggle_window_maximize`]'s
     /// `zoom:` call flips.
     fn is_maximized(&self) -> ServiceResult<bool> {
@@ -4051,11 +3892,9 @@ impl WindowControl for MacBackend {
         Ok(())
     }
 
-    /// Toggles `NSWindowStyleMask::Titled` (issue #1022) — backs
-    /// vimcode's client-side-decoration path (its #552). AppKit ties the
-    /// titlebar, not a separate flag, to this style bit: removing it also
-    /// removes the traffic-light buttons and title text, matching what a
-    /// host that paints its own titlebar wants.
+    /// Toggles `NSWindowStyleMask::Titled` — backs client-side-decoration
+    /// paths. AppKit ties the titlebar to this style bit: removing it also
+    /// removes the traffic-light buttons and title text.
     fn set_decorated(&mut self, decorated: bool) -> ServiceResult<()> {
         let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
         let mut style = window.styleMask();
@@ -4108,7 +3947,7 @@ impl WindowControl for MacBackend {
     }
 }
 
-/// macOS's `TrayService` surface (issue #953), backed by
+/// macOS's `TrayService` surface, backed by
 /// `NSStatusBar`/`NSStatusItem` — see [`super::tray`]'s module doc for
 /// the full design (lazy item creation, the menu-vs-plain-click
 /// trade-off, why `ContextMenuDismissed` doesn't fire for a tray menu).
@@ -4237,7 +4076,7 @@ impl PaintSurface for ChromeSurface<'_> {
         }
     }
 
-    /// The chrome twin of `MacBackend`'s own #810 override — same
+    /// The chrome twin of `MacBackend`'s own override — same
     /// `bold`/`italic`/`underline`-unsupported posture, same `scale_x`
     /// support via [`super::text::draw_text_scaled_x`], just against
     /// `chrome_font`.
@@ -4245,8 +4084,7 @@ impl PaintSurface for ChromeSurface<'_> {
     /// Not optional: this is the method the shared status-bar paint
     /// actually calls. Without it the adapter would inherit the trait
     /// default (forward to [`Self::surface_draw_text_run`]) — right font,
-    /// but `scale_x` silently dropped, a divergence from the editor path
-    /// that would only surface the day a chrome primitive uses it.
+    /// but `scale_x` silently dropped.
     #[allow(clippy::too_many_arguments)]
     fn surface_draw_text_run_styled(
         &mut self,
@@ -4523,11 +4361,9 @@ impl PaintSurface for MacBackend {
         (w as f32, h as f32)
     }
 
-    // #860: no `surface_measure_text_styled` override — the trait
-    // default (ignore `bold`, forward here) already reproduces this
-    // backend's pre-#860 `status_bar` rasteriser exactly: it measured
-    // (and rendered) every segment at the same weight regardless of
-    // `bold` (see `macos::status_bar`'s module doc, "Bold segments").
+    // The trait default (ignore `bold`, forward here) already reproduces
+    // this backend's pre-#860 `status_bar` rasteriser exactly: it measured
+    // and rendered every segment at the same weight regardless of `bold`.
 
     fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
         let ctx = self.current_cg();
@@ -4598,19 +4434,13 @@ impl PaintSurface for MacBackend {
         }
     }
 
-    /// #810: overrides the default (which drops both styling and
-    /// scale) for `scale_x` only — `bold`/`italic`/`underline` stay
-    /// unsupported (this backend's own pre-#810 documented "not
-    /// rendered yet" posture; see `macos::terminal`'s former module
-    /// doc), but `draw_text_scaled_x` already existed here for the
-    /// wide-glyph advance fix (#500/#703), so that capability isn't
-    /// lost by routing through this trait.
-    ///
-    /// Reads `chrome_font` unconditionally — see
+    /// Overrides the default (which drops both styling and scale) for
+    /// `scale_x` only — `bold`/`italic`/`underline` stay unsupported
+    /// (this backend's documented "not rendered yet" posture), but
+    /// `draw_text_scaled_x` already existed here for the wide-glyph
+    /// advance fix. Reads `chrome_font` unconditionally — see
     /// [`Self::surface_measure_text`]'s doc. [`EditorSurface`] carries the
-    /// `current_font` twin of this method for the editor-class callers
-    /// that still need it (the terminal's wide-glyph advance fix among
-    /// them).
+    /// `current_font` twin for editor-class callers that still need it.
     #[allow(clippy::too_many_arguments)]
     fn surface_draw_text_run_styled(
         &mut self,
@@ -4642,7 +4472,7 @@ impl PaintSurface for MacBackend {
         }
     }
 
-    /// #1073: overrides the default (which ignores `role`) — `chrome_font`
+    /// Overrides the default (which ignores `role`) — `chrome_font`
     /// and `current_font` are already genuinely different `CTFont`s on
     /// this backend (see `chrome_font`'s field doc), so a `dyn
     /// PaintSurface` caller holding a live `MacBackend` can now paint
@@ -4666,9 +4496,9 @@ impl PaintSurface for MacBackend {
         );
         let font = match role {
             crate::FontRole::Chrome => &self.chrome_font,
-            // Issue #1117: falls back to `chrome_font` — never `None` —
-            // instead of panicking when a host draws `FontRole::Editor`
-            // text before calling `set_current_font`.
+            // Falls back to `chrome_font` — never `None` — instead of
+            // panicking when a host draws `FontRole::Editor` text before
+            // calling `set_current_font`.
             crate::FontRole::Editor => self.current_font.as_ref().unwrap_or(&self.chrome_font),
         };
         // SAFETY: ctx is non-null inside the frame scope.
@@ -4684,7 +4514,7 @@ impl PaintSurface for MacBackend {
         }
     }
 
-    /// #1073: overrides the default only to document why it needn't
+    /// Overrides the default only to document why it needn't
     /// change anything — [`Self::set_current_font`]/[`Self::set_chrome_font`]
     /// already re-apply [`Self::set_nerd_font_fallback`]'s cascade to
     /// both `current_font` and `chrome_font` (see those methods' docs),
@@ -4772,7 +4602,7 @@ pub(crate) unsafe fn ns_fill_rect(ctx: CGContextRef, rect: Rect, c: Color) {
     CGContextFillRect(ctx, ns_cg_rect(rect));
 }
 
-/// [`ns_fill_rect`]'s rounded-corner twin (issue #1073). Builds the
+/// [`ns_fill_rect`]'s rounded-corner twin. Builds the
 /// rounded-rect path with the classic `CGContextAddArcToPoint`
 /// tangent-arc technique (four straight edges, each corner rounded by
 /// one arc of `radius`) rather than `CGPathCreateWithRoundedRect` —
@@ -4950,7 +4780,7 @@ extern "C" {
     fn CGContextMoveToPoint(c: CGContextRef, x: CGFloat, y: CGFloat);
     fn CGContextAddLineToPoint(c: CGContextRef, x: CGFloat, y: CGFloat);
     fn CGContextStrokePath(c: CGContextRef);
-    // #1073, `ns_fill_rounded_rect`'s tangent-arc rounded-rect path.
+    // Used by `ns_fill_rounded_rect`'s tangent-arc rounded-rect path.
     fn CGContextBeginPath(c: CGContextRef);
     fn CGContextAddArcToPoint(
         c: CGContextRef,
@@ -5038,7 +4868,7 @@ mod tests {
         assert_eq!(v.scale, 2.0);
     }
 
-    /// quadraui#699: `MacBackend::modal_stack_handle` must hand back a
+    /// `MacBackend::modal_stack_handle` must hand back a
     /// handle that shares state with the backend's own modal stack —
     /// this is the whole point of the issue: a host holding only
     /// `&mut dyn Backend` needs this to work identically on macOS to
@@ -5058,12 +4888,8 @@ mod tests {
         assert_eq!(h2.borrow().len(), 1);
     }
 
-    /// Issue #1187 acceptance: on macOS headless, `Auto` resolves to
-    /// `Native` (this is the one backend that declares
-    /// `caps.native_menu`) and `Custom` resolves to painted, unchanged
-    /// from every other backend. No `MainThreadMarker`/AppKit needed —
-    /// `menu_style`/`set_menu_style`/`effective_menu_style` are pure
-    /// `BackendCore` state + `MenuStyle::resolve`, not AppKit calls.
+    /// On macOS headless, `Auto` resolves to `Native` (this backend
+    /// declares `caps.native_menu`) and `Custom` resolves to painted.
     #[test]
     fn mac_backend_auto_resolves_native_and_custom_resolves_painted() {
         let mut backend = MacBackend::new();
@@ -5120,19 +4946,10 @@ mod tests {
         );
     }
 
-    /// Regression test for #930: `install_menu_bar` used to
-    /// `.expect()` a `MainThreadMarker`, which panics on any thread
-    /// other than the real OS main thread. `MacBackend` itself is
-    /// `!Send` (it carries `Rc<RefCell<_>>` state), so this builds the
-    /// backend *inside* the spawned thread rather than moving one in —
-    /// what matters is that `install_menu_bar` runs somewhere that is
-    /// provably not the main thread, which every `std::thread::spawn`
-    /// worker satisfies.
-    ///
-    /// Before the fix this `.join()` would return `Err` (the spawned
-    /// thread panicked). After the fix it degrades exactly like its
-    /// sibling helpers in `menu_bar_install.rs`: a silent no-op, no
-    /// `menu_target` retained.
+    /// Regression test: `install_menu_bar` must not panic when called
+    /// off the main thread. `MacBackend` is `!Send`, so this test builds
+    /// the backend inside the spawned thread. After the fix, the call
+    /// degrades to a silent no-op: no `menu_target` retained.
     #[test]
     fn install_menu_bar_off_main_thread_does_not_panic() {
         let bar = crate::primitives::menu_bar::MenuBar {
@@ -5156,9 +4973,9 @@ mod tests {
         );
     }
 
-    /// Same shape as `install_menu_bar_off_main_thread_does_not_panic`
-    /// above, for `show_context_menu` (#930 calls this out as the
-    /// sibling that needed the identical fix).
+    /// Regression test for `show_context_menu`: like `install_menu_bar`,
+    /// it must not panic when called off the main thread, degrading to a
+    /// silent no-op with no menu retained.
     #[test]
     fn show_context_menu_off_main_thread_does_not_panic() {
         let menu = crate::primitives::context_menu::ContextMenu {
@@ -5177,7 +4994,7 @@ mod tests {
             .expect("show_context_menu must return, not panic, off the main thread (#930)");
     }
 
-    /// quadraui#699: the stash-then-reuse pattern this issue exists to
+    /// The stash-then-reuse pattern this issue exists to
     /// unblock — obtain the handle through `&mut dyn Backend`, drop
     /// that borrow, and use the handle afterwards from an unrelated
     /// borrow scope. Mirrors
@@ -5197,7 +5014,7 @@ mod tests {
         assert_eq!(backend.modal_stack_handle().borrow().len(), 1);
     }
 
-    /// quadraui#699: same shared-state guarantee as
+    /// Same shared-state guarantee as
     /// `mac_backend_modal_stack_handle_shares_state`, for
     /// `drag_state_handle`.
     #[test]
@@ -5226,7 +5043,7 @@ mod tests {
         assert_eq!(b.char_width(), 8.0);
     }
 
-    /// The registry itself now lives in `BackendCore` (#1090) — its
+    /// The registry itself now lives in `BackendCore` — its
     /// `contains_key` isn't reachable from here anymore, so this observes
     /// the same round trip behaviourally via `match_keypress`.
     #[test]
@@ -5246,7 +5063,7 @@ mod tests {
         assert_eq!(b.match_keypress(&Key::Char('s'), ctrl_s), None);
     }
 
-    // ── Accelerator matching (#486) ──────────────────────────────────
+    // ── Accelerator matching ─────────────────────────────────────────
 
     #[test]
     fn match_keypress_finds_registered_global_binding() {
@@ -5338,14 +5155,11 @@ mod tests {
         );
     }
 
-    /// Regression test for the blocking review finding on this PR:
-    /// `parse_binding` (shared with `TuiBackend`) resolves every
-    /// universal `KeyBinding` variant to a **Ctrl** `ParsedBinding`
-    /// regardless of platform. `accelerator_to_ns` (native menu path)
-    /// and `render_binding` (display path) both already render these
-    /// as **Cmd** on macOS, so a real Cmd+S keypress — the one the UI
-    /// tells the user to press — must match a `KeyBinding::Save`
-    /// registration.
+    /// `parse_binding` resolves every universal `KeyBinding` variant to a
+    /// **Ctrl** `ParsedBinding` regardless of platform. `accelerator_to_ns`
+    /// (native menu path) and `render_binding` (display path) both render
+    /// these as **Cmd** on macOS, so a real Cmd+S keypress must match a
+    /// `KeyBinding::Save` registration.
     #[test]
     fn match_keypress_universal_binding_matches_native_cmd_not_ctrl() {
         let mut b = MacBackend::new();
@@ -5442,7 +5256,7 @@ mod tests {
         );
     }
 
-    // ── Double-click folding (#486) ──────────────────────────────────
+    // ── Double-click folding ─────────────────────────────────────────
 
     fn mouse_down(x: f32, y: f32) -> UiEvent {
         UiEvent::MouseDown {
@@ -5501,7 +5315,7 @@ mod tests {
         assert!(b.poll_events().is_empty());
     }
 
-    // ── Background-thread wake (issue #831) ─────────────────────────────
+    // ── Background-thread wake ──────────────────────────────────────────
     //
     // `MacBackend::waker`'s `DispatchQueue::main().exec_async` half needs a
     // real, running `NSApplication` main-queue pump to observe — a plain
@@ -5579,21 +5393,11 @@ mod tests {
         assert!(b.current_font.is_some());
     }
 
-    /// Issue #934: `MacBackend` previously had no public counterpart to
-    /// `GtkBackend::set_current_line_height` / `set_current_char_width` /
-    /// `WinBackend::set_current_line_height` / `set_current_char_width` —
-    /// a host computing chrome layout generically across backends had no
-    /// way to force this backend's cached row-spacing metrics to agree
-    /// with whatever value it used elsewhere. Confirms the new setters
-    /// (a) actually override the values `Backend::line_height`/
-    /// `char_width` return, taking priority over whatever
-    /// `set_current_font` last derived, and (b) don't require a font to
-    /// be installed at all — mirroring the other two backends' setters,
-    /// which are plain field writes with no font dependency.
-    ///
-    /// This test would not even compile before this fix — there was no
-    /// `set_current_line_height`/`set_current_char_width` method on
-    /// `MacBackend` to call, so it stands as its own RED-verification.
+    /// `MacBackend` now has public `set_current_line_height` and
+    /// `set_current_char_width` setters, matching `GtkBackend` and
+    /// `WinBackend`. These must override cached values from `set_current_font`,
+    /// and must not require a font to be installed. This test would not
+    /// compile before this fix.
     #[test]
     fn set_current_line_height_and_char_width_override_font_derived_defaults() {
         let mut b = MacBackend::new();
@@ -5636,7 +5440,7 @@ mod tests {
         assert!(!Backend::begin_window_drag(&mut b));
     }
 
-    /// #498: also no-ops when a window is present but no press was ever
+    /// Also no-ops when a window is present but no press was ever
     /// stashed — there's no real `NSEvent` to hand
     /// `performWindowDragWithEvent:`. Can't construct a real `NSWindow`
     /// headlessly, so this exercises the guard against the private
@@ -5654,7 +5458,7 @@ mod tests {
         assert!(!Backend::toggle_window_maximize(&mut b));
     }
 
-    /// #1022: `is_maximized`/`set_decorated` guard on `self.window` the
+    /// `is_maximized`/`set_decorated` guard on `self.window` the
     /// same way every other `WindowControl` method here does — no real
     /// `NSWindow` exists in a headless unit test, so both must report
     /// `Unsupported` rather than panic.
@@ -5686,7 +5490,7 @@ mod tests {
         ));
     }
 
-    /// #947: same no-window guard as the three tests above —
+    /// Same no-window guard as the three tests above —
     /// `titlebar_control_inset` must short-circuit to the trait's own
     /// `Rect::default()` before touching `standardWindowButton` at all.
     /// The live-window case (non-empty inset matching AppKit's actual
@@ -5699,7 +5503,7 @@ mod tests {
         assert_eq!(Backend::titlebar_control_inset(&b), Rect::default());
     }
 
-    /// #1154: with a real `NSWindow`, `titlebar_control_inset` must report
+    /// With a real `NSWindow`, `titlebar_control_inset` must report
     /// the actual traffic-light cluster width, not the full window width
     /// the pre-fix `close_button.superview()` read (that private
     /// container is `NSTitlebarView`, which spans the window edge to
@@ -5760,7 +5564,7 @@ mod tests {
         );
     }
 
-    /// #1177: once the traffic-light buttons are hidden — the state
+    /// Once the traffic-light buttons are hidden — the state
     /// AppKit puts them in while the window is in native full screen —
     /// `titlebar_control_inset` must collapse to `Rect::default()`
     /// instead of continuing to report the last-known cluster rect. A
@@ -5850,29 +5654,11 @@ mod tests {
         );
     }
 
-    /// Regression test for the blocking review finding on this PR: the
-    /// `PointerShape` → cursor mapping this backend introduced had zero
-    /// test coverage, despite `desktop::all_pointer_shapes()` existing
-    /// specifically to make an exhaustive mapping test trivial — mirrors
-    /// `gtk::backend::pointer_shape_cursor_name_maps_every_variant`.
-    ///
-    /// Asserts against [`MacCursorKind`], **not** against vended
-    /// `NSCursor` singletons. The first cut of this test built a
-    /// `[Retained<NSCursor>; 9]` expectation array and compared
-    /// `Retained::as_ptr` identity; that reds the `macos (build, test)`
-    /// check, because libtest runs every `#[test]` on a spawned worker
-    /// thread and `+[NSCursor arrowCursor]` is an AppKit call in a
-    /// process that never created an `NSApplication` — the same hazard
-    /// `macos::menu_bar_install`'s tests already gate behind
-    /// `MainThreadMarker::new()`. It also asserted the wrong thing:
-    /// "these factory methods return a shared instance" is Apple's
-    /// invariant, not quadraui's. quadraui's invariant is *which* cursor
-    /// each shape picks, which is exactly what `mac_cursor_kind` returns
-    /// — so this version covers strictly more of what can regress here,
-    /// deterministically, on every platform and every thread.
-    /// [`mac_cursor_for_shape`]'s one-line kind → singleton dispatch is
-    /// covered by `mac_cursor_for_shape_vends_the_kind_it_maps_to` below,
-    /// on the one thread where it can run at all.
+    /// `PointerShape` → cursor mapping must cover every variant.
+    /// Asserts against [`MacCursorKind`], not against `NSCursor` singletons:
+    /// `MacBackend` runs on spawned worker threads where AppKit calls are
+    /// unsafe, and the invariant to test is which cursor each shape picks,
+    /// not that Apple's factory methods return shared instances.
     #[test]
     fn mac_cursor_kind_maps_every_variant() {
         // One expected kind per `desktop::all_pointer_shapes()` entry, in
@@ -5909,7 +5695,7 @@ mod tests {
         }
     }
 
-    /// #1154: pure, AppKit-free coverage of [`union_ns_rect`] — the
+    /// Pure, AppKit-free coverage of [`union_ns_rect`] — the
     /// building block `titlebar_control_inset` unions the three button
     /// frames with, runnable on every platform and every thread (no
     /// `MainThreadMarker` gate needed, unlike
@@ -5997,7 +5783,7 @@ mod tests {
         assert_ne!(Retained::as_ptr(&up_down), Retained::as_ptr(&left_right));
     }
 
-    /// #498: `backend_caps` must stay honest — declaring `window_chrome`
+    /// `backend_caps` must stay honest — declaring `window_chrome`
     /// / `pointer_cursor` requires the corresponding methods actually be
     /// overridden (see `tests/conformance/caps.rs`'s
     /// `backends_declare_only_what_they_override`, which checks this
@@ -6010,7 +5796,7 @@ mod tests {
         assert!(caps.pointer_cursor);
     }
 
-    /// quadraui#936 (RED-verify companion): before this issue's fix,
+    /// Before this issue's fix,
     /// `backend_caps().native_dialogs` was `false` (the stub's own doc
     /// comment said so). `native_dialogs` is `Unprovable` in
     /// `CAP_CONTRACTS` (see `backend_caps`'s doc comment above), so
@@ -6046,18 +5832,10 @@ mod tests {
         }
     }
 
-    /// #790: `MacBackend::list_hscrollbar` used to ignore `list.bordered`
-    /// entirely, so a bordered list's horizontal scrollbar overpainted its
-    /// own border and the thumb hit-rect was off by one cell at each end
-    /// — the vertical sibling of this exact bug was fixed for GTK/macOS
-    /// layout reservation in #712, but the horizontal `list_hscrollbar`
-    /// geometry API was missed because GTK/Windows/macOS each carried
-    /// their own copy of the track math. Both now delegate to
-    /// [`crate::primitives::list::hscrollbar_track`], so this asserts the
-    /// macOS column of the fix directly: track inset matches the shared
-    /// helper (and GTK/Windows' `list_hscrollbar`, which already had this
-    /// right) rather than the flat, un-inset track the old macOS copy
-    /// produced.
+    /// `MacBackend::list_hscrollbar` must inset the track for bordered
+    /// lists, matching the shared `primitives::list::hscrollbar_track`
+    /// helper and the GTK/Windows implementations. The vertical sibling
+    /// bug was fixed in #712, but the horizontal geometry was missed.
     #[test]
     fn list_hscrollbar_insets_track_for_bordered_list() {
         let mut b = MacBackend::new();
@@ -6122,11 +5900,9 @@ mod tests {
         }
     }
 
-    /// #961: `draw_minimap` must actually paint pixels + report
-    /// `painted: true` — the positive replacement for #802's
-    /// `draw_minimap_does_not_panic_and_reports_unpainted`, now that macOS
-    /// has a real Core Graphics/Core Text minimap rasteriser
-    /// (`super::minimap::draw_minimap`).
+    /// `draw_minimap` must paint pixels and report `painted: true`.
+    /// This replaced an earlier `draw_minimap_does_not_panic_and_reports_unpainted`
+    /// test after macOS gained a real Core Graphics/Core Text minimap rasteriser.
     #[test]
     fn draw_minimap_paints_and_reports_painted() {
         use super::super::headless::BitmapSurface;
@@ -6199,14 +5975,10 @@ mod tests {
         assert_eq!(painted.layout, layout_only);
     }
 
-    /// Renamed from #802-era `draw_image_does_not_panic_and_reports_unsupported`:
-    /// with a real decoder now wired in (#962), an empty byte source is no
-    /// longer "there's no decoder to try" but "the decoder was tried and
-    /// had nothing to decode" — still a clean `Unsupported`, just for a
-    /// different reason. Deliberately called outside `enter_frame_scope`
-    /// (no `ctx`) to prove decoding is attempted, and fails, before
-    /// `draw_image` ever needs a live CoreGraphics context — see
-    /// `super::image::draw_image`'s doc comment.
+    /// Empty byte source is a clean `Unsupported` result: the decoder was
+    /// tried and had nothing to decode. Deliberately called outside
+    /// `enter_frame_scope` (no `ctx`) to prove decoding is attempted before
+    /// `draw_image` ever needs a live CoreGraphics context.
     #[test]
     fn draw_image_from_empty_bytes_reports_unsupported() {
         let mut b = MacBackend::new();
@@ -6314,11 +6086,9 @@ mod tests {
         !crc
     }
 
-    /// #962: `draw_image` must actually paint pixels + report `Painted` —
-    /// the positive replacement for #802's degrade-to-`Unsupported`
-    /// coverage, now that macOS has a real Core Graphics/ImageIO image
-    /// rasteriser (`super::image::draw_image`). Mirrors
-    /// `draw_minimap_paints_and_reports_painted` above.
+    /// `draw_image` must paint pixels and report `Painted`. This replaced
+    /// an earlier degrade-to-`Unsupported` test after macOS gained a real
+    /// Core Graphics/ImageIO image rasteriser.
     #[test]
     fn draw_image_paints_and_reports_painted() {
         use super::super::headless::BitmapSurface;
@@ -6366,7 +6136,7 @@ mod tests {
         assert!(painted_any, "draw_image must paint non-background pixels");
     }
 
-    // ── Text selection (#803) ────────────────────────────────────────
+    // ── Text selection ───────────────────────────────────────────────
     //
     // State-machine delegation coverage, mirroring `gtk::backend::tests`'
     // (now-lifted, see `crate::text_selection`'s own test module for the
@@ -6611,29 +6381,12 @@ mod tests {
         );
     }
 
-    /// `apply_selection_highlight`'s real CoreGraphics paint, checked
-    /// against a headless `BitmapSurface` — the pixel-level half of
-    /// #803's acceptance criteria. Paints a solid-colour `TextRegion`
-    /// background via `draw_status_bar`, drags a selection across it
-    /// (`set_active_text_selection` directly — the dispatch-level drag
-    /// round trip is covered in `macos::run`'s own tests), calls
-    /// `apply_selection_highlight`, and asserts the pixel at the
-    /// selection's location shifted toward the translucent-blue highlight
-    /// instead of staying the plain background colour.
-    ///
-    /// ## Why the probe column is derived, not hardcoded
-    ///
-    /// The blend is `bg + 0.30 * (highlight - bg)`, so the size of the
-    /// blue-channel rise depends entirely on what was underneath. A
-    /// fixed `x = 2` probe lands on the antialiased stem of the first
-    /// glyph (~`(206, 206, 206)` for white-on-dark Menlo), where the
-    /// rise shrinks to `0.30 * (255 - 206) ≈ 15` and a
-    /// "blue must rise noticeably" threshold fails even though the
-    /// paint is perfectly correct. So the probe is taken from the
-    /// **painted `StatusBarLayout`** — just past the text segment's
-    /// right edge, where the bar fill is still `BG` and no glyph can
-    /// reach — the same glyph-free-padding trick
-    /// `macos::status_bar`'s own tests use.
+    /// `apply_selection_highlight` paints a translucent blue overlay via
+    /// the blend `bg + 0.30 * (highlight - bg)`. The probe column is derived
+    /// from the painted `StatusBarLayout` (just past the text segment's right
+    /// edge, where no glyph reaches) rather than hardcoded, because the blue
+    /// rise otherwise may disappear into antialiasing noise when the text stem
+    /// underneath is already bright.
     #[test]
     fn mac_apply_selection_highlight_paints_over_the_background() {
         use super::super::headless::BitmapSurface;
@@ -6779,19 +6532,11 @@ mod tests {
         );
     }
 
-    /// Not a pixel-precision test for every verb (that's `fill_rect`'s job
-    /// above) — this exercises every remaining `PaintSurface` method at
-    /// least once end-to-end (frame lifecycle, measurement, stroke, line,
-    /// clip push/pop, text run, image) so an implementation bug (wrong arg
-    /// order, a swapped field, a panic inside the frame-scope guard) fails
-    /// a test instead of shipping silently — the same coverage
-    /// `gtk_backend_paint_surface_verbs_do_not_panic` /
-    /// `win_backend_paint_surface_verbs_do_not_panic` give their
-    /// backends, closing the gap this issue's review flagged: until this
-    /// test existed, nothing anywhere called a `MacBackend::surface_*`
-    /// method, so the hand-written `ns_fill_rect`/`ns_stroke_rect`/
-    /// `ns_draw_line`/`ns_push_clip` CoreGraphics FFI was verified by
-    /// nothing beyond "it compiles".
+    /// Exercise every `PaintSurface` method at least once end-to-end
+    /// (frame lifecycle, measurement, stroke, line, clip push/pop, text run,
+    /// image) so implementation bugs fail a test instead of shipping silently.
+    /// Before this test existed, no code called `MacBackend::surface_*` methods,
+    /// so the hand-written CoreGraphics FFI had no pixel-level coverage.
     #[test]
     fn mac_backend_paint_surface_verbs_do_not_panic() {
         use super::super::headless::BitmapSurface;
@@ -6849,11 +6594,9 @@ mod tests {
                 fit: crate::primitives::image::ImageFit::Contain,
                 fallback_text: "[i]".to_string(),
             };
-            // Empty bytes have nothing to decode, so this stays
-            // `Unsupported` even with #962's real decoder wired in — this
-            // call only needs to prove it reaches the same code
-            // `Backend::draw_image` does (inside a live frame scope, this
-            // time), not any particular decode outcome.
+            // Empty bytes have nothing to decode, so this stays `Unsupported`
+            // even with a real decoder. This call proves it reaches the same code
+            // `Backend::draw_image` does (inside a live frame scope).
             let _ = b.surface_draw_image(Rect::new(0.0, 40.0, 8.0, 8.0), &image);
         });
 
@@ -7013,7 +6756,7 @@ mod tests {
              chrome={chrome_ink}, editor={editor_ink}"
         );
 
-        // #1073: italic must not panic.
+        // Italic must not panic.
         let italic_surface = BitmapSurface::new(W, H);
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.enter_frame_scope(italic_surface.context_ptr(), |b| {
@@ -7064,18 +6807,12 @@ mod tests {
 
     // ── Form (#808, PaintSurface Phase 2a) ──────────────────────────
 
-    /// Regression for #808: pre-fix, `macos::form::draw_form` matched
-    /// only 10 of 14 `FieldKind` variants and silently fell through
-    /// (`_ => {}`) on `Slider` / `ColorPicker` / `Dropdown` / `TextArea`
-    /// — a form using one of those painted nothing beyond its label and
-    /// row background, with no error anywhere. Confirmed to reproduce
-    /// against unfixed `develop @ a9104f5`. `draw_form` now routes
-    /// through the shared `primitives::form::paint`, which handles all
-    /// 14 variants — this scans each field's row, past where its label
-    /// ends, for a pixel that isn't the row background, proving the
-    /// *value* painted something (a label-only hit doesn't count: every
-    /// pre-fix backend already painted labels regardless of whether the
-    /// value fell through).
+    /// `macos::form::draw_form` previously matched only 10 of 14
+    /// `FieldKind` variants and silently fell through on `Slider` /
+    /// `ColorPicker` / `Dropdown` / `TextArea`, painting nothing beyond
+    /// label and row background. It now routes through the shared
+    /// `primitives::form::paint`. This scans each field's row past where
+    /// its label ends for a pixel that isn't the row background.
     #[test]
     fn mac_backend_draw_form_paints_the_four_field_kinds_macos_used_to_drop() {
         use super::super::headless::BitmapSurface;
@@ -7665,13 +7402,10 @@ mod tests {
         );
     }
 
-    /// Regression for quadraui#791/#810: before #791, `macos::chart`
-    /// already clipped via `CGContextSaveGState`/`CGContextClipToRect`;
-    /// #810 unified all three backends' `draw_chart` onto the shared
-    /// `primitives::chart::paint`, which is what now owns this clip for
-    /// every pixel backend — this is the "driver-tier" proof for macOS,
-    /// mirroring `gtk::backend::tests`'s and `win::backend::tests`'s
-    /// twin tests pixel-for-pixel (same fixture, same geometry).
+    /// `macos::chart` already clipped via `CGContextSaveGState`; the shared
+    /// `primitives::chart::paint` now owns this clip for every pixel backend.
+    /// This is the driver-tier proof for macOS that the hover marker stays
+    /// within the chart rect.
     #[test]
     fn mac_backend_draw_chart_hover_marker_does_not_escape_chart_rect() {
         let chart = chart_sample_bar(
@@ -7879,18 +7613,11 @@ mod tests {
         );
     }
 
-    /// #860 review follow-up: driver-tier coverage (mirrors
-    /// `gtk::backend::tests::gtk_backend_draw_status_bar_negative_width_does_not_paint`)
-    /// proving the shared
-    /// `primitives::status_bar::native_surface_paint::paint`'s #791
-    /// zero/negative-size guard actually short-circuits through the real
-    /// `MacBackend`, not just the primitive-tier `RecordingSurface` test.
-    /// Unlike GTK, macOS already carried this guard pre-#860 (see that
-    /// module's own doc), so this is completeness coverage rather than a
-    /// regression proof — and it uses a literal zero width rather than a
-    /// negative one: CoreGraphics's `CGContextClipToRect`/`CGContextFillRect`
-    /// don't share Cairo's negative-size "mirrors into a real rect"
-    /// behaviour that makes a negative width meaningful there.
+    /// The shared `primitives::status_bar::native_surface_paint::paint`
+    /// guards against zero/negative sizes; this proves the guard short-circuits
+    /// through the real `MacBackend`. macOS already carried this pre-guard,
+    /// so this is completeness coverage. CoreGraphics doesn't mirror Cairo's
+    /// negative-size behaviour, so a literal zero width is tested.
     #[test]
     fn mac_backend_draw_status_bar_zero_width_does_not_paint() {
         use super::super::headless::BitmapSurface;
@@ -8059,10 +7786,9 @@ mod tests {
         }
     }
 
-    /// Regression for quadraui#494 / LESSONS.md "Layout helpers must
-    /// return coords in the same frame across backends": paint at a
-    /// non-zero rect origin with a title row present, then round-trip
-    /// an absolute click the way a real host does.
+    /// Layout hit-test must resolve lines correctly at a non-zero rect
+    /// origin with a title row present, round-tripping an absolute click
+    /// the way a real host does.
     #[test]
     fn mac_backend_draw_text_display_layout_hit_test_resolves_lines_at_nonzero_origin() {
         let mut td = make_td(20, false);
@@ -8096,7 +7822,7 @@ mod tests {
         }
     }
 
-    // ── Chrome font (issue #963) ─────────────────────────────────────
+    // ── Chrome font ──────────────────────────────────────────────────
     //
     // Acceptance coverage: macOS now carries a `chrome_font` distinct
     // from `current_font` (the editor font), defaulting to the CoreText
@@ -8125,10 +7851,9 @@ mod tests {
         );
     }
 
-    /// `set_editor_font` and `set_ui_font` must land on independent state
-    /// — the #912 hazard this issue exists to avoid. Growing one must
-    /// never move the other's cached line height, and each setter must
-    /// install exactly the font it was asked for.
+    /// `set_editor_font` and `set_ui_font` must land on independent state.
+    /// Growing one must never move the other's cached line height, and each
+    /// setter must install exactly the font it was asked for.
     #[test]
     fn set_editor_font_and_set_ui_font_are_independent() {
         use crate::Backend;
@@ -8172,14 +7897,11 @@ mod tests {
         );
     }
 
-    /// Issue #1132: `measure_text` must resolve a genuinely different
-    /// `CTFont` per [`crate::FontRole`] — `chrome_font` for
-    /// [`crate::FontRole::Chrome`], `current_font` for
-    /// [`crate::FontRole::Editor`] — not the same cached advance twice.
-    /// A much larger chrome font must measure the same string wider than
-    /// a small editor font does; this would pass vacuously if `role`
-    /// were ignored and both arms measured against whichever font
-    /// happened to be installed.
+    /// `measure_text` must resolve a genuinely different `CTFont` per
+    /// [`crate::FontRole`] — `chrome_font` for [`crate::FontRole::Chrome`],
+    /// `current_font` for [`crate::FontRole::Editor`] — not the same cached
+    /// advance twice. A much larger chrome font must measure the same string
+    /// wider than a small editor font does.
     #[test]
     fn measure_text_resolves_a_different_font_per_role() {
         use crate::{Backend, FontRole};
@@ -8198,12 +7920,9 @@ mod tests {
         );
     }
 
-    /// #1117's "falls back to `chrome_font`, never panics" degrade,
-    /// exercised through `measure_text` instead of
-    /// `surface_draw_text_run_with_role`: a fresh `MacBackend` with no
-    /// [`MacBackend::set_current_font`] call yet must still return a
-    /// real (non-zero) measurement for [`crate::FontRole::Editor`],
-    /// resolved against `chrome_font`.
+    /// `measure_text` with [`crate::FontRole::Editor`] must fall back to
+    /// `chrome_font` before `set_current_font` is called, never panicking.
+    /// A fresh `MacBackend` must still return a real (non-zero) measurement.
     #[test]
     fn measure_text_editor_role_falls_back_to_chrome_font_before_set_current_font() {
         use crate::{Backend, FontRole};
@@ -8214,11 +7933,9 @@ mod tests {
         assert!(h > 0.0, "expected a real measurement, got height {h}");
     }
 
-    /// Issue #1156: `default_fonts()` reports macOS's VS-Code-alignment
-    /// convention — `Menlo 12` for editor content, and the real
-    /// CoreText-resolved system UI font name at 13pt for chrome, not a
-    /// hardcoded guess at what "SF" resolves to on the running OS
-    /// version.
+    /// `default_fonts()` must report macOS's VS-Code-alignment convention:
+    /// `Menlo 12` for editor content, and the real CoreText-resolved system
+    /// UI font name at 13pt for chrome.
     #[test]
     fn mac_backend_default_fonts_reports_platform_convention() {
         use crate::Backend;
@@ -8283,12 +8000,10 @@ mod tests {
         assert_eq!(b.chrome_font.pt_size(), 12.0);
     }
 
-    /// `set_editor_font` keeps the previously installed face when the
-    /// requested family isn't installed — the doc'd "degrade, don't
-    /// fail" posture. Without [`super::super::text::make_font_exact`]
-    /// this silently installed Helvetica (Core Text's substitute for an
-    /// unknown name) as the *editor* font, i.e. a proportional face where
-    /// the app asked for monospace.
+    /// `set_editor_font` must keep the previously installed face when the
+    /// requested family isn't installed — the "degrade, don't fail" posture.
+    /// Without proper family resolution, an unknown name silently installed
+    /// Helvetica (Core Text's substitute) as the editor font.
     #[test]
     fn set_editor_font_keeps_the_installed_font_for_an_unknown_family() {
         use crate::Backend;
@@ -8312,9 +8027,9 @@ mod tests {
         );
     }
 
-    /// Issue #1023: `set_editor_font("monospace", …)` resolves to the
-    /// CoreText fixed-pitch system font, not a literal (and unresolvable)
-    /// family named `"monospace"`.
+    /// `set_editor_font("monospace", …)` must resolve to the CoreText
+    /// fixed-pitch system font, not a literal (and unresolvable) family
+    /// named `"monospace"`.
     #[test]
     fn set_editor_font_resolves_the_monospace_generic_token() {
         use crate::Backend;
@@ -8332,9 +8047,8 @@ mod tests {
         );
     }
 
-    /// Issue #1023: `set_ui_font` resolves all three CSS generic tokens
-    /// (plus Pango's `Sans`/`Monospace` aliases) to their native CoreText
-    /// counterparts, at the requested size.
+    /// `set_ui_font` must resolve all three CSS generic tokens (plus Pango's
+    /// `Sans`/`Monospace` aliases) to their native CoreText counterparts.
     #[test]
     fn set_ui_font_resolves_generic_tokens() {
         use crate::Backend;
@@ -8370,13 +8084,10 @@ mod tests {
         );
     }
 
-    /// Issue #1023: `parse_ui_font_desc` splits a Pango-style
-    /// comma-separated fallback list and resolves to the first family
-    /// that's actually installed — `"Definitely Not A Real Font Family
-    /// One, Definitely Not A Real Font Family Two, Menlo"` must land on
-    /// `Menlo`, not fail the whole description the way a single
-    /// `rfind(' ')` split used to (it would see `"...Family Two, Menlo"`
-    /// as everything-before-a-nonexistent-size and reject the lot).
+    /// `parse_ui_font_desc` must split a Pango-style comma-separated
+    /// fallback list and resolve to the first family that's actually installed.
+    /// `"Definitely Not A Real Font Family One, Definitely Not A Real Font
+    /// Family Two, Menlo"` must land on `Menlo`, not fail the whole description.
     #[test]
     fn set_ui_font_resolves_the_first_installed_family_in_a_comma_list() {
         use crate::Backend;
@@ -8431,7 +8142,7 @@ mod tests {
         );
     }
 
-    /// Black-box acceptance test (issue #963): paint a `StatusBar`
+    /// Black-box acceptance test: paint a `StatusBar`
     /// through the real `Backend::draw_status_bar_interactive` path and
     /// prove its painted geometry tracks `set_ui_font`, not
     /// `set_editor_font` — the two-font separation actually reaching a
@@ -8499,13 +8210,10 @@ mod tests {
         );
     }
 
-    /// Issue #1045 item 2: `draw_status_bar_interactive_scaled` paints
-    /// narrower text at a smaller `font_scale`, and — critically — must
-    /// not leave the ambient chrome font perturbed for the *next* call:
-    /// an unscaled `draw_status_bar_interactive` painted immediately
-    /// after a scaled call must come back to exactly its own pre-scaled
-    /// width, proving the swap in `status_bar_paint_scaled` is fully
-    /// undone rather than leaking into later paints this frame.
+    /// `draw_status_bar_interactive_scaled` must paint narrower text at a
+    /// smaller `font_scale`, and must not leave the ambient chrome font
+    /// perturbed for the next call. An unscaled paint immediately after
+    /// must come back to exactly its own pre-scaled width.
     #[test]
     fn draw_status_bar_interactive_scaled_shrinks_without_perturbing_later_unscaled_paints() {
         use super::super::headless::BitmapSurface;
@@ -8581,9 +8289,7 @@ mod tests {
 
     /// `status_bar_layout` (the no-paint twin) must agree with what
     /// `draw_status_bar_interactive` actually painted once both read
-    /// `chrome_font` — regression guard for #963 keeping the two
-    /// call sites in sync the way #484 already required for the
-    /// pre-#963 `current_font`-only world.
+    /// `chrome_font`, keeping the two call sites in sync.
     #[test]
     fn status_bar_layout_matches_painted_layout_after_set_ui_font() {
         use super::super::headless::BitmapSurface;
@@ -8638,14 +8344,9 @@ mod tests {
         }
     }
 
-    /// Issue #1179 acceptance test: a `StatusBar` drawn into a `rect`
-    /// taller than `chrome_line_height` (vimcode's fixed-height
-    /// breadcrumb row is the real-world case) must fill the whole rect,
-    /// not just its own line height — the leftover strip used to show
-    /// whatever the frame's clear colour was (a hard-coded dark literal
-    /// pre-#1179). Uses an empty-segments bar so the fill falls back to
-    /// `theme.background` (see `native_surface_paint::paint`'s doc),
-    /// which is what the pixel below `chrome_line_height` must match.
+    /// A `StatusBar` drawn into a rect taller than `chrome_line_height`
+    /// must fill the whole rect, not just its own line height. The leftover
+    /// strip must match `theme.background`, not show the frame's clear colour.
     #[test]
     fn draw_status_bar_interactive_fills_the_whole_rect_height_not_just_line_height() {
         use super::super::headless::BitmapSurface;
@@ -8656,9 +8357,7 @@ mod tests {
         const W: u32 = 200;
         const H: u32 = 40;
 
-        // A light background, nothing close to the old dark clear
-        // literal (#1F1F24 == (31, 31, 36)) — the same regression #1179
-        // reports for `QuadraView::draw_rect`'s frame backdrop.
+        // A light background, proving the fill extends beyond chrome_line_height.
         let theme = Theme {
             background: Color::rgb(236, 236, 236),
             ..Theme::default()
@@ -8692,8 +8391,7 @@ mod tests {
         });
         b.end_frame();
 
-        // Bottom row of the rect — below where `chrome_line_height`
-        // alone would have stopped filling, pre-#1179.
+        // The bottom row — below where chrome_line_height alone would stop filling.
         let (r, g, bl, _a) = surface.pixel(W / 2, H - 2);
         assert_eq!(
             (r, g, bl),
@@ -8703,20 +8401,17 @@ mod tests {
         );
     }
 
-    /// Issue #1003 acceptance test: paint a `TreeView` through the real
-    /// `Backend::draw_tree` path and prove its painted row-label extent
-    /// tracks `set_ui_font`, not `set_editor_font` — the headline symptom
-    /// this issue was filed over (a file tree rendered in the editor's
-    /// monospace font instead of the system UI font every other native
-    /// app uses). Same shape as
+    /// Acceptance test: paint a `TreeView` through the real
+    /// `Backend::draw_tree` path and verify its painted row-label extent
+    /// tracks `set_ui_font`, not `set_editor_font`. Same structure as
     /// `GtkBackend`'s `gtk_backend_draw_tree_uses_ui_font_not_editor_font`
     /// (`gtk/backend.rs`): paint the same single-row tree under two
     /// wildly different *editor* font sizes with `ui_font` left at its
     /// default — the painted extent must be identical — then change
     /// `ui_font` alone as a positive control and see the extent move.
     ///
-    /// The one place this can't copy its GTK twin verbatim is the row
-    /// *geometry*. `GtkBackend` is **told** its metrics (`current_line_height`
+    /// The one place this differs from its GTK twin is row *geometry*.
+    /// `GtkBackend` is **told** its metrics (`current_line_height`
     /// / `current_char_width` are pushed in by the host), so swapping the
     /// Pango layout's font description there changes only the glyphs.
     /// `MacBackend` **derives** them, inside `set_editor_font` — and row
@@ -8851,14 +8546,12 @@ mod tests {
         }
     }
 
-    /// #1043 regression: `tree_vscrollbar` used to pass the raw
-    /// `line_height` (16px default) as `TreeView::vscrollbar`'s
-    /// `row_height`, not the `line_height * 1.4` pitch `mac_tree_layout`
-    /// actually paints for non-header rows. With `current_line_height`
-    /// left at its 16px default, 15 rows painted at the real 22.4px→22px
-    /// pitch only fit 13 into a 300px-tall viewport (300/22 = 13), so an
-    /// overflow scrollbar must appear — the old raw-`line_height` math
-    /// (300/16 = 18) would have wrongly reported "everything fits".
+    /// `tree_vscrollbar` must pass `line_height * 1.4` pitch (not raw
+    /// `line_height`) as `TreeView::vscrollbar`'s `row_height`, since that
+    /// is what `mac_tree_layout` actually paints for non-header rows.
+    /// With `current_line_height` at 16px default, 15 rows painted at the
+    /// real 22.4px→22px pitch only fit 13 into a 300px-tall viewport
+    /// (300/22 = 13), so an overflow scrollbar must appear.
     #[test]
     fn mac_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
         let backend = MacBackend::new();
@@ -8876,7 +8569,7 @@ mod tests {
         );
     }
 
-    /// #1043 / #623: a host-set `TreeStyle::row_height` must be honored
+    /// A host-set `TreeStyle::row_height` must be honored
     /// by `tree_vscrollbar`, exactly as `mac_tree_layout`/`draw_tree`
     /// honor it — not silently ignored in favor of `line_height`.
     #[test]
@@ -8891,11 +8584,11 @@ mod tests {
         assert_eq!(sb.track.width, 50.0);
     }
 
-    /// Issue #1003: `menu_bar_layout`/`draw_menu_bar` twin of
-    /// `draw_tree_uses_ui_font_not_editor_font` above, using the returned
-    /// `MenuBarLayout`'s measured item width instead of a pixel scan —
-    /// `draw_menu_bar` hands back real geometry, so there is no need to
-    /// rasterise and re-measure.
+    /// `menu_bar_layout`/`draw_menu_bar` twin of
+    /// `draw_tree_uses_ui_font_not_editor_font`: verify the returned
+    /// `MenuBarLayout`'s measured item width is correct. `draw_menu_bar`
+    /// hands back real geometry, so there is no need to rasterise and
+    /// re-measure.
     #[test]
     fn draw_menu_bar_uses_ui_font_not_editor_font() {
         use super::super::headless::BitmapSurface;
@@ -9145,45 +8838,23 @@ mod tests {
         assert_eq!(backend.last_native_menu_bar.as_ref(), Some(&other));
     }
 
-    /// Issue #1003 regression test for `draw_activity_bar` — the
-    /// mandatory, non-default `Backend` method (see its own comment for
-    /// why `draw_activity_bar_with_style`, which already had an
-    /// equivalent guard's worth of review attention, doesn't cover this
-    /// path: `AppShell::render` and `ScreenLayout::draw`'s
-    /// `Surface::ActivityBar` arm both call this method directly, never
-    /// the styled one).
+    /// Regression test for `draw_activity_bar` — the mandatory,
+    /// non-default `Backend` method (see its own comment for why
+    /// `draw_activity_bar_with_style`, which already had equivalent review
+    /// attention, doesn't cover this path: `AppShell::render` and
+    /// `ScreenLayout::draw`'s `Surface::ActivityBar` arm both call this
+    /// method directly, never the styled one).
     ///
-    /// Issue #1157 narrowed what "uses ui_font, not editor_font" can
-    /// mean here: the icon glyph's *size* is now pinned to
-    /// `ActivityBarStyle::resolved_icon_size_px()` regardless of either
-    /// font's own point size (`macos::activity_bar`'s module doc), so
-    /// this test's original positive control — grow `ui_font`'s point
-    /// size alone and watch the icon widen — is no longer a valid
-    /// probe; it would fail on a correct, on-issue implementation,
-    /// because making the icon *not* track a font's size is exactly
-    /// what #1157 fixed. Swapping `ui_font`'s *family* instead isn't a
-    /// reliable substitute either: at a fixed 24pt, `W`-heavy fallback
-    /// text renders within a few px of "canvas-filling" in every
-    /// installed system family, so a family-only visual delta is too
-    /// close to noise to assert on.
-    ///
-    /// So this test asserts the same underlying contract
-    /// (`draw_activity_bar` paints through `chrome_font`, never
-    /// `current_font`/the editor font) via two size-based probes that
-    /// remain valid post-#1157, plus a family-based probe on the side
-    /// this fix *didn't* touch — `editor_font`'s family should have
-    /// exactly zero effect, since the editor font is never read at all
-    /// on this path:
-    /// - icon extent is independent of `editor_font`'s size (unchanged
-    ///   from before #1157);
-    /// - icon extent is independent of `editor_font`'s *family* too —
-    ///   if `draw_activity_bar` ever regressed to reading
-    ///   `current_font` instead of `chrome_font`, swapping the editor
-    ///   family would move the rendered glyph;
-    /// - icon extent is *also* independent of `ui_font`'s size — the
-    ///   #1157 fix itself, exercised through this trait method rather
-    ///   than only through `draw_activity_bar_with_style` (see
-    ///   `macos::activity_bar::tests::icon_ink_height_follows_style_not_chrome_font_size`).
+    /// Verifies that `draw_activity_bar` paints through `chrome_font`,
+    /// never `current_font`/the editor font. Icon extent is pinned to
+    /// `ActivityBarStyle::resolved_icon_size_px()` regardless of font point
+    /// size (see `macos::activity_bar` module doc). This test uses three
+    /// probes:
+    /// - icon extent is independent of `editor_font`'s size;
+    /// - icon extent is independent of `editor_font`'s family — a
+    ///   regression would swap the editor family and move the rendered
+    ///   glyph;
+    /// - icon extent is independent of `ui_font`'s size.
     #[test]
     fn draw_activity_bar_uses_ui_font_not_editor_font() {
         use super::super::headless::BitmapSurface;
@@ -9275,7 +8946,7 @@ mod tests {
              menlo_editor={small_editor_extent}, papyrus_editor={other_editor_family_extent}"
         );
 
-        // #1157: icon extent must also be ui_font-*size* independent —
+        // Icon extent must also be ui_font-*size* independent —
         // the fix this issue shipped, exercised through the mandatory
         // `draw_activity_bar` entry point rather than only the styled
         // one.

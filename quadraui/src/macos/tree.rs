@@ -1,18 +1,15 @@
 //! macOS rasteriser for [`crate::TreeView`].
 //!
 //! Content painting (background, rows, chevron/icon/badge/text or
-//! inline-edit, vertical scrollbar) moved to the shared
-//! [`crate::primitives::tree::native_surface_paint::paint`] (#1075,
-//! `PaintSurface` Phase 4 slice 2/8) — see that fn's module doc for
-//! what's shared. Notably, this migration upgrades macOS's inline-rename
-//! rendering from a plain-text fallback (this module's pre-migration
-//! "Scope omissions" — caret/selection were GTK-only) to the same full
-//! caret + selection-highlight + placeholder treatment every backend now
-//! shares.
+//! inline-edit, vertical scrollbar) is shared with other backends via
+//! [`crate::primitives::tree::native_surface_paint::paint`] — see that
+//! fn's module doc for what's shared. This provides full caret +
+//! selection-highlight + placeholder treatment for inline-rename across
+//! all backends.
 //!
 //! Header rows use `(line_height * 1.2)` pitch, leaves and branches use
 //! `(line_height * 1.4)` unless `TreeStyle::row_height` overrides the
-//! non-header pitch (#623). Chevron / icon / text / badge layout within
+//! non-header pitch. Chevron / icon / text / badge layout within
 //! a row matches the GTK convention so a paired `macos_multi_tree`
 //! example reads identically to its GTK twin.
 
@@ -25,21 +22,18 @@ use crate::primitives::tree::{TreeView, TreeViewLayout};
 use crate::theme::Theme;
 
 /// Compute the layout the macOS rasteriser would produce for `tree`
-/// in `area` at `line_height`. Hosts and tests call this to drive
-/// hit-testing without re-deriving row pitch. Header rows use
-/// `(line_height * 1.2).round()`, others use `(line_height * 1.4)`
-/// unless `tree.style.row_height` overrides the non-header pitch (#623).
+/// in `area` at `line_height`. Header rows use `(line_height * 1.2).round()`,
+/// others use `(line_height * 1.4)` unless `tree.style.row_height` overrides
+/// the non-header pitch.
 ///
 /// Coordinate frame: `visible_rows.bounds` and `hit_regions` are in
 /// **tree-local** coords (origin at 0, 0), matching `tui_tree_layout`
 /// and `gtk_tree_layout`. Hosts must subtract `area.x`/`area.y` from
-/// absolute click coords before calling [`TreeViewLayout::hit_test`]
-/// (the `tree_controller` compose helper and example AppLogic both
-/// follow this convention).
+/// absolute click coords before calling [`TreeViewLayout::hit_test`].
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::tree_layout`]
-/// (#499) — identical to [`crate::gtk::tree::gtk_tree_layout`], now
-/// shared instead of duplicated.
+/// — identical to [`crate::gtk::tree::gtk_tree_layout`], now shared
+/// instead of duplicated.
 pub fn mac_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
     crate::primitives::layout_metrics::tree_layout(tree, area, line_height)
 }
@@ -48,7 +42,7 @@ pub fn mac_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeVi
 /// same layout `mac_tree_layout` would produce.
 ///
 /// `nerd_fonts_enabled` picks `row.icon.glyph` when `true` and
-/// `row.icon.fallback` when `false` (issue #804) — pass
+/// `row.icon.fallback` when `false` — pass
 /// `MacBackend`'s own flag (set via [`crate::Backend::set_nerd_fonts`]),
 /// same convention as `macos::activity_bar::draw_activity_bar` and the
 /// TUI/GTK `draw_tree` rasterisers.
@@ -270,12 +264,6 @@ mod tests {
         // `area` lives. Hosts (compose helpers, AppLogic) subtract
         // area.x/area.y from absolute click coords before hit_test.
         // This matches `tui_tree_layout` and `gtk_tree_layout`.
-        //
-        // Regression for #44 search-panel click drift: prior to the
-        // fix, mac_tree_layout shifted hit_regions to absolute coords,
-        // causing AppLogic that localised position (per the documented
-        // contract) to hit the row at `position.y - 2*area.y` instead
-        // of the row under the cursor.
         let tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
         // Area offset by (0, 60) — typical when a tree lives below an
         // MSV header + aux input.
@@ -325,7 +313,7 @@ mod tests {
         );
     }
 
-    /// #623: with `row_height` set, the row pitch is pinned regardless
+    /// With `row_height` set, the row pitch is pinned regardless
     /// of `line_height` — mirrors `gtk_row_height_override_pins_pitch_across_line_heights`.
     /// Without the override, item pitch scales with line_height and this
     /// would fail (`14.0 * 1.4 = 19.6` vs `48.0 * 1.4 = 67.2`).
@@ -361,18 +349,12 @@ mod tests {
         }
     }
 
-    /// #804: `nerd_fonts_enabled` selects `row.icon.glyph` vs
-    /// `row.icon.fallback` — previously a stored-but-ignored flag,
-    /// `draw_tree` always painted `fallback` regardless of
-    /// `MacBackend::nerd_fonts_enabled`. Uses two ASCII strings of
-    /// clearly different width (`"WWWW"` vs `"E"`) rather than a real
-    /// Nerd Font codepoint, so the assertion holds headless without a
-    /// Nerd Font installed — same reasoning as
-    /// `gtk::activity_bar::nerd_fonts_flag_selects_glyph_or_fallback`.
+    /// `nerd_fonts_enabled` selects `row.icon.glyph` vs
+    /// `row.icon.fallback`. Uses two ASCII strings of clearly different
+    /// width (`"WWWW"` vs `"E"`) rather than a real Nerd Font codepoint,
+    /// so the assertion holds headless without a Nerd Font installed.
     /// Measures the painted icon's pixel bounding-box width via
-    /// foreground-vs-background scanning — asserted on pixels, not
-    /// screen text, per quadraui#555. This test was observed RED against
-    /// the pre-fix `draw_tree` (both widths equal to the `"E"` fallback's).
+    /// foreground-vs-background scanning — asserted on pixels, not screen text.
     #[test]
     fn nerd_fonts_flag_selects_glyph_or_fallback() {
         use crate::types::Icon;
@@ -434,12 +416,10 @@ mod tests {
         );
     }
 
-    /// #1057: a row with `Icon::color` set paints its icon glyph in that
-    /// colour; a row without one paints it in the default row fg,
-    /// unchanged from pre-#1057 rendering. Empty row text (as in
-    /// `nerd_fonts_flag_selects_glyph_or_fallback` above) means the icon
-    /// glyph is the only ink in the row, so the most-inked pixel on the
-    /// row's mid-line is unambiguously the icon.
+    /// A row with `Icon::color` set paints its icon glyph in that colour;
+    /// a row without one paints it in the default row fg. Empty row text
+    /// means the icon glyph is the only ink in the row, so the most-inked
+    /// pixel on the row's mid-line is unambiguously the icon.
     #[test]
     fn icon_color_paints_icon_glyph_in_that_color_else_default_fg() {
         use crate::types::Icon;
@@ -515,11 +495,8 @@ mod tests {
         );
     }
 
-    /// #1075 regression: before the `native_surface_paint` migration,
-    /// `draw_tree` never painted a vertical scrollbar even though
-    /// `Backend::tree_vscrollbar` (#1043) already returned real
-    /// geometry for hit-testing. This would have failed (background
-    /// colour, nothing painted) against the pre-#1075 body.
+    /// The vertical scrollbar is painted when the tree overflows,
+    /// providing both a visual indicator and hit-testable geometry.
     #[test]
     fn paints_vertical_scrollbar_track_when_overflowing() {
         let tree = make_tree((0..40).map(|i| leaf(i, &format!("row{i}"))).collect());
@@ -608,7 +585,7 @@ mod tests {
         }
     }
 
-    /// #1075: macOS upgrades from a plain-text inline-rename fallback
+    /// MacOS upgrades from a plain-text inline-rename fallback
     /// (pre-migration "Scope omissions") to the same caret/selection
     /// treatment GTK always had. A row mid-rename must still paint
     /// *something* distinct from the background inside its bounds.

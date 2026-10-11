@@ -206,7 +206,7 @@ mod tests {
     /// Deliberately does **not** recompute `text_x`/`text_y` via its own
     /// `measure_text(&font(), ..)` call — that assumes the test's font
     /// matches whatever the backend actually painted with, which drifted
-    /// after per-backend platform font defaults (#1156) started
+    /// after per-backend platform font defaults started
     /// overriding `set_current_font`. Instead it scans directly inside
     /// the item's *layout* bounds (which the real paint call already
     /// resolved) for a horizontal run of contiguous `tab_active_fg`
@@ -310,14 +310,12 @@ mod tests {
 
     #[test]
     fn hit_test_resolves_clickable_items_at_nonzero_origin() {
-        // Regression for quadraui#494 / LESSONS.md "Layout helpers must
-        // return coords in the same frame across backends": every other
-        // test in this file lays out at origin (0, 0). `mac_menu_bar_
-        // layout` bakes `x`/`y` straight into `visible_items[].bounds`
-        // (absolute frame, matching the GTK/TUI twins) via
-        // `MenuBar::layout`, whose cursor starts at `bounds.x` — call it
-        // directly (pure fn, no paint needed) at a non-zero origin and
-        // prove hit_test still resolves the right item.
+        // Layout helpers must return coords in the same frame across
+        // backends. `mac_menu_bar_layout` bakes `x`/`y` straight into
+        // `visible_items[].bounds` (absolute frame, matching the GTK/TUI
+        // twins) via `MenuBar::layout`, whose cursor starts at `bounds.x`.
+        // Call it directly (pure fn, no paint needed) at a non-zero origin
+        // and verify hit_test still resolves the right item.
         let bar = sample_bar();
         let f = font();
         let origin_x = 7.0;
