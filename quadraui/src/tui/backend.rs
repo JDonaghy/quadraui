@@ -3407,6 +3407,7 @@ impl Backend for TuiBackend {
                 area.height as f32,
             ),
             1.0,
+            1.0,
         )
     }
 
@@ -4560,7 +4561,7 @@ mod tests {
         }
 
         fn tree_vscrollbar(&self, r: QRect, t: &TreeView) -> Option<crate::Scrollbar> {
-            t.vscrollbar(r, 1.0)
+            t.vscrollbar(r, 1.0, 1.0)
         }
 
         fn form_layout(&self, r: QRect, form: &Form) -> crate::primitives::form::FormLayout {
