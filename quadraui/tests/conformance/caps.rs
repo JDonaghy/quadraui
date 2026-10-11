@@ -414,6 +414,18 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "the default *is* uniform-monospace division (`EditorLayout::col_at_x`), which is exact \
          for a cell grid — GTK overrides it only because Pango advance widths vary",
     ),
+    // TUI: `tree_paints_own_scrollbar` — scrolling a tree in a terminal has
+    // no spare pixels for an overlay scrollbar, so `draw_tree` never paints
+    // one and the default `false` is the honest answer: the host
+    // (`TreeController`) reserves a column and paints the scrollbar itself.
+    // GTK, macOS and Win all override this to `true` because each paints the
+    // overlay inside `draw_tree`.
+    (
+        "tui",
+        "tree_paints_own_scrollbar",
+        "a terminal has no spare pixels for an overlay scrollbar, so `draw_tree` never paints \
+         one — the host reserves a column and paints it instead (quadraui#1476)",
+    ),
     // TUI: `has_font_family` answers "does the platform have
     // this font installed", which a terminal emulator's hosting process
     // cannot answer — the terminal's own font choice is invisible to
