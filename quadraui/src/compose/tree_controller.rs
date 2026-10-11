@@ -1440,8 +1440,8 @@ mod tests {
     fn render_skips_own_paint_when_backend_paints_tree_scrollbar() {
         let mut tc = TreeController::new("t");
         tc.set_rows(fake_rows("r", 100));
+        let _overlay = crate::testing::TreePaintsOwnScrollbar::set(true);
         let mut backend = RecordingBackend::new();
-        backend.tree_paints_own_scrollbar = true;
         let rect = Rect::new(0.0, 0.0, 80.0, 10.0);
         tc.render(&mut backend, rect);
         assert_eq!(backend.calls, vec!["draw_tree"]);
@@ -1452,7 +1452,7 @@ mod tests {
         let mut tc = TreeController::new("t");
         tc.set_rows(fake_rows("r", 100));
         let mut backend = RecordingBackend::new();
-        assert!(!backend.tree_paints_own_scrollbar);
+        assert!(!crate::Backend::tree_paints_own_scrollbar(&backend));
         let rect = Rect::new(0.0, 0.0, 80.0, 10.0);
         tc.render(&mut backend, rect);
         assert_eq!(backend.calls, vec!["draw_tree", "draw_scrollbar"]);
@@ -1462,8 +1462,8 @@ mod tests {
     fn split_rect_reserves_no_column_when_backend_paints_own_scrollbar() {
         let mut tc = TreeController::new("t");
         tc.set_rows(fake_rows("r", 100));
-        let mut backend = RecordingBackend::new();
-        backend.tree_paints_own_scrollbar = true;
+        let _overlay = crate::testing::TreePaintsOwnScrollbar::set(true);
+        let backend = RecordingBackend::new();
         let rect = Rect::new(0.0, 0.0, 80.0, 10.0);
         let (tree_rect, sb) = tc.split_rect(&backend, rect);
         assert_eq!(tree_rect, rect);
