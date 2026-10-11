@@ -3050,7 +3050,11 @@ impl Backend for MacBackend {
         // (or `TreeStyle::row_height`), not the raw `line_height`.
         let row_h =
             crate::primitives::layout_metrics::tree_row_pitch(tree, self.current_line_height);
-        tree.vscrollbar(rect, row_h as f32)
+        tree.vscrollbar(
+            rect,
+            row_h as f32,
+            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+        )
     }
     fn tree_paints_own_scrollbar(&self) -> bool {
         true
@@ -8551,7 +8555,9 @@ mod tests {
     /// is what `mac_tree_layout` actually paints for non-header rows.
     /// With `current_line_height` at 16px default, 15 rows painted at the
     /// real 22.4px→22px pitch only fit 13 into a 300px-tall viewport
-    /// (300/22 = 13), so an overflow scrollbar must appear.
+    /// (300/22 = 13), so an overflow scrollbar must appear. The row pitch
+    /// governs the minimum thumb length, not the track's (fixed 10px)
+    /// width.
     #[test]
     fn mac_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
         let backend = MacBackend::new();
@@ -8563,15 +8569,22 @@ mod tests {
 
         let expected_row_h = ((backend.current_line_height * 1.4).round()) as f32;
         assert_eq!(
-            sb.track.width, expected_row_h,
-            "track width (and row pitch) must match tree_layout's non-header \
-             item_height, not the raw line_height"
+            sb.track.width,
+            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+            "track width must stay the fixed VS Code list/tree scrollbar width"
+        );
+        assert!(
+            sb.thumb_len >= expected_row_h,
+            "minimum thumb length (and row pitch) must match tree_layout's \
+             non-header item_height, not the raw line_height"
         );
     }
 
     /// A host-set `TreeStyle::row_height` must be honored
     /// by `tree_vscrollbar`, exactly as `mac_tree_layout`/`draw_tree`
-    /// honor it — not silently ignored in favor of `line_height`.
+    /// honor it — not silently ignored in favor of `line_height`. It
+    /// governs the minimum thumb length, not the track's (fixed 10px)
+    /// width.
     #[test]
     fn mac_backend_tree_vscrollbar_honors_tree_style_row_height_override() {
         let backend = MacBackend::new();
@@ -8581,7 +8594,11 @@ mod tests {
 
         let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
             .expect("15 rows at a 50px override overflow a 300px viewport (6 visible)");
-        assert_eq!(sb.track.width, 50.0);
+        assert_eq!(
+            sb.track.width,
+            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH
+        );
+        assert!(sb.thumb_len >= 50.0);
     }
 
     /// `menu_bar_layout`/`draw_menu_bar` twin of

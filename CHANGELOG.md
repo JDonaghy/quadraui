@@ -84,6 +84,19 @@ only a push to `main` runs this workflow.
   `git push`/`gh` command, since `gh` may not be available wherever this
   runs. See `scripts/test_release.py` for coverage.
 
+### Fixed
+
+- `TreeView::vscrollbar`'s track is now a fixed 10px wide on pixel backends
+  (GTK, macOS, Win), independent of the tree's row pitch, matching VS Code's
+  standard list/tree scrollbar width (issue #1495). It previously reused
+  `row_height` as both the track width and the minimum thumb length, so a
+  pixel backend's ≈20px row pitch produced a ≈20px-wide scrollbar track
+  instead of 10px. `TreeView::vscrollbar` now takes an explicit
+  `track_width` parameter (still a separate `row_height` for the minimum
+  thumb length); every pixel backend's `Backend::tree_vscrollbar` passes
+  the new `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH` constant. TUI is
+  unaffected — its track stays one cell wide.
+
 ## [0.1.4] - 2026-10-11
 
 ### Added
