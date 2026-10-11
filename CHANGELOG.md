@@ -101,6 +101,9 @@ only a push to `main` runs this workflow.
 
 - macOS Explorer header toolbar icons are now vertically centred in the
   sidebar header band instead of being placed low and clipped (issue #1494).
+- macOS editor vertical scrollbar now renders at the configured width
+  (14px) instead of collapsing to a 1px column at the window edge
+  (issue #1496).
 
 ## [0.1.4] - 2026-10-11
 
