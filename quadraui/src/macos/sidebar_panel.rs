@@ -189,4 +189,97 @@ mod tests {
              pinned to the editor's: {h_small_chrome} vs {h_huge_chrome}"
         );
     }
+
+    /// #1494: the header toolbar's icon glyphs (new file, new folder,
+    /// refresh, collapse, "…") must paint fully inside the header band and
+    /// be vertically centred on it, matching the title row. #1470 fixed the
+    /// band's *height* (sized off the chrome font's line height) but left a
+    /// separate bug: `measure_text` let a fallback-resolved glyph run's own
+    /// ascent/descent leak into the text height it reported, while
+    /// `draw_text`/`draw_text_impl` always positions glyphs off the
+    /// *primary* font's own ascent — the two disagree, so centring against
+    /// the reported height pushes the glyph off-centre (low in the slot)
+    /// and the header's clip rect then cuts off its lower part.
+    ///
+    /// `'\u{EAF0}'` ("Explorer") is not a bare-Menlo (the chrome font under
+    /// test) glyph — it's a codicon PUA codepoint that resolves through the
+    /// chrome font's fallback cascade to a different font entirely (see
+    /// `resolved_fallback_for_char_reports_no_real_glyph_for_bare_menlo_on_pua`
+    /// and its sibling tests in `super::super::text`), which is exactly the
+    /// case that desynchronised `measure_text`'s reported height from where
+    /// `draw_text_impl` actually paints.
+    #[test]
+    fn toolbar_icon_glyph_is_vertically_centered_in_header_band() {
+        let panel = SidebarPanel {
+            id: WidgetId::new("sb"),
+            toolbar: Some(Toolbar {
+                id: WidgetId::new("sb:toolbar"),
+                buttons: vec![ToolbarButton::Action {
+                    id: WidgetId::new("new-file"),
+                    label: String::new(),
+                    icon: Some("\u{EAF0}".into()),
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                }],
+                bg: None,
+                focused_index: None,
+            }),
+            toolbar_height: None,
+        };
+        let (surface, layout) = paint_via_backend(&panel);
+        let tb = layout.toolbar_bounds.expect("toolbar bounds present");
+        let item = layout
+            .toolbar_layout
+            .expect("toolbar layout present")
+            .visible_items[0]
+            .bounds;
+
+        // The header band is flat-filled with the theme's header bg before
+        // any glyph is painted, so any pixel that doesn't match that fill
+        // colour is glyph ink — no need to hardcode a theme colour.
+        let bg_x = (item.x as u32).min(W - 1);
+        let bg_y = (tb.y as u32).min(H - 1);
+        let bg = surface.pixel(bg_x, bg_y);
+
+        let x0 = item.x.max(0.0) as u32;
+        let x1 = ((item.x + item.width).min(W as f32)) as u32;
+        let y0 = tb.y.max(0.0) as u32;
+        let y1 = ((tb.y + tb.height).min(H as f32)) as u32;
+
+        let mut min_y: Option<u32> = None;
+        let mut max_y: Option<u32> = None;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if surface.pixel(x, y) != bg {
+                    min_y = Some(min_y.map_or(y, |m| m.min(y)));
+                    max_y = Some(max_y.map_or(y, |m| m.max(y)));
+                }
+            }
+        }
+        let min_y = min_y.expect("icon glyph should paint at least one pixel") as f32;
+        let max_y = max_y.expect("icon glyph should paint at least one pixel") as f32;
+
+        assert!(
+            min_y >= tb.y - 0.5,
+            "icon glyph top ({min_y}) sits above the header band (tb.y={})",
+            tb.y,
+        );
+        assert!(
+            max_y + 1.0 <= tb.y + tb.height + 0.5,
+            "icon glyph bottom ({}) is clipped by the header band's bottom edge \
+             ({}) — see #1494",
+            max_y + 1.0,
+            tb.y + tb.height,
+        );
+
+        let glyph_center = (min_y + max_y + 1.0) / 2.0;
+        let band_center = tb.y + tb.height / 2.0;
+        assert!(
+            (glyph_center - band_center).abs() <= 1.0,
+            "icon glyph vertical centre ({glyph_center}) is not within 1px of the \
+             header band's centre ({band_center}) — see #1494",
+        );
+    }
 }
