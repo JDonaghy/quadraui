@@ -52,6 +52,38 @@ pub fn greet() -> &'static str {
 }
 """
 
+# Mirrors the real shape of `quadraui/src/gtk/backend.rs` /
+# `quadraui/src/tui/backend.rs` that #1500's review flagged: an early,
+# lone `#[cfg(test)]`-gated `use` import, then real production code, then
+# the file's actual trailing `#[cfg(test)] mod tests { ... }` block. A
+# "first #[cfg(test)] occurrence" boundary would wrongly treat everything
+# from the early import onward -- including the production code -- as
+# exempt test code; the correct boundary is the trailing block only.
+EARLY_CFG_TEST_IMPORT_SRC = """\
+//! Example module mirroring gtk/backend.rs's shape: an early
+//! `#[cfg(test)]`-gated import, followed by real production code,
+//! followed by the file's true trailing `#[cfg(test)] mod tests { ... }`.
+
+#[cfg(test)]
+use std::cell::Cell;
+
+pub fn greet() -> &'static str {
+    "hi"
+}
+
+pub fn farewell() -> &'static str {
+    "bye"
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        assert_eq!(2 + 2, 4);
+    }
+}
+"""
+
 
 class TempGitRepo:
     """A throwaway git repo with `quadraui/src/` + `CHANGELOG.md`, for diff tests."""
@@ -138,6 +170,81 @@ class RequiresChangelogEntryTest(unittest.TestCase):
             tests_dir.mkdir()
             (tests_dir / "helpers.rs").write_text("pub fn helper() {}\n")
             head = repo.commit("add files under exempt paths")
+
+            required = changelog_check.requires_changelog_entry(base, head, repo.root)
+            self.assertEqual(required, [])
+
+
+class TestModuleBoundaryTest(unittest.TestCase):
+    """Regression coverage for #1500's review: the boundary must be the
+    file's trailing, EOF-spanning `#[cfg(test)] mod ... {` block, not the
+    first `#[cfg(test)]` occurrence anywhere in the file."""
+
+    def test_boundary_is_the_trailing_block_not_the_early_import(self):
+        source = EARLY_CFG_TEST_IMPORT_SRC
+        lines = source.splitlines()
+        boundary = changelog_check.test_module_boundary(source)
+
+        self.assertIsNotNone(boundary)
+        # 1-indexed boundary line must be the `#[cfg(test)]` immediately
+        # above `mod tests {`, not the earlier lone `use` import's attribute.
+        self.assertEqual(lines[boundary - 1], "#[cfg(test)]")
+        self.assertEqual(lines[boundary], "mod tests {")
+
+    def test_lone_cfg_test_import_with_no_trailing_mod_is_not_a_boundary(self):
+        source = "#[cfg(test)]\nuse std::cell::Cell;\n\npub fn greet() {}\n"
+        self.assertIsNone(changelog_check.test_module_boundary(source))
+
+    def test_nested_cfg_test_mod_that_closes_before_eof_is_not_a_boundary(self):
+        # A `#[cfg(test)]` test submodule nested inside another `mod` (so
+        # indented, and closing well before EOF) must never be mistaken
+        # for the trailing boundary -- mirrors win/run.rs's shape.
+        source = (
+            "mod win32 {\n"
+            "    #[cfg(test)]\n"
+            "    mod live_window_nchittest_tests {\n"
+            "        #[test]\n"
+            "        fn it_works() {}\n"
+            "    }\n"
+            "\n"
+            "    pub fn run() {}\n"
+            "}\n"
+            "\n"
+            "pub fn run_with() {}\n"
+        )
+        self.assertIsNone(changelog_check.test_module_boundary(source))
+
+
+class TestModuleOnlyChangeShapeTest(unittest.TestCase):
+    """`requires_changelog_entry` on the `gtk/backend.rs`-shaped fixture:
+    an early `#[cfg(test)]` import must not exempt real production code
+    that follows it, only the file's actual trailing test module."""
+
+    def test_change_after_early_cfg_test_import_requires_entry(self):
+        with TempGitRepo() as repo:
+            repo.write_src("lib.rs", EARLY_CFG_TEST_IMPORT_SRC)
+            base = repo.commit("base mirroring gtk/backend.rs's shape")
+
+            updated = EARLY_CFG_TEST_IMPORT_SRC.replace('"bye"', '"goodbye"')
+            repo.write_src("lib.rs", updated)
+            head = repo.commit(
+                "change production code between the early import and the "
+                "trailing mod tests"
+            )
+
+            required = changelog_check.requires_changelog_entry(base, head, repo.root)
+            self.assertEqual(required, ["quadraui/src/lib.rs"])
+
+    def test_change_inside_trailing_mod_tests_still_exempt(self):
+        with TempGitRepo() as repo:
+            repo.write_src("lib.rs", EARLY_CFG_TEST_IMPORT_SRC)
+            base = repo.commit("base mirroring gtk/backend.rs's shape")
+
+            updated = EARLY_CFG_TEST_IMPORT_SRC.replace(
+                "assert_eq!(2 + 2, 4);", "assert_eq!(2 + 2, 4); // extra"
+            )
+            repo.write_src("lib.rs", updated)
+            head = repo.commit("edit only inside the trailing mod tests")
 
             required = changelog_check.requires_changelog_entry(base, head, repo.root)
             self.assertEqual(required, [])
