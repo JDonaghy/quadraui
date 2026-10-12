@@ -122,6 +122,17 @@ only a push to `main` runs this workflow.
 - macOS editor vertical scrollbar now renders at the configured width
   (14px) instead of collapsing to a 1px column at the window edge
   (issue #1496).
+- macOS title-bar command centre now reads like VS Code's rather than a
+  high-contrast form control (issue #1482): the search box is a rounded
+  rect with a low-alpha tint of `Theme::separator` and a thin, low-alpha
+  border of the same colour (instead of a full-opacity hard-edged
+  rectangle outline), a small dim codicon magnifier sits ahead of the
+  label, and the back/forward glyphs are codicon chevrons instead of
+  full-weight Unicode triangles. `macos::command_center::mac_command_center_layout`
+  measures the magnifier and its trailing pad as part of the search box's
+  width, so a label long enough to beat the 280px minimum no longer paints
+  past the box's right edge; the whole strip stays centred in its bounds.
+  Other backends are unaffected — GTK, TUI and Win keep their own styling.
 
 ## [0.1.4] - 2026-10-11
 

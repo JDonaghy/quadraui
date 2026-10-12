@@ -57,6 +57,18 @@ const SEARCH_BORDER_ALPHA: u8 = 130;
 /// rather than competing with the label text.
 const SEARCH_ICON_SIZE_PT: f64 = 12.0;
 
+/// The magnifier glyph's font and advance width.
+///
+/// Shared by the measurement and paint paths so the box is always wide
+/// enough for what the paint path actually puts inside it:
+/// `clone_with_font_size` keeps `font`'s own cascade list (including the
+/// bundled codicon fallback), only the point size changes.
+fn search_icon_metrics(font: &CTFont) -> (CTFont, f64) {
+    let icon_font = font.clone_with_font_size(SEARCH_ICON_SIZE_PT);
+    let (icon_w, _) = measure_text(&icon_font, &codicon::SEARCH.to_string());
+    (icon_font, icon_w)
+}
+
 /// Compute the pixel-unit layout without painting. Caller routes
 /// clicks against this when it needs the same layout the rasteriser
 /// used.
@@ -71,8 +83,13 @@ pub fn mac_command_center_layout(
     let search_w = if cc.search_label.is_empty() {
         0.0
     } else {
+        // Three pads, not two: the box holds `pad | icon | pad | label |
+        // pad`, so a label long enough to beat `SEARCH_MIN_WIDTH` would
+        // run out past the right edge if the icon and its trailing pad
+        // were left out of the measurement.
         let (text_w, _) = measure_text(font, &cc.search_label);
-        (text_w as f32 + SEARCH_PAD_PX as f32 * 2.0).max(SEARCH_MIN_WIDTH)
+        let (_, icon_w) = search_icon_metrics(font);
+        (text_w as f32 + icon_w as f32 + SEARCH_PAD_PX as f32 * 3.0).max(SEARCH_MIN_WIDTH)
     };
     cc.layout(
         QRect::new(x as f32, y as f32, w as f32, h as f32),
@@ -172,12 +189,10 @@ pub unsafe fn draw_command_center(
         ns_fill_rounded_rect(ctx, box_rect, SEARCH_CORNER_RADIUS, fill);
         ns_stroke_rounded_rect(ctx, box_rect, SEARCH_CORNER_RADIUS, border, 1.0);
 
-        // Small dim magnifier glyph ahead of the label. `clone_with_font_size`
-        // keeps `font`'s own cascade list (including the bundled codicon
-        // fallback), only the point size changes.
-        let icon_font = font.clone_with_font_size(SEARCH_ICON_SIZE_PT);
+        // Small dim magnifier glyph ahead of the label, measured the same
+        // way `mac_command_center_layout` sized the box.
+        let (icon_font, icon_w) = search_icon_metrics(font);
         let icon_glyph = codicon::SEARCH.to_string();
-        let (icon_w, _) = measure_text(&icon_font, &icon_glyph);
         let icon_x = bx + SEARCH_PAD_PX;
         let icon_y = by + (bh - SEARCH_ICON_SIZE_PT) / 2.0 + 1.0;
         draw_text(
@@ -261,19 +276,43 @@ mod tests {
         }
     }
 
-    fn paint_via_backend(cc: &CommandCenter) -> (BitmapSurface, CommandCenterLayout) {
-        let surface = BitmapSurface::new(W, H);
+    fn paint_via_backend_sized(cc: &CommandCenter, w: u32) -> (BitmapSurface, CommandCenterLayout) {
+        let surface = BitmapSurface::new(w, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
-        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.begin_frame(Viewport::new(w as f32, H as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_command_center(QRect::new(0.0, 0.0, W as f32, H as f32), cc);
+            let l = b.draw_command_center(QRect::new(0.0, 0.0, w as f32, H as f32), cc);
             *layout.borrow_mut() = Some(l);
         });
         backend.end_frame();
         (surface, layout.into_inner().unwrap())
+    }
+
+    fn paint_via_backend(cc: &CommandCenter) -> (BitmapSurface, CommandCenterLayout) {
+        paint_via_backend_sized(cc, W)
+    }
+
+    /// Manhattan distance from `tab_bar_bg`, i.e. "how much ink landed
+    /// on this pixel". Theme-relative, so it reads the same under the
+    /// light and dark defaults.
+    fn ink(surface: &BitmapSurface, x: u32, y: u32) -> i32 {
+        let theme = Theme::default();
+        let (r, g, b, _) = surface.pixel(x, y);
+        (r as i32 - theme.tab_bar_bg.r as i32).abs()
+            + (g as i32 - theme.tab_bar_bg.g as i32).abs()
+            + (b as i32 - theme.tab_bar_bg.b as i32).abs()
+    }
+
+    /// Ink a full-opacity `Theme::separator` fill would leave — the
+    /// yardstick "subtle" is measured against.
+    fn full_separator_ink() -> i32 {
+        let theme = Theme::default();
+        (theme.separator.r as i32 - theme.tab_bar_bg.r as i32).abs()
+            + (theme.separator.g as i32 - theme.tab_bar_bg.g as i32).abs()
+            + (theme.separator.b as i32 - theme.tab_bar_bg.b as i32).abs()
     }
 
     #[test]
@@ -383,55 +422,92 @@ mod tests {
     }
 
     #[test]
-    fn search_box_is_rounded_and_the_fill_is_a_subtle_tint() {
+    fn search_box_corners_are_rounded_away_from_the_border() {
         let cc = sample_cc();
         let (surface, layout) = paint_via_backend(&cc);
-        let theme = Theme::default();
         let search = layout.search_bounds.expect("search bounds present");
 
-        // A corner of the box's bounding rect sits outside a radius-4
-        // fillet (distance from the fillet centre is ~5.7px, past the
-        // 4px radius) — background must show through there, or this is
-        // just a plain rectangle under a new name. CoreGraphics
-        // antialiases the fillet's curve against the sub-pixel box
-        // coordinates, so the sampled corner can carry a faint AA fringe
-        // (a couple of units) even when fully outside the fill; a corner
-        // mistakenly inside a *plain* rectangle fill would instead land
-        // near a full-alpha blend of the fill colour, many units away.
-        // Tolerance distinguishes the two without hardcoding either
-        // theme's exact RGB separation.
-        let corner_x = search.x.round() as u32;
-        let corner_y = (search.y + 2.0).round() as u32;
-        let (r, g, b, _) = surface.pixel(corner_x, corner_y);
-        let corner_dist = (r as i32 - theme.tab_bar_bg.r as i32).abs()
-            + (g as i32 - theme.tab_bar_bg.g as i32).abs()
-            + (b as i32 - theme.tab_bar_bg.b as i32).abs();
-        assert!(
-            corner_dist <= 4,
-            "a corner outside the radius-4 fillet must stay (almost) untouched by the fill: \
-             got {:?}, background is {:?} (dist={corner_dist})",
-            (r, g, b),
-            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b)
+        // The box's border runs down the straight part of its left edge
+        // but curves away from the corner of its bounding rect, which
+        // sits outside a radius-4 fillet. Comparing the two pixels is a
+        // structural test for roundness: both carry the same colour at
+        // the same alpha, so the only thing separating them is the
+        // fillet. A plain rectangle would put the same border ink in
+        // both places. Asserting a *ratio* rather than an absolute
+        // tolerance keeps the test honest about CoreGraphics' AA fringe,
+        // which varies with the host's renderer.
+        let left_x = search.x.round() as u32;
+        let corner = ink(&surface, left_x, (search.y + 2.0).round() as u32);
+        let edge = ink(
+            &surface,
+            left_x,
+            (search.y + search.height / 2.0).round() as u32,
         );
+        assert!(
+            edge > 4 * corner.max(1),
+            "the bounding-rect corner must be nearly clear of the border ink that runs down \
+             the straight edge (corner={corner}, edge={edge})"
+        );
+    }
 
-        // The centre of the box is tinted, but only faintly: the issue
-        // asks for a subtle, low-contrast box rather than a solid block
-        // of the separator colour, so the blended pixel must land much
+    #[test]
+    fn search_box_fill_is_a_subtle_tint_not_a_solid_block() {
+        let cc = sample_cc();
+        let (surface, layout) = paint_via_backend(&cc);
+        let search = layout.search_bounds.expect("search bounds present");
+
+        // The centre of the box is tinted, but only faintly: the box
+        // should read as a barely-there panel rather than a solid block
+        // of the separator colour, so the blended pixel must land far
         // closer to the bar background than a full-opacity separator
         // fill would.
         let cx = (search.x + search.width / 2.0).round() as u32;
         let cy = (search.y + search.height / 2.0).round() as u32;
-        let (r, g, b, _) = surface.pixel(cx, cy);
-        let bg_dist = (r as i32 - theme.tab_bar_bg.r as i32).abs()
-            + (g as i32 - theme.tab_bar_bg.g as i32).abs()
-            + (b as i32 - theme.tab_bar_bg.b as i32).abs();
-        let full_separator_dist = (theme.separator.r as i32 - theme.tab_bar_bg.r as i32).abs()
-            + (theme.separator.g as i32 - theme.tab_bar_bg.g as i32).abs()
-            + (theme.separator.b as i32 - theme.tab_bar_bg.b as i32).abs();
+        let centre = ink(&surface, cx, cy);
+        let solid = full_separator_ink();
         assert!(
-            bg_dist > 0 && bg_dist < full_separator_dist,
-            "search box fill must be visibly tinted (bg_dist={bg_dist}) but far short of a \
-             full-opacity separator block (full_separator_dist={full_separator_dist})"
+            centre > 0 && centre * 4 < solid,
+            "search box fill must be visibly tinted (centre={centre}) but nowhere near a \
+             full-opacity separator block (solid={solid})"
         );
+    }
+
+    #[test]
+    fn long_search_label_stays_inside_the_box() {
+        // A label wide enough to beat `SEARCH_MIN_WIDTH` makes the box
+        // text-measured, so the magnifier and the pad behind it have to
+        // be part of that measurement or the label spills out the right
+        // edge of the rounded rect it is supposed to sit in.
+        const WIDE: u32 = 900;
+        let cc = CommandCenter {
+            search_label: "a very long project search label that will not fit in the minimum"
+                .into(),
+            ..sample_cc()
+        };
+        let (surface, layout) = paint_via_backend_sized(&cc, WIDE);
+        let search = layout.search_bounds.expect("search bounds present");
+        assert!(
+            search.width > SEARCH_MIN_WIDTH,
+            "test label must be long enough to leave the minimum-width branch, got {}",
+            search.width
+        );
+        assert!(
+            search.x + search.width <= WIDE as f32,
+            "search box must stay inside the bar: {search:?}"
+        );
+
+        // Nothing but bar background to the right of the box. Start one
+        // pixel past the edge so the border stroke's own outer AA fringe
+        // is not counted as spill.
+        let first_outside = (search.x + search.width).ceil() as u32 + 1;
+        for x in first_outside..WIDE {
+            for y in 0..H {
+                let spill = ink(&surface, x, y);
+                assert!(
+                    spill <= 2,
+                    "label painted past the search box's right edge at ({x}, {y}): ink={spill}"
+                );
+            }
+        }
     }
 }
