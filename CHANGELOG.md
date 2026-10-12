@@ -141,6 +141,13 @@ only a push to `main` runs this workflow.
   font differs in size from the editor font centred its label against a
   line height that didn't describe the font actually painting it. Both
   methods now use `chrome_line_height`. Other backends are unaffected.
+- macOS active-tab chip background now fully encloses the tab label
+  (issue #1474). The rounded chip's top/bottom inset was a fixed
+  constant, so when the row height was tight (e.g. reusing the editor
+  line height), the chip was shorter than the label's own line height
+  and descenders or ascenders painted outside the chip. The inset now
+  shrinks adaptively so the chip is always at least as tall as the
+  label. Other backends are unaffected.
 
 ## [0.1.4] - 2026-10-11
 
