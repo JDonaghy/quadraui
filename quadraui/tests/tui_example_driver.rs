@@ -6821,60 +6821,69 @@ fn tab_icons_demo_toggling_the_sidecar_shifts_labels_by_the_reservation() {
 }
 
 #[test]
-fn tab_icons_demo_click_on_a_decorated_tab_activates_that_tab() {
+fn tab_icons_demo_clicking_a_tab_close_glyph_closes_that_tab() {
     // Round-trips paint → `tab_bar_layout_icons` → handle → re-render.
-    // With the icon-less twin the third tab's slot would sit ~6 columns
-    // left of where it painted, so this click would land on tab 1.
+    // `tab_close_center` resolves tab 2's close-glyph geometry through the
+    // icon-decorated layout, same as activation clicks do — three icon
+    // reservations upstream have pushed this column past where an
+    // icon-blind `tab_bar_layout` would put it.
     let mut driver = TuiDriver::new(TabIconsDemo::new(), 100, 10);
-    let readme = driver
-        .find_bounds("README.md")
-        .expect("tab 2's label should be painted");
-    let main = driver
-        .find_bounds("main.rs")
-        .expect("tab 0's label should be painted");
-    let readme_before = driver
-        .style_at(readme.x as u16, readme.y as u16)
-        .expect("README cell")
-        .bg;
-    let main_before = driver
-        .style_at(main.x as u16, main.y as u16)
-        .expect("main.rs cell")
-        .bg;
-    assert_ne!(
-        readme_before, main_before,
-        "tab 0 starts active and tab 2 inactive, so their backgrounds differ"
+    assert!(
+        driver.find_bounds("README.md").is_some(),
+        "tab 2's label should be painted before it is closed"
     );
 
-    // Deliberately the *trailing* end of tab 2 (its close glyph), not the
-    // center: three icon reservations upstream have pushed this column
-    // past where an icon-blind `tab_bar_layout` would put tab 2's slot,
-    // so a demo that routed clicks through the icon-less twin would find
-    // no slot here and leave tab 0 active. A center click would still
-    // land inside the shifted slot and pass either way.
     let (x, y) = driver
         .tab_close_center(&tab_icons_bar_id(), 2)
         .expect("tab 2 should have painted close-glyph geometry");
     driver.click(x, y);
 
-    let readme_after = driver
-        .style_at(readme.x as u16, readme.y as u16)
-        .expect("README cell")
-        .bg;
-    let main_after = driver
-        .style_at(main.x as u16, main.y as u16)
-        .expect("main.rs cell")
-        .bg;
-    assert_eq!(
-        readme_after,
-        main_before,
-        "clicking tab 2 should make it active (it should now paint the \
-         background tab 0 had):\n{}",
+    assert!(
+        driver.find_bounds("README.md").is_none(),
+        "clicking tab 2's close glyph should remove it from the bar:\n{}",
         driver.screen()
     );
+    assert!(
+        driver.find_bounds("main.rs").is_some(),
+        "the other tabs should stay painted:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn tab_icons_demo_closing_the_active_tab_activates_the_next_one() {
+    let mut driver = TuiDriver::new(TabIconsDemo::new(), 100, 10);
+    // Tab 0 ("main.rs") starts active.
+    let main_before = driver
+        .find_bounds("main.rs")
+        .expect("tab 0's label should be painted");
+    let active_bg_before = driver
+        .style_at(main_before.x as u16, main_before.y as u16)
+        .expect("main.rs cell")
+        .bg;
+
+    let (x, y) = driver
+        .tab_close_center(&tab_icons_bar_id(), 0)
+        .expect("tab 0 should have painted close-glyph geometry");
+    driver.click(x, y);
+
+    assert!(
+        driver.find_bounds("main.rs").is_none(),
+        "closing the active tab should remove it:\n{}",
+        driver.screen()
+    );
+    let cargo = driver
+        .find_bounds("Cargo.toml")
+        .expect("tab 1 should still be painted and should now be active");
+    let active_bg_after = driver
+        .style_at(cargo.x as u16, cargo.y as u16)
+        .expect("Cargo.toml cell")
+        .bg;
     assert_eq!(
-        main_after,
-        readme_before,
-        "and tab 0 should go inactive:\n{}",
+        active_bg_after,
+        active_bg_before,
+        "the next remaining tab should become active, inheriting the \
+         active background:\n{}",
         driver.screen()
     );
 }
