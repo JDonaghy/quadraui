@@ -78,6 +78,10 @@ only a push to `main` runs this workflow.
   and context menu now size against `chrome_line_height()` instead of
   `line_height()`, matching VS Code's tab row height on macOS where the
   chrome and editor fonts have different metrics (issue #1483).
+- MacBackend `draw_multi_section_view` and `msv_layout` now use
+  `chrome_line_height` / `chrome_char_width` instead of the editor font
+  metrics, fixing paint-vs-hit misalignment in the explorer sidebar
+  (conformance regression from #1483 / #1518).
 
 ## [0.1.5] - 2026-10-12
 ### Added
