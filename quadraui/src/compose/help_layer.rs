@@ -322,7 +322,7 @@ impl HelpOverlayController {
     /// derived from the backend's own line height / char width (never a
     /// hardcoded cell/pixel constant — see `docs/LESSONS.md`).
     fn popup_rect(container: Rect, backend: &dyn Backend) -> Rect {
-        let lh = backend.line_height();
+        let lh = backend.chrome_line_height();
         let cw = backend.char_width();
         let w = (container.width * 0.7).max(cw * 44.0).min(container.width);
         let h = (container.height * 0.7)

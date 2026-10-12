@@ -1834,6 +1834,20 @@ pub trait Backend: sealed::Sealed {
     /// `let viewport_cols = ((rect.width - gutter) / backend.char_width()).floor();`
     fn char_width(&self) -> f32;
 
+    /// Line height of the chrome / UI font, in surface-native units.
+    ///
+    /// Chrome elements — tab strips, breadcrumb bars, status bars —
+    /// are sized and painted against the system UI font, whose metrics
+    /// can differ from the editor (monospace) font that
+    /// [`Self::line_height`] reports.  Backends that maintain a
+    /// separate chrome font override this; the default returns
+    /// [`Self::line_height`] so fixed-cell backends (TUI) and
+    /// backends whose chrome and editor fonts share a line height
+    /// work unchanged.
+    fn chrome_line_height(&self) -> f32 {
+        self.line_height()
+    }
+
     /// Override the cached line height (in this backend's native units)
     /// that [`Self::line_height`] reports and every `draw_*` rasteriser
     /// paints against.

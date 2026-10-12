@@ -347,7 +347,7 @@ impl SidebarPanelBody {
         rect: Rect,
         body: impl FnOnce(&mut dyn Backend, Rect),
     ) -> SidebarPanelBodyLayout {
-        let unit_h = backend.line_height();
+        let unit_h = backend.chrome_line_height();
         let mut layout = self.layout(rect, unit_h);
 
         if let Some(bg) = self.background {
@@ -631,7 +631,7 @@ mod tests {
         };
         let mut backend = RecordingBackend::new();
         let rendered = panel.render(&mut backend, rect(), &RecordingWidget);
-        let computed = panel.layout(rect(), backend.line_height());
+        let computed = panel.layout(rect(), backend.chrome_line_height());
         assert_eq!(rendered, computed);
     }
 

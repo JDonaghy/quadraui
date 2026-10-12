@@ -61,6 +61,22 @@ only a push to `main` runs this workflow.
 
 ### Added
 
+- `Backend::chrome_line_height()` — line height of the chrome / UI font,
+  defaulting to `line_height()` so TUI and single-font backends work
+  unchanged. `MacBackend` overrides it to return the system UI font's
+  line height. GTK and Win backends fall through to the default for now
+  (issue #1483).
+
+### Fixed
+
+- Tab strip, app shell, sidebar, menus, bottom panel, help overlay,
+  and context menu now size against `chrome_line_height()` instead of
+  `line_height()`, matching VS Code's tab row height on macOS where the
+  chrome and editor fonts have different metrics (issue #1483).
+
+## [0.1.5] - 2026-10-12
+### Added
+
 - `CaretBlinkState` (issue #1460) — backend-neutral software caret-blink
   state machine: a `visible`/`paused_until` toggle driven entirely by
   caller-supplied `Instant`s, with `on_activity` to hold the caret solid
