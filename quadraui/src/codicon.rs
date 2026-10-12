@@ -95,6 +95,21 @@ pub(crate) const CHEVRON_DOWN: char = '\u{eab4}';
 /// VS Code's own context menu reuses this exact chevron for both.
 pub(crate) const CHEVRON_RIGHT: char = '\u{eab6}';
 
+/// Command-centre back-navigation arrow — `codicon-chevron-left`, the
+/// GUI counterpart of the plain `◀` a text-only backend paints in the
+/// same place. Sits immediately before [`CHEVRON_RIGHT`] in codicon's
+/// own PUA range (`chevron-down`, `chevron-left`, `chevron-right` are
+/// consecutive codepoints in codicon 0.0.46's `codicon.css`).
+#[cfg_attr(not(all(feature = "macos", target_os = "macos")), allow(dead_code))]
+pub(crate) const CHEVRON_LEFT: char = '\u{eab5}';
+
+/// Command-centre search-box magnifier — `codicon-search`, painted
+/// small and dim ahead of the search label on GUI backends. TUI's
+/// search box has no separate icon glyph, just `[`/`]` brackets around
+/// the label.
+#[cfg_attr(not(all(feature = "macos", target_os = "macos")), allow(dead_code))]
+pub(crate) const SEARCH: char = '\u{ea6d}';
+
 /// Checked context-menu item indicator — `codicon-check` (TUI paints a
 /// plain `✓`).
 #[cfg_attr(
@@ -180,6 +195,8 @@ mod tests {
         let glyphs = [
             CHEVRON_DOWN,
             CHEVRON_RIGHT,
+            CHEVRON_LEFT,
+            SEARCH,
             CHECK,
             CLOSE,
             DIRTY,
