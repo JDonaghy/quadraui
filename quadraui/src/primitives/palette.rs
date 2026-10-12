@@ -727,6 +727,17 @@ pub(crate) mod native_surface_paint {
             Color::rgba(0, 0, 0, 100),
         );
         surface.surface_push_clip(area);
+        // A rounded-rect fill only covers the shape inside the corner
+        // arcs — the four small triangles between each arc and `area`'s
+        // own corner stay unpainted. Since `surface_push_clip` clips to
+        // the full rectangular `area` (not the rounded silhouette),
+        // whatever was painted immediately before this popup in the same
+        // frame (e.g. a sidebar tree underneath an overlapping popup)
+        // would otherwise show through at those four corners. A plain
+        // rect fill first guarantees the popup's full bounds are opaque
+        // before the rounded fill/stroke draw the visible silhouette on
+        // top of it.
+        surface.surface_fill_rect(area, theme.surface_bg);
         surface.surface_fill_rounded_rect(area, style.corner_radius, theme.surface_bg);
         surface.surface_stroke_rounded_rect(
             area,
@@ -1237,6 +1248,30 @@ pub(crate) mod native_surface_paint {
             assert!(
                 sel.y >= sep.y + sep.height,
                 "row 0's selection fill ({sel:?}) overpaints the separator ({sep:?})"
+            );
+        }
+
+        /// A rounded-rect fill leaves the four corner triangles outside
+        /// its arcs unpainted. `paint` must fill the full, plain `area`
+        /// rectangle with `theme.surface_bg` *before* the rounded fill
+        /// runs, so nothing painted underneath the popup earlier in the
+        /// same frame (e.g. a sidebar tree behind an overlapping popup)
+        /// can show through at the corners.
+        #[test]
+        fn popup_background_covers_full_bounds_before_the_rounded_fill() {
+            let p = sample();
+            let (surface, _) = paint_sample(&p);
+            let theme = Theme::default();
+
+            assert_eq!(
+                surface.fills.first(),
+                Some(&(AREA, theme.surface_bg)),
+                "first fill must be an opaque, full-bounds background fill"
+            );
+            assert_eq!(
+                surface.fills.get(1),
+                Some(&(AREA, theme.surface_bg)),
+                "the rounded-corner fill must follow the full-bounds fill, not replace it"
             );
         }
 
