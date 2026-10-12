@@ -61,6 +61,11 @@ only a push to `main` runs this workflow.
 
 ### Added
 
+- `ShellConfig::status_bar_under_main_column` field and
+  `ShellConfig::with_status_bar_under_main_column()` builder, threaded
+  through `build_shell_adapter()` — lets ShellConfig-based consumers
+  opt into the full-height activity bar layout without reaching past
+  `AppShell`'s private fields (refs #1497).
 - `Backend::chrome_line_height()` — line height of the chrome / UI font,
   defaulting to `line_height()` so TUI and single-font backends work
   unchanged. `MacBackend` overrides it to return the system UI font's
@@ -95,21 +100,6 @@ only a push to `main` runs this workflow.
   bottom edge, instead of spanning the full window width. Off by default,
   which keeps the original full-width carve byte-identical to before this
   method existed.
-- CI now enforces a `CHANGELOG.md` `[Unreleased]` entry for any PR that
-  changes a non-test `quadraui/src/**` Rust file (issue #1500) —
-  `tools/changelog_check.py`, run as the new "CHANGELOG [Unreleased] entry
-  check" job. Comment-only diffs and changes confined to a trailing
-  `#[cfg(test)] mod tests` block are exempt automatically; a PR that
-  genuinely needs no entry can carry the `no-changelog` label instead. Not
-  wired into branch protection as a required check here — that's an
-  operator-controlled setting.
-- `scripts/release.py` (issue #1501) — one-command release prep (`prepare
-  X.Y.Z`: version bump + `Cargo.lock` refresh + CHANGELOG.md retitle, on a
-  new `release-X.Y.Z` branch) and promotion (`promote`: prints the
-  `develop` -> `main` PR + merge commands with the actual released
-  CHANGELOG.md section as the PR body). Prints but never runs any
-  `git push`/`gh` command, since `gh` may not be available wherever this
-  runs. See `scripts/test_release.py` for coverage.
 
 ### Fixed
 
