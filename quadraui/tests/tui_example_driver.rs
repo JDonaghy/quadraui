@@ -6889,6 +6889,143 @@ fn tab_icons_demo_closing_the_active_tab_activates_the_next_one() {
 }
 
 #[test]
+fn tab_icons_demo_closing_a_middle_active_tab_activates_its_right_neighbour() {
+    // Regression for the "always promotes the leftmost tab" bug: activate
+    // the *middle* tab, close it, and assert its right neighbour — not
+    // tab 0 — becomes active. `tab_icons_demo_closing_the_active_tab_activates_the_next_one`
+    // only exercises closing tab 0, which is the one case where "leftmost"
+    // and "right neighbour" happen to coincide.
+    let mut driver = TuiDriver::new(TabIconsDemo::new(), 100, 10);
+    let bar_id = tab_icons_bar_id();
+
+    // Tab 0 ("main.rs") starts active — capture the shared "active tab"
+    // background once, while it's still the one wearing it, so the
+    // later assertion isn't fooled by comparing two *currently* inactive
+    // tabs to each other.
+    let main_before = driver
+        .find_bounds("main.rs")
+        .expect("tab 0's label should be painted");
+    let active_bg = driver
+        .style_at(main_before.x as u16, main_before.y as u16)
+        .expect("main.rs cell")
+        .bg;
+
+    let (cx, cy) = driver
+        .tab_center(&bar_id, 1)
+        .expect("tab 1 (Cargo.toml) should have painted geometry");
+    driver.click(cx, cy);
+    assert!(
+        driver.find_bounds("Cargo.toml").is_some(),
+        "tab 1 should now be active:\n{}",
+        driver.screen()
+    );
+
+    let (x, y) = driver
+        .tab_close_center(&bar_id, 1)
+        .expect("tab 1 should have painted close-glyph geometry");
+    driver.click(x, y);
+
+    assert!(
+        driver.find_bounds("Cargo.toml").is_none(),
+        "closing tab 1 should remove it:\n{}",
+        driver.screen()
+    );
+    let main_bg = driver
+        .find_bounds("main.rs")
+        .and_then(|b| driver.style_at(b.x as u16, b.y as u16))
+        .expect("main.rs cell")
+        .bg;
+    let readme_bounds = driver
+        .find_bounds("README.md")
+        .expect("tab 2 should still be painted");
+    let readme_bg = driver
+        .style_at(readme_bounds.x as u16, readme_bounds.y as u16)
+        .expect("README.md cell")
+        .bg;
+    assert_eq!(
+        readme_bg,
+        active_bg,
+        "closing the active middle tab should activate its right \
+         neighbour (README.md):\n{}",
+        driver.screen()
+    );
+    assert_ne!(
+        main_bg,
+        active_bg,
+        "the leftmost tab (main.rs) should stay inactive, not be \
+         wrongly promoted:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn tab_icons_demo_closing_the_last_active_tab_activates_its_left_neighbour() {
+    // Closing the *rightmost* open tab while it's active has no right
+    // neighbour to promote, so it falls back to the new last tab.
+    let mut driver = TuiDriver::new(TabIconsDemo::new(), 100, 10);
+    let bar_id = tab_icons_bar_id();
+
+    // Tab 0 ("main.rs") starts active — capture the shared "active tab"
+    // background once, while it's still the one wearing it.
+    let main_before = driver
+        .find_bounds("main.rs")
+        .expect("tab 0's label should be painted");
+    let active_bg = driver
+        .style_at(main_before.x as u16, main_before.y as u16)
+        .expect("main.rs cell")
+        .bg;
+
+    let (cx, cy) = driver
+        .tab_center(&bar_id, 2)
+        .expect("tab 2 (README.md) should have painted geometry");
+    driver.click(cx, cy);
+    assert!(
+        driver.find_bounds("README.md").is_some(),
+        "tab 2 should now be active:\n{}",
+        driver.screen()
+    );
+
+    let (x, y) = driver
+        .tab_close_center(&bar_id, 2)
+        .expect("tab 2 should have painted close-glyph geometry");
+    driver.click(x, y);
+
+    assert!(
+        driver.find_bounds("README.md").is_none(),
+        "closing tab 2 should remove it:\n{}",
+        driver.screen()
+    );
+    let main_bounds = driver
+        .find_bounds("main.rs")
+        .expect("tab 0 should still be painted");
+    let main_bg = driver
+        .style_at(main_bounds.x as u16, main_bounds.y as u16)
+        .expect("main.rs cell")
+        .bg;
+    let cargo_bounds = driver
+        .find_bounds("Cargo.toml")
+        .expect("tab 1 should still be painted and should now be active");
+    let cargo_bg = driver
+        .style_at(cargo_bounds.x as u16, cargo_bounds.y as u16)
+        .expect("Cargo.toml cell")
+        .bg;
+    assert_eq!(
+        cargo_bg,
+        active_bg,
+        "closing the active last tab should fall back to its left \
+         neighbour (Cargo.toml):\n{}",
+        driver.screen()
+    );
+    assert_ne!(
+        main_bg,
+        active_bg,
+        "the leftmost tab (main.rs) should stay inactive, not be \
+         wrongly promoted:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
 fn tab_icons_demo_q_exits() {
     let mut driver = TuiDriver::new(TabIconsDemo::new(), 100, 10);
     driver.type_char('q');

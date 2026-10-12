@@ -17,10 +17,13 @@
 //! "identity colour survives an inactive tab" half of the contract.
 //!
 //! Every tab is closable: a click on its `×` removes it from the bar
-//! (the icon sidecar is filtered to match), and if the closed tab was
-//! active, the next remaining tab — in display order — becomes active.
-//! Close hit-testing is checked before tab-body activation, so a click
-//! on the glyph never doubles as an activation click first.
+//! (the icon sidecar is filtered to match). If the closed tab was
+//! active, its **right-hand neighbour** becomes active — the same
+//! close-neighbour rule as `compose::WorkspaceController::close` —
+//! falling back to the new last tab when the closed tab was the
+//! rightmost one. Close hit-testing is checked before tab-body
+//! activation, so a click on the glyph never doubles as an activation
+//! click first.
 
 use quadraui::{
     AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
@@ -186,8 +189,16 @@ impl AppLogic for TabIconsDemo {
                                 let orig = open[vis_i];
                                 self.closed[orig] = true;
                                 if self.active == orig {
-                                    if let Some(&next) = self.open_indices().first() {
-                                        self.active = next;
+                                    // Close-neighbour rule (see
+                                    // `compose::WorkspaceController::close`'s
+                                    // doc): the tab that slides into the
+                                    // closed one's visible slot — its right
+                                    // neighbour — takes over; when the
+                                    // closed tab was last, clamp onto the
+                                    // new last tab instead.
+                                    let new_open = self.open_indices();
+                                    if let Some(last) = new_open.len().checked_sub(1) {
+                                        self.active = new_open[vis_i.min(last)];
                                     }
                                 }
                                 return Reaction::Redraw;
