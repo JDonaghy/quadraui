@@ -127,6 +127,13 @@ cargo test  -p quadraui --features win
 cargo fmt --all --check
 ```
 
+**CHANGELOG enforcement (#1500).** CI rejects PRs that change non-test
+`quadraui/src/**` Rust files without adding a line inside `CHANGELOG.md`'s
+`## [Unreleased]` section. Add an entry under the appropriate `### Added` /
+`### Fixed` / `### Changed` / `### Deprecated` / `### Removed` heading.
+Comment-only and test-only (`#[cfg(test)]` block) diffs are exempt
+automatically; the `no-changelog` label skips the check entirely.
+
 ## Win-GUI: building and testing for real
 
 The `--features win` lines above are a type-check on non-Windows hosts, not a test
