@@ -61,6 +61,17 @@ only a push to `main` runs this workflow.
 
 ### Added
 
+- `CaretBlinkState` (issue #1460) — backend-neutral software caret-blink
+  state machine: a `visible`/`paused_until` toggle driven entirely by
+  caller-supplied `Instant`s, with `on_activity` to hold the caret solid
+  while typing and `next_wake_delay` for a backend that schedules its next
+  wake via `Backend::request_frame_in` instead of a raw repeating timer.
+  This is the seam half of GTK/Win caret blink: it extracts the timer-free
+  logic already proven by `macos::caret_blink`'s `NSTimer`-driven
+  implementation so a GTK or Win backend can drive the same convention
+  through its own native timer mechanism in a follow-up, per-backend issue.
+  TUI is unaffected — it relies on the terminal's own hardware cursor
+  blink, not a software state machine.
 - `AppShell::with_status_bar_under_main_column(self) -> Self` (issue #1497) —
   opt-in layout mode where the activity bar and sidebar run the full height
   of the area below the title bar, and the status bar + command line are
