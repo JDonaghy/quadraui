@@ -186,6 +186,9 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
     if config.has_status_bar {
         shell = shell.with_status_bar();
     }
+    if config.status_bar_under_main_column {
+        shell = shell.with_status_bar_under_main_column();
+    }
 
     // When a BottomPanelConfig is present, enable the bottom panel region
     // and create the controller. Initial height is set in setup() once we
