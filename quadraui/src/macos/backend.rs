@@ -2406,10 +2406,15 @@ impl Backend for MacBackend {
         // Chrome primitives are drawn through `chrome_font` — see
         // `draw_tree`'s comment. This method covers both `draw_tab_bar`
         // and `draw_tab_bar_with_chrome`: both delegate here with
-        // an empty icon sidecar.
+        // an empty icon sidecar. The centring math below must use
+        // `chrome_line_height`, not `current_line_height` (the editor
+        // metric) — same hazard `Self::draw_text_input`'s doc documents —
+        // or the label centres against a line height that doesn't
+        // describe the font actually painting it, leaving the row taller
+        // than the label needs and the label off-centre within it.
         let font = &self.chrome_font;
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
+        let line_height = self.chrome_line_height;
         // SAFETY: `ctx` is non-null inside the frame scope.
         // `super::tab_bar::draw_tab_bar_icons` honours `rect.y`
         // via its own `y_offset` parameter, but is never handed `rect.x`
@@ -2475,10 +2480,11 @@ impl Backend for MacBackend {
             "MacBackend::draw_tab_bar_layout called outside enter_frame_scope",
         );
         // Chrome primitives are drawn through `chrome_font` — see
-        // `draw_tab_bar_icons`' comment.
+        // `draw_tab_bar_icons`' comment, including why centring uses
+        // `chrome_line_height` rather than the editor's.
         let font = &self.chrome_font;
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
+        let line_height = self.chrome_line_height;
         // SAFETY: `ctx` is non-null inside the frame scope. Same X-only
         // CTM translate as `Self::draw_tab_bar_icons` above — this call
         // discards the painted `TabBarHits` anyway, so there is no return
@@ -9015,6 +9021,84 @@ mod tests {
             small_editor_extent.abs_diff(huge_ui_font_extent) <= 1,
             "activity bar icon glyph extent must be ui-font-size independent (issue #1157): \
              default_ui_font={small_editor_extent}, ui_font_Helvetica_60={huge_ui_font_extent}"
+        );
+    }
+
+    /// `draw_tab_bar_icons` paints labels through `chrome_font`, so the
+    /// vertical-centring math it feeds `tab_bar::draw_tab_bar_icons` must
+    /// use `chrome_line_height`, not the editor's `current_line_height` —
+    /// otherwise a tab bar painted with a chrome font that differs from
+    /// the editor font centres the label against a line height that
+    /// doesn't describe the font actually painting it.
+    ///
+    /// Pins a tiny editor font against a much larger chrome font (mirrors
+    /// `mac_backend_chart_axis_label_space_is_reserved_in_chrome_metrics`'s
+    /// divergence check) so the two centring formulas land far enough
+    /// apart that the chrome-correct one can't pass by coincidence, then
+    /// asserts the painted label's recorded top edge matches centring on
+    /// `chrome_line_height`.
+    #[test]
+    #[allow(deprecated)] // `draw_tab_bar` returns the deprecated `TabBarHits` — issue #823
+    fn mac_backend_tab_bar_label_centres_on_chrome_line_height() {
+        const CW: u32 = 320;
+        const CH: u32 = 80;
+        const ROW_Y: f32 = 10.0;
+        const ROW_H: f32 = 60.0;
+
+        let surface = BitmapSurface::new(CW, CH);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(super::super::text::make_font("Menlo", 5.0).expect("Menlo"));
+        backend.set_chrome_font(super::super::text::make_font("Menlo", 24.0).expect("Menlo"));
+        assert!(
+            backend.chrome_line_height - backend.current_line_height > 1.0,
+            "chrome and editor line heights must differ enough that the two centring \
+             formulas land at different y positions: chrome={}, editor={}",
+            backend.chrome_line_height,
+            backend.current_line_height,
+        );
+
+        let bar = TabBar {
+            id: WidgetId::new("tabbar:test"),
+            tabs: vec![crate::TabItem {
+                label: "a".to_string(),
+                is_active: true,
+                ..Default::default()
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: false,
+            compact: false,
+        };
+
+        backend.set_painted_text_recording(true);
+        backend.begin_frame(Viewport::new(CW as f32, CH as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_tab_bar(Rect::new(0.0, ROW_Y, CW as f32, ROW_H), &bar, None);
+        });
+        backend.end_frame();
+
+        let runs = backend.text_runs();
+        let run = runs.iter().find(|r| r.text == "a").unwrap_or_else(|| {
+            panic!(
+                "expected a painted run for the tab label \"a\"; painted: {:?}",
+                runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+            )
+        });
+
+        let expected_y = ROW_Y + (ROW_H - backend.chrome_line_height as f32) / 2.0;
+        let buggy_y = ROW_Y + (ROW_H - backend.current_line_height as f32) / 2.0;
+        assert!(
+            (buggy_y - expected_y).abs() > 1.0,
+            "the two candidate centrings must differ enough to tell them apart: \
+             chrome-centred={expected_y}, editor-centred={buggy_y}",
+        );
+        assert!(
+            (run.bounds.y - expected_y).abs() < 0.01,
+            "tab label must be centred using chrome_line_height, not current_line_height: \
+             got y={}, expected={expected_y} (editor-metric centring would give {buggy_y})",
+            run.bounds.y,
         );
     }
 }
