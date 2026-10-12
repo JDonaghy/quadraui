@@ -133,6 +133,14 @@ only a push to `main` runs this workflow.
   width, so a label long enough to beat the 280px minimum no longer paints
   past the box's right edge; the whole strip stays centred in its bounds.
   Other backends are unaffected — GTK, TUI and Win keep their own styling.
+- macOS editor tab labels are now vertically centred against the chrome
+  font's own line height instead of the editor font's (issue #1483).
+  `MacBackend::draw_tab_bar_icons`/`draw_tab_bar_icons_layout` paint tab
+  labels through `chrome_font` but centred them using
+  `current_line_height` (the editor metric), so a tab bar whose chrome
+  font differs in size from the editor font centred its label against a
+  line height that didn't describe the font actually painting it. Both
+  methods now use `chrome_line_height`. Other backends are unaffected.
 
 ## [0.1.4] - 2026-10-11
 
