@@ -983,7 +983,7 @@ impl AppShell {
     /// Draws: activity bar, sidebar header, resize divider.
     /// Consumer draws: sidebar panel content, main content area.
     pub fn render(&self, backend: &mut dyn Backend, area: Rect) -> AppShellLayout {
-        let lh = backend.line_height();
+        let lh = backend.chrome_line_height();
         // `Backend::theme()` reads back whatever the host last passed to
         // `set_theme` — the same palette every `draw_*` rasteriser call
         // below already paints with — so this chrome tracks the app's actual theme.
@@ -1054,7 +1054,7 @@ impl AppShell {
     /// Call this before the consumer's own event handling. If the result
     /// is not [`AppShellEvent::Ignored`], the consumer should redraw.
     pub fn handle(&mut self, event: &UiEvent, backend: &dyn Backend, area: Rect) -> AppShellEvent {
-        let lh = backend.line_height();
+        let lh = backend.chrome_line_height();
         let layout = self.compute_layout(area, lh);
 
         match event {

@@ -173,7 +173,7 @@ impl FormController {
     // ── Render ────────────────────────────────────────────────────────
 
     pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-        let lh = backend.line_height();
+        let lh = backend.chrome_line_height();
         // Cache metrics for handle_cached(). The &self receiver prevents
         // mutation here, so we defer to a post-render cache call pattern:
         // callers that need handle_cached() should call set_backend_info()
@@ -199,7 +199,7 @@ impl FormController {
     /// Equivalent to calling [`Self::set_backend_info`] then
     /// [`Self::render`], but in one step.
     pub fn render_and_cache(&mut self, backend: &mut dyn Backend, rect: Rect) {
-        self.cached_lh = Some(backend.line_height());
+        self.cached_lh = Some(backend.chrome_line_height());
         self.render(backend, rect);
     }
 
@@ -211,7 +211,7 @@ impl FormController {
         backend: &mut dyn Backend,
         rect: Rect,
     ) -> FormControllerEvent {
-        let lh = backend.line_height();
+        let lh = backend.chrome_line_height();
         self.handle_inner(event, rect, lh, Some(backend))
     }
 
@@ -250,7 +250,7 @@ impl FormController {
     }
 
     pub fn viewport_rows(&self, backend: &dyn Backend, rect: Rect) -> usize {
-        viewport_rows_lh(backend.line_height(), rect)
+        viewport_rows_lh(backend.chrome_line_height(), rect)
     }
 
     // ── Internal: shared handle dispatch ─────────────────────────────

@@ -646,7 +646,7 @@ impl MenuSystem {
         if self.menus[open_idx].items.is_empty() {
             return None;
         }
-        let lh = backend.line_height();
+        let lh = backend.chrome_line_height();
         let bar = self.build_menu_bar();
         let bar_layout = backend.menu_bar_layout(bar_rect, &bar);
         // A backend that resolves `ResolvedMenuStyle::Native` reports a
@@ -692,7 +692,7 @@ impl MenuSystem {
         };
         stack.push((root_menu, root_layout));
 
-        let lh = backend.line_height();
+        let lh = backend.chrome_line_height();
         let item_h = (lh * 1.4).round().max(lh);
         let sep_h = (lh * 0.5).round().max(1.0);
         let viewport = backend.viewport();

@@ -1233,7 +1233,7 @@ impl TabGroupController {
         }
 
         // ── Step 3: for each pane, draw tab strip + content ─────────
-        let lh = backend.line_height();
+        let lh = backend.chrome_line_height();
         let mut pane_bounds_out = Vec::with_capacity(n);
         let mut strip_bounds = Vec::with_capacity(n);
         let mut content_bounds = Vec::with_capacity(n);
@@ -3544,5 +3544,34 @@ mod tests {
                 new_pane_idx: 2,
             }]
         );
+    }
+
+    // ── chrome_line_height governs the tab strip ───────────────────────────
+
+    #[test]
+    fn strip_height_uses_chrome_line_height() {
+        let mut ctrl = make_group();
+        let mut backend = crate::testing::RecordingBackend {
+            line_height: 20.0,
+            chrome_line_height: Some(35.0),
+            viewport: crate::Viewport {
+                width: 800.0,
+                height: 600.0,
+                scale: 1.0,
+            },
+            char_width: 8.0,
+            ..Default::default()
+        };
+
+        let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = ctrl.render(&mut backend, bounds);
+
+        // The strip height must be chrome_line_height (35), not
+        // the editor line_height (20).
+        assert_eq!(layout.strip_bounds.len(), 1);
+        assert_eq!(layout.strip_bounds[0].height, 35.0);
+        // Content area starts after the strip.
+        assert_eq!(layout.content_bounds[0].y, 35.0);
+        assert_eq!(layout.content_bounds[0].height, 600.0 - 35.0);
     }
 }

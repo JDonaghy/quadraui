@@ -2000,6 +2000,10 @@ impl Backend for MacBackend {
         self.current_line_height as f32
     }
 
+    fn chrome_line_height(&self) -> f32 {
+        self.chrome_line_height as f32
+    }
+
     fn char_width(&self) -> f32 {
         self.current_char_width as f32
     }
