@@ -3044,13 +3044,12 @@ impl Backend for MacBackend {
         );
         // Section headers and Tree/List body rows are sidebar chrome
         // (`ChromePrimitive::MultiSectionView`). The font swaps to chrome,
-        // but `line_height`/`char_width` stay editor values, since
-        // embedded `SectionBody::Chart`/editor-adjacent content measures
-        // against those.
+        // and `line_height` uses the chrome metric so row spacing matches
+        // the compose layer's `chrome_line_height()`-based hit regions.
         let font = &self.chrome_font;
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        let char_width = self.current_char_width;
+        let line_height = self.chrome_line_height;
+        let char_width = self.chrome_char_width;
         let caret_visible = self.caret_visible.get();
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
@@ -3070,7 +3069,7 @@ impl Backend for MacBackend {
         }
     }
     fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout {
-        super::multi_section_view::mac_msv_layout(view, rect, self.current_line_height)
+        super::multi_section_view::mac_msv_layout(view, rect, self.chrome_line_height)
     }
     fn msv_metrics(&self) -> MsvLayoutMetrics {
         super::multi_section_view::mac_msv_metrics(self.current_line_height, false)
