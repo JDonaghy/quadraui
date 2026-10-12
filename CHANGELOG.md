@@ -97,6 +97,13 @@ only a push to `main` runs this workflow.
 
 ### Fixed
 
+- File-picker / palette overlay now paints an opaque background fill
+  covering its full rectangular bounds before drawing the rounded-rect
+  silhouette (issue #1509). Previously the rounded fill left the four
+  corner triangles between each arc and the clipping rectangle unpainted,
+  allowing content rendered earlier in the same frame (e.g. sidebar tree
+  chevrons) to bleed through. Affects all pixel backends (macOS, GTK,
+  Win) that share `native_surface_paint::paint`.
 - `TreeView::vscrollbar`'s track is now a fixed 10px wide on pixel backends
   (GTK, macOS, Win), independent of the tree's row pitch, matching VS Code's
   standard list/tree scrollbar width (issue #1495). It previously reused
