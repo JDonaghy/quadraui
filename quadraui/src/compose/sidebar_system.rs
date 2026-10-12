@@ -431,7 +431,7 @@ impl SidebarSystem {
     /// uses pixel-accurate hit regions instead of the generic estimate.
     pub fn cache_form_layouts(&mut self, backend: &dyn Backend) {
         let (view, map) = self.build_view();
-        let lh = backend.line_height();
+        let lh = backend.chrome_line_height();
         let metrics = backend.msv_metrics();
         let layout = view.layout(Rect::new(0.0, 0.0, 0.0, 0.0), metrics, |i| {
             body_measure(&view.sections[i], lh)
@@ -490,7 +490,7 @@ impl SidebarSystem {
         backend: &mut dyn Backend,
         rect: Rect,
     ) -> SidebarEvent {
-        let lh = backend.line_height();
+        let lh = backend.chrome_line_height();
         let metrics = backend.msv_metrics();
         self.handle_inner(event, rect, lh, &metrics, Some(&*backend))
     }

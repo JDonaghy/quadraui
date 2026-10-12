@@ -552,7 +552,11 @@ mod tests {
         let item_height =
             crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT as f64) as f32;
         let expected = tree
-            .vscrollbar(rect, item_height)
+            .vscrollbar_with_track_width(
+                rect,
+                item_height,
+                crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+            )
             .expect("40 rows in this viewport must need a v-scrollbar");
 
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");

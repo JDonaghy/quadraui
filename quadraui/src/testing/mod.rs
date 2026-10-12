@@ -679,6 +679,11 @@ pub struct RecordingBackend {
     pub line_height: f32,
     /// Reported by [`Backend::char_width`]. `1.0` by default.
     pub char_width: f32,
+    /// Reported by [`Backend::chrome_line_height`]. `None` means fall
+    /// through to [`Self::line_height`] (matching the trait default).
+    /// Set to `Some(h)` to simulate a backend whose chrome font has a
+    /// different line height than the editor font.
+    pub chrome_line_height: Option<f32>,
     /// Backs [`Backend::focus_manager`] — unlike `modal_stack_handle`/
     /// `drag_state_handle`, this one *is* real state a headless mock can
     /// honestly fabricate, so it's included rather than
@@ -697,6 +702,7 @@ impl Default for RecordingBackend {
             },
             line_height: 1.0,
             char_width: 1.0,
+            chrome_line_height: None,
             focus: crate::focus::FocusManager::new(),
         }
     }
@@ -797,6 +803,9 @@ impl crate::Backend for RecordingBackend {
     }
     fn line_height(&self) -> f32 {
         self.line_height
+    }
+    fn chrome_line_height(&self) -> f32 {
+        self.chrome_line_height.unwrap_or(self.line_height)
     }
     fn char_width(&self) -> f32 {
         self.char_width
@@ -1110,7 +1119,15 @@ impl crate::Backend for RecordingBackend {
         })
     }
     fn tree_vscrollbar(&self, rect: Rect, tree: &crate::TreeView) -> Option<crate::Scrollbar> {
-        tree.vscrollbar(rect, self.line_height())
+        // Reached only when `tree_paints_own_scrollbar()` is true (see
+        // `TreeController::split_rect`), i.e. only when a test is
+        // simulating a pixel backend — so the track width matches the
+        // real pixel backends' fixed column, not `line_height`.
+        tree.vscrollbar_with_track_width(
+            rect,
+            self.line_height(),
+            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+        )
     }
     fn tree_paints_own_scrollbar(&self) -> bool {
         #[cfg(test)]

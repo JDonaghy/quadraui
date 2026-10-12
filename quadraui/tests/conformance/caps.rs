@@ -401,6 +401,28 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "Direct2D repaints the whole render target between `BeginDraw`/`EndDraw` every frame — \
          no incremental diff cache to desync, so the no-op default is correct (quadraui#1037)",
     ),
+    // ── chrome_line_height: macOS overrides it (system UI font ≠ editor
+    // font); TUI/GTK/Win fall through to the trait default, which returns
+    // `line_height()` — the correct answer while they use a single font
+    // for everything (quadraui#1483).
+    (
+        "tui",
+        "chrome_line_height",
+        "a terminal cell has one height — there is no separate chrome font, so the \
+         `line_height()` fallback is the correct answer, not a missing one (#1483)",
+    ),
+    (
+        "gtk",
+        "chrome_line_height",
+        "GTK uses the editor font for chrome until a Pango system-font override lands — the \
+         `line_height()` fallback is correct today (#1483)",
+    ),
+    (
+        "win",
+        "chrome_line_height",
+        "Win-GUI uses the editor font for chrome until a DirectWrite system-font override \
+         lands — the `line_height()` fallback is correct today (#1483)",
+    ),
     // TUI: a fixed-cell backend, so the font-shaped methods have no meaning.
     (
         "tui",

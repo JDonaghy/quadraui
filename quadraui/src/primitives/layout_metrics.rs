@@ -114,6 +114,12 @@ pub mod pixel {
     /// [`crate::DataTable`] width reserved for the vertical scrollbar.
     pub const DATA_TABLE_SCROLLBAR_WIDTH: f32 = 8.0;
 
+    /// [`crate::TreeView`] vertical scrollbar column width on pixel
+    /// backends, matching VS Code's list/tree scrollbar (10px) — see
+    /// [`super::tree_row_pitch`]'s doc for why the column width must not
+    /// be derived from row pitch. TUI passes `1.0` (one cell) instead.
+    pub const TREE_VSCROLLBAR_WIDTH: f32 = 10.0;
+
     /// [`crate::Form`] horizontal padding (both sides combined) reserved
     /// around a `ButtonRow` / `SegmentedControl` item's label. Replaces
     /// measuring the label wrapped in `"[label]"` bracket glyphs — that

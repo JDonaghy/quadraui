@@ -308,6 +308,46 @@ jobs:
             --fail-on-gap \
             --base "${{ github.event.pull_request.base.sha }}"
 
+  changelog-check:
+    # #1500: block a PR that changes a non-test `quadraui/src/**` Rust file
+    # without adding a line to CHANGELOG.md's `[Unreleased]` section.
+    # `tools/changelog_check.py` does the actual diff/exemption logic; this
+    # job only supplies the two inputs that only exist in the `pull_request`
+    # event context and that the script has no business reaching for itself
+    # (consistent with every other gate in this file — no job here shells
+    # out to `gh`/the GitHub API):
+    #   - the PR's base SHA, so the script diffs against the real merge
+    #     base instead of guessing a branch name;
+    #   - the PR's labels, read directly off `github.event.pull_request`,
+    #     so a `no-changelog`-labeled PR can skip the check without the
+    #     script ever touching an API.
+    #
+    # Intentionally NOT a required check in branch protection — that's an
+    # operator-controlled repo setting, not something this file encodes.
+    #
+    # `pull_request`-only, same reasoning as `example-coverage` above: the
+    # diff needs a base commit, which only exists for a PR event.
+    name: CHANGELOG [Unreleased] entry check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    # #1292: a full-history checkout plus one Python script, normally
+    # under a couple of minutes — same shape as example-coverage above.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, not the default shallow depth-1: the diff below
+          # needs the PR's base commit in this checkout's object graph.
+          fetch-depth: 0
+      - name: changelog_check.py unit tests
+        run: python3 tools/test_changelog_check.py
+      - name: CHANGELOG [Unreleased] entry check
+        run: |
+          python3 tools/changelog_check.py \
+            --labels "${{ join(github.event.pull_request.labels.*.name, ',') }}" \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"
+
   comment-lint:
     # #1112: comments describe the code as it is; history (what it used to
     # do, what a PR/reviewer said) belongs in CHANGELOG.md and the issue
@@ -338,6 +378,10 @@ jobs:
       # somewhere in CI instead of only on a worker's local machine.
       - name: release_decide.py unit tests
         run: python3 scripts/test_release_decide.py
+      # Same rationale as the step above, for `scripts/release.py`'s
+      # `prepare`/`promote` commands (#1501).
+      - name: release.py unit tests
+        run: python3 scripts/test_release.py
       - name: site_gen.py unit tests
         run: python3 tools/test_site_gen.py
       - name: introduction.md / README.md hello-world sync check

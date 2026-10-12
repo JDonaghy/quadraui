@@ -610,3 +610,238 @@ fn tab_icons_demo_pressing_q_exits() {
     driver.type_char('q');
     assert!(driver.exited(), "'q' should make the demo exit");
 }
+
+/// Close-glyph center for tab `tab_idx` in `TabIconsDemo`'s initial
+/// layout (all three `tab_icons_demo::LABELS` open, tab 0 active).
+/// `MacDriver` has no `tab_close_center` helper of its own (unlike
+/// `TuiDriver`/`GtkDriver`, which cache a `TabBarLayout` per paint), so
+/// this resolves the same geometry `TabIconsDemo::handle` does: build the
+/// identical `TabBar` + icon sidecar and run them through
+/// `Backend::tab_bar_layout_icons`, the no-paint twin of the call
+/// `TabIconsDemo::render` paints with. `rect.x` is `0.0`, so the returned
+/// bounds are already in the surface coordinates `MacDriver::click` takes.
+#[allow(deprecated)] // `Backend::tab_bar_layout_icons` returns `TabBarHits`
+fn tab_icons_initial_close_center(driver: &MacDriver<TabIconsDemo>, tab_idx: usize) -> (f32, f32) {
+    let viewport = driver.backend().viewport();
+    let lh = driver.backend().line_height();
+    let bar = quadraui::TabBar {
+        id: quadraui::WidgetId::new("tab-icons-demo:tabs"),
+        tabs: tab_icons_demo::LABELS
+            .iter()
+            .enumerate()
+            .map(|(i, label)| quadraui::TabItem {
+                label: label.to_string(),
+                is_active: i == 0,
+                ..Default::default()
+            })
+            .collect(),
+        scroll_offset: 0,
+        right_segments: vec![],
+        active_accent: None,
+        show_tab_close: true,
+        compact: false,
+    };
+    let icons = TabIconsDemo::new().icons();
+    let hits = driver.backend().tab_bar_layout_icons(
+        quadraui::Rect::new(0.0, 0.0, viewport.width, lh),
+        &bar,
+        &icons,
+    );
+    let (start, end) = hits.close_bounds[tab_idx].expect("every tab in this demo is closable");
+    (((start + end) / 2.0) as f32, lh / 2.0)
+}
+
+#[test]
+fn tab_icons_demo_clicking_a_tab_close_glyph_closes_that_tab() {
+    let mut driver = MacDriver::new(TabIconsDemo::new(), TAB_ICONS_W, TAB_ICONS_H);
+    assert!(
+        driver.find_bounds("README.md").is_some(),
+        "tab 2's label should be painted before it is closed"
+    );
+    let (x, y) = tab_icons_initial_close_center(&driver, 2);
+    driver.click(x, y);
+    assert!(
+        driver.find_bounds("README.md").is_none(),
+        "clicking tab 2's close glyph should remove it from the bar: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.find_bounds("main.rs").is_some(),
+        "the other tabs should stay painted: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn tab_icons_demo_closing_the_active_tab_activates_the_next_one() {
+    let mut driver = MacDriver::new(TabIconsDemo::new(), TAB_ICONS_W, TAB_ICONS_H);
+    let main_before = driver
+        .find_bounds("main.rs")
+        .expect("tab 0's label should be painted");
+    let active_bg_before = driver.pixel(
+        (main_before.x - TAB_ICON_GAP_PT / 2.0) as u32,
+        (main_before.y + main_before.height / 2.0) as u32,
+    );
+
+    let (x, y) = tab_icons_initial_close_center(&driver, 0);
+    driver.click(x, y);
+    assert!(
+        driver.find_bounds("main.rs").is_none(),
+        "closing the active tab should remove it: {:?}",
+        driver.painted_texts()
+    );
+
+    let cargo = driver
+        .find_bounds("Cargo.toml")
+        .expect("tab 1 should still be painted and should now be active");
+    let active_bg_after = driver.pixel(
+        (cargo.x - TAB_ICON_GAP_PT / 2.0) as u32,
+        (cargo.y + cargo.height / 2.0) as u32,
+    );
+    assert_eq!(
+        active_bg_after,
+        active_bg_before,
+        "the next remaining tab should become active, inheriting the \
+         active background: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn tab_icons_demo_closing_a_middle_active_tab_activates_its_right_neighbour() {
+    // Regression for the "always promotes the leftmost tab" bug: activate
+    // the *middle* tab, close it, and assert its right neighbour — not
+    // tab 0 — becomes active. `tab_icons_demo_closing_the_active_tab_activates_the_next_one`
+    // only exercises closing tab 0, which is the one case where "leftmost"
+    // and "right neighbour" happen to coincide.
+    let mut driver = MacDriver::new(TabIconsDemo::new(), TAB_ICONS_W, TAB_ICONS_H);
+
+    // Tab 0 ("main.rs") starts active — capture the shared "active tab"
+    // background once, while it's still the one wearing it, so the later
+    // assertion isn't fooled by comparing two *currently* inactive tabs
+    // to each other.
+    let main_before = driver
+        .find_bounds("main.rs")
+        .expect("tab 0's label should be painted");
+    let active_bg = driver.pixel(
+        (main_before.x - TAB_ICON_GAP_PT / 2.0) as u32,
+        (main_before.y + main_before.height / 2.0) as u32,
+    );
+
+    let cargo = driver
+        .find_bounds("Cargo.toml")
+        .expect("tab 1's label should be painted");
+    driver.click(cargo.x + cargo.width / 2.0, cargo.y + cargo.height / 2.0);
+    assert!(
+        driver.find_bounds("Cargo.toml").is_some(),
+        "tab 1 should still be painted and now be active: {:?}",
+        driver.painted_texts()
+    );
+
+    // Close-glyph geometry doesn't depend on which tab is active, only on
+    // which tabs are open, so the initial-layout helper still resolves
+    // tab 1's close-glyph center correctly here.
+    let (x, y) = tab_icons_initial_close_center(&driver, 1);
+    driver.click(x, y);
+    assert!(
+        driver.find_bounds("Cargo.toml").is_none(),
+        "closing tab 1 should remove it: {:?}",
+        driver.painted_texts()
+    );
+
+    let main = driver
+        .find_bounds("main.rs")
+        .expect("tab 0 should still be painted");
+    let main_bg = driver.pixel(
+        (main.x - TAB_ICON_GAP_PT / 2.0) as u32,
+        (main.y + main.height / 2.0) as u32,
+    );
+    let readme = driver
+        .find_bounds("README.md")
+        .expect("tab 2 should still be painted");
+    let readme_bg = driver.pixel(
+        (readme.x - TAB_ICON_GAP_PT / 2.0) as u32,
+        (readme.y + readme.height / 2.0) as u32,
+    );
+    assert_eq!(
+        readme_bg,
+        active_bg,
+        "closing the active middle tab should activate its right \
+         neighbour (README.md): {:?}",
+        driver.painted_texts()
+    );
+    assert_ne!(
+        main_bg,
+        active_bg,
+        "the leftmost tab (main.rs) should stay inactive, not be \
+         wrongly promoted: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn tab_icons_demo_closing_the_last_active_tab_activates_its_left_neighbour() {
+    // Closing the *rightmost* open tab while it's active has no right
+    // neighbour to promote, so it falls back to the new last tab.
+    let mut driver = MacDriver::new(TabIconsDemo::new(), TAB_ICONS_W, TAB_ICONS_H);
+
+    // Tab 0 ("main.rs") starts active — capture the shared "active tab"
+    // background once, while it's still the one wearing it.
+    let main_before = driver
+        .find_bounds("main.rs")
+        .expect("tab 0's label should be painted");
+    let active_bg = driver.pixel(
+        (main_before.x - TAB_ICON_GAP_PT / 2.0) as u32,
+        (main_before.y + main_before.height / 2.0) as u32,
+    );
+
+    let readme = driver
+        .find_bounds("README.md")
+        .expect("tab 2's label should be painted");
+    driver.click(
+        readme.x + readme.width / 2.0,
+        readme.y + readme.height / 2.0,
+    );
+    assert!(
+        driver.find_bounds("README.md").is_some(),
+        "tab 2 should still be painted and now be active: {:?}",
+        driver.painted_texts()
+    );
+
+    let (x, y) = tab_icons_initial_close_center(&driver, 2);
+    driver.click(x, y);
+    assert!(
+        driver.find_bounds("README.md").is_none(),
+        "closing tab 2 should remove it: {:?}",
+        driver.painted_texts()
+    );
+
+    let main = driver
+        .find_bounds("main.rs")
+        .expect("tab 0 should still be painted");
+    let main_bg = driver.pixel(
+        (main.x - TAB_ICON_GAP_PT / 2.0) as u32,
+        (main.y + main.height / 2.0) as u32,
+    );
+    let cargo = driver
+        .find_bounds("Cargo.toml")
+        .expect("tab 1 should still be painted and should now be active");
+    let cargo_bg = driver.pixel(
+        (cargo.x - TAB_ICON_GAP_PT / 2.0) as u32,
+        (cargo.y + cargo.height / 2.0) as u32,
+    );
+    assert_eq!(
+        cargo_bg,
+        active_bg,
+        "closing the active last tab should fall back to its left \
+         neighbour (Cargo.toml): {:?}",
+        driver.painted_texts()
+    );
+    assert_ne!(
+        main_bg,
+        active_bg,
+        "the leftmost tab (main.rs) should stay inactive, not be \
+         wrongly promoted: {:?}",
+        driver.painted_texts()
+    );
+}

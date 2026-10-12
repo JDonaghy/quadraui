@@ -692,7 +692,7 @@ impl WorkspaceController {
     ///    event-driven backends, where a queued redraw is unreliable.
     #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
     pub fn render(&mut self, backend: &mut dyn Backend, bounds: Rect) -> WorkspaceLayout {
-        let strip_height = backend.line_height().min(bounds.height.max(0.0));
+        let strip_height = backend.chrome_line_height().min(bounds.height.max(0.0));
         let strip = Rect::new(bounds.x, bounds.y, bounds.width, strip_height);
         let body = Rect::new(
             bounds.x,

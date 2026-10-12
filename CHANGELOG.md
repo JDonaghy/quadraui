@@ -59,6 +59,107 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-12
+### Added
+
+- `ShellConfig::status_bar_under_main_column` field and
+  `ShellConfig::with_status_bar_under_main_column()` builder, threaded
+  through `build_shell_adapter()` — lets ShellConfig-based consumers
+  opt into the full-height activity bar layout without reaching past
+  `AppShell`'s private fields (refs #1497).
+- `Backend::chrome_line_height()` — line height of the chrome / UI font,
+  defaulting to `line_height()` so TUI and single-font backends work
+  unchanged. `MacBackend` overrides it to return the system UI font's
+  line height. GTK and Win backends fall through to the default for now
+  (issue #1483).
+
+### Fixed
+
+- Tab strip, app shell, sidebar, menus, bottom panel, help overlay,
+  and context menu now size against `chrome_line_height()` instead of
+  `line_height()`, matching VS Code's tab row height on macOS where the
+  chrome and editor fonts have different metrics (issue #1483).
+- MacBackend `draw_multi_section_view` and `msv_layout` now use
+  `chrome_line_height` / `chrome_char_width` instead of the editor font
+  metrics, fixing paint-vs-hit misalignment in the explorer sidebar
+  (conformance regression from #1483 / #1518).
+
+## [0.1.5] - 2026-10-12
+### Added
+
+- `CaretBlinkState` (issue #1460) — backend-neutral software caret-blink
+  state machine: a `visible`/`paused_until` toggle driven entirely by
+  caller-supplied `Instant`s, with `on_activity` to hold the caret solid
+  while typing and `next_wake_delay` for a backend that schedules its next
+  wake via `Backend::request_frame_in` instead of a raw repeating timer.
+  This is the seam half of GTK/Win caret blink: it extracts the timer-free
+  logic already proven by `macos::caret_blink`'s `NSTimer`-driven
+  implementation so a GTK or Win backend can drive the same convention
+  through its own native timer mechanism in a follow-up, per-backend issue.
+  TUI is unaffected — it relies on the terminal's own hardware cursor
+  blink, not a software state machine.
+- `AppShell::with_status_bar_under_main_column(self) -> Self` (issue #1497) —
+  opt-in layout mode where the activity bar and sidebar run the full height
+  of the area below the title bar, and the status bar + command line are
+  carved from the main column's x/width only, still flush against the
+  bottom edge, instead of spanning the full window width. Off by default,
+  which keeps the original full-width carve byte-identical to before this
+  method existed.
+
+### Fixed
+
+- File-picker / palette overlay now paints an opaque background fill
+  covering its full rectangular bounds before drawing the rounded-rect
+  silhouette (issue #1509). Previously the rounded fill left the four
+  corner triangles between each arc and the clipping rectangle unpainted,
+  allowing content rendered earlier in the same frame (e.g. sidebar tree
+  chevrons) to bleed through. Affects all pixel backends (macOS, GTK,
+  Win) that share `native_surface_paint::paint`.
+- `TreeView::vscrollbar`'s track is now a fixed 10px wide on pixel backends
+  (GTK, macOS, Win), independent of the tree's row pitch, matching VS Code's
+  standard list/tree scrollbar width (issue #1495). It previously reused
+  `row_height` as both the track width and the minimum thumb length, so a
+  pixel backend's ≈20px row pitch produced a ≈20px-wide scrollbar track
+  instead of 10px. `TreeView::vscrollbar` now takes an explicit
+  `track_width` parameter (still a separate `row_height` for the minimum
+  thumb length); every pixel backend's `Backend::tree_vscrollbar` passes
+  the new `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH` constant. TUI is
+  unaffected — its track stays one cell wide.
+
+### Fixed
+
+- macOS Explorer header toolbar icons are now vertically centred in the
+  sidebar header band instead of being placed low and clipped (issue #1494).
+- macOS editor vertical scrollbar now renders at the configured width
+  (14px) instead of collapsing to a 1px column at the window edge
+  (issue #1496).
+- macOS title-bar command centre now reads like VS Code's rather than a
+  high-contrast form control (issue #1482): the search box is a rounded
+  rect with a low-alpha tint of `Theme::separator` and a thin, low-alpha
+  border of the same colour (instead of a full-opacity hard-edged
+  rectangle outline), a small dim codicon magnifier sits ahead of the
+  label, and the back/forward glyphs are codicon chevrons instead of
+  full-weight Unicode triangles. `macos::command_center::mac_command_center_layout`
+  measures the magnifier and its trailing pad as part of the search box's
+  width, so a label long enough to beat the 280px minimum no longer paints
+  past the box's right edge; the whole strip stays centred in its bounds.
+  Other backends are unaffected — GTK, TUI and Win keep their own styling.
+- macOS editor tab labels are now vertically centred against the chrome
+  font's own line height instead of the editor font's (issue #1483).
+  `MacBackend::draw_tab_bar_icons`/`draw_tab_bar_icons_layout` paint tab
+  labels through `chrome_font` but centred them using
+  `current_line_height` (the editor metric), so a tab bar whose chrome
+  font differs in size from the editor font centred its label against a
+  line height that didn't describe the font actually painting it. Both
+  methods now use `chrome_line_height`. Other backends are unaffected.
+- macOS active-tab chip background now fully encloses the tab label
+  (issue #1474). The rounded chip's top/bottom inset was a fixed
+  constant, so when the row height was tight (e.g. reusing the editor
+  line height), the chip was shorter than the label's own line height
+  and descenders or ascenders painted outside the chip. The inset now
+  shrinks adaptively so the chip is always at least as tall as the
+  label. Other backends are unaffected.
+
 ## [0.1.4] - 2026-10-11
 
 ### Added

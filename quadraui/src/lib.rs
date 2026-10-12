@@ -168,6 +168,12 @@
 // `primitives/mod.rs`'s `pub mod` list, nor is it exposed as its own
 // public module path. Re-exported below as `crate::A11yInfo`.
 mod a11y;
+// Not under `primitives/`, same reasoning as `font_role`/`generic_font`
+// below: a blink state machine is not a widget — no `Layout`, no
+// `hit_test`, no `Backend::draw_*` method of its own — so it must not
+// inflate the primitive count `readme_truth.rs` derives from
+// `primitives/mod.rs`'s `pub mod` list.
+pub mod caret_blink;
 pub mod diagnostics;
 pub mod diff;
 pub mod focus;
@@ -380,6 +386,7 @@ mod text_selection;
 mod backend_core;
 
 pub use a11y::A11yInfo;
+pub use caret_blink::CaretBlinkState;
 pub use diff::compute_hunks;
 pub use focus::FocusManager;
 pub use font_role::{ChromePrimitive, EditorClassPrimitive, FontRole};

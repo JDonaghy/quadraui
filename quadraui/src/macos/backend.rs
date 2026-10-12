@@ -306,7 +306,7 @@ pub struct MacBackend {
     /// arguments are always `0.0` and go unread.
     pending_window_press: WindowDragArm<Retained<NSEvent>>,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
-    /// (issue #683). Picks `Icon::glyph` vs `Icon::fallback` in
+    // /. Picks `Icon::glyph` vs `Icon::fallback` in
     /// `draw_activity_bar` and (since #804) `draw_tree`. Set via
     /// [`Backend::set_nerd_fonts`]; defaults to `true` on this backend —
     /// see `GtkBackend`'s matching field doc for why a
@@ -1222,6 +1222,34 @@ fn native_menu_bar_layout(rect: Rect) -> MenuBarLayout {
     }
 }
 
+/// Defensive clamp for [`MacBackend::draw_editor`]: both `editor.rect`
+/// and `viewport` are already in points (see [`Viewport`]'s doc), so no
+/// scale conversion is needed — this only ever shrinks `editor.rect`'s
+/// right/bottom edge back inside `viewport`, never moves its origin or
+/// grows it.
+///
+/// Returns `None` when `editor.rect` already fits (the overwhelmingly
+/// common case — no clone), and `None` rather than clamping at all when
+/// `viewport` is the all-zero default (`MacBackend::new` before its first
+/// `begin_frame`), so a backend used outside the normal
+/// `begin_frame` → `enter_frame_scope` → `draw_editor` sequence keeps
+/// unclamped behaviour instead of silently painting nothing.
+fn clamp_editor_rect_to_viewport(editor: &Editor, viewport: Viewport) -> Option<Editor> {
+    if viewport.width <= 0.0 || viewport.height <= 0.0 {
+        return None;
+    }
+    let rect = editor.rect;
+    let max_width = (viewport.width - rect.x).max(0.0);
+    let max_height = (viewport.height - rect.y).max(0.0);
+    if rect.width <= max_width && rect.height <= max_height {
+        return None;
+    }
+    let mut clamped = editor.clone();
+    clamped.rect.width = rect.width.min(max_width);
+    clamped.rect.height = rect.height.min(max_height);
+    Some(clamped)
+}
+
 impl Default for MacBackend {
     fn default() -> Self {
         Self::new()
@@ -1972,6 +2000,10 @@ impl Backend for MacBackend {
         self.current_line_height as f32
     }
 
+    fn chrome_line_height(&self) -> f32 {
+        self.chrome_line_height as f32
+    }
+
     fn char_width(&self) -> f32 {
         self.current_char_width as f32
     }
@@ -2378,10 +2410,15 @@ impl Backend for MacBackend {
         // Chrome primitives are drawn through `chrome_font` — see
         // `draw_tree`'s comment. This method covers both `draw_tab_bar`
         // and `draw_tab_bar_with_chrome`: both delegate here with
-        // an empty icon sidecar.
+        // an empty icon sidecar. The centring math below must use
+        // `chrome_line_height`, not `current_line_height` (the editor
+        // metric) — same hazard `Self::draw_text_input`'s doc documents —
+        // or the label centres against a line height that doesn't
+        // describe the font actually painting it, leaving the row taller
+        // than the label needs and the label off-centre within it.
         let font = &self.chrome_font;
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
+        let line_height = self.chrome_line_height;
         // SAFETY: `ctx` is non-null inside the frame scope.
         // `super::tab_bar::draw_tab_bar_icons` honours `rect.y`
         // via its own `y_offset` parameter, but is never handed `rect.x`
@@ -2447,10 +2484,11 @@ impl Backend for MacBackend {
             "MacBackend::draw_tab_bar_layout called outside enter_frame_scope",
         );
         // Chrome primitives are drawn through `chrome_font` — see
-        // `draw_tab_bar_icons`' comment.
+        // `draw_tab_bar_icons`' comment, including why centring uses
+        // `chrome_line_height` rather than the editor's.
         let font = &self.chrome_font;
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
+        let line_height = self.chrome_line_height;
         // SAFETY: `ctx` is non-null inside the frame scope. Same X-only
         // CTM translate as `Self::draw_tab_bar_icons` above — this call
         // discards the painted `TabBarHits` anyway, so there is no return
@@ -3006,13 +3044,12 @@ impl Backend for MacBackend {
         );
         // Section headers and Tree/List body rows are sidebar chrome
         // (`ChromePrimitive::MultiSectionView`). The font swaps to chrome,
-        // but `line_height`/`char_width` stay editor values, since
-        // embedded `SectionBody::Chart`/editor-adjacent content measures
-        // against those.
+        // and `line_height` uses the chrome metric so row spacing matches
+        // the compose layer's `chrome_line_height()`-based hit regions.
         let font = &self.chrome_font;
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        let char_width = self.current_char_width;
+        let line_height = self.chrome_line_height;
+        let char_width = self.chrome_char_width;
         let caret_visible = self.caret_visible.get();
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
@@ -3032,7 +3069,7 @@ impl Backend for MacBackend {
         }
     }
     fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout {
-        super::multi_section_view::mac_msv_layout(view, rect, self.current_line_height)
+        super::multi_section_view::mac_msv_layout(view, rect, self.chrome_line_height)
     }
     fn msv_metrics(&self) -> MsvLayoutMetrics {
         super::multi_section_view::mac_msv_metrics(self.current_line_height, false)
@@ -3050,7 +3087,11 @@ impl Backend for MacBackend {
         // (or `TreeStyle::row_height`), not the raw `line_height`.
         let row_h =
             crate::primitives::layout_metrics::tree_row_pitch(tree, self.current_line_height);
-        tree.vscrollbar(rect, row_h as f32)
+        tree.vscrollbar_with_track_width(
+            rect,
+            row_h as f32,
+            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+        )
     }
     fn tree_paints_own_scrollbar(&self) -> bool {
         true
@@ -3072,6 +3113,21 @@ impl Backend for MacBackend {
         let line_height = self.current_line_height;
         let char_width = self.current_char_width;
         let v_scrollbar_w = self.editor_v_scrollbar_w;
+        // `editor.rect` is the sole geometry
+        // `draw_editor_with_options_and_v_scrollbar_w` reads (see that
+        // function's module doc) — this trait method's own `_rect`
+        // argument is unused by design, same as `GtkBackend::draw_editor`
+        // (see `Backend::draw_editor`'s doc for the caller invariant that
+        // the two are expected to agree). A host's `editor.rect` can
+        // disagree with this backend's real window bounds (e.g. a
+        // rounding/DPI mismatch making `editor.rect` wider than the
+        // window); painting straight into it lays the reserved scrollbar
+        // column mostly or wholly past the right edge, leaving only a
+        // sliver visible. Clamp a defensive copy so nothing this
+        // rasteriser paints — least of all the scrollbar track — can
+        // extend past the real viewport.
+        let clamped = clamp_editor_rect_to_viewport(editor, self.viewport);
+        let editor = clamped.as_ref().unwrap_or(editor);
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::editor::draw_editor_with_options_and_v_scrollbar_w(
@@ -8551,7 +8607,9 @@ mod tests {
     /// is what `mac_tree_layout` actually paints for non-header rows.
     /// With `current_line_height` at 16px default, 15 rows painted at the
     /// real 22.4px→22px pitch only fit 13 into a 300px-tall viewport
-    /// (300/22 = 13), so an overflow scrollbar must appear.
+    /// (300/22 = 13), so an overflow scrollbar must appear. The row pitch
+    /// governs the minimum thumb length, not the track's (fixed 10px)
+    /// width.
     #[test]
     fn mac_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
         let backend = MacBackend::new();
@@ -8563,15 +8621,22 @@ mod tests {
 
         let expected_row_h = ((backend.current_line_height * 1.4).round()) as f32;
         assert_eq!(
-            sb.track.width, expected_row_h,
-            "track width (and row pitch) must match tree_layout's non-header \
-             item_height, not the raw line_height"
+            sb.track.width,
+            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+            "track width must stay the fixed VS Code list/tree scrollbar width"
+        );
+        assert!(
+            sb.thumb_len >= expected_row_h,
+            "minimum thumb length (and row pitch) must match tree_layout's \
+             non-header item_height, not the raw line_height"
         );
     }
 
     /// A host-set `TreeStyle::row_height` must be honored
     /// by `tree_vscrollbar`, exactly as `mac_tree_layout`/`draw_tree`
-    /// honor it — not silently ignored in favor of `line_height`.
+    /// honor it — not silently ignored in favor of `line_height`. It
+    /// governs the minimum thumb length, not the track's (fixed 10px)
+    /// width.
     #[test]
     fn mac_backend_tree_vscrollbar_honors_tree_style_row_height_override() {
         let backend = MacBackend::new();
@@ -8581,7 +8646,11 @@ mod tests {
 
         let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
             .expect("15 rows at a 50px override overflow a 300px viewport (6 visible)");
-        assert_eq!(sb.track.width, 50.0);
+        assert_eq!(
+            sb.track.width,
+            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH
+        );
+        assert!(sb.thumb_len >= 50.0);
     }
 
     /// `menu_bar_layout`/`draw_menu_bar` twin of
@@ -8955,6 +9024,84 @@ mod tests {
             small_editor_extent.abs_diff(huge_ui_font_extent) <= 1,
             "activity bar icon glyph extent must be ui-font-size independent (issue #1157): \
              default_ui_font={small_editor_extent}, ui_font_Helvetica_60={huge_ui_font_extent}"
+        );
+    }
+
+    /// `draw_tab_bar_icons` paints labels through `chrome_font`, so the
+    /// vertical-centring math it feeds `tab_bar::draw_tab_bar_icons` must
+    /// use `chrome_line_height`, not the editor's `current_line_height` —
+    /// otherwise a tab bar painted with a chrome font that differs from
+    /// the editor font centres the label against a line height that
+    /// doesn't describe the font actually painting it.
+    ///
+    /// Pins a tiny editor font against a much larger chrome font (mirrors
+    /// `mac_backend_chart_axis_label_space_is_reserved_in_chrome_metrics`'s
+    /// divergence check) so the two centring formulas land far enough
+    /// apart that the chrome-correct one can't pass by coincidence, then
+    /// asserts the painted label's recorded top edge matches centring on
+    /// `chrome_line_height`.
+    #[test]
+    #[allow(deprecated)] // `draw_tab_bar` returns the deprecated `TabBarHits` — issue #823
+    fn mac_backend_tab_bar_label_centres_on_chrome_line_height() {
+        const CW: u32 = 320;
+        const CH: u32 = 80;
+        const ROW_Y: f32 = 10.0;
+        const ROW_H: f32 = 60.0;
+
+        let surface = BitmapSurface::new(CW, CH);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(super::super::text::make_font("Menlo", 5.0).expect("Menlo"));
+        backend.set_chrome_font(super::super::text::make_font("Menlo", 24.0).expect("Menlo"));
+        assert!(
+            backend.chrome_line_height - backend.current_line_height > 1.0,
+            "chrome and editor line heights must differ enough that the two centring \
+             formulas land at different y positions: chrome={}, editor={}",
+            backend.chrome_line_height,
+            backend.current_line_height,
+        );
+
+        let bar = TabBar {
+            id: WidgetId::new("tabbar:test"),
+            tabs: vec![crate::TabItem {
+                label: "a".to_string(),
+                is_active: true,
+                ..Default::default()
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: false,
+            compact: false,
+        };
+
+        backend.set_painted_text_recording(true);
+        backend.begin_frame(Viewport::new(CW as f32, CH as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_tab_bar(Rect::new(0.0, ROW_Y, CW as f32, ROW_H), &bar, None);
+        });
+        backend.end_frame();
+
+        let runs = backend.text_runs();
+        let run = runs.iter().find(|r| r.text == "a").unwrap_or_else(|| {
+            panic!(
+                "expected a painted run for the tab label \"a\"; painted: {:?}",
+                runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+            )
+        });
+
+        let expected_y = ROW_Y + (ROW_H - backend.chrome_line_height as f32) / 2.0;
+        let buggy_y = ROW_Y + (ROW_H - backend.current_line_height as f32) / 2.0;
+        assert!(
+            (buggy_y - expected_y).abs() > 1.0,
+            "the two candidate centrings must differ enough to tell them apart: \
+             chrome-centred={expected_y}, editor-centred={buggy_y}",
+        );
+        assert!(
+            (run.bounds.y - expected_y).abs() < 0.01,
+            "tab label must be centred using chrome_line_height, not current_line_height: \
+             got y={}, expected={expected_y} (editor-metric centring would give {buggy_y})",
+            run.bounds.y,
         );
     }
 }

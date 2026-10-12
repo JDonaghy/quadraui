@@ -1563,4 +1563,45 @@ mod tests {
             "the default column still paints at the right edge"
         );
     }
+
+    /// A host can hand `draw_editor` an `editor.rect` wider than the
+    /// real window (e.g. a rounding/DPI mismatch upstream of this
+    /// backend). `draw_editor` must still paint the scrollbar track fully
+    /// inside the real viewport rather than laying it out past the right
+    /// edge, where only a sliver (or nothing at all) would be visible.
+    ///
+    /// `editor.rect` here is 20px wider than the real 200x80 viewport
+    /// `scroll_test_paint_via_backend` paints into. Without the clamp,
+    /// the 14px column would land at `x = 0 + 220 - 14 = 206` —
+    /// entirely outside the painted surface's `[0, 200)`. The clamp in
+    /// `draw_editor` shrinks `editor.rect` back inside `self.viewport`,
+    /// so the column lands at `[186, 200)` — the same span the in-bounds
+    /// `_paints_14px_column` test above asserts.
+    ///
+    /// This only covers the paint path. `Backend::editor_layout` (the
+    /// no-paint hit-test twin, `src/backend.rs`) is shared, trait-default
+    /// code and is not overridden here — its own doc documents that
+    /// passing it a `rect` which disagrees with what was actually
+    /// painted is an uncovered caller invariant.
+    #[test]
+    fn backend_clamps_oversized_editor_rect_to_viewport() {
+        let mut oversized = scroll_test_editor(50, 5);
+        oversized.rect.width = SCROLL_TEST_W as f32 + 20.0;
+
+        let surface = scroll_test_paint_via_backend(&oversized, Some(14.0));
+        let y = SCROLL_TEST_H - 4;
+        for x in 186..SCROLL_TEST_W {
+            assert!(
+                !scroll_test_pixel_is_bg(&surface, x, y),
+                "x={x} lies inside the 14px scrollbar column [186, 200) and should be \
+                 tinted — editor.rect ({}px) is wider than the real 200px viewport, so an \
+                 unclamped draw_editor would have laid this column out past the window edge",
+                oversized.rect.width
+            );
+        }
+        assert!(
+            scroll_test_pixel_is_bg(&surface, 183, y),
+            "x=183 lies left of the 14px scrollbar column and should be plain background"
+        );
+    }
 }

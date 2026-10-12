@@ -478,19 +478,38 @@ pub fn font_metrics(font: &CTFont) -> FontMetrics {
 }
 
 /// Measure the rendered footprint of `text` in `font`. Returns
-/// `(width, height)` in points — height is the font's full line height
-/// regardless of string content (matches how primitives reserve
-/// vertical space).
+/// `(width, height)` in points — height is **always** `font`'s own
+/// full line height (`ascent + descent + leading`), regardless of
+/// string content (matches how primitives reserve vertical space).
+///
+/// Height must not come from `CTLine::get_typographic_bounds()` for
+/// non-empty text: that aggregates metrics across every glyph *run* in
+/// the line, and `font`'s cascade list (built by
+/// [`font_with_fallback`] / [`font_with_builtin_fallback`] — every
+/// `MacBackend` chrome/editor font carries one, always ending in
+/// [`crate::codicon::FONT_FAMILY`]) means a character `font` itself
+/// doesn't cover — a codicon PUA icon glyph being the common case —
+/// resolves through a *different* font, whose ascent/descent/leading
+/// then leak into the typographic bounds. [`draw_text_impl`] positions
+/// every glyph using only `font`'s own `ascent()` (never a resolved
+/// fallback run's), so letting height vary with the resolved run's
+/// metrics would desynchronise the two: callers that centre text
+/// vertically using this height (e.g.
+/// `sidebar_panel::native_surface_paint::paint_toolbar_header`) would
+/// then centre against a height [`draw_text_impl`] never positions
+/// against, pushing the glyph low in its slot where a clip rect can cut
+/// off its lower part. Pinning height to `font`'s own metrics, exactly
+/// as the empty-string branch below also does, keeps this function's
+/// contract true for every input and consistent with how glyphs are
+/// actually drawn.
 pub fn measure_text(font: &CTFont, text: &str) -> (f64, f64) {
+    let height = font.ascent() + font.descent() + font.leading();
     if text.is_empty() {
-        return (0.0, font.ascent() + font.descent() + font.leading());
+        return (0.0, height);
     }
     let line = build_ctline(font, text);
     let bounds = line.get_typographic_bounds();
-    (
-        bounds.width,
-        bounds.ascent + bounds.descent + bounds.leading,
-    )
+    (bounds.width, height)
 }
 
 /// Implements [`crate::primitives::layout_metrics::TextMeasure`] on `CTFont`

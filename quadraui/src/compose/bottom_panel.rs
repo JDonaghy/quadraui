@@ -270,7 +270,7 @@ impl BottomPanelController {
     /// TUI, pixels for GTK). All returned rects use the same unit.
     #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
     pub fn render(&mut self, backend: &mut dyn Backend, panel_bounds: Rect) -> BottomPanelLayout {
-        let lh = backend.line_height();
+        let lh = backend.chrome_line_height();
 
         let strip_h = lh;
         let strip = Rect::new(panel_bounds.x, panel_bounds.y, panel_bounds.width, strip_h);

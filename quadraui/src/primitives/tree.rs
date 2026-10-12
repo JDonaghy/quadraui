@@ -342,11 +342,28 @@ impl TreeView {
     ///   cells, GTK / macOS / Windows pixels).
     /// - `row_height` — height of one (non-header) row: `1.0` on TUI,
     ///   or [`crate::primitives::layout_metrics::tree_row_pitch`]'s result
-    ///   on pixel backends. The scrollbar occupies the rightmost column of
-    ///   `area`, and `row_height` also serves as both the column width
-    ///   and the minimum thumb length.
+    ///   on pixel backends. Used only as the minimum thumb length, matching
+    ///   [`ListView::vscrollbar`](crate::primitives::list::ListView::vscrollbar).
     pub fn vscrollbar(&self, area: Rect, row_height: f32) -> Option<Scrollbar> {
-        if row_height <= 0.0 {
+        self.vscrollbar_with_track_width(area, row_height, row_height)
+    }
+
+    /// Like [`vscrollbar`](Self::vscrollbar), but with an explicit
+    /// `track_width` instead of defaulting it to `row_height`.
+    ///
+    /// - `track_width` — width of the scrollbar column, occupying the
+    ///   rightmost `track_width` of `area`: `1.0` on TUI (one cell), or
+    ///   [`crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`]
+    ///   on pixel backends. Deliberately independent of `row_height`:
+    ///   VS Code's list/tree scrollbar is a fixed 10px regardless of row
+    ///   pitch.
+    pub fn vscrollbar_with_track_width(
+        &self,
+        area: Rect,
+        row_height: f32,
+        track_width: f32,
+    ) -> Option<Scrollbar> {
+        if row_height <= 0.0 || track_width <= 0.0 {
             return None;
         }
         let total = self.rows.len() as f32;
@@ -358,9 +375,9 @@ impl TreeView {
             return None;
         }
         let track = Rect::new(
-            area.x + area.width - row_height,
+            area.x + area.width - track_width,
             area.y,
-            row_height,
+            track_width,
             area.height,
         );
         Some(Scrollbar::vertical(
@@ -631,8 +648,14 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        // Paint the vertical scrollbar when present.
-        if let Some(vsb) = tree.vscrollbar(area, item_height) {
+        // Paint the vertical scrollbar when present. The track is a
+        // fixed pixel-backend width, independent of row pitch — see
+        // `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`'s doc.
+        if let Some(vsb) = tree.vscrollbar_with_track_width(
+            area,
+            item_height,
+            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+        ) {
             crate::primitives::scrollbar::native_surface_paint::paint(&vsb, surface, theme);
         }
 
@@ -825,7 +848,11 @@ pub(crate) mod native_surface_paint {
             let item_height =
                 crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT as f64) as f32;
             let expected = tree
-                .vscrollbar(AREA, item_height)
+                .vscrollbar_with_track_width(
+                    AREA,
+                    item_height,
+                    crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+                )
                 .expect("50 rows in an 80px/22px viewport must need a v-scrollbar");
             assert!(
                 surface
@@ -1410,29 +1437,48 @@ mod tests {
         #[test]
         fn none_when_tree_is_empty() {
             let t = vtree(0, 0);
-            assert!(t.vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0).is_none());
+            assert!(t
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
+                .is_none());
         }
 
         #[test]
         fn none_when_rows_fit_in_viewport() {
             // 5 rows, 10-row viewport — all fit, no scrollbar.
             let t = vtree(5, 0);
-            assert!(t.vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0).is_none());
+            assert!(t
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
+                .is_none());
         }
 
         #[test]
         fn none_when_rows_exactly_fill_viewport() {
             // 10 rows, 10-row viewport — total == visible, no scrollbar.
             let t = vtree(10, 0);
-            assert!(t.vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0).is_none());
+            assert!(t
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
+                .is_none());
         }
 
         #[test]
         fn none_when_row_height_is_zero_or_negative() {
             let t = vtree(50, 0);
-            assert!(t.vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 0.0).is_none());
             assert!(t
-                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), -1.0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 0.0, 1.0)
+                .is_none());
+            assert!(t
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), -1.0, 1.0)
+                .is_none());
+        }
+
+        #[test]
+        fn none_when_track_width_is_zero_or_negative() {
+            let t = vtree(50, 0);
+            assert!(t
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 0.0)
+                .is_none());
+            assert!(t
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, -1.0)
                 .is_none());
         }
 
@@ -1440,7 +1486,7 @@ mod tests {
         fn track_spans_rightmost_column() {
             let t = vtree(20, 0);
             let sb = t
-                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
                 .expect("overflow should yield a scrollbar");
             // Rightmost column (x=19), full height, 1 unit wide.
             assert_eq!(sb.track.x, 19.0);
@@ -1456,7 +1502,7 @@ mod tests {
         fn thumb_advances_with_scroll_offset() {
             let t = vtree(20, 10);
             let sb = t
-                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
                 .expect("overflow should yield a scrollbar");
             assert!(
                 sb.thumb_start > 0.0,
@@ -1465,16 +1511,36 @@ mod tests {
         }
 
         #[test]
-        fn pixel_units_row_height_is_track_width_and_min_thumb() {
-            // GTK-style: row_height = 18.5px. Track column width and
-            // minimum thumb length both derive from it, same convention
-            // as `ListView::vscrollbar`.
+        fn pixel_backend_track_is_10px_wide_independent_of_row_pitch() {
+            // GTK/macOS/Win-style: row_height is a 20px row pitch (the
+            // rounded `line_height * 1.4` tree_row_pitch produces), but
+            // the track column must stay VS Code's fixed 10px — not grow
+            // to match the row pitch.
             let t = vtree(50, 0);
             let sb = t
-                .vscrollbar(Rect::new(0.0, 0.0, 300.0, 200.0), 18.5)
+                .vscrollbar_with_track_width(
+                    Rect::new(0.0, 0.0, 300.0, 200.0),
+                    20.0,
+                    crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+                )
                 .expect("overflow should yield a scrollbar");
-            assert_eq!(sb.track.width, 18.5);
-            assert!(sb.thumb_len >= 18.5);
+            assert_eq!(sb.track.width, 10.0);
+            assert_eq!(sb.track.x, 300.0 - 10.0);
+            // The minimum thumb length still ties to row_height, not
+            // track_width.
+            assert!(sb.thumb_len >= 20.0);
+        }
+
+        #[test]
+        fn tui_track_is_one_cell_wide() {
+            // TUI-style: row_height = 1.0 cell, track_width = 1.0 cell —
+            // the track stays exactly one cell, matching TUI's uniform
+            // row pitch.
+            let t = vtree(50, 0);
+            let sb = t
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
+                .expect("overflow should yield a scrollbar");
+            assert_eq!(sb.track.width, 1.0);
         }
     }
 }

@@ -826,7 +826,11 @@ mod tests {
         let item_height =
             crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT) as f32;
         let expected = tree
-            .vscrollbar(area, item_height)
+            .vscrollbar_with_track_width(
+                area,
+                item_height,
+                crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+            )
             .expect("40 rows in a 200px viewport must need a v-scrollbar");
 
         let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");

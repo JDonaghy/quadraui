@@ -517,7 +517,11 @@ mod tests {
             let item_height =
                 crate::primitives::layout_metrics::tree_row_pitch(&tree, b.line_height() as f64)
                     as f32;
-            *expected.borrow_mut() = tree.vscrollbar(area, item_height);
+            *expected.borrow_mut() = tree.vscrollbar_with_track_width(
+                area,
+                item_height,
+                crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+            );
         });
         backend.end_frame();
         let expected = expected
@@ -583,6 +587,66 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// An over-long row label ellipsizes to fit the row instead of hard
+    /// clipping mid-glyph, using the real `CTFont` measurer rather than a
+    /// test double — this is what guarantees the shared
+    /// [`crate::primitives::tree::native_surface_paint::paint`] truncation
+    /// math and macOS's actual Core Text layout agree on where `…` lands.
+    #[test]
+    fn long_label_ellipsizes_within_row_using_real_font_metrics() {
+        let label = "BACKEND_SPECIFIC_AUDIT_MODULE_WITH_A_VERY_LONG_FILE_NAME";
+        let tree = make_tree(vec![leaf(0, label)]);
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_theme(Theme {
+            tab_bar_bg: Color::rgb(255, 255, 255),
+            background: Color::rgb(255, 255, 255),
+            ..Theme::default()
+        });
+        backend.set_current_font(font());
+        backend.set_painted_text_recording(true);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_tree(QRect::new(0.0, 0.0, W as f32, H as f32), &tree);
+            let l = mac_tree_layout(
+                &tree,
+                QRect::new(0.0, 0.0, W as f32, H as f32),
+                b.line_height() as f64,
+            );
+            *layout.borrow_mut() = Some(l);
+        });
+        let runs = backend.text_runs().to_vec();
+        backend.end_frame();
+        let layout = layout.into_inner().expect("row painted");
+        let row_bounds = layout.visible_rows[0].bounds;
+        let row_right_edge = row_bounds.x + row_bounds.width;
+
+        let ellipsized = runs
+            .iter()
+            .find(|run| run.text.ends_with('…'))
+            .unwrap_or_else(|| {
+                panic!(
+                    "an over-long label must paint a run ending in an ellipsis, got runs: {:?}",
+                    runs.iter().map(|r| &r.text).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            ellipsized.text.chars().count() < label.chars().count(),
+            "the ellipsized run must be a strict prefix of the full label, got {:?}",
+            ellipsized.text
+        );
+        assert!(
+            ellipsized.bounds.x + ellipsized.bounds.width <= row_right_edge + 0.5,
+            "the ellipsized run's right edge ({}) must fit within the row's right \
+             edge ({row_right_edge}) — macOS's real CTFont measurer must agree \
+             with what it paints",
+            ellipsized.bounds.x + ellipsized.bounds.width,
+        );
     }
 
     /// MacOS upgrades from a plain-text inline-rename fallback

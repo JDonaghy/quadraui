@@ -15,6 +15,15 @@
 //! would make the demo look broken on a stock machine and would give the
 //! driver test nothing to assert on. The colours are what carry the
 //! "identity colour survives an inactive tab" half of the contract.
+//!
+//! Every tab is closable: a click on its `×` removes it from the bar
+//! (the icon sidecar is filtered to match). If the closed tab was
+//! active, its **right-hand neighbour** becomes active — the same
+//! close-neighbour rule as `compose::WorkspaceController::close` —
+//! falling back to the new last tab when the closed tab was the
+//! rightmost one. Close hit-testing is checked before tab-body
+//! activation, so a click on the glyph never doubles as an activation
+//! click first.
 
 use quadraui::{
     AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
@@ -30,6 +39,8 @@ pub const TOGGLE_KEY: char = 'i';
 pub struct TabIconsDemo {
     active: usize,
     icons_on: bool,
+    /// Parallel to [`LABELS`] — `true` once that tab has been closed.
+    closed: [bool; LABELS.len()],
 }
 
 impl TabIconsDemo {
@@ -37,7 +48,25 @@ impl TabIconsDemo {
         Self {
             active: 0,
             icons_on: true,
+            closed: [false; LABELS.len()],
         }
+    }
+
+    /// [`LABELS`] indices still open, in display order.
+    fn open_indices(&self) -> Vec<usize> {
+        (0..LABELS.len()).filter(|&i| !self.closed[i]).collect()
+    }
+
+    /// The icon sidecar, filtered and reordered to match `bar().tabs`.
+    fn visible_icons(&self) -> Vec<Option<TabIcon>> {
+        if !self.icons_on {
+            return vec![];
+        }
+        let icons = self.icons();
+        self.open_indices()
+            .into_iter()
+            .map(|i| icons[i].clone())
+            .collect()
     }
 
     /// The icon sidecar: entry `i` decorates tab `i`. Rust orange, TOML
@@ -89,11 +118,11 @@ impl TabIconsDemo {
     fn bar(&self) -> TabBar {
         TabBar {
             id: WidgetId::new("tab-icons-demo:tabs"),
-            tabs: LABELS
-                .iter()
-                .enumerate()
-                .map(|(i, label)| TabItem {
-                    label: (*label).to_string(),
+            tabs: self
+                .open_indices()
+                .into_iter()
+                .map(|i| TabItem {
+                    label: LABELS[i].to_string(),
                     is_active: i == self.active,
                     ..Default::default()
                 })
@@ -121,7 +150,7 @@ impl AppLogic for TabIconsDemo {
         let lh = backend.line_height();
         let bar = self.bar();
         // The `TabBar` is painted with or without the sidecar.
-        let icons = if self.icons_on { self.icons() } else { vec![] };
+        let icons = self.visible_icons();
         backend.draw_tab_bar_icons(Rect::new(0.0, 0.0, viewport.width, lh), &bar, &icons, None);
         backend.draw_status_bar_interactive(
             Rect::new(0.0, viewport.height - lh, viewport.width, lh),
@@ -144,15 +173,41 @@ impl AppLogic for TabIconsDemo {
                 let lh = backend.line_height();
                 let (x, y) = (position.x, position.y);
                 if y <= lh {
-                    let icons = if self.icons_on { self.icons() } else { vec![] };
+                    let icons = self.visible_icons();
                     let hits = backend.tab_bar_layout_icons(
                         Rect::new(0.0, 0.0, viewport.width, lh),
                         &self.bar(),
                         &icons,
                     );
-                    for (i, (start, end)) in hits.slot_positions.iter().enumerate() {
+                    let open = self.open_indices();
+                    // Close buttons take precedence over tab-body
+                    // activation, so a click on the `×` never also
+                    // registers as an activation click on the tab under it.
+                    for (vis_i, close) in hits.close_bounds.iter().enumerate() {
+                        if let Some((start, end)) = close {
+                            if end > start && (*start..*end).contains(&(x as f64)) {
+                                let orig = open[vis_i];
+                                self.closed[orig] = true;
+                                if self.active == orig {
+                                    // Close-neighbour rule (see
+                                    // `compose::WorkspaceController::close`'s
+                                    // doc): the tab that slides into the
+                                    // closed one's visible slot — its right
+                                    // neighbour — takes over; when the
+                                    // closed tab was last, clamp onto the
+                                    // new last tab instead.
+                                    let new_open = self.open_indices();
+                                    if let Some(last) = new_open.len().checked_sub(1) {
+                                        self.active = new_open[vis_i.min(last)];
+                                    }
+                                }
+                                return Reaction::Redraw;
+                            }
+                        }
+                    }
+                    for (vis_i, (start, end)) in hits.slot_positions.iter().enumerate() {
                         if (*start..*end).contains(&(x as f64)) && end > start {
-                            self.active = i;
+                            self.active = open[vis_i];
                             return Reaction::Redraw;
                         }
                     }
@@ -174,7 +229,11 @@ impl AppLogic for TabIconsDemo {
                 key: Key::Named(NamedKey::Tab),
                 ..
             } => {
-                self.active = (self.active + 1) % LABELS.len();
+                let open = self.open_indices();
+                if !open.is_empty() {
+                    let pos = open.iter().position(|&i| i == self.active).unwrap_or(0);
+                    self.active = open[(pos + 1) % open.len()];
+                }
                 Reaction::Redraw
             }
             _ => Reaction::Continue,

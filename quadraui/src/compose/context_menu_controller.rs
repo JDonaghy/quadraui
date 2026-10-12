@@ -263,7 +263,7 @@ impl ContextMenuController {
         anchor: Point,
         backend: &dyn Backend,
     ) -> ContextMenuLayout {
-        let lh = backend.line_height();
+        let lh = backend.chrome_line_height();
         let (item_h, sep_h, menu_width) = item_measure(lh);
         let viewport = backend.viewport();
         let vp = Rect::new(0.0, 0.0, viewport.width, viewport.height);

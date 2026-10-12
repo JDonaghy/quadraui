@@ -80,6 +80,11 @@ pub struct ShellConfig {
     pub max_bottom_panel_height_lh: f32,
     pub has_command_line: bool,
     pub has_status_bar: bool,
+    /// Carve the status bar and command line from the main column's width
+    /// instead of the full window width, letting the activity bar and
+    /// sidebar run the full height below the title bar. Off by default.
+    /// Set via [`Self::with_status_bar_under_main_column`].
+    pub status_bar_under_main_column: bool,
     /// Optional tabbed bottom panel. `None` (the default) preserves the
     /// existing no-panel layout. When `Some`, the shell runner creates a
     /// [`crate::compose::bottom_panel::BottomPanelController`] that renders
@@ -188,6 +193,7 @@ impl ShellConfig {
             max_bottom_panel_height_lh: 30.0,
             has_command_line: false,
             has_status_bar: false,
+            status_bar_under_main_column: false,
             bottom_panel: None,
             bottom_bands: Vec::new(),
             editor_font: None,
@@ -273,6 +279,11 @@ impl ShellConfig {
 
     pub fn with_status_bar(mut self) -> Self {
         self.has_status_bar = true;
+        self
+    }
+
+    pub fn with_status_bar_under_main_column(mut self) -> Self {
+        self.status_bar_under_main_column = true;
         self
     }
 

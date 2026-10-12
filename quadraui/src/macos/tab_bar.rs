@@ -497,6 +497,27 @@ pub unsafe fn draw_tab_bar_icons(
     // Tab-bar background.
     fill_rect(ctx, 0.0, y_offset, width, row_height, theme.tab_bar_bg);
 
+    // The active tab's chip is inset from the row by `TAB_CHIP_INSET_Y`
+    // on top and bottom — VS Code's pill, not a square block filling the
+    // row edge to edge. That fixed inset is only safe when the row has
+    // slack beyond the label's own line height; `text_y_offset` above
+    // centers the label within the *row*, so a row barely taller than
+    // `line_height` (a caller that reuses its editor line height as the
+    // tab bar's row height, e.g. `tui_tab_icons`/`macos_tab_icons`'s
+    // `backend.line_height()`) leaves less than `TAB_CHIP_INSET_Y` of
+    // slack per side above and below the label text — not enough for the
+    // fixed inset, so the chip would paint narrower than the label and a
+    // descender like "Cargo.toml"'s "g" would ink past the chip's edge.
+    // Shrinking the inset (down to 0, at the limit) whenever the row is
+    // that tight keeps the chip at least `line_height` tall, which is
+    // exactly the height `text_y_offset` already centers the label
+    // within — so the chip encloses the label whenever the row is tall
+    // enough to hold the label at all.
+    let max_chip_inset_y = ((row_height - line_height) / 2.0).max(0.0);
+    let chip_inset_y = TAB_CHIP_INSET_Y.min(max_chip_inset_y);
+    let chip_y = y_offset + chip_inset_y;
+    let chip_h = (row_height - 2.0 * chip_inset_y).max(0.0);
+
     // ── Tabs paint loop ──────────────────────────────────────────────
     // `slot_positions` is padded with `(0.0, 0.0)` for the scrolled-past
     // tabs, so start after them and stop where the layout stopped.
@@ -510,14 +531,13 @@ pub unsafe fn draw_tab_bar_icons(
         let (slot_x, slot_end) = hits.slot_positions[tab_idx];
         let tab_content_w = slot_end - slot_x - tab_outer_gap;
 
-        // Tab background. The active tab paints an inset, rounded chip
-        // (VS Code's pill, matching `gtk::tab_bar`'s `TAB_CHIP_INSET_Y` /
-        // `TAB_CHIP_RADIUS` — the same active-tab shape on both pixel
-        // backends) rather than a square block filling the full row
-        // height edge to edge. Inactive tabs are unchanged: a
-        // full-height rectangle in the bar's own background colour.
-        let chip_y = y_offset + TAB_CHIP_INSET_Y;
-        let chip_h = (row_height - 2.0 * TAB_CHIP_INSET_Y).max(0.0);
+        // Tab background. The active tab paints the inset, rounded chip
+        // computed above (VS Code's pill, matching `gtk::tab_bar`'s
+        // `TAB_CHIP_INSET_Y` / `TAB_CHIP_RADIUS` — the same active-tab
+        // shape on both pixel backends) rather than a square block
+        // filling the full row height edge to edge. Inactive tabs are
+        // unchanged: a full-height rectangle in the bar's own
+        // background colour.
         if tab.is_active {
             // SAFETY: `ctx` is a valid `CGContextRef` for the duration of
             // this paint call — see this fn's own `# Safety` doc.
@@ -1717,5 +1737,165 @@ mod tests {
         // `layout_twin_matches_the_painted_hits_at_nonzero_origin` above.
         let computed = backend.tab_bar_layout(QRect::new(SIDEBAR_W, 0.0, W as f32, H as f32), &bar);
         assert_eq!(hits.right_segment_bounds, computed.right_segment_bounds);
+    }
+
+    /// The active tab's chip must fully enclose the painted label —
+    /// icon, text and the close `×` — not just the label's *measured*
+    /// width. Regression test for the real system UI font at the row
+    /// height the `tui_tab_icons`/`macos_tab_icons` demo actually paints
+    /// at: `backend.line_height()`'s hardcoded 16.0 editor-font default,
+    /// which is tight enough relative to the chrome font's own line
+    /// height that a fixed `TAB_CHIP_INSET_Y` on both edges would leave
+    /// a chip shorter than the label, letting a descender like
+    /// "Cargo.toml"'s "g" ink past the chip's bottom edge.
+    #[test]
+    #[allow(deprecated)]
+    fn active_chip_fully_encloses_the_painted_label_at_the_real_chrome_font() {
+        let icons = vec![
+            Some(TabIcon {
+                glyph: "R".into(),
+                color: Color::rgb(222, 165, 132),
+            }),
+            Some(TabIcon {
+                glyph: "T".into(),
+                color: Color::rgb(160, 190, 210),
+            }),
+            Some(TabIcon {
+                glyph: "M".into(),
+                color: Color::rgb(120, 170, 240),
+            }),
+        ];
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: [" main.rs ", " Cargo.toml ", " README.md "]
+                .iter()
+                .enumerate()
+                .map(|(i, label)| TabItem {
+                    label: (*label).to_string(),
+                    is_active: i == 1,
+                    ..Default::default()
+                })
+                .collect(),
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+
+        const WIDE_W: u32 = 600;
+        // The live `tui_tab_icons`/`macos_tab_icons` demo passes
+        // `backend.line_height()` — `MacBackend::new()`'s hardcoded
+        // editor-font default of 16.0, never overridden since the demo
+        // never calls `AppLogic::setup()` to install an editor font — as
+        // the tab bar's row height, not this module's `H = 28` test
+        // constant. Reproduce that exact (much tighter) row height here
+        // rather than the roomier one every other test in this module uses.
+        const DEMO_ROW_H: u32 = 16;
+        let surface = BitmapSurface::new(WIDE_W, DEMO_ROW_H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.begin_frame(Viewport::new(WIDE_W as f32, DEMO_ROW_H as f32, 1.0));
+        let (_, chrome_line_height) = backend.measure_text("M", crate::FontRole::Chrome);
+        let hits = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let h = b.draw_tab_bar_icons(
+                QRect::new(0.0, 0.0, WIDE_W as f32, DEMO_ROW_H as f32),
+                &bar,
+                &icons,
+                None,
+            );
+            *hits.borrow_mut() = Some(h);
+        });
+        backend.end_frame();
+        let hits = hits.into_inner().unwrap();
+
+        let theme = Theme::default();
+        let (slot_x, slot_end) = hits.slot_positions[1];
+        let chip_x1 = slot_end - TAB_OUTER_GAP;
+
+        // Both the bar's own background and the chip's background are
+        // dark, low-luma colours (`Theme::default()`'s
+        // `tab_bar_bg`/`tab_active_bg`), while the label text and icon
+        // glyphs are painted at a much higher-luma colour (`tab_active_fg`
+        // and the icon tints) — a wide enough gap that a luma threshold
+        // tells real label ink apart from the chip's own anti-aliased
+        // fill edge. A fractional chip inset (the case under test) means
+        // the chip's straight top/bottom edge sits mid-pixel, so the row
+        // straddling it blends `tab_bar_bg` and `tab_active_bg` into a
+        // third colour that matches neither exactly — an exact-colour
+        // background check would misclassify that blend as escaped ink.
+        fn luma(c: Color) -> f64 {
+            0.299 * c.r as f64 + 0.587 * c.g as f64 + 0.114 * c.b as f64
+        }
+        let ink_luma_threshold = ((luma(theme.tab_bar_bg).max(luma(theme.tab_active_bg))
+            + luma(theme.tab_active_fg))
+            / 2.0)
+            .max(luma(theme.tab_bar_bg).max(luma(theme.tab_active_bg)) + 20.0);
+        // Inset well clear of the chip's own rounded corners (radius
+        // `TAB_CHIP_RADIUS`) so corner anti-aliasing isn't mistaken for
+        // label ink escaping the chip's top/bottom edge.
+        let inset = (TAB_CHIP_RADIUS as u32) + 6;
+        let probe_x0 = (slot_x as u32) + inset;
+        let probe_x1 = (chip_x1 as u32).saturating_sub(inset).max(probe_x0);
+
+        // No recomputed `chip_y`/`chip_bottom` here: trusting a formula
+        // that mirrors `draw_tab_bar_icons`'s own adaptive-inset formula
+        // only proves the two formulas agree with each other, not that
+        // the chip the backend actually painted encloses the label it
+        // actually painted. Instead, classify every sampled row purely
+        // from rendered pixels.
+        //
+        // A row's non-ink pixels are overwhelmingly the flat colour
+        // behind the label — either the chip (`tab_active_bg`, or a
+        // `tab_bar_bg`/`tab_active_bg` blend on a row straddling the
+        // chip's fractional top/bottom edge) or, when the chip doesn't
+        // reach that row, the bar's own flat `tab_bar_bg`. The glyphs'
+        // own anti-aliased stroke edges are a small minority of pixels
+        // confined to a ring around the ink itself, and their colour
+        // (a blend toward the bright label colour) sits below the ink
+        // luma threshold without matching either flat background —
+        // checking whether *any* non-ink pixel differs from
+        // `tab_bar_bg` mistakes those stroke-edge pixels for chip
+        // coverage even when no chip is present under the row at all.
+        // Taking the *mode* (most frequent colour) of the row's
+        // non-ink pixels instead picks out the dominant background
+        // colour and ignores the rare stroke-edge outliers.
+        let bar_bg = theme.tab_bar_bg;
+        const BG_DIFF_EPSILON: f64 = 4.0;
+
+        let mut violations: Vec<u32> = vec![];
+        for y in 0..DEMO_ROW_H {
+            let mut row_has_ink = false;
+            let mut bg_color_counts: std::collections::HashMap<(u8, u8, u8), u32> =
+                std::collections::HashMap::new();
+            for x in probe_x0..probe_x1 {
+                let (r, g, b, _) = surface.pixel(x, y);
+                let pixel_luma = 0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64;
+                if pixel_luma > ink_luma_threshold {
+                    row_has_ink = true;
+                } else {
+                    *bg_color_counts.entry((r, g, b)).or_insert(0) += 1;
+                }
+            }
+            let row_has_chip_coverage = bg_color_counts
+                .into_iter()
+                .max_by_key(|(_, count)| *count)
+                .is_some_and(|((r, g, b), _)| {
+                    (r as f64 - bar_bg.r as f64).abs() > BG_DIFF_EPSILON
+                        || (g as f64 - bar_bg.g as f64).abs() > BG_DIFF_EPSILON
+                        || (b as f64 - bar_bg.b as f64).abs() > BG_DIFF_EPSILON
+                });
+            if row_has_ink && !row_has_chip_coverage {
+                violations.push(y);
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "label ink painted in a row with no chip colour beneath it \
+             (chrome_line_height={chrome_line_height}, demo_row_h={DEMO_ROW_H}): \
+             rows={violations:?}"
+        );
     }
 }
