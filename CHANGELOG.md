@@ -59,6 +59,7 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-12
 ### Added
 
 - `ShellConfig::status_bar_under_main_column` field and
