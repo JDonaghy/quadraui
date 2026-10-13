@@ -34,6 +34,11 @@ mod board;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod chart;
+/// Windows rasteriser for [`crate::ComboBox`]. All painting delegates to
+/// [`crate::primitives::combo_box::native_surface_paint::paint`] via
+/// [`crate::Backend::draw_combo_box`], so this module carries no
+/// production code of its own — see its module docs.
+mod combo_box;
 /// Direct2D / DirectWrite rasteriser for [`crate::CommandCenter`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -112,6 +117,11 @@ pub(crate) mod msg;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod multi_section_view;
+/// Windows rasteriser for [`crate::NumberInput`]. All painting delegates
+/// to [`crate::primitives::number_input::native_surface_paint::paint`]
+/// via [`crate::Backend::draw_number_input`], so this module carries no
+/// production code of its own — see its module docs.
+mod number_input;
 /// Direct2D / DirectWrite rasteriser for [`crate::Palette`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
