@@ -84,6 +84,19 @@ only a push to `main` runs this workflow.
   backend painter yet; a headless `TuiDriver` conformance test
   (`tests/scroll_view_driver.rs`) covers wheel/keyboard scroll and
   clipping on arbitrary content.
+- `NumberInput` and editable `ComboBox` primitives
+  (`quadraui::primitives::{number_input, combo_box}`): `NumberInput`
+  covers min/max/step/precision bounds, stepper-button and
+  arrow-key/wheel increment, and commit/validation; `ComboBox` covers
+  free-text editing with a filtered dropdown (reusing `Completions`'
+  placement layout), type-ahead, keyboard navigation, and commit/cancel
+  semantics. `NumberInput` ships `NumberInputLayout`, `NumberInputHit`,
+  `NumberInputEvent`; `ComboBox` ships `ComboBoxLayout`, `ComboBoxHit`,
+  `ComboBoxEvent`. Shared logic only — no backend painter yet, so these
+  have no TUI/GTK rasteriser or demo; a headless `TuiDriver`
+  conformance test (`tests/number_input_combo_box_driver.rs`) covers
+  validation, commit, and cancel for both widgets. `TextInput` is
+  untouched.
 
 ## [0.1.6] - 2026-10-12
 ### Fixed
