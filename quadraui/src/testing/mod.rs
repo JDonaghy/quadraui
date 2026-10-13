@@ -1056,6 +1056,12 @@ impl crate::Backend for RecordingBackend {
     fn text_input_layout(&self, r: Rect, ti: &crate::TextInput) -> crate::TextInputLayout {
         ti.layout(r, crate::TextInputMeasure::from_metrics(&self.measure()))
     }
+    fn draw_number_input(&mut self, _n: &crate::NumberInput, _l: &crate::NumberInputLayout) {
+        self.record("draw_number_input");
+    }
+    fn draw_combo_box(&mut self, _c: &crate::ComboBox, _l: &crate::ComboBoxLayout) {
+        self.record("draw_combo_box");
+    }
     fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {
         self.record("draw_tooltip");
     }

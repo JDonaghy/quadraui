@@ -29,14 +29,14 @@
 use quadraui::{
     compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, Anchor, AppLogic, Backend,
     BadgeStatus, BoardCard, BoardColumn, BoardModel, Canvas, CardBadge, Chart, ChartKind, Color,
-    Column, ColumnAlign, ColumnWidth, CommandCenter, CommandLine, CompletionItem,
+    Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter, CommandLine, CompletionItem,
     CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem, ContextMenuItemMeasure,
     ContextMenuPlacement, DataRow, DataTable, Decoration, Dialog, DialogButton, DialogMeasure,
     DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, DropOverlay, Editor, EditorCursor,
     EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan, FieldKind,
     FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField, Image, ImageFit, ImageSource,
     InteractionState, ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap,
-    MinimapLine, MsvAxis, MultiSectionView, Palette, PaletteItem, PaletteMode, Panel,
+    MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette, PaletteItem, PaletteMode, Panel,
     PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup,
     RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader,
     SectionSize, SelectionMode, Series, Side, SidebarPanel, Spinner, Split, SplitDirection,
@@ -1402,6 +1402,52 @@ pub const CASES: &[Case] = &[
             };
             #[allow(deprecated)]
             let _ = b.draw_status_bar(Rect::new(0.0, 0.0, area.width, lh), &bar, None, None);
+        },
+    },
+    Case {
+        method: "draw_number_input",
+        needle: Some("70"),
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            let number_input = NumberInput {
+                id: id("number-input"),
+                value: 70.0,
+                min: 0.0,
+                max: 100.0,
+                step: 1.0,
+                precision: 0,
+                draft: None,
+                disabled: false,
+                focused: true,
+            };
+            let bounds = Rect::new(0.0, 0.0, cw * 10.0, lh);
+            let layout = number_input.layout(bounds);
+            let _ = area;
+            b.draw_number_input(&number_input, &layout);
+        },
+    },
+    Case {
+        method: "draw_combo_box",
+        needle: Some("c0combo"),
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            let combo_box = ComboBox {
+                id: id("combo-box"),
+                options: vec!["c0combo".to_string()],
+                text: "c0combo".to_string(),
+                committed: String::new(),
+                open: false,
+                highlighted: None,
+                disabled: false,
+                focused: true,
+            };
+            let field_bounds = Rect::new(0.0, 0.0, cw * 20.0, lh);
+            let layout = combo_box.layout(field_bounds, area, cw * 20.0, lh * 6.0, |_| {
+                CompletionItemMeasure::new(lh)
+            });
+            b.draw_combo_box(&combo_box, &layout);
         },
     },
 ];
