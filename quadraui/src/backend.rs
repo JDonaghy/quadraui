@@ -2752,15 +2752,10 @@ pub trait Backend: sealed::Sealed {
     /// [`Self::draw_tooltip`] and [`Self::draw_completions`], whose
     /// layouts are likewise host-resolved rather than backend-resolved.
     ///
-    /// Defaulted, not required (`PRIMITIVE_RULES.md` rule 7): unlike
-    /// [`Self::draw_text_input`], a backend that hasn't wired a real
-    /// rasteriser yet is indistinguishable from one that correctly
-    /// paints nothing, so there is no portability hazard in leaving it
-    /// no-op — only a backend whose issue is scoped to this primitive
-    /// needs to override it.
-    fn draw_number_input(&mut self, number_input: &NumberInput, layout: &NumberInputLayout) {
-        let _ = (number_input, layout);
-    }
+    /// Required, no default (`PRIMITIVE_RULES.md` rule 7): every
+    /// in-tree backend must rasterise this primitive itself rather than
+    /// silently painting nothing.
+    fn draw_number_input(&mut self, number_input: &NumberInput, layout: &NumberInputLayout);
 
     /// Draw a [`ComboBox`] at its caller-resolved `layout`: the field
     /// plus, when open, the filtered dropdown. The caller computes
@@ -2768,12 +2763,10 @@ pub trait Backend: sealed::Sealed {
     /// `combo_box_layout` accessor exists, same host-resolves-layout
     /// shape as [`Self::draw_number_input`].
     ///
-    /// Defaulted, not required (`PRIMITIVE_RULES.md` rule 7) — same
-    /// "structural absence, no portability hazard" reasoning as
+    /// Required, no default (`PRIMITIVE_RULES.md` rule 7) — same
+    /// "every backend must rasterise it" reasoning as
     /// [`Self::draw_number_input`].
-    fn draw_combo_box(&mut self, combo_box: &ComboBox, layout: &ComboBoxLayout) {
-        let _ = (combo_box, layout);
-    }
+    fn draw_combo_box(&mut self, combo_box: &ComboBox, layout: &ComboBoxLayout);
 
     /// Draw a [`Tooltip`] popup at its caller-resolved layout, with the
     /// default chrome ([`crate::TooltipBorder::Full`], no title). The

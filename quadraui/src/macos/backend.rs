@@ -3027,6 +3027,30 @@ impl Backend for MacBackend {
         // its id so it's inventory-observable.
         self.register_zone(float.id.clone(), layout.bounds);
     }
+    fn draw_number_input(
+        &mut self,
+        number_input: &crate::primitives::number_input::NumberInput,
+        layout: &crate::primitives::number_input::NumberInputLayout,
+    ) {
+        let theme = self.current_theme;
+        crate::primitives::number_input::native_surface_paint::paint(
+            number_input,
+            layout,
+            self,
+            &theme,
+        );
+        self.register_zone(number_input.id.clone(), layout.bounds);
+    }
+    /// Same shape as [`Self::draw_number_input`] above.
+    fn draw_combo_box(
+        &mut self,
+        combo_box: &crate::primitives::combo_box::ComboBox,
+        layout: &crate::primitives::combo_box::ComboBoxLayout,
+    ) {
+        let theme = self.current_theme;
+        crate::primitives::combo_box::native_surface_paint::paint(combo_box, layout, self, &theme);
+        self.register_zone(combo_box.id.clone(), layout.field_bounds);
+    }
     fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
         let ctx = self.current_cg();
         debug_assert!(

@@ -3559,6 +3559,40 @@ impl Backend for TuiBackend {
         crate::tui::draw_completions(frame.buffer_mut(), completions, layout, &theme);
     }
 
+    fn draw_number_input(
+        &mut self,
+        number_input: &crate::primitives::number_input::NumberInput,
+        layout: &crate::primitives::number_input::NumberInputLayout,
+    ) {
+        let theme = self.current_theme;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_number_input called outside enter_frame_scope"
+            );
+            return;
+        };
+        crate::tui::draw_number_input(frame.buffer_mut(), number_input, layout, &theme);
+        self.register_zone(number_input.id.clone(), layout.bounds);
+    }
+
+    fn draw_combo_box(
+        &mut self,
+        combo_box: &crate::primitives::combo_box::ComboBox,
+        layout: &crate::primitives::combo_box::ComboBoxLayout,
+    ) {
+        let theme = self.current_theme;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_combo_box called outside enter_frame_scope"
+            );
+            return;
+        };
+        crate::tui::draw_combo_box(frame.buffer_mut(), combo_box, layout, &theme);
+        self.register_zone(combo_box.id.clone(), layout.field_bounds);
+    }
+
     fn draw_scrollbar(
         &mut self,
         _rect: QRect,
@@ -4482,6 +4516,8 @@ mod tests {
                 crate::primitives::text_input::TextInputMeasure::new(1.0, 1.0),
             )
         }
+        fn draw_number_input(&mut self, _n: &crate::NumberInput, _l: &crate::NumberInputLayout) {}
+        fn draw_combo_box(&mut self, _c: &crate::ComboBox, _l: &crate::ComboBoxLayout) {}
         fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
         fn draw_context_menu(
             &mut self,

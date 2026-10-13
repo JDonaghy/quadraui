@@ -3706,6 +3706,36 @@ impl Backend for WinBackend {
         self.register_zone(float.id.clone(), layout.bounds);
     }
 
+    /// Same "no `target_os` gate needed" shape as [`Self::draw_float`]
+    /// above: [`crate::primitives::number_input::native_surface_paint::paint`]
+    /// degrades to a no-op through this backend's own [`PaintSurface`]
+    /// impl when there is no live surface/DWrite yet.
+    fn draw_number_input(
+        &mut self,
+        number_input: &crate::primitives::number_input::NumberInput,
+        layout: &crate::primitives::number_input::NumberInputLayout,
+    ) {
+        let theme = self.current_theme;
+        crate::primitives::number_input::native_surface_paint::paint(
+            number_input,
+            layout,
+            self,
+            &theme,
+        );
+        self.register_zone(number_input.id.clone(), layout.bounds);
+    }
+
+    /// Same shape as [`Self::draw_number_input`] above.
+    fn draw_combo_box(
+        &mut self,
+        combo_box: &crate::primitives::combo_box::ComboBox,
+        layout: &crate::primitives::combo_box::ComboBoxLayout,
+    ) {
+        let theme = self.current_theme;
+        crate::primitives::combo_box::native_surface_paint::paint(combo_box, layout, self, &theme);
+        self.register_zone(combo_box.id.clone(), layout.field_bounds);
+    }
+
     /// Real Direct2D/DirectWrite rasteriser via `win::multi_section_view`
     /// once a surface is attached. See [`Self::draw_status_bar`]'s doc for
     /// the "surface not attached yet" fallback posture.
