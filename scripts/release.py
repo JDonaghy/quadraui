@@ -11,11 +11,12 @@ of both steps and prints (but never runs) the `git`/`gh` commands a human
 still has to execute, since `gh` may not be installed or authenticated
 wherever this runs.
 
-`prepare` is the only supported way to bump `quadraui/Cargo.toml`'s version
-(#1524). A hand-edit of the version field that skips `prepare` leaves
-`Cargo.lock` stale, which `release.yml`'s `check` job
-(`scripts/release_decide.py check-lock`) now catches before `cargo publish
---locked` would otherwise fail on it during `publish`.
+`prepare` is the only supported way to bump `quadraui/Cargo.toml`'s
+version. A hand-edit of the version field that skips `prepare` leaves
+`Cargo.lock` stale; `ci.yml`'s `lockfile-check` job and `release.yml`'s
+`check` job both run `scripts/release_decide.py check-lock`, which names
+that mismatch before `cargo publish --locked` fails on it during
+`publish`.
 
 Two subcommands:
 

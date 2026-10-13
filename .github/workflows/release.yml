@@ -75,20 +75,21 @@ jobs:
       tag: ${{ steps.decide.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+
+      # Catches a version bump that edited `quadraui/Cargo.toml` directly
+      # instead of running `scripts/release.py prepare`, which refreshes
+      # `Cargo.lock` to match in the same commit. A mismatch makes both
+      # `cargo metadata --locked` below and `cargo publish --locked` in
+      # `publish` fail with a far less obvious message, so this names the
+      # cause first. Reads the two files directly — no cargo, hence before
+      # the toolchain step.
+      - name: Verify Cargo.lock is not stale
+        run: python3 scripts/release_decide.py check-lock
+
       # Toolchain is pinned in rust-toolchain.toml; rustup's override
       # resolution honors that file regardless of what this action installs
       # as its default, so this reads the version with the same 1.97.1 as CI.
       - uses: dtolnay/rust-toolchain@stable
-
-      # Catches a version bump that edited `quadraui/Cargo.toml` directly
-      # instead of running `scripts/release.py prepare` (#1524): that script
-      # always refreshes `Cargo.lock` to match, so if `cargo update -p
-      # quadraui --offline` still changes it here, the lockfile is stale and
-      # `cargo publish --locked` below would fail later anyway — this fails
-      # fast, before `decide` even runs.
-      - name: Verify Cargo.lock is not stale
-        run: |
-          python3 scripts/release_decide.py check-lock
 
       - name: Read the quadraui crate version
         id: version
