@@ -16,10 +16,18 @@ use quadraui::{
     AppLogic, Backend, Color, MouseButton, PressZone, Reaction, Rect, ScrollView, UiEvent, WidgetId,
 };
 
-const ROW_COUNT: usize = 40;
+/// Number of rows in the list; the last one is `ROW_COUNT - 1`.
+pub const ROW_COUNT: usize = 40;
+/// Width of the scrollbar track along the window's right edge. Drivers
+/// derive the track's centre from this plus the backend viewport, so no
+/// test needs a literal pixel column.
+pub const SCROLLBAR_WIDTH: f32 = 14.0;
+/// Shortest thumb the scrollbar ever paints. A press within this
+/// distance of the thumb's own end of the track always lands on the
+/// thumb, whatever the window height.
+pub const MIN_THUMB_LEN: f32 = 20.0;
+
 const ROW_HEIGHT: f32 = 24.0;
-const SCROLLBAR_WIDTH: f32 = 14.0;
-const MIN_THUMB_LEN: f32 = 20.0;
 const WHEEL_STEP: f32 = ROW_HEIGHT * 3.0;
 
 /// Wheel-scrollable, scrollbar-draggable list of `ROW_COUNT` rows.
