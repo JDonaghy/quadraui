@@ -134,6 +134,10 @@ mod progress;
 #[cfg(target_os = "windows")]
 mod rich_text_popup;
 pub mod run;
+/// Win painter for [`crate::ScrollView`]: `paint_clipped` +
+/// `draw_scrollbar_for`, generic over [`crate::Backend`] like its GTK
+/// counterpart — see its module docs.
+pub mod scroll_view;
 /// Direct2D rasteriser for [`crate::Scrollbar`]. Windows-only in
 /// full — see its module docs.
 #[cfg(target_os = "windows")]

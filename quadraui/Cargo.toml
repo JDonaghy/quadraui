@@ -1630,6 +1630,11 @@ name = "win_hscroll"
 path = "examples/win_hscroll.rs"
 required-features = ["win"]
 
+[[example]]
+name = "win_scroll_view"
+path = "examples/win_scroll_view.rs"
+required-features = ["win"]
+
 # #707 — Win-GUI shell runner (`win::shell_runner::run_with_shell`), the
 # Windows analogue of #465. Same `AppShellDemo` `ShellApp` impl
 # `tui_appshell_demo`/`gtk_appshell_demo`/`macos_appshell_demo` already
