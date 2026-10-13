@@ -97,6 +97,7 @@ const PRIMITIVES: &[(&str, &str)] = &[
     ("progress", "ProgressBar"),
     ("radio_group", "RadioGroup"),
     ("rich_text_popup", "RichTextPopup"),
+    ("scroll_view", "ScrollView"),
     ("scrollbar", "Scrollbar"),
     ("sidebar_panel", "SidebarPanel"),
     ("spinner", "Spinner"),

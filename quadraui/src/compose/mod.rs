@@ -40,6 +40,14 @@
 //!   [`crate::primitives::toast::ToastOverlay`]: Tab/Shift+Tab/Left/Right
 //!   cycle a focused toast's buttons, Up/Down move between toasts, Enter
 //!   activates, Escape dismisses.
+//!
+//! [`crate::ScrollView`] is a `primitives` type, not a controller here —
+//! it is the generic seam for a host that scrolls content it lays out
+//! itself. [`FormController`], [`TreeController`], and [`ChatController`]
+//! keep their own row-indexed scroll state unchanged; a future controller
+//! for scrolling arbitrary child content (a help panel, a form section)
+//! composes [`crate::ScrollView`] the same way these compose their own
+//! primitive instead of duplicating offset/thumb math.
 
 pub mod app_shell;
 pub mod bottom_panel;
