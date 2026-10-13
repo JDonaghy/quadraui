@@ -16,7 +16,7 @@
 //!
 //! ## What's in the box
 //!
-//! 42 primitives (one module each under `src/primitives/`), each
+//! 48 primitives (one module each under `src/primitives/`), each
 //! declarative + serde-friendly so apps and Lua plugins can describe UI
 //! as data. A representative sample:
 //!
@@ -103,7 +103,7 @@
 //! `0.1.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
-//! `quadraui/docs/decisions/DECISIONS.md`. 42 primitives shipped. The TUI
+//! `quadraui/docs/decisions/DECISIONS.md`. 48 primitives shipped. The TUI
 //! and GTK backends have full feature parity and are battle-tested by
 //! vimcode (5000+ tests). The macOS backend implements the whole
 //! `Backend` trait and is built/tested for real on `macos-latest` CI. The
@@ -400,10 +400,12 @@ pub use primitives::board::{
     board_layout, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardHit, BoardLayout,
     BoardMeasure, BoardModel, CardBadge, CardId, CardLayout, ColumnLayout, MoveDir,
 };
+pub use primitives::button::{Button, ButtonEvent, ButtonHit, ButtonLayout, ButtonVariant};
 pub use primitives::canvas::{Canvas, CanvasHit, CanvasLayout, DrawOp};
 pub use primitives::chart::{
     Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, Series,
 };
+pub use primitives::combo_box::{ComboBox, ComboBoxEvent, ComboBoxHit, ComboBoxLayout};
 pub use primitives::command_center::{
     CommandCenter, CommandCenterHit, CommandCenterLayout, CommandCenterMeasure,
 };
@@ -469,6 +471,9 @@ pub use primitives::multi_section_view::{
     MultiSectionViewLayout, ScrollMode, ScrollbarHit, Section, SectionAux, SectionBody,
     SectionHeader, SectionId, SectionLayout, SectionMeasure, SectionSize,
 };
+pub use primitives::number_input::{
+    NumberInput, NumberInputEvent, NumberInputHit, NumberInputLayout,
+};
 pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout, PaletteMode,
     PalettePreview, PaletteScrollbar, VisiblePaletteItem,
@@ -483,10 +488,14 @@ pub use primitives::pipeline_view::{
 pub use primitives::progress::{
     ProgressBar, ProgressBarHit, ProgressBarLayout, ProgressBarMeasure,
 };
+pub use primitives::radio_group::{
+    RadioGroup, RadioGroupEvent, RadioGroupHit, RadioGroupLayout, RadioOption, RadioOptionMeasure,
+};
 pub use primitives::rich_text_popup::{
     PopupPlacement, PopupScrollbar, RichTextLink, RichTextPopup, RichTextPopupHit,
     RichTextPopupLayout, RichTextPopupMeasure, TextSelection, VisibleRichTextLine,
 };
+pub use primitives::scroll_view::{ScrollView, ScrollViewEvent};
 pub use primitives::scrollbar::{fit_thumb, PressZone, ScrollAxis, Scrollbar};
 pub use primitives::sidebar_panel::{
     SidebarPanel, SidebarPanelHit, SidebarPanelLayout, SidebarPanelMeasure,
@@ -501,6 +510,7 @@ pub use primitives::status_bar::{
     StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout, StatusBarSegment,
     StatusSegmentMeasure, StatusSegmentSide, VisibleStatusSegment,
 };
+pub use primitives::switch::{Switch, SwitchEvent, SwitchHit, SwitchLayout};
 // `TabBarHits` is deprecated (D-6 pre-refactor hit struct; `TabBarLayout` with
 // `Rect` is the replacement). Allow it here since `pub use` of a deprecated
 // item is itself a use site. Removal is blocked on the six-method/four-backend

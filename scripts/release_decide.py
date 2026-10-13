@@ -13,7 +13,7 @@ is the part of that decision worth testing outside a real GitHub Actions run:
   - tag missing and the changelog section is missing/empty -> fail, before
     any tag is pushed or anything is published
 
-Two subcommands, used from `release.yml`:
+Three subcommands, used from `release.yml`:
 
     python3 scripts/release_decide.py decide \\
         --version 0.1.2 --remote origin --repo-dir .
@@ -21,16 +21,35 @@ Two subcommands, used from `release.yml`:
     python3 scripts/release_decide.py notes \\
         --changelog CHANGELOG.md --version 0.1.2 --out notes.md
 
+    python3 scripts/release_decide.py check-lock --repo-dir .
+
 `decide` exits 0 and prints `decision=noop` or `decision=publish` (also
 appended to the file named by `$GITHUB_OUTPUT`, if set) and touches the
 network only via `git ls-remote` against the real remote tags, never the
 shallow local checkout. `notes` extracts the `## [<version>]` CHANGELOG.md
 section and exits 1, writing nothing, if that section is missing or empty.
+
+`check-lock` guards against a version bump that edited `quadraui/Cargo.toml`
+directly instead of going through `scripts/release.py prepare`, which also
+refreshes `Cargo.lock`. It compares the `version =` field of
+`quadraui/Cargo.toml` against the `version =` of `Cargo.lock`'s
+`[[package]] name = "quadraui"` entry and fails if they disagree, which is
+exactly the mismatch `cargo publish --locked` would reject later. It runs
+before `decide` or `notes`, and never rewrites the lockfile — the point is
+to report the mismatch, not to paper over it.
+
+`check-lock` deliberately reads both files directly instead of shelling out
+to `cargo update -p quadraui --offline`: that call needs a populated
+registry index for every one of quadraui's dependencies, which a fresh
+CI checkout does not have, so it fails on a perfectly fresh lockfile. Plain
+file reads make this check hermetic, toolchain-free and identical on every
+host.
 """
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -102,6 +121,84 @@ def cmd_decide(args: argparse.Namespace) -> int:
     return 0
 
 
+MANIFEST_VERSION_RE = re.compile(r'(?m)^version\s*=\s*"([^"]+)"')
+
+
+def manifest_version(cargo_toml_text: str) -> str | None:
+    """Return `quadraui/Cargo.toml`'s `[package]` version, or None.
+
+    The first top-level `version = "..."` line in the manifest, which is
+    the one `[package]` owns: every later `version =` sits inside a
+    `[dependencies.*]`-style table.
+    """
+    match = MANIFEST_VERSION_RE.search(cargo_toml_text)
+    return match.group(1) if match else None
+
+
+def locked_version(cargo_lock_text: str, package: str) -> str | None:
+    """Return `package`'s version from a `Cargo.lock`, or None if absent.
+
+    `Cargo.lock` is a sequence of `[[package]]` tables, each with its own
+    `name`/`version` pair, so this walks the lines and returns the
+    `version` that follows the matching `name`.
+    """
+    found = False
+    for line in cargo_lock_text.splitlines():
+        stripped = line.strip()
+        if stripped == f'name = "{package}"':
+            found = True
+        elif found:
+            match = re.fullmatch(r'version\s*=\s*"([^"]+)"', stripped)
+            if match:
+                return match.group(1)
+            if stripped.startswith("[["):
+                return None
+    return None
+
+
+def cmd_check_lock(args: argparse.Namespace) -> int:
+    repo_dir = Path(args.repo_dir)
+    manifest_path = repo_dir / "quadraui" / "Cargo.toml"
+    lock_path = repo_dir / "Cargo.lock"
+
+    for path in (manifest_path, lock_path):
+        if not path.is_file():
+            print(f"::error::{path} does not exist", file=sys.stderr)
+            return 1
+
+    declared = manifest_version(manifest_path.read_text(encoding="utf-8"))
+    if declared is None:
+        print(
+            f'::error::no `version = "..."` line in {manifest_path}',
+            file=sys.stderr,
+        )
+        return 1
+
+    locked = locked_version(lock_path.read_text(encoding="utf-8"), "quadraui")
+    if locked is None:
+        print(
+            f'::error::{lock_path} has no `[[package]] name = "quadraui"` entry — '
+            "regenerate it with `cargo update -p quadraui --offline` and commit "
+            "the result.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if locked != declared:
+        print(
+            f"::error::Cargo.lock is stale: quadraui/Cargo.toml declares version "
+            f"{declared} but Cargo.lock pins {locked}. `cargo publish --locked` "
+            "rejects that. Bump the version with `scripts/release.py prepare "
+            "X.Y.Z`, which refreshes Cargo.lock in the same commit, or run "
+            "`cargo update -p quadraui --offline` and commit the result.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"Cargo.lock matches quadraui/Cargo.toml's version ({declared}).")
+    return 0
+
+
 def cmd_notes(args: argparse.Namespace) -> int:
     changelog_path = Path(args.changelog)
     text = changelog_path.read_text(encoding="utf-8")
@@ -131,6 +228,12 @@ def main(argv: list[str] | None = None) -> int:
     notes.add_argument("--version", required=True)
     notes.add_argument("--out", required=True)
     notes.set_defaults(func=cmd_notes)
+
+    check_lock = sub.add_parser(
+        "check-lock", help="fail if Cargo.lock is stale relative to quadraui's version"
+    )
+    check_lock.add_argument("--repo-dir", default=".")
+    check_lock.set_defaults(func=cmd_check_lock)
 
     args = parser.parse_args(argv)
     return args.func(args)

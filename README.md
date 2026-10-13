@@ -85,7 +85,7 @@ The full version is `quadraui/examples/hello.rs`:
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
   silently doing nothing.
-- **Heavily tested.** Around 5,300 tests, including headless
+- **Heavily tested.** Around 5,400 tests, including headless
   paint-then-click round trips on all four backends, an end-to-end
   `TuiDriver` that drives real example apps through the event loop, and
   benchmarks for 100k-row tables and trees and a 4k-line editor.
@@ -203,7 +203,7 @@ Pick the backends you ship; `terminal` is independent of them.
 
 ## What's in the box
 
-**42 primitives**, one module each under `quadraui/src/primitives/`: a
+**48 primitives**, one module each under `quadraui/src/primitives/`: a
 declarative description, a shared layout, and a rasteriser per backend.
 Among them:
 

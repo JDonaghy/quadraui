@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for `scripts/release_decide.py`'s three decision branches (#1368).
+"""Tests for `scripts/release_decide.py`'s decision branches (#1368).
 
 Stdlib-only (`unittest`), matching `tools/test_example_coverage.py`'s own
 rationale for avoiding a pytest dependency. Run with:
@@ -14,6 +14,9 @@ Covers the three branches `.github/workflows/release.yml` relies on:
     (`decide` prints `decision=publish`, `notes` extracts the section)
   - tag missing + no/empty CHANGELOG.md section -> `notes` fails (exit 1),
     before any tag is created or anything published
+
+Plus `check-lock`, the `Cargo.lock`-vs-`quadraui/Cargo.toml` version guard
+both `ci.yml`'s `lockfile-check` job and `release.yml`'s `check` job run.
 """
 from __future__ import annotations
 
@@ -165,6 +168,152 @@ class DecideCommandTests(unittest.TestCase):
             contents = output_path.read_text()
             self.assertIn("decision=publish", contents)
             self.assertIn("tag=v0.2.0", contents)
+
+
+class LockFixtureRepo:
+    """A `quadraui/Cargo.toml` + `Cargo.lock` pair for `check-lock` tests.
+
+    Only those two files, written directly: `check-lock` compares the
+    version each one declares and never shells out to cargo or git, so a
+    fixture that invoked `cargo generate-lockfile` would add a toolchain
+    dependency (and, for a crate with real dependencies, a registry-cache
+    one) that the command under test does not have.
+    """
+
+    MANIFEST = '[package]\nname = "quadraui"\nversion = "{version}"\nedition = "2021"\n'
+    LOCK = (
+        'version = 4\n\n'
+        '[[package]]\nname = "arboard"\nversion = "3.4.0"\n\n'
+        '[[package]]\nname = "quadraui"\nversion = "{version}"\n'
+        'dependencies = [\n "arboard",\n]\n'
+    )
+
+    def __init__(self, manifest_version: str = "0.1.0", lock_version: str = "0.1.0"):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / "quadraui").mkdir(parents=True)
+        self.write_manifest(manifest_version)
+        self.write_lock(lock_version)
+
+    def write_manifest(self, version: str) -> None:
+        (self.root / "quadraui" / "Cargo.toml").write_text(
+            self.MANIFEST.format(version=version), encoding="utf-8"
+        )
+
+    def write_lock(self, version: str) -> None:
+        (self.root / "Cargo.lock").write_text(
+            self.LOCK.format(version=version), encoding="utf-8"
+        )
+
+    def __enter__(self) -> "LockFixtureRepo":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._tmp.cleanup()
+
+
+def run_check_lock(repo_dir: Path, env: dict[str, str] | None = None):
+    return subprocess.run(
+        [
+            sys.executable,
+            str(Path(release_decide.__file__)),
+            "check-lock",
+            "--repo-dir",
+            str(repo_dir),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+class CheckLockCommandTests(unittest.TestCase):
+    def test_passes_when_lock_matches_cargo_toml(self):
+        with LockFixtureRepo() as repo:
+            result = run_check_lock(repo.root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("matches", result.stdout)
+            self.assertIn("0.1.0", result.stdout)
+
+    def test_fails_when_version_bumped_without_lock_update(self):
+        """The mistake this guards: a hand-edited version bump that skipped
+        `scripts/release.py prepare`, so `Cargo.lock` still pins the old one.
+        """
+        with LockFixtureRepo(manifest_version="0.2.0", lock_version="0.1.0") as repo:
+            result = run_check_lock(repo.root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("stale", result.stderr)
+            self.assertIn("0.2.0", result.stderr)
+            self.assertIn("0.1.0", result.stderr)
+            self.assertIn("release.py prepare", result.stderr)
+
+    def test_passes_after_lock_refresh(self):
+        with LockFixtureRepo(manifest_version="0.2.0", lock_version="0.1.0") as repo:
+            repo.write_lock("0.2.0")
+            result = run_check_lock(repo.root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_fails_when_lock_has_no_quadraui_entry(self):
+        with LockFixtureRepo() as repo:
+            (repo.root / "Cargo.lock").write_text(
+                'version = 4\n\n[[package]]\nname = "arboard"\nversion = "3.4.0"\n',
+                encoding="utf-8",
+            )
+            result = run_check_lock(repo.root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("quadraui", result.stderr)
+
+    def test_fails_when_lock_is_missing(self):
+        with LockFixtureRepo() as repo:
+            (repo.root / "Cargo.lock").unlink()
+            result = run_check_lock(repo.root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("does not exist", result.stderr)
+
+    def test_needs_neither_cargo_nor_git_on_path(self):
+        """Runs with an empty `PATH`, the floor of what CI provides.
+
+        `check-lock` runs in checkout-only jobs with no Rust toolchain and
+        no populated registry cache, so it must reach its verdict from the
+        two files alone.
+        """
+        with LockFixtureRepo(manifest_version="0.2.0", lock_version="0.1.0") as repo:
+            env = dict(os.environ)
+            env["PATH"] = ""
+            result = run_check_lock(repo.root, env=env)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("stale", result.stderr)
+
+
+class LockVersionParsingTests(unittest.TestCase):
+    def test_manifest_version_reads_the_package_table_version(self):
+        self.assertEqual(
+            release_decide.manifest_version(
+                '[package]\nname = "quadraui"\nversion = "0.3.1"\n\n'
+                '[dependencies.ratatui]\nversion = "0.30"\n'
+            ),
+            "0.3.1",
+        )
+
+    def test_manifest_version_is_none_without_a_version_line(self):
+        self.assertIsNone(
+            release_decide.manifest_version('[package]\nname = "quadraui"\n')
+        )
+
+    def test_locked_version_picks_the_named_package(self):
+        lock = (
+            '[[package]]\nname = "ratatui"\nversion = "0.30.0"\n\n'
+            '[[package]]\nname = "quadraui"\nversion = "0.1.6"\n'
+        )
+        self.assertEqual(release_decide.locked_version(lock, "quadraui"), "0.1.6")
+        self.assertEqual(release_decide.locked_version(lock, "ratatui"), "0.30.0")
+
+    def test_locked_version_ignores_a_dependency_list_mention(self):
+        lock = (
+            '[[package]]\nname = "kubeui"\nversion = "0.0.0"\n'
+            'dependencies = [\n "quadraui",\n]\n'
+        )
+        self.assertIsNone(release_decide.locked_version(lock, "quadraui"))
 
 
 class ChangelogSectionTests(unittest.TestCase):

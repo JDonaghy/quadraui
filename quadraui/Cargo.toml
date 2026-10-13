@@ -1,6 +1,6 @@
 [package]
 name = "quadraui"
-version = "0.1.6"
+version = "0.1.7"
 edition.workspace = true
 description = "Cross-platform Rust UI toolkit: write one AppLogic and run it unmodified on TUI, GTK4 (Linux), macOS, and Windows backends"
 license.workspace = true
@@ -933,6 +933,11 @@ path = "examples/gtk_search_panel.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "gtk_scroll_view"
+path = "examples/gtk_scroll_view.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_sidebar_search"
 path = "examples/tui_sidebar_search.rs"
 required-features = ["tui"]
@@ -1623,6 +1628,11 @@ required-features = ["win"]
 [[example]]
 name = "win_hscroll"
 path = "examples/win_hscroll.rs"
+required-features = ["win"]
+
+[[example]]
+name = "win_scroll_view"
+path = "examples/win_scroll_view.rs"
 required-features = ["win"]
 
 # #707 — Win-GUI shell runner (`win::shell_runner::run_with_shell`), the

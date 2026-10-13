@@ -387,6 +387,31 @@ jobs:
       - name: introduction.md / README.md hello-world sync check
         run: python3 tools/test_introduction_matches_readme.py
 
+  lockfile-check:
+    # Catches a version-bump commit that edited `quadraui/Cargo.toml`
+    # directly instead of going through `scripts/release.py prepare` (which
+    # always refreshes `Cargo.lock` in the same commit) before it reaches
+    # `develop`/`main` — not just at the `release.yml` `check` job that
+    # gates `main`, by which point the mismatch has already survived a
+    # review and a promotion merge. Runs on both `push` and `pull_request`,
+    # unlike `changelog-check` above: this needs no PR-only base-SHA diff,
+    # only the already-checked-out tree's own `Cargo.lock` vs.
+    # `quadraui/Cargo.toml`, so it runs identically either way.
+    #
+    # Checkout-only, no toolchain and no `Swatinem/rust-cache`: the check
+    # reads the two files' `version =` fields in Python. A cargo-based
+    # equivalent (`cargo update -p quadraui --offline`) cannot run here —
+    # it needs a registry index entry for every quadraui dependency, which
+    # a fresh runner has not fetched, so it fails even on a fresh lockfile.
+    name: Cargo.lock freshness check
+    runs-on: ubuntu-latest
+    # #1292: one Python script reading two files, normally a few seconds.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Cargo.lock is not stale
+        run: python3 scripts/release_decide.py check-lock
+
   tui:
     name: tui + win (build, test, clippy) — ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

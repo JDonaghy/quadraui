@@ -58,6 +58,92 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Added
+
+- Standalone `Button`, `RadioGroup`, and `Switch` primitives
+  (`quadraui::primitives::{button, radio_group, switch}`): layout,
+  hit-test, keyboard focus/activation, and their events, usable outside
+  `Form`/`Dialog`. `Button` ships `ButtonVariant`, `ButtonLayout`,
+  `ButtonHit`, `ButtonEvent`; `RadioGroup` ships `RadioOption`,
+  `RadioOptionMeasure`, `RadioGroupLayout`, `RadioGroupHit`,
+  `RadioGroupEvent`; `Switch` ships `SwitchLayout`, `SwitchHit`,
+  `SwitchEvent`. Shared logic only — no backend painter yet, so these
+  have no TUI/GTK rasteriser or demo; a headless `TuiDriver`
+  conformance test (`tests/standalone_controls_driver.rs`) covers focus
+  traversal, keyboard and pointer activation, and events on all three.
+  `Form`/`Dialog`'s own field kinds are untouched.
+- `ScrollView` primitive (`quadraui::primitives::scroll_view`): generic
+  scroll-offset state, wheel/keyboard handling (`handle_wheel`,
+  `handle_key`), visible-range clipping math (`visible_range`,
+  `is_visible`), and scrollbar geometry (`scrollbar`) for a host that
+  scrolls arbitrary child content it lays out itself. Ships
+  `ScrollViewEvent`. Offsets are `f32` from the start, so it needs no
+  further API change for the planned crate-wide move to continuous
+  scroll offsets. Additive only — `List`/`TreeView`/`DataTable` keep
+  their own row-indexed scroll state unchanged. Shared logic only — no
+  backend painter yet; a headless `TuiDriver` conformance test
+  (`tests/scroll_view_driver.rs`) covers wheel/keyboard scroll and
+  clipping on arbitrary content.
+- GTK rasteriser for `ScrollView`
+  (`quadraui::gtk::scroll_view::{paint_clipped, draw_scrollbar_for}`):
+  clips child painting to the viewport and draws the scrollbar chrome
+  via the existing `native_surface_paint` scrollbar painter. Scroll-
+  offset/clipping math stays in `quadraui::primitives::scroll_view` —
+  this module only paints. Ships the `gtk_scroll_view` example (wheel
+  scroll + scrollbar-thumb drag over a tall row list), covered by a
+  `GtkDriver` test (`tests/gtk_example_driver.rs`) asserting both input
+  paths clip and scroll the painted content correctly.
+- Win-GUI rasteriser for `ScrollView`
+  (`quadraui::win::scroll_view::{paint_clipped, draw_scrollbar_for}`):
+  same shape as the GTK rasteriser above — clips child painting to the
+  viewport via `Backend::paint_surface`'s clip push/pop and draws the
+  scrollbar chrome via `Backend::draw_scrollbar`. Scroll-offset/clipping
+  math stays in `quadraui::primitives::scroll_view`; this module only
+  paints, and adds no new `Backend` trait method. Ships the
+  `win_scroll_view` example, reusing the same `ScrollViewDemo`
+  `AppLogic` as `gtk_scroll_view`, covered by a `WinDriver` test
+  (`tests/win_example_driver.rs`) asserting both wheel scroll and
+  scrollbar-thumb drag clip and scroll the painted content correctly.
+- `NumberInput` and editable `ComboBox` primitives
+  (`quadraui::primitives::{number_input, combo_box}`): `NumberInput`
+  covers min/max/step/precision bounds, stepper-button and
+  arrow-key/wheel increment, and commit/validation; `ComboBox` covers
+  free-text editing with a filtered dropdown (reusing `Completions`'
+  placement layout), type-ahead, keyboard navigation, and commit/cancel
+  semantics. `NumberInput` ships `NumberInputLayout`, `NumberInputHit`,
+  `NumberInputEvent`; `ComboBox` ships `ComboBoxLayout`, `ComboBoxHit`,
+  `ComboBoxEvent`. Shared logic only; a headless `TuiDriver` conformance
+  test (`tests/number_input_combo_box_driver.rs`) covers validation,
+  commit, and cancel for both widgets. `TextInput` is untouched.
+- GTK and TUI rasterisers for `NumberInput` and `ComboBox`
+  (`quadraui::gtk::{number_input, combo_box}`,
+  `quadraui::tui::{number_input, combo_box}`): stepper-button and
+  mouse-wheel chrome for `NumberInput`, dropdown and type-ahead
+  highlight chrome for `ComboBox`, via two new required `Backend`
+  methods (`draw_number_input`, `draw_combo_box`, no default body per
+  rule 7) implemented by every backend. The GTK rasterisers delegate to
+  shared `native_surface_paint::paint` functions added to
+  `quadraui::primitives::{number_input, combo_box}`; the TUI rasterisers
+  mirror the same fill/stroke/text layering directly on the `ratatui`
+  buffer — layout and validation/commit/cancel logic is unchanged and
+  stays backend-generic. Covered by `GtkDriver` tests in each new GTK
+  module (stepper click/wheel increment for `NumberInput`; type-ahead
+  filter, keyboard navigation, commit, cancel, and dropdown-item click
+  for `ComboBox`) and by TUI paint/click round-trip tests plus two new
+  `tests/conformance/c0.rs` cases. The gallery demo is deferred to the
+  `ComboBox`/`NumberInput` gallery-page issue.
+- Windows rasteriser for `NumberInput` and `ComboBox`
+  (`quadraui::win::{number_input, combo_box}`): same shape as the GTK
+  rasterisers above — `Backend::draw_number_input` and
+  `Backend::draw_combo_box` delegate entirely to the shared
+  `native_surface_paint::paint` functions in
+  `quadraui::primitives::{number_input, combo_box}`, so these modules
+  carry no production code of their own. Layout and
+  validation/commit/cancel logic is unchanged and stays backend-generic.
+  Covered by `WinDriver` tests in each new module (stepper click/wheel
+  increment for `NumberInput`; type-ahead filter, keyboard navigation,
+  commit, cancel, and dropdown-item click for `ComboBox`). The gallery
+  demo is deferred to the `ComboBox`/`NumberInput` gallery-page issue.
 
 ## [0.1.6] - 2026-10-12
 ### Fixed

@@ -167,7 +167,7 @@ mod tests {
             let l = super::mac_tree_layout(
                 tree,
                 QRect::new(0.0, 0.0, W as f32, H as f32),
-                b.line_height() as f64,
+                b.chrome_line_height() as f64,
             );
             *layout.borrow_mut() = Some(l);
         });
