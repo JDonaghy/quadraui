@@ -9,12 +9,11 @@
 //! software) Direct2D device via `HeadlessSurface` — no live window, no
 //! GPU, no display.
 //!
-//! ## Why pixel/`Reaction` assertions, not `screen_contains`/`find`
-//!
-//! `WinBackend` doesn't instrument its `draw_text` call sites into a
-//! `TextRun` list the way `GtkBackend`/`MacBackend` do yet (see
-//! `win::testing::WinDriver`'s "Limitations" doc), so there is no
-//! painted-text lookup to assert on here. Instead these tests assert on:
+//! `WinDriver::new` enables painted-text-run recording unconditionally, so
+//! `find`/`screen_contains`/`painted_texts` resolve real painted text the
+//! same way `GtkDriver`'s/`MacDriver`'s do — most tests below assert on
+//! those. A few assert on other signals instead, where they prove
+//! something painted text can't:
 //! - [`AppShellDemo::probe`]'s real `ActivityBar` bounds (proves layout
 //!   reached `render_content` through the composed `ShellAdapter`, not a
 //!   shadow copy); and
@@ -32,7 +31,8 @@
 use quadraui::testing::ConformanceDriver;
 use quadraui::win::testing::{driver_with_shell, WinDriver};
 use quadraui::{
-    Backend, Key, Modifiers, NamedKey, Reaction, Rect, Split, SplitDirection, UiEvent, WidgetId,
+    Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Reaction, Rect, Split,
+    SplitDirection, UiEvent, WidgetId,
 };
 
 #[path = "../examples/common/appshell_demo.rs"]
@@ -81,6 +81,10 @@ use multi_tree::DebugSidebar;
 #[path = "../examples/common/data_table_app.rs"]
 mod data_table_app;
 use data_table_app::DataTableApp;
+
+#[path = "../examples/common/scroll_view_demo.rs"]
+mod scroll_view_demo;
+use scroll_view_demo::ScrollViewDemo;
 
 // These tests port shapes from `examples/common` that lack TUI/GTK/macOS
 // driver tests, or author directly when one exists (`mini_app`/`hscroll_editor`
@@ -233,8 +237,7 @@ fn appshell_demo_unintercepted_key_still_reaches_the_app() {
 // selection feedback, Ctrl-C, assert the copy landed). `WinDriver::new`
 // (unlike `driver_with_shell`) enables painted-text-run recording
 // unconditionally, so `find`/`screen_contains` resolve real
-// `StatusBar` text the same way `GtkDriver`'s do — the stale "no painted-text
-// lookup yet" caveat in this file's module doc predates that landing.
+// `StatusBar` text the same way `GtkDriver`'s do.
 //
 // Panel content pixel size for `PanelApp`'s five sample lines plus title
 // bar and status bar — comfortably larger than the painted content so
@@ -1682,5 +1685,209 @@ fn platform_services_clipboard_round_trips_through_the_real_win32_clipboard() {
          required) should round-trip the exact text just written — the \
          same `WinPlatformServices::clipboard()` this example's 'c' \
          handler calls"
+    );
+}
+
+// Win-GUI twin of `tests/gtk_example_driver.rs`'s
+// `scroll_view_gtk_*` tests — same `ScrollViewDemo` `AppLogic`, same
+// script (wheel-scroll to the bottom and back, then drag the scrollbar
+// thumb down and back up), dispatched via `WinDriver::dispatch` with raw
+// `UiEvent`s rather than the `mouse_down`/`mouse_move`/`mouse_up`
+// convenience wrappers — `ScrollViewDemo::handle` does its own
+// self-contained track-rect/scrollbar hit-testing against whatever
+// `UiEvent` it receives, so it doesn't need (and must not go through)
+// `win::run`'s richer `route_mouse_down`/`route_mouse_move`/
+// `route_mouse_up` pipeline built for other examples' zone registries.
+
+const SCROLL_VIEW_WINDOWS: [(u32, u32); 2] = [(400, 300), (280, 170)];
+
+fn painted_rows(driver: &WinDriver<ScrollViewDemo>) -> Vec<usize> {
+    let mut rows: Vec<usize> = driver
+        .painted_texts()
+        .iter()
+        .filter_map(|text| text.trim().strip_prefix("row ")?.parse::<usize>().ok())
+        .collect();
+    rows.sort_unstable();
+    rows
+}
+
+fn first_painted_row(driver: &WinDriver<ScrollViewDemo>) -> usize {
+    *painted_rows(driver)
+        .first()
+        .expect("the demo always paints at least one row")
+}
+
+fn last_painted_row(driver: &WinDriver<ScrollViewDemo>) -> usize {
+    *painted_rows(driver)
+        .last()
+        .expect("the demo always paints at least one row")
+}
+
+fn scroll_view_track_x(driver: &WinDriver<ScrollViewDemo>) -> f32 {
+    let viewport = Backend::viewport(driver.backend());
+    viewport.width - scroll_view_demo::SCROLLBAR_WIDTH / 2.0
+}
+
+fn scroll_view_track_span(driver: &WinDriver<ScrollViewDemo>) -> (f32, f32) {
+    let viewport = Backend::viewport(driver.backend());
+    (0.0, viewport.height)
+}
+
+fn scroll_view_wheel(driver: &mut WinDriver<ScrollViewDemo>, notches: f32) -> Reaction {
+    let viewport = Backend::viewport(driver.backend());
+    let position = Point::new(viewport.width / 2.0, viewport.height / 2.0);
+    driver.dispatch(UiEvent::Scroll {
+        widget: None,
+        delta: quadraui::ScrollDelta::new(0.0, notches),
+        position,
+    })
+}
+
+#[test]
+fn scroll_view_win_wheel_scrolls_the_row_list() {
+    for (width, height) in SCROLL_VIEW_WINDOWS {
+        scroll_view_wheel_scenario(width, height);
+    }
+}
+
+fn scroll_view_wheel_scenario(width: u32, height: u32) {
+    let mut driver = WinDriver::new(ScrollViewDemo::new(), width, height);
+    assert_eq!(
+        first_painted_row(&driver),
+        0,
+        "a freshly-created demo starts scrolled to the top"
+    );
+    let bottom_row = scroll_view_demo::ROW_COUNT - 1;
+    let initial_last = last_painted_row(&driver);
+    assert!(
+        initial_last < bottom_row,
+        "a {width}x{height} viewport should not fit every one of \
+         {row_count} rows at once",
+        row_count = scroll_view_demo::ROW_COUNT
+    );
+
+    let reaction = scroll_view_wheel(&mut driver, 1.0);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "a wheel notch over the row list should scroll it and request a \
+         redraw"
+    );
+    assert!(
+        first_painted_row(&driver) > 0,
+        "scrolling down should move the first visible row past 0"
+    );
+    assert!(
+        last_painted_row(&driver) > initial_last,
+        "scrolling down should move the last visible row further down"
+    );
+
+    for _ in 0..scroll_view_demo::ROW_COUNT {
+        scroll_view_wheel(&mut driver, 1.0);
+    }
+    assert_eq!(
+        last_painted_row(&driver),
+        bottom_row,
+        "scrolling far enough down should clamp at the last row"
+    );
+    assert!(
+        first_painted_row(&driver) > 0,
+        "clamped at the bottom, the first visible row should still be > 0"
+    );
+    assert_eq!(
+        scroll_view_wheel(&mut driver, 1.0),
+        Reaction::Continue,
+        "once clamped at the bottom, another downward notch should be a \
+         no-op"
+    );
+
+    for _ in 0..scroll_view_demo::ROW_COUNT {
+        scroll_view_wheel(&mut driver, -1.0);
+    }
+    assert_eq!(
+        first_painted_row(&driver),
+        0,
+        "scrolling far enough back up should clamp at the top again"
+    );
+}
+
+#[test]
+fn scroll_view_win_dragging_the_scrollbar_thumb_scrolls_the_row_list() {
+    for (width, height) in SCROLL_VIEW_WINDOWS {
+        scroll_view_drag_scenario(width, height);
+    }
+}
+
+fn scroll_view_drag_scenario(width: u32, height: u32) {
+    let mut driver = WinDriver::new(ScrollViewDemo::new(), width, height);
+    assert_eq!(
+        first_painted_row(&driver),
+        0,
+        "a freshly-created demo starts scrolled to the top"
+    );
+
+    let track_x = scroll_view_track_x(&driver);
+    let (track_top, track_bottom) = scroll_view_track_span(&driver);
+    let grab_inset = scroll_view_demo::MIN_THUMB_LEN / 2.0;
+    driver.dispatch(UiEvent::MouseDown {
+        widget: None,
+        button: MouseButton::Left,
+        position: Point::new(track_x, track_top + grab_inset),
+        modifiers: Modifiers::default(),
+    });
+    let reaction = driver.dispatch(UiEvent::MouseMoved {
+        position: Point::new(track_x, track_bottom),
+        buttons: ButtonMask {
+            left: true,
+            ..ButtonMask::default()
+        },
+    });
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "dragging the thumb should scroll the row list and request a \
+         redraw"
+    );
+    driver.dispatch(UiEvent::MouseUp {
+        widget: None,
+        button: MouseButton::Left,
+        position: Point::new(track_x, track_bottom),
+    });
+
+    assert!(
+        first_painted_row(&driver) > 0,
+        "dragging the thumb to the bottom of the track should scroll past \
+         row 0"
+    );
+    assert_eq!(
+        last_painted_row(&driver),
+        scroll_view_demo::ROW_COUNT - 1,
+        "dragging the thumb all the way down should reach the last row"
+    );
+
+    // Drag back up to the top of the track.
+    driver.dispatch(UiEvent::MouseDown {
+        widget: None,
+        button: MouseButton::Left,
+        position: Point::new(track_x, track_bottom - grab_inset),
+        modifiers: Modifiers::default(),
+    });
+    driver.dispatch(UiEvent::MouseMoved {
+        position: Point::new(track_x, track_top),
+        buttons: ButtonMask {
+            left: true,
+            ..ButtonMask::default()
+        },
+    });
+    driver.dispatch(UiEvent::MouseUp {
+        widget: None,
+        button: MouseButton::Left,
+        position: Point::new(track_x, track_top),
+    });
+    assert_eq!(
+        first_painted_row(&driver),
+        0,
+        "dragging the thumb back to the top of the track should scroll \
+         back to row 0"
     );
 }

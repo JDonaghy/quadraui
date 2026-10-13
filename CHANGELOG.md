@@ -93,6 +93,17 @@ only a push to `main` runs this workflow.
   scroll + scrollbar-thumb drag over a tall row list), covered by a
   `GtkDriver` test (`tests/gtk_example_driver.rs`) asserting both input
   paths clip and scroll the painted content correctly.
+- Win-GUI rasteriser for `ScrollView`
+  (`quadraui::win::scroll_view::{paint_clipped, draw_scrollbar_for}`):
+  same shape as the GTK rasteriser above — clips child painting to the
+  viewport via `Backend::paint_surface`'s clip push/pop and draws the
+  scrollbar chrome via `Backend::draw_scrollbar`. Scroll-offset/clipping
+  math stays in `quadraui::primitives::scroll_view`; this module only
+  paints, and adds no new `Backend` trait method. Ships the
+  `win_scroll_view` example, reusing the same `ScrollViewDemo`
+  `AppLogic` as `gtk_scroll_view`, covered by a `WinDriver` test
+  (`tests/win_example_driver.rs`) asserting both wheel scroll and
+  scrollbar-thumb drag clip and scroll the painted content correctly.
 - `NumberInput` and editable `ComboBox` primitives
   (`quadraui::primitives::{number_input, combo_box}`): `NumberInput`
   covers min/max/step/precision bounds, stepper-button and

@@ -1,6 +1,5 @@
-//! `ScrollView` + GTK painter demo: a tall list of rows that overflows
-//! its viewport, scrolled by mouse wheel or by dragging the scrollbar
-//! thumb.
+//! `ScrollView` painter demo: a tall list of rows that overflows its
+//! viewport, scrolled by mouse wheel or by dragging the scrollbar thumb.
 //!
 //! `ScrollView` itself (in `quadraui::primitives::scroll_view`) only
 //! tracks scroll-offset and visible-range state; this `AppLogic`
@@ -8,8 +7,14 @@
 //! drag input onto it, the same composition pattern every other
 //! `*Controller` in `quadraui::compose` uses for its own scrollbar
 //! (see `quadraui::compose::tree_controller`). Painting goes through
-//! `quadraui::gtk::scroll_view::{paint_clipped, draw_scrollbar_for}`,
-//! GTK-only since there is no TUI rasteriser for this primitive yet.
+//! `paint_clipped`/`draw_scrollbar_for`, resolved below to whichever
+//! pixel backend (`gtk` or `win`) is enabled — there is no TUI
+//! rasteriser for this primitive yet.
+
+#[cfg(feature = "gtk")]
+use quadraui::gtk::scroll_view::{draw_scrollbar_for, paint_clipped};
+#[cfg(all(feature = "win", not(feature = "gtk")))]
+use quadraui::win::scroll_view::{draw_scrollbar_for, paint_clipped};
 
 use quadraui::primitives::scrollbar::ThumbDrag;
 use quadraui::{
@@ -116,7 +121,7 @@ impl AppLogic for ScrollViewDemo {
         let first_row = (start / ROW_HEIGHT).floor().max(0.0) as usize;
         let last_row = ((end / ROW_HEIGHT).ceil() as usize).min(ROW_COUNT);
 
-        quadraui::gtk::scroll_view::paint_clipped(backend, &view, |backend| {
+        paint_clipped(backend, &view, |backend| {
             for row in first_row..last_row {
                 let row_top = row as f32 * ROW_HEIGHT - view.clamped_offset();
                 let rect = Rect::new(view.viewport.x, row_top, view.viewport.width, ROW_HEIGHT);
@@ -132,7 +137,7 @@ impl AppLogic for ScrollViewDemo {
         });
 
         let track = self.track_rect(backend);
-        quadraui::gtk::scroll_view::draw_scrollbar_for(backend, &view, track, MIN_THUMB_LEN);
+        draw_scrollbar_for(backend, &view, track, MIN_THUMB_LEN);
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
