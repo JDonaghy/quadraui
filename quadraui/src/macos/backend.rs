@@ -2057,14 +2057,6 @@ impl Backend for MacBackend {
             "MacBackend::draw_tree called outside enter_frame_scope",
         );
         // Row labels/badges/chevrons are chrome (`ChromePrimitive::Tree`),
-        // not editor content — paint through `chrome_font`, matching
-        // `GtkBackend::draw_tree`. Unlike `current_font`, `chrome_font` is
-        // never `None` (seeded at construction), so there is no "no font yet"
-        // fallback branch. `line_height` deliberately stays `current_line_height`
-        // (the editor pitch) — mirroring `GtkBackend::draw_tree`, which
-        // passes its own `self.current_line_height` unchanged; row pitch
-        // tracking `chrome_font`'s metrics is a deliberately deferred part
-        // of chrome parity, not something this fix introduces or closes.
         let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
@@ -2090,9 +2082,9 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_list called outside enter_frame_scope",
         );
-        // The list is chrome (`ChromePrimitive::List`) — see `draw_tree`'s
-        // comment above for why this reads `chrome_font` instead of
-        // `current_font` while `line_height` deliberately stays the editor pitch.
+        // The list is chrome (`ChromePrimitive::List`) — paint through
+        // `chrome_font` at `chrome_line_height`, matching the compose
+        // layer's layout and `list_layout` hit regions.
         let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
@@ -2194,9 +2186,8 @@ impl Backend for MacBackend {
         )
     }
     fn list_layout(&self, rect: Rect, list: &ListView) -> crate::ListViewLayout {
-        // No font-role change here: `mac_list_layout` takes
-        // no font at all, only pitch — same `current_line_height`/
-        // `current_char_width` `GtkBackend::list_layout` uses.
+        // Lists are sidebar chrome — use the chrome metric so
+        // hit regions match `draw_list`'s painted row positions.
         super::list::mac_list_layout(
             list,
             rect.width as f64,
@@ -3072,19 +3063,12 @@ impl Backend for MacBackend {
         super::multi_section_view::mac_msv_layout(view, rect, self.chrome_line_height)
     }
     fn msv_metrics(&self) -> MsvLayoutMetrics {
-        super::multi_section_view::mac_msv_metrics(self.current_line_height, false)
+        super::multi_section_view::mac_msv_metrics(self.chrome_line_height, false)
     }
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
-        // No font-role change here — see `list_layout`'s
-        // comment above; `mac_tree_layout` only takes pitch, and
-        // `GtkBackend::tree_layout` passes its own editor
-        // `current_line_height` too.
         super::tree::mac_tree_layout(tree, rect, self.current_line_height)
     }
     fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<crate::Scrollbar> {
-        // macOS tree vertical-scrollbar rasteriser uses the same per-row
-        // pitch `Self::tree_layout` paints — `line_height * 1.4`
-        // (or `TreeStyle::row_height`), not the raw `line_height`.
         let row_h =
             crate::primitives::layout_metrics::tree_row_pitch(tree, self.current_line_height);
         tree.vscrollbar_with_track_width(

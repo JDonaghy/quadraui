@@ -59,6 +59,18 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-10-12
+### Fixed
+
+- `ShellAdapter::handle` now passes `chrome_line_height()` to
+  `AppShell::layout`, matching `AppShell::render` which already uses it
+  since #1517 — fixes a one-frame sidebar layout shift that broke
+  explorer hit-band tests (the event routing computed a different
+  sidebar rect than what was painted).
+- `MacBackend::msv_metrics` now uses `chrome_line_height` instead of
+  `current_line_height`, consistent with `msv_layout` and
+  `draw_multi_section_view` (both already use it since 7dfbad5e).
+
 ## [0.1.5] - 2026-10-12
 ### Added
 
