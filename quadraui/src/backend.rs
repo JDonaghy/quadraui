@@ -45,6 +45,7 @@ use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
+use crate::primitives::combo_box::{ComboBox, ComboBoxLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::command_line::{CommandLine, CommandLineLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
@@ -65,6 +66,7 @@ use crate::primitives::minimap::{Minimap, MinimapLayout, MinimapScale};
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
+use crate::primitives::number_input::{NumberInput, NumberInputLayout};
 use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
@@ -2742,6 +2744,36 @@ pub trait Backend: sealed::Sealed {
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`;
     /// callers compare directly against raw click coordinates.
     fn text_input_layout(&self, rect: Rect, ti: &TextInput) -> TextInputLayout;
+
+    /// Draw a [`NumberInput`] at its caller-resolved `layout`: the text
+    /// area plus the increment/decrement stepper buttons. The caller
+    /// computes `layout` itself via [`NumberInput::layout`] — no
+    /// separate `number_input_layout` accessor exists, mirroring
+    /// [`Self::draw_tooltip`] and [`Self::draw_completions`], whose
+    /// layouts are likewise host-resolved rather than backend-resolved.
+    ///
+    /// Defaulted, not required (`PRIMITIVE_RULES.md` rule 7): unlike
+    /// [`Self::draw_text_input`], a backend that hasn't wired a real
+    /// rasteriser yet is indistinguishable from one that correctly
+    /// paints nothing, so there is no portability hazard in leaving it
+    /// no-op — only a backend whose issue is scoped to this primitive
+    /// needs to override it.
+    fn draw_number_input(&mut self, number_input: &NumberInput, layout: &NumberInputLayout) {
+        let _ = (number_input, layout);
+    }
+
+    /// Draw a [`ComboBox`] at its caller-resolved `layout`: the field
+    /// plus, when open, the filtered dropdown. The caller computes
+    /// `layout` itself via [`ComboBox::layout`] — no separate
+    /// `combo_box_layout` accessor exists, same host-resolves-layout
+    /// shape as [`Self::draw_number_input`].
+    ///
+    /// Defaulted, not required (`PRIMITIVE_RULES.md` rule 7) — same
+    /// "structural absence, no portability hazard" reasoning as
+    /// [`Self::draw_number_input`].
+    fn draw_combo_box(&mut self, combo_box: &ComboBox, layout: &ComboBoxLayout) {
+        let _ = (combo_box, layout);
+    }
 
     /// Draw a [`Tooltip`] popup at its caller-resolved layout, with the
     /// default chrome ([`crate::TooltipBorder::Full`], no title). The

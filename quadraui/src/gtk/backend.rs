@@ -3587,6 +3587,38 @@ impl Backend for GtkBackend {
         )
     }
 
+    fn draw_number_input(
+        &mut self,
+        number_input: &crate::primitives::number_input::NumberInput,
+        layout: &crate::primitives::number_input::NumberInputLayout,
+    ) {
+        // `NumberInput`'s stepper glyphs and field text are chrome, not
+        // editor content — `self`'s own `PaintSurface::surface_draw_text_run`
+        // already forces `ui_font`, same as `Self::draw_panel` /
+        // `Self::draw_scrollbar`'s unwrapped-`self` shape, so no explicit
+        // font save/swap/restore is needed here.
+        let theme = self.current_theme;
+        crate::primitives::number_input::native_surface_paint::paint(
+            number_input,
+            layout,
+            self,
+            &theme,
+        );
+        self.register_zone(number_input.id.clone(), layout.bounds);
+    }
+
+    fn draw_combo_box(
+        &mut self,
+        combo_box: &crate::primitives::combo_box::ComboBox,
+        layout: &crate::primitives::combo_box::ComboBoxLayout,
+    ) {
+        // Same unwrapped-`self` shape as `Self::draw_number_input` above —
+        // field and dropdown-row labels are chrome text.
+        let theme = self.current_theme;
+        crate::primitives::combo_box::native_surface_paint::paint(combo_box, layout, self, &theme);
+        self.register_zone(combo_box.id.clone(), layout.field_bounds);
+    }
+
     fn draw_tooltip(&mut self, tooltip: &crate::Tooltip, layout_arg: &crate::TooltipLayout) {
         self.draw_tooltip_with_chrome(tooltip, layout_arg, &crate::TooltipChrome::default());
     }
