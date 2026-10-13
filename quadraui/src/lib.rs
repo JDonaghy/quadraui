@@ -400,6 +400,7 @@ pub use primitives::board::{
     board_layout, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardHit, BoardLayout,
     BoardMeasure, BoardModel, CardBadge, CardId, CardLayout, ColumnLayout, MoveDir,
 };
+pub use primitives::button::{Button, ButtonEvent, ButtonHit, ButtonLayout, ButtonVariant};
 pub use primitives::canvas::{Canvas, CanvasHit, CanvasLayout, DrawOp};
 pub use primitives::chart::{
     Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, Series,
@@ -483,6 +484,9 @@ pub use primitives::pipeline_view::{
 pub use primitives::progress::{
     ProgressBar, ProgressBarHit, ProgressBarLayout, ProgressBarMeasure,
 };
+pub use primitives::radio_group::{
+    RadioGroup, RadioGroupEvent, RadioGroupHit, RadioGroupLayout, RadioOption, RadioOptionMeasure,
+};
 pub use primitives::rich_text_popup::{
     PopupPlacement, PopupScrollbar, RichTextLink, RichTextPopup, RichTextPopupHit,
     RichTextPopupLayout, RichTextPopupMeasure, TextSelection, VisibleRichTextLine,
@@ -501,6 +505,7 @@ pub use primitives::status_bar::{
     StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout, StatusBarSegment,
     StatusSegmentMeasure, StatusSegmentSide, VisibleStatusSegment,
 };
+pub use primitives::switch::{Switch, SwitchEvent, SwitchHit, SwitchLayout};
 // `TabBarHits` is deprecated (D-6 pre-refactor hit struct; `TabBarLayout` with
 // `Rect` is the replacement). Allow it here since `pub use` of a deprecated
 // item is itself a use site. Removal is blocked on the six-method/four-backend
