@@ -491,6 +491,7 @@ pub use primitives::rich_text_popup::{
     PopupPlacement, PopupScrollbar, RichTextLink, RichTextPopup, RichTextPopupHit,
     RichTextPopupLayout, RichTextPopupMeasure, TextSelection, VisibleRichTextLine,
 };
+pub use primitives::scroll_view::{ScrollView, ScrollViewEvent};
 pub use primitives::scrollbar::{fit_thumb, PressZone, ScrollAxis, Scrollbar};
 pub use primitives::sidebar_panel::{
     SidebarPanel, SidebarPanelHit, SidebarPanelLayout, SidebarPanelMeasure,

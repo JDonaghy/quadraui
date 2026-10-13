@@ -72,6 +72,18 @@ only a push to `main` runs this workflow.
   conformance test (`tests/standalone_controls_driver.rs`) covers focus
   traversal, keyboard and pointer activation, and events on all three.
   `Form`/`Dialog`'s own field kinds are untouched.
+- `ScrollView` primitive (`quadraui::primitives::scroll_view`): generic
+  scroll-offset state, wheel/keyboard handling (`handle_wheel`,
+  `handle_key`), visible-range clipping math (`visible_range`,
+  `is_visible`), and scrollbar geometry (`scrollbar`) for a host that
+  scrolls arbitrary child content it lays out itself. Ships
+  `ScrollViewEvent`. Offsets are `f32` from the start, so it needs no
+  further API change for the planned crate-wide move to continuous
+  scroll offsets. Additive only — `List`/`TreeView`/`DataTable` keep
+  their own row-indexed scroll state unchanged. Shared logic only — no
+  backend painter yet; a headless `TuiDriver` conformance test
+  (`tests/scroll_view_driver.rs`) covers wheel/keyboard scroll and
+  clipping on arbitrary content.
 
 ## [0.1.6] - 2026-10-12
 ### Fixed
