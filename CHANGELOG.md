@@ -84,6 +84,15 @@ only a push to `main` runs this workflow.
   backend painter yet; a headless `TuiDriver` conformance test
   (`tests/scroll_view_driver.rs`) covers wheel/keyboard scroll and
   clipping on arbitrary content.
+- GTK rasteriser for `ScrollView`
+  (`quadraui::gtk::scroll_view::{paint_clipped, draw_scrollbar_for}`):
+  clips child painting to the viewport and draws the scrollbar chrome
+  via the existing `native_surface_paint` scrollbar painter. Scroll-
+  offset/clipping math stays in `quadraui::primitives::scroll_view` —
+  this module only paints. Ships the `gtk_scroll_view` example (wheel
+  scroll + scrollbar-thumb drag over a tall row list), covered by a
+  `GtkDriver` test (`tests/gtk_example_driver.rs`) asserting both input
+  paths clip and scroll the painted content correctly.
 - `NumberInput` and editable `ComboBox` primitives
   (`quadraui::primitives::{number_input, combo_box}`): `NumberInput`
   covers min/max/step/precision bounds, stepper-button and
