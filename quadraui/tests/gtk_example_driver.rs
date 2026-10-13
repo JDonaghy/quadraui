@@ -1314,66 +1314,169 @@ fn form_scroll_gtk_tab_moves_focus_from_name_to_first_toggle_and_back() {
     );
 }
 
-const SCROLL_VIEW_W: i32 = 400;
-const SCROLL_VIEW_H: i32 = 300;
+/// Window sizes the `ScrollView` demo scenarios each run at. The same
+/// assertions have to hold at every one of them: the demo's geometry is
+/// a function of the backend's viewport, so a host that hands the
+/// backend a different window must not change the scroll behaviour.
+const SCROLL_VIEW_WINDOWS: [(i32, i32); 2] = [(400, 300), (280, 170)];
+
+/// Row indices the demo currently paints, ascending, parsed back out of
+/// the painted text runs. Assertions are phrased in terms of *which rows
+/// are on screen*, so they hold for any viewport the host hands the
+/// backend instead of only the size this file asks for.
+fn painted_rows(driver: &GtkDriver<ScrollViewDemo>) -> Vec<usize> {
+    let mut rows: Vec<usize> = driver
+        .painted_texts()
+        .iter()
+        .filter_map(|text| text.trim().strip_prefix("row ")?.parse::<usize>().ok())
+        .collect();
+    rows.sort_unstable();
+    rows
+}
+
+fn first_painted_row(driver: &GtkDriver<ScrollViewDemo>) -> usize {
+    *painted_rows(driver)
+        .first()
+        .expect("the demo always paints at least one row")
+}
+
+fn last_painted_row(driver: &GtkDriver<ScrollViewDemo>) -> usize {
+    *painted_rows(driver)
+        .last()
+        .expect("the demo always paints at least one row")
+}
+
+/// Centre of the demo's scrollbar track, derived from the backend's own
+/// viewport rather than from the requested window size.
+fn scroll_view_track_x(driver: &GtkDriver<ScrollViewDemo>) -> f32 {
+    let viewport = quadraui::Backend::viewport(driver.backend());
+    viewport.width - scroll_view_demo::SCROLLBAR_WIDTH / 2.0
+}
+
+/// Vertical span of the scrollbar track, taken from the same viewport.
+fn scroll_view_track_span(driver: &GtkDriver<ScrollViewDemo>) -> (f32, f32) {
+    let viewport = quadraui::Backend::viewport(driver.backend());
+    (0.0, viewport.height)
+}
+
+fn scroll_view_wheel(driver: &mut GtkDriver<ScrollViewDemo>, notches: f32) -> Reaction {
+    let viewport = quadraui::Backend::viewport(driver.backend());
+    let position = Point::new(viewport.width / 2.0, viewport.height / 2.0);
+    driver.dispatch(UiEvent::Scroll {
+        widget: None,
+        delta: quadraui::ScrollDelta::new(0.0, notches),
+        position,
+    })
+}
 
 #[test]
 fn scroll_view_gtk_wheel_scrolls_the_row_list() {
-    let mut driver = GtkDriver::new(ScrollViewDemo::new(), SCROLL_VIEW_W, SCROLL_VIEW_H);
-    assert!(
-        driver.screen_contains("row 0"),
-        "row 0 should be painted at the top before any scrolling: {:?}",
+    for (width, height) in SCROLL_VIEW_WINDOWS {
+        scroll_view_wheel_scenario(width, height);
+    }
+}
+
+fn scroll_view_wheel_scenario(width: i32, height: i32) {
+    let mut driver = GtkDriver::new(ScrollViewDemo::new(), width, height);
+    assert_eq!(
+        first_painted_row(&driver),
+        0,
+        "row 0 should be painted at the top before any scrolling (window {width}x{height}): {:?}",
         driver.painted_texts()
     );
+    let bottom_row = scroll_view_demo::ROW_COUNT - 1;
+    let initial_last = last_painted_row(&driver);
     assert!(
-        !driver.screen_contains("row 20"),
-        "row 20 should be well past the initial viewport: {:?}",
+        initial_last < bottom_row,
+        "the row list must overflow its viewport for this test to mean anything (window {width}x{height}): {:?}",
         driver.painted_texts()
     );
 
     // `ScrollView::handle_wheel` treats `delta.y` as a notch count,
-    // multiplied by the caller's step (`WHEEL_STEP` = 3 rows here) —
-    // five notches scrolls far enough that row 0 scrolls out of view and
-    // row 20 scrolls into it, without overshooting to the bottom.
-    let reaction = driver.dispatch(UiEvent::Scroll {
-        widget: None,
-        delta: quadraui::ScrollDelta::new(0.0, 5.0),
-        position: Point::new(10.0, 10.0),
-    });
-    assert_eq!(reaction, Reaction::Redraw, "a wheel scroll should redraw");
+    // multiplied by the caller's step, so one notch scrolls the band of
+    // painted rows down without jumping to either extreme.
+    let reaction = scroll_view_wheel(&mut driver, 1.0);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "a wheel scroll should redraw (window {width}x{height})"
+    );
     assert!(
-        !driver.screen_contains("row 0"),
-        "row 0 should have scrolled out of view: {:?}",
+        first_painted_row(&driver) > 0,
+        "one notch should scroll the top row out of view (window {width}x{height}): {:?}",
         driver.painted_texts()
     );
     assert!(
-        driver.screen_contains("row 20"),
-        "scrolling down should bring deeper rows into view: {:?}",
+        last_painted_row(&driver) > initial_last,
+        "one notch should bring deeper rows into view (window {width}x{height}): {:?}",
+        driver.painted_texts()
+    );
+
+    // Enough notches to reach the end: the clipped band stops at the last
+    // row instead of scrolling past it, and further notches are absorbed.
+    for _ in 0..scroll_view_demo::ROW_COUNT {
+        scroll_view_wheel(&mut driver, 1.0);
+    }
+    assert_eq!(
+        last_painted_row(&driver),
+        bottom_row,
+        "scrolling to the end should paint the final row (window {width}x{height}): {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        first_painted_row(&driver) > 0,
+        "at the end of the list the first rows should be clipped away (window {width}x{height}): {:?}",
+        driver.painted_texts()
+    );
+    assert_eq!(
+        scroll_view_wheel(&mut driver, 1.0),
+        Reaction::Continue,
+        "a notch past the end of the content should not redraw (window {width}x{height})"
+    );
+
+    // And back up again — the offset is clamped, not accumulated past zero.
+    for _ in 0..scroll_view_demo::ROW_COUNT {
+        scroll_view_wheel(&mut driver, -1.0);
+    }
+    assert_eq!(
+        first_painted_row(&driver),
+        0,
+        "scrolling back up should return row 0 to the top (window {width}x{height}): {:?}",
         driver.painted_texts()
     );
 }
 
 #[test]
 fn scroll_view_gtk_dragging_the_scrollbar_thumb_scrolls_the_row_list() {
-    let mut driver = GtkDriver::new(ScrollViewDemo::new(), SCROLL_VIEW_W, SCROLL_VIEW_H);
-    assert!(
-        driver.screen_contains("row 0"),
-        "row 0 should be painted at the top before any dragging: {:?}",
+    for (width, height) in SCROLL_VIEW_WINDOWS {
+        scroll_view_drag_scenario(width, height);
+    }
+}
+
+fn scroll_view_drag_scenario(width: i32, height: i32) {
+    let mut driver = GtkDriver::new(ScrollViewDemo::new(), width, height);
+    assert_eq!(
+        first_painted_row(&driver),
+        0,
+        "row 0 should be painted at the top before any dragging (window {width}x{height}): {:?}",
         driver.painted_texts()
     );
 
     // The scrollbar track runs along the window's right edge (see
-    // `ScrollViewDemo::track_rect`); grab its thumb near the top and drag
-    // it down to the bottom of the track.
-    let track_x = SCROLL_VIEW_W as f32 - 7.0;
+    // `ScrollViewDemo::track_rect`). At offset zero the thumb sits at the
+    // top of the track and is at least `MIN_THUMB_LEN` long, so pressing
+    // half that far down the track always lands on it.
+    let track_x = scroll_view_track_x(&driver);
+    let (track_top, track_bottom) = scroll_view_track_span(&driver);
+    let grab_inset = scroll_view_demo::MIN_THUMB_LEN / 2.0;
     driver.dispatch(UiEvent::MouseDown {
         widget: None,
         button: MouseButton::Left,
-        position: Point::new(track_x, 5.0),
+        position: Point::new(track_x, track_top + grab_inset),
         modifiers: Modifiers::default(),
     });
     let reaction = driver.dispatch(UiEvent::MouseMoved {
-        position: Point::new(track_x, SCROLL_VIEW_H as f32 - 5.0),
+        position: Point::new(track_x, track_bottom),
         buttons: quadraui::ButtonMask {
             left: true,
             ..quadraui::ButtonMask::default()
@@ -1382,22 +1485,50 @@ fn scroll_view_gtk_dragging_the_scrollbar_thumb_scrolls_the_row_list() {
     assert_eq!(
         reaction,
         Reaction::Redraw,
-        "dragging the thumb should redraw"
+        "dragging the thumb should redraw (window {width}x{height})"
     );
     driver.dispatch(UiEvent::MouseUp {
         widget: None,
         button: MouseButton::Left,
-        position: Point::new(track_x, SCROLL_VIEW_H as f32 - 5.0),
+        position: Point::new(track_x, track_bottom),
     });
 
     assert!(
-        !driver.screen_contains("row 0"),
-        "dragging the thumb to the bottom should scroll row 0 out of view: {:?}",
+        first_painted_row(&driver) > 0,
+        "dragging the thumb to the bottom should scroll row 0 out of view (window {width}x{height}): {:?}",
         driver.painted_texts()
     );
-    assert!(
-        driver.screen_contains("row 39"),
-        "dragging the thumb to the bottom should bring the last row into view: {:?}",
+    assert_eq!(
+        last_painted_row(&driver),
+        scroll_view_demo::ROW_COUNT - 1,
+        "dragging the thumb to the bottom should bring the last row into view (window {width}x{height}): {:?}",
+        driver.painted_texts()
+    );
+
+    // Dragging the thumb back from its new home at the bottom of the
+    // track returns the list to the top.
+    driver.dispatch(UiEvent::MouseDown {
+        widget: None,
+        button: MouseButton::Left,
+        position: Point::new(track_x, track_bottom - grab_inset),
+        modifiers: Modifiers::default(),
+    });
+    driver.dispatch(UiEvent::MouseMoved {
+        position: Point::new(track_x, track_top),
+        buttons: quadraui::ButtonMask {
+            left: true,
+            ..quadraui::ButtonMask::default()
+        },
+    });
+    driver.dispatch(UiEvent::MouseUp {
+        widget: None,
+        button: MouseButton::Left,
+        position: Point::new(track_x, track_top),
+    });
+    assert_eq!(
+        first_painted_row(&driver),
+        0,
+        "dragging the thumb back to the top should restore row 0 (window {width}x{height}): {:?}",
         driver.painted_texts()
     );
 }
