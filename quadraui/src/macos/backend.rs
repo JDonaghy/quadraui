@@ -2057,9 +2057,11 @@ impl Backend for MacBackend {
             "MacBackend::draw_tree called outside enter_frame_scope",
         );
         // Row labels/badges/chevrons are chrome (`ChromePrimitive::Tree`),
+        // so row spacing uses the chrome metric — same reason as the MSV
+        // fix in 7dfbad5e.
         let font = &self.chrome_font;
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
+        let line_height = self.chrome_line_height;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::tree::draw_tree(
@@ -2087,7 +2089,7 @@ impl Backend for MacBackend {
         // layer's layout and `list_layout` hit regions.
         let font = &self.chrome_font;
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
+        let line_height = self.chrome_line_height;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::list::draw_list(
@@ -2179,7 +2181,7 @@ impl Backend for MacBackend {
         // Delegate to the primitive's geometry method using pixel units:
         // each "row" is one line_height tall (the primitive column-width
         // parameter is reused as row_height here, same as for TUI).
-        let row_h = self.line_height();
+        let row_h = self.chrome_line_height();
         list.vscrollbar(
             crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height),
             row_h,
@@ -2192,8 +2194,8 @@ impl Backend for MacBackend {
             list,
             rect.width as f64,
             rect.height as f64,
-            self.current_line_height,
-            self.current_char_width,
+            self.chrome_line_height,
+            self.chrome_char_width,
         )
     }
     /// Shared field-kind painting lives in
@@ -3090,11 +3092,11 @@ impl Backend for MacBackend {
         super::multi_section_view::mac_msv_metrics(self.chrome_line_height, false)
     }
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
-        super::tree::mac_tree_layout(tree, rect, self.current_line_height)
+        super::tree::mac_tree_layout(tree, rect, self.chrome_line_height)
     }
     fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<crate::Scrollbar> {
         let row_h =
-            crate::primitives::layout_metrics::tree_row_pitch(tree, self.current_line_height);
+            crate::primitives::layout_metrics::tree_row_pitch(tree, self.chrome_line_height);
         tree.vscrollbar_with_track_width(
             rect,
             row_h as f32,
@@ -8621,13 +8623,15 @@ mod tests {
     #[test]
     fn mac_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
         let backend = MacBackend::new();
-        let tree = flat_tree(15);
-        let rect = Rect::new(0.0, 0.0, 20.0, 300.0);
+        let row_pitch = (backend.chrome_line_height * 1.4).round();
+        let n_rows = ((250.0 / row_pitch).ceil() as usize) + 2;
+        let tree = flat_tree(n_rows);
+        let rect = Rect::new(0.0, 0.0, 20.0, 250.0);
 
         let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("15 rows at the real 22px row pitch overflow a 300px viewport");
+            .expect("rows at chrome_line_height row pitch must overflow a 250px viewport");
 
-        let expected_row_h = ((backend.current_line_height * 1.4).round()) as f32;
+        let expected_row_h = row_pitch as f32;
         assert_eq!(
             sb.track.width,
             crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
