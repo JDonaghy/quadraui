@@ -11,6 +11,7 @@
 
 pub mod activity_bar;
 pub mod board;
+pub mod button;
 pub mod canvas;
 pub mod chart;
 pub mod command_center;
@@ -36,6 +37,7 @@ pub mod palette;
 pub mod panel;
 pub mod pipeline_view;
 pub mod progress;
+pub mod radio_group;
 pub mod rich_text_popup;
 pub mod scrollbar;
 pub mod sidebar_panel;
@@ -43,6 +45,7 @@ pub mod spinner;
 pub mod split;
 pub mod split_tree;
 pub mod status_bar;
+pub mod switch;
 pub mod tab_bar;
 pub mod terminal;
 pub mod text_display;

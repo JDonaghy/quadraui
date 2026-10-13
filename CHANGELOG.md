@@ -58,6 +58,20 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Added
+
+- Standalone `Button`, `RadioGroup`, and `Switch` primitives
+  (`quadraui::primitives::{button, radio_group, switch}`): layout,
+  hit-test, keyboard focus/activation, and their events, usable outside
+  `Form`/`Dialog`. `Button` ships `ButtonVariant`, `ButtonLayout`,
+  `ButtonHit`, `ButtonEvent`; `RadioGroup` ships `RadioOption`,
+  `RadioOptionMeasure`, `RadioGroupLayout`, `RadioGroupHit`,
+  `RadioGroupEvent`; `Switch` ships `SwitchLayout`, `SwitchHit`,
+  `SwitchEvent`. Shared logic only — no backend painter yet, so these
+  have no TUI/GTK rasteriser or demo; a headless `TuiDriver`
+  conformance test (`tests/standalone_controls_driver.rs`) covers focus
+  traversal, keyboard and pointer activation, and events on all three.
+  `Form`/`Dialog`'s own field kinds are untouched.
 
 ## [0.1.6] - 2026-10-12
 ### Fixed
