@@ -201,14 +201,6 @@ dispatch.
 - `main` — released/stable; only updated by `develop` → `main` promotion merges
   (a version bump in one triggers the crates.io publish).
 - `develop` — integration branch; all feature work merges here first.
-- **`scripts/release.py prepare X.Y.Z` is the only supported way to bump
-  `quadraui/Cargo.toml`'s version.** It also refreshes `Cargo.lock`
-  (`cargo update -p quadraui --offline`) and retitles `CHANGELOG.md`'s
-  `[Unreleased]` section in the same commit. A hand-edit of the version field
-  that skips this script leaves `Cargo.lock` stale; `ci.yml`'s
-  `lockfile-check` job and `release.yml`'s `check` job both run
-  `scripts/release_decide.py check-lock`, which fails on that mismatch before
-  `cargo publish --locked` would.
 
 ## Reference consumer: vimcode
 
