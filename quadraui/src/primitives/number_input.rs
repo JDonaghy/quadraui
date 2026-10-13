@@ -321,6 +321,223 @@ pub enum NumberInputEvent {
     Cancelled { id: WidgetId },
 }
 
+/// Shared-paint executor for [`NumberInput`] — a rasteriser calls into
+/// this (never re-deriving geometry) instead of walking the fields
+/// itself, matching every other primitive's `native_surface_paint`
+/// module (see `docs/PRIMITIVE_RULES.md`'s "Primitive-first" rule).
+/// Gated to the backends that actually paint pixels — the TUI backend
+/// renders `NumberInput` through its own cell-grid path instead.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{NumberInput, NumberInputLayout};
+    use crate::paint_surface::PaintSurface;
+    use crate::theme::Theme;
+
+    /// The text currently shown in the field: the in-progress
+    /// [`NumberInput::draft`] verbatim when one is pending, otherwise
+    /// `value` formatted to `precision` decimal places.
+    fn display_text(number_input: &NumberInput) -> String {
+        match &number_input.draft {
+            Some(draft) => draft.clone(),
+            None => format!("{:.*}", number_input.precision as usize, number_input.value),
+        }
+    }
+
+    /// Paint a [`NumberInput`] onto `surface`: a bordered text area
+    /// showing [`display_text`], plus the increment/decrement stepper
+    /// buttons stacked in their own bordered cells. `disabled` and
+    /// `focused` recolour the border/text, mirroring
+    /// [`crate::primitives::text_input`]'s own disabled/focus
+    /// treatment — there is no per-button hover/press state to react to
+    /// here, since (unlike [`crate::Scrollbar`]) `NumberInput` tracks
+    /// none.
+    pub(crate) fn paint(
+        number_input: &NumberInput,
+        layout: &NumberInputLayout,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+    ) {
+        if layout.bounds.width <= 0.0 || layout.bounds.height <= 0.0 {
+            return;
+        }
+
+        let border = if number_input.disabled {
+            theme.border_fg
+        } else if number_input.focused {
+            theme.accent_fg
+        } else {
+            theme.border_fg
+        };
+        let fg = if number_input.disabled {
+            theme.muted_fg
+        } else {
+            theme.surface_fg
+        };
+
+        surface.surface_fill_rect(layout.text_area, theme.input_bg);
+        surface.surface_stroke_rect(layout.bounds, border, 1.0);
+
+        let text = display_text(number_input);
+        if !text.is_empty() {
+            surface.surface_draw_text_run(layout.text_area, &text, fg);
+        }
+
+        surface.surface_stroke_rect(layout.increment, border, 1.0);
+        surface.surface_stroke_rect(layout.decrement, border, 1.0);
+        surface.surface_draw_text_run(layout.increment, "+", fg);
+        surface.surface_draw_text_run(layout.decrement, "-", fg);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::{Point, Rect, Viewport};
+        use crate::types::{Color, WidgetId};
+        use crate::Image;
+
+        /// Records every surface verb `NumberInput`'s paint uses — mirrors
+        /// `primitives::command_line`'s identical test double, so this
+        /// test runs on any host without Cairo/Core Graphics/Direct2D.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color)>,
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, _stroke_width: f32) {
+                self.strokes.push((rect, color));
+            }
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: Point,
+                _to: Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn sample() -> (NumberInput, NumberInputLayout) {
+            let n = NumberInput::new(WidgetId::new("settings:volume"), 0.0, 100.0);
+            let layout = n.layout(Rect::new(0.0, 0.0, 10.0, 2.0));
+            (n, layout)
+        }
+
+        #[test]
+        fn paints_text_area_background_border_and_value() {
+            let (n, layout) = sample();
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&n, &layout, &mut surface, &theme);
+
+            assert_eq!(surface.fills[0], (layout.text_area, theme.input_bg));
+            assert!(surface.strokes.contains(&(layout.bounds, theme.border_fg)));
+            assert_eq!(surface.text_runs[0].1, "0");
+        }
+
+        #[test]
+        fn shows_in_progress_draft_instead_of_committed_value() {
+            let (mut n, layout) = sample();
+            n.draft = Some("4".into());
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&n, &layout, &mut surface, &theme);
+
+            assert_eq!(surface.text_runs[0].1, "4");
+        }
+
+        #[test]
+        fn paints_both_stepper_buttons_with_their_own_border() {
+            let (n, layout) = sample();
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&n, &layout, &mut surface, &theme);
+
+            assert!(surface
+                .strokes
+                .contains(&(layout.increment, theme.border_fg)));
+            assert!(surface
+                .strokes
+                .contains(&(layout.decrement, theme.border_fg)));
+            assert!(surface
+                .text_runs
+                .iter()
+                .any(|(r, t, _)| *r == layout.increment && t == "+"));
+            assert!(surface
+                .text_runs
+                .iter()
+                .any(|(r, t, _)| *r == layout.decrement && t == "-"));
+        }
+
+        #[test]
+        fn focused_border_differs_from_unfocused_border() {
+            let (mut n, layout) = sample();
+            n.focused = true;
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&n, &layout, &mut surface, &theme);
+
+            assert!(surface.strokes.contains(&(layout.bounds, theme.accent_fg)));
+        }
+
+        #[test]
+        fn zero_size_bounds_paints_nothing() {
+            let n = NumberInput::new(WidgetId::new("v"), 0.0, 100.0);
+            let layout = n.layout(Rect::new(0.0, 0.0, 0.0, 0.0));
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&n, &layout, &mut surface, &theme);
+            assert!(surface.fills.is_empty());
+            assert!(surface.strokes.is_empty());
+            assert!(surface.text_runs.is_empty());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

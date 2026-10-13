@@ -347,6 +347,267 @@ pub enum ComboBoxEvent {
     Cancelled { id: WidgetId },
 }
 
+/// Shared-paint executor for [`ComboBox`] — a rasteriser calls into
+/// this (never re-deriving geometry or re-filtering `options` itself)
+/// instead of walking the fields directly, matching every other
+/// primitive's `native_surface_paint` module (see
+/// `docs/PRIMITIVE_RULES.md`'s "Primitive-first" rule). Gated to the
+/// backends that actually paint pixels — the TUI backend renders
+/// `ComboBox` through its own cell-grid path instead.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{ComboBox, ComboBoxLayout};
+    use crate::paint_surface::PaintSurface;
+    use crate::theme::Theme;
+
+    /// Paint a [`ComboBox`] onto `surface`: a bordered text field
+    /// showing [`ComboBox::text`], plus — when `layout.dropdown` is
+    /// `Some` — the filtered options popup, highlighting whichever
+    /// filtered-list index [`ComboBox::highlighted`] names. Item
+    /// labels aren't carried on [`crate::primitives::completions::VisibleCompletion`],
+    /// so each visible item's `item_idx` (an index into the *filtered*
+    /// list, per [`ComboBox::filtered_indices`]'s own contract) is
+    /// mapped back through `combo_box.options` here rather than in the
+    /// primitive's own layout code, mirroring how [`ComboBox::commit`]
+    /// already does that same index chase.
+    pub(crate) fn paint(
+        combo_box: &ComboBox,
+        layout: &ComboBoxLayout,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+    ) {
+        let field = layout.field_bounds;
+        if field.width > 0.0 && field.height > 0.0 {
+            let border = if combo_box.disabled {
+                theme.border_fg
+            } else if combo_box.focused {
+                theme.accent_fg
+            } else {
+                theme.border_fg
+            };
+            let fg = if combo_box.disabled {
+                theme.muted_fg
+            } else {
+                theme.surface_fg
+            };
+            surface.surface_fill_rect(field, theme.input_bg);
+            surface.surface_stroke_rect(field, border, 1.0);
+            if !combo_box.text.is_empty() {
+                surface.surface_draw_text_run(field, &combo_box.text, fg);
+            }
+        }
+
+        let Some(dropdown) = &layout.dropdown else {
+            return;
+        };
+        if dropdown.bounds.width <= 0.0 || dropdown.bounds.height <= 0.0 {
+            return;
+        }
+        surface.surface_fill_rect(dropdown.bounds, theme.completion_bg);
+        surface.surface_stroke_rect(dropdown.bounds, theme.completion_border, 1.0);
+
+        let filtered = combo_box.filtered_indices();
+        for visible in &dropdown.visible_items {
+            if combo_box.highlighted == Some(visible.item_idx) {
+                surface.surface_fill_rect(visible.bounds, theme.completion_selected_bg);
+            }
+            if let Some(&option_idx) = filtered.get(visible.item_idx) {
+                surface.surface_draw_text_run(
+                    visible.bounds,
+                    &combo_box.options[option_idx],
+                    theme.completion_fg,
+                );
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::{Point, Rect, Viewport};
+        use crate::primitives::completions::CompletionItemMeasure;
+        use crate::types::{Color, WidgetId};
+        use crate::Image;
+
+        /// Records every surface verb `ComboBox`'s paint uses — mirrors
+        /// `primitives::command_line`'s identical test double, so this
+        /// test runs on any host without Cairo/Core Graphics/Direct2D.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color)>,
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, _stroke_width: f32) {
+                self.strokes.push((rect, color));
+            }
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: Point,
+                _to: Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn options() -> Vec<String> {
+            vec!["Apple".into(), "Apricot".into(), "Banana".into()]
+        }
+
+        fn field_bounds() -> Rect {
+            Rect::new(0.0, 0.0, 20.0, 1.0)
+        }
+
+        fn viewport() -> Rect {
+            Rect::new(0.0, 0.0, 80.0, 24.0)
+        }
+
+        #[test]
+        fn paints_field_background_border_and_text() {
+            let mut c = ComboBox::new(WidgetId::new("form:fruit"), options());
+            c.text = "Cher".into();
+            let layout = c.layout(field_bounds(), viewport(), 20.0, 10.0, |_| {
+                CompletionItemMeasure::new(1.0)
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&c, &layout, &mut surface, &theme);
+
+            assert_eq!(surface.fills[0], (field_bounds(), theme.input_bg));
+            assert!(surface.strokes.contains(&(field_bounds(), theme.border_fg)));
+            assert_eq!(surface.text_runs[0].1, "Cher");
+        }
+
+        #[test]
+        fn closed_dropdown_paints_no_popup_chrome() {
+            let c = ComboBox::new(WidgetId::new("form:fruit"), options());
+            let layout = c.layout(field_bounds(), viewport(), 20.0, 10.0, |_| {
+                CompletionItemMeasure::new(1.0)
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&c, &layout, &mut surface, &theme);
+
+            assert!(!surface
+                .fills
+                .iter()
+                .any(|(_, color)| *color == theme.completion_bg));
+        }
+
+        #[test]
+        fn open_dropdown_paints_every_filtered_option_label() {
+            let mut c = ComboBox::new(WidgetId::new("form:fruit"), options());
+            c.open = true;
+            c.text = "ap".into(); // filtered: Apple, Apricot
+            let layout = c.layout(field_bounds(), viewport(), 20.0, 10.0, |_| {
+                CompletionItemMeasure::new(1.0)
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&c, &layout, &mut surface, &theme);
+
+            assert!(surface
+                .fills
+                .iter()
+                .any(|(_, color)| *color == theme.completion_bg));
+            let labels: Vec<&str> = surface
+                .text_runs
+                .iter()
+                .map(|(_, text, _)| text.as_str())
+                .collect();
+            assert!(labels.contains(&"Apple"));
+            assert!(labels.contains(&"Apricot"));
+            assert!(!labels.contains(&"Banana"));
+        }
+
+        #[test]
+        fn highlighted_item_gets_a_selection_fill() {
+            let mut c = ComboBox::new(WidgetId::new("form:fruit"), options());
+            c.open = true;
+            c.text = "ap".into(); // filtered: [0 Apple, 1 Apricot]
+            c.highlighted = Some(1);
+            let layout = c.layout(field_bounds(), viewport(), 20.0, 10.0, |_| {
+                CompletionItemMeasure::new(1.0)
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&c, &layout, &mut surface, &theme);
+
+            let highlighted_bounds = layout.dropdown.as_ref().unwrap().visible_items[1].bounds;
+            assert!(surface
+                .fills
+                .contains(&(highlighted_bounds, theme.completion_selected_bg)));
+            let unhighlighted_bounds = layout.dropdown.as_ref().unwrap().visible_items[0].bounds;
+            assert!(!surface
+                .fills
+                .contains(&(unhighlighted_bounds, theme.completion_selected_bg)));
+        }
+
+        #[test]
+        fn zero_size_field_paints_nothing_for_the_field() {
+            let c = ComboBox::new(WidgetId::new("form:fruit"), options());
+            let layout = c.layout(
+                Rect::new(0.0, 0.0, 0.0, 0.0),
+                viewport(),
+                20.0,
+                10.0,
+                |_| CompletionItemMeasure::new(1.0),
+            );
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&c, &layout, &mut surface, &theme);
+            assert!(surface.fills.is_empty());
+            assert!(surface.strokes.is_empty());
+            assert!(surface.text_runs.is_empty());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

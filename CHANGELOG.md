@@ -112,11 +112,22 @@ only a push to `main` runs this workflow.
   placement layout), type-ahead, keyboard navigation, and commit/cancel
   semantics. `NumberInput` ships `NumberInputLayout`, `NumberInputHit`,
   `NumberInputEvent`; `ComboBox` ships `ComboBoxLayout`, `ComboBoxHit`,
-  `ComboBoxEvent`. Shared logic only — no backend painter yet, so these
-  have no TUI/GTK rasteriser or demo; a headless `TuiDriver`
-  conformance test (`tests/number_input_combo_box_driver.rs`) covers
-  validation, commit, and cancel for both widgets. `TextInput` is
-  untouched.
+  `ComboBoxEvent`. Shared logic only; a headless `TuiDriver` conformance
+  test (`tests/number_input_combo_box_driver.rs`) covers validation,
+  commit, and cancel for both widgets. `TextInput` is untouched.
+- GTK rasterisers for `NumberInput` and `ComboBox`
+  (`quadraui::gtk::{number_input, combo_box}`): stepper-button and
+  mouse-wheel chrome for `NumberInput`, dropdown and type-ahead
+  highlight chrome for `ComboBox`, via two new `Backend` methods
+  (`draw_number_input`, `draw_combo_box`) with default (no-op)
+  implementations per rule 7 so no existing `Backend` implementor
+  breaks. Both delegate to shared `native_surface_paint::paint` functions
+  added to `quadraui::primitives::{number_input, combo_box}` — layout and
+  validation/commit/cancel logic is unchanged and stays backend-generic.
+  Covered by `GtkDriver` tests in each new module (stepper click/wheel
+  increment for `NumberInput`; type-ahead filter, keyboard navigation,
+  commit, cancel, and dropdown-item click for `ComboBox`). The gallery
+  demo is deferred to the `ComboBox`/`NumberInput` gallery-page issue.
 
 ## [0.1.6] - 2026-10-12
 ### Fixed
