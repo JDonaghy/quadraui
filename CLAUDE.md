@@ -205,9 +205,10 @@ dispatch.
   `quadraui/Cargo.toml`'s version.** It also refreshes `Cargo.lock`
   (`cargo update -p quadraui --offline`) and retitles `CHANGELOG.md`'s
   `[Unreleased]` section in the same commit. A hand-edit of the version field
-  that skips this script leaves `Cargo.lock` stale; `release.yml`'s `check`
-  job runs `scripts/release_decide.py check-lock` to catch that before
-  `cargo publish --locked` would otherwise fail on it.
+  that skips this script leaves `Cargo.lock` stale; `ci.yml`'s
+  `lockfile-check` job and `release.yml`'s `check` job both run
+  `scripts/release_decide.py check-lock`, which fails on that mismatch before
+  `cargo publish --locked` would.
 
 ## Reference consumer: vimcode
 
