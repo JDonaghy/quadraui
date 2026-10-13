@@ -70,6 +70,7 @@ const EXEMPT: &[&str] = &["layout_metrics"];
 const PRIMITIVES: &[(&str, &str)] = &[
     ("activity_bar", "ActivityBar"),
     ("board", "BoardModel"),
+    ("button", "Button"),
     ("canvas", "Canvas"),
     ("chart", "Chart"),
     ("command_center", "CommandCenter"),
@@ -94,6 +95,7 @@ const PRIMITIVES: &[(&str, &str)] = &[
     ("panel", "Panel"),
     ("pipeline_view", "PipelineView"),
     ("progress", "ProgressBar"),
+    ("radio_group", "RadioGroup"),
     ("rich_text_popup", "RichTextPopup"),
     ("scrollbar", "Scrollbar"),
     ("sidebar_panel", "SidebarPanel"),
@@ -101,6 +103,7 @@ const PRIMITIVES: &[(&str, &str)] = &[
     ("split", "Split"),
     ("split_tree", "SplitTree"),
     ("status_bar", "StatusBar"),
+    ("switch", "Switch"),
     ("tab_bar", "TabBar"),
     ("terminal", "Terminal"),
     ("text_display", "TextDisplay"),
