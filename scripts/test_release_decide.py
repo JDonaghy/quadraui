@@ -167,6 +167,102 @@ class DecideCommandTests(unittest.TestCase):
             self.assertIn("tag=v0.2.0", contents)
 
 
+class CargoFixtureRepo:
+    """A minimal cargo workspace + git repo for `check-lock` tests.
+
+    Mirrors `scripts/test_release.py`'s `ReleaseFixtureRepo` shape (a
+    `quadraui` member crate with no external dependencies, so `cargo update
+    -p quadraui --offline` never needs network access) but without the
+    `develop` branch / `CHANGELOG.md` machinery `prepare`/`promote` need,
+    since `check-lock` only cares about `Cargo.lock` vs.
+    `quadraui/Cargo.toml`.
+    """
+
+    def __init__(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / "quadraui" / "src").mkdir(parents=True)
+        (self.root / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["quadraui"]\nresolver = "2"\n'
+        )
+        (self.root / "quadraui" / "Cargo.toml").write_text(
+            '[package]\nname = "quadraui"\nversion = "0.1.0"\nedition = "2021"\n'
+        )
+        (self.root / "quadraui" / "src" / "lib.rs").write_text("pub fn hello() {}\n")
+        subprocess.run(
+            ["cargo", "generate-lockfile", "--offline"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        run_git(["init", "-q", "-b", "develop"], self.root)
+        run_git(["config", "user.email", "test@example.com"], self.root)
+        run_git(["config", "user.name", "Test"], self.root)
+        run_git(["add", "-A"], self.root)
+        run_git(["commit", "-q", "-m", "init"], self.root)
+
+    def __enter__(self) -> "CargoFixtureRepo":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._tmp.cleanup()
+
+    def bump_cargo_toml_version_only(self, new_version: str) -> None:
+        """Edit `quadraui/Cargo.toml`'s version without touching `Cargo.lock`.
+
+        Simulates the exact mistake #1524 is about: a hand-edited version
+        bump that skips `scripts/release.py prepare` (and thus its
+        `cargo update -p quadraui --offline` step).
+        """
+        path = self.root / "quadraui" / "Cargo.toml"
+        path.write_text(path.read_text().replace('"0.1.0"', f'"{new_version}"'))
+        run_git(["commit", "-q", "-am", f"bump to {new_version} (no lock update)"], self.root)
+
+
+class CheckLockCommandTests(unittest.TestCase):
+    def _run_check_lock(self, repo_dir: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(Path(release_decide.__file__)),
+                "check-lock",
+                "--repo-dir",
+                str(repo_dir),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_passes_when_lock_matches_cargo_toml(self):
+        with CargoFixtureRepo() as repo:
+            result = self._run_check_lock(repo.root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("matches", result.stdout)
+
+    def test_fails_when_version_bumped_without_lock_update(self):
+        with CargoFixtureRepo() as repo:
+            repo.bump_cargo_toml_version_only("0.2.0")
+            result = self._run_check_lock(repo.root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("stale", result.stderr)
+            self.assertIn("release.py prepare", result.stderr)
+
+    def test_passes_after_release_py_prepare_style_lock_refresh(self):
+        with CargoFixtureRepo() as repo:
+            repo.bump_cargo_toml_version_only("0.2.0")
+            subprocess.run(
+                ["cargo", "update", "-p", "quadraui", "--offline"],
+                cwd=repo.root,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            run_git(["commit", "-q", "-am", "refresh Cargo.lock"], repo.root)
+            result = self._run_check_lock(repo.root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class ChangelogSectionTests(unittest.TestCase):
     CHANGELOG = """\
 # Changelog

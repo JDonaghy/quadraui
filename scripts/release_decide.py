@@ -13,7 +13,7 @@ is the part of that decision worth testing outside a real GitHub Actions run:
   - tag missing and the changelog section is missing/empty -> fail, before
     any tag is pushed or anything is published
 
-Two subcommands, used from `release.yml`:
+Three subcommands, used from `release.yml`:
 
     python3 scripts/release_decide.py decide \\
         --version 0.1.2 --remote origin --repo-dir .
@@ -21,11 +21,20 @@ Two subcommands, used from `release.yml`:
     python3 scripts/release_decide.py notes \\
         --changelog CHANGELOG.md --version 0.1.2 --out notes.md
 
+    python3 scripts/release_decide.py check-lock --repo-dir .
+
 `decide` exits 0 and prints `decision=noop` or `decision=publish` (also
 appended to the file named by `$GITHUB_OUTPUT`, if set) and touches the
 network only via `git ls-remote` against the real remote tags, never the
 shallow local checkout. `notes` extracts the `## [<version>]` CHANGELOG.md
 section and exits 1, writing nothing, if that section is missing or empty.
+
+`check-lock` guards against a version bump that edited `quadraui/Cargo.toml`
+directly instead of going through `scripts/release.py prepare` (#1524):
+it runs `cargo update -p quadraui --offline` (the same call `prepare` makes)
+and fails if that changes `Cargo.lock`, before `decide` or `notes` run. It
+never commits the refreshed lockfile — the point is to catch the mismatch in
+CI, not to fix it.
 """
 from __future__ import annotations
 
@@ -102,6 +111,45 @@ def cmd_decide(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check_lock(args: argparse.Namespace) -> int:
+    repo_dir = Path(args.repo_dir)
+
+    update = subprocess.run(
+        ["cargo", "update", "-p", "quadraui", "--offline"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+    if update.returncode != 0:
+        print(
+            f"::error::`cargo update -p quadraui --offline` failed:\n{update.stderr}",
+            file=sys.stderr,
+        )
+        return 1
+
+    diff = subprocess.run(
+        ["git", "diff", "--exit-code", "--", "Cargo.lock"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+    if diff.returncode != 0:
+        print(
+            "::error::Cargo.lock is stale — did you use `scripts/release.py "
+            "prepare`? `cargo update -p quadraui --offline` changed Cargo.lock, "
+            "which means quadraui/Cargo.toml's version was bumped without "
+            "refreshing Cargo.lock to match. Run `scripts/release.py prepare "
+            "X.Y.Z` (which does this for you) or `cargo update -p quadraui "
+            "--offline` and commit the result.",
+            file=sys.stderr,
+        )
+        print(diff.stdout, file=sys.stderr)
+        return 1
+
+    print("Cargo.lock matches quadraui/Cargo.toml's version.")
+    return 0
+
+
 def cmd_notes(args: argparse.Namespace) -> int:
     changelog_path = Path(args.changelog)
     text = changelog_path.read_text(encoding="utf-8")
@@ -131,6 +179,12 @@ def main(argv: list[str] | None = None) -> int:
     notes.add_argument("--version", required=True)
     notes.add_argument("--out", required=True)
     notes.set_defaults(func=cmd_notes)
+
+    check_lock = sub.add_parser(
+        "check-lock", help="fail if Cargo.lock is stale relative to quadraui's version"
+    )
+    check_lock.add_argument("--repo-dir", default=".")
+    check_lock.set_defaults(func=cmd_check_lock)
 
     args = parser.parse_args(argv)
     return args.func(args)
