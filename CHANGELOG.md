@@ -132,6 +132,18 @@ only a push to `main` runs this workflow.
   for `ComboBox`) and by TUI paint/click round-trip tests plus two new
   `tests/conformance/c0.rs` cases. The gallery demo is deferred to the
   `ComboBox`/`NumberInput` gallery-page issue.
+- Windows rasteriser for `NumberInput` and `ComboBox`
+  (`quadraui::win::{number_input, combo_box}`): same shape as the GTK
+  rasterisers above — `Backend::draw_number_input` and
+  `Backend::draw_combo_box` delegate entirely to the shared
+  `native_surface_paint::paint` functions in
+  `quadraui::primitives::{number_input, combo_box}`, so these modules
+  carry no production code of their own. Layout and
+  validation/commit/cancel logic is unchanged and stays backend-generic.
+  Covered by `WinDriver` tests in each new module (stepper click/wheel
+  increment for `NumberInput`; type-ahead filter, keyboard navigation,
+  commit, cancel, and dropdown-item click for `ComboBox`). The gallery
+  demo is deferred to the `ComboBox`/`NumberInput` gallery-page issue.
 
 ## [0.1.6] - 2026-10-12
 ### Fixed
