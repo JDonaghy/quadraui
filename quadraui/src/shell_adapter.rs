@@ -98,7 +98,7 @@ impl<A: ShellApp> ShellAdapter<A> {
         area: Rect,
         ev: &AppShellEvent,
     ) -> Reaction {
-        let layout = self.shell.layout(area, backend.line_height());
+        let layout = self.shell.layout(area, backend.chrome_line_height());
         let sidebar_visible = self.shell.sidebar_visible();
         let ctx = ShellContext::new(
             self.active_panel_id.as_ref(),
@@ -313,7 +313,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
                 stack.hit_test(position).is_some()
             };
             if modal_hit {
-                let layout = self.shell.layout(area, backend.line_height());
+                let layout = self.shell.layout(area, backend.chrome_line_height());
                 let sidebar_visible = self.shell.sidebar_visible();
                 let ctx = ShellContext::new(
                     self.active_panel_id.as_ref(),
@@ -427,7 +427,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             }
         }
 
-        let layout = self.shell.layout(area, backend.line_height());
+        let layout = self.shell.layout(area, backend.chrome_line_height());
         let sidebar_visible = self.shell.sidebar_visible();
         let ctx = ShellContext::new(
             self.active_panel_id.as_ref(),
