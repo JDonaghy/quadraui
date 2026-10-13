@@ -16,7 +16,7 @@
 //!
 //! ## What's in the box
 //!
-//! 46 primitives (one module each under `src/primitives/`), each
+//! 48 primitives (one module each under `src/primitives/`), each
 //! declarative + serde-friendly so apps and Lua plugins can describe UI
 //! as data. A representative sample:
 //!
@@ -103,7 +103,7 @@
 //! `0.1.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
-//! `quadraui/docs/decisions/DECISIONS.md`. 46 primitives shipped. The TUI
+//! `quadraui/docs/decisions/DECISIONS.md`. 48 primitives shipped. The TUI
 //! and GTK backends have full feature parity and are battle-tested by
 //! vimcode (5000+ tests). The macOS backend implements the whole
 //! `Backend` trait and is built/tested for real on `macos-latest` CI. The
@@ -405,6 +405,7 @@ pub use primitives::canvas::{Canvas, CanvasHit, CanvasLayout, DrawOp};
 pub use primitives::chart::{
     Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, Series,
 };
+pub use primitives::combo_box::{ComboBox, ComboBoxEvent, ComboBoxHit, ComboBoxLayout};
 pub use primitives::command_center::{
     CommandCenter, CommandCenterHit, CommandCenterLayout, CommandCenterMeasure,
 };
@@ -469,6 +470,9 @@ pub use primitives::multi_section_view::{
     HeaderHit, InlineInput, MsvLayoutMetrics, MultiSectionView, MultiSectionViewHit,
     MultiSectionViewLayout, ScrollMode, ScrollbarHit, Section, SectionAux, SectionBody,
     SectionHeader, SectionId, SectionLayout, SectionMeasure, SectionSize,
+};
+pub use primitives::number_input::{
+    NumberInput, NumberInputEvent, NumberInputHit, NumberInputLayout,
 };
 pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout, PaletteMode,
