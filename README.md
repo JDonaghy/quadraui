@@ -203,7 +203,7 @@ Pick the backends you ship; `terminal` is independent of them.
 
 ## What's in the box
 
-**42 primitives**, one module each under `quadraui/src/primitives/`: a
+**45 primitives**, one module each under `quadraui/src/primitives/`: a
 declarative description, a shared layout, and a rasteriser per backend.
 Among them:
 

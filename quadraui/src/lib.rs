@@ -16,7 +16,7 @@
 //!
 //! ## What's in the box
 //!
-//! 42 primitives (one module each under `src/primitives/`), each
+//! 45 primitives (one module each under `src/primitives/`), each
 //! declarative + serde-friendly so apps and Lua plugins can describe UI
 //! as data. A representative sample:
 //!
@@ -103,7 +103,7 @@
 //! `0.1.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
-//! `quadraui/docs/decisions/DECISIONS.md`. 42 primitives shipped. The TUI
+//! `quadraui/docs/decisions/DECISIONS.md`. 45 primitives shipped. The TUI
 //! and GTK backends have full feature parity and are battle-tested by
 //! vimcode (5000+ tests). The macOS backend implements the whole
 //! `Backend` trait and is built/tested for real on `macos-latest` CI. The
