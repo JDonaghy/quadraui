@@ -48,6 +48,7 @@ mod pipeline_view;
 mod progress;
 mod rich_text_popup;
 mod run;
+pub mod scroll_view;
 mod scrollbar;
 pub mod services;
 pub mod shell_runner;

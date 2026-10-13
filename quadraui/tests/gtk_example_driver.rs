@@ -59,6 +59,10 @@ use context_menu_style_demo::ContextMenuStyleDemo;
 mod submenu_app;
 use submenu_app::SubmenuApp;
 
+#[path = "../examples/common/scroll_view_demo.rs"]
+mod scroll_view_demo;
+use scroll_view_demo::ScrollViewDemo;
+
 #[path = "../examples/common/form_scroll.rs"]
 mod form_scroll;
 use form_scroll::FormScrollApp;
@@ -1306,6 +1310,94 @@ fn form_scroll_gtk_tab_moves_focus_from_name_to_first_toggle_and_back() {
     assert!(
         driver.screen_contains("name = \"X\""),
         "after Tab then Shift+Tab, typing should still reach the name field: {:?}",
+        driver.painted_texts()
+    );
+}
+
+const SCROLL_VIEW_W: i32 = 400;
+const SCROLL_VIEW_H: i32 = 300;
+
+#[test]
+fn scroll_view_gtk_wheel_scrolls_the_row_list() {
+    let mut driver = GtkDriver::new(ScrollViewDemo::new(), SCROLL_VIEW_W, SCROLL_VIEW_H);
+    assert!(
+        driver.screen_contains("row 0"),
+        "row 0 should be painted at the top before any scrolling: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        !driver.screen_contains("row 20"),
+        "row 20 should be well past the initial viewport: {:?}",
+        driver.painted_texts()
+    );
+
+    // `ScrollView::handle_wheel` treats `delta.y` as a notch count,
+    // multiplied by the caller's step (`WHEEL_STEP` = 3 rows here) —
+    // five notches scrolls far enough that row 0 scrolls out of view and
+    // row 20 scrolls into it, without overshooting to the bottom.
+    let reaction = driver.dispatch(UiEvent::Scroll {
+        widget: None,
+        delta: quadraui::ScrollDelta::new(0.0, 5.0),
+        position: Point::new(10.0, 10.0),
+    });
+    assert_eq!(reaction, Reaction::Redraw, "a wheel scroll should redraw");
+    assert!(
+        !driver.screen_contains("row 0"),
+        "row 0 should have scrolled out of view: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.screen_contains("row 20"),
+        "scrolling down should bring deeper rows into view: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn scroll_view_gtk_dragging_the_scrollbar_thumb_scrolls_the_row_list() {
+    let mut driver = GtkDriver::new(ScrollViewDemo::new(), SCROLL_VIEW_W, SCROLL_VIEW_H);
+    assert!(
+        driver.screen_contains("row 0"),
+        "row 0 should be painted at the top before any dragging: {:?}",
+        driver.painted_texts()
+    );
+
+    // The scrollbar track runs along the window's right edge (see
+    // `ScrollViewDemo::track_rect`); grab its thumb near the top and drag
+    // it down to the bottom of the track.
+    let track_x = SCROLL_VIEW_W as f32 - 7.0;
+    driver.dispatch(UiEvent::MouseDown {
+        widget: None,
+        button: MouseButton::Left,
+        position: Point::new(track_x, 5.0),
+        modifiers: Modifiers::default(),
+    });
+    let reaction = driver.dispatch(UiEvent::MouseMoved {
+        position: Point::new(track_x, SCROLL_VIEW_H as f32 - 5.0),
+        buttons: quadraui::ButtonMask {
+            left: true,
+            ..quadraui::ButtonMask::default()
+        },
+    });
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "dragging the thumb should redraw"
+    );
+    driver.dispatch(UiEvent::MouseUp {
+        widget: None,
+        button: MouseButton::Left,
+        position: Point::new(track_x, SCROLL_VIEW_H as f32 - 5.0),
+    });
+
+    assert!(
+        !driver.screen_contains("row 0"),
+        "dragging the thumb to the bottom should scroll row 0 out of view: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.screen_contains("row 39"),
+        "dragging the thumb to the bottom should bring the last row into view: {:?}",
         driver.painted_texts()
     );
 }

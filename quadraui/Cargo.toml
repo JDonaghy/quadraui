@@ -933,6 +933,11 @@ path = "examples/gtk_search_panel.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "gtk_scroll_view"
+path = "examples/gtk_scroll_view.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_sidebar_search"
 path = "examples/tui_sidebar_search.rs"
 required-features = ["tui"]

@@ -45,6 +45,12 @@
 //! - [`key_map`] — **not** an `AppLogic`, unlike everything else in this
 //!   list. `KeyMap`/`KeyContext` are a standalone copy-paste recipe, not
 //!   wired into any runner. See its own module doc.
+//! - [`ScrollViewDemo`] (in [`scroll_view_demo`], `gtk`-only) — tall row
+//!   list wheel-scrolled and scrollbar-dragged through a
+//!   `quadraui::ScrollView`, painted via
+//!   `quadraui::gtk::scroll_view::{paint_clipped, draw_scrollbar_for}`.
+//!   Used by `gtk_scroll_view` only — no TUI rasteriser for this
+//!   primitive exists yet.
 
 // Each example uses a subset of the shared items, so dead-code +
 // unused-import warnings are expected and not actionable here.
@@ -105,6 +111,8 @@ pub mod palette_dual_mode_app;
 pub mod panel_app;
 pub mod pipeline_app;
 pub mod right_click_demo;
+#[cfg(feature = "gtk")]
+pub mod scroll_view_demo;
 pub mod search_panel;
 pub mod selection_app;
 pub mod shell_app;
@@ -176,6 +184,8 @@ pub use palette_dual_mode_app::PaletteDualModeApp;
 pub use panel_app::PanelApp;
 pub use pipeline_app::PipelineApp;
 pub use right_click_demo::RightClickDemo;
+#[cfg(feature = "gtk")]
+pub use scroll_view_demo::ScrollViewDemo;
 pub use search_panel::SearchPanelApp;
 pub use selection_app::SelectionDemo;
 pub use shell_app::ShellApp;
