@@ -58,6 +58,8 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+
+## [0.1.7] - 2026-10-13
 ### Added
 
 - Standalone `Button`, `RadioGroup`, and `Switch` primitives
@@ -144,6 +146,16 @@ only a push to `main` runs this workflow.
   increment for `NumberInput`; type-ahead filter, keyboard navigation,
   commit, cancel, and dropdown-item click for `ComboBox`). The gallery
   demo is deferred to the `ComboBox`/`NumberInput` gallery-page issue.
+
+### Fixed
+
+- `MacBackend::draw_tree`, `draw_list`, `tree_layout`, `tree_vscrollbar`,
+  `list_layout`, and `list_vscrollbar` now use `chrome_line_height` instead
+  of `current_line_height` — the same class of fix as the MSV metric
+  correction in 7dfbad5e. When the editor font and system-UI font produce
+  different line heights (e.g. CI default SF Pro 11pt vs Menlo 14pt), the
+  mismatch made painted row bounds diverge from hit-test bands, causing
+  `sweep_hit_band_integrity` failures in downstream tree tests.
 
 ## [0.1.6] - 2026-10-12
 ### Fixed
