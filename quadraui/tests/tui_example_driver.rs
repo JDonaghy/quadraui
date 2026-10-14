@@ -58,6 +58,8 @@ mod clipboard_demo;
 mod command_line_selection_demo;
 #[path = "../examples/common/context_menu_style_demo.rs"]
 mod context_menu_style_demo;
+#[path = "../examples/common/controls.rs"]
+mod controls;
 #[path = "../examples/common/data_table_app.rs"]
 mod data_table_app;
 #[path = "../examples/common/demo.rs"]
@@ -184,6 +186,7 @@ use chat_demo::ChatDemo;
 use clipboard_demo::ClipboardDemo;
 use command_line_selection_demo::CommandLineSelectionDemo;
 use context_menu_style_demo::ContextMenuStyleDemo;
+use controls::ControlsApp;
 use data_table_app::DataTableApp;
 use demo::AppState;
 use dialog_table_demo::DialogTableDemo;
@@ -5319,7 +5322,7 @@ fn chart_grouped_bar_view_paints_series_side_by_side() {
 
     // A zero-valued sub-bar paints nothing while its neighbours stay put.
     assert!(
-        grouped_runs.iter().any(|&h| h == 0),
+        grouped_runs.contains(&0),
         "the zeroed `Failed` sub-bar should be empty, not shifted: {grouped_runs:?}\n{grouped}"
     );
 
@@ -5368,6 +5371,106 @@ fn indicators_toggling_cancellable_paints_and_clears_cancel_symbol() {
     assert!(
         !toggled_off.contains('×'),
         "toggling 'c' again should disable the cancel affordance and clear '×':\n{toggled_off}"
+    );
+}
+
+// ─── ControlsApp: button/radio/switch focus, activation and clicks ────────
+//
+// `tui_controls` is the first example to exercise the `draw_button`,
+// `draw_radio_group` and `draw_switch` `Backend` trait methods together.
+// This drives the real `ControlsApp` through Tab-focus, Space/Enter
+// activation, arrow-key radio selection and a mouse click, asserting on
+// the painted text each primitive's TUI rasteriser produces (`[ Label ]`
+// for the button, `(•) Label` for the selected radio option).
+
+#[test]
+fn controls_button_click_increments_and_repaints_label() {
+    let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+    let before = driver.screen();
+    assert!(
+        before.contains("[ Clicked 0x ]"),
+        "button should start unclicked:\n{before}"
+    );
+
+    driver.press_named(NamedKey::Enter);
+    let after = driver.screen();
+    assert!(
+        after.contains("[ Clicked 1x ]"),
+        "Enter should activate the focused button and repaint its label:\n{after}"
+    );
+    assert!(
+        after.contains("Button clicked"),
+        "status bar should report the click:\n{after}"
+    );
+}
+
+#[test]
+fn controls_mouse_click_on_button_activates_it() {
+    let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+    let (x, y) = driver
+        .find("Clicked 0x")
+        .expect("button label should be on screen");
+
+    driver.click(x, y);
+    let after = driver.screen();
+    assert!(
+        after.contains("[ Clicked 1x ]"),
+        "clicking the button should activate it:\n{after}"
+    );
+}
+
+#[test]
+fn controls_tab_cycles_focus_to_radio_group_and_arrow_keys_move_selection() {
+    let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+    let before = driver.screen();
+    assert!(
+        before.contains("(\u{2022}) Light"),
+        "Light should start selected:\n{before}"
+    );
+
+    driver.press_named(NamedKey::Tab);
+    driver.press_named(NamedKey::Down);
+    let after = driver.screen();
+    assert!(
+        after.contains("(\u{2022}) Dark"),
+        "Down should move the radio selection to Dark once the group has focus:\n{after}"
+    );
+    assert!(
+        after.contains("Radio -> 1"),
+        "status bar should report the new selection:\n{after}"
+    );
+}
+
+#[test]
+fn controls_mouse_click_on_radio_option_selects_it() {
+    let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+    let (x, y) = driver
+        .find("Auto")
+        .expect("Auto option label should be on screen");
+
+    driver.click(x, y);
+    let after = driver.screen();
+    assert!(
+        after.contains("(\u{2022}) Auto"),
+        "clicking the Auto row should select it:\n{after}"
+    );
+    assert!(
+        after.contains("Radio -> 2"),
+        "status bar should report the new selection:\n{after}"
+    );
+}
+
+#[test]
+fn controls_tab_to_switch_and_space_toggles_it() {
+    let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+
+    driver.press_named(NamedKey::Tab);
+    driver.press_named(NamedKey::Tab);
+    driver.press(Key::Char(' '));
+    let after = driver.screen();
+    assert!(
+        after.contains("Switch -> true"),
+        "Space on the focused switch should toggle it and repaint the status bar:\n{after}"
     );
 }
 
