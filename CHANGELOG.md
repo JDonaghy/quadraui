@@ -59,6 +59,19 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+### Added
+
+- `Backend` trait methods `draw_button`/`button_layout`,
+  `draw_radio_group`/`radio_group_layout` and `draw_switch`/`switch_layout`,
+  with a real TUI rasteriser, a shared `PaintSurface`-based minimal paint
+  (`native_surface_paint`, in each of `primitives::{button, radio_group,
+  switch}`) wired into GTK's `draw_*` methods, and stub implementations
+  for the macOS/Windows backends and both `MockBackend`s.
+  `examples/tui_controls.rs` (`AppLogic` in `examples/common/controls.rs`)
+  demos all three primitives together; a real native GTK painter (hover/
+  pressed chrome, cairo/pango text) and demo follow in a later,
+  backend-scoped issue.
+
 ### Fixed
 
 - `Scrollbar`'s shared pixel-backend rasteriser (GTK/Win/macOS): thumb

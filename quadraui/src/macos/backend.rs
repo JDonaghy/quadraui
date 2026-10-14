@@ -62,6 +62,7 @@ use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::board::{BoardLayout, BoardModel};
+use crate::primitives::button::{Button, ButtonLayout};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
@@ -80,12 +81,16 @@ use crate::primitives::multi_section_view::{
 };
 use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
+use crate::primitives::radio_group::{
+    RadioGroup, RadioGroupLayout, RadioOption, RadioOptionMeasure,
+};
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
+use crate::primitives::switch::{Switch, SwitchLayout};
 // `TabBarHits` is deprecated — this backend constructs it directly
 // (per the audit: `macos::tab_bar` has no intermediate `TabBarLayout`),
 // so the import needs the same allow every use site below does.
@@ -3391,6 +3396,34 @@ impl Backend for MacBackend {
         let layout = canvas.layout(rect);
         crate::primitives::canvas::native_surface_paint::paint(canvas, &layout, self);
         layout
+    }
+    /// No native rasteriser yet — paints nothing and returns the real
+    /// (pure-geometry) layout.
+    fn draw_button(&mut self, rect: Rect, button: &Button) -> ButtonLayout {
+        self.button_layout(rect, button)
+    }
+    fn button_layout(&self, rect: Rect, button: &Button) -> ButtonLayout {
+        button.layout(rect)
+    }
+    /// See [`Self::draw_button`]'s doc. The per-option measure is
+    /// nominal (`rect.width` × the chrome line height) since there is
+    /// no native text-metrics surface to measure against yet.
+    fn draw_radio_group(&mut self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout {
+        self.radio_group_layout(rect, group)
+    }
+    fn radio_group_layout(&self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout {
+        let row_height = self.current_line_height as f32;
+        group.layout(rect, |_option: &RadioOption| RadioOptionMeasure {
+            width: rect.width,
+            height: row_height,
+        })
+    }
+    /// See [`Self::draw_button`]'s doc.
+    fn draw_switch(&mut self, rect: Rect, switch: &Switch) -> SwitchLayout {
+        self.switch_layout(rect, switch)
+    }
+    fn switch_layout(&self, rect: Rect, switch: &Switch) -> SwitchLayout {
+        switch.layout(rect)
     }
     fn draw_toast_overlay(&mut self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
         // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc)

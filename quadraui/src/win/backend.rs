@@ -19,6 +19,7 @@ use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
+use crate::primitives::button::{Button, ButtonLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterHit, CommandCenterLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
@@ -39,11 +40,15 @@ use crate::primitives::multi_section_view::{
 };
 use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
+use crate::primitives::radio_group::{
+    RadioGroup, RadioGroupLayout, RadioOption, RadioOptionMeasure,
+};
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::{StatusBarHit, StatusBarLayout};
+use crate::primitives::switch::{Switch, SwitchLayout};
 #[cfg(target_os = "windows")]
 use crate::primitives::toolbar::ToolbarButton;
 // `TabBarHits` is `#[deprecated]` — the `Backend` trait still returns it
@@ -4659,6 +4664,35 @@ impl Backend for WinBackend {
                 rect.height,
             ),
         )
+    }
+
+    /// No native rasteriser yet — paints nothing and returns the real
+    /// (pure-geometry) layout.
+    fn draw_button(&mut self, rect: Rect, button: &Button) -> ButtonLayout {
+        self.button_layout(rect, button)
+    }
+    fn button_layout(&self, rect: Rect, button: &Button) -> ButtonLayout {
+        button.layout(rect)
+    }
+    /// See [`Self::draw_button`]'s doc. The per-option measure is
+    /// nominal (`rect.width` × the chrome line height) since there is
+    /// no native text-metrics surface to measure against yet.
+    fn draw_radio_group(&mut self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout {
+        self.radio_group_layout(rect, group)
+    }
+    fn radio_group_layout(&self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout {
+        let row_height = self.current_line_height;
+        group.layout(rect, |_option: &RadioOption| RadioOptionMeasure {
+            width: rect.width,
+            height: row_height,
+        })
+    }
+    /// See [`Self::draw_button`]'s doc.
+    fn draw_switch(&mut self, rect: Rect, switch: &Switch) -> SwitchLayout {
+        self.switch_layout(rect, switch)
+    }
+    fn switch_layout(&self, rect: Rect, switch: &Switch) -> SwitchLayout {
+        switch.layout(rect)
     }
 
     /// See [`Self::draw_status_bar`]'s doc for the "surface not

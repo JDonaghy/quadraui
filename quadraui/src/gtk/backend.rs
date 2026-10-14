@@ -4388,6 +4388,90 @@ impl Backend for GtkBackend {
         )
     }
 
+    /// Paint via the shared [`crate::primitives::button::native_surface_paint::paint`].
+    fn draw_button(
+        &mut self,
+        rect: QRect,
+        button: &crate::primitives::button::Button,
+    ) -> crate::primitives::button::ButtonLayout {
+        let theme = self.current_theme;
+        let style = self.style();
+        let layout = crate::primitives::button::native_surface_paint::paint(
+            button, self, &theme, rect, &style,
+        );
+        self.register_zone(button.id.clone(), rect);
+        layout
+    }
+
+    fn button_layout(
+        &self,
+        rect: QRect,
+        button: &crate::primitives::button::Button,
+    ) -> crate::primitives::button::ButtonLayout {
+        button.layout(rect)
+    }
+
+    /// Paint via the shared [`crate::primitives::radio_group::native_surface_paint::paint`].
+    /// The per-option measure is nominal (`rect.width` × the chrome
+    /// line height) since there is no native text-metrics surface to
+    /// measure against yet.
+    fn draw_radio_group(
+        &mut self,
+        rect: QRect,
+        group: &crate::primitives::radio_group::RadioGroup,
+    ) -> crate::primitives::radio_group::RadioGroupLayout {
+        let theme = self.current_theme;
+        let row_height = self.current_line_height as f32;
+        let layout = crate::primitives::radio_group::native_surface_paint::paint(
+            group, self, &theme, rect, row_height,
+        );
+        for (option, item) in group.options.iter().zip(layout.items.iter()) {
+            self.register_zone(option.id.clone(), *item);
+        }
+        layout
+    }
+
+    fn radio_group_layout(
+        &self,
+        rect: QRect,
+        group: &crate::primitives::radio_group::RadioGroup,
+    ) -> crate::primitives::radio_group::RadioGroupLayout {
+        let row_height = self.current_line_height as f32;
+        group.layout(
+            rect,
+            |_option: &crate::primitives::radio_group::RadioOption| {
+                crate::primitives::radio_group::RadioOptionMeasure {
+                    width: rect.width,
+                    height: row_height,
+                }
+            },
+        )
+    }
+
+    /// Paint via the shared [`crate::primitives::switch::native_surface_paint::paint`].
+    /// Chrome-only (no label of its own), so this also registers a
+    /// click zone — same "paint + register" pairing as
+    /// [`Self::draw_focus_ring`].
+    fn draw_switch(
+        &mut self,
+        rect: QRect,
+        switch: &crate::primitives::switch::Switch,
+    ) -> crate::primitives::switch::SwitchLayout {
+        let theme = self.current_theme;
+        let layout =
+            crate::primitives::switch::native_surface_paint::paint(switch, self, &theme, rect);
+        self.register_zone(switch.id.clone(), rect);
+        layout
+    }
+
+    fn switch_layout(
+        &self,
+        rect: QRect,
+        switch: &crate::primitives::switch::Switch,
+    ) -> crate::primitives::switch::SwitchLayout {
+        switch.layout(rect)
+    }
+
     fn toast_stack_layout(
         &self,
         rect: QRect,

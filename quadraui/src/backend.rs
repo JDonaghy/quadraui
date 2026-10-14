@@ -43,6 +43,7 @@ use crate::interaction::InteractionState;
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
+use crate::primitives::button::{Button, ButtonLayout};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::combo_box::{ComboBox, ComboBoxLayout};
@@ -70,6 +71,7 @@ use crate::primitives::number_input::{NumberInput, NumberInputLayout};
 use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
+use crate::primitives::radio_group::{RadioGroup, RadioGroupLayout};
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::sidebar_panel::{SidebarPanel, SidebarPanelLayout};
@@ -77,6 +79,7 @@ use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
+use crate::primitives::switch::{Switch, SwitchLayout};
 // `TabBarHits` is `#[deprecated]` — this trait still returns it from six
 // methods below, so the import itself needs the same allow every use site
 // does.
@@ -3319,6 +3322,39 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout;
+
+    /// Draw a [`Button`]. Returns the [`ButtonLayout`] so hosts can
+    /// route clicks. Same coordinate frame as [`Self::button_layout`]
+    /// (ABSOLUTE).
+    fn draw_button(&mut self, rect: Rect, button: &Button) -> ButtonLayout;
+
+    /// Compute button layout without painting.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
+    fn button_layout(&self, rect: Rect, button: &Button) -> ButtonLayout;
+
+    /// Draw a [`RadioGroup`] (a vertical list of mutually-exclusive
+    /// options). Returns the [`RadioGroupLayout`] so hosts can route
+    /// clicks. Same coordinate frame as [`Self::radio_group_layout`]
+    /// (ABSOLUTE).
+    fn draw_radio_group(&mut self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout;
+
+    /// Compute radio-group layout without painting. Each backend
+    /// supplies its own per-option measure (text extents, cell counts,
+    /// or a nominal fallback) — see the implementation for the shape.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
+    fn radio_group_layout(&self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout;
+
+    /// Draw a [`Switch`] (a standalone on/off toggle). Returns the
+    /// [`SwitchLayout`] so hosts can route clicks. Same coordinate
+    /// frame as [`Self::switch_layout`] (ABSOLUTE).
+    fn draw_switch(&mut self, rect: Rect, switch: &Switch) -> SwitchLayout;
+
+    /// Compute switch layout without painting.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
+    fn switch_layout(&self, rect: Rect, switch: &Switch) -> SwitchLayout;
 
     /// Draw a [`CommandCenter`] (nav arrows + search box). Returns the
     /// [`CommandCenterLayout`] so hosts can route clicks. Same
