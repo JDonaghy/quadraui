@@ -1,8 +1,9 @@
 //! `RadioGroup` primitive: a standalone set of mutually-exclusive
 //! options — layout, hit-test, keyboard focus/activation (arrow-key
-//! wraparound cursor), and its event. Shared logic only; no backend
-//! painter lives here (see `docs/PRIMITIVE_RULES.md`'s cross-backend
-//! commitment — a rasteriser follows in a later, backend-scoped issue).
+//! wraparound cursor), and its event. Layout/hit-test/keyboard logic
+//! lives here; backend rasterisers live in `tui::radio_group`,
+//! `gtk::radio_group`, and inline in each platform's `backend.rs` (see
+//! `Backend::draw_radio_group`).
 //!
 //! Today `Form`'s `Radio`/`RadioGroup` field kind covers the same shape
 //! embedded inside a form. `RadioGroup` is additive: a standalone

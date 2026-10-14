@@ -1,0 +1,15 @@
+//! Button + RadioGroup + Switch `AppLogic` + `quadraui::gtk::run` example.
+//!
+//! Tab to move focus, Space/Enter to activate, Up/Down to move the radio
+//! group cursor, `q` to quit.
+//!
+//! ```sh
+//! cargo run --example gtk_controls --features gtk
+//! ```
+
+#[path = "common/mod.rs"]
+mod common;
+
+fn main() -> std::process::ExitCode {
+    quadraui::gtk::run(common::ControlsApp::new())
+}

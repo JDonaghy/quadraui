@@ -59,6 +59,15 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+### Added
+
+- `Backend` trait methods `draw_button`/`button_layout`,
+  `draw_radio_group`/`radio_group_layout` and `draw_switch`/`switch_layout`,
+  with real TUI and GTK rasterisers and stub implementations for the
+  macOS/Windows backends and both `MockBackend`s. `examples/tui_controls.rs`
+  and `examples/gtk_controls.rs` (shared `AppLogic` in
+  `examples/common/controls.rs`) demo all three primitives together.
+
 ### Fixed
 
 - `Scrollbar`'s shared pixel-backend rasteriser (GTK/Win/macOS): thumb

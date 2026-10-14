@@ -22,6 +22,7 @@ mod activity_bar;
 mod app_font;
 pub mod backend;
 mod board;
+mod button;
 mod chart;
 mod combo_box;
 mod command_center;
@@ -48,6 +49,7 @@ mod palette;
 mod panel;
 mod pipeline_view;
 mod progress;
+mod radio_group;
 mod rich_text_popup;
 mod run;
 pub mod scroll_view;
@@ -60,6 +62,7 @@ mod split;
 mod split_tree;
 mod status_bar;
 mod surface;
+mod switch;
 mod tab_bar;
 mod terminal;
 pub mod testing;
@@ -78,6 +81,7 @@ pub use crate::primitives::tab_bar::TabBarHits;
 pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style, ACTIVITY_ROW_PX};
 pub use backend::GtkBackend;
 pub use board::gtk_board_layout;
+pub use button::{draw_button, gtk_button_layout};
 pub use chart::gtk_chart_layout;
 pub use command_center::{draw_command_center, gtk_command_center_layout};
 pub use completions::draw_completions;
@@ -108,6 +112,7 @@ pub use palette::{draw_palette, gtk_palette_layout};
 pub use panel::gtk_panel_layout;
 pub use pipeline_view::gtk_pipeline_view_layout;
 pub use progress::gtk_progress_layout;
+pub use radio_group::{draw_radio_group, gtk_radio_group_layout};
 pub use rich_text_popup::{
     draw_rich_text_popup, RICH_TEXT_POPUP_SB_INSET, RICH_TEXT_POPUP_SB_WIDTH,
 };
@@ -119,6 +124,7 @@ pub use split_tree::gtk_split_tree_layout;
 // `draw_status_bar` stays public: `kubeui-gtk/src/main.rs` calls it
 // directly with no alternative — see `status_bar.rs`'s module doc.
 pub use status_bar::{draw_status_bar, MIN_GAP_PX};
+pub use switch::{draw_switch, gtk_switch_layout};
 pub use tab_bar::{
     draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome, draw_tab_bar_with_chrome,
 };

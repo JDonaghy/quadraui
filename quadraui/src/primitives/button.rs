@@ -1,8 +1,8 @@
 //! `Button` primitive: a standalone, clickable action control — primary,
 //! secondary, and icon variants, with keyboard focus/activation, plus
-//! its disabled state and event. Shared logic only; no backend painter
-//! lives here (see `docs/PRIMITIVE_RULES.md`'s cross-backend commitment
-//! — a rasteriser follows in a later, backend-scoped issue).
+//! its disabled state and event. Layout/hit-test/keyboard logic lives
+//! here; backend rasterisers live in `tui::button`, `gtk::button`, and
+//! inline in each platform's `backend.rs` (see `Backend::draw_button`).
 //!
 //! Today `Form`'s `Button`/`ButtonRow` field kinds cover the same shape
 //! embedded inside a form. `Button` is additive: a standalone control

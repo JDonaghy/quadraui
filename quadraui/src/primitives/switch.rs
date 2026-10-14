@@ -1,8 +1,8 @@
 //! `Switch` primitive: a standalone on/off toggle — layout, hit-test,
-//! keyboard focus/activation, and its event. Shared logic only; no
-//! backend painter lives here (see `docs/PRIMITIVE_RULES.md`'s
-//! cross-backend commitment — a rasteriser follows in a later,
-//! backend-scoped issue).
+//! keyboard focus/activation, and its event. Layout/hit-test/keyboard
+//! logic lives here; backend rasterisers live in `tui::switch`,
+//! `gtk::switch`, and inline in each platform's `backend.rs` (see
+//! `Backend::draw_switch`).
 //!
 //! Today `Form`'s `Toggle`/`ToggleGroup` field kinds cover the same
 //! on/off shape embedded inside a form. `Switch` is additive: a

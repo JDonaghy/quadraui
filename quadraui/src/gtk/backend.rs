@@ -4388,6 +4388,109 @@ impl Backend for GtkBackend {
         )
     }
 
+    fn draw_button(
+        &mut self,
+        rect: QRect,
+        button: &crate::primitives::button::Button,
+    ) -> crate::primitives::button::ButtonLayout {
+        let theme = self.current_theme;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_button called outside enter_frame_scope");
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let button_layout = crate::gtk::draw_button(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            button,
+            &theme,
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        button_layout
+    }
+
+    fn button_layout(
+        &self,
+        rect: QRect,
+        button: &crate::primitives::button::Button,
+    ) -> crate::primitives::button::ButtonLayout {
+        button.layout(rect)
+    }
+
+    fn draw_radio_group(
+        &mut self,
+        rect: QRect,
+        group: &crate::primitives::radio_group::RadioGroup,
+    ) -> crate::primitives::radio_group::RadioGroupLayout {
+        let theme = self.current_theme;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_radio_group called outside enter_frame_scope");
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let group_layout = crate::gtk::draw_radio_group(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            group,
+            &theme,
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        group_layout
+    }
+
+    fn radio_group_layout(
+        &self,
+        rect: QRect,
+        group: &crate::primitives::radio_group::RadioGroup,
+    ) -> crate::primitives::radio_group::RadioGroupLayout {
+        crate::gtk::gtk_radio_group_layout(
+            group,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            self.current_line_height,
+        )
+    }
+
+    fn draw_switch(
+        &mut self,
+        rect: QRect,
+        switch: &crate::primitives::switch::Switch,
+    ) -> crate::primitives::switch::SwitchLayout {
+        let theme = self.current_theme;
+        let (cr, _pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_switch called outside enter_frame_scope");
+        crate::gtk::draw_switch(
+            cr,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            switch,
+            &theme,
+        )
+    }
+
+    fn switch_layout(
+        &self,
+        rect: QRect,
+        switch: &crate::primitives::switch::Switch,
+    ) -> crate::primitives::switch::SwitchLayout {
+        switch.layout(rect)
+    }
+
     fn toast_stack_layout(
         &self,
         rect: QRect,
