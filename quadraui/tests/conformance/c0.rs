@@ -28,8 +28,8 @@
 
 use quadraui::{
     compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, Anchor, AppLogic, Backend,
-    BadgeStatus, BoardCard, BoardColumn, BoardModel, Canvas, CardBadge, Chart, ChartKind, Color,
-    Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter, CommandLine, CompletionItem,
+    BadgeStatus, BoardCard, BoardColumn, BoardModel, Button, Canvas, CardBadge, Chart, ChartKind,
+    Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter, CommandLine, CompletionItem,
     CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem, ContextMenuItemMeasure,
     ContextMenuPlacement, DataRow, DataTable, Decoration, Dialog, DialogButton, DialogMeasure,
     DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, DropOverlay, Editor, EditorCursor,
@@ -37,14 +37,15 @@ use quadraui::{
     FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField, Image, ImageFit, ImageSource,
     InteractionState, ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap,
     MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette, PaletteItem, PaletteMode, Panel,
-    PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup,
-    RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader,
-    SectionSize, SelectionMode, Series, Side, SidebarPanel, Spinner, Split, SplitDirection,
-    SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText, TabBar, TabChrome,
-    TabFrame, TabIcon, TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput,
-    Toast, ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure,
-    ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
-    TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    PipelineStage, PipelineView, PopupPlacement, ProgressBar, RadioGroup, RadioOption, Reaction,
+    Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section,
+    SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side, SidebarPanel, Spinner,
+    Split, SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan,
+    StyledText, Switch, TabBar, TabChrome, TabFrame, TabIcon, TabItem, Terminal, TerminalCell,
+    TextDisplay, TextDisplayLine, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity,
+    Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarPaintOptions, ToolbarVAlign, Tooltip,
+    TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView,
+    UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -1184,6 +1185,36 @@ pub const CASES: &[Case] = &[
                 focus: None,
             };
             let _ = b.draw_toast_overlay(area, &stack);
+        },
+    },
+    Case {
+        method: "draw_button",
+        needle: Some("c0btn"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let button = Button::new(id("button"), "c0btn");
+            let _ = b.draw_button(Rect::new(0.0, 0.0, area.width, lh), &button);
+        },
+    },
+    Case {
+        method: "draw_radio_group",
+        needle: Some("c0radio"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let group = RadioGroup::new(
+                id("radio-group"),
+                vec![RadioOption::new(id("radio-option"), "c0radio")],
+            );
+            let _ = b.draw_radio_group(Rect::new(0.0, 0.0, area.width, lh * 2.0), &group);
+        },
+    },
+    Case {
+        method: "draw_switch",
+        needle: None,
+        paint: |b, area| {
+            let lh = b.line_height();
+            let switch = Switch::new(id("switch"));
+            let _ = b.draw_switch(Rect::new(0.0, 0.0, area.width, lh), &switch);
         },
     },
     Case {
