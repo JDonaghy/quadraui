@@ -234,6 +234,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
     }
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        self.app.pre_render(backend);
         let viewport = backend.viewport();
         let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
         let layout = self.shell.render(backend, area);
