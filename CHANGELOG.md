@@ -59,6 +59,14 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+### Fixed
+
+- `Scrollbar`'s shared pixel-backend rasteriser (GTK/Win/macOS): thumb
+  resting alpha raised from 0.50 to 0.65 (hover 0.70→0.80, drag 0.85→0.90)
+  and the thumb now paints as a rounded pill via `surface_fill_rounded_rect`
+  instead of a sharp-cornered fill, so a 14px-wide track reads with
+  VS-Code-like visual weight instead of as too-translucent/too-narrow.
+
 ## [0.1.8] - 2026-10-14
 
 ### Added
