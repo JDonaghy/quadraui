@@ -333,7 +333,8 @@ pub(crate) mod native_surface_paint {
     use crate::Rect;
 
     /// Paint a [`Scrollbar`] onto `surface`: a translucent track with a
-    /// brighter translucent thumb on top, both bumping alpha on
+    /// brighter, higher-contrast translucent thumb on top (pill-shaped,
+    /// rounded to half its shorter side), both bumping alpha on
     /// hover/drag. See this module's doc for the one known divergence
     /// re-verified (already fixed) while unifying three
     /// per-backend copies into this one.
@@ -348,12 +349,15 @@ pub(crate) mod native_surface_paint {
         } else {
             0.20
         };
+        // Thumb alpha floors at 0.65 even at rest — below that the thumb
+        // reads as barely narrower than the track instead of a distinct
+        // control, at the visual weight VS Code's default theme carries.
         let thumb_alpha = if scrollbar.dragging {
-            0.85
+            0.90
         } else if scrollbar.hovered {
-            0.70
+            0.80
         } else {
-            0.50
+            0.65
         };
 
         surface.surface_fill_rect(track, theme.scrollbar_track.with_alpha(track_alpha));
@@ -372,7 +376,12 @@ pub(crate) mod native_surface_paint {
                 track.height,
             ),
         };
-        surface.surface_fill_rect(thumb_rect, theme.scrollbar_thumb.with_alpha(thumb_alpha));
+        let thumb_radius = thumb_rect.width.min(thumb_rect.height) / 2.0;
+        surface.surface_fill_rounded_rect(
+            thumb_rect,
+            thumb_radius,
+            theme.scrollbar_thumb.with_alpha(thumb_alpha),
+        );
     }
 
     #[cfg(test)]
@@ -383,13 +392,21 @@ pub(crate) mod native_surface_paint {
         use crate::types::{Color, WidgetId};
         use crate::Image;
 
-        /// Records every `surface_fill_rect` call — mirrors
-        /// `primitives::chart`'s `RecordingSurface` test double, scoped
-        /// to just the verb this primitive uses, so this test runs on
-        /// any host without Cairo/Core Graphics/Direct2D.
+        /// Records every `surface_fill_rect` / `surface_fill_rounded_rect`
+        /// call — mirrors `primitives::chart`'s `RecordingSurface` test
+        /// double, scoped to just the verbs this primitive uses, so this
+        /// test runs on any host without Cairo/Core Graphics/Direct2D.
+        ///
+        /// `fills` holds every fill regardless of verb, `(rect, color)`,
+        /// in call order — `paint`'s track-then-thumb order means index 1
+        /// is always the thumb. `rounded_radii` records just the radius
+        /// passed to `surface_fill_rounded_rect` calls, in the same
+        /// relative order, so a test can assert the thumb painted with a
+        /// real corner radius without caring about its exact pixel value.
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
+            rounded_radii: Vec<f32>,
         }
 
         impl PaintSurface for RecordingSurface {
@@ -410,14 +427,9 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// Test-only recorder — `paint` never calls this verb
-            /// (see this module's own doc for why no primitive here has been
-            /// migrated onto it yet); this exists only so `RecordingSurface`
-            /// satisfies the trait. Records into the same `fills` list as
-            /// `surface_fill_rect` (radius dropped) — no test asserts on it
-            /// today.
-            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
                 self.fills.push((rect, color));
+                self.rounded_radii.push(radius);
             }
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
             fn surface_stroke_rounded_rect(
@@ -476,6 +488,38 @@ pub(crate) mod native_surface_paint {
                     color.a
                 );
             }
+        }
+
+        /// The thumb must read as a distinct control against its track even
+        /// at rest, not only on hover/drag — regression coverage for the
+        /// too-translucent-to-read-as-14px-wide complaint: resting alpha
+        /// floors at 0.65 (`166/255`) and the thumb paints with a real
+        /// corner radius rather than a sharp-cornered `surface_fill_rect`.
+        #[test]
+        fn resting_thumb_has_high_contrast_rounded_fill() {
+            let sb = vertical_bar(0.0, 200.0, 50.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&sb, &mut surface, &theme);
+
+            let (thumb_rect, thumb_color) = surface.fills[1];
+            assert!(
+                thumb_color.a >= 166,
+                "resting thumb alpha should floor at ~0.65, got a={}",
+                thumb_color.a
+            );
+            assert_eq!(
+                surface.rounded_radii.len(),
+                1,
+                "thumb should paint via surface_fill_rounded_rect, not a sharp-cornered fill"
+            );
+            assert!(
+                surface.rounded_radii[0] > 0.0,
+                "thumb corner radius should be positive"
+            );
+            assert!(
+                surface.rounded_radii[0] <= thumb_rect.width.min(thumb_rect.height) / 2.0 + 0.01
+            );
         }
 
         #[test]
