@@ -13,7 +13,7 @@ is the part of that decision worth testing outside a real GitHub Actions run:
   - tag missing and the changelog section is missing/empty -> fail, before
     any tag is pushed or anything is published
 
-Three subcommands, used from `release.yml`:
+Four subcommands, used from `release.yml` and `ci.yml`:
 
     python3 scripts/release_decide.py decide \\
         --version 0.1.2 --remote origin --repo-dir .
@@ -23,11 +23,24 @@ Three subcommands, used from `release.yml`:
 
     python3 scripts/release_decide.py check-lock --repo-dir .
 
+    python3 scripts/release_decide.py version --repo-dir .
+
 `decide` exits 0 and prints `decision=noop` or `decision=publish` (also
 appended to the file named by `$GITHUB_OUTPUT`, if set) and touches the
 network only via `git ls-remote` against the real remote tags, never the
 shallow local checkout. `notes` extracts the `## [<version>]` CHANGELOG.md
-section and exits 1, writing nothing, if that section is missing or empty.
+section and exits 1, writing nothing, if that section is missing or empty —
+`ci.yml`'s `changelog-version-check` job runs this on the `develop` -> `main`
+promotion PR itself, against the version `version` below reads, so a
+CHANGELOG still titled `## [Unreleased]` fails the PR before merge instead of
+only `release.yml`'s own, identical check catching it after `main` has
+already moved.
+
+`version` prints `version=<X.Y.Z>` (also appended to `$GITHUB_OUTPUT`),
+reading `quadraui/Cargo.toml`'s `[package]` version directly — no `cargo`
+invocation, so it works in a checkout-only job with no toolchain installed,
+the same reason `check-lock` reads both its files directly instead of
+shelling out to `cargo metadata`.
 
 `check-lock` guards against a version bump that edited `quadraui/Cargo.toml`
 directly instead of going through `scripts/release.py prepare`, which also
@@ -199,6 +212,31 @@ def cmd_check_lock(args: argparse.Namespace) -> int:
     return 0
 
 
+VERSION_FORMAT_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+
+
+def cmd_version(args: argparse.Namespace) -> int:
+    repo_dir = Path(args.repo_dir)
+    manifest_path = repo_dir / "quadraui" / "Cargo.toml"
+
+    if not manifest_path.is_file():
+        print(f"::error::{manifest_path} does not exist", file=sys.stderr)
+        return 1
+
+    version = manifest_version(manifest_path.read_text(encoding="utf-8"))
+    if version is None or not VERSION_FORMAT_RE.match(version):
+        print(
+            f'::error::{manifest_path} has no valid `version = "X.Y.Z"` '
+            f"`[package]` line (found {version!r})",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"version={version}")
+    _write_github_output("version", version)
+    return 0
+
+
 def cmd_notes(args: argparse.Namespace) -> int:
     changelog_path = Path(args.changelog)
     text = changelog_path.read_text(encoding="utf-8")
@@ -234,6 +272,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     check_lock.add_argument("--repo-dir", default=".")
     check_lock.set_defaults(func=cmd_check_lock)
+
+    version = sub.add_parser(
+        "version", help="read quadraui/Cargo.toml's [package] version"
+    )
+    version.add_argument("--repo-dir", default=".")
+    version.set_defaults(func=cmd_version)
 
     args = parser.parse_args(argv)
     return args.func(args)

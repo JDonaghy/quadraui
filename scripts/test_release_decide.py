@@ -316,6 +316,62 @@ class LockVersionParsingTests(unittest.TestCase):
         self.assertIsNone(release_decide.locked_version(lock, "quadraui"))
 
 
+def run_version(repo_dir: Path, env: dict[str, str] | None = None):
+    return subprocess.run(
+        [
+            sys.executable,
+            str(Path(release_decide.__file__)),
+            "version",
+            "--repo-dir",
+            str(repo_dir),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+class VersionCommandTests(unittest.TestCase):
+    def test_prints_the_manifest_version(self):
+        with LockFixtureRepo(manifest_version="0.1.7") as repo:
+            result = run_version(repo.root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("version=0.1.7", result.stdout)
+
+    def test_writes_github_output_file(self):
+        with LockFixtureRepo(manifest_version="0.1.7") as repo:
+            output_path = repo.root / "github_output.txt"
+            output_path.write_text("")
+            env = dict(os.environ)
+            env["GITHUB_OUTPUT"] = str(output_path)
+            result = run_version(repo.root, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("version=0.1.7", output_path.read_text())
+
+    def test_fails_when_manifest_is_missing(self):
+        with LockFixtureRepo() as repo:
+            (repo.root / "quadraui" / "Cargo.toml").unlink()
+            result = run_version(repo.root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("does not exist", result.stderr)
+
+    def test_fails_when_version_is_malformed(self):
+        with LockFixtureRepo() as repo:
+            repo.write_manifest("not-a-version")
+            result = run_version(repo.root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("no valid", result.stderr)
+
+    def test_needs_neither_cargo_nor_git_on_path(self):
+        """Matches `check-lock`'s own floor: no toolchain, no registry cache."""
+        with LockFixtureRepo(manifest_version="0.1.7") as repo:
+            env = dict(os.environ)
+            env["PATH"] = ""
+            result = run_version(repo.root, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("version=0.1.7", result.stdout)
+
+
 class ChangelogSectionTests(unittest.TestCase):
     CHANGELOG = """\
 # Changelog

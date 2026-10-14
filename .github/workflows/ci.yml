@@ -348,6 +348,52 @@ jobs:
             "${{ github.event.pull_request.base.sha }}" \
             "${{ github.event.pull_request.head.sha }}"
 
+  changelog-version-check:
+    # Verifies, on the develop -> main promotion PR itself, that
+    # CHANGELOG.md has a non-empty `## [X.Y.Z]` section matching
+    # quadraui/Cargo.toml's version — the same check `release.yml`'s
+    # `check` job runs, but here it runs before the merge instead of after,
+    # so a CHANGELOG still titled `## [Unreleased]` fails the PR instead of
+    # `main`.
+    #
+    # Deliberately NOT the same job as `changelog-check` above: that one
+    # enforces (on every PR) that a `quadraui/src/**` change adds a line
+    # under `[Unreleased]` — a `develop`-targeting concern. This job asks a
+    # question that is only meaningful at release time — "does the version
+    # in `quadraui/Cargo.toml` have a matching, non-empty, non-Unreleased
+    # CHANGELOG section" — so it is scoped to a `pull_request` whose
+    # `base_ref` is `main`, the only PR that is ever a release promotion
+    # (see CLAUDE.md's "Branching + releases": `main` only moves via that
+    # PR). Ordinary `develop` PRs and plain pushes skip this job entirely —
+    # unlike `semver-checks`' advisory-everywhere-else `continue-on-error`
+    # toggle, there is no meaningful advisory signal to show on a non-
+    # promotion PR for a check about a version bump that PR likely isn't
+    # making.
+    #
+    # No toolchain/cache steps: `version` and `notes` both read
+    # `quadraui/Cargo.toml`/`CHANGELOG.md` directly, the same hermetic,
+    # checkout-only design as `check-lock` (see that command's module doc
+    # in `scripts/release_decide.py` for why this matters on a fresh
+    # runner with no registry cache).
+    name: CHANGELOG has a versioned section for this release (develop -> main gate)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    # Two Python-script steps reading local files, normally a few seconds.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the quadraui crate version
+        id: version
+        run: python3 scripts/release_decide.py version
+      - name: Verify CHANGELOG.md has a release-notes section for this version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 scripts/release_decide.py notes \
+            --changelog CHANGELOG.md \
+            --version "${VERSION}" \
+            --out "${RUNNER_TEMP}/notes-preview.md"
+
   comment-lint:
     # #1112: comments describe the code as it is; history (what it used to
     # do, what a PR/reviewer said) belongs in CHANGELOG.md and the issue
