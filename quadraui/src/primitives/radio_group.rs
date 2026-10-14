@@ -1,8 +1,9 @@
 //! `RadioGroup` primitive: a standalone set of mutually-exclusive
 //! options — layout, hit-test, keyboard focus/activation (arrow-key
-//! wraparound cursor), and its event. Shared logic only; no backend
-//! painter lives here (see `docs/PRIMITIVE_RULES.md`'s cross-backend
-//! commitment — a rasteriser follows in a later, backend-scoped issue).
+//! wraparound cursor), and its event. Layout/hit-test/keyboard logic
+//! lives here; backend rasterisers live in `tui::radio_group` and
+//! inline in each platform's `backend.rs` (see
+//! `Backend::draw_radio_group`).
 //!
 //! Today `Form`'s `Radio`/`RadioGroup` field kind covers the same shape
 //! embedded inside a form. `RadioGroup` is additive: a standalone
@@ -230,6 +231,88 @@ impl RadioGroupLayout {
             }
         }
         RadioGroupHit::Outside
+    }
+}
+
+/// `paint` is the shared [`crate::paint_surface::PaintSurface`]
+/// implementation of radio-group painting (per-option marker/label),
+/// used by backends that have no dedicated native rasteriser for
+/// `RadioGroup` — the same minimal-chrome fallback
+/// [`crate::primitives::progress`] already uses for `ProgressBar`.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{RadioGroup, RadioGroupLayout, RadioOption, RadioOptionMeasure};
+    use crate::event::Rect;
+    use crate::paint_surface::PaintSurface;
+    use crate::theme::Theme;
+
+    /// Paint a [`RadioGroup`] into `rect` on `surface`, stacking each
+    /// option's row using `row_height`, and returning
+    /// [`RadioGroupLayout`] for host click dispatch.
+    pub(crate) fn paint(
+        group: &RadioGroup,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        row_height: f32,
+    ) -> RadioGroupLayout {
+        let layout = group.layout(rect, |_option: &RadioOption| RadioOptionMeasure {
+            width: rect.width,
+            height: row_height,
+        });
+
+        for (index, option) in group.options.iter().enumerate() {
+            let Some(item) = layout.items.get(index) else {
+                continue;
+            };
+            if item.width <= 0.0 || item.height <= 0.0 {
+                continue;
+            }
+
+            let selected = group.selected == Some(index);
+            let marker_color = if option.disabled {
+                theme.muted_fg
+            } else if selected {
+                theme.accent_fg
+            } else {
+                theme.border_fg
+            };
+            let marker_size = item.height.min(item.width).max(0.0);
+            let marker_rect = Rect::new(item.x, item.y, marker_size, marker_size);
+            if selected {
+                surface.surface_fill_rounded_rect(marker_rect, marker_size / 2.0, marker_color);
+            } else {
+                surface.surface_stroke_rounded_rect(
+                    marker_rect,
+                    marker_size / 2.0,
+                    marker_color,
+                    1.0,
+                );
+            }
+
+            if !option.label.is_empty() {
+                let label_x = item.x + marker_size + 4.0;
+                let label_rect = Rect::new(
+                    label_x,
+                    item.y,
+                    (item.x + item.width - label_x).max(0.0),
+                    item.height,
+                );
+                let fg = if option.disabled {
+                    theme.muted_fg
+                } else {
+                    theme.foreground
+                };
+                surface.surface_draw_text_run(label_rect, &option.label, fg);
+            }
+        }
+
+        layout
     }
 }
 

@@ -1,8 +1,7 @@
 //! `Switch` primitive: a standalone on/off toggle — layout, hit-test,
-//! keyboard focus/activation, and its event. Shared logic only; no
-//! backend painter lives here (see `docs/PRIMITIVE_RULES.md`'s
-//! cross-backend commitment — a rasteriser follows in a later,
-//! backend-scoped issue).
+//! keyboard focus/activation, and its event. Layout/hit-test/keyboard
+//! logic lives here; backend rasterisers live in `tui::switch` and
+//! inline in each platform's `backend.rs` (see `Backend::draw_switch`).
 //!
 //! Today `Form`'s `Toggle`/`ToggleGroup` field kinds cover the same
 //! on/off shape embedded inside a form. `Switch` is additive: a
@@ -154,6 +153,76 @@ impl SwitchLayout {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SwitchEvent {
     Toggled { id: WidgetId, value: bool },
+}
+
+/// `paint` is the shared [`crate::paint_surface::PaintSurface`]
+/// implementation of switch painting (track/thumb), used by backends
+/// that have no dedicated native rasteriser for `Switch` — the same
+/// minimal-chrome fallback [`crate::primitives::progress`] already
+/// uses for `ProgressBar`. Chrome-only (no label of its own), so the
+/// caller is expected to also register a click zone — see
+/// [`crate::Backend::draw_focus_ring`]'s doc for that pattern.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{Switch, SwitchLayout};
+    use crate::event::Rect;
+    use crate::paint_surface::PaintSurface;
+    use crate::theme::Theme;
+
+    /// Paint a [`Switch`] into `rect` on `surface`, returning
+    /// [`SwitchLayout`] for host click dispatch.
+    pub(crate) fn paint(
+        switch: &Switch,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+    ) -> SwitchLayout {
+        let layout = switch.layout(rect);
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return layout;
+        }
+
+        let track_color = if switch.disabled {
+            theme.surface_bg
+        } else if switch.value {
+            theme.accent_bg
+        } else {
+            theme.surface_bg
+        };
+        let radius = (rect.height / 2.0).max(0.0);
+        surface.surface_fill_rounded_rect(rect, radius, track_color);
+
+        let border = if switch.disabled {
+            theme.muted_fg
+        } else if switch.focused {
+            theme.accent_fg
+        } else {
+            theme.border_fg
+        };
+        surface.surface_stroke_rounded_rect(rect, radius, border, 1.0);
+
+        // Thumb: a filled circle at the track's "on" or "off" end.
+        let thumb_diameter = rect.height.max(0.0);
+        let thumb_x = if switch.value {
+            rect.x + (rect.width - thumb_diameter).max(0.0)
+        } else {
+            rect.x
+        };
+        let thumb_color = if switch.disabled {
+            theme.muted_fg
+        } else {
+            theme.foreground
+        };
+        let thumb_rect = Rect::new(thumb_x, rect.y, thumb_diameter, thumb_diameter);
+        surface.surface_fill_rounded_rect(thumb_rect, thumb_diameter / 2.0, thumb_color);
+
+        layout
+    }
 }
 
 #[cfg(test)]

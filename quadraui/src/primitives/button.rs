@@ -1,8 +1,8 @@
 //! `Button` primitive: a standalone, clickable action control — primary,
 //! secondary, and icon variants, with keyboard focus/activation, plus
-//! its disabled state and event. Shared logic only; no backend painter
-//! lives here (see `docs/PRIMITIVE_RULES.md`'s cross-backend commitment
-//! — a rasteriser follows in a later, backend-scoped issue).
+//! its disabled state and event. Layout/hit-test/keyboard logic lives
+//! here; backend rasterisers live in `tui::button` and inline in each
+//! platform's `backend.rs` (see `Backend::draw_button`).
 //!
 //! Today `Form`'s `Button`/`ButtonRow` field kinds cover the same shape
 //! embedded inside a form. `Button` is additive: a standalone control
@@ -165,6 +165,73 @@ impl ButtonLayout {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ButtonEvent {
     Activated { id: WidgetId },
+}
+
+/// `paint` is the shared [`crate::paint_surface::PaintSurface`]
+/// implementation of button painting (fill/border/label), used by
+/// backends that have no dedicated native rasteriser for `Button` —
+/// the same minimal-chrome fallback [`crate::primitives::progress`]
+/// already uses for `ProgressBar`.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{Button, ButtonLayout, ButtonVariant};
+    use crate::event::Rect;
+    use crate::paint_surface::PaintSurface;
+    use crate::style::Style;
+    use crate::theme::Theme;
+
+    /// Paint a [`Button`] into `rect` on `surface`, returning
+    /// [`ButtonLayout`] for host click dispatch. `style` supplies the
+    /// corner radius the fill/border paint with.
+    pub(crate) fn paint(
+        button: &Button,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        style: &Style,
+    ) -> ButtonLayout {
+        let layout = button.layout(rect);
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return layout;
+        }
+
+        let bg = if button.disabled {
+            theme.surface_bg
+        } else {
+            match button.variant {
+                ButtonVariant::Primary => theme.accent_bg,
+                ButtonVariant::Secondary | ButtonVariant::Icon => theme.surface_bg,
+            }
+        };
+        surface.surface_fill_rounded_rect(rect, style.corner_radius, bg);
+
+        if !matches!(button.variant, ButtonVariant::Icon) {
+            let border = if button.disabled {
+                theme.muted_fg
+            } else if button.focused {
+                theme.accent_fg
+            } else {
+                theme.border_fg
+            };
+            surface.surface_stroke_rounded_rect(rect, style.corner_radius, border, 1.0);
+        }
+
+        if !button.label.is_empty() {
+            let fg = if button.disabled {
+                theme.muted_fg
+            } else {
+                theme.foreground
+            };
+            surface.surface_draw_text_run(rect, &button.label, fg);
+        }
+
+        layout
+    }
 }
 
 #[cfg(test)]

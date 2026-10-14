@@ -1262,6 +1262,27 @@ impl crate::Backend for RecordingBackend {
     fn spinner_layout(&self, r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
         crate::SpinnerLayout { bounds: r }
     }
+    fn draw_button(&mut self, _r: Rect, _b: &crate::Button) -> crate::ButtonLayout {
+        self.record("draw_button");
+        unimplemented!("RecordingBackend has no Button layout algorithm")
+    }
+    fn button_layout(&self, _r: Rect, _b: &crate::Button) -> crate::ButtonLayout {
+        unimplemented!("RecordingBackend has no Button layout algorithm")
+    }
+    fn draw_radio_group(&mut self, _r: Rect, _g: &crate::RadioGroup) -> crate::RadioGroupLayout {
+        self.record("draw_radio_group");
+        unimplemented!("RecordingBackend has no RadioGroup layout algorithm")
+    }
+    fn radio_group_layout(&self, _r: Rect, _g: &crate::RadioGroup) -> crate::RadioGroupLayout {
+        unimplemented!("RecordingBackend has no RadioGroup layout algorithm")
+    }
+    fn draw_switch(&mut self, _r: Rect, _s: &crate::Switch) -> crate::SwitchLayout {
+        self.record("draw_switch");
+        unimplemented!("RecordingBackend has no Switch layout algorithm")
+    }
+    fn switch_layout(&self, _r: Rect, _s: &crate::Switch) -> crate::SwitchLayout {
+        unimplemented!("RecordingBackend has no Switch layout algorithm")
+    }
     fn draw_command_center(
         &mut self,
         _r: Rect,
