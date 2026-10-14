@@ -59,6 +59,18 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+### Added
+
+- `ShellApp::pre_render` hook: called before shell layout reads
+  `chrome_line_height`, so apps can synchronise per-frame backend state
+  (font metrics, scrollbar widths) before layout runs, eliminating the
+  one-frame convergence lag that caused hit-band mismatches.
+
+### Fixed
+
+- `Cargo.lock` now matches the 0.1.8 version declared in `Cargo.toml`
+  (was stale at 0.1.7).
+
 ## [0.1.7] - 2026-10-13
 ### Added
 

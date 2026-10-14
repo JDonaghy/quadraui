@@ -706,6 +706,12 @@ pub trait ShellApp {
     /// Called once after the shell is built. Optional.
     fn setup(&mut self, _backend: &mut dyn Backend) {}
 
+    /// Called every frame before the shell reads `chrome_line_height` and
+    /// computes its layout.  Apps that update backend font metrics (e.g.
+    /// via `set_ui_font` / `set_editor_font` / `set_theme`) should do so
+    /// here so the shell layout uses the current values on the same frame.
+    fn pre_render(&self, _backend: &mut dyn Backend) {}
+
     /// Notified when a panel switch occurs (activity bar click or
     /// programmatic). Optional.
     ///

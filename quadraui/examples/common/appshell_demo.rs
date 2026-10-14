@@ -144,6 +144,9 @@ impl AppShellDemo {
         .with_panel_icon(search, Icon::new("\u{ea6d}", "S")) // codicon-search
         .with_panel_icon(git, Icon::new("\u{ea68}", "G")) // codicon-source-control
         .with_panel_icon(settings, Icon::new("\u{eb51}", "*")) // codicon-settings-gear
+        .with_status_bar()
+        .with_status_bar_under_main_column()
+        .with_command_line()
     }
 }
 
@@ -193,6 +196,42 @@ impl ShellApp for AppShellDemo {
             lh,
         );
         backend.draw_status_bar_interactive(rect, &main_label, &InteractionState::new());
+
+        if let Some(sb) = layout.status_bar_bounds {
+            let bar = StatusBar {
+                id: WidgetId::new("demo-status-bar"),
+                left_segments: vec![StatusBarSegment {
+                    text: " STATUS BAR (main-column width) ".into(),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(0, 122, 204),
+                    bold: true,
+                    action_id: None,
+                }],
+                right_segments: vec![StatusBarSegment {
+                    text: format!(" x={:.0} w={:.0} ", sb.x, sb.width),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(0, 100, 180),
+                    bold: false,
+                    action_id: None,
+                }],
+            };
+            backend.draw_status_bar_interactive(sb, &bar, &InteractionState::new());
+        }
+
+        if let Some(cmd) = layout.command_line_bounds {
+            let bar = StatusBar {
+                id: WidgetId::new("demo-command-line"),
+                left_segments: vec![StatusBarSegment {
+                    text: " COMMAND LINE ".into(),
+                    fg: Color::rgb(200, 200, 200),
+                    bg: Color::rgb(50, 50, 50),
+                    bold: false,
+                    action_id: None,
+                }],
+                right_segments: vec![],
+            };
+            backend.draw_status_bar_interactive(cmd, &bar, &InteractionState::new());
+        }
     }
 
     fn handle(
