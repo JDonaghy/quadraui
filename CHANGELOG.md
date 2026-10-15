@@ -61,6 +61,22 @@ only a push to `main` runs this workflow.
 
 ### Added
 
+- `transition` module (`Transition`, `lerp`, `lerp_rect`) — a
+  backend-agnostic time-progress helper for chrome motion (fades, slides)
+  that computes `0.0..=1.0` progress from a start `Instant` and `Duration`,
+  clamped before the start and after the end. It does not touch
+  `InvalidationLog` itself; a caller advancing a `Transition` each frame is
+  expected to call `Backend::invalidate_rect` for whatever rect changed.
+- `Backend::invalidate_rect`/`Backend::invalidation_log` and the backing
+  `InvalidationLog` type — a bookkeeping-only pair (required methods, no
+  default, per rule 7) that records dirty rects without triggering any
+  native partial-repaint call, mirroring `request_full_repaint`'s
+  "latch now, act later" shape. Implemented by all four real backends via
+  `BackendCore::record_invalidation`/`BackendCore::invalidation_log`, plus
+  `testing::RecordingBackend` and both `MockBackend`s. Wiring the actual
+  native partial-repaint call (GTK `queue_draw_area`, AppKit
+  `setNeedsDisplay(_:in:)`, Win32 `InvalidateRect`) is deferred follow-on
+  work.
 - `Backend` trait methods `draw_button`/`button_layout`,
   `draw_radio_group`/`radio_group_layout` and `draw_switch`/`switch_layout`,
   with a real TUI rasteriser, a shared `PaintSurface`-based minimal paint

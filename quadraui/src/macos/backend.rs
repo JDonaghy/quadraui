@@ -1623,6 +1623,14 @@ impl Backend for MacBackend {
         });
     }
 
+    fn invalidate_rect(&mut self, rect: crate::event::Rect) {
+        self.core.record_invalidation(rect);
+    }
+
+    fn invalidation_log(&self) -> &crate::backend::InvalidationLog {
+        self.core.invalidation_log()
+    }
+
     /// Unlike every other backend, macOS's universal bindings (`Save`,
     /// `Copy`, …) map onto Cmd instead of Ctrl — this override applies
     /// that translation once here, via

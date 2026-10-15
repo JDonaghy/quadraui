@@ -2075,6 +2075,14 @@ impl Backend for WinBackend {
         }
     }
 
+    fn invalidate_rect(&mut self, rect: crate::event::Rect) {
+        self.core.record_invalidation(rect);
+    }
+
+    fn invalidation_log(&self) -> &crate::backend::InvalidationLog {
+        self.core.invalidation_log()
+    }
+
     fn register_accelerator(&mut self, acc: &Accelerator) {
         self.core.register_accelerator(acc);
     }
