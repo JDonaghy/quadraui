@@ -79,8 +79,25 @@ only a push to `main` runs this workflow.
   Covered by a `MacDriver` conformance test driving focus, keyboard and
   mouse activation across all three (`tests/
   macos_standalone_controls_driver.rs`).
+- `primitives::layout_metrics::tree_layout_measured` — a non-breaking
+  sibling of `tree_layout` taking `&dyn TextMeasure`, which measures
+  `TreeStyle::chevron_expanded`/`chevron_collapsed` for real instead of
+  estimating a chevron's advance as `line_height * 0.65`. `tree_layout`
+  keeps its existing signature and behavior.
+- `Dialog::measure_generic_measured` — a non-breaking sibling of
+  `measure_generic` taking `&dyn TextMeasure`, which sizes
+  `DialogMeasure::button_width` from each `DialogButton::label`'s real
+  measured width (floored at `measure_generic`'s flat `char_width * 8.0`
+  estimate, so short labels never render narrower than they do today).
+  `measure_generic` keeps its existing signature and behavior.
 
 ### Fixed
+
+- `SidebarSystem`'s tree layout now honors `TreeStyle::row_height`:
+  `compute_tree_layout` delegates to the shared
+  `layout_metrics::tree_layout` instead of re-deriving row pitch, indent
+  and chevron geometry from `line_height` in a hand-inlined copy that had
+  drifted from it.
 
 - `Scrollbar`'s shared pixel-backend rasteriser (GTK/Win/macOS): thumb
   resting alpha raised from 0.50 to 0.65 (hover 0.70→0.80, drag 0.85→0.90)
