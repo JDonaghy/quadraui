@@ -32,7 +32,7 @@
 //! rather than going through the queue.
 
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -97,10 +97,11 @@ use crate::primitives::switch::{Switch, SwitchLayout};
 #[allow(deprecated)]
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::text_display::TextDisplayLayout;
-use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
+use crate::primitives::toast::{ToastCorner, ToastOverlay, ToastStackLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::testing::{TextRun, ZoneRec};
+use crate::transition::{lerp, Transition};
 use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
 use crate::{
@@ -348,6 +349,24 @@ pub struct MacBackend {
     /// drains it into `UiEvent::User` alongside `events`, on the AppKit
     /// main thread, same as any other queued event.
     tick_callback: WakeCallback,
+    /// Per-toast entrance-slide animation, keyed by [`Toast::id`]. Inserted
+    /// in [`Self::draw_toast_overlay`] the first time a toast id is seen and
+    /// retained only while that id is still present in the
+    /// [`ToastOverlay`] passed in; drives the x-offset
+    /// `crate::primitives::toast::native_surface_paint::paint_with_x_offset`
+    /// slides a toast in from its stack's off-screen edge. Toasts are
+    /// removed from the overlay (not animated out) on dismissal, so this
+    /// only ever covers the entrance half of the motion: there is no
+    /// lingering `Toast` to sample geometry from once dismissal removes it,
+    /// so an exit slide has nothing to paint.
+    toast_enter: HashMap<WidgetId, Transition>,
+    /// Per-toolbar-item hover-fade-in animation, keyed by
+    /// [`crate::primitives::toolbar::VisibleToolbarItem::action_id`].
+    /// Inserted in [`Self::draw_toolbar_with_options`] the first frame an
+    /// item is hovered and dropped the frame it stops being hovered — same
+    /// entrance-only scoping as `toast_enter` above, since there is no
+    /// hover-exit state to keep animating once the pointer has moved on.
+    hover_fade: HashMap<WidgetId, Transition>,
 }
 
 /// The wake-target [`MacBackend::waker`] invokes — see
@@ -659,6 +678,8 @@ impl MacBackend {
             user_events: crate::runtime::UserEventQueue::new(),
             wake_callback: Arc::new(std::sync::OnceLock::new()),
             tick_callback: Arc::new(std::sync::OnceLock::new()),
+            toast_enter: HashMap::new(),
+            hover_fade: HashMap::new(),
         }
     }
 
@@ -1625,6 +1646,17 @@ impl Backend for MacBackend {
 
     fn invalidate_rect(&mut self, rect: crate::event::Rect) {
         self.core.record_invalidation(rect);
+        // `QuadraView` sets `isFlipped` to `true` (see `run.rs`), so its
+        // coordinate space is already top-left-origin with y growing
+        // downward — the same convention `crate::event::Rect` uses, so no
+        // y-flip is needed when building the native rect.
+        if let Some(view) = self.window.as_ref().and_then(|w| w.contentView()) {
+            let ns_rect = NSRect::new(
+                NSPoint::new(rect.x as f64, rect.y as f64),
+                NSSize::new(rect.width as f64, rect.height as f64),
+            );
+            view.setNeedsDisplayInRect(ns_rect);
+        }
     }
 
     fn invalidation_log(&self) -> &crate::backend::InvalidationLog {
@@ -3461,7 +3493,44 @@ impl Backend for MacBackend {
         let theme = self.current_theme;
         let style = self.style();
         let line_height = self.current_line_height as f32;
-        crate::primitives::toast::native_surface_paint::paint(
+
+        const TOAST_SLIDE_DURATION: Duration = Duration::from_millis(220);
+        let now = std::time::Instant::now();
+
+        // Track one entrance transition per live toast id: drop any whose
+        // toast has disappeared (dismissed toasts are removed from `stack`
+        // immediately, so there is nothing left to animate out), and start
+        // a fresh one for any id seen for the first time this frame.
+        let live_ids: HashSet<WidgetId> = stack.toasts.iter().map(|t| t.id.clone()).collect();
+        self.toast_enter.retain(|id, _| live_ids.contains(id));
+        for id in &live_ids {
+            self.toast_enter
+                .entry(id.clone())
+                .or_insert_with(|| Transition::start(TOAST_SLIDE_DURATION));
+        }
+
+        // Toasts slide in from their stack's off-screen edge: right corners
+        // from beyond the viewport's right edge, left corners from beyond
+        // its left edge.
+        let start_dx = match stack.corner {
+            ToastCorner::BottomRight | ToastCorner::TopRight => rect.width,
+            ToastCorner::BottomLeft | ToastCorner::TopLeft => -rect.width,
+        };
+
+        let mut still_animating = false;
+        let offsets: HashMap<WidgetId, f32> = self
+            .toast_enter
+            .iter()
+            .map(|(id, transition)| {
+                let progress = transition.progress_at(now);
+                if progress < 1.0 {
+                    still_animating = true;
+                }
+                (id.clone(), lerp(start_dx, 0.0, progress))
+            })
+            .collect();
+
+        let layout = crate::primitives::toast::native_surface_paint::paint_with_x_offset(
             stack,
             self,
             &theme,
@@ -3471,7 +3540,14 @@ impl Backend for MacBackend {
             rect.width,
             rect.height,
             line_height,
-        )
+            |id| offsets.get(id).copied().unwrap_or(0.0),
+        );
+
+        if still_animating {
+            self.request_frame_in(Duration::from_millis(16));
+        }
+
+        layout
     }
     fn toast_stack_layout(&self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
         // No-paint twin of `draw_toast_overlay` — that method paints
@@ -3646,6 +3722,32 @@ impl Backend for MacBackend {
         options: crate::primitives::toolbar::ToolbarPaintOptions,
     ) -> crate::primitives::toolbar::ToolbarLayout {
         let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
+
+        const HOVER_FADE_DURATION: Duration = Duration::from_millis(120);
+        let now = std::time::Instant::now();
+
+        // Track a fade-in transition for whichever item is currently
+        // hovered; at most one id is hovered at a time, and there is no
+        // hover-exit state to keep animating once the pointer moves on —
+        // same entrance-only scoping as `toast_enter`.
+        if let Some(id) = hovered_id {
+            self.hover_fade.retain(|k, _| k == id);
+            self.hover_fade
+                .entry(id.clone())
+                .or_insert_with(|| Transition::start(HOVER_FADE_DURATION));
+        } else {
+            self.hover_fade.clear();
+        }
+        let fade_progress =
+            hovered_id.and_then(|id| self.hover_fade.get(id).map(|t| t.progress_at(now)));
+        let still_fading = matches!(fade_progress, Some(p) if p < 1.0);
+
+        // While the fade-in is still animating, suppress the shared paint
+        // code's binary hover highlight (it would otherwise snap straight
+        // to full opacity) in favor of the translucent overlay painted
+        // below at `fade_progress` alpha.
+        let painted_hovered_id = if still_fading { None } else { hovered_id };
+
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
@@ -3656,7 +3758,7 @@ impl Backend for MacBackend {
         let font = &self.chrome_font;
         let theme = self.current_theme;
         // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
+        let layout = unsafe {
             super::toolbar::draw_toolbar_with_options(
                 ctx,
                 font,
@@ -3666,11 +3768,47 @@ impl Backend for MacBackend {
                 rect.height as f64,
                 bar,
                 &theme,
-                hovered_id,
+                painted_hovered_id,
                 pressed_id,
                 options,
             )
+        };
+
+        if still_fading {
+            if let (Some(id), Some(progress)) = (hovered_id, fade_progress) {
+                if let Some(vis) = layout
+                    .visible_items
+                    .iter()
+                    .find(|v| v.action_id.as_ref() == Some(id))
+                {
+                    let item = vis.bounds;
+                    if item.width > 0.0 && item.height > 0.0 {
+                        // Mirrors `primitives::toolbar::native_surface_paint`'s
+                        // own hover-highlight geometry exactly, so the faded
+                        // overlay lines up with the opaque highlight it eases
+                        // into.
+                        const CORNER_RADIUS: f32 = 4.0;
+                        let inset = Rect::new(
+                            item.x + 2.0,
+                            item.y + 2.0,
+                            (item.width - 4.0).max(0.0),
+                            (item.height - 4.0).max(0.0),
+                        );
+                        let color = theme.hover_bg.with_alpha(progress as f64);
+                        // SAFETY: ctx is the same non-null frame-scope
+                        // pointer used by the paint call above.
+                        let mut surface = super::surface::CgSurface {
+                            ctx,
+                            font: Some(font),
+                        };
+                        surface.surface_fill_rounded_rect(inset, CORNER_RADIUS, color);
+                    }
+                }
+            }
+            self.request_frame_in(Duration::from_millis(16));
         }
+
+        layout
     }
 
     fn toolbar_layout(
@@ -9176,6 +9314,107 @@ mod tests {
             "tab label must be centred using chrome_line_height, not current_line_height: \
              got y={}, expected={expected_y} (editor-metric centring would give {buggy_y})",
             run.bounds.y,
+        );
+    }
+
+    // ── toast overlay entrance slide ─────────────────────────────────────
+
+    const TOAST_W: u32 = 400;
+    const TOAST_H: u32 = 200;
+
+    fn sample_toast_overlay() -> ToastOverlay {
+        ToastOverlay {
+            id: WidgetId::new("toasts:bottom_right"),
+            corner: ToastCorner::BottomRight,
+            toasts: vec![crate::primitives::toast::Toast {
+                id: WidgetId::new("toast:1"),
+                title: "Saved".to_string(),
+                body: String::new(),
+                severity: crate::primitives::toast::ToastSeverity::Success,
+                actions: vec![],
+                accent: None,
+            }],
+            focus: None,
+        }
+    }
+
+    /// Paints `overlay` through `MacBackend::draw_toast_overlay` on a fresh
+    /// frame and returns both the surface and the resolved layout, which
+    /// stays pinned to each toast's resting bounds regardless of any
+    /// in-flight slide offset (see `paint_with_x_offset`'s own doc).
+    fn paint_toast_overlay(
+        backend: &mut MacBackend,
+        overlay: &ToastOverlay,
+    ) -> (super::super::headless::BitmapSurface, ToastStackLayout) {
+        use super::super::headless::BitmapSurface;
+
+        let surface = BitmapSurface::new(TOAST_W, TOAST_H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        backend.begin_frame(Viewport::new(TOAST_W as f32, TOAST_H as f32, 1.0));
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let l =
+                b.draw_toast_overlay(Rect::new(0.0, 0.0, TOAST_W as f32, TOAST_H as f32), overlay);
+            *layout.borrow_mut() = Some(l);
+        });
+        backend.end_frame();
+        (surface, layout.into_inner().unwrap())
+    }
+
+    /// `MacBackend::draw_toast_overlay` slides a newly-shown toast in from
+    /// its stack's off-screen edge via `Transition`, instead of painting it
+    /// at full, resting position on the very first frame: sampling the
+    /// toast's resting-position centre on frame one must not show its
+    /// (deterministic, severity-driven) fill colour, since the box is still
+    /// painted off-canvas at that point.
+    #[test]
+    fn toast_overlay_slides_in_from_off_screen_on_first_frame() {
+        let overlay = sample_toast_overlay();
+        let mut backend = MacBackend::new();
+        backend.set_current_font(super::super::text::make_font("Menlo", 14.0).expect("Menlo"));
+
+        let (surface, layout) = paint_toast_overlay(&mut backend, &overlay);
+        let vt = &layout.visible_toasts[0];
+        let cx = (vt.bounds.x + vt.bounds.width / 2.0) as u32;
+        let cy = (vt.bounds.y + vt.bounds.height / 2.0) as u32;
+        let (r, g, b, _a) = surface.pixel(cx, cy);
+        let success_bg = Color::rgb(30, 80, 30);
+        assert_ne!(
+            (r, g, b),
+            (success_bg.r, success_bg.g, success_bg.b),
+            "first frame should paint the toast off-screen, slid in from the stack's edge, \
+             not already at its resting position",
+        );
+    }
+
+    /// Once a toast has been visible for longer than its slide's duration,
+    /// it should be painted at its resting position — the animation hands
+    /// off to a static layout once it finishes, same contract as the
+    /// toolbar hover fade
+    /// (`toolbar::tests::hover_highlight_reaches_full_opacity_after_fade_duration`).
+    #[test]
+    fn toast_overlay_reaches_resting_position_after_slide_duration() {
+        let overlay = sample_toast_overlay();
+        let mut backend = MacBackend::new();
+        backend.set_current_font(super::super::text::make_font("Menlo", 14.0).expect("Menlo"));
+
+        let _first = paint_toast_overlay(&mut backend, &overlay);
+
+        // The slide's duration (220ms) plus generous margin for scheduler
+        // jitter — mirrors the sleep-based timing tests elsewhere in this
+        // crate (e.g. `toolbar::tests`, `tui::backend`, `win::run`).
+        std::thread::sleep(Duration::from_millis(320));
+
+        let (surface, layout) = paint_toast_overlay(&mut backend, &overlay);
+        let vt = &layout.visible_toasts[0];
+        let cx = (vt.bounds.x + vt.bounds.width / 2.0) as u32;
+        let cy = (vt.bounds.y + vt.bounds.height / 2.0) as u32;
+        let (r, g, b, _a) = surface.pixel(cx, cy);
+        let success_bg = Color::rgb(30, 80, 30);
+        assert_eq!(
+            (r, g, b),
+            (success_bg.r, success_bg.g, success_bg.b),
+            "toast should be painted at its resting position once the slide finishes",
         );
     }
 }
