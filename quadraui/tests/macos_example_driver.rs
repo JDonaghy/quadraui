@@ -42,6 +42,14 @@ use image_app::ImageApp;
 mod tab_icons_demo;
 use tab_icons_demo::TabIconsDemo;
 
+#[path = "../examples/common/toolbar_app.rs"]
+mod toolbar_app;
+use toolbar_app::ToolbarApp;
+
+#[path = "../examples/common/form_groups.rs"]
+mod form_groups;
+use form_groups::FormGroupsApp;
+
 // Point canvas — big enough for five pipeline stage boxes + arrow
 // connectors + the bottom status bar at macOS's native (point, not cell)
 // scale. Same size `tests/cross_backend_parity.rs` uses for its `MacDriver`
@@ -844,4 +852,137 @@ fn tab_icons_demo_closing_the_last_active_tab_activates_its_left_neighbour() {
          wrongly promoted: {:?}",
         driver.painted_texts()
     );
+}
+
+// ─── flex-layout rewire (#1430): packing must stay identical on macOS ──────
+//
+// `AppShell`, `Form` and `Toolbar` each route their 1D position arithmetic
+// through `crate::flex::pack_1d` when the `layout` feature is enabled, and
+// through the original hand-rolled arithmetic when it is not. The three
+// tests below are the macOS twins of `tests/tui_example_driver.rs`'s
+// `toolbar_items_pack_left_to_right_in_one_row` /
+// `appshell_chrome_bands_carve_left_to_right` /
+// `form_fields_stack_and_group_items_pack` — same fixtures, same packing
+// claims, asserted in points via `find_bounds` rather than cells via a
+// character-grid `screen()` string, since `MacDriver` has no grid to scan:
+// there is no `row_containing`/divider-column-scan equivalent here, and
+// activity-bar icons paint as Nerd-Font glyphs (not the ASCII `E`/`S`/`G`
+// fallback TUI's test keys off), so the AppShell band check below is
+// `find_bounds` on painted *text* chrome only (sidebar header, main-area
+// hint), not the activity bar itself.
+
+/// `(x, y, width)` of each needle's painted bounds, in the order given.
+///
+/// Panics naming the first needle that isn't on screen.
+fn mac_bounds_of<A: quadraui::AppLogic>(
+    driver: &MacDriver<A>,
+    needles: &[&str],
+) -> Vec<(f32, f32, f32)> {
+    needles
+        .iter()
+        .map(|needle| {
+            let b = driver
+                .find_bounds(needle)
+                .unwrap_or_else(|| panic!("{needle:?} not painted: {:?}", driver.painted_texts()));
+            (b.x, b.y, b.width)
+        })
+        .collect()
+}
+
+/// Assert `items` sit on one row, in the given order, without overlapping.
+fn mac_assert_packed_in_one_row(items: &[(f32, f32, f32)], labels: &[&str]) {
+    for (pair, names) in items.windows(2).zip(labels.windows(2)) {
+        let (lx, ly, lw) = pair[0];
+        let (rx, ry, _) = pair[1];
+        assert_eq!(
+            ly, ry,
+            "{:?} and {:?} must pack onto the same row",
+            names[0], names[1]
+        );
+        assert!(
+            lx + lw <= rx,
+            "{:?} (x={lx}, w={lw}) must end before {:?} starts (x={rx})",
+            names[0],
+            names[1]
+        );
+    }
+}
+
+#[test]
+fn toolbar_items_pack_left_to_right_in_one_row() {
+    let driver = MacDriver::new(ToolbarApp::new(), 900, 120);
+
+    // `Toolbar::layout` decides each item's left edge, so any packing
+    // drift pulls one of these out of row-order or overlapping with its
+    // left neighbour.
+    let labels = ["Continue", "Pause", "Filter", "Reset", "Debug"];
+    mac_assert_packed_in_one_row(&mac_bounds_of(&driver, &labels), &labels);
+}
+
+#[test]
+fn appshell_chrome_bands_carve_left_to_right() {
+    let config = AppShellDemo::config();
+    let driver = driver_with_shell(AppShellDemo::new(), config, SHELL_W, SHELL_H);
+
+    // Bands run left to right: activity bar, sidebar, main area. The
+    // sidebar header and the main-area hint text are both chrome this
+    // demo paints every frame regardless of which panel is active, so
+    // their relative x-order is the band carve's signature.
+    let [(explorer_x, _, _), (main_x, _, _)] =
+        mac_bounds_of(&driver, &["EXPLORER", "Tab=focus bar"])[..]
+    else {
+        unreachable!("mac_bounds_of returns one entry per needle")
+    };
+    assert!(
+        main_x > explorer_x,
+        "main area (x={main_x}) sits right of the sidebar header (x={explorer_x})"
+    );
+
+    // The sidebar band's content starts inside the sidebar, left of the
+    // main area — the same "band clips its content" claim TUI's test
+    // makes by comparing against the divider column.
+    let content = driver
+        .find_bounds("(sidebar content here)")
+        .expect("sidebar content placeholder should be painted");
+    assert!(
+        content.x < main_x,
+        "sidebar content (x={}) starts left of the main area (x={main_x})",
+        content.x
+    );
+}
+
+#[test]
+fn form_fields_stack_and_group_items_pack() {
+    let driver = MacDriver::new(FormGroupsApp::new(), 700, 400);
+    let line_height = driver.backend().line_height();
+
+    // Each field's top edge is the running sum of the heights above it:
+    // the two-row Find field (label + toggles), then the two-row Replace
+    // field (label + button row), then Scope. `"Replace "` (trailing
+    // space) picks the field label, not the "Replace All" button, which
+    // is the next thing painted after it.
+    let [(_, find_y, _), (_, replace_y, _), (_, scope_y, _)] =
+        mac_bounds_of(&driver, &["Find", "Replace ", "Scope"])[..]
+    else {
+        unreachable!("mac_bounds_of returns one entry per needle")
+    };
+    assert_eq!(
+        replace_y - find_y,
+        line_height,
+        "Replace field stacks one row below Find"
+    );
+    assert_eq!(
+        scope_y - replace_y,
+        line_height,
+        "Scope field stacks one row below Replace"
+    );
+
+    // Items inside a `ToggleGroup` / `ButtonRow` pack left-to-right with
+    // the field's own gap — the other half of `Form`'s packing. "Find
+    // Next" and "Replace All" bracket the button row without colliding
+    // with the "Replace" field label painted above them.
+    let toggles = ["Workspace", "File", "Selection"];
+    mac_assert_packed_in_one_row(&mac_bounds_of(&driver, &toggles), &toggles);
+    let buttons = ["Find Next", "Replace All"];
+    mac_assert_packed_in_one_row(&mac_bounds_of(&driver, &buttons), &buttons);
 }
