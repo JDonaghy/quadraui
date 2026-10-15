@@ -59,6 +59,7 @@ mod example_manifest;
 mod githooks_worktree;
 mod primitive_doc_examples;
 mod quality_gate_docs;
+mod semver_gate;
 
 use std::panic;
 
@@ -91,6 +92,8 @@ fn checks() -> Vec<Check> {
         check!(quality_gate_docs::win_test_script_is_executable),
         check!(downstream_gate_docs::downstream_job_and_claude_md_name_the_same_consumers),
         check!(downstream_gate_docs::downstream_job_keeps_its_three_load_bearing_properties),
+        check!(semver_gate::semver_job_advisory_split_is_step_level),
+        check!(semver_gate::semver_job_still_blocks_the_release_promotion),
         check!(example_manifest::every_example_file_has_a_manifest_entry),
         check!(example_manifest::every_example_entry_requires_its_backend_feature),
         check!(cross_target_toolchain::rust_toolchain_pin_still_exists),
