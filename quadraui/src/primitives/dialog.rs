@@ -29,6 +29,7 @@
 
 use crate::backend::{MessageDialogButton, MessageDialogOptions};
 use crate::event::Rect;
+use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toolbar::{Toolbar, ToolbarHit, ToolbarItemMeasure, ToolbarLayout};
 use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -537,14 +538,53 @@ impl Dialog {
     ///
     /// Does not measure [`Self::table`] or [`Self::buttons`]' rendered pixel
     /// width beyond the char-cell approximation above; callers with real
-    /// text measurement available should prefer measuring directly and
-    /// building a [`DialogMeasure`] by hand.
+    /// text measurement available should prefer [`Self::measure_generic_measured`].
     pub fn measure_generic(
         &self,
         char_width: f32,
         line_height: f32,
         viewport: Rect,
         border_chrome_inset: f32,
+    ) -> DialogMeasure {
+        self.measure_generic_inner(char_width, line_height, viewport, border_chrome_inset, None)
+    }
+
+    /// Like [`Self::measure_generic`], but sizes [`DialogMeasure::button_width`]
+    /// from each [`DialogButton::label`]'s real rendered width through
+    /// `measure` instead of the fixed `char_width * 8.0` estimate — the
+    /// widest button sets a uniform width for the row (`button_width` is
+    /// shared by every button; see [`DialogMeasure::button_width`]'s doc),
+    /// plus 2 char-widths of horizontal padding, floored at the original
+    /// `char_width * 8.0` so a row of short labels ("OK" / "No") doesn't
+    /// shrink below what every existing caller of [`Self::measure_generic`]
+    /// already renders.
+    ///
+    /// Every other field is identical to [`Self::measure_generic`] — only
+    /// the button row's width changes.
+    pub fn measure_generic_measured(
+        &self,
+        char_width: f32,
+        line_height: f32,
+        viewport: Rect,
+        border_chrome_inset: f32,
+        measure: &dyn TextMeasure,
+    ) -> DialogMeasure {
+        self.measure_generic_inner(
+            char_width,
+            line_height,
+            viewport,
+            border_chrome_inset,
+            Some(measure),
+        )
+    }
+
+    fn measure_generic_inner(
+        &self,
+        char_width: f32,
+        line_height: f32,
+        viewport: Rect,
+        border_chrome_inset: f32,
+        measure: Option<&dyn TextMeasure>,
     ) -> DialogMeasure {
         let table = self.table.as_ref();
         let table_total_h = table
@@ -575,6 +615,16 @@ impl Dialog {
             .max(table_preferred_w)
             .min(viewport.width - char_width * 4.0 - border_chrome_inset * 2.0);
 
+        let estimated_button_w = char_width * 8.0;
+        let button_width = match measure {
+            Some(m) => self
+                .buttons
+                .iter()
+                .map(|b| m.width_of(&b.label) + char_width * 2.0)
+                .fold(estimated_button_w, f32::max),
+            None => estimated_button_w,
+        };
+
         DialogMeasure {
             width: dialog_w,
             title_height: title_h,
@@ -582,7 +632,7 @@ impl Dialog {
             table_height: table_total_h,
             input_height: input_h,
             button_row_height: line_height,
-            button_width: char_width * 8.0,
+            button_width,
             button_gap: char_width * 2.0,
             padding: line_height,
         }
@@ -1843,5 +1893,82 @@ mod tests {
             no_inset.width - 4.0,
             "border_chrome_inset shrinks width by 2x the inset"
         );
+    }
+
+    // ── Dialog::measure_generic_measured ──────────────────────────────────
+
+    /// Fixed-width stand-in for a real font: `6.0` px per char. Mirrors
+    /// `layout_metrics`'s `FakeMeasure`, giving this a platform-independent
+    /// regression test instead of depending on a real backend's glyph
+    /// metrics.
+    struct FakeMeasure;
+    impl crate::primitives::layout_metrics::TextMeasure for FakeMeasure {
+        fn width_of(&self, text: &str) -> f32 {
+            text.chars().count() as f32 * 6.0
+        }
+    }
+
+    #[test]
+    fn measure_generic_measured_uses_real_label_width_not_the_estimate() {
+        let mut d = base_dialog(None);
+        d.buttons = vec![btn("a-very-long-button-label")];
+        let viewport = Rect::new(0.0, 0.0, 200.0, 30.0);
+        let char_width = 1.0;
+        let line_height = 1.0;
+
+        let estimated = d.measure_generic(char_width, line_height, viewport, 0.0);
+        let measured =
+            d.measure_generic_measured(char_width, line_height, viewport, 0.0, &FakeMeasure);
+
+        assert_eq!(
+            estimated.button_width, 8.0,
+            "measure_generic always uses the flat char_width * 8.0 estimate"
+        );
+        let label_w = FakeMeasure.width_of("a-very-long-button-label");
+        assert_eq!(
+            measured.button_width,
+            label_w + char_width * 2.0,
+            "measured button_width tracks the real label width + padding, \
+             not the flat estimate"
+        );
+        assert!(measured.button_width > estimated.button_width);
+    }
+
+    #[test]
+    fn measure_generic_measured_floors_at_the_char_width_estimate() {
+        // Short labels must not shrink the button row below what
+        // measure_generic already renders for every existing caller.
+        struct NarrowMeasure;
+        impl crate::primitives::layout_metrics::TextMeasure for NarrowMeasure {
+            fn width_of(&self, text: &str) -> f32 {
+                text.chars().count() as f32 * 1.0
+            }
+        }
+
+        let d = base_dialog(None); // buttons: [btn("ok")]
+        let viewport = Rect::new(0.0, 0.0, 200.0, 30.0);
+        let char_width = 1.0;
+        let line_height = 1.0;
+
+        let measured =
+            d.measure_generic_measured(char_width, line_height, viewport, 0.0, &NarrowMeasure);
+        assert_eq!(measured.button_width, char_width * 8.0);
+    }
+
+    #[test]
+    fn measure_generic_measured_matches_estimate_for_other_fields() {
+        let d = table_dialog();
+        let viewport = Rect::new(0.0, 0.0, 100.0, 30.0);
+        let estimated = d.measure_generic(1.0, 1.0, viewport, 0.0);
+        let measured = d.measure_generic_measured(1.0, 1.0, viewport, 0.0, &FakeMeasure);
+
+        assert_eq!(measured.width, estimated.width);
+        assert_eq!(measured.title_height, estimated.title_height);
+        assert_eq!(measured.body_height, estimated.body_height);
+        assert_eq!(measured.table_height, estimated.table_height);
+        assert_eq!(measured.input_height, estimated.input_height);
+        assert_eq!(measured.button_row_height, estimated.button_row_height);
+        assert_eq!(measured.button_gap, estimated.button_gap);
+        assert_eq!(measured.padding, estimated.padding);
     }
 }
