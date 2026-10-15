@@ -183,11 +183,25 @@ jobs:
     # `### Deprecated`/rule-8 workflow exists for — so hard-failing every
     # `develop` PR on any API diff from the last crates.io release would be
     # noise, not signal. The `develop` -> `main` promotion PR is the actual
-    # release gate (release.yml#1368), so that is where this must block:
-    # `continue-on-error` is true (advisory) everywhere except a
-    # `pull_request` targeting `main`, where it is false (required). Plain
-    # `push` runs (no `base_ref`) stay advisory too — nothing to block once
-    # a push has already landed.
+    # release gate (release.yml#1368), so that is where this must block: a
+    # diff is advisory (a `::warning::` annotation, job green) everywhere
+    # except a `pull_request` targeting `main`, where it fails the job.
+    # Plain `push` runs (no `base_ref`) stay advisory too — nothing to block
+    # once a push has already landed.
+    #
+    # That advisory/required split is implemented *per step*, in the
+    # `continue-on-error` on the action step plus the classification step
+    # after it — deliberately NOT with a job-level
+    # `continue-on-error: ${{ ... }}` expression. A job-level
+    # `continue-on-error` only keeps the overall *workflow run* green; the
+    # job's own check run is still reported to the GitHub Checks API with
+    # conclusion `failure`. Anything that reads check runs rather than the
+    # run conclusion — branch protection, required-checks lists, the
+    # coordinator's merge gate — therefore sees an advisory API diff as a
+    # red, merge-blocking check on every `develop` PR, which is exactly what
+    # the split above exists to avoid. Step-level `continue-on-error` keeps
+    # the step's failure out of the job's conclusion, so the check run is
+    # green when the diff is advisory and red only on the promotion PR.
     name: cargo-semver-checks (public API vs. published crates.io)
     runs-on: ubuntu-latest
     # #1292: this job builds quadraui's full heuristic feature surface
@@ -197,7 +211,6 @@ jobs:
     # own 25-minute budget, rounded up for margin, since this is a hard
     # block on the `develop` -> `main` promotion PR specifically.
     timeout-minutes: 45
-    continue-on-error: ${{ !(github.event_name == 'pull_request' && github.base_ref == 'main') }}
     # A semver diff answers "does the public API differ from what's on
     # crates.io", not "does it lint clean" — the registry baseline crate is
     # already built with `--cap-lints allow`, but this job's own checkout
@@ -227,9 +240,40 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
       - uses: obi1kenobi/cargo-semver-checks-action@v2
+        id: semver
+        # Never fails the job directly — the classification step below owns
+        # that decision, reading `steps.semver.outcome`. See the job's
+        # "Required vs. advisory" comment for why this is here and not a
+        # job-level `continue-on-error`.
+        continue-on-error: true
         with:
           package: quadraui
           manifest-path: Cargo.toml
+      # Any non-success outcome lands here, including an infrastructure
+      # failure (apt, registry, rustdoc) rather than a real API diff. Both
+      # are reported the same way, which fails closed in the direction that
+      # matters: the promotion PR cannot go green without the step itself
+      # succeeding.
+      - name: Classify the semver diff (advisory on develop, required on main)
+        env:
+          SEMVER_OUTCOME: ${{ steps.semver.outcome }}
+          # `true` only on the develop -> main release promotion PR, the one
+          # PR that can turn an accumulated API break into a published
+          # crates.io version (see CLAUDE.md's "Branching + releases").
+          RELEASE_GATE: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' }}
+        run: |
+          if [ "$SEMVER_OUTCOME" = "success" ]; then
+            echo "No public-API break against the published crates.io release."
+            exit 0
+          fi
+          # One line: a newline inside an annotation command terminates it,
+          # so the rest would be printed as plain log text instead.
+          MSG="cargo-semver-checks reports a public-API difference from the published crates.io release of quadraui (the step above names the offending items). Either give quadraui/Cargo.toml the bump Cargo's pre-1.0 semver convention requires (0.MINOR for a break) on the develop -> main promotion PR, or follow CLAUDE.md rule 3 to make the change non-breaking."
+          if [ "$RELEASE_GATE" = "true" ]; then
+            echo "::error title=Public-API break blocks this release::$MSG"
+            exit 1
+          fi
+          echo "::warning title=Public-API break accumulating for the next release::$MSG"
 
   doc:
     # #797: docs.rs renders `tui`/`gtk`/`win`/`terminal`/`layout` only if they
@@ -365,10 +409,10 @@ jobs:
     # `base_ref` is `main`, the only PR that is ever a release promotion
     # (see CLAUDE.md's "Branching + releases": `main` only moves via that
     # PR). Ordinary `develop` PRs and plain pushes skip this job entirely —
-    # unlike `semver-checks`' advisory-everywhere-else `continue-on-error`
-    # toggle, there is no meaningful advisory signal to show on a non-
-    # promotion PR for a check about a version bump that PR likely isn't
-    # making.
+    # unlike `semver-checks`, which still runs everywhere and reports a
+    # non-promotion diff as an advisory `::warning::`, there is no
+    # meaningful advisory signal to show on a non-promotion PR for a check
+    # about a version bump that PR likely isn't making.
     #
     # No toolchain/cache steps: `version` and `notes` both read
     # `quadraui/Cargo.toml`/`CHANGELOG.md` directly, the same hermetic,
