@@ -787,6 +787,50 @@ pub struct PlatformFontDefaults {
     pub ui_size_pt: f32,
 }
 
+/// The rects passed to [`Backend::invalidate_rect`] since the last
+/// [`Self::clear`].
+///
+/// Pure bookkeeping — see [`Backend::invalidate_rect`]'s doc for why this
+/// log doesn't itself trigger any native repaint. Every backend owns one
+/// (via [`crate::backend_core::BackendCore`]) and returns it unchanged from
+/// [`Backend::invalidation_log`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InvalidationLog {
+    rects: Vec<Rect>,
+}
+
+impl InvalidationLog {
+    /// An empty log.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a dirty rect.
+    pub fn push(&mut self, rect: Rect) {
+        self.rects.push(rect);
+    }
+
+    /// All recorded rects, oldest first.
+    pub fn rects(&self) -> &[Rect] {
+        &self.rects
+    }
+
+    /// Drop every recorded rect.
+    pub fn clear(&mut self) {
+        self.rects.clear();
+    }
+
+    /// Whether any rect has been recorded since the last [`Self::clear`].
+    pub fn is_empty(&self) -> bool {
+        self.rects.is_empty()
+    }
+
+    /// How many rects have been recorded since the last [`Self::clear`].
+    pub fn len(&self) -> usize {
+        self.rects.len()
+    }
+}
+
 /// Framework-level policy for whether a context menu (or, follow-up
 /// work permitting, a menu bar) shows as a real OS menu or as an
 /// in-window painted popup.
@@ -1388,6 +1432,37 @@ pub trait Backend: sealed::Sealed {
     /// same "may act as if called once" contract
     /// [`Self::request_frame_in`] documents for overlapping requests.
     fn request_full_repaint(&mut self) {}
+
+    /// Record that `rect` needs repainting, for a future partial-repaint
+    /// path to consume.
+    ///
+    /// This is a **bookkeeping hook, not a native repaint call** — calling
+    /// it does not itself invalidate anything on screen. It only appends
+    /// `rect` to the backend's [`InvalidationLog`] (read back via
+    /// [`Self::invalidation_log`]), the same "latch now, act later" shape
+    /// [`Self::request_full_repaint`] already uses for its flag: the actual
+    /// native partial-repaint call (GTK's `queue_draw_area` — removed in
+    /// GTK4, so GTK can only ever invalidate the whole viewport; AppKit's
+    /// `setNeedsDisplay(_:in:)`; Win32's `InvalidateRect(hwnd, Some(&rect),
+    /// …)`) is follow-on work for whichever render-path caller decides to
+    /// wire it up, not this seam. Chrome-motion callers (see
+    /// [`crate::transition::Transition`]) call this once per frame with the
+    /// animating widget's dirty rect so that future caller can exist without
+    /// another `Backend` method.
+    ///
+    /// Every backend implements this as a one-line delegation to
+    /// [`crate::backend_core::BackendCore::record_invalidation`] — there is
+    /// no useful no-op default, since the whole point is that the rect ends
+    /// up in the log every backend shares.
+    fn invalidate_rect(&mut self, rect: Rect);
+
+    /// The log of rects passed to [`Self::invalidate_rect`] since the last
+    /// [`InvalidationLog::clear`].
+    ///
+    /// Exists so tests (and, eventually, a partial-repaint render path) can
+    /// observe what chrome motion asked to have redrawn without the backend
+    /// needing to expose any native handle.
+    fn invalidation_log(&self) -> &InvalidationLog;
 
     /// Register an accelerator. The backend stores it and emits
     /// [`UiEvent::Accelerator`] when the native key event matches.

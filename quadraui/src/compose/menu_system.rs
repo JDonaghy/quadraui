@@ -871,6 +871,7 @@ mod tests {
         /// the menu-bar layout reports the zero-height, item-less shape
         /// a platform-owned menu bar has in-window (macOS, by default).
         native_menu_bar: bool,
+        invalidation_log: crate::backend::InvalidationLog,
     }
 
     impl MockBackend {
@@ -880,6 +881,7 @@ mod tests {
                 drag_state: std::rc::Rc::new(std::cell::RefCell::new(crate::DragState::new())),
                 focus: crate::focus::FocusManager::new(),
                 native_menu_bar: false,
+                invalidation_log: crate::backend::InvalidationLog::new(),
             }
         }
 
@@ -928,6 +930,12 @@ mod tests {
         }
         fn register_accelerator(&mut self, _: &crate::accelerator::Accelerator) {}
         fn unregister_accelerator(&mut self, _: &crate::accelerator::AcceleratorId) {}
+        fn invalidate_rect(&mut self, rect: crate::event::Rect) {
+            self.invalidation_log.push(rect);
+        }
+        fn invalidation_log(&self) -> &crate::backend::InvalidationLog {
+            &self.invalidation_log
+        }
         fn modal_stack_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::ModalStack>> {
             self.modal_stack.clone()
         }

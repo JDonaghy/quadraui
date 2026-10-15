@@ -689,6 +689,10 @@ pub struct RecordingBackend {
     /// honestly fabricate, so it's included rather than
     /// `unimplemented!()`.
     pub focus: crate::focus::FocusManager,
+    /// Backs [`Backend::invalidate_rect`]/[`Backend::invalidation_log`] —
+    /// pure bookkeeping, same shape every real backend's `BackendCore`
+    /// delegates to.
+    pub invalidation_log: crate::backend::InvalidationLog,
 }
 
 impl Default for RecordingBackend {
@@ -704,6 +708,7 @@ impl Default for RecordingBackend {
             char_width: 1.0,
             chrome_line_height: None,
             focus: crate::focus::FocusManager::new(),
+            invalidation_log: crate::backend::InvalidationLog::new(),
         }
     }
 }
@@ -774,6 +779,12 @@ impl crate::Backend for RecordingBackend {
     }
     fn register_accelerator(&mut self, _a: &crate::Accelerator) {}
     fn unregister_accelerator(&mut self, _id: &crate::AcceleratorId) {}
+    fn invalidate_rect(&mut self, rect: crate::event::Rect) {
+        self.invalidation_log.push(rect);
+    }
+    fn invalidation_log(&self) -> &crate::backend::InvalidationLog {
+        &self.invalidation_log
+    }
     fn modal_stack_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::ModalStack>> {
         unimplemented!(
             "RecordingBackend has no shared ModalStack — drive a real backend \
