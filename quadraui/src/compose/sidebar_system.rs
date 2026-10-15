@@ -34,7 +34,6 @@ use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionViewLayout, SectionMeasure,
 };
 use crate::primitives::scrollbar::ThumbDrag;
-use crate::primitives::tree::TreeRowMeasure;
 use crate::{
     Backend, ButtonMask, Key, Modifiers, MouseButton, MsvAxis, MultiSectionView,
     MultiSectionViewHit, NamedKey, Point, Rect, ScrollMode, ScrollbarHit, Section, SectionBody,
@@ -644,26 +643,15 @@ impl SidebarSystem {
         tree: &TreeView,
         lh: f32,
     ) -> crate::primitives::tree::TreeViewLayout {
-        let header_h = (lh * 1.2).round();
-        let item_h = (lh * 1.4).round();
-        let indent_px = (lh * 0.9).round();
-        let show_chevrons = tree.style.show_chevrons;
-        tree.layout(body_b.width, body_b.height, |i| {
-            let row = &tree.rows[i];
-            let is_header = matches!(row.decoration, crate::types::Decoration::Header);
-            let height = if is_header { header_h } else { item_h };
-            // Approximate chevron end x (mirrors gtk_tree_layout).
-            let chevron_end_x = if row.is_expanded.is_some() && show_chevrons {
-                let est_glyph_w = lh * 0.65;
-                Some(2.0 + row.indent as f32 * indent_px + est_glyph_w + 4.0)
-            } else {
-                None
-            };
-            TreeRowMeasure {
-                height,
-                chevron_end_x,
-            }
-        })
+        // Delegate to the shared pixel-layout math instead of a hand-inlined
+        // copy: this used to hardcode `item_h = (lh * 1.4).round()` here,
+        // silently ignoring `TreeStyle::row_height` even though
+        // `layout_metrics::tree_layout` already respects it via
+        // `tree_row_pitch`. No live `TextMeasure` is reachable from this
+        // `&self` call site (no cached backend handle on `SidebarSystem`),
+        // so the chevron end-x is still the `line_height * 0.65` estimate —
+        // same as every other caller of `layout_metrics::tree_layout`.
+        crate::primitives::layout_metrics::tree_layout(tree, body_b, lh as f64)
     }
 
     fn handle_key(
