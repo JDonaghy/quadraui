@@ -121,6 +121,14 @@ only a push to `main` runs this workflow.
   instead of a sharp-cornered fill, so a 14px-wide track reads with
   VS-Code-like visual weight instead of as too-translucent/too-narrow.
 
+- `mac_tree_layout` now measures each branch row's chevron glyph
+  (`TreeStyle::chevron_expanded`/`chevron_collapsed`) with the real
+  `CTFont` via `layout_metrics::tree_layout_measured`, instead of the
+  `line_height * 0.65` estimate `layout_metrics::tree_layout` falls back
+  to. `mac_tree_layout` and `Backend::tree_layout` take a `font: &CTFont`
+  parameter to do so (mirrors `mac_form_layout`'s existing `font`
+  parameter); no consumer repo calls `mac_tree_layout` directly.
+
 ## [0.1.8] - 2026-10-14
 
 ### Added

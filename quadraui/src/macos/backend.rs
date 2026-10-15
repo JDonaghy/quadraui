@@ -3105,7 +3105,7 @@ impl Backend for MacBackend {
         super::multi_section_view::mac_msv_metrics(self.chrome_line_height, false)
     }
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
-        super::tree::mac_tree_layout(tree, rect, self.chrome_line_height)
+        super::tree::mac_tree_layout(tree, rect, self.chrome_line_height, &self.chrome_font)
     }
     fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<crate::Scrollbar> {
         let row_h =
