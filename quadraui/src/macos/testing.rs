@@ -130,6 +130,10 @@ impl<A: AppLogic> MacDriver<A> {
         // *any* primitive — off in production, a live app never reads
         // it (mirrors `GtkBackend::set_painted_text_recording`).
         backend.set_painted_text_recording(true);
+        // Entrance-slide and hover-fade animations complete instantly in
+        // the test driver so `click_text` targets are at their resting
+        // position on the first frame, matching the layout hit-test uses.
+        backend.set_skip_animations(true);
         if let Some(font) = make_font("Menlo", 14.0) {
             backend.set_current_font(font);
         }
