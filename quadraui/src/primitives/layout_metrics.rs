@@ -18,8 +18,10 @@
 //!
 //! Where a rasteriser needs a *real* glyph width (Form's per-item hit
 //! regions), it goes through [`TextMeasure`] instead of hardcoding an
-//! estimate — each backend supplies a thin adapter over its live
-//! font/context (see `macos::form::CtFontMeasure`).
+//! estimate — each backend supplies this however fits its own font
+//! API: GTK wraps a scratch `pango::Layout` (`gtk::backend::PangoTextMeasure`),
+//! while macOS's `CTFont` and Windows' `DWrite` handle implement
+//! [`TextMeasure`] directly, with no wrapper struct needed.
 
 use crate::event::Rect as QRect;
 use crate::primitives::board::{BoardLayout, BoardMeasure, BoardModel};
@@ -162,15 +164,44 @@ pub mod pixel {
 /// pitch, leaves/branches use `(line_height * 1.4).round()` unless
 /// [`crate::types::TreeStyle::row_height`] overrides the non-header
 /// pitch. Chevron end-x is an *estimate*
-/// (`line_height * 0.65` for the glyph) since exact glyph metrics
-/// aren't available without laying out each chevron per row — every
-/// backend already made this same tradeoff independently.
+/// (`line_height * 0.65` for the glyph) since no [`TextMeasure`] is
+/// available here — every backend already made this same tradeoff
+/// independently. Callers with a real measurer should prefer
+/// [`tree_layout_measured`], which measures
+/// [`crate::types::TreeStyle::chevron_expanded`] /
+/// [`crate::types::TreeStyle::chevron_collapsed`] exactly instead of
+/// estimating.
 ///
 /// Coordinate frame: `visible_rows.bounds` and `hit_regions` are in
 /// **tree-local** coords (origin at 0, 0). Callers subtract
 /// `area.x`/`area.y` from absolute click coords before calling
 /// [`TreeViewLayout::hit_test`].
 pub fn tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
+    tree_layout_inner(tree, area, line_height, None)
+}
+
+/// Like [`tree_layout`], but measures the chevron glyph actually
+/// configured on `tree.style` (`chevron_expanded` / `chevron_collapsed`)
+/// through `measure` instead of estimating its pixel width as
+/// `line_height * 0.65`. This is the pixel-backend equivalent of
+/// `tui::tree::tui_tree_layout`'s exact character-count measurement —
+/// TUI cells are fixed-width so an exact count is free there; pixel
+/// backends need a real [`TextMeasure`] to get the same precision.
+pub fn tree_layout_measured(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    measure: &dyn TextMeasure,
+) -> TreeViewLayout {
+    tree_layout_inner(tree, area, line_height, Some(measure))
+}
+
+fn tree_layout_inner(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    measure: Option<&dyn TextMeasure>,
+) -> TreeViewLayout {
     let header_height = (line_height * 1.2).round();
     let item_height = tree_row_pitch(tree, line_height);
     let indent_px = (line_height * 0.9).round();
@@ -183,11 +214,15 @@ pub fn tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLa
         } else {
             item_height as f32
         };
-        // Approximate chevron end x in tree-local pixels:
-        //   2px left margin + indent levels + estimated chevron glyph width + 4px gap.
+        // Chevron end x in tree-local pixels:
+        //   2px left margin + indent levels + glyph width + 4px gap.
         let chevron_end_x = if row.is_expanded.is_some() && show_chevrons {
-            let est_glyph_w = line_height * 0.65;
-            Some((2.0 + row.indent as f64 * indent_px + est_glyph_w + 4.0) as f32)
+            let glyph_w = match (measure, row.is_expanded) {
+                (Some(m), Some(true)) => m.width_of(&tree.style.chevron_expanded) as f64,
+                (Some(m), Some(false)) => m.width_of(&tree.style.chevron_collapsed) as f64,
+                _ => line_height * 0.65,
+            };
+            Some((2.0 + row.indent as f64 * indent_px + glyph_w + 4.0) as f32)
         } else {
             None
         };
@@ -1363,6 +1398,45 @@ mod tests {
         // for non-header rows — that's the whole point of sharing this fn.
         let tree = bare_tree();
         assert_eq!(tree_row_pitch(&tree, 16.0), (16.0_f64 * 1.4).round());
+    }
+
+    fn tree_with_expanded_row() -> TreeView {
+        let mut tree = bare_tree();
+        tree.rows = vec![crate::primitives::tree::TreeRow {
+            path: vec![0],
+            indent: 1,
+            icon: None,
+            text: crate::types::StyledText::plain("src/"),
+            badge: None,
+            is_expanded: Some(true),
+            decoration: Decoration::Normal,
+            edit: None,
+        }];
+        tree
+    }
+
+    #[test]
+    fn tree_layout_measured_uses_real_chevron_glyph_width_not_the_estimate() {
+        // `tree.style.chevron_expanded` defaults to "▾" (one char); FakeMeasure
+        // reports 6.0px/char, so the measured chevron end-x must differ from
+        // `tree_layout`'s `line_height * 0.65` estimate.
+        let tree = tree_with_expanded_row();
+        let area = QRect::new(0.0, 0.0, 100.0, 80.0);
+        let estimated = tree_layout(&tree, area, 16.0);
+        let measured = tree_layout_measured(&tree, area, 16.0, &FakeMeasure);
+
+        // The Chevron hit-region's width *is* the row's chevron_end_x
+        // (see `TreeView::layout`'s hit-region split).
+        let est_x = estimated.hit_regions[0].0.width;
+        let measured_x = measured.hit_regions[0].0.width;
+        assert_ne!(
+            est_x, measured_x,
+            "measured chevron end-x must use the real glyph width, not the estimate"
+        );
+        // indent_px = (16.0 * 0.9).round() = 14.0; glyph_w = 6.0 ("▾" is one char).
+        let indent_px = (16.0_f64 * 0.9).round();
+        let expected = (2.0 + 1.0 * indent_px + 6.0 + 4.0) as f32;
+        assert_eq!(measured_x, expected);
     }
 
     #[test]
