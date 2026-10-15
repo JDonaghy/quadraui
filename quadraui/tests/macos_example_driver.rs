@@ -854,7 +854,7 @@ fn tab_icons_demo_closing_the_last_active_tab_activates_its_left_neighbour() {
     );
 }
 
-// ─── flex-layout rewire (#1430): packing must stay identical on macOS ──────
+// ─── flex-layout packing stays identical on macOS ──────────────────────────
 //
 // `AppShell`, `Form` and `Toolbar` each route their 1D position arithmetic
 // through `crate::flex::pack_1d` when the `layout` feature is enabled, and
@@ -955,26 +955,41 @@ fn appshell_chrome_bands_carve_left_to_right() {
 fn form_fields_stack_and_group_items_pack() {
     let driver = MacDriver::new(FormGroupsApp::new(), 700, 400);
     let line_height = driver.backend().line_height();
+    // `Form` rows are `(line_height * 1.4).round()` tall
+    // (`layout_metrics::form_row_height`), not `line_height` itself —
+    // every `FormField` (including `ToggleGroup`/`ButtonRow`) measures
+    // exactly one row of this height
+    // (`form_field_measure_height_is_one_row_for_every_field_kind`).
+    let row_h = quadraui::primitives::layout_metrics::form_row_height(line_height as f64);
 
-    // Each field's top edge is the running sum of the heights above it:
-    // the two-row Find field (label + toggles), then the two-row Replace
-    // field (label + button row), then Scope. `"Replace "` (trailing
-    // space) picks the field label, not the "Replace All" button, which
-    // is the next thing painted after it.
+    // Each field's top edge is the running sum of the row heights above
+    // it. The fixture's five fields are: "search" (label "Find"),
+    // "toggles" (`ToggleGroup`, no label), "replace" (label "Replace"),
+    // "buttons" (`ButtonRow`, no label — one of its buttons is itself
+    // labelled "Replace"), "scope" (label "Scope"). So the row carrying
+    // the "Replace" label sits two rows below "Find" (skipping
+    // "toggles"), and "Scope" sits two rows below that (skipping
+    // "buttons").
+    //
+    // The "replace" field's `TextInput` is empty, so it paints its
+    // placeholder `"Replace…"` (with the ellipsis glyph) in the same row
+    // as the "Replace" label — unlike the bare label text, this needle
+    // can't collide with the "Replace"/"Replace All" buttons painted
+    // later in the "buttons" row, which don't share that glyph.
     let [(_, find_y, _), (_, replace_y, _), (_, scope_y, _)] =
-        mac_bounds_of(&driver, &["Find", "Replace ", "Scope"])[..]
+        mac_bounds_of(&driver, &["Find", "Replace…", "Scope"])[..]
     else {
         unreachable!("mac_bounds_of returns one entry per needle")
     };
     assert_eq!(
         replace_y - find_y,
-        line_height,
-        "Replace field stacks one row below Find"
+        2.0 * row_h,
+        "Replace field stacks two rows below Find (skipping the toggles row)"
     );
     assert_eq!(
         scope_y - replace_y,
-        line_height,
-        "Scope field stacks one row below Replace"
+        2.0 * row_h,
+        "Scope field stacks two rows below Replace (skipping the buttons row)"
     );
 
     // Items inside a `ToggleGroup` / `ButtonRow` pack left-to-right with
