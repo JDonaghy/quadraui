@@ -643,14 +643,14 @@ impl SidebarSystem {
         tree: &TreeView,
         lh: f32,
     ) -> crate::primitives::tree::TreeViewLayout {
-        // Delegate to the shared pixel-layout math instead of a hand-inlined
-        // copy: this used to hardcode `item_h = (lh * 1.4).round()` here,
-        // silently ignoring `TreeStyle::row_height` even though
-        // `layout_metrics::tree_layout` already respects it via
-        // `tree_row_pitch`. No live `TextMeasure` is reachable from this
-        // `&self` call site (no cached backend handle on `SidebarSystem`),
-        // so the chevron end-x is still the `line_height * 0.65` estimate —
-        // same as every other caller of `layout_metrics::tree_layout`.
+        // The shared pixel-layout math owns row pitch, indent and chevron
+        // geometry — including `TreeStyle::row_height`, which it honors via
+        // `tree_row_pitch`. Deriving any of it locally from `lh` would
+        // re-introduce a copy that silently ignores that style field.
+        // No live `TextMeasure` is reachable from this `&self` call site (no
+        // cached backend handle on `SidebarSystem`), so the chevron end-x is
+        // the `line_height * 0.65` estimate — same as every other caller of
+        // `layout_metrics::tree_layout`.
         crate::primitives::layout_metrics::tree_layout(tree, body_b, lh as f64)
     }
 
