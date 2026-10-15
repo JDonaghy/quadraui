@@ -742,14 +742,15 @@ impl ToastOverlay {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{
-        toast_button_rects, truncate_line, wrap_text_lines, Toast, ToastFocus, ToastFocusTarget,
-        ToastMeasure, ToastOverlay, ToastSeverity, ToastStackLayout, VisibleToast, MAX_BODY_LINES,
+        shift_rect, toast_button_rects, truncate_line, wrap_text_lines, Toast, ToastFocus,
+        ToastFocusTarget, ToastMeasure, ToastOverlay, ToastSeverity, ToastStackLayout,
+        VisibleToast, MAX_BODY_LINES,
     };
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::style::Style;
     use crate::theme::Theme;
-    use crate::types::Color;
+    use crate::types::{Color, WidgetId};
 
     const TOAST_WIDTH: f32 = 320.0;
     const TOAST_MARGIN: f32 = 12.0;
@@ -796,6 +797,42 @@ pub(crate) mod native_surface_paint {
         viewport_height: f32,
         line_height: f32,
     ) -> ToastStackLayout {
+        paint_with_x_offset(
+            stack,
+            surface,
+            theme,
+            style,
+            origin_x,
+            origin_y,
+            viewport_width,
+            viewport_height,
+            line_height,
+            |_| 0.0,
+        )
+    }
+
+    /// Same contract as [`paint`], but shifts each toast box horizontally
+    /// by `x_offset_for(id)` points before painting — the hook a backend's
+    /// entrance-slide animation uses to paint a toast mid-flight without
+    /// perturbing the returned [`ToastStackLayout`], which stays at the
+    /// toast's resting position so hit-testing is unaffected by the
+    /// in-flight visual offset.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_x_offset<F>(
+        stack: &ToastOverlay,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        origin_x: f32,
+        origin_y: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+        line_height: f32,
+        x_offset_for: F,
+    ) -> ToastStackLayout
+    where
+        F: Fn(&WidgetId) -> f32,
+    {
         let layout = stack.layout(
             origin_x,
             origin_y,
@@ -859,7 +896,23 @@ pub(crate) mod native_surface_paint {
         for vt in &layout.visible_toasts {
             let toast = &stack.toasts[vt.toast_idx];
             let focus = stack.focus.as_ref().filter(|f| f.toast_id == toast.id);
-            paint_toast(surface, theme, style, vt, toast, line_height, focus);
+            let dx = x_offset_for(&vt.id);
+            if dx == 0.0 {
+                paint_toast(surface, theme, style, vt, toast, line_height, focus);
+            } else {
+                let shifted = VisibleToast {
+                    toast_idx: vt.toast_idx,
+                    id: vt.id.clone(),
+                    bounds: shift_rect(vt.bounds, dx, 0.0),
+                    dismiss_bounds: vt.dismiss_bounds.map(|r| shift_rect(r, dx, 0.0)),
+                    action_rects: vt
+                        .action_rects
+                        .iter()
+                        .map(|r| shift_rect(*r, dx, 0.0))
+                        .collect(),
+                };
+                paint_toast(surface, theme, style, &shifted, toast, line_height, focus);
+            }
         }
 
         layout
