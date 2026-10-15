@@ -31,11 +31,22 @@ use crate::theme::Theme;
 /// and `gtk_tree_layout`. Hosts must subtract `area.x`/`area.y` from
 /// absolute click coords before calling [`TreeViewLayout::hit_test`].
 ///
-/// Thin wrapper over [`crate::primitives::layout_metrics::tree_layout`]
-/// — identical to [`crate::gtk::tree::gtk_tree_layout`], now shared
-/// instead of duplicated.
-pub fn mac_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
-    crate::primitives::layout_metrics::tree_layout(tree, area, line_height)
+/// Thin wrapper over
+/// [`crate::primitives::layout_metrics::tree_layout_measured`] —
+/// identical to [`crate::gtk::tree::gtk_tree_layout`], now shared
+/// instead of duplicated. `font` measures each row's chevron glyph
+/// (`TreeStyle::chevron_expanded`/`chevron_collapsed`) for real
+/// instead of the `line_height * 0.65` estimate the unmeasured
+/// `tree_layout` falls back to — `CTFont` implements
+/// [`crate::primitives::layout_metrics::TextMeasure`] directly, so no
+/// adapter struct is needed (unlike GTK's `PangoTextMeasure`).
+pub fn mac_tree_layout(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    font: &CTFont,
+) -> TreeViewLayout {
+    crate::primitives::layout_metrics::tree_layout_measured(tree, area, line_height, font)
 }
 
 /// Draw a [`TreeView`] into `(x, y, w, h)` on `ctx`. Returns the
@@ -66,10 +77,10 @@ pub unsafe fn draw_tree(
 ) -> TreeViewLayout {
     let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
     if w <= 0.0 || h <= 0.0 {
-        return mac_tree_layout(tree, area, line_height);
+        return mac_tree_layout(tree, area, line_height, font);
     }
 
-    let layout = mac_tree_layout(tree, area, line_height);
+    let layout = mac_tree_layout(tree, area, line_height, font);
 
     CGContextSaveGState(ctx);
     CGContextClipToRect(ctx, rect(x, y, w, h));
@@ -136,6 +147,19 @@ mod tests {
         }
     }
 
+    fn branch_row(idx: u16, label: &str, expanded: bool) -> TreeRow {
+        TreeRow {
+            path: vec![idx],
+            indent: 1,
+            icon: None,
+            text: StyledText::plain(label),
+            badge: None,
+            is_expanded: Some(expanded),
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
     fn make_tree(rows: Vec<TreeRow>) -> TreeView {
         TreeView {
             id: WidgetId::new("tree"),
@@ -168,6 +192,7 @@ mod tests {
                 tree,
                 QRect::new(0.0, 0.0, W as f32, H as f32),
                 b.chrome_line_height() as f64,
+                &font(),
             );
             *layout.borrow_mut() = Some(l);
         });
@@ -268,7 +293,7 @@ mod tests {
         // Area offset by (0, 60) — typical when a tree lives below an
         // MSV header + aux input.
         let area = QRect::new(0.0, 60.0, 240.0, 180.0);
-        let layout = mac_tree_layout(&tree, area, 16.0);
+        let layout = mac_tree_layout(&tree, area, 16.0, &font());
         // Locality: first row's bounds.y must be 0, not 60.
         let first = &layout.visible_rows[0];
         assert_eq!(
@@ -292,6 +317,36 @@ mod tests {
                 vr.row_idx,
             );
         }
+    }
+
+    /// `mac_tree_layout` must measure the chevron glyph with the real
+    /// `CTFont` instead of falling back to the unmeasured
+    /// `line_height * 0.65` estimate `tree_layout` uses — mirrors
+    /// `tree_layout_measured_uses_real_chevron_glyph_width_not_the_estimate`
+    /// in `primitives::layout_metrics`, but exercised end to end through
+    /// the macOS wrapper with a real `Menlo` `CTFont`.
+    #[test]
+    fn mac_tree_layout_uses_real_chevron_glyph_width_not_the_estimate() {
+        let tree = make_tree(vec![branch_row(0, "alpha", true)]);
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let estimated = crate::primitives::layout_metrics::tree_layout(&tree, area, 16.0);
+        let measured = mac_tree_layout(&tree, area, 16.0, &font());
+
+        // The Chevron hit-region's width *is* the row's chevron_end_x
+        // (see `TreeView::layout`'s hit-region split).
+        let est_x = estimated.hit_regions[0].0.width;
+        let measured_x = measured.hit_regions[0].0.width;
+        assert_ne!(
+            est_x, measured_x,
+            "measured chevron end-x must use the real Menlo glyph width ({measured_x}), \
+             not the line_height * 0.65 estimate ({est_x})",
+        );
+        assert_eq!(
+            measured.hit_test(measured_x - 1.0, 4.0),
+            TreeViewHit::Chevron(0),
+            "the measured boundary itself must still resolve to the chevron hit region",
+        );
     }
 
     #[test]
@@ -328,8 +383,8 @@ mod tests {
         tree.style.row_height = Some(22);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
 
-        let small = mac_tree_layout(&tree, area, 14.0);
-        let large = mac_tree_layout(&tree, area, 48.0);
+        let small = mac_tree_layout(&tree, area, 14.0, &font());
+        let large = mac_tree_layout(&tree, area, 48.0, &font());
 
         assert_eq!(small.visible_rows.len(), large.visible_rows.len());
         for (s, l) in small.visible_rows.iter().zip(large.visible_rows.iter()) {
@@ -617,6 +672,7 @@ mod tests {
                 &tree,
                 QRect::new(0.0, 0.0, W as f32, H as f32),
                 b.line_height() as f64,
+                &font(),
             );
             *layout.borrow_mut() = Some(l);
         });
