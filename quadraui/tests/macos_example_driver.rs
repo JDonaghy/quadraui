@@ -981,23 +981,34 @@ fn form_fields_stack_and_group_items_pack() {
     else {
         unreachable!("mac_bounds_of returns one entry per needle")
     };
-    assert_eq!(
-        replace_y - find_y,
-        2.0 * row_h,
-        "Replace field stacks two rows below Find (skipping the toggles row)"
+    // Compared with a tolerance rather than `assert_eq!`: every row
+    // centres its text vertically by a fractional offset
+    // `(row_h - text_h) / 2`, and adding that offset to a two-row
+    // baseline before subtracting it again costs a few ULPs of `f32`.
+    // The geometric claim is "exactly two rows", at point precision.
+    let two_rows = 2.0 * row_h as f32;
+    assert!(
+        (replace_y - find_y - two_rows).abs() < 0.01,
+        "Replace field stacks two rows below Find, skipping the toggles row \
+         (find_y={find_y}, replace_y={replace_y}, row_h={row_h})"
     );
-    assert_eq!(
-        scope_y - replace_y,
-        2.0 * row_h,
-        "Scope field stacks two rows below Replace (skipping the buttons row)"
+    assert!(
+        (scope_y - replace_y - two_rows).abs() < 0.01,
+        "Scope field stacks two rows below Replace, skipping the buttons row \
+         (replace_y={replace_y}, scope_y={scope_y}, row_h={row_h})"
     );
 
-    // Items inside a `ToggleGroup` / `ButtonRow` pack left-to-right with
-    // the field's own gap — the other half of `Form`'s packing. "Find
-    // Next" and "Replace All" bracket the button row without colliding
-    // with the "Replace" field label painted above them.
-    let toggles = ["Workspace", "File", "Selection"];
-    mac_assert_packed_in_one_row(&mac_bounds_of(&driver, &toggles), &toggles);
+    // The other half of `Form`'s packing: items *inside* one field pack
+    // left-to-right with the field's own gap. The "scope" field is a
+    // `FieldKind::Toolbar`, so its three buttons are laid out by the
+    // embedded `Toolbar` rasteriser rather than by `Form` itself —
+    // worth asserting separately from the `ButtonRow` below, which
+    // `Form` packs directly. "Find Next" and "Replace All" bracket that
+    // button row; the middle "Replace" button is skipped because its
+    // label is a prefix of both its neighbour's and the field label
+    // above it, and `find_bounds` matches painted runs by substring.
+    let scope_buttons = ["Workspace", "File", "Selection"];
+    mac_assert_packed_in_one_row(&mac_bounds_of(&driver, &scope_buttons), &scope_buttons);
     let buttons = ["Find Next", "Replace All"];
     mac_assert_packed_in_one_row(&mac_bounds_of(&driver, &buttons), &buttons);
 }
