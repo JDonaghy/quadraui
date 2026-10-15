@@ -147,6 +147,41 @@ mod tests {
         );
     }
 
+    /// Paints a [`ToastOverlay`] via the shared
+    /// [`crate::primitives::toast::native_surface_paint::paint`] path,
+    /// bypassing `MacBackend::draw_toast_overlay`'s entrance-slide
+    /// animation so the toast is at its resting position on the first
+    /// frame.  Animation behaviour is covered by
+    /// `toast_overlay_slides_in_from_off_screen_on_first_frame` in
+    /// `macos::backend::tests`.
+    fn paint_settled(stack: &ToastOverlay) -> (BitmapSurface, ToastStackLayout) {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let theme = Theme::default();
+        let style = backend.style();
+        let line_height = backend.line_height();
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let l = crate::primitives::toast::native_surface_paint::paint(
+                stack,
+                b,
+                &theme,
+                &style,
+                0.0,
+                0.0,
+                W as f32,
+                H as f32,
+                line_height,
+            );
+            *layout.borrow_mut() = Some(l);
+        });
+        backend.end_frame();
+        (surface, layout.into_inner().unwrap())
+    }
+
     #[test]
     fn severity_tint_painted() {
         let stack = ToastOverlay {
@@ -155,7 +190,7 @@ mod tests {
             toasts: vec![toast("err", "Boom", ToastSeverity::Error)],
             focus: None,
         };
-        let (surface, layout) = paint_via_backend(&stack);
+        let (surface, layout) = paint_settled(&stack);
         let theme = Theme::default();
         let t = &layout.visible_toasts[0];
         // Probe inside the box, away from glyphs (right of the title
