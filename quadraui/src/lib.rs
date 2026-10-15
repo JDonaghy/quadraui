@@ -205,6 +205,12 @@ pub mod terminal_style;
 pub mod testing;
 pub mod text_util;
 pub mod theme;
+// Not under `primitives/`, same reasoning as `font_role`/`generic_font`
+// above: a time-based progress helper is not a widget — no `Layout`, no
+// `hit_test`, no `Backend::draw_*` method of its own — so it must not
+// inflate the primitive count `readme_truth.rs` derives from
+// `primitives/mod.rs`'s `pub mod` list.
+pub mod transition;
 pub mod types;
 pub mod undo;
 
@@ -555,6 +561,7 @@ pub use text_util::{
     snap_to_char_boundary, word_wrap, wrap_spans, WrapPolicy,
 };
 pub use theme::Theme;
+pub use transition::{lerp, lerp_rect, Transition};
 pub use types::{
     Badge, Color, Decoration, Icon, Modifiers, SelectionMode, StyledSpan, StyledText, TreePath,
     TreeStyle, WidgetId,
@@ -568,9 +575,10 @@ pub use accelerator::{
 };
 pub use backend::{
     Backend, BackendCaps, BackendError, Clipboard, ClipboardFormat, ColorDepth, Display,
-    FileDialogOptions, MenuStyle, MessageDialogButton, MessageDialogChoice, MessageDialogOptions,
-    Metrics, Notification, PlatformFontDefaults, PlatformServices, PointerShape, ResizeEdge,
-    ResolvedMenuStyle, RgbaImage, SecretStore, ServiceResult, SystemTheme, WindowControl,
+    FileDialogOptions, InvalidationLog, MenuStyle, MessageDialogButton, MessageDialogChoice,
+    MessageDialogOptions, Metrics, Notification, PlatformFontDefaults, PlatformServices,
+    PointerShape, ResizeEdge, ResolvedMenuStyle, RgbaImage, SecretStore, ServiceResult,
+    SystemTheme, WindowControl,
 };
 pub use event::{
     mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,

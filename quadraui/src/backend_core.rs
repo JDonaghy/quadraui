@@ -59,14 +59,9 @@
 use std::collections::HashMap;
 
 use crate::accelerator::{key_to_binding_name, parse_binding};
+use crate::backend::InvalidationLog;
 use crate::dispatch::{DragState, TextRegion};
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-use crate::event::Rect;
-use crate::event::{Key, Point};
+use crate::event::{Key, Point, Rect};
 use crate::text_selection::{ActiveTextSelection, TextSelectionState};
 use crate::types::{Modifiers, WidgetId};
 use crate::{Accelerator, AcceleratorId, AcceleratorScope, ParsedBinding, UiEvent};
@@ -95,6 +90,13 @@ pub(crate) struct BackendCore {
     ///
     /// [`Backend::set_menu_style`]: crate::backend::Backend::set_menu_style
     menu_style: crate::backend::MenuStyle,
+    /// Rects recorded via [`Backend::invalidate_rect`][inv]. Unlike
+    /// `selection_highlight_rects` below, this is not gated to the pixel
+    /// backends: TUI chrome motion (see [`crate::transition::Transition`])
+    /// needs the same bookkeeping as GTK/macOS/Win-GUI do.
+    ///
+    /// [inv]: crate::backend::Backend::invalidate_rect
+    invalidation_log: InvalidationLog,
 }
 
 impl BackendCore {
@@ -196,6 +198,20 @@ impl BackendCore {
     /// [`Backend::set_menu_style`][crate::backend::Backend::set_menu_style].
     pub(crate) fn set_menu_style(&mut self, style: crate::backend::MenuStyle) {
         self.menu_style = style;
+    }
+
+    // ─── Invalidation log ───────────────────────────────────────────────
+
+    /// Record `rect` into the invalidation log — see
+    /// [`Backend::invalidate_rect`][crate::backend::Backend::invalidate_rect].
+    pub(crate) fn record_invalidation(&mut self, rect: Rect) {
+        self.invalidation_log.push(rect);
+    }
+
+    /// The invalidation log — see
+    /// [`Backend::invalidation_log`][crate::backend::Backend::invalidation_log].
+    pub(crate) fn invalidation_log(&self) -> &InvalidationLog {
+        &self.invalidation_log
     }
 
     // ─── Text selection ─────────────────────────────────────────────────
@@ -522,5 +538,17 @@ mod tests {
             Point::new(50.0, 5.0),
         );
         assert_eq!(core.extract_selection_text_pixel(20.0, 10.0), "hello");
+    }
+
+    #[test]
+    fn record_invalidation_appends_to_the_log() {
+        let mut core = BackendCore::default();
+        assert!(core.invalidation_log().is_empty());
+
+        let rect = crate::event::Rect::new(1.0, 2.0, 3.0, 4.0);
+        core.record_invalidation(rect);
+
+        assert_eq!(core.invalidation_log().len(), 1);
+        assert_eq!(core.invalidation_log().rects(), &[rect]);
     }
 }

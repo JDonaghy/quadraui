@@ -2043,6 +2043,14 @@ impl Backend for TuiBackend {
         self.full_repaint_requested = true;
     }
 
+    fn invalidate_rect(&mut self, rect: crate::event::Rect) {
+        self.core.record_invalidation(rect);
+    }
+
+    fn invalidation_log(&self) -> &crate::backend::InvalidationLog {
+        self.core.invalidation_log()
+    }
+
     fn register_accelerator(&mut self, acc: &Accelerator) {
         self.core.register_accelerator(acc);
     }
@@ -4305,6 +4313,7 @@ mod tests {
         viewport: Viewport,
         theme: crate::Theme,
         focus: crate::focus::FocusManager,
+        invalidation_log: crate::backend::InvalidationLog,
     }
 
     impl MockBackend {
@@ -4317,6 +4326,7 @@ mod tests {
                 viewport: Viewport::new(80.0, 24.0, 1.0),
                 theme: crate::Theme::default(),
                 focus: crate::focus::FocusManager::new(),
+                invalidation_log: crate::backend::InvalidationLog::new(),
             }
         }
     }
@@ -4352,6 +4362,12 @@ mod tests {
         }
         fn register_accelerator(&mut self, _a: &Accelerator) {}
         fn unregister_accelerator(&mut self, _id: &AcceleratorId) {}
+        fn invalidate_rect(&mut self, rect: crate::event::Rect) {
+            self.invalidation_log.push(rect);
+        }
+        fn invalidation_log(&self) -> &crate::backend::InvalidationLog {
+            &self.invalidation_log
+        }
         fn modal_stack_handle(&self) -> Rc<RefCell<ModalStack>> {
             self.modal_stack.clone()
         }
