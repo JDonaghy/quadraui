@@ -106,6 +106,14 @@ only a push to `main` runs this workflow.
   measured width (floored at `measure_generic`'s flat `char_width * 8.0`
   estimate, so short labels never render narrower than they do today).
   `measure_generic` keeps its existing signature and behavior.
+- macOS toast overlay now slides a new toast in from its stack's off-screen
+  edge via `Transition`, instead of appearing at full position on its first
+  painted frame. Entrance-only: toasts are removed from the overlay (not
+  animated out) on dismissal, so there is no exit slide.
+- macOS toolbar items now fade their hover highlight in over 120ms via
+  `Transition` instead of snapping straight to `theme.hover_bg` on the
+  first hovered frame. Scoped to hover only; the pressed/active highlight
+  is unchanged.
 
 ### Changed
 
@@ -119,6 +127,10 @@ only a push to `main` runs this workflow.
 
 ### Fixed
 
+- `MacBackend::invalidate_rect` now calls AppKit's `setNeedsDisplayInRect:`
+  on the recorded rect instead of only bookkeeping it in the shared
+  `InvalidationLog`, completing the native partial-repaint wiring this
+  type was added for.
 - `SidebarSystem`'s tree layout now honors `TreeStyle::row_height`:
   `compute_tree_layout` delegates to the shared
   `layout_metrics::tree_layout` instead of re-deriving row pitch, indent

@@ -209,24 +209,69 @@ mod tests {
         y: f32,
         options: crate::primitives::toolbar::ToolbarPaintOptions,
     ) -> (BitmapSurface, ToolbarLayout) {
-        let surface = BitmapSurface::new(W, H);
-        surface.fill(0.0, 0.0, 0.0, 0.0);
+        paint_via_backend_full(bar, x, y, &crate::InteractionState::new(), options).0
+    }
 
+    /// Like [`paint_via_backend_with_options`] but reuses one `MacBackend`
+    /// across calls (so its per-widget animation state, e.g.
+    /// [`super::super::MacBackend`]'s hover-fade map, survives between
+    /// paints) and takes an explicit [`crate::InteractionState`]. Returns
+    /// the backend alongside the surface/layout so a caller can paint
+    /// again — immediately, or after a real sleep — to observe a
+    /// transition progress.
+    fn paint_via_backend_full(
+        bar: &Toolbar,
+        x: f32,
+        y: f32,
+        interaction: &crate::InteractionState,
+        options: crate::primitives::toolbar::ToolbarPaintOptions,
+    ) -> ((BitmapSurface, ToolbarLayout), MacBackend) {
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let (surface, layout) = paint_once(&mut backend, bar, x, y, interaction, options);
+        backend.end_frame();
+        ((surface, layout), backend)
+    }
+
+    /// Repaint `bar` through an already-begun `backend`, for sampling a
+    /// second frame (e.g. after a real sleep) against the same backend's
+    /// retained animation state.
+    fn repaint(
+        backend: &mut MacBackend,
+        bar: &Toolbar,
+        x: f32,
+        y: f32,
+        interaction: &crate::InteractionState,
+        options: crate::primitives::toolbar::ToolbarPaintOptions,
+    ) -> (BitmapSurface, ToolbarLayout) {
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let (surface, layout) = paint_once(backend, bar, x, y, interaction, options);
+        backend.end_frame();
+        (surface, layout)
+    }
+
+    fn paint_once(
+        backend: &mut MacBackend,
+        bar: &Toolbar,
+        x: f32,
+        y: f32,
+        interaction: &crate::InteractionState,
+        options: crate::primitives::toolbar::ToolbarPaintOptions,
+    ) -> (BitmapSurface, ToolbarLayout) {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
 
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
             let l = b.draw_toolbar_with_options(
                 QRect::new(x, y, W as f32 - x, H as f32 - y),
                 bar,
-                &crate::InteractionState::new(),
+                interaction,
                 options,
             );
             *layout.borrow_mut() = Some(l);
         });
-        backend.end_frame();
         (surface, layout.into_inner().unwrap())
     }
 
@@ -399,6 +444,81 @@ mod tests {
         assert!(
             top_row < bottom_row,
             "Top should paint higher than Bottom (top={top_row}, bottom={bottom_row})"
+        );
+    }
+
+    /// `MacBackend::draw_toolbar_with_options` fades a hovered button's
+    /// highlight in over `HOVER_FADE_DURATION` instead of snapping it to
+    /// full opacity on the first hovered frame: the very first paint of a
+    /// newly-hovered button should be visibly dimmer than
+    /// `theme.hover_bg`, since the fade has only just started.
+    #[test]
+    fn hover_highlight_is_dim_on_first_hovered_frame() {
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_action("tb:refine", "Refine", true)],
+            bg: None,
+            focused_index: None,
+        };
+        let theme = Theme::default();
+        let interaction =
+            crate::InteractionState::from_parts(Some(WidgetId::new("tb:refine")), None);
+
+        let ((surface, layout), _backend) =
+            paint_via_backend_full(&bar, 0.0, 0.0, &interaction, Default::default());
+        let item = &layout.visible_items[0];
+
+        // Sample the highlight fill away from the corners/label, matching
+        // `active_button_highlight_has_rounded_corners_not_square` above.
+        let cx = (item.bounds.x + 5.0) as u32;
+        let cy = (item.bounds.y + item.bounds.height / 2.0) as u32;
+        let (r, _g, _b, _a) = surface.pixel(cx, cy);
+        assert_ne!(
+            r, theme.hover_bg.r,
+            "first hovered frame should paint a partially faded-in highlight, not the full-opacity colour",
+        );
+    }
+
+    /// Once a button has been hovered for longer than the fade's
+    /// duration, the highlight should match the shared, static
+    /// `theme.hover_bg` fill exactly — the animation hands off to the
+    /// ordinary binary highlight once it finishes.
+    #[test]
+    fn hover_highlight_reaches_full_opacity_after_fade_duration() {
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_action("tb:refine", "Refine", true)],
+            bg: None,
+            focused_index: None,
+        };
+        let theme = Theme::default();
+        let interaction =
+            crate::InteractionState::from_parts(Some(WidgetId::new("tb:refine")), None);
+
+        let (_first, mut backend) =
+            paint_via_backend_full(&bar, 0.0, 0.0, &interaction, Default::default());
+
+        // `HOVER_FADE_DURATION` (120ms) plus generous margin for scheduler
+        // jitter — mirrors the sleep-based timing tests elsewhere in this
+        // crate (e.g. `tui::backend`, `win::run`).
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let (surface, layout) = repaint(
+            &mut backend,
+            &bar,
+            0.0,
+            0.0,
+            &interaction,
+            Default::default(),
+        );
+        let item = &layout.visible_items[0];
+        let cx = (item.bounds.x + 5.0) as u32;
+        let cy = (item.bounds.y + item.bounds.height / 2.0) as u32;
+        let (r, g, b, _a) = surface.pixel(cx, cy);
+        assert_eq!(
+            (r, g, b),
+            (theme.hover_bg.r, theme.hover_bg.g, theme.hover_bg.b),
+            "highlight should reach the static theme colour once the fade-in finishes",
         );
     }
 }
