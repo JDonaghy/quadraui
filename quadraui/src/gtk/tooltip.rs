@@ -315,22 +315,31 @@ mod tests {
         }
     }
 
-    /// Styled-line spans now render `bold` through
-    /// `PaintSurface::surface_draw_text_run_styled` — GTK's
-    /// pre-migration rasteriser cleared Pango attributes before drawing
-    /// each span, silently dropping it. Observed RED before the port
-    /// (GTK ignored `span.bold` entirely, so this failed): paint the
-    /// same text once bold and once regular, and assert the bold run's
-    /// ink extends further right — Pango's bold face is strictly wider
-    /// per-glyph for any real font.
+    /// Styled-line spans render `bold` through
+    /// `PaintSurface::surface_draw_text_run_styled`; a rasteriser that
+    /// clears Pango attributes before drawing each span silently drops
+    /// it. Paint the same text once bold and once regular, and assert
+    /// the bold run lays down strictly more ink.
+    ///
+    /// **Ink mass, not ink width.** The portable signature of a bold
+    /// face is that its stems are thicker, so it covers more pixels;
+    /// whether it is also *wider* depends entirely on which font the
+    /// host's fontconfig resolves `serif`/`sans` to. Noto Sans and Noto
+    /// Serif — the default `sans`/`serif` on a stock Debian/Ubuntu
+    /// install — give `M` the same advance in Regular and Bold, so a
+    /// right-edge-of-ink comparison ties there and only passes on hosts
+    /// whose default family happens to be metric-variable (DejaVu Sans,
+    /// say). Counting non-background pixels holds for both.
     #[test]
-    fn styled_line_bold_span_paints_wider_ink_than_regular() {
+    fn styled_line_bold_span_paints_more_ink_than_regular() {
         use crate::types::{StyledSpan, StyledText};
 
-        // Furthest-right column (within `x_start..x_end`) that differs
-        // from the pure-background reference colour, scanning every row
-        // in `y_start..y_end` — i.e. the right edge of the painted ink.
-        fn last_ink_x(
+        // How many pixels in `x_start..x_end` × `y_start..y_end` differ
+        // from the pure-background reference colour — i.e. the amount of
+        // glyph ink (including anti-aliasing) the run laid down. Both
+        // renders share the same background fill, so any constant
+        // non-text contribution cancels out of the comparison.
+        fn ink_pixels(
             data: &[u8],
             stride: usize,
             bg: (u8, u8, u8),
@@ -338,26 +347,24 @@ mod tests {
             x_end: i32,
             y_start: i32,
             y_end: i32,
-        ) -> i32 {
-            let mut last = x_start;
+        ) -> usize {
+            let mut count = 0;
             for y in y_start..y_end {
                 for x in x_start..x_end {
                     if pixel(data, stride, x, y) != bg {
-                        last = last.max(x);
+                        count += 1;
                     }
                 }
             }
-            last
+            count
         }
 
         let (layout, chrome) = sample_layout(TooltipBorder::None, None);
         let b = layout.bounds;
 
         // Short enough that neither weight's ink reaches the tooltip's
-        // own right edge (120px wide, minus 8px left padding) — the
-        // very first version of this test used a string long enough
-        // that *both* weights saturated the scan range at the same
-        // rightmost column, hiding the width difference entirely.
+        // own right edge (120px wide, minus 8px left padding), so the
+        // scan range never clips one weight's glyphs and not the other's.
         let mut bold_tip = sample_tooltip();
         bold_tip.styled_lines = Some(vec![StyledText {
             spans: vec![StyledSpan {
@@ -379,13 +386,17 @@ mod tests {
         let y_end = y_start + LINE_H as i32;
         let bg = bg_reference(&bold_data, stride, b);
 
-        let bold_ink_x = last_ink_x(&bold_data, stride, bg, x_start, x_end, y_start, y_end);
-        let regular_ink_x = last_ink_x(&regular_data, stride, bg, x_start, x_end, y_start, y_end);
+        let bold_ink = ink_pixels(&bold_data, stride, bg, x_start, x_end, y_start, y_end);
+        let regular_ink = ink_pixels(&regular_data, stride, bg, x_start, x_end, y_start, y_end);
 
         assert!(
-            bold_ink_x > regular_ink_x,
-            "bold span should paint wider than the same text at regular weight \
-             (bold_ink_x={bold_ink_x}, regular_ink_x={regular_ink_x})"
+            bold_ink > 0 && regular_ink > 0,
+            "both weights should paint something (bold_ink={bold_ink}, regular_ink={regular_ink})"
+        );
+        assert!(
+            bold_ink > regular_ink,
+            "bold span should paint more ink than the same text at regular weight \
+             (bold_ink={bold_ink}, regular_ink={regular_ink})"
         );
     }
 }
