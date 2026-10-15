@@ -272,6 +272,14 @@ pub struct MacBackend {
     /// runner never reads it — [`super::testing::MacDriver::new`] turns
     /// it on. Mirrors `GtkBackend::painted_text_recording`.
     painted_text_recording: bool,
+    /// When `true`, entrance-slide and hover-fade animations complete
+    /// instantly (zero-duration transitions). Off by default (the live
+    /// runner shows the full animation);
+    /// [`super::testing::MacDriver::new`] turns it on so conformance
+    /// scenarios that `click_text` a toast's dismiss affordance hit the
+    /// widget at its resting position rather than its mid-slide painted
+    /// position.
+    skip_animations: bool,
     /// Every [`super::text::draw_text`] call recorded during the last
     /// [`Self::enter_frame_scope`] with `painted_text_recording` on —
     /// see [`Self::set_painted_text_recording`].
@@ -668,6 +676,7 @@ impl MacBackend {
             )),
             zones: Vec::new(),
             painted_text_recording: false,
+            skip_animations: false,
             text_runs: Vec::new(),
             focused_activity_bar: None,
             minimap_scale: crate::primitives::minimap::MinimapScale::default(),
@@ -907,6 +916,13 @@ impl MacBackend {
     /// report — mirrors `GtkBackend::set_painted_text_recording`.
     pub(crate) fn set_painted_text_recording(&mut self, enabled: bool) {
         self.painted_text_recording = enabled;
+    }
+
+    /// When `true`, entrance-slide and hover-fade transitions use
+    /// `Duration::ZERO`, completing instantly so conformance-test
+    /// click targets are at their resting position on the first frame.
+    pub(crate) fn set_skip_animations(&mut self, skip: bool) {
+        self.skip_animations = skip;
     }
 
     /// Text runs recorded during the last [`Self::enter_frame_scope`]
@@ -3494,7 +3510,11 @@ impl Backend for MacBackend {
         let style = self.style();
         let line_height = self.current_line_height as f32;
 
-        const TOAST_SLIDE_DURATION: Duration = Duration::from_millis(220);
+        let toast_slide_duration = if self.skip_animations {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(220)
+        };
         let now = std::time::Instant::now();
 
         // Track one entrance transition per live toast id: drop any whose
@@ -3506,7 +3526,7 @@ impl Backend for MacBackend {
         for id in &live_ids {
             self.toast_enter
                 .entry(id.clone())
-                .or_insert_with(|| Transition::start(TOAST_SLIDE_DURATION));
+                .or_insert_with(|| Transition::start(toast_slide_duration));
         }
 
         // Toasts slide in from their stack's off-screen edge: right corners
@@ -3723,7 +3743,11 @@ impl Backend for MacBackend {
     ) -> crate::primitives::toolbar::ToolbarLayout {
         let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
 
-        const HOVER_FADE_DURATION: Duration = Duration::from_millis(120);
+        let hover_fade_duration = if self.skip_animations {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(120)
+        };
         let now = std::time::Instant::now();
 
         // Track a fade-in transition for whichever item is currently
@@ -3734,7 +3758,7 @@ impl Backend for MacBackend {
             self.hover_fade.retain(|k, _| k == id);
             self.hover_fade
                 .entry(id.clone())
-                .or_insert_with(|| Transition::start(HOVER_FADE_DURATION));
+                .or_insert_with(|| Transition::start(hover_fade_duration));
         } else {
             self.hover_fade.clear();
         }
