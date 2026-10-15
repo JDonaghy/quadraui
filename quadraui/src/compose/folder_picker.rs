@@ -687,7 +687,29 @@ fn dir_fuzzy_score(path: &str, query: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
+
+    /// Number of child directories [`picker_root`] creates. Chosen so
+    /// `filtered()` (which also carries `".."` and `"."`) holds well over
+    /// ten entries, the largest selection index any test below drives.
+    const PICKER_ROOT_CHILDREN: usize = 12;
+
+    /// A throwaway browsing root holding [`PICKER_ROOT_CHILDREN`] empty
+    /// child directories.
+    ///
+    /// Every controller test roots its picker here rather than at the
+    /// ambient `env::temp_dir()`: `FolderPickerController::new` walks the
+    /// root recursively to `DEFAULT_MAX_DEPTH`, so a shared system temp
+    /// directory makes both the entry list and the walk's cost depend on
+    /// whatever else happens to live there. The returned `TempDir` must
+    /// stay bound for the lifetime of the picker — dropping it deletes
+    /// the directory.
+    fn picker_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("create picker tempdir");
+        for i in 0..PICKER_ROOT_CHILDREN {
+            std::fs::create_dir(dir.path().join(format!("child{i:02}"))).expect("create child dir");
+        }
+        dir
+    }
 
     // ── dir_fuzzy_score ───────────────────────────────────────────────
 
@@ -771,16 +793,25 @@ mod tests {
 
     #[test]
     fn new_sets_dotdot_and_dot_entries() {
-        let tmp = env::temp_dir();
-        let picker = FolderPickerController::new(tmp.clone(), vec![], false);
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
+        let picker = FolderPickerController::new(tmp, vec![], false);
         // ".." and "." should always be the first two entries.
         assert!(picker.all_entries.contains(&PathBuf::from("..")));
         assert!(picker.all_entries.contains(&PathBuf::from(".")));
+        // An isolated root makes the whole walk deterministic: "..", "."
+        // and one entry per child directory, nothing else.
+        assert_eq!(
+            picker.filtered().len(),
+            PICKER_ROOT_CHILDREN + 2,
+            "isolated root must yield exactly \"..\", \".\" and one entry per child"
+        );
     }
 
     #[test]
     fn push_and_pop_char_update_query() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let mut picker = FolderPickerController::new(tmp, vec![], false);
         picker.push_char('s');
         picker.push_char('r');
@@ -791,7 +822,8 @@ mod tests {
 
     #[test]
     fn move_up_clamps_at_zero() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let mut picker = FolderPickerController::new(tmp, vec![], false);
         assert_eq!(picker.selected(), 0);
         picker.move_up();
@@ -800,17 +832,18 @@ mod tests {
 
     #[test]
     fn move_down_advances_selection() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let mut picker = FolderPickerController::new(tmp, vec![], false);
-        if picker.filtered().len() >= 2 {
-            picker.move_down();
-            assert_eq!(picker.selected(), 1);
-        }
+        assert!(picker.filtered().len() >= 2);
+        picker.move_down();
+        assert_eq!(picker.selected(), 1);
     }
 
     #[test]
     fn move_down_clamps_at_last() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let mut picker = FolderPickerController::new(tmp, vec![], false);
         let last = picker.filtered().len().saturating_sub(1);
         for _ in 0..last + 5 {
@@ -821,32 +854,33 @@ mod tests {
 
     #[test]
     fn sync_scroll_brings_selected_into_view() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let mut picker = FolderPickerController::new(tmp, vec![], false);
         // Force a large selection index.
-        if picker.filtered().len() >= 10 {
-            picker.selected = 9;
-            picker.sync_scroll(5);
-            assert!(picker.scroll_top + 5 > picker.selected);
-            assert!(picker.scroll_top <= picker.selected);
-        }
+        assert!(picker.filtered().len() >= 10);
+        picker.selected = 9;
+        picker.sync_scroll(5);
+        assert!(picker.scroll_top + 5 > picker.selected);
+        assert!(picker.scroll_top <= picker.selected);
     }
 
     #[test]
     fn sync_scroll_scrolls_up_when_needed() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let mut picker = FolderPickerController::new(tmp, vec![], false);
-        if picker.filtered().len() >= 5 {
-            picker.scroll_top = 5;
-            picker.selected = 2; // above scroll_top
-            picker.sync_scroll(3);
-            assert_eq!(picker.scroll_top, 2);
-        }
+        assert!(picker.filtered().len() >= 5);
+        picker.scroll_top = 5;
+        picker.selected = 2; // above scroll_top
+        picker.sync_scroll(3);
+        assert_eq!(picker.scroll_top, 2);
     }
 
     #[test]
     fn escape_event_returns_cancelled() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let mut picker = FolderPickerController::new(tmp, vec![], false);
         let ev = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Escape),
@@ -879,7 +913,8 @@ mod tests {
 
     #[test]
     fn enter_on_dot_returns_confirmed_with_root() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let mut picker = FolderPickerController::new(tmp.clone(), vec![], false);
         // "." is always at index 1 (after "..") when parent exists.
         let dot_idx = picker
@@ -899,25 +934,25 @@ mod tests {
 
     #[test]
     fn up_down_key_moves_selection() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let mut picker = FolderPickerController::new(tmp, vec![], false);
-        if picker.filtered().len() >= 2 {
-            let ev_down = UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Down),
-                modifiers: Modifiers::default(),
-                repeat: false,
-            };
-            picker.handle(&ev_down, 10);
-            assert_eq!(picker.selected(), 1);
+        assert!(picker.filtered().len() >= 2);
+        let ev_down = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Down),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        picker.handle(&ev_down, 10);
+        assert_eq!(picker.selected(), 1);
 
-            let ev_up = UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Up),
-                modifiers: Modifiers::default(),
-                repeat: false,
-            };
-            picker.handle(&ev_up, 10);
-            assert_eq!(picker.selected(), 0);
-        }
+        let ev_up = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Up),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        picker.handle(&ev_up, 10);
+        assert_eq!(picker.selected(), 0);
     }
 
     #[test]
@@ -925,7 +960,8 @@ mod tests {
         // Query characters arrive via `Key::Char` in `KeyPressed`, *not* via
         // `CharTyped`. The latter is intentionally ignored to avoid
         // double-insert when a future backend emits both for the same input.
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let mut picker = FolderPickerController::new(tmp, vec![], false);
         let ev = UiEvent::KeyPressed {
             key: Key::Char('s'),
@@ -940,7 +976,8 @@ mod tests {
     fn char_typed_is_ignored() {
         // Documented contract: `CharTyped` is not the canonical typing
         // source; only `Key::Char` in `KeyPressed` mutates the query.
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let mut picker = FolderPickerController::new(tmp, vec![], false);
         let ev = UiEvent::CharTyped('s');
         let result = picker.handle(&ev, 10);
@@ -950,7 +987,8 @@ mod tests {
 
     #[test]
     fn backspace_removes_last_char() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let mut picker = FolderPickerController::new(tmp, vec![], false);
         picker.push_char('s');
         picker.push_char('r');
@@ -965,7 +1003,8 @@ mod tests {
 
     #[test]
     fn selected_path_resolves_dot_to_root() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let picker = FolderPickerController::new(tmp.clone(), vec![], false);
         let dot_idx = picker
             .filtered()
@@ -995,7 +1034,8 @@ mod tests {
 
     #[test]
     fn build_palette_id_is_folder_picker() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let picker = FolderPickerController::new(tmp, vec![], false);
         let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
         let palette = picker.build_palette(rect);
@@ -1004,7 +1044,8 @@ mod tests {
 
     #[test]
     fn build_palette_title_contains_open_folder() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let picker = FolderPickerController::new(tmp, vec![], false);
         let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
         let palette = picker.build_palette(rect);
@@ -1013,7 +1054,8 @@ mod tests {
 
     #[test]
     fn build_palette_items_match_filtered() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let picker = FolderPickerController::new(tmp, vec![], false);
         let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
         let palette = picker.build_palette(rect);
@@ -1096,7 +1138,8 @@ mod tests {
 
     #[test]
     fn with_id_overrides_widget_id() {
-        let tmp = env::temp_dir();
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
         let picker = FolderPickerController::new(tmp, vec![], false).with_id("picker_b");
         let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
         assert_eq!(picker.build_palette(rect).id.as_str(), "picker_b");
