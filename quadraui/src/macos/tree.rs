@@ -32,12 +32,12 @@ use crate::theme::Theme;
 /// absolute click coords before calling [`TreeViewLayout::hit_test`].
 ///
 /// Thin wrapper over
-/// [`crate::primitives::layout_metrics::tree_layout_measured`] —
-/// identical to [`crate::gtk::tree::gtk_tree_layout`], now shared
-/// instead of duplicated. `font` measures each row's chevron glyph
-/// (`TreeStyle::chevron_expanded`/`chevron_collapsed`) for real
-/// instead of the `line_height * 0.65` estimate the unmeasured
-/// `tree_layout` falls back to — `CTFont` implements
+/// [`crate::primitives::layout_metrics::tree_layout_measured`], the same
+/// shared pixel-layout math [`crate::gtk::tree::gtk_tree_layout`] uses.
+/// `font` measures each branch row's chevron glyph
+/// (`TreeStyle::chevron_expanded`/`chevron_collapsed`) for real, rather
+/// than the `line_height * 0.65` advance the unmeasured `tree_layout`
+/// estimates — `CTFont` implements
 /// [`crate::primitives::layout_metrics::TextMeasure`] directly, so no
 /// adapter struct is needed (unlike GTK's `PangoTextMeasure`).
 pub fn mac_tree_layout(
@@ -341,6 +341,18 @@ mod tests {
             est_x, measured_x,
             "measured chevron end-x must use the real Menlo glyph width ({measured_x}), \
              not the line_height * 0.65 estimate ({est_x})",
+        );
+        // Exact geometry: 2px left margin + one indent level
+        // (`round(line_height * 0.9)`) + the real glyph advance + 4px gap.
+        let glyph_w = crate::primitives::layout_metrics::TextMeasure::width_of(
+            &font(),
+            &tree.style.chevron_expanded,
+        );
+        let expected = 2.0 + (16.0f32 * 0.9).round() + glyph_w + 4.0;
+        assert!(
+            (measured_x - expected).abs() < 0.01,
+            "measured chevron end-x {measured_x} must equal the CTFont-measured \
+             geometry {expected} (glyph advance {glyph_w})",
         );
         assert_eq!(
             measured.hit_test(measured_x - 1.0, 4.0),

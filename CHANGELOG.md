@@ -107,6 +107,16 @@ only a push to `main` runs this workflow.
   estimate, so short labels never render narrower than they do today).
   `measure_generic` keeps its existing signature and behavior.
 
+### Changed
+
+- `macos::mac_tree_layout` takes a fourth `font: &CTFont` argument, so it
+  can measure chevron glyphs for real (mirrors `mac_form_layout`'s existing
+  `font` argument). `Backend::tree_layout` is unchanged — `MacBackend`
+  passes its own `chrome_font`. Breaking for direct callers of the
+  `quadraui::macos::mac_tree_layout` re-export only; neither published
+  consumer (`vimcode`, `coord-tui`) calls it — both reach macOS tree
+  layout through `Backend::tree_layout`.
+
 ### Fixed
 
 - `SidebarSystem`'s tree layout now honors `TreeStyle::row_height`:
@@ -125,9 +135,10 @@ only a push to `main` runs this workflow.
   (`TreeStyle::chevron_expanded`/`chevron_collapsed`) with the real
   `CTFont` via `layout_metrics::tree_layout_measured`, instead of the
   `line_height * 0.65` estimate `layout_metrics::tree_layout` falls back
-  to. `mac_tree_layout` and `Backend::tree_layout` take a `font: &CTFont`
-  parameter to do so (mirrors `mac_form_layout`'s existing `font`
-  parameter); no consumer repo calls `mac_tree_layout` directly.
+  to, so a chevron hit region and the label column that follows it line up
+  with the glyph the macOS rasteriser actually paints. `MacBackend`'s
+  `Backend::tree_layout` and `macos::draw_tree` both route through it with
+  the chrome `CTFont`.
 
 ## [0.1.8] - 2026-10-14
 
