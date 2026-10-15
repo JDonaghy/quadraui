@@ -1770,9 +1770,16 @@ name = "gtk_float"
 path = "examples/gtk_float.rs"
 required-features = ["gtk"]
 
-# Button/RadioGroup/Switch controls demo (TUI only — GTK painters are a
-# separate issue's scope).
+# Button/RadioGroup/Switch controls demo. Both entries are mandatory (see
+# the note above): without an explicit `[[example]]`, `gtk_controls.rs`
+# gets autodiscovered with no `required-features` and fails
+# `cargo test --features tui` on `quadraui::gtk` being configured out.
 [[example]]
 name = "tui_controls"
 path = "examples/tui_controls.rs"
 required-features = ["tui"]
+
+[[example]]
+name = "gtk_controls"
+path = "examples/gtk_controls.rs"
+required-features = ["gtk"]
