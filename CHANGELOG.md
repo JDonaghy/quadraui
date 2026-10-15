@@ -66,11 +66,19 @@ only a push to `main` runs this workflow.
   with a real TUI rasteriser, a shared `PaintSurface`-based minimal paint
   (`native_surface_paint`, in each of `primitives::{button, radio_group,
   switch}`) wired into GTK's `draw_*` methods, and stub implementations
-  for the macOS/Windows backends and both `MockBackend`s.
+  for the Windows backend and both `MockBackend`s.
   `examples/tui_controls.rs` (`AppLogic` in `examples/common/controls.rs`)
   demos all three primitives together; a real native GTK painter (hover/
   pressed chrome, cairo/pango text) and demo follow in a later,
   backend-scoped issue.
+- macOS painter for `Button`, `RadioGroup` and `Switch`: `MacBackend::
+  draw_button`/`draw_radio_group`/`draw_switch` now paint through the
+  shared `native_surface_paint` CoreGraphics path (primary/secondary
+  variants, disabled dimming) instead of returning a bare layout, and
+  register a click zone per widget (per option, for `RadioGroup`).
+  Covered by a `MacDriver` conformance test driving focus, keyboard and
+  mouse activation across all three (`tests/
+  macos_standalone_controls_driver.rs`).
 
 ### Fixed
 
