@@ -239,8 +239,12 @@ impl SubmenuApp {
             self.menu_system.close(backend);
         }
         let lh = backend.line_height();
-        let viewport = backend.viewport();
-        let vp = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+        // `context_menu_viewport` is the paint surface with room already
+        // reserved for whatever chrome the backend draws outside the
+        // menu's item region (one cell of box border on TUI), so the
+        // layout this anchors — and the rows it hit-tests — stay inside
+        // the surface even when the click is on the very first row.
+        let vp = backend.context_menu_viewport();
         let menu = ContextMenu {
             id: WidgetId::new("ctx-menu"),
             items: Self::ctx_menu_items(),
@@ -279,8 +283,7 @@ impl SubmenuApp {
     /// Render the in-window context menu (root + all open submenus).
     fn render_ctx_menu(state: &CtxState, backend: &mut dyn Backend) {
         let lh = backend.line_height();
-        let viewport = backend.viewport();
-        let vp = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+        let vp = backend.context_menu_viewport();
         let menu_w = 20.0 * lh;
         let item_h = lh;
         let sep_h = (lh * 0.5_f32).max(1.0_f32);
@@ -410,9 +413,10 @@ impl SubmenuApp {
                 ..
             } => {
                 // Hit-test against each open level (deepest first).
+                // Same viewport the render pass uses, so the rows hit
+                // here are the rows that were painted.
                 let lh = backend.line_height();
-                let viewport = backend.viewport();
-                let vp = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                let vp = backend.context_menu_viewport();
                 let menu_w = 20.0 * lh;
                 let item_h = lh;
                 let sep_h = (lh * 0.5_f32).max(1.0_f32);
@@ -525,8 +529,7 @@ impl SubmenuApp {
             UiEvent::MouseMoved { position, .. } => {
                 // Update hover selection at deepest level containing cursor.
                 let lh = backend.line_height();
-                let viewport = backend.viewport();
-                let vp = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                let vp = backend.context_menu_viewport();
                 let menu_w = 20.0 * lh;
                 let item_h = lh;
                 let sep_h = (lh * 0.5_f32).max(1.0_f32);

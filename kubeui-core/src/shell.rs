@@ -9,7 +9,7 @@ use quadraui::{Color, ContextMenuHit, ContextMenuItemMeasure, Rect as QRect, Sta
 use crate::state::AppState;
 use crate::{
     build_picker_menu, build_status_bar, decode_picker_hit_id, picker_anchor, picker_current_index,
-    picker_menu_width, Action,
+    picker_menu_viewport, picker_menu_width, Action,
 };
 
 /// Unified kubeui theme. Both backends consume this; a backend that
@@ -65,6 +65,11 @@ pub fn bootstrap_state(rt: &tokio::runtime::Runtime) -> AppState {
 /// each for TUI cells, character-width / line-height pixels for GTK).
 /// The status bar is assumed to live on the bottom row of `viewport`,
 /// at height `cell_h`.
+///
+/// `border_inset` is the renderer's
+/// `quadraui::Backend::context_menu_border_inset`; the picker dropdown is
+/// hit-tested in the viewport [`picker_menu_viewport`] derives from it, so
+/// the caller must pass the same value its paint pass used.
 pub fn resolve_click(
     state: &AppState,
     viewport: QRect,
@@ -72,6 +77,7 @@ pub fn resolve_click(
     y: f32,
     cell_w: f32,
     cell_h: f32,
+    border_inset: f32,
 ) -> Vec<Action> {
     // Picker (dropdown over status bar): hit-test the live menu layout
     // so click resolution stays in lock-step with paint. Click outside
@@ -82,7 +88,8 @@ pub fn resolve_click(
         };
         let menu = build_picker_menu(picker, picker_current_index(state, picker.purpose));
         let menu_w = picker_menu_width(picker, viewport, cell_w);
-        let menu_layout = menu.layout_at(anchor, viewport, menu_w, |_| {
+        let menu_vp = picker_menu_viewport(viewport, border_inset);
+        let menu_layout = menu.layout_at(anchor, menu_vp, menu_w, |_| {
             ContextMenuItemMeasure::new(cell_h)
         });
         return match menu_layout.hit_test(x, y) {

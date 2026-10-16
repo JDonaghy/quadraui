@@ -264,6 +264,23 @@ pub fn picker_menu_width(picker: &Picker, viewport: Rect, cell_w: f32) -> f32 {
     (w_cells * cell_w).min(viewport.width - 4.0 * cell_w)
 }
 
+/// Surface the picker dropdown is laid out in: `viewport` inset on all
+/// four sides by `border_inset` so the chrome the rasteriser paints
+/// outside the menu's item region still has room on-screen.
+///
+/// `border_inset` comes from `quadraui::Backend::context_menu_border_inset`
+/// — 1 cell on TUI, where the box border sits outside the item region,
+/// and 0 on pixel backends, which draw their chrome inside it. Paint and
+/// hit-test must pass the same value, or a click lands on the wrong row.
+pub fn picker_menu_viewport(viewport: Rect, border_inset: f32) -> Rect {
+    Rect::new(
+        viewport.x + border_inset,
+        viewport.y + border_inset,
+        (viewport.width - border_inset * 2.0).max(0.0),
+        (viewport.height - border_inset * 2.0).max(0.0),
+    )
+}
+
 /// Anchor rect for the open picker — the status-bar segment that
 /// triggered it. Returns coordinates in the viewport's unit (cells for
 /// TUI, pixels for GTK), assuming the status bar sits at the bottom
