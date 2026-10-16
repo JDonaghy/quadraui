@@ -59,6 +59,17 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+### Fixed
+
+- `Minimap::layout_with_sizing` no longer paints an oversized
+  `viewport_highlight` band across the whole strip when the editor's
+  viewport already spans every row of the file (an empty or very short
+  buffer that fits entirely on-screen). The highlight is now zero-height
+  in that case, matching the "nothing to scroll, nothing to indicate"
+  convention `Minimap::scroll_thumb` already follows. Affects every
+  backend that renders the minimap (GTK, TUI, macOS, Win-GUI), since they
+  all consume the same shared layout.
+
 ## [0.2.0] - 2026-10-16
 
 ### Added
@@ -321,15 +332,6 @@ only a push to `main` runs this workflow.
   sites in `backend.rs` now add `tui::TAB_SEPARATOR_COLS` to a tab's
   measured width whenever it has no close-button reservation; tabs with a
   close button, and bracket-framed active tabs, are unaffected.
-
-- `Minimap::layout_with_sizing` no longer paints an oversized
-  `viewport_highlight` band across the whole strip when the editor's
-  viewport already spans every row of the file (an empty or very short
-  buffer that fits entirely on-screen). The highlight is now zero-height
-  in that case, matching the "nothing to scroll, nothing to indicate"
-  convention `Minimap::scroll_thumb` already follows. Affects every
-  backend that renders the minimap (GTK, TUI, macOS, Win-GUI), since they
-  all consume the same shared layout.
 
 ## [0.1.8] - 2026-10-14
 
