@@ -290,7 +290,7 @@ impl Demo for SidebarDemo {
                 let layout = backend.draw_sidebar_panel_interactive(
                     panel_rect,
                     &self.panel(),
-                    &InteractionState::from_parts(self.hover.current(), self.pressed.clone()),
+                    &InteractionState::from_parts(self.hover.current(), self.pressed),
                 );
                 let content = layout.content_bounds;
                 let header_text = if self.filter_on {
