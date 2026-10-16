@@ -117,12 +117,16 @@ mod tests {
                 let px = surface.pixel_at(x0 + dx, y0 + dy);
                 // Approximate match: anti-aliased strokes in Direct2D
                 // with ALPHA_MODE_IGNORE blend partial-coverage pixels
-                // with the background, so no pixel exactly equals the
-                // brush colour. A tolerance of ±2 per channel catches
-                // near-full-coverage pixels without false positives.
-                if (px.r as i16 - color.r as i16).abs() <= 2
-                    && (px.g as i16 - color.g as i16).abs() <= 2
-                    && (px.b as i16 - color.b as i16).abs() <= 2
+                // with the black background, producing `coverage * color`
+                // per channel.  A 1 px stroked circle on a 20 px marker
+                // tops out at ~95 % coverage on some GPU/driver combos, so
+                // ±10 per channel (≥ 92 % coverage for the worst channel)
+                // catches near-full-coverage pixels while still rejecting
+                // the next-closest palette entry (`accent_fg`, whose
+                // nearest channel is 12 away on green).
+                if (px.r as i16 - color.r as i16).abs() <= 10
+                    && (px.g as i16 - color.g as i16).abs() <= 10
+                    && (px.b as i16 - color.b as i16).abs() <= 10
                 {
                     return true;
                 }
