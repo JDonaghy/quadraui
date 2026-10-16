@@ -174,6 +174,12 @@ mod a11y;
 // inflate the primitive count `readme_truth.rs` derives from
 // `primitives/mod.rs`'s `pub mod` list.
 pub mod caret_blink;
+// Not under `primitives/`, same reasoning as `font_role`/`generic_font`
+// above: a handle-addressed value store is not a widget — no `Layout`, no
+// `hit_test`, no `Backend::draw_*` method of its own — so it must not
+// inflate the primitive count `readme_truth.rs` derives from
+// `primitives/mod.rs`'s `pub mod` list.
+pub mod descriptor_store;
 pub mod diagnostics;
 pub mod diff;
 pub mod focus;

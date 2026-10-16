@@ -61,6 +61,17 @@ only a push to `main` runs this workflow.
 
 ### Added
 
+- `descriptor_store` module (`DescriptorStore<T>`, `Handle<T>`) — a
+  Rust-owned retained store addressed by handle instead of by position:
+  `insert(value) -> Handle<T>`, `update(handle, |t| …)` for in-place
+  mutation, `remove`, `get`/`get_mut`, and `iter`. Lets a host turn a
+  per-frame `Vec<(Handle<T>, Rect)>` into pure geometry, with the
+  descriptor itself mutated in place rather than rebuilt from scratch each
+  frame. Generation-checked per slot and store-id-tagged per `Handle`, so a
+  stale or foreign handle is rejected by every lookup rather than
+  silently resolving to the wrong value. Backend-neutral, no feature gate;
+  no primitive is wired through it yet — that is per-primitive follow-on
+  work.
 - `OwnedFrame`/`OwnedNode`/`OwnedContent` — a lifetime-free, owned sibling
   of `Surface`/`ScreenLayout`: `OwnedFrame::from_layout` clones a
   `ScreenLayout<'_>`'s surfaces into a `Vec<OwnedNode>` (each carrying its
