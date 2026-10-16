@@ -32,6 +32,19 @@ pub const TAB_CLOSE_CHAR: char = '×';
 /// right amount of trailing space.
 pub const TAB_CLOSE_COLS: u16 = 2;
 
+/// Separator glyph painted between adjacent tab labels that have no
+/// close button to provide their own visual boundary (`show_tab_close:
+/// false`, or a non-closable tab). Light vertical box-drawing rule —
+/// renders in every monospaced terminal font and reads as a distinct
+/// item boundary rather than running labels together.
+pub const TAB_SEPARATOR_CHAR: char = '│';
+
+/// Cell width reserved after a tab with no close button, for
+/// [`TAB_SEPARATOR_CHAR`]. Apps that build a [`crate::TabMeasure`] for a
+/// tab with `close_width: 0.0` should add this to the tab's measured
+/// width so the rasteriser has a cell to paint the separator into.
+pub const TAB_SEPARATOR_COLS: u16 = 1;
+
 /// Draw a [`TabBar`] into `area` on `buf`. Returns the **tab-content
 /// width** in cells (`area.width - reserved_by_right_segments`) so
 /// the caller can decide how many tabs fit and what scroll offset to
@@ -354,8 +367,18 @@ pub fn draw_tab_bar_icons_with_chrome(
                 set_cell(buf, x, area.y, ']', fg, bg);
             }
         } else if x < tab_end {
-            // Trailing separator space (within tab bounds, uses bar bg).
-            set_cell(buf, x, area.y, ' ', bar_bg, bar_bg);
+            if vt.close_bounds.is_none() {
+                // No close button reserved for this tab — the measurer
+                // (`TuiBackend::draw_tab_bar_icons`/`_with_chrome` in
+                // `backend.rs`) reserved this cell as a separator column
+                // instead, so paint a visible rule rather than blank
+                // space; otherwise adjacent labels read as one run of
+                // text with only bold-vs-not telling them apart.
+                set_cell(buf, x, area.y, TAB_SEPARATOR_CHAR, separator, bar_bg);
+            } else {
+                // Trailing separator space (within tab bounds, uses bar bg).
+                set_cell(buf, x, area.y, ' ', bar_bg, bar_bg);
+            }
         }
     }
 
@@ -770,5 +793,82 @@ mod tests {
             TabBarHit::Tab(0) => {}
             other => panic!("click on the ']' bracket expected Tab(0) (not close), got {other:?}"),
         }
+    }
+
+    /// A compact bar with `show_tab_close: false` reserves one trailing
+    /// column per tab for [`TAB_SEPARATOR_CHAR`], so adjacent labels read
+    /// as distinct items instead of running together.
+    #[test]
+    fn no_close_tabs_paint_a_separator_between_labels() {
+        use crate::primitives::tab_bar::TabBarHit;
+
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![
+                TabItem {
+                    label: "Problems".into(),
+                    is_active: true,
+                    is_closable: false,
+                    ..Default::default()
+                },
+                TabItem {
+                    label: "Output".into(),
+                    is_active: false,
+                    is_closable: false,
+                    ..Default::default()
+                },
+                TabItem {
+                    label: "Terminal".into(),
+                    is_active: false,
+                    is_closable: false,
+                    ..Default::default()
+                },
+            ],
+            right_segments: vec![],
+            active_accent: None,
+            scroll_offset: 0,
+            show_tab_close: false,
+            compact: true,
+        };
+        // Mirrors `TuiBackend`'s measurer: no close button reserved, so each
+        // tab's width is its label plus one `TAB_SEPARATOR_COLS` column.
+        let layout = bar.layout(
+            40.0,
+            1.0,
+            0.0,
+            |i| {
+                let label_w = crate::tui::display_width(&bar.tabs[i].label) as f32;
+                TabMeasure::new(label_w + TAB_SEPARATOR_COLS as f32, 0.0)
+            },
+            |_| SegmentMeasure::new(0.0),
+        );
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
+        draw_tab_bar(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+        );
+
+        // Column 8 is the cell right after "Problems" (8 chars) — the
+        // separator this tab's measurer reserved.
+        assert_eq!(
+            cell_char(&buf, 8, 0),
+            TAB_SEPARATOR_CHAR,
+            "expected a separator glyph between the first and second tab"
+        );
+        // Column 15 is right after "Output" (6 chars) starting at col 9.
+        assert_eq!(
+            cell_char(&buf, 15, 0),
+            TAB_SEPARATOR_CHAR,
+            "expected a separator glyph between the second and third tab"
+        );
+        assert_eq!(
+            layout.hit_test(8.5, 0.0),
+            TabBarHit::Tab(0),
+            "the separator column must stay part of the tab it follows, not a dead zone"
+        );
     }
 }

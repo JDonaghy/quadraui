@@ -2509,7 +2509,16 @@ impl Backend for TuiBackend {
                 } else {
                     0
                 };
-                display_width(&t.label) + tab_close + crate::tab_icon_cols(icons, i) as usize
+                // No close button to reserve? Reserve a separator column
+                // instead, so adjacent labels on a bar with
+                // `show_tab_close: false` (or a non-closable tab) paint
+                // with a visible boundary rather than running together.
+                let sep = if tab_close == 0 {
+                    crate::tui::TAB_SEPARATOR_COLS as usize
+                } else {
+                    0
+                };
+                display_width(&t.label) + tab_close + sep + crate::tab_icon_cols(icons, i) as usize
             })
             .collect();
         let layout = bar.layout(
@@ -2580,7 +2589,16 @@ impl Backend for TuiBackend {
                 } else {
                     0
                 };
-                display_width(&t.label) + tab_close + crate::tab_icon_cols(icons, i) as usize
+                // No close button to reserve? Reserve a separator column
+                // instead, so adjacent labels on a bar with
+                // `show_tab_close: false` (or a non-closable tab) paint
+                // with a visible boundary rather than running together.
+                let sep = if tab_close == 0 {
+                    crate::tui::TAB_SEPARATOR_COLS as usize
+                } else {
+                    0
+                };
+                display_width(&t.label) + tab_close + sep + crate::tab_icon_cols(icons, i) as usize
             })
             .collect();
         let layout = bar.layout(
@@ -2648,7 +2666,10 @@ impl Backend for TuiBackend {
                 } else if has_close {
                     base + close_cols
                 } else {
-                    base
+                    // No close button and no bracket framing to supply a
+                    // visual boundary — reserve a column for the separator
+                    // glyph so adjacent labels don't run together.
+                    base + crate::tui::TAB_SEPARATOR_COLS as usize
                 }
             })
             .collect();
@@ -2717,7 +2738,10 @@ impl Backend for TuiBackend {
                 } else if has_close {
                     base + close_cols
                 } else {
-                    base
+                    // No close button and no bracket framing to supply a
+                    // visual boundary — reserve a column for the separator
+                    // glyph so adjacent labels don't run together.
+                    base + crate::tui::TAB_SEPARATOR_COLS as usize
                 }
             })
             .collect();
@@ -2871,7 +2895,16 @@ impl Backend for TuiBackend {
                 } else {
                     0
                 };
-                display_width(&t.label) + tab_close + crate::tab_icon_cols(icons, i) as usize
+                // No close button to reserve? Reserve a separator column
+                // instead, so adjacent labels on a bar with
+                // `show_tab_close: false` (or a non-closable tab) paint
+                // with a visible boundary rather than running together.
+                let sep = if tab_close == 0 {
+                    crate::tui::TAB_SEPARATOR_COLS as usize
+                } else {
+                    0
+                };
+                display_width(&t.label) + tab_close + sep + crate::tab_icon_cols(icons, i) as usize
             })
             .collect();
         let layout = bar.layout(
@@ -2942,7 +2975,16 @@ impl Backend for TuiBackend {
                 } else {
                     0
                 };
-                display_width(&t.label) + tab_close + crate::tab_icon_cols(icons, i) as usize
+                // No close button to reserve? Reserve a separator column
+                // instead, so adjacent labels on a bar with
+                // `show_tab_close: false` (or a non-closable tab) paint
+                // with a visible boundary rather than running together.
+                let sep = if tab_close == 0 {
+                    crate::tui::TAB_SEPARATOR_COLS as usize
+                } else {
+                    0
+                };
+                display_width(&t.label) + tab_close + sep + crate::tab_icon_cols(icons, i) as usize
             })
             .collect();
         bar.layout(
@@ -2990,7 +3032,10 @@ impl Backend for TuiBackend {
                 } else if has_close {
                     base + close_cols
                 } else {
-                    base
+                    // No close button and no bracket framing to supply a
+                    // visual boundary — reserve a column for the separator
+                    // glyph so adjacent labels don't run together.
+                    base + crate::tui::TAB_SEPARATOR_COLS as usize
                 }
             })
             .collect();
@@ -3066,7 +3111,10 @@ impl Backend for TuiBackend {
                 } else if has_close {
                     base + close_cols
                 } else {
-                    base
+                    // No close button and no bracket framing to supply a
+                    // visual boundary — reserve a column for the separator
+                    // glyph so adjacent labels don't run together.
+                    base + crate::tui::TAB_SEPARATOR_COLS as usize
                 }
             })
             .collect();
