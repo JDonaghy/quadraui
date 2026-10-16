@@ -772,7 +772,13 @@ fn draw_text(
     color: Color,
 ) -> WinResult<()> {
     if crate::testing::text_run_sink_active() {
-        crate::testing::record_text_run(text, rect);
+        // Offset by the active D2D translation so text runs are recorded
+        // in surface-absolute coordinates — the space WinDriver::find
+        // returns and the hit-test path expects. Mirrors
+        // `gtk::painted_text::show_layout`'s `cr.user_to_device()`.
+        let (tx, ty) = CURRENT_TRANSLATION.get();
+        let abs_rect = Rect::new(rect.x + tx, rect.y + ty, rect.width, rect.height);
+        crate::testing::record_text_run(text, abs_rect);
     }
     let wide: Vec<u16> = text.encode_utf16().collect();
     let brush = get_or_create_brush(target, color)?;
@@ -1140,6 +1146,16 @@ pub(crate) fn draw_line(
     Ok(())
 }
 
+/// The cumulative D2D translation offset active during the current
+/// `with_translation` scope — `(0.0, 0.0)` outside any translation.
+/// [`draw_text`] reads this to record text runs in surface-absolute
+/// coordinates (mirroring `gtk::painted_text::show_layout`'s
+/// `cr.user_to_device()` conversion), so [`super::testing::WinDriver::find`]
+/// returns positions in the same coordinate space the hit-test path uses.
+thread_local! {
+    static CURRENT_TRANSLATION: Cell<(f32, f32)> = const { Cell::new((0.0, 0.0)) };
+}
+
 /// Run `f` with `target`'s transform temporarily set to a translation by
 /// `(dx, dy)` DIPs, then restore the identity transform. Returns `f`'s
 /// own return value.
@@ -1159,6 +1175,13 @@ pub(crate) fn draw_line(
 /// inside another still-open `with_translation`/`with_horizontal_scale`
 /// call** — doing so would have the inner call's unconditional identity
 /// restore clobber the outer transform rather than composing with it.
+///
+/// Text-run recording: [`draw_text`] records bounds in
+/// **surface-absolute** coordinates so [`super::testing::WinDriver::find`]
+/// returns the same click-space position the hit-test path expects —
+/// mirroring `gtk::painted_text::show_layout`'s `cr.user_to_device()`
+/// adjustment. This function pushes `(dx, dy)` onto
+/// [`CURRENT_TRANSLATION`] so `draw_text` can offset the local rect.
 pub(crate) fn with_translation<F: FnOnce() -> R, R>(
     target: &ID2D1RenderTarget,
     dx: f32,
@@ -1177,7 +1200,10 @@ pub(crate) fn with_translation<F: FnOnce() -> R, R>(
     // is a plain stack struct borrowed only for this call — infallible
     // on `ID2D1RenderTarget`, per this function's own doc comment.
     unsafe { target.SetTransform(&translated) };
+    let prev = CURRENT_TRANSLATION.get();
+    CURRENT_TRANSLATION.set((dx, dy));
     let result = f();
+    CURRENT_TRANSLATION.set(prev);
     let identity = windows_numerics::Matrix3x2 {
         M11: 1.0,
         M12: 0.0,
