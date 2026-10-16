@@ -75,6 +75,11 @@ mod tests {
             .paint(|target| {
                 // Clear to opaque black so anti-aliased strokes blend
                 // with a known background, not undefined DIB content.
+                //
+                // SAFETY: `target` is the live render target
+                // `HeadlessSurface::paint` passes in, mid-`BeginDraw`/
+                // `EndDraw`; the `D2D1_COLOR_F` is a plain stack literal
+                // borrowed only for the duration of this call.
                 unsafe {
                     target.Clear(Some(&D2D1_COLOR_F {
                         r: 0.0,
