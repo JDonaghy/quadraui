@@ -207,7 +207,10 @@ pub struct MinimapLayout {
     pub bounds: Rect,
     pub visible_lines: Vec<VisibleMinimapLine>,
     /// Where the editor's current viewport appears, in the same absolute
-    /// coordinates as `bounds`.
+    /// coordinates as `bounds`. Zero-height whenever the viewport already
+    /// spans the whole file (nothing to scroll to, so nothing to
+    /// indicate) — an empty or short buffer that fits on-screen never
+    /// gets a highlight here.
     pub viewport_highlight: Rect,
     pub scrollbar: Option<Scrollbar>,
     /// Buffer columns folded into one output cell along the horizontal
@@ -464,7 +467,18 @@ impl Minimap {
         let window_hi = (window_start_row + rows_shown) as f32;
         let clipped_start = start_row_abs.clamp(window_lo, window_hi);
         let clipped_end = end_row_abs.clamp(window_lo, window_hi);
-        let highlight_h = (clipped_end - clipped_start).max(0.0) * row_h;
+        // The editor's viewport already covers every row of the file (an
+        // empty or short buffer that fits on-screen with nothing left to
+        // scroll to) — same "nothing to scroll" condition `scroll_thumb`
+        // tests via `total <= visible`. Painting a highlight here would
+        // cover the whole strip in a solid block instead of indicating a
+        // position within it, so there is nothing to draw.
+        let whole_file_visible = start_row_abs <= 0.0 && end_row_abs >= row_count as f32;
+        let highlight_h = if whole_file_visible {
+            0.0
+        } else {
+            (clipped_end - clipped_start).max(0.0) * row_h
+        };
         let viewport_highlight = Rect::new(
             bounds.x,
             bounds.y + (clipped_start - window_lo) * row_h,
@@ -1516,6 +1530,33 @@ mod tests {
         let bounds = Rect::new(0.0, 0.0, 10.0, 16.0); // pitch 4px, under the cap
         let layout = mm.layout_with_sizing(bounds, 2, MinimapSizing::Fill);
         assert_eq!(layout.viewport_highlight, Rect::new(0.0, 4.0, 10.0, 8.0));
+    }
+
+    #[test]
+    fn layout_viewport_highlight_is_empty_when_viewport_covers_the_whole_file() {
+        // A one-line (or otherwise fully on-screen) file: the editor's
+        // viewport already spans every row, so there's nothing to
+        // scroll to and no position to indicate -- painting a highlight
+        // here would just cover the whole strip in a solid block
+        // instead (the oversized bar on an empty/short file).
+        let mm = minimap(1, 0, 1);
+        let bounds = Rect::new(0.0, 0.0, 10.0, 16.0);
+        for sizing in [MinimapSizing::Fill, MinimapSizing::FixedPitch(2.0)] {
+            let layout = mm.layout_with_sizing(bounds, 1, sizing);
+            assert_eq!(
+                layout.viewport_highlight.height, 0.0,
+                "a fully-visible one-line file must not highlight any viewport band \
+                 (sizing {sizing:?})"
+            );
+        }
+
+        // A short file where `visible_row_count` overshoots `lines.len()`
+        // (a host reporting its window's row budget rather than clamping
+        // to the buffer) must still resolve to "whole file visible".
+        let mut mm_overshoot = minimap(3, 0, 3);
+        mm_overshoot.visible_row_count = 50;
+        let layout = mm_overshoot.layout_with_sizing(bounds, 1, MinimapSizing::FixedPitch(2.0));
+        assert_eq!(layout.viewport_highlight.height, 0.0);
     }
 
     #[test]
