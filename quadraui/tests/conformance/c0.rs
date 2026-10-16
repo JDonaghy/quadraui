@@ -542,15 +542,11 @@ pub const CASES: &[Case] = &[
         paint: |b, area| {
             let cw = b.char_width();
             let track = Rect::new(area.width - cw, 0.0, cw, area.height);
-            let sb = Scrollbar {
-                id: id("scrollbar"),
-                axis: ScrollAxis::Vertical,
-                track,
-                thumb_start: 0.0,
-                thumb_len: area.height / 2.0,
-                hovered: false,
-                dragging: false,
-            };
+            let mut sb = Scrollbar::default();
+            sb.id = id("scrollbar");
+            sb.axis = ScrollAxis::Vertical;
+            sb.track = track;
+            sb.thumb_len = area.height / 2.0;
             b.draw_scrollbar(track, &sb);
         },
     },
@@ -660,29 +656,20 @@ pub const CASES: &[Case] = &[
         method: "draw_palette",
         needle: Some("c0palt"),
         paint: |b, area| {
-            let palette = Palette {
-                id: id("palette"),
-                title: "Palette".to_string(),
-                query: String::new(),
-                query_cursor: 0,
-                items: vec![PaletteItem {
-                    text: StyledText::plain("c0palt"),
-                    detail: None,
-                    icon: None,
-                    match_positions: vec![],
-                    depth: 0,
-                    expandable: false,
-                    expanded: false,
-                }],
-                selected_idx: 0,
-                scroll_offset: 0,
-                total_count: 0,
-                has_focus: false,
-                show_query: true,
-                create_label: None,
-                preview: None,
-                mode: PaletteMode::List,
-            };
+            let mut palette = Palette::default();
+            palette.id = id("palette");
+            palette.title = "Palette".to_string();
+            palette.items = vec![PaletteItem {
+                text: StyledText::plain("c0palt"),
+                detail: None,
+                icon: None,
+                match_positions: vec![],
+                depth: 0,
+                expandable: false,
+                expanded: false,
+            }];
+            palette.show_query = true;
+            palette.mode = PaletteMode::List;
             b.draw_palette(area, &palette);
         },
     },
@@ -780,11 +767,9 @@ pub const CASES: &[Case] = &[
                 is_find_active: false,
             };
             let row: Vec<TerminalCell> = "c0term".chars().map(cell).collect();
-            let term = Terminal {
-                id: id("terminal"),
-                cells: vec![row],
-                scrollbar: None,
-            };
+            let mut term = Terminal::default();
+            term.id = id("terminal");
+            term.cells = vec![row];
             b.draw_terminal(area, &term);
         },
     },
@@ -1071,19 +1056,16 @@ pub const CASES: &[Case] = &[
         paint: |b, area| {
             let lh = b.line_height();
             let cw = b.char_width();
-            let completions = Completions {
-                id: id("completions"),
-                items: vec![CompletionItem {
-                    label: StyledText::plain("c0cmpl"),
-                    detail: None,
-                    documentation: None,
-                    kind: Default::default(),
-                    icon: None,
-                }],
-                selected_idx: 0,
-                scroll_offset: 0,
-                has_focus: true,
-            };
+            let mut completions = Completions::default();
+            completions.id = id("completions");
+            completions.items = vec![CompletionItem {
+                label: StyledText::plain("c0cmpl"),
+                detail: None,
+                documentation: None,
+                kind: Default::default(),
+                icon: None,
+            }];
+            completions.has_focus = true;
             let layout = completions.layout(0.0, 0.0, lh, area, cw * 20.0, lh * 6.0, |_| {
                 CompletionItemMeasure::new(lh)
             });
@@ -1221,12 +1203,11 @@ pub const CASES: &[Case] = &[
         method: "draw_command_center",
         needle: Some("c0ccnt"),
         paint: |b, area| {
-            let cc = CommandCenter {
-                id: id("command-center"),
-                back_enabled: true,
-                forward_enabled: true,
-                search_label: "c0ccnt".to_string(),
-            };
+            let mut cc = CommandCenter::default();
+            cc.id = id("command-center");
+            cc.back_enabled = true;
+            cc.forward_enabled = true;
+            cc.search_label = "c0ccnt".to_string();
             let _ = b.draw_command_center(area, &cc);
         },
     },
@@ -1441,17 +1422,13 @@ pub const CASES: &[Case] = &[
         paint: |b, area| {
             let cw = b.char_width();
             let lh = b.line_height();
-            let number_input = NumberInput {
-                id: id("number-input"),
-                value: 70.0,
-                min: 0.0,
-                max: 100.0,
-                step: 1.0,
-                precision: 0,
-                draft: None,
-                disabled: false,
-                focused: true,
-            };
+            let mut number_input = NumberInput::default();
+            number_input.id = id("number-input");
+            number_input.value = 70.0;
+            number_input.min = 0.0;
+            number_input.max = 100.0;
+            number_input.step = 1.0;
+            number_input.focused = true;
             let bounds = Rect::new(0.0, 0.0, cw * 10.0, lh);
             let layout = number_input.layout(bounds);
             let _ = area;
@@ -1464,16 +1441,11 @@ pub const CASES: &[Case] = &[
         paint: |b, area| {
             let cw = b.char_width();
             let lh = b.line_height();
-            let combo_box = ComboBox {
-                id: id("combo-box"),
-                options: vec!["c0combo".to_string()],
-                text: "c0combo".to_string(),
-                committed: String::new(),
-                open: false,
-                highlighted: None,
-                disabled: false,
-                focused: true,
-            };
+            let mut combo_box = ComboBox::default();
+            combo_box.id = id("combo-box");
+            combo_box.options = vec!["c0combo".to_string()];
+            combo_box.text = "c0combo".to_string();
+            combo_box.focused = true;
             let field_bounds = Rect::new(0.0, 0.0, cw * 20.0, lh);
             let layout = combo_box.layout(field_bounds, area, cw * 20.0, lh * 6.0, |_| {
                 CompletionItemMeasure::new(lh)

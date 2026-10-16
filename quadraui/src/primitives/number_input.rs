@@ -72,6 +72,7 @@ const STEPPER_WIDTH: f32 = 3.0;
 /// );
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct NumberInput {
     pub id: WidgetId,
     /// Last committed value. Only changes via
@@ -268,6 +269,14 @@ impl NumberInput {
             id: self.id.clone(),
             value: self.clamp_value(self.value + (delta.y as f64) * step),
         })
+    }
+}
+
+impl Default for NumberInput {
+    /// A `[0, 100]`-bounded field with an empty id. See
+    /// [`NumberInput::new`] for a field with a real id/range.
+    fn default() -> Self {
+        Self::new(WidgetId::new(""), 0.0, 100.0)
     }
 }
 

@@ -79,6 +79,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(combo.filtered_indices(), vec![0, 1]);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ComboBox {
     pub id: WidgetId,
     /// Fixed candidate list [`ComboBox::filtered_indices`] matches
@@ -298,6 +299,14 @@ impl ComboBox {
             }
             ComboBoxHit::Field | ComboBoxHit::Outside => None,
         }
+    }
+}
+
+impl Default for ComboBox {
+    /// An empty combo box with no options. See [`ComboBox::new`] for one
+    /// with a real id/options list.
+    fn default() -> Self {
+        Self::new(WidgetId::new(""), Vec::new())
     }
 }
 

@@ -63,6 +63,7 @@ pub enum ButtonVariant {
 /// assert_eq!(event, Some(ButtonEvent::Activated { id: button.id.clone() }));
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Button {
     pub id: WidgetId,
     /// Visible label. Ignored (but still present) for
@@ -134,6 +135,14 @@ impl Button {
         Some(ButtonEvent::Activated {
             id: self.id.clone(),
         })
+    }
+}
+
+impl Default for Button {
+    /// A primary, enabled, unfocused button with an empty id and label.
+    /// See [`Button::new`] for a button with a real id/label.
+    fn default() -> Self {
+        Self::new(WidgetId::new(""), "")
     }
 }
 

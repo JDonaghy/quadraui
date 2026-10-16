@@ -201,6 +201,86 @@ fn app_shell_layout_exhaustive_struct_literal_still_compiles() {
     assert!(layout.bottom_panel_bounds.is_none());
 }
 
+// ── v0.2 `#[non_exhaustive]` batch: `Default` + field mutation survives
+// field growth ──────────────────────────────────────────────────────────
+
+/// Twelve primitives gained `Default` and `#[non_exhaustive]` together so
+/// that adding a field to any of them stops being a breaking change.
+/// `#[non_exhaustive]` rejects every struct-literal form from outside the
+/// defining crate — even a literal naming every field with a trailing
+/// `..Default::default()` — so the only construction patterns that survive
+/// a future field addition are a constructor (`Button::new(...)`) or
+/// `Default::default()` followed by direct field assignment. This test
+/// builds one of each newly-`#[non_exhaustive]` primitive with that
+/// pattern, from a file compiled as an external crate exactly like a real
+/// downstream consumer, proving the migration path the CHANGELOG
+/// documents actually compiles.
+#[test]
+fn non_exhaustive_batch_builds_via_default_plus_field_assignment() {
+    use quadraui::{
+        Button, ComboBox, CommandCenter, Completions, DropZone, Float, NumberInput, Palette,
+        RadioGroup, ScrollView, Switch, Terminal,
+    };
+
+    let mut button = Button::default();
+    button.id = WidgetId::new("downstream:button");
+    button.label = "Go".to_string();
+    assert_eq!(button.label, "Go");
+
+    let mut combo = ComboBox::default();
+    combo.id = WidgetId::new("downstream:combo");
+    combo.options = vec!["a".to_string(), "b".to_string()];
+    assert_eq!(combo.options.len(), 2);
+
+    let mut switch = Switch::default();
+    switch.id = WidgetId::new("downstream:switch");
+    switch.value = true;
+    assert!(switch.value);
+
+    let mut radio = RadioGroup::default();
+    radio.id = WidgetId::new("downstream:radio");
+    assert_eq!(radio.id, WidgetId::new("downstream:radio"));
+
+    let mut number = NumberInput::default();
+    number.id = WidgetId::new("downstream:number");
+    assert_eq!(number.id, WidgetId::new("downstream:number"));
+
+    // `DropZone` derives `Default` directly (no hand-written `impl`) —
+    // the same external pattern still applies.
+    let mut drop_zone = DropZone::default();
+    drop_zone.group_idx = 3;
+    assert_eq!(drop_zone.group_idx, 3);
+
+    let mut scroll = ScrollView::default();
+    scroll.scroll_offset = 7.0;
+    assert_eq!(scroll.scroll_offset, 7.0);
+
+    let mut command_center = CommandCenter::default();
+    command_center.id = WidgetId::new("downstream:command_center");
+    assert_eq!(
+        command_center.id,
+        WidgetId::new("downstream:command_center")
+    );
+
+    let mut completions = Completions::default();
+    completions.id = WidgetId::new("downstream:completions");
+    assert_eq!(completions.id, WidgetId::new("downstream:completions"));
+
+    let mut palette = Palette::default();
+    palette.id = WidgetId::new("downstream:palette");
+    assert_eq!(palette.id, WidgetId::new("downstream:palette"));
+
+    let mut terminal = Terminal::default();
+    terminal.id = WidgetId::new("downstream:terminal");
+    assert_eq!(terminal.id, WidgetId::new("downstream:terminal"));
+
+    let mut float = Float::default();
+    float.id = WidgetId::new("downstream:float");
+    float.focusable = false;
+    assert_eq!(float.id, WidgetId::new("downstream:float"));
+    assert!(!float.focusable);
+}
+
 // ── `Backend::draw_toolbar*` call shapes ───────────────────────────────
 
 /// The call shapes a known consumer uses to paint a `Toolbar`.

@@ -43,6 +43,7 @@ use serde::{Deserialize, Serialize};
 ///     selected_idx: 0,
 ///     scroll_offset: 0,
 ///     has_focus: true,
+///     ..Default::default()
 /// };
 ///
 /// let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
@@ -53,6 +54,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.hit_test(10.0, 6.0), CompletionsHit::Item(0));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Completions {
     pub id: WidgetId,
     pub items: Vec<CompletionItem>,
@@ -64,6 +66,21 @@ pub struct Completions {
     /// non-interactive) — apps set this based on their own state.
     #[serde(default)]
     pub has_focus: bool,
+}
+
+impl Default for Completions {
+    /// An empty, unfocused completion popup with no items. Set fields
+    /// directly afterwards (every field is `pub`) — see
+    /// `docs/PRIMITIVE_RULES.md` rule 8.
+    fn default() -> Self {
+        Completions {
+            id: WidgetId::new(""),
+            items: Vec::new(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: false,
+        }
+    }
 }
 
 /// One completion candidate.

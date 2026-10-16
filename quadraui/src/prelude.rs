@@ -41,11 +41,25 @@ pub use crate::interaction::InteractionState;
 // ── ShellApp — the other runner (see docs/GUIDE.md "which runner?") ─────
 pub use crate::shell::{ShellApp, ShellConfig, ShellContext};
 
+// ── Declarative frame assembly (ScreenLayout::push(Surface::...) + draw)
+// — the canonical path a `ShellApp::render_content` uses to paint more
+// than one primitive into a single frame; see `frame.rs`'s module doc.
+pub use crate::frame::{ScreenLayout, Surface};
+
+// ── AppShell — the VS Code-style activity-bar/sidebar/editor frame.
+// `AppShellLayout` is what `ShellApp::render_content` receives each
+// frame (see the crate root `README.md` hello-world); `PanelDefinition`
+// and `FormController`/`FormControllerEvent` are the other `compose`
+// pieces a typical multi-pane app wires up alongside it.
+pub use crate::compose::{AppShellLayout, FormController, FormControllerEvent, PanelDefinition};
+
 // ── A representative sample of primitives (the crate root table's own
 // "representative sample", kept in sync with it — see `lib.rs`'s module
 // doc) — enough to build the two-pane app `docs/GUIDE.md` walks through.
 // Every other primitive lives at `quadraui::<Name>` exactly as it always
 // has; this list is deliberately not exhaustive.
+pub use crate::primitives::form::{FieldKind, Form, FormField, FormLayout};
+pub use crate::primitives::list::{ListItem, ListView, ListViewLayout};
 pub use crate::primitives::panel::{Panel, PanelAction, PanelLayout};
 pub use crate::primitives::split::{Split, SplitDirection, SplitLayout};
 pub use crate::primitives::status_bar::{StatusBar, StatusBarLayout, StatusBarSegment};

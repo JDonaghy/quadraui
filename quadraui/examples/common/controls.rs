@@ -46,13 +46,12 @@ impl ControlsApp {
     }
 
     fn button(&self) -> Button {
-        Button {
-            id: WidgetId::new("controls:button"),
-            label: format!("Clicked {}x", self.clicks),
-            variant: Default::default(),
-            disabled: false,
-            focused: self.focus == Focus::Button,
-        }
+        let mut button = Button::new(
+            WidgetId::new("controls:button"),
+            format!("Clicked {}x", self.clicks),
+        );
+        button.focused = self.focus == Focus::Button;
+        button
     }
 
     fn radio_group(&self) -> RadioGroup {

@@ -67,10 +67,10 @@ use quadraui::macos::testing::MacDriver;
 use quadraui::{
     AppLogic, Backend, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, Decoration,
     DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, FieldKind, Form,
-    FormField, Palette, PaletteItem, PaletteMode, Panel, ProgressBar, Reaction, Rect, Spinner,
-    StyledSpan, StyledText, Terminal, TerminalCell, TerminalCursorShape, TextDisplay,
-    TextDisplayLine, Toast, ToastCorner, ToastOverlay, ToastSeverity, Tooltip, TooltipMeasure,
-    TooltipPlacement, UiEvent, WidgetId,
+    FormField, Palette, PaletteItem, Panel, ProgressBar, Reaction, Rect, Spinner, StyledSpan,
+    StyledText, Terminal, TerminalCell, TerminalCursorShape, TextDisplay, TextDisplayLine, Toast,
+    ToastCorner, ToastOverlay, ToastSeverity, Tooltip, TooltipMeasure, TooltipPlacement, UiEvent,
+    WidgetId,
 };
 
 const W: u32 = 640;
@@ -255,25 +255,23 @@ fn draw_text_display_paints_in_editor_font() {
 fn draw_terminal_paints_in_editor_font() {
     const CELL: &str = "Z";
     assert_run_paints_in_editor_font("draw_terminal", CELL, |b, area| {
-        let term = Terminal {
-            id: id("terminal"),
-            cells: vec![vec![TerminalCell {
-                text: CELL.to_string(),
-                fg: Color::rgb(220, 220, 220),
-                bg: Color::rgb(30, 30, 30),
-                bold: false,
-                italic: false,
-                underline: false,
-                dim: false,
-                selected: false,
-                is_cursor: false,
-                cursor_shape: TerminalCursorShape::Block,
-                cursor_blinking: false,
-                is_find_match: false,
-                is_find_active: false,
-            }]],
-            scrollbar: None,
-        };
+        let mut term = Terminal::default();
+        term.id = id("terminal");
+        term.cells = vec![vec![TerminalCell {
+            text: CELL.to_string(),
+            fg: Color::rgb(220, 220, 220),
+            bg: Color::rgb(30, 30, 30),
+            bold: false,
+            italic: false,
+            underline: false,
+            dim: false,
+            selected: false,
+            is_cursor: false,
+            cursor_shape: TerminalCursorShape::Block,
+            cursor_blinking: false,
+            is_find_match: false,
+            is_find_active: false,
+        }]];
         b.draw_terminal(area, &term);
     });
 }
@@ -411,29 +409,18 @@ fn draw_tooltip_paints_in_chrome_font() {
 #[test]
 fn draw_palette_paints_in_chrome_font() {
     assert_paints_in_chrome_font("draw_palette", |b, area| {
-        let palette = Palette {
-            id: id("palette"),
-            title: "Palette".to_string(),
-            query: String::new(),
-            query_cursor: 0,
-            items: vec![PaletteItem {
-                text: StyledText::plain(LABEL),
-                detail: None,
-                icon: None,
-                match_positions: vec![],
-                depth: 0,
-                expandable: false,
-                expanded: false,
-            }],
-            selected_idx: 0,
-            scroll_offset: 0,
-            total_count: 0,
-            has_focus: false,
-            show_query: true,
-            create_label: None,
-            preview: None,
-            mode: PaletteMode::List,
-        };
+        let mut palette = Palette::default();
+        palette.id = id("palette");
+        palette.title = "Palette".to_string();
+        palette.items = vec![PaletteItem {
+            text: StyledText::plain(LABEL),
+            detail: None,
+            icon: None,
+            match_positions: vec![],
+            depth: 0,
+            expandable: false,
+            expanded: false,
+        }];
         b.draw_palette(area, &palette);
     });
 }
