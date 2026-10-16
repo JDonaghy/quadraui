@@ -990,7 +990,7 @@ pub(crate) mod native_surface_paint {
                 (rect.height - header_height - footer_h).max(0.0),
             );
             let sb = Scrollbar::vertical(
-                table.id.clone(),
+                table.id,
                 track,
                 table.scroll_offset as f32,
                 table.rows.len() as f32,
@@ -1004,7 +1004,7 @@ pub(crate) mod native_surface_paint {
             let track_w = (rect.width - layout.scrollbar_width).max(1.0);
             let track = Rect::new(rect.x, hsb_y, track_w, layout.h_scrollbar_height);
             let sb = Scrollbar::horizontal(
-                table.id.clone(),
+                table.id,
                 track,
                 table.h_scroll,
                 layout.content_width,

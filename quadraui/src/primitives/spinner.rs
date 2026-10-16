@@ -102,7 +102,7 @@ impl SpinnerLayout {
             && y >= self.bounds.y
             && y < self.bounds.y + self.bounds.height
         {
-            SpinnerHit::Body(id.clone())
+            SpinnerHit::Body(*id)
         } else {
             SpinnerHit::Empty
         }

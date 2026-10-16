@@ -400,7 +400,7 @@ impl ContextMenu {
             });
             if clickable {
                 if let Some(id) = &item.id {
-                    hit_regions.push((item_bounds, ContextMenuHit::Item(id.clone())));
+                    hit_regions.push((item_bounds, ContextMenuHit::Item(*id)));
                 }
             } else {
                 hit_regions.push((item_bounds, ContextMenuHit::Inert));
@@ -614,7 +614,7 @@ pub(crate) mod native_surface_paint {
 
             if vis.clickable {
                 if let Some(ref id) = menu.items[vis.item_idx].id {
-                    rects.push((row, id.clone()));
+                    rects.push((row, *id));
                 }
             }
         }

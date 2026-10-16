@@ -478,7 +478,7 @@ impl Form {
 
         for (row, y) in rows.into_iter().zip(ys) {
             let bounds = Rect::new(0.0, y, viewport_width, row.clipped_height);
-            let id = self.fields[row.idx].id.clone();
+            let id = self.fields[row.idx].id;
 
             let mut item_bounds = Vec::new();
             if !row.item_measures.is_empty() {
@@ -487,11 +487,11 @@ impl Form {
                     item_x_positions(row.items_start_x, row.clipped_height, row.item_gap, &widths);
                 for (item, item_x) in row.item_measures.iter().zip(item_xs) {
                     let item_rect = Rect::new(item_x, y, item.width, row.clipped_height);
-                    hit_regions.push((item_rect, FormHit::Field(item.id.clone())));
-                    item_bounds.push((item.id.clone(), item_rect));
+                    hit_regions.push((item_rect, FormHit::Field(item.id)));
+                    item_bounds.push((item.id, item_rect));
                 }
             }
-            hit_regions.push((bounds, FormHit::Field(id.clone())));
+            hit_regions.push((bounds, FormHit::Field(id)));
 
             visible_fields.push(VisibleFormField {
                 field_idx: row.idx,

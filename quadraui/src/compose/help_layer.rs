@@ -288,7 +288,7 @@ impl HelpOverlayController {
             None => "Help  (Esc to close)".to_string(),
         };
         let panel = Panel {
-            id: self.id.clone(),
+            id: self.id,
             title: Some(StyledText::plain(title)),
             actions: vec![],
             accent: None,

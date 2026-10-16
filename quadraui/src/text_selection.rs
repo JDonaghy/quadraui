@@ -114,7 +114,7 @@ impl TextSelectionState {
     /// [`Self::last_text_region_id`] so Ctrl-A can resolve the correct
     /// target even after the drag has ended.
     pub fn set_active_text_selection(&mut self, region: WidgetId, anchor: Point, focus: Point) {
-        self.last_text_region_id = Some(region.clone());
+        self.last_text_region_id = Some(region);
         self.active_selection = Some(ActiveTextSelection {
             region,
             anchor,
@@ -183,14 +183,14 @@ impl TextSelectionState {
         // Resolve the target region id.
         let region_id = if let Some(ref id) = self.last_text_region_id {
             if self.text_regions.iter().any(|r| &r.id == id) {
-                id.clone()
+                *id
             } else if self.text_regions.len() == 1 {
-                self.text_regions[0].id.clone()
+                self.text_regions[0].id
             } else {
                 return false;
             }
         } else if self.text_regions.len() == 1 {
-            self.text_regions[0].id.clone()
+            self.text_regions[0].id
         } else {
             return false;
         };

@@ -158,7 +158,7 @@ impl StatusBar {
                 regions.push(StatusBarHitRegion {
                     col,
                     width: w,
-                    id: id.clone(),
+                    id: *id,
                 });
             }
             col += w;
@@ -175,7 +175,7 @@ impl StatusBar {
                 regions.push(StatusBarHitRegion {
                     col,
                     width: w,
-                    id: id.clone(),
+                    id: *id,
                 });
             }
             col += w;
@@ -449,7 +449,7 @@ impl StatusBar {
                 clickable,
             });
             if let Some(id) = &seg.action_id {
-                hit_regions.push((bounds, StatusBarHit::Segment(id.clone())));
+                hit_regions.push((bounds, StatusBarHit::Segment(*id)));
             }
             cursor += w;
         }
@@ -511,7 +511,7 @@ impl StatusBar {
                 clickable,
             });
             if let Some(id) = &seg.action_id {
-                hit_regions.push((bounds, StatusBarHit::Segment(id.clone())));
+                hit_regions.push((bounds, StatusBarHit::Segment(*id)));
             }
             cursor += w;
         }

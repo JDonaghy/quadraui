@@ -726,7 +726,7 @@ impl ChatController {
         // ── 1. Status strip ───────────────────────────────────────────
         let status_rows = self.build_status_rows();
         let status_list = MessageList {
-            id: WidgetId::new(format!("{}-status", self.id.0)),
+            id: WidgetId::new(format!("{}-status", self.id)),
             rows: status_rows,
             scroll_top: 0,
         };
@@ -736,7 +736,7 @@ impl ChatController {
         if self.busy {
             if let Some(sp_rect) = layout.spinner {
                 let spinner = Spinner {
-                    id: WidgetId::new(format!("{}-spinner", self.id.0)),
+                    id: WidgetId::new(format!("{}-spinner", self.id)),
                     label: String::new(),
                     frame_idx: self.spinner_frame,
                     accent: None,
@@ -764,7 +764,7 @@ impl ChatController {
         }
 
         let list = MessageList {
-            id: WidgetId::new(format!("{}-transcript", self.id.0)),
+            id: WidgetId::new(format!("{}-transcript", self.id)),
             rows: wrapped_rows,
             scroll_top: self.transcript_scroll_top.get(),
         };
@@ -774,7 +774,7 @@ impl ChatController {
         if let Some(sb_rect) = layout.scrollbar {
             let track_w = self.scrollbar_track_width(backend.line_height());
             let sb = build_scrollbar(
-                format!("{}-sb", self.id.0),
+                format!("{}-sb", self.id),
                 sb_rect,
                 self.transcript_scroll_top.get(),
                 total_rows,
@@ -793,7 +793,7 @@ impl ChatController {
                 .map(|h| h.spans.iter().map(|s| s.text.as_str()).collect())
                 .unwrap_or_default();
             let hint_list = MessageList {
-                id: WidgetId::new(format!("{}-hint", self.id.0)),
+                id: WidgetId::new(format!("{}-hint", self.id)),
                 rows: vec![MessageRow::new(hint_text, Color::rgb(140, 140, 140), 0.0)],
                 scroll_top: 0,
             };
@@ -1041,9 +1041,9 @@ impl ChatController {
     fn build_send_form(&self) -> Form {
         let disabled = !self.busy && self.input_buf.trim().is_empty();
         Form {
-            id: WidgetId::new(format!("{}-send-form", self.id.0)),
+            id: WidgetId::new(format!("{}-send-form", self.id)),
             fields: vec![FormField {
-                id: WidgetId::new(format!("{}-send-btn", self.id.0)),
+                id: WidgetId::new(format!("{}-send-btn", self.id)),
                 label: StyledText::plain(if self.busy { "Stop" } else { "Send" }),
                 kind: FieldKind::Button,
                 hint: StyledText::plain(""),
@@ -1201,7 +1201,7 @@ impl ChatController {
         let (logical_line, logical_col) =
             cursor_byte_to_line_col(&self.input_buf, self.input_cursor);
         let (visual_row, visual_col) = input_logical_to_visual(rows, logical_line, logical_col);
-        let mut ti = TextInput::new(WidgetId::new(format!("{}-input", self.id.0)));
+        let mut ti = TextInput::new(WidgetId::new(format!("{}-input", self.id)));
         ti.lines = lines;
         ti.cursor_line = visual_row;
         ti.cursor_col = visual_col;
@@ -1524,7 +1524,7 @@ impl ChatController {
             let col_budget = self.transcript_col_budget(backend.char_width(), layout.transcript);
             let (rows, turn_starts) = self.build_transcript_rows_indexed(col_budget);
             let list = MessageList {
-                id: WidgetId::new(format!("{}-transcript", self.id.0)),
+                id: WidgetId::new(format!("{}-transcript", self.id)),
                 rows,
                 scroll_top: self.transcript_scroll_top.get(),
             };
@@ -1610,7 +1610,7 @@ impl ChatController {
 
         let track_w = self.scrollbar_track_width(backend.line_height());
         let sb = build_scrollbar(
-            format!("{}-sb", self.id.0),
+            format!("{}-sb", self.id),
             sb_rect,
             self.transcript_scroll_top.get(),
             total,

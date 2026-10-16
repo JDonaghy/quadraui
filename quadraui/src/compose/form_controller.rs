@@ -425,7 +425,7 @@ impl FormController {
             None if delta >= 0 => 0,
             None => stops.len() - 1,
         };
-        let id = stops[next_idx].clone();
+        let id = *stops[next_idx];
         // The stop's index among `stops` isn't necessarily its index in
         // `form.fields` (non-focusable fields are filtered out above),
         // so re-find its field index for scrolling and for seeding the
@@ -443,7 +443,7 @@ impl FormController {
             .map(|f| {
                 let (cursor, selection_anchor) = default_text_cursor(&f.kind);
                 TextEditState {
-                    field_id: id.clone(),
+                    field_id: id,
                     cursor,
                     selection_anchor,
                 }
@@ -464,7 +464,7 @@ impl FormController {
         let Some(form) = &self.form else {
             return FormControllerEvent::Ignored;
         };
-        let Some(focused_id) = form.focused_field.clone() else {
+        let Some(focused_id) = form.focused_field else {
             return FormControllerEvent::Ignored;
         };
         let Some(field) = form.fields.iter().find(|f| f.id == focused_id) else {
@@ -492,7 +492,7 @@ impl FormController {
         let Some(form) = &self.form else {
             return FormControllerEvent::Ignored;
         };
-        let Some(focused_id) = form.focused_field.clone() else {
+        let Some(focused_id) = form.focused_field else {
             return FormControllerEvent::Ignored;
         };
         let Some(field) = form.fields.iter().find(|f| f.id == focused_id) else {
@@ -523,7 +523,7 @@ impl FormController {
         // call, which never notices).
         let new_anchor = new_anchor.filter(|a| *a != new_cursor);
         self.text_edit = Some(TextEditState {
-            field_id: focused_id.clone(),
+            field_id: focused_id,
             cursor: new_cursor,
             selection_anchor: new_anchor,
         });
@@ -652,30 +652,24 @@ pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent 
         if &field.id == clicked_id {
             return match &field.kind {
                 FieldKind::Toggle { value } => FormEvent::ToggleChanged {
-                    id: clicked_id.clone(),
+                    id: *clicked_id,
                     value: !value,
                 },
-                FieldKind::Button => FormEvent::ButtonClicked {
-                    id: clicked_id.clone(),
-                },
-                _ => FormEvent::FocusChanged {
-                    id: clicked_id.clone(),
-                },
+                FieldKind::Button => FormEvent::ButtonClicked { id: *clicked_id },
+                _ => FormEvent::FocusChanged { id: *clicked_id },
             };
         }
         if let FieldKind::ToggleGroup { toggles } = &field.kind {
             if let Some(t) = toggles.iter().find(|t| &t.id == clicked_id) {
                 return FormEvent::ToggleChanged {
-                    id: clicked_id.clone(),
+                    id: *clicked_id,
                     value: !t.value,
                 };
             }
         }
         if let FieldKind::ButtonRow { buttons } = &field.kind {
             if buttons.iter().any(|b| &b.id == clicked_id) {
-                return FormEvent::ButtonClicked {
-                    id: clicked_id.clone(),
-                };
+                return FormEvent::ButtonClicked { id: *clicked_id };
             }
         }
         if let FieldKind::SegmentedControl { .. } = &field.kind {
@@ -683,7 +677,7 @@ pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent 
             if clicked_id.as_str().starts_with(&prefix) {
                 if let Ok(idx) = clicked_id.as_str()[prefix.len()..].parse::<usize>() {
                     return FormEvent::SegmentedControlChanged {
-                        id: field.id.clone(),
+                        id: field.id,
                         selected_idx: idx,
                     };
                 }
@@ -697,15 +691,13 @@ pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent 
                 )
             }) {
                 return FormEvent::ToolbarButtonClicked {
-                    field_id: field.id.clone(),
-                    button_id: clicked_id.clone(),
+                    field_id: field.id,
+                    button_id: *clicked_id,
                 };
             }
         }
     }
-    FormEvent::FocusChanged {
-        id: clicked_id.clone(),
-    }
+    FormEvent::FocusChanged { id: *clicked_id }
 }
 
 // ── Keyboard editing helpers ──────────────────────────────────────────
@@ -922,7 +914,7 @@ fn form_field_measure(
             let items = toggles
                 .iter()
                 .map(|t| FormItemMeasure {
-                    id: t.id.clone(),
+                    id: t.id,
                     width: (t.label.chars().count() as f32 + 2.0) * char_w,
                 })
                 .collect();
@@ -951,7 +943,7 @@ fn form_field_measure(
                         })
                         .unwrap_or(0.0);
                     FormItemMeasure {
-                        id: b.id.clone(),
+                        id: b.id,
                         width: (b.label.chars().count() as f32 + icon_w + 2.0) * char_w,
                     }
                 })

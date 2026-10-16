@@ -648,7 +648,7 @@ impl WorkspaceController {
     /// host can measure or mirror the strip without painting it.
     pub fn tab_bar(&self) -> TabBar {
         TabBar {
-            id: self.bar_id.clone(),
+            id: self.bar_id,
             tabs: self
                 .docs
                 .iter()

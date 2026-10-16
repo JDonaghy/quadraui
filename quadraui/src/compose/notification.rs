@@ -58,7 +58,7 @@ pub fn notify_or_toast(backend: &dyn Backend, n: Notification) -> Option<Toast> 
         .actions()
         .iter()
         .map(|(action_id, label)| ToastButton {
-            id: action_id.clone(),
+            id: *action_id,
             label: label.clone(),
             primary: false,
         })
