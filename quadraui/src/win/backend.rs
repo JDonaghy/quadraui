@@ -4674,10 +4674,27 @@ impl Backend for WinBackend {
         )
     }
 
-    /// No native rasteriser yet — paints nothing and returns the real
-    /// (pure-geometry) layout.
+    /// Paint via the shared
+    /// [`crate::primitives::button::native_surface_paint::paint`] once a
+    /// surface is attached — mirrors [`Self::draw_progress`]. See
+    /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
+    /// fallback posture.
     fn draw_button(&mut self, rect: Rect, button: &Button) -> ButtonLayout {
-        self.button_layout(rect, button)
+        #[cfg(target_os = "windows")]
+        if self.surface.is_some() && self.dwrite.is_some() {
+            let theme = self.current_theme;
+            let style = self.style();
+            let layout = crate::primitives::button::native_surface_paint::paint(
+                button, self, &theme, rect, &style,
+            );
+            self.register_zone(button.id.clone(), rect);
+            return layout;
+        }
+        // No surface/DWrite yet — return the real (pure-geometry) layout
+        // via `button_layout` and paint nothing.
+        let layout = self.button_layout(rect, button);
+        self.register_zone(button.id.clone(), rect);
+        layout
     }
     fn button_layout(&self, rect: Rect, button: &Button) -> ButtonLayout {
         button.layout(rect)
@@ -4686,7 +4703,25 @@ impl Backend for WinBackend {
     /// nominal (`rect.width` × the chrome line height) since there is
     /// no native text-metrics surface to measure against yet.
     fn draw_radio_group(&mut self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout {
-        self.radio_group_layout(rect, group)
+        #[cfg(target_os = "windows")]
+        if self.surface.is_some() && self.dwrite.is_some() {
+            let theme = self.current_theme;
+            let row_height = self.current_line_height;
+            let layout = crate::primitives::radio_group::native_surface_paint::paint(
+                group, self, &theme, rect, row_height,
+            );
+            for (option, item) in group.options.iter().zip(layout.items.iter()) {
+                self.register_zone(option.id.clone(), *item);
+            }
+            return layout;
+        }
+        // No surface/DWrite yet — return the real (pure-geometry) layout
+        // via `radio_group_layout` and paint nothing.
+        let layout = self.radio_group_layout(rect, group);
+        for (option, item) in group.options.iter().zip(layout.items.iter()) {
+            self.register_zone(option.id.clone(), *item);
+        }
+        layout
     }
     fn radio_group_layout(&self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout {
         let row_height = self.current_line_height;
@@ -4695,9 +4730,23 @@ impl Backend for WinBackend {
             height: row_height,
         })
     }
-    /// See [`Self::draw_button`]'s doc.
+    /// See [`Self::draw_button`]'s doc. Chrome-only (no label of its
+    /// own), so this also registers a click zone over the whole `rect` —
+    /// same "paint + register" pairing as [`Self::draw_button`].
     fn draw_switch(&mut self, rect: Rect, switch: &Switch) -> SwitchLayout {
-        self.switch_layout(rect, switch)
+        #[cfg(target_os = "windows")]
+        if self.surface.is_some() && self.dwrite.is_some() {
+            let theme = self.current_theme;
+            let layout =
+                crate::primitives::switch::native_surface_paint::paint(switch, self, &theme, rect);
+            self.register_zone(switch.id.clone(), rect);
+            return layout;
+        }
+        // No surface/DWrite yet — return the real (pure-geometry) layout
+        // via `switch_layout` and paint nothing.
+        let layout = self.switch_layout(rect, switch);
+        self.register_zone(switch.id.clone(), rect);
+        layout
     }
     fn switch_layout(&self, rect: Rect, switch: &Switch) -> SwitchLayout {
         switch.layout(rect)

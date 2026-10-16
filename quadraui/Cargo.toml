@@ -1783,3 +1783,11 @@ required-features = ["tui"]
 name = "gtk_controls"
 path = "examples/gtk_controls.rs"
 required-features = ["gtk"]
+
+# Win-GUI leg of the Button/RadioGroup/Switch controls demo — same
+# `ControlsApp` `tui_controls`/`gtk_controls` already run, real
+# Direct2D/DirectWrite chrome instead of the TUI/GTK painters.
+[[example]]
+name = "win_controls"
+path = "examples/win_controls.rs"
+required-features = ["win"]

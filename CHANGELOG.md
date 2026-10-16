@@ -95,6 +95,15 @@ only a push to `main` runs this workflow.
   Covered by a `MacDriver` conformance test driving focus, keyboard and
   mouse activation across all three (`tests/
   macos_standalone_controls_driver.rs`).
+- Windows painter for `Button`, `RadioGroup` and `Switch`: `WinBackend::
+  draw_button`/`draw_radio_group`/`draw_switch` now paint through the
+  shared `native_surface_paint` Direct2D/DirectWrite path (primary/
+  secondary variants, disabled dimming), with layout-only twins
+  `win_button_layout`/`win_radio_group_layout`/`win_switch_layout` for
+  hit-testing. Covered by a `WinDriver` conformance test driving focus,
+  keyboard and mouse activation across all three (`tests/
+  win_standalone_controls_driver.rs`) and a `win_controls` gallery
+  example pairing the existing `ControlsApp`.
 - `primitives::layout_metrics::tree_layout_measured` — a non-breaking
   sibling of `tree_layout` taking `&dyn TextMeasure`, which measures
   `TreeStyle::chevron_expanded`/`chevron_collapsed` for real instead of
