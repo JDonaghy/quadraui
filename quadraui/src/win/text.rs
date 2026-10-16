@@ -1146,13 +1146,13 @@ pub(crate) fn draw_line(
     Ok(())
 }
 
-/// The cumulative D2D translation offset active during the current
-/// `with_translation` scope — `(0.0, 0.0)` outside any translation.
-/// [`draw_text`] reads this to record text runs in surface-absolute
-/// coordinates (mirroring `gtk::painted_text::show_layout`'s
-/// `cr.user_to_device()` conversion), so [`super::testing::WinDriver::find`]
-/// returns positions in the same coordinate space the hit-test path uses.
 thread_local! {
+    /// The cumulative D2D translation offset active during the current
+    /// `with_translation` scope — `(0.0, 0.0)` outside any translation.
+    /// [`draw_text`] reads this to record text runs in surface-absolute
+    /// coordinates (mirroring `gtk::painted_text::show_layout`'s
+    /// `cr.user_to_device()` conversion), so [`super::testing::WinDriver::find`]
+    /// returns positions in the same coordinate space the hit-test path uses.
     static CURRENT_TRANSLATION: Cell<(f32, f32)> = const { Cell::new((0.0, 0.0)) };
 }
 
