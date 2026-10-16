@@ -218,6 +218,12 @@ only a push to `main` runs this workflow.
 
 ### Fixed
 
+- Editor cursorline/diff/DAP-stopped row backgrounds (GTK, macOS, Win, TUI)
+  no longer fill the full viewport width before a vertical scrollbar
+  column is painted on top — each rasteriser now narrows the row fill to
+  `EditorLayout::text_bounds`, the same bound the text clip already
+  respects, so the highlight stops at the scrollbar track instead of
+  bleeding under it.
 - TUI context menu: the top (and left) border no longer collides with the
   first item's row when the menu is anchored flush against the viewport
   edge (e.g. right-clicking a tab bar rendered at row 0). The fix lives in

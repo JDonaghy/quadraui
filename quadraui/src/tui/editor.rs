@@ -114,7 +114,11 @@ pub fn draw_editor(
             }
         };
         if line_bg != window_bg {
-            for col in 0..area.width {
+            // Stop short of the reserved vertical scrollbar column, like
+            // `viewport_cols`/`text_width` below — the row highlight must
+            // not bleed into the scrollbar track.
+            let bg_width = area.width.saturating_sub(if has_scrollbar { 1 } else { 0 });
+            for col in 0..bg_width {
                 set_cell(buf, area.x + col, screen_y, ' ', default_fg, line_bg);
             }
         }

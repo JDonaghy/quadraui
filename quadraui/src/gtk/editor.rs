@@ -322,6 +322,12 @@ fn paint_line_backgrounds(ctx: &EditorPaintCtx) {
     } = ctx;
     let (cr, editor, theme, line_height) = (*cr, *editor, *theme, *line_height);
     let rect = ctx.rect;
+    // Stop short of the reserved vertical scrollbar column, mirroring the
+    // text clip below — `text_bounds.x + text_bounds.width` already
+    // excludes `v_scrollbar_bounds` when present, so the fill never
+    // bleeds under the scrollbar.
+    let bg_right = ctx.editor_geom.text_bounds.x as f64 + ctx.editor_geom.text_bounds.width as f64;
+    let bg_width = (bg_right - rect.x as f64).max(0.0);
     for (view_idx, rl) in editor.lines.iter().enumerate() {
         let y = rect.y as f64 + view_idx as f64 * line_height;
         let bg_color = if rl.is_dap_current {
@@ -341,7 +347,7 @@ fn paint_line_backgrounds(ctx: &EditorPaintCtx) {
         if let Some(color) = bg_color {
             let (dr, dg, db) = cairo_rgb(color);
             cr.set_source_rgb(dr, dg, db);
-            cr.rectangle(rect.x as f64, y, rect.width as f64, line_height);
+            cr.rectangle(rect.x as f64, y, bg_width, line_height);
             cr.fill().ok();
         }
     }
@@ -1748,6 +1754,46 @@ mod tests {
             "scrollbar column pixel must be identical regardless of overflowing text — \
              the text loop should narrow around the reserved column instead of painting \
              glyphs the scrollbar then overlays (#968)"
+        );
+    }
+
+    /// `paint_line_backgrounds` must narrow the cursorline/diff/DAP row
+    /// fill to `text_bounds`, the same way the text clip is narrowed —
+    /// otherwise the fill reaches the reserved v-scrollbar column and
+    /// bleeds through the translucent scrollbar track. Paint a buffer
+    /// with the cursorline active on the row under the scrollbar's
+    /// mid-track pixel and assert that pixel is identical to the same
+    /// pixel with no cursorline active at all: the only way a translucent
+    /// track composited over two different row colours produces the same
+    /// result is if neither row colour actually reaches that pixel.
+    #[test]
+    fn draw_editor_cursorline_background_does_not_bleed_into_scrollbar_column() {
+        let theme = Theme::default();
+        assert_ne!(
+            theme.cursorline_bg, theme.background,
+            "fixture assumption: cursorline_bg must differ from background for this test to \
+             be meaningful"
+        );
+
+        let mut with_cursorline = scroll_test_editor(50, 0, 5);
+        // Line at view index 2 covers y in [32, 48) — pixel y=40 below is
+        // the same mid-track pixel the other scrollbar tests sample.
+        with_cursorline.cursorline = true;
+        with_cursorline.lines[2].is_current_line = true;
+
+        let blank = scroll_test_editor(50, 0, 5);
+
+        let (data_cursorline, stride) = scroll_test_paint(&with_cursorline, &theme);
+        let (data_blank, stride2) = scroll_test_paint(&blank, &theme);
+        assert_eq!(stride, stride2);
+
+        let px_cursorline = scroll_test_pixel(&data_cursorline, stride as usize, 198, 40);
+        let px_blank = scroll_test_pixel(&data_blank, stride as usize, 198, 40);
+        assert_eq!(
+            px_cursorline, px_blank,
+            "scrollbar column pixel must be identical regardless of the cursorline background \
+             on the row underneath it — the row fill should narrow around the reserved column \
+             instead of bleeding into it"
         );
     }
 
