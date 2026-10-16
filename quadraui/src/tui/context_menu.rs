@@ -21,6 +21,19 @@ use crate::primitives::context_menu::{
 };
 use crate::theme::Theme;
 
+/// Cells [`draw_context_menu`] paints its box border on, outside the
+/// item region, on each side. This is what
+/// [`crate::tui::backend::TuiBackend`] reports as its
+/// [`crate::Backend::context_menu_border_inset`], so the reservation a
+/// caller makes and the chrome this rasteriser paints come from one
+/// constant.
+///
+/// Re-exported as `quadraui::tui::CONTEXT_MENU_BORDER_INSET` for callers
+/// that drive this rasteriser without a [`crate::Backend`] handle: inset
+/// the viewport by it on all four sides before laying the menu out, the
+/// way [`crate::Backend::context_menu_viewport`] does.
+pub const BORDER_INSET: f32 = 1.0;
+
 /// Returns the right-aligned shortcut text for `item`, sourced from
 /// `item.detail` (preferred, back-compat) or rendered from
 /// `item.key_equivalent`. Returns `None` if neither is set.
@@ -34,6 +47,25 @@ fn shortcut_text(item: &ContextMenuItem, platform: Platform) -> Option<String> {
 }
 
 /// Draw a [`ContextMenu`] popup.
+///
+/// `layout.bounds` is the **inner** items region; the box border paints
+/// on a whole cell *outside* it on every side. For that border to have a
+/// cell to occupy when the menu is anchored flush against a viewport
+/// edge, the caller reserves it up front by passing
+/// [`crate::Backend::context_menu_viewport`] — the surface inset on all
+/// four sides by [`crate::Backend::context_menu_border_inset`] — as the
+/// `viewport` of [`ContextMenu::layout`] / [`ContextMenu::layout_at`].
+/// Reserving the cell in the layout, rather than shifting only where
+/// this function paints, keeps painted rows and the rows
+/// [`ContextMenuLayout::hit_test`] reports in the same coordinate space.
+///
+/// That inset is a *recommendation*, not a precondition: a layout built
+/// from a non-inset viewport (so `bounds.x` or `bounds.y` rounds to `0`)
+/// still renders, and still paints every item on the row its own
+/// `bounds` reports. The consequence is cosmetic and confined to the
+/// near edge — the border column/row has nowhere to go outside the
+/// buffer, so it falls on the first item column/row, which is painted
+/// after it and wins. Nothing here panics or wraps on such a layout.
 pub fn draw_context_menu(
     buf: &mut Buffer,
     menu: &ContextMenu,
@@ -52,40 +84,40 @@ pub fn draw_context_menu(
     if inner_w == 0 || inner_h == 0 {
         return;
     }
-    // `layout.bounds` is the **inner** items region; the chrome border
-    // paints one cell outside it on every side. `Backend::context_menu_border_inset`
-    // reserves that outside cell by insetting the viewport a caller
-    // passes to `ContextMenu::layout`/`layout_at`, so `inner_x`/`inner_y`
-    // are already `>= 1` whenever the menu is anchored flush against the
-    // viewport's top-left corner — the border and the items it encloses
-    // stay in the same coordinate space `hit_test` uses.
-    let item_x = inner_x;
-    let bx = inner_x - 1;
-    let by = inner_y - 1;
-    let bw = inner_w + 2;
-    let bh = inner_h + 2;
+    // Border box: the ring of cells immediately outside the items
+    // region. `bounds` comes from caller-supplied `f32` geometry, so a
+    // viewport that was not inset by `Backend::context_menu_viewport`
+    // can put the items region at column/row 0, leaving the near border
+    // no cell inside the buffer to occupy. Saturate instead of
+    // underflowing: the near border then shares the first item
+    // column/row, which is painted afterwards and wins, so the only
+    // consequence is a missing edge. Items always paint at the
+    // coordinates `bounds` reports, keeping paint and `hit_test` in
+    // agreement whichever way this lands.
+    let left = inner_x.saturating_sub(1);
+    let top = inner_y.saturating_sub(1);
+    let right = inner_x.saturating_add(inner_w);
+    let bottom = inner_y.saturating_add(inner_h);
 
-    for dy in 0..bh {
-        for dx in 0..bw {
-            let cx = bx + dx;
-            let cy = by + dy;
-            let ch = if dy == 0 {
-                if dx == 0 {
+    for cy in top..=bottom {
+        for cx in left..=right {
+            let ch = if cy == top {
+                if cx == left {
                     '┌'
-                } else if dx == bw - 1 {
+                } else if cx == right {
                     '┐'
                 } else {
                     '─'
                 }
-            } else if dy == bh - 1 {
-                if dx == 0 {
+            } else if cy == bottom {
+                if cx == left {
                     '└'
-                } else if dx == bw - 1 {
+                } else if cx == right {
                     '┘'
                 } else {
                     '─'
                 }
-            } else if dx == 0 || dx == bw - 1 {
+            } else if cx == left || cx == right {
                 '│'
             } else {
                 ' '
@@ -99,7 +131,7 @@ pub fn draw_context_menu(
         let row_y = vis.bounds.y.round() as u16;
         if vis.is_separator {
             for dx in 0..inner_w {
-                set_cell(buf, item_x + dx, row_y, '─', sep_fg, bg);
+                set_cell(buf, inner_x.saturating_add(dx), row_y, '─', sep_fg, bg);
             }
             continue;
         }
@@ -112,13 +144,20 @@ pub fn draw_context_menu(
             (fg, bg)
         };
         for dx in 0..inner_w {
-            set_cell(buf, item_x + dx, row_y, ' ', item_fg, item_bg);
+            set_cell(
+                buf,
+                inner_x.saturating_add(dx),
+                row_y,
+                ' ',
+                item_fg,
+                item_bg,
+            );
         }
-        // Check prefix — sits in the left-padding column at item_x.
+        // Check prefix — sits in the left-padding column at inner_x.
         // `Some(false)` reserves the slot without filling it (so a
         // column of mixed checked/unchecked items aligns visually).
         if matches!(item.checked, Some(true)) {
-            set_cell(buf, item_x, row_y, '✓', item_fg, item_bg);
+            set_cell(buf, inner_x, row_y, '✓', item_fg, item_bg);
         }
         let label = item
             .label
@@ -127,8 +166,8 @@ pub fn draw_context_menu(
             .map(|s| s.text.as_str())
             .unwrap_or("");
         for (i, ch) in label.chars().enumerate() {
-            let col = item_x + 1 + i as u16;
-            if col >= item_x + inner_w {
+            let col = inner_x.saturating_add(1).saturating_add(i as u16);
+            if col >= right {
                 break;
             }
             set_cell(buf, col, row_y, ch, item_fg, item_bg);
@@ -142,20 +181,18 @@ pub fn draw_context_menu(
             } else {
                 dim_fg
             };
-            if inner_w > 0 {
-                set_cell(buf, item_x + inner_w - 1, row_y, '▶', arrow_fg, item_bg);
-            }
+            set_cell(buf, right.saturating_sub(1), row_y, '▶', arrow_fg, item_bg);
         } else if let Some(shortcut) = shortcut_text(item, Platform::Tui) {
-            let sc_w = shortcut.chars().count() as u16;
-            let sc_start = item_x + inner_w.saturating_sub(sc_w + 1);
+            let sc_w = shortcut.chars().count().min(u16::MAX as usize) as u16;
+            let sc_start = inner_x.saturating_add(inner_w.saturating_sub(sc_w.saturating_add(1)));
             let sc_fg = if is_selected && vis.clickable {
                 item_fg
             } else {
                 dim_fg
             };
             for (i, ch) in shortcut.chars().enumerate() {
-                let col = sc_start + i as u16;
-                if col >= item_x + inner_w {
+                let col = sc_start.saturating_add(i as u16);
+                if col >= right {
                     break;
                 }
                 set_cell(buf, col, row_y, ch, sc_fg, item_bg);
@@ -200,6 +237,20 @@ pub fn draw_context_menu_with_submenus(
 ) {
     draw_context_menu(buf, root_menu, root_layout, theme);
 
+    // Child layouts are computed here rather than by the caller, so this
+    // function owns the border reservation for them: inset `viewport` on
+    // all four sides by the cell `draw_context_menu` paints its box
+    // border on, exactly as `Backend::context_menu_viewport` does for the
+    // root. Every placement branch below reads `vp`, not `viewport`, so
+    // neither the pull-left flip nor the clamp fallback can land a
+    // child's inner region flush at the buffer's near corner.
+    let vp = crate::event::Rect::new(
+        viewport.x + BORDER_INSET,
+        viewport.y + BORDER_INSET,
+        (viewport.width - BORDER_INSET * 2.0).max(0.0),
+        (viewport.height - BORDER_INSET * 2.0).max(0.0),
+    );
+
     // Walk the open submenu chain.  We keep owned copies so Rust's borrow
     // checker lets us update `parent_*` at the end of each iteration.
     let mut parent_items: Vec<ContextMenuItem> = root_menu.items.clone();
@@ -234,13 +285,13 @@ pub fn draw_context_menu_with_submenus(
         //    leaving the parent's left border intact)
         let flipped_x = parent_bounds.x - MENU_WIDTH - 1.0;
 
-        let anchor_x = if preferred_x + MENU_WIDTH <= viewport.x + viewport.width {
+        let anchor_x = if preferred_x + MENU_WIDTH <= vp.x + vp.width {
             preferred_x
-        } else if flipped_x >= viewport.x {
+        } else if flipped_x >= vp.x {
             flipped_x
         } else {
             // Neither side has enough room — clamp to viewport right.
-            (viewport.x + viewport.width - MENU_WIDTH).max(viewport.x)
+            (vp.x + vp.width - MENU_WIDTH).max(vp.x)
         };
 
         // Anchor y = top of the row that triggered this submenu.
@@ -261,7 +312,7 @@ pub fn draw_context_menu_with_submenus(
         };
 
         // In TUI every row (item or separator) is exactly 1 cell tall.
-        let sub_layout = sub_menu.layout(anchor_x, anchor_y, viewport, MENU_WIDTH, |_| {
+        let sub_layout = sub_menu.layout(anchor_x, anchor_y, vp, MENU_WIDTH, |_| {
             ContextMenuItemMeasure::new(1.0)
         });
 
@@ -703,13 +754,12 @@ mod tests {
     #[test]
     fn top_border_survives_when_menu_anchored_at_viewport_top_row() {
         // Anchored at y=0 (e.g. a right-click on a tab bar rendered at the
-        // very top row of the viewport). Production callers reserve a row
-        // for the border by insetting the viewport they pass to `layout()`
-        // via `Backend::context_menu_border_inset` (1 cell for TUI); this
-        // test passes that already-inset viewport directly, so
-        // `layout_at`'s own clamping — not the rasteriser — pushes the
-        // menu's `bounds.y` down to row 1, leaving row 0 free for the
-        // border.
+        // very top row of the viewport). Callers lay a menu out inside
+        // `Backend::context_menu_viewport` — the surface inset by one cell
+        // on every side on TUI, where the box border sits outside the item
+        // region. This test passes that inset surface directly, so
+        // `layout_at`'s own clamping puts `bounds.y` on row 1 and leaves
+        // row 0 free for the border.
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
         let menu = make_menu();
         let layout = menu.layout(
@@ -739,9 +789,9 @@ mod tests {
 
     #[test]
     fn left_border_survives_when_menu_anchored_at_viewport_left_edge() {
-        // Symmetric case: anchored at x=0 with an already-inset viewport
-        // (see the top-row test above), so `layout_at` pushes `bounds.x`
-        // to column 1, leaving column 0 free for the border.
+        // Symmetric case: anchored at x=0 inside the same inset surface
+        // (see the top-row test above), so `layout_at` puts `bounds.x` on
+        // column 1, leaving column 0 free for the border.
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
         let menu = make_menu();
         let layout = menu.layout(
@@ -769,11 +819,10 @@ mod tests {
     #[test]
     fn clicks_land_on_painted_row_when_menu_anchored_at_viewport_corner() {
         // Paint↔click round-trip: a menu anchored flush against the
-        // viewport's top-left corner (the inset viewport a `Backend`
-        // caller would build via `context_menu_border_inset`) must paint
+        // top-left corner of `Backend::context_menu_viewport` must paint
         // its first item on the exact row/column `hit_test` reports for
-        // that item's `WidgetId` — not one row/column off from the border
-        // shift the rasteriser applies.
+        // that item's `WidgetId`. The border occupies the row and column
+        // outside `bounds`, so neither moves.
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
         let menu = make_menu();
         let layout = menu.layout(
@@ -806,13 +855,154 @@ mod tests {
         );
 
         // Hit-testing the exact cell the item was painted at must resolve
-        // to that item's id — agreement between paint and hit-test is the
-        // whole point of reserving the border via the viewport inset
-        // rather than shifting only where the rasteriser paints.
+        // to that item's id: reserving the border in the viewport the
+        // layout is built from is what keeps paint and hit-test in one
+        // coordinate space.
         assert_eq!(
             layout.hit_test(item_x, row_y),
             ContextMenuHit::Item(WidgetId::new("Open")),
             "clicking the painted row of the first item must hit \"Open\""
+        );
+    }
+
+    /// Row `y` of `buf`, as a string, for substring assertions.
+    fn buf_row(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| cell_char(buf, x, y)).collect()
+    }
+
+    #[test]
+    fn zero_origin_layout_paints_without_overflow() {
+        // A caller that lays the menu out in the raw viewport instead of
+        // `Backend::context_menu_viewport` gets an item region on column
+        // and row 0, so the near border has no cell inside the buffer to
+        // occupy. That must stay a cosmetic degrade: the `u16` border
+        // arithmetic may not underflow (a panic under `overflow-checks`,
+        // a wrap to 65535 without), and every item must still paint on
+        // the row and column its own bounds report.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let menu = make_menu();
+        let layout = menu.layout(
+            0.0,
+            0.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        assert_eq!(
+            (
+                layout.bounds.x.round() as u16,
+                layout.bounds.y.round() as u16
+            ),
+            (0, 0),
+            "test precondition: a non-inset viewport puts the item region at the origin"
+        );
+
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+
+        let first = &layout.visible_items[0];
+        assert_eq!(
+            cell_char(
+                &buf,
+                first.bounds.x.round() as u16 + 1,
+                first.bounds.y.round() as u16
+            ),
+            'O',
+            "\"Open\" must paint at the row/column its own bounds report:\n{}",
+            buf_row(&buf, first.bounds.y.round() as u16)
+        );
+        assert_eq!(
+            layout.hit_test(first.bounds.x + 1.0, first.bounds.y),
+            ContextMenuHit::Item(WidgetId::new("Open")),
+            "paint and hit-test must agree even when the border has no cell"
+        );
+
+        // The edges that do have room are unaffected: the border still
+        // closes on the right and the bottom.
+        let right = layout.bounds.width.round() as u16;
+        let bottom = layout.bounds.height.round() as u16;
+        assert_eq!(
+            cell_char(&buf, right, bottom),
+            '┘',
+            "bottom-right corner must still be painted"
+        );
+    }
+
+    #[test]
+    fn submenu_child_keeps_its_border_at_zero_origin_viewport() {
+        // Same non-inset viewport, but through the submenu rasteriser:
+        // the parent sits at the origin, so the child's own `layout`
+        // would clamp to row 0 too. `draw_context_menu_with_submenus`
+        // insets the viewport it lays children out in, which keeps the
+        // child's chrome on-screen; either way the `u16` arithmetic must
+        // not overflow and the child's items must still render.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 50, 10));
+        let menu = submenu_parent_menu();
+        let viewport = crate::event::Rect::new(0.0, 0.0, 50.0, 10.0);
+        let layout = menu.layout(0.0, 0.0, viewport, 16.0, |_| {
+            ContextMenuItemMeasure::new(1.0)
+        });
+        assert_eq!(
+            layout.bounds.y.round() as u16,
+            0,
+            "test precondition: the parent menu's item region starts on row 0"
+        );
+
+        draw_context_menu_with_submenus(
+            &mut buf,
+            &menu,
+            &layout,
+            &[0],
+            &[0],
+            viewport,
+            &Theme::default(),
+        );
+
+        let screen: String = (0..buf.area.height)
+            .map(|y| buf_row(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            screen.contains("SubItem"),
+            "the child menu's item must render:\n{screen}"
+        );
+        assert!(
+            screen.lines().any(|line| {
+                matches!((line.find('┌'), line.rfind('┐')), (Some(l), Some(r)) if r > l)
+            }),
+            "the child popup's top border must be fully on-screen:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn submenu_left_flip_against_left_edge_does_not_overflow() {
+        // The left-flip branch subtracts the child width from the
+        // parent's left edge, which goes negative when the parent is
+        // anchored near column 0 in a narrow viewport. The child is
+        // clamped back inside instead of wrapping, and still paints.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 24, 8));
+        let menu = submenu_parent_menu();
+        let viewport = crate::event::Rect::new(0.0, 0.0, 24.0, 8.0);
+        let layout = menu.layout(1.0, 0.0, viewport, 16.0, |_| {
+            ContextMenuItemMeasure::new(1.0)
+        });
+
+        draw_context_menu_with_submenus(
+            &mut buf,
+            &menu,
+            &layout,
+            &[0],
+            &[0],
+            viewport,
+            &Theme::default(),
+        );
+
+        let screen: String = (0..buf.area.height)
+            .map(|y| buf_row(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            screen.contains("SubItem"),
+            "the flipped child menu's item must render inside the buffer:\n{screen}"
         );
     }
 }

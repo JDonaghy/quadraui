@@ -24,8 +24,8 @@ use ratatui::Terminal;
 
 use kubeui_core::{
     apply_action, bootstrap_state, build_list, build_picker_menu, build_status_bar,
-    build_yaml_view, picker_anchor, picker_current_index, picker_menu_width, resolve_click, theme,
-    Action, AppState,
+    build_yaml_view, picker_anchor, picker_current_index, picker_menu_viewport, picker_menu_width,
+    resolve_click, theme, Action, AppState,
 };
 use quadraui::{Color, ContextMenuItemMeasure};
 
@@ -128,7 +128,12 @@ fn run(
                     let current = picker_current_index(state, picker.purpose);
                     let menu = build_picker_menu(picker, current);
                     let menu_w = picker_menu_width(picker, viewport, 1.0);
-                    let menu_layout = menu.layout_at(anchor, viewport, menu_w, |_| {
+                    // Lay the dropdown out inside the surface the box
+                    // border fits in, so a menu tall enough to clamp
+                    // against the top row keeps its top border.
+                    let menu_vp =
+                        picker_menu_viewport(viewport, quadraui::tui::CONTEXT_MENU_BORDER_INSET);
+                    let menu_layout = menu.layout_at(anchor, menu_vp, menu_w, |_| {
                         ContextMenuItemMeasure::new(1.0)
                     });
                     quadraui::tui::draw_context_menu(
@@ -158,9 +163,15 @@ fn run(
                 if let MouseEventKind::Down(MouseButton::Left) = me.kind {
                     let viewport =
                         quadraui::Rect::new(0.0, 0.0, term_size.0 as f32, term_size.1 as f32);
-                    for action in
-                        resolve_click(state, viewport, me.column as f32, me.row as f32, 1.0, 1.0)
-                    {
+                    for action in resolve_click(
+                        state,
+                        viewport,
+                        me.column as f32,
+                        me.row as f32,
+                        1.0,
+                        1.0,
+                        quadraui::tui::CONTEXT_MENU_BORDER_INSET,
+                    ) {
                         apply_action(state, action, rt);
                     }
                 }

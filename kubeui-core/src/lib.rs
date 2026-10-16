@@ -37,7 +37,7 @@ pub use shell::{bootstrap_state, resolve_click, theme};
 pub use state::{AppState, Focus, Picker, PickerPurpose, ResourceKind};
 pub use view::{
     build_list, build_picker_menu, build_status_bar, build_yaml_view, decode_picker_hit_id,
-    picker_anchor, picker_current_index, picker_menu_width, status_color,
+    picker_anchor, picker_current_index, picker_menu_viewport, picker_menu_width, status_color,
 };
 
 /// Install the rustls crypto provider — must be called once per

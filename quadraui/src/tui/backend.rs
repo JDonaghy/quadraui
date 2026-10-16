@@ -2241,10 +2241,10 @@ impl Backend for TuiBackend {
 
     /// `draw_context_menu` paints the menu's border on a whole cell
     /// outside `layout.bounds`, one cell on every side — a one-character
-    /// reservation on the viewport's top and left edges keeps that border
-    /// cell on-screen when the menu is anchored flush against either.
+    /// reservation on each viewport edge keeps that border cell on-screen
+    /// when the menu is anchored flush against any of them.
     fn context_menu_border_inset(&self) -> f32 {
-        1.0
+        super::context_menu::BORDER_INSET
     }
 
     // ─── Drawing ───────────────────────────────────────────────────────────
@@ -5396,6 +5396,56 @@ mod tests {
         let (chrome_w, _) = Backend::measure_text(&backend, "ab日本", crate::FontRole::Chrome);
         let (editor_w, _) = Backend::measure_text(&backend, "ab日本", crate::FontRole::Editor);
         assert_eq!(chrome_w, editor_w, "role has nothing to select on TUI");
+    }
+
+    /// `Backend::context_menu_viewport` is the surface a caller lays a
+    /// context menu out in: the viewport inset on all four sides by
+    /// `context_menu_border_inset`, so the chrome the rasteriser paints
+    /// *outside* the menu's item region has a cell to live on. TUI's box
+    /// border is one cell, so each edge moves in by one and both
+    /// dimensions shrink by two.
+    #[test]
+    fn tui_backend_context_menu_viewport_reserves_border_on_all_four_sides() {
+        let mut backend = TuiBackend::new();
+        backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
+
+        assert_eq!(
+            Backend::context_menu_border_inset(&backend),
+            1.0,
+            "TUI paints a one-cell box border outside the item region"
+        );
+        assert_eq!(
+            Backend::context_menu_viewport(&backend),
+            QRect::new(1.0, 1.0, 78.0, 22.0),
+            "all four edges must be reserved, not just the top-left"
+        );
+    }
+
+    /// A viewport too small to hold the chrome must degrade to an empty
+    /// surface rather than a negative-width rect (which would make the
+    /// menu's own clamping arithmetic nonsense).
+    #[test]
+    fn tui_backend_context_menu_viewport_clamps_tiny_viewport_to_empty() {
+        let mut backend = TuiBackend::new();
+        backend.begin_frame(Viewport::new(1.0, 1.0, 1.0));
+
+        let vp = Backend::context_menu_viewport(&backend);
+        assert_eq!(vp.width, 0.0, "width cannot go negative: {vp:?}");
+        assert_eq!(vp.height, 0.0, "height cannot go negative: {vp:?}");
+    }
+
+    /// A backend that paints its menu chrome *inside* the item region
+    /// reserves nothing: with the default `0.0` inset the menu surface
+    /// is the whole viewport, so the shared helper is a no-op there.
+    #[test]
+    fn default_border_inset_leaves_the_whole_viewport_for_the_menu() {
+        let backend = MockBackend::new();
+
+        assert_eq!(Backend::context_menu_border_inset(&backend), 0.0);
+        assert_eq!(
+            Backend::context_menu_viewport(&backend),
+            QRect::new(0.0, 0.0, 80.0, 24.0)
+        );
     }
 
     /// Issue #1156: TUI has no font concept at all, so `default_fonts()`
