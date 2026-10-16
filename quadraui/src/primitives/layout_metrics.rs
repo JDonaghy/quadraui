@@ -244,9 +244,16 @@ fn tree_layout_inner(
 /// pitch instead of raw `line_height` matches what `tree_layout` paints for
 /// non-header rows (the overwhelming majority of rows in any real tree),
 /// and respects `TreeStyle::row_height` when set.
+///
+/// `TreeStyle::row_height` is in screen pixels.  On a cell grid (TUI,
+/// where `line_height` is architecturally `1.0`), a raw px value would
+/// become an absurd cell count, so the px field is suppressed — the
+/// same guard `AppShell::compute_layout` applies to its own px fields.
 pub fn tree_row_pitch(tree: &TreeView, line_height: f64) -> f64 {
+    let is_cell_grid = line_height <= 1.0;
     tree.style
         .row_height
+        .filter(|_| !is_cell_grid)
         .map(|h| h as f64)
         .unwrap_or(line_height * 1.4)
         .round()
@@ -1449,6 +1456,16 @@ mod tests {
         assert_eq!(tree_row_pitch(&tree, 16.0), 42.0);
         // And it must NOT vary with `line_height` once set.
         assert_eq!(tree_row_pitch(&tree, 100.0), 42.0);
+    }
+
+    #[test]
+    fn tree_row_pitch_suppresses_px_row_height_on_cell_grid() {
+        // On a cell grid (TUI, line_height = 1.0), the px-denominated
+        // `row_height` field is suppressed so that tree rows occupy
+        // exactly one cell.  Without this guard a default `Some(22)`
+        // would become 22 cells per row, breaking hit-testing.
+        let tree = bare_tree(); // row_height = Some(22) via default
+        assert_eq!(tree_row_pitch(&tree, 1.0), 1.0);
     }
 
     /// Fixed-width stand-in for a proportional font: every glyph measures
