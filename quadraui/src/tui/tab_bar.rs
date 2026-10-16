@@ -42,7 +42,19 @@ pub const TAB_SEPARATOR_CHAR: char = '│';
 /// Cell width reserved after a tab with no close button, for
 /// [`TAB_SEPARATOR_CHAR`]. Apps that build a [`crate::TabMeasure`] for a
 /// tab with `close_width: 0.0` should add this to the tab's measured
-/// width so the rasteriser has a cell to paint the separator into.
+/// width so the rasteriser has a cell to paint the separator into — with
+/// one exception: a bracket-framed active tab (see [`TabChrome`]) also
+/// measures `close_width: 0.0`, but its final column is the closing `]`,
+/// not a separator, so it must not add this constant.
+///
+/// The rasteriser paints the separator right after the label (plus any
+/// close glyph), not necessarily at the tab's last column — if the
+/// measurer reserves more trailing width than this constant, the extra
+/// slack lands as blank space between the separator and the next tab.
+/// Every no-close tab gets one, including the last visible tab, so a bar
+/// with no right segments ends on a trailing rule rather than a blank
+/// edge; that's deliberate, matching how a close-button bar always ends
+/// on its last `×`/`●` glyph rather than blank space.
 pub const TAB_SEPARATOR_COLS: u16 = 1;
 
 /// Draw a [`TabBar`] into `area` on `buf`. Returns the **tab-content
@@ -551,9 +563,12 @@ mod tests {
             show_tab_close: false,
             compact: false,
         };
-        // Measure with the same `display_width` function the fixed
-        // `TuiBackend` measure side uses, so the label's budget covers
-        // every column it actually paints (9: 3 wide glyphs x2 + 3 narrow).
+        // Measure with the same `display_width` function the `TuiBackend`
+        // measure side uses, so the label's budget covers every column it
+        // actually paints (9: 3 wide glyphs x2 + 3 narrow). No close
+        // button and no separator reservation here — this test pins the
+        // wide-glyph stride, not the no-close separator (see
+        // `no_close_tabs_paint_a_separator_between_labels` below).
         let width = crate::tui::display_width(label) as f32;
         assert_eq!(width, 9.0);
         let layout = bar.layout(
@@ -612,9 +627,14 @@ mod tests {
 
     /// An icon glyph paints at the tab's leading edge in its own
     /// [`crate::TabIcon::color`], and the label starts right after it +
-    /// the 1-column gap [`crate::tab_icon_cols`] reserves — matching what
-    /// `TuiBackend::draw_tab_bar_icons`/`tab_bar_layout_icons`
-    /// (backend.rs) add to the tab's measured width.
+    /// the 1-column gap [`crate::tab_icon_cols`] reserves. This test's
+    /// measurer reserves `icon_cols + label_w` with no close button and
+    /// no separator column (`close_width: 0.0` with no
+    /// `TAB_SEPARATOR_COLS` added), so it is narrower by one column than
+    /// what `TuiBackend::draw_tab_bar_icons`/`tab_bar_layout_icons`
+    /// (backend.rs) would reserve for the same tab — fine here since this
+    /// test pins the icon-before-label paint order, not the no-close
+    /// separator.
     #[test]
     fn icon_glyph_paints_before_label_and_widens_measured_tab() {
         use crate::primitives::tab_bar::TabIcon;

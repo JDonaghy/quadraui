@@ -1488,17 +1488,19 @@ mod tests {
         let theme = Theme::default();
         let driver = TuiDriver::new(TabBarApp { theme }, 20, 1);
 
-        // "perm" occupies cells 0..4, "prev" occupies cells 4..8 (no close
-        // buttons reserved — `is_closable: false` on both tabs); the rest
+        // Neither tab reserves a close button (`is_closable: false` on
+        // both), so each gets a trailing `TAB_SEPARATOR_COLS` column
+        // instead: "perm" occupies cells 0..5 ("perm" + separator at 4),
+        // "prev" occupies cells 5..10 ("prev" + separator at 9); the rest
         // of the 20-cell bar is blank fill.
-        assert!(driver.screen_contains("permprev"));
+        assert!(driver.screen_contains("perm│prev│"));
 
         let perm_style = driver
             .style_at(0, 0)
             .expect("(0, 0) is inside the 20x1 buffer");
         let preview_style = driver
-            .style_at(4, 0)
-            .expect("(4, 0) is inside the 20x1 buffer");
+            .style_at(5, 0)
+            .expect("(5, 0) is inside the 20x1 buffer");
 
         assert!(
             !perm_style.modifiers.contains(Modifier::ITALIC),
@@ -1569,16 +1571,114 @@ mod tests {
         assert_eq!(row.len(), 20, "row length should equal buffer width");
         assert_eq!(
             row.iter().map(|(ch, _)| *ch).collect::<String>(),
-            "permprev            "[..20],
+            // 10 chars of content ("perm" + "│" + "prev" + "│") + 10
+            // spaces of blank fill = 20 chars. Not byte-sliced like the
+            // old all-ASCII literal: "│" is multi-byte in UTF-8, so a
+            // byte-index slice would land mid-codepoint.
+            "perm│prev│          ",
             "styled_row's chars should match screen()'s glyphs left to right"
         );
         // Same per-cell distinction as style_at, reachable via styled_row.
+        // Column 4 is the separator after "perm", not part of either tab's
+        // label — the preview tab's own first cell is column 5.
         assert!(!row[0].1.modifiers.contains(Modifier::ITALIC));
-        assert!(row[4].1.modifiers.contains(Modifier::ITALIC));
+        assert!(row[5].1.modifiers.contains(Modifier::ITALIC));
 
         assert!(
             driver.styled_row(1).is_empty(),
             "out-of-range row should be empty, not panic"
+        );
+    }
+
+    /// A compact tab bar with no close buttons (`show_tab_close: false`).
+    /// Drives the real `TuiBackend::draw_tab_bar`/`tab_bar_layout`
+    /// measurer end to end — not a hand-rolled `TabMeasure` — so a
+    /// regression in any of the backend's own measurer call sites breaks
+    /// here, not only in `tab_bar.rs`'s rasteriser-level unit test.
+    struct NoCloseTabBarApp {
+        active: usize,
+    }
+
+    impl NoCloseTabBarApp {
+        const RECT: Rect = Rect::new(0.0, 0.0, 20.0, 1.0);
+
+        fn bar(&self) -> TabBar {
+            TabBar {
+                id: QWidgetId::new("tabs"),
+                tabs: vec![
+                    TabItem {
+                        label: "Problems".into(),
+                        is_active: self.active == 0,
+                        is_dirty: false,
+                        is_preview: false,
+                        is_closable: false,
+                    },
+                    TabItem {
+                        label: "Output".into(),
+                        is_active: self.active == 1,
+                        is_dirty: false,
+                        is_preview: false,
+                        is_closable: false,
+                    },
+                ],
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: false,
+                compact: true,
+            }
+        }
+    }
+
+    impl AppLogic for NoCloseTabBarApp {
+        type AreaId = ();
+
+        #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_tab_bar(Self::RECT, &self.bar(), None);
+        }
+
+        #[allow(deprecated)] // `Backend::tab_bar_layout` returns `TabBarHits` — issue #823
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::MouseDown { position, .. } = event else {
+                return Reaction::Continue;
+            };
+            let hits = backend.tab_bar_layout(Self::RECT, &self.bar());
+            let x = position.x as f64;
+            for (i, (sx, ex)) in hits.slot_positions.iter().enumerate() {
+                if x >= *sx && x < *ex {
+                    self.active = i;
+                    return Reaction::Redraw;
+                }
+            }
+            Reaction::Continue
+        }
+    }
+
+    /// Acceptance criterion for quadraui's compact-tab-bar separator: the
+    /// backend's own measurer (not a test's hand-rolled `TabMeasure`)
+    /// reserves a `TAB_SEPARATOR_CHAR` column after each no-close tab, and
+    /// that column stays part of the tab it follows rather than becoming a
+    /// dead click zone.
+    #[test]
+    fn no_close_tab_bar_separator_click_through_backend_measurer_activates_its_tab() {
+        let app = NoCloseTabBarApp { active: 1 };
+        let mut driver = TuiDriver::new(app, 20, 1);
+
+        assert!(
+            driver.screen_contains("Problems│Output│"),
+            "the real backend measurer should reserve a separator column after each no-close tab"
+        );
+
+        let (sep_x, sep_y) = driver
+            .find("│")
+            .expect("separator glyph should be visible on the 20-cell bar");
+        driver.click(sep_x, sep_y);
+        assert_eq!(
+            driver.app().active,
+            0,
+            "clicking the separator painted right after tab 0's label should activate tab 0, \
+             not fall through to a dead zone"
         );
     }
 
