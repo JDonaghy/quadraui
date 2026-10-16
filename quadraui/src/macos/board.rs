@@ -238,7 +238,7 @@ mod tests {
             // ...and clicking it resolves back to the same column.
             assert_eq!(
                 layout.hit_test(hx, hy),
-                BoardHit::ColumnHeader(col.col_id.clone()),
+                BoardHit::ColumnHeader(col.col_id),
                 "header click at origin ({origin_x}, {origin_y}) must resolve to its column",
             );
 
@@ -247,7 +247,7 @@ mod tests {
                 let cy = cardl.bounds.y + cardl.bounds.height / 2.0;
                 assert_eq!(
                     layout.hit_test(cx, cy),
-                    BoardHit::Card(cardl.id.clone()),
+                    BoardHit::Card(cardl.id),
                     "card click at origin ({origin_x}, {origin_y}) must resolve to its card",
                 );
                 assert!(

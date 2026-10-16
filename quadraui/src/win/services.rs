@@ -1037,7 +1037,7 @@ fn win_show_message_dialog(
     }
     ids.iter()
         .position(|&id| id == chosen)
-        .map(|i| opts.buttons[i].id.clone())
+        .map(|i| opts.buttons[i].id)
 }
 
 // ─── Notifications ──────────────────────────────────────────────────────

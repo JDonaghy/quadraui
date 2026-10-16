@@ -122,9 +122,7 @@ mod tests {
         assert_eq!(layout.hit_test(Point::new(2.0, 2.0)), ButtonHit::Body);
         assert_eq!(
             button.click(),
-            Some(ButtonEvent::Activated {
-                id: button.id.clone()
-            })
+            Some(ButtonEvent::Activated { id: button.id })
         );
     }
 
@@ -136,11 +134,6 @@ mod tests {
             &crate::event::Key::Named(crate::event::NamedKey::Enter),
             &crate::types::Modifiers::default(),
         );
-        assert_eq!(
-            event,
-            Some(ButtonEvent::Activated {
-                id: button.id.clone()
-            })
-        );
+        assert_eq!(event, Some(ButtonEvent::Activated { id: button.id }));
     }
 }

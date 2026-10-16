@@ -127,7 +127,7 @@ mod tests {
         assert_eq!(
             switch.click(),
             Some(SwitchEvent::Toggled {
-                id: switch.id.clone(),
+                id: switch.id,
                 value: true
             })
         );
@@ -144,7 +144,7 @@ mod tests {
         assert_eq!(
             event,
             Some(SwitchEvent::Toggled {
-                id: switch.id.clone(),
+                id: switch.id,
                 value: true
             })
         );

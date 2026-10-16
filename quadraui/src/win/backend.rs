@@ -3302,7 +3302,7 @@ impl Backend for WinBackend {
 
             if let Some(ref sb_state) = term.scrollbar {
                 let sb = crate::primitives::scrollbar::Scrollbar::vertical(
-                    term.id.clone(),
+                    term.id,
                     Rect::new(rect.x + cell_area_w, rect.y, sb_width, rect.height),
                     sb_state.effective_scroll_offset() as f32,
                     sb_state.total_lines as f32,
@@ -4682,7 +4682,7 @@ impl Backend for WinBackend {
             let layout = crate::primitives::button::native_surface_paint::paint(
                 button, self, &theme, rect, &style,
             );
-            self.register_zone(button.id.clone(), rect);
+            self.register_zone(button.id, rect);
             return layout;
         }
         // No surface/DWrite yet — return the real (pure-geometry) layout
@@ -4706,7 +4706,7 @@ impl Backend for WinBackend {
                 group, self, &theme, rect, row_height,
             );
             for (option, item) in group.options.iter().zip(layout.items.iter()) {
-                self.register_zone(option.id.clone(), *item);
+                self.register_zone(option.id, *item);
             }
             return layout;
         }
@@ -4734,7 +4734,7 @@ impl Backend for WinBackend {
             let theme = self.current_theme;
             let layout =
                 crate::primitives::switch::native_surface_paint::paint(switch, self, &theme, rect);
-            self.register_zone(switch.id.clone(), rect);
+            self.register_zone(switch.id, rect);
             return layout;
         }
         // No surface/DWrite yet — return the real (pure-geometry) layout

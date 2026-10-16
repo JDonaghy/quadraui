@@ -77,7 +77,7 @@ pub fn mac_activity_bar_layout(
             ActivityBarRowHit {
                 y_start: vi.bounds.y,
                 y_end: vi.bounds.y + vi.bounds.height,
-                id: item.id.clone(),
+                id: item.id,
                 tooltip: item.tooltip.clone(),
             }
         })

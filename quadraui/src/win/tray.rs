@@ -353,8 +353,8 @@ fn append_hmenu_item(hmenu: HMENU, item: &ContextMenuItem, ids: &mut Vec<WidgetI
         return;
     }
 
-    if item.id.is_some() {
-        ids.push(item.id.clone().expect("checked Some above"));
+    if let Some(id) = item.id {
+        ids.push(id);
         let cmd_id = ids.len();
         let mut flags = MF_STRING;
         if item.disabled {
