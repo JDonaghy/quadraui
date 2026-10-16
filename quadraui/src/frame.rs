@@ -33,7 +33,7 @@
 //! for the reasons above; there is no primitive that is categorically
 //! unreachable through the declarative path.
 //!
-//! ## `FrameHitMap` is serializable, but is not yet an owned `Frame`
+//! ## `FrameHitMap` is serializable; [`OwnedFrame`] is the owned `Frame`
 //!
 //! [`Surface<'a>`] borrows every primitive it paints — correct for a
 //! same-frame paint/hit-test pass, useless for anything that needs to
@@ -50,18 +50,23 @@
 //! data readable and round-trippable instead of only probeable via
 //! [`FrameHitMap::hit_test`].
 //!
-//! **This is a step toward an owned `Frame`, not the owned `Frame`
-//! itself.** A `FrameZone` is a bare tag (e.g. `FrameZone::Tree { idx:
-//! 3 }`) plus a frame-local surface index whose meaning depends
-//! entirely on the `ScreenLayout` push order that produced it — it
-//! carries no primitive content, no accessibility role, no label, no
-//! value. It cannot by itself feed an AccessKit `TreeUpdate` node,
-//! cannot be re-painted by a web backend, and cannot replay a frame; a
-//! receiver on the other end of a wire has no way to recover what
-//! `idx: 3` even referred to unless it reproduces the exact same push
-//! order independently. `Surface<'a>`/`ScreenLayout<'a>` still borrow.
-//! Building an owned `Frame` tree that carries real content and roles
-//! remains tracked work, out of scope here.
+//! A `FrameZone` alone is a bare tag (e.g. `FrameZone::Tree { idx: 3
+//! }`) plus a frame-local surface index: it carries no primitive
+//! content, no accessibility role, no label, no value, and cannot by
+//! itself feed an AccessKit `TreeUpdate` node, be re-painted by a web
+//! backend, or replay a frame. [`OwnedFrame`] is the owned, lifetime-free
+//! counterpart that closes that gap: [`OwnedFrame::from_layout`] clones
+//! every primitive a [`ScreenLayout`] was about to borrow into an
+//! [`OwnedNode`] (rect, optional [`crate::types::WidgetId`], optional
+//! [`crate::a11y::A11yInfo`], and the primitive itself as [`OwnedContent`]),
+//! so the resulting [`OwnedFrame`] can be serialized, sent across a
+//! process/wire boundary, or inspected long after the `ScreenLayout` that
+//! produced it has gone out of scope. [`OwnedFrame::draw`] repaints it
+//! through the same `Backend` calls [`ScreenLayout::draw`] would have
+//! made, and [`OwnedFrame::hit_map`] derives a [`FrameHitMap`] without a
+//! backend at all — both are lock-step with the original push order
+//! because the index each [`OwnedNode`] carries is captured once, at
+//! `from_layout` time.
 
 //! ## Presence gating + the paint/hit-test order invariant
 //!
@@ -905,6 +910,516 @@ impl<'a> Default for ScreenLayout<'a> {
     }
 }
 
+/// A single primitive's content, owned rather than borrowed — the
+/// payload half of an [`OwnedNode`]. One variant per [`Surface`]
+/// variant that carries a `serde`-serializable primitive.
+///
+/// `#[non_exhaustive]` for the same reason as [`Surface`] and
+/// [`FrameZone`]: a new primitive adds a new variant here additively.
+///
+/// [`Self::DropOverlay`] and [`Self::FindReplace`] are the fallbacks for
+/// the two [`Surface`] variants whose primitive does not (yet) implement
+/// `serde::{Serialize, Deserialize}` ([`DropOverlay`], [`FindReplacePanel`]
+/// respectively) — the node still gets a rect and its own distinct
+/// [`FrameZone`] tag via [`OwnedFrame::hit_map`], but carries no content
+/// to redraw or inspect. [`Self::Opaque`] is the generic fallback for any
+/// future primitive that likewise can't be captured yet.
+#[non_exhaustive]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum OwnedContent {
+    Editor(Editor),
+    TabBar(TabBar),
+    StatusBar(StatusBar),
+    ActivityBar(ActivityBar),
+    CommandLine(CommandLine),
+    Terminal(Terminal),
+    TextDisplay(TextDisplay),
+    MultiSectionView(MultiSectionView),
+    Tree(TreeView),
+    List(ListView),
+    Form(Form),
+    MenuBar(MenuBar),
+    Split(Split),
+    Panel(Panel),
+    Scrollbar(Scrollbar),
+    Palette(Palette),
+    Tooltip(Tooltip),
+    ContextMenu(ContextMenu),
+    Dialog(Dialog),
+    Float(Float),
+    Completions(Completions),
+    RichTextPopup(RichTextPopup),
+    Toast(ToastOverlay),
+    DataTable(DataTable),
+    Chart(Chart),
+    Board(BoardModel),
+    CommandCenter(CommandCenter),
+    DiffView(DiffView),
+    Image(Image),
+    MessageList(MessageList),
+    Minimap(Minimap),
+    PipelineView(PipelineView),
+    Progress(ProgressBar),
+    SidebarPanel(SidebarPanel),
+    Spinner(Spinner),
+    SplitTree(SplitTree),
+    TextInput(TextInput),
+    Toolbar(Toolbar),
+    /// No content captured — the source [`Surface`] was [`Surface::DropOverlay`].
+    DropOverlay,
+    /// No content captured — the source [`Surface`] was [`Surface::FindReplace`].
+    FindReplace,
+    /// No content captured — a generic fallback for any future
+    /// non-serializable primitive. See this enum's doc for which
+    /// [`Surface`] variants use the more specific fallbacks instead.
+    Opaque,
+}
+
+impl OwnedContent {
+    /// Repaint this content through the matching `Backend::draw_*`
+    /// call, mirroring [`ScreenLayout::draw`]'s match arm for the
+    /// [`Surface`] variant this content was captured from. Transient,
+    /// per-frame interaction state (hover/press ids, hovered row
+    /// indices) is not captured by [`OwnedFrame::from_layout`], so
+    /// every such parameter is passed as `None`/absent here.
+    ///
+    /// The six overlay variants that need a non-serializable `*Layout`
+    /// companion to redraw (`Tooltip`, `ContextMenu`, `Dialog`, `Float`,
+    /// `Completions`, `RichTextPopup`), plus [`Self::DropOverlay`],
+    /// [`Self::FindReplace`] and [`Self::Opaque`], are no-ops: their
+    /// hit-test zone still round-trips, but repainting them needs either
+    /// a layout or primitive content this owned snapshot does not keep.
+    fn draw(&self, rect: Rect, backend: &mut dyn Backend) {
+        match self {
+            OwnedContent::Editor(editor) => {
+                backend.draw_editor(rect, editor);
+            }
+            OwnedContent::TabBar(bar) => {
+                backend.draw_tab_bar(rect, bar, None);
+            }
+            OwnedContent::StatusBar(bar) => {
+                let interaction = crate::interaction::InteractionState::from_parts(None, None);
+                backend.draw_status_bar_interactive(rect, bar, &interaction);
+            }
+            OwnedContent::ActivityBar(bar) => {
+                backend.draw_activity_bar(rect, bar, None);
+            }
+            OwnedContent::CommandLine(cmd) => backend.draw_command_line(rect, cmd),
+            OwnedContent::Terminal(term) => backend.draw_terminal(rect, term),
+            OwnedContent::TextDisplay(td) => backend.draw_text_display(rect, td),
+            OwnedContent::MultiSectionView(view) => backend.draw_multi_section_view(rect, view),
+            OwnedContent::Tree(tree) => backend.draw_tree(rect, tree),
+            OwnedContent::List(list) => backend.draw_list(rect, list),
+            OwnedContent::Form(form) => backend.draw_form(rect, form),
+            OwnedContent::MenuBar(bar) => {
+                backend.draw_menu_bar(rect, bar);
+            }
+            OwnedContent::Split(split) => {
+                backend.draw_split(rect, split);
+            }
+            OwnedContent::Panel(panel) => {
+                backend.draw_panel(rect, panel);
+            }
+            OwnedContent::Scrollbar(sb) => backend.draw_scrollbar(rect, sb),
+            OwnedContent::Palette(palette) => backend.draw_palette(rect, palette),
+            OwnedContent::Toast(stack) => {
+                backend.draw_toast_overlay(rect, stack);
+            }
+            OwnedContent::DataTable(table) => {
+                backend.draw_data_table(rect, table, None);
+            }
+            OwnedContent::Chart(chart) => {
+                backend.draw_chart(rect, chart, None, None);
+            }
+            OwnedContent::Board(model) => {
+                backend.draw_board(rect, model);
+            }
+            OwnedContent::CommandCenter(cc) => {
+                backend.draw_command_center(rect, cc);
+            }
+            OwnedContent::DiffView(view) => {
+                backend.draw_diff_view(rect, view);
+            }
+            OwnedContent::Image(image) => {
+                backend.draw_image(rect, image);
+            }
+            OwnedContent::MessageList(list) => backend.draw_message_list(rect, list),
+            OwnedContent::Minimap(minimap) => {
+                backend.draw_minimap(rect, minimap);
+            }
+            OwnedContent::PipelineView(view) => {
+                backend.draw_pipeline_view(rect, view);
+            }
+            OwnedContent::Progress(bar) => {
+                backend.draw_progress(rect, bar);
+            }
+            OwnedContent::SidebarPanel(panel) => {
+                let interaction = crate::interaction::InteractionState::from_parts(None, None);
+                backend.draw_sidebar_panel_interactive(rect, panel, &interaction);
+            }
+            OwnedContent::Spinner(spinner) => {
+                backend.draw_spinner(rect, spinner);
+            }
+            OwnedContent::SplitTree(tree) => {
+                backend.draw_split_tree(rect, tree);
+            }
+            OwnedContent::TextInput(ti) => {
+                backend.draw_text_input(rect, ti);
+            }
+            OwnedContent::Toolbar(bar) => {
+                let interaction = crate::interaction::InteractionState::from_parts(None, None);
+                backend.draw_toolbar_interactive(rect, bar, &interaction);
+            }
+            OwnedContent::Tooltip(_)
+            | OwnedContent::ContextMenu(_)
+            | OwnedContent::Dialog(_)
+            | OwnedContent::Float(_)
+            | OwnedContent::Completions(_)
+            | OwnedContent::RichTextPopup(_)
+            | OwnedContent::DropOverlay
+            | OwnedContent::FindReplace
+            | OwnedContent::Opaque => {}
+        }
+    }
+
+    /// The [`FrameZone`] this content contributes at frame-local index
+    /// `idx`, mirroring [`ScreenLayout::zone_for`]'s tag-per-variant
+    /// mapping so a `ScreenLayout` and the [`OwnedFrame`] captured from
+    /// it produce identical zones.
+    fn zone(&self, idx: usize) -> FrameZone {
+        match self {
+            OwnedContent::Editor(_) => FrameZone::Editor { idx },
+            OwnedContent::TabBar(_) => FrameZone::TabBar { idx },
+            OwnedContent::StatusBar(_) => FrameZone::StatusBar { idx },
+            OwnedContent::ActivityBar(_) => FrameZone::ActivityBar { idx },
+            OwnedContent::CommandLine(_) => FrameZone::CommandLine { idx },
+            OwnedContent::Terminal(_) => FrameZone::Terminal { idx },
+            OwnedContent::TextDisplay(_) => FrameZone::TextDisplay { idx },
+            OwnedContent::MultiSectionView(_) => FrameZone::MultiSectionView { idx },
+            OwnedContent::Tree(_) => FrameZone::Tree { idx },
+            OwnedContent::List(_) => FrameZone::List { idx },
+            OwnedContent::Form(_) => FrameZone::Form { idx },
+            OwnedContent::MenuBar(_) => FrameZone::MenuBar { idx },
+            OwnedContent::Split(_) => FrameZone::Split { idx },
+            OwnedContent::Panel(_) => FrameZone::Panel { idx },
+            OwnedContent::Scrollbar(_) => FrameZone::Scrollbar { idx },
+            OwnedContent::Palette(_) => FrameZone::Palette { idx },
+            OwnedContent::Tooltip(_) => FrameZone::Tooltip { idx },
+            OwnedContent::ContextMenu(_) => FrameZone::ContextMenu { idx },
+            OwnedContent::Dialog(_) => FrameZone::Dialog { idx },
+            OwnedContent::Float(_) => FrameZone::Float { idx },
+            OwnedContent::Completions(_) => FrameZone::Completions { idx },
+            OwnedContent::RichTextPopup(_) => FrameZone::RichTextPopup { idx },
+            OwnedContent::Toast(_) => FrameZone::Toast { idx },
+            OwnedContent::DataTable(_) => FrameZone::DataTable { idx },
+            OwnedContent::Chart(_) => FrameZone::Chart { idx },
+            OwnedContent::Board(_) => FrameZone::Board { idx },
+            OwnedContent::CommandCenter(_) => FrameZone::CommandCenter { idx },
+            OwnedContent::DiffView(_) => FrameZone::DiffView { idx },
+            OwnedContent::Image(_) => FrameZone::Image { idx },
+            OwnedContent::MessageList(_) => FrameZone::MessageList { idx },
+            OwnedContent::Minimap(_) => FrameZone::Minimap { idx },
+            OwnedContent::PipelineView(_) => FrameZone::PipelineView { idx },
+            OwnedContent::Progress(_) => FrameZone::Progress { idx },
+            OwnedContent::SidebarPanel(_) => FrameZone::SidebarPanel { idx },
+            OwnedContent::Spinner(_) => FrameZone::Spinner { idx },
+            OwnedContent::SplitTree(_) => FrameZone::SplitTree { idx },
+            OwnedContent::TextInput(_) => FrameZone::TextInput { idx },
+            OwnedContent::Toolbar(_) => FrameZone::Toolbar { idx },
+            OwnedContent::DropOverlay => FrameZone::DropOverlay { idx },
+            OwnedContent::FindReplace => FrameZone::FindReplace { idx },
+            OwnedContent::Opaque => FrameZone::Empty,
+        }
+    }
+}
+
+/// One captured surface in an [`OwnedFrame`]: the owned counterpart of
+/// a single [`Surface`] entry. Every field is owned and `serde`-capable,
+/// so an `OwnedNode` outlives the `ScreenLayout` it was captured from.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OwnedNode {
+    /// Frame-local surface index, matching [`FrameZone`]'s `idx` —
+    /// see that type's doc for the push-order-dependent caveat.
+    pub idx: usize,
+    /// Bounding rect this node paints/hit-tests at — the same rect
+    /// [`ScreenLayout::zone_for`] would have used for the source
+    /// [`Surface`] (plain `rect` for most variants, `layout.bounds` for
+    /// the overlay variants that carry one, [`DropOverlay::bounds`] for
+    /// [`Surface::DropOverlay`]).
+    pub rect: Rect,
+    /// This node's owning widget, when the source [`Surface`] variant
+    /// carries one — mirrors [`ScreenLayout::tab_stops`]'s inclusion
+    /// list exactly (structural chrome, transient overlays, and purely
+    /// decorative primitives have no widget id here, matching that
+    /// method's exclusions).
+    pub widget_id: Option<WidgetId>,
+    /// Accessibility sidecar data for this node. Always `None` when
+    /// produced by [`OwnedFrame::from_layout`] — no primitive today
+    /// carries [`crate::a11y::A11yInfo`] to capture — but present on the
+    /// type so a consumer can attach it after the fact.
+    pub a11y: Option<crate::a11y::A11yInfo>,
+    /// The captured primitive content.
+    pub content: OwnedContent,
+}
+
+/// An owned, lifetime-free frame tree: the serializable counterpart of
+/// a [`ScreenLayout`]. Build one with [`Self::from_layout`], then call
+/// [`Self::draw`] to repaint it or [`Self::hit_map`] to derive a
+/// [`FrameHitMap`] without a backend. See the module doc's "`FrameHitMap`
+/// is serializable; `OwnedFrame` is the owned `Frame`" section for the
+/// full rationale.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct OwnedFrame {
+    nodes: Vec<OwnedNode>,
+}
+
+impl OwnedFrame {
+    /// An empty `OwnedFrame`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Capture every surface in `layout` into an owned, serializable
+    /// [`OwnedFrame`]. Clones each primitive rather than borrowing it,
+    /// so the result outlives `layout` and the frame it described.
+    pub fn from_layout(layout: &ScreenLayout<'_>) -> Self {
+        let nodes = layout
+            .surfaces
+            .iter()
+            .enumerate()
+            .map(|(idx, surface)| {
+                let (rect, widget_id, content) = capture_surface(surface);
+                OwnedNode {
+                    idx,
+                    rect,
+                    widget_id,
+                    a11y: None,
+                    content,
+                }
+            })
+            .collect();
+        Self { nodes }
+    }
+
+    /// The captured nodes, in the same back-to-front order they were
+    /// pushed into the source [`ScreenLayout`].
+    pub fn nodes(&self) -> &[OwnedNode] {
+        &self.nodes
+    }
+
+    /// Repaint every node through `backend` and return the resulting
+    /// [`FrameHitMap`] — the owned-data counterpart of
+    /// [`ScreenLayout::draw`]. See [`OwnedContent::draw`] for which
+    /// variants are no-ops here (they still register a hit zone).
+    pub fn draw(&self, backend: &mut dyn Backend) -> FrameHitMap {
+        let mut hit_map = FrameHitMap::new();
+        for node in &self.nodes {
+            node.content.draw(node.rect, backend);
+            hit_map.push(node.rect, node.content.zone(node.idx));
+        }
+        hit_map
+    }
+
+    /// Derive the [`FrameHitMap`] this frame would produce, without
+    /// invoking any `backend.draw_*()` call — the owned-data counterpart
+    /// of [`ScreenLayout::hit_map`].
+    pub fn hit_map(&self) -> FrameHitMap {
+        let mut hit_map = FrameHitMap::new();
+        for node in &self.nodes {
+            hit_map.push(node.rect, node.content.zone(node.idx));
+        }
+        hit_map
+    }
+}
+
+/// Capture one borrowed [`Surface`] into its owned `(rect, widget_id,
+/// content)` parts. The widget-id rule mirrors
+/// [`ScreenLayout::tab_stops`]'s inclusion list exactly; the rect rule
+/// mirrors [`ScreenLayout::zone_for`]'s exactly. [`Surface::DropOverlay`]
+/// falls back to [`OwnedContent::DropOverlay`] and [`Surface::FindReplace`]
+/// falls back to [`OwnedContent::FindReplace`], because [`DropOverlay`]
+/// and [`FindReplacePanel`] do not implement `serde::{Serialize,
+/// Deserialize}` — both still keep their own distinct [`FrameZone`] tag.
+fn capture_surface(surface: &Surface<'_>) -> (Rect, Option<WidgetId>, OwnedContent) {
+    match surface {
+        Surface::Editor { rect, editor } => (
+            *rect,
+            Some(editor.id.clone()),
+            OwnedContent::Editor((*editor).clone()),
+        ),
+        Surface::TabBar { rect, bar, .. } => (
+            *rect,
+            Some(bar.id.clone()),
+            OwnedContent::TabBar((*bar).clone()),
+        ),
+        Surface::StatusBar { rect, bar, .. } => (
+            *rect,
+            Some(bar.id.clone()),
+            OwnedContent::StatusBar((*bar).clone()),
+        ),
+        Surface::ActivityBar { rect, bar, .. } => (
+            *rect,
+            Some(bar.id.clone()),
+            OwnedContent::ActivityBar((*bar).clone()),
+        ),
+        Surface::CommandLine { rect, cmd } => (
+            *rect,
+            Some(cmd.id.clone()),
+            OwnedContent::CommandLine((*cmd).clone()),
+        ),
+        Surface::Terminal { rect, term } => (
+            *rect,
+            Some(term.id.clone()),
+            OwnedContent::Terminal((*term).clone()),
+        ),
+        Surface::TextDisplay { rect, td } => (
+            *rect,
+            Some(td.id.clone()),
+            OwnedContent::TextDisplay((*td).clone()),
+        ),
+        Surface::MultiSectionView { rect, view } => (
+            *rect,
+            Some(view.id.clone()),
+            OwnedContent::MultiSectionView((*view).clone()),
+        ),
+        Surface::Tree { rect, tree } => (
+            *rect,
+            Some(tree.id.clone()),
+            OwnedContent::Tree((*tree).clone()),
+        ),
+        Surface::List { rect, list } => (
+            *rect,
+            Some(list.id.clone()),
+            OwnedContent::List((*list).clone()),
+        ),
+        Surface::Form { rect, form } => (
+            *rect,
+            Some(form.id.clone()),
+            OwnedContent::Form((*form).clone()),
+        ),
+        Surface::MenuBar { rect, bar } => (
+            *rect,
+            Some(bar.id.clone()),
+            OwnedContent::MenuBar((*bar).clone()),
+        ),
+        Surface::Split { rect, split } => (*rect, None, OwnedContent::Split((*split).clone())),
+        Surface::Panel { rect, panel } => (
+            *rect,
+            Some(panel.id.clone()),
+            OwnedContent::Panel((*panel).clone()),
+        ),
+        Surface::Scrollbar { rect, sb } => (*rect, None, OwnedContent::Scrollbar((*sb).clone())),
+        Surface::Palette { rect, palette } => (
+            *rect,
+            Some(palette.id.clone()),
+            OwnedContent::Palette((*palette).clone()),
+        ),
+        Surface::Tooltip { tooltip, layout } => (
+            layout.bounds,
+            None,
+            OwnedContent::Tooltip((*tooltip).clone()),
+        ),
+        Surface::ContextMenu { menu, layout } => (
+            layout.bounds,
+            None,
+            OwnedContent::ContextMenu((*menu).clone()),
+        ),
+        Surface::Dialog { dialog, layout } => {
+            (layout.bounds, None, OwnedContent::Dialog((*dialog).clone()))
+        }
+        Surface::Float { float, layout } => {
+            (layout.bounds, None, OwnedContent::Float((*float).clone()))
+        }
+        Surface::Completions {
+            completions,
+            layout,
+        } => (
+            layout.bounds,
+            None,
+            OwnedContent::Completions((*completions).clone()),
+        ),
+        Surface::FindReplace { rect, .. } => (*rect, None, OwnedContent::FindReplace),
+        Surface::RichTextPopup { popup, layout } => (
+            layout.bounds,
+            None,
+            OwnedContent::RichTextPopup((*popup).clone()),
+        ),
+        Surface::Toast { rect, stack } => (*rect, None, OwnedContent::Toast((*stack).clone())),
+        Surface::DataTable { rect, table, .. } => (
+            *rect,
+            Some(table.id.clone()),
+            OwnedContent::DataTable((*table).clone()),
+        ),
+        Surface::Chart { rect, chart, .. } => (
+            *rect,
+            Some(chart.id.clone()),
+            OwnedContent::Chart((*chart).clone()),
+        ),
+        Surface::Board { rect, model } => (
+            *rect,
+            Some(model.id.clone()),
+            OwnedContent::Board((*model).clone()),
+        ),
+        Surface::CommandCenter { rect, cc } => (
+            *rect,
+            Some(cc.id.clone()),
+            OwnedContent::CommandCenter((*cc).clone()),
+        ),
+        Surface::DiffView { rect, view } => (
+            *rect,
+            Some(view.id.clone()),
+            OwnedContent::DiffView((*view).clone()),
+        ),
+        Surface::DropOverlay { overlay } => (overlay.bounds(), None, OwnedContent::DropOverlay),
+        Surface::Image { rect, image } => (*rect, None, OwnedContent::Image((*image).clone())),
+        Surface::MessageList { rect, list } => (
+            *rect,
+            Some(list.id.clone()),
+            OwnedContent::MessageList((*list).clone()),
+        ),
+        Surface::Minimap { rect, minimap } => (
+            *rect,
+            Some(minimap.id.clone()),
+            OwnedContent::Minimap((*minimap).clone()),
+        ),
+        Surface::PipelineView { rect, view } => (
+            *rect,
+            Some(view.id.clone()),
+            OwnedContent::PipelineView((*view).clone()),
+        ),
+        Surface::Progress { rect, bar } => (
+            *rect,
+            if bar.cancellable {
+                Some(bar.id.clone())
+            } else {
+                None
+            },
+            OwnedContent::Progress((*bar).clone()),
+        ),
+        Surface::SidebarPanel { rect, panel, .. } => (
+            *rect,
+            Some(panel.id.clone()),
+            OwnedContent::SidebarPanel((*panel).clone()),
+        ),
+        Surface::Spinner { rect, spinner } => {
+            (*rect, None, OwnedContent::Spinner((*spinner).clone()))
+        }
+        Surface::SplitTree { rect, tree } => {
+            (*rect, None, OwnedContent::SplitTree((*tree).clone()))
+        }
+        Surface::TextInput { rect, ti } => (
+            *rect,
+            Some(ti.id.clone()),
+            OwnedContent::TextInput((*ti).clone()),
+        ),
+        Surface::Toolbar { rect, bar, .. } => (
+            *rect,
+            Some(bar.id.clone()),
+            OwnedContent::Toolbar((*bar).clone()),
+        ),
+    }
+}
+
 /// A typed, app-defined z-order rung. Implement this once
 /// per app-specific "what can appear in a frame" enum (an editor pane,
 /// a bottom panel, an overlay stack, ...) to get a single declared
@@ -1530,6 +2045,159 @@ mod tests {
         // its own owned data behaves identically.
         let rebuilt = FrameHitMap::from_zones(map.zones().to_vec());
         assert_eq!(rebuilt, map);
+    }
+
+    /// [`OwnedFrame`] round-trips through JSON with no backend in
+    /// scope, and [`OwnedFrame::hit_map`] on the deserialized copy
+    /// matches what the original [`ScreenLayout`] would have produced.
+    #[test]
+    fn owned_frame_serde_round_trip_preserves_hit_map() {
+        let editor = Editor {
+            id: "ed".into(),
+            rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+            lines: Vec::new(),
+            cursor: None,
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines: 0,
+            max_col: 0,
+            gutter_char_width: 0,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: std::collections::HashMap::new(),
+            code_action_lines: std::collections::HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: false,
+            lightbulb_glyph: '\0',
+        };
+        let palette = Palette {
+            id: "pal".into(),
+            title: String::new(),
+            query: String::new(),
+            query_cursor: 0,
+            items: Vec::new(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            total_count: 0,
+            has_focus: false,
+            show_query: true,
+            create_label: None,
+            preview: None,
+            mode: crate::primitives::palette::PaletteMode::List,
+        };
+
+        let mut layout = ScreenLayout::new();
+        layout.push(Surface::Editor {
+            rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+            editor: &editor,
+        });
+        layout.push(Surface::Palette {
+            rect: Rect::new(0.0, 0.0, 50.0, 50.0),
+            palette: &palette,
+        });
+
+        let captured = OwnedFrame::from_layout(&layout);
+        assert_eq!(captured.nodes().len(), 2);
+
+        let json = serde_json::to_string(&captured).expect("OwnedFrame serializes");
+        let restored: OwnedFrame = serde_json::from_str(&json).expect("OwnedFrame deserializes");
+
+        let hit_map = restored.hit_map();
+        assert!(!hit_map.is_empty());
+        assert_eq!(hit_map.len(), 2);
+        // Point in the overlay → highest-z (last-pushed) wins, same as
+        // `ScreenLayout::hit_map` would have reported for the source.
+        assert_eq!(hit_map.hit_test(25.0, 25.0), FrameZone::Palette { idx: 1 });
+        // Point outside the overlay but inside the editor.
+        assert_eq!(hit_map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
+        // Point outside everything.
+        assert_eq!(hit_map.hit_test(150.0, 150.0), FrameZone::Empty);
+    }
+
+    /// The literal acceptance shape: build a frame, serialize it,
+    /// deserialize it, `draw()` the deserialized copy through a real
+    /// [`crate::tui::TuiBackend`] (the production `Backend` call path,
+    /// not just `hit_map()`'s backend-free shortcut), and check the
+    /// result is non-empty and correct.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn owned_frame_serde_round_trip_draws_through_tui_backend() {
+        use crate::runner::{AppLogic, Reaction};
+        use crate::tui::testing::TuiDriver;
+        use std::cell::RefCell;
+
+        let editor = Editor {
+            id: "ed".into(),
+            rect: Rect::new(0.0, 0.0, 20.0, 5.0),
+            lines: Vec::new(),
+            cursor: None,
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines: 0,
+            max_col: 0,
+            gutter_char_width: 0,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: std::collections::HashMap::new(),
+            code_action_lines: std::collections::HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: false,
+            lightbulb_glyph: '\0',
+        };
+
+        let mut layout = ScreenLayout::new();
+        layout.push(Surface::Editor {
+            rect: Rect::new(0.0, 0.0, 20.0, 5.0),
+            editor: &editor,
+        });
+
+        let captured = OwnedFrame::from_layout(&layout);
+        let json = serde_json::to_string(&captured).expect("OwnedFrame serializes");
+        let restored: OwnedFrame = serde_json::from_str(&json).expect("OwnedFrame deserializes");
+
+        /// Drives the deserialized `OwnedFrame` through the real
+        /// `Backend` trait on every render, exactly as a long-running
+        /// app's render hook would, and stashes the resulting
+        /// `FrameHitMap` for the test to inspect afterward.
+        struct DrawRestoredFrame(OwnedFrame, RefCell<Option<FrameHitMap>>);
+        impl AppLogic for DrawRestoredFrame {
+            type AreaId = ();
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let hit_map = self.0.draw(backend);
+                *self.1.borrow_mut() = Some(hit_map);
+            }
+            fn handle(&mut self, _event: crate::UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                Reaction::Continue
+            }
+        }
+
+        let app = DrawRestoredFrame(restored, RefCell::new(None));
+        let driver = TuiDriver::new(app, 20, 5);
+        let hit_map = driver
+            .app()
+            .1
+            .borrow()
+            .clone()
+            .expect("render ran at least once during TuiDriver::new");
+
+        assert!(!hit_map.is_empty());
+        assert_eq!(hit_map.hit_test(1.0, 1.0), FrameZone::Editor { idx: 0 });
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
