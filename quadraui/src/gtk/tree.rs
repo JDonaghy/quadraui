@@ -596,7 +596,7 @@ mod tests {
             leaf(2, "gamma"),
             leaf(3, "delta"),
         ]);
-        tree.style.row_height = Some(22);
+        tree.style.row_height = Some(30);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
 
         let small_font_layout = gtk_tree_layout(&tree, area, 14.0);
@@ -619,7 +619,7 @@ mod tests {
                 small.row_idx
             );
             assert_eq!(
-                small.bounds.height, 22.0,
+                small.bounds.height, 30.0,
                 "row height must equal the override"
             );
         }
