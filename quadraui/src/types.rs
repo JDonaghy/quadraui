@@ -521,14 +521,15 @@ pub struct TreeStyle {
     /// backend, GUI included.
     pub chevron_collapsed: String,
     /// Host override for non-header row height, in the backend's native
-    /// unit (pixels for GTK / macOS / Win-GUI). `None` (the default)
-    /// keeps the current behaviour: GUI backends derive the row pitch from
-    /// the editor `line_height` (`line_height * 1.4` for leaves and
-    /// branches); TUI rows stay a fixed 1 cell regardless.
+    /// unit (pixels for GTK / macOS / Win-GUI). `Some(22)` by default,
+    /// matching VS Code's tree row pitch, independent of editor font size.
+    /// Header rows (`Decoration::Header`) are unaffected; they stay pitched
+    /// off `line_height`. Set to `None` to fall back to the old
+    /// line-height-derived pitch (`line_height * 1.4` for leaves and
+    /// branches) instead.
     ///
-    /// `Some(h)` pins leaf/branch rows to `h`, independent of editor
-    /// font size. Header rows (`Decoration::Header`) are unaffected; they
-    /// stay pitched off `line_height`.
+    /// **TUI ignores this field** — a cell grid has no literal pixels, so
+    /// rows there stay a fixed 1 cell regardless of this override.
     ///
     /// Integral because both GUI rasterisers `.round()` the row pitch
     /// to whole native units before painting.
@@ -536,8 +537,14 @@ pub struct TreeStyle {
     /// Both `gtk_tree_layout` / `mac_tree_layout` (hit-test) and
     /// `draw_tree` (paint) read this same field, so paint and hit-test
     /// stay in sync by construction.
-    #[serde(default)]
+    #[serde(default = "TreeStyle::default_row_height")]
     pub row_height: Option<u16>,
+}
+
+impl TreeStyle {
+    fn default_row_height() -> Option<u16> {
+        Some(22)
+    }
 }
 
 impl Default for TreeStyle {
@@ -547,7 +554,7 @@ impl Default for TreeStyle {
             show_chevrons: true,
             chevron_expanded: "▾".into(),
             chevron_collapsed: "▸".into(),
-            row_height: None,
+            row_height: Self::default_row_height(),
         }
     }
 }

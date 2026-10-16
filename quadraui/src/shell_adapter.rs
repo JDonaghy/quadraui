@@ -186,6 +186,9 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
     if config.has_status_bar {
         shell = shell.with_status_bar();
     }
+    if let Some(height_px) = config.status_bar_height_px {
+        shell = shell.with_status_bar_height_px(height_px);
+    }
     if config.status_bar_under_main_column {
         shell = shell.with_status_bar_under_main_column();
     }
@@ -574,6 +577,50 @@ mod tests {
         let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 6.0);
         let tb = layout.title_bar_bounds.expect("row reserved");
         assert_eq!(tb.height, 34.0);
+    }
+
+    /// `ShellConfig::with_status_bar_height_px` reaches the built
+    /// `AppShell` so a pixel height set on the config actually sizes the
+    /// resolved status bar, not just stores a field nobody reads.
+    #[test]
+    fn status_bar_height_px_reaches_the_built_app_shell() {
+        let config = ShellConfig::new("t", Vec::new())
+            .with_status_bar()
+            .with_status_bar_height_px(30.0);
+
+        let adapter = build_shell_adapter(NoopApp, config);
+        // `line_height = 6.0` would resolve to `6.0` via the one-line-height
+        // fallback — the 30.0 px override must win instead.
+        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 6.0);
+        let sb = layout.status_bar_bounds.expect("row reserved");
+        assert_eq!(sb.height, 30.0);
+    }
+
+    /// A `ShellConfig` with no explicit px override at all — matching the
+    /// `appshell_demo` example — resolves to VS Code's own chrome
+    /// dimensions (48px activity bar, 35px tab/title bar, 22px status bar)
+    /// on a GUI backend (`line_height > 1.0`), with no app configuration
+    /// beyond enabling the three bands and zero app-side pixel tuning.
+    #[test]
+    fn default_shell_config_measures_vs_code_chrome_px_on_a_gui_backend() {
+        let config = ShellConfig::new("t", Vec::new())
+            .with_title_bar(1.0)
+            .with_status_bar();
+
+        let adapter = build_shell_adapter(NoopApp, config);
+        // A GUI-sized line height (20px) where a naive line-height-derived
+        // title bar (`1.0 * 20.0 = 20.0`) would fall well short of the 35px
+        // floor, proving the px default — not a lucky line-height
+        // coincidence — is what produces 35.0.
+        let layout = adapter
+            .shell
+            .layout(Rect::new(0.0, 0.0, 800.0, 600.0), 20.0);
+
+        assert_eq!(layout.activity_bar_bounds.width, 48.0);
+        let tb = layout.title_bar_bounds.expect("title bar row reserved");
+        assert_eq!(tb.height, 35.0);
+        let sb = layout.status_bar_bounds.expect("status bar row reserved");
+        assert_eq!(sb.height, 22.0);
     }
 
     /// `ShellConfig::with_panel_icon` overrides are applied to the underlying
