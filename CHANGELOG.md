@@ -206,12 +206,16 @@ only a push to `main` runs this workflow.
 
 ### Fixed
 
-- TUI context menu: `draw_context_menu` no longer lets the top (or left)
-  border row/column collide with the first item's row when the menu is
-  anchored flush against the viewport edge (`layout.bounds.y == 0` or
-  `.x == 0` — e.g. right-clicking a tab bar rendered at row 0). The items
-  now shift inward by one cell in that case instead of the border's
-  `saturating_sub(1)` clamping onto the same cell as the first item.
+- TUI context menu: the top (and left) border no longer collides with the
+  first item's row when the menu is anchored flush against the viewport
+  edge (e.g. right-clicking a tab bar rendered at row 0). The fix lives in
+  geometry, not the rasteriser: a new `Backend::context_menu_border_inset`
+  method (default `0.0`; `TuiBackend` returns `1.0`) lets each
+  `ContextMenu::layout`/`layout_at` caller reserve the border's chrome
+  cell by insetting the viewport rect it passes in, so `hit_test` and
+  `draw_context_menu` agree on where the first item actually sits instead
+  of the rasteriser alone shifting painted rows away from the unshifted
+  hit-test geometry.
 - `MacBackend::invalidate_rect` now calls AppKit's `setNeedsDisplayInRect:`
   on the recorded rect instead of only bookkeeping it in the shared
   `InvalidationLog`, completing the native partial-repaint wiring this
