@@ -196,7 +196,7 @@ mod tests {
             let cy = hit.bounds.y + hit.bounds.height / 2.0;
             assert_eq!(
                 layout.hit_test(1.0, cy),
-                ActivityBarHit::Item(item.id.clone()),
+                ActivityBarHit::Item(item.id),
                 "row centre for {:?} should hit-test back to itself",
                 item.id,
             );
@@ -231,7 +231,7 @@ mod tests {
         // first (see that field's doc), so `hits[0]` is the *settings*
         // row, not the visually-topmost one. Look up the top-pinned
         // explorer item explicitly rather than assuming array order.
-        let explorer_id = bar.top_items[0].id.clone();
+        let explorer_id = bar.top_items[0].id;
         let explorer_hit = hits
             .iter()
             .find(|h| h.id == explorer_id)

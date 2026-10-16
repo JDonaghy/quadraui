@@ -150,7 +150,7 @@ impl AppLogic for ToastActionsApp {
                     .iter()
                     .find(|t| t.actions.iter().any(|a| a.id == id))
                 {
-                    let toast_id = t.id.clone();
+                    let toast_id = t.id;
                     self.dismiss(toast_id);
                 }
                 return Reaction::Redraw;
@@ -207,7 +207,7 @@ impl AppLogic for ToastActionsApp {
                             .iter()
                             .find(|t| t.actions.iter().any(|a| a.id == id))
                         {
-                            let toast_id = t.id.clone();
+                            let toast_id = t.id;
                             self.dismiss(toast_id);
                         }
                     }

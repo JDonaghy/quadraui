@@ -149,7 +149,7 @@ impl AppLogic for BoardApp {
                     .unwrap_or(BoardHit::Empty);
                 match hit {
                     BoardHit::Card(id) => {
-                        self.model.selected_card_id = Some(id.clone());
+                        self.model.selected_card_id = Some(id);
                         let title = self
                             .model
                             .columns

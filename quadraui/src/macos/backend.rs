@@ -2229,7 +2229,7 @@ impl Backend for MacBackend {
         let row_h = self.line_height();
         let track = crate::primitives::list::hscrollbar_track(rect, list.bordered, char_w, row_h);
         Some(crate::Scrollbar::horizontal(
-            list.id.clone(),
+            list.id,
             track,
             list.h_scroll as f32 * char_w,
             content_px,
@@ -2583,7 +2583,7 @@ impl Backend for MacBackend {
         // next `KeyPressed` into this bar — same contract
         // `GtkBackend::draw_activity_bar` implements.
         if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id.clone());
+            self.focused_activity_bar = Some(bar.id);
         }
         let ctx = self.current_cg();
         debug_assert!(
@@ -2632,7 +2632,7 @@ impl Backend for MacBackend {
     ) -> Vec<ActivityBarRowHit> {
         // Track keyboard focus — same contract as `draw_activity_bar` above.
         if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id.clone());
+            self.focused_activity_bar = Some(bar.id);
         }
         let ctx = self.current_cg();
         debug_assert!(
@@ -2796,7 +2796,7 @@ impl Backend for MacBackend {
 
         if let Some(ref sb_state) = term.scrollbar {
             let sb = crate::primitives::scrollbar::Scrollbar::vertical(
-                term.id.clone(),
+                term.id,
                 Rect::new(
                     rect.x + cell_area_w as f32,
                     rect.y,
@@ -3088,7 +3088,7 @@ impl Backend for MacBackend {
         // Same convention `draw_minimap`/`draw_image` use for a
         // chrome-only primitive: register the float's own bounds under
         // its id so it's inventory-observable.
-        self.register_zone(float.id.clone(), layout.bounds);
+        self.register_zone(float.id, layout.bounds);
     }
     fn draw_number_input(
         &mut self,
@@ -3102,7 +3102,7 @@ impl Backend for MacBackend {
             self,
             &theme,
         );
-        self.register_zone(number_input.id.clone(), layout.bounds);
+        self.register_zone(number_input.id, layout.bounds);
     }
     /// Same shape as [`Self::draw_number_input`] above.
     fn draw_combo_box(
@@ -3112,7 +3112,7 @@ impl Backend for MacBackend {
     ) {
         let theme = self.current_theme;
         crate::primitives::combo_box::native_surface_paint::paint(combo_box, layout, self, &theme);
-        self.register_zone(combo_box.id.clone(), layout.field_bounds);
+        self.register_zone(combo_box.id, layout.field_bounds);
     }
     fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
         let ctx = self.current_cg();
@@ -3460,7 +3460,7 @@ impl Backend for MacBackend {
         let layout = crate::primitives::button::native_surface_paint::paint(
             button, self, &theme, rect, &style,
         );
-        self.register_zone(button.id.clone(), rect);
+        self.register_zone(button.id, rect);
         layout
     }
     fn button_layout(&self, rect: Rect, button: &Button) -> ButtonLayout {
@@ -3477,7 +3477,7 @@ impl Backend for MacBackend {
             group, self, &theme, rect, row_height,
         );
         for (option, item) in group.options.iter().zip(layout.items.iter()) {
-            self.register_zone(option.id.clone(), *item);
+            self.register_zone(option.id, *item);
         }
         layout
     }
@@ -3496,7 +3496,7 @@ impl Backend for MacBackend {
         let theme = self.current_theme;
         let layout =
             crate::primitives::switch::native_surface_paint::paint(switch, self, &theme, rect);
-        self.register_zone(switch.id.clone(), rect);
+        self.register_zone(switch.id, rect);
         layout
     }
     fn switch_layout(&self, rect: Rect, switch: &Switch) -> SwitchLayout {
@@ -3521,11 +3521,11 @@ impl Backend for MacBackend {
         // toast has disappeared (dismissed toasts are removed from `stack`
         // immediately, so there is nothing left to animate out), and start
         // a fresh one for any id seen for the first time this frame.
-        let live_ids: HashSet<WidgetId> = stack.toasts.iter().map(|t| t.id.clone()).collect();
+        let live_ids: HashSet<WidgetId> = stack.toasts.iter().map(|t| t.id).collect();
         self.toast_enter.retain(|id, _| live_ids.contains(id));
         for id in &live_ids {
             self.toast_enter
-                .entry(id.clone())
+                .entry(*id)
                 .or_insert_with(|| Transition::start(toast_slide_duration));
         }
 
@@ -3546,7 +3546,7 @@ impl Backend for MacBackend {
                 if progress < 1.0 {
                     still_animating = true;
                 }
-                (id.clone(), lerp(start_dx, 0.0, progress))
+                (*id, lerp(start_dx, 0.0, progress))
             })
             .collect();
 
@@ -3757,7 +3757,7 @@ impl Backend for MacBackend {
         if let Some(id) = hovered_id {
             self.hover_fade.retain(|k, _| k == id);
             self.hover_fade
-                .entry(id.clone())
+                .entry(*id)
                 .or_insert_with(|| Transition::start(hover_fade_duration));
         } else {
             self.hover_fade.clear();
@@ -3978,7 +3978,7 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_minimap called outside enter_frame_scope",
         );
-        self.register_zone(minimap.id.clone(), rect);
+        self.register_zone(minimap.id, rect);
         let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         let theme = self.current_theme;
         let dpi_scale = self.viewport.scale as f64;
@@ -4028,7 +4028,7 @@ impl Backend for MacBackend {
         rect: Rect,
         image: &crate::primitives::image::Image,
     ) -> crate::backend::ImagePaintResult {
-        self.register_zone(image.id.clone(), rect);
+        self.register_zone(image.id, rect);
         let ctx = self.current_cg();
         let scale = self.viewport.scale;
         // Unlike `draw_minimap`, `draw_image` can legitimately return

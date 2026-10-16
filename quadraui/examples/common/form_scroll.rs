@@ -82,7 +82,7 @@ impl FormScrollApp {
         Form {
             id: WidgetId::new("settings-form"),
             fields,
-            focused_field: self.focused.clone(),
+            focused_field: self.focused,
             scroll_offset: 0,
             has_focus: true,
         }

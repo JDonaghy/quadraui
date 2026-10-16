@@ -161,9 +161,7 @@ mod tests {
         );
         assert_eq!(
             button.click(),
-            Some(ButtonEvent::Activated {
-                id: button.id.clone()
-            })
+            Some(ButtonEvent::Activated { id: button.id })
         );
     }
 
@@ -175,12 +173,7 @@ mod tests {
             &crate::event::Key::Named(crate::event::NamedKey::Enter),
             &crate::types::Modifiers::default(),
         );
-        assert_eq!(
-            event,
-            Some(ButtonEvent::Activated {
-                id: button.id.clone()
-            })
-        );
+        assert_eq!(event, Some(ButtonEvent::Activated { id: button.id }));
     }
 
     /// `win_button_layout` must produce byte-identical layout to the painted result.

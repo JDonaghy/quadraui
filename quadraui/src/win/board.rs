@@ -152,14 +152,14 @@ mod tests {
                 "column header escaped the requested origin ({origin_x}, {origin_y})",
             );
             let hit = layout.hit_test(hb.x + 1.0, hb.y + hb.height / 2.0);
-            assert_eq!(hit, BoardHit::ColumnHeader(col.col_id.clone()));
+            assert_eq!(hit, BoardHit::ColumnHeader(col.col_id));
 
             for cardl in &col.cards {
                 let cx = cardl.bounds.x + cardl.bounds.width / 2.0;
                 let cy = cardl.bounds.y + cardl.bounds.height / 2.0;
                 assert_eq!(
                     layout.hit_test(cx, cy),
-                    BoardHit::Card(cardl.id.clone()),
+                    BoardHit::Card(cardl.id),
                     "card click must resolve to its card",
                 );
             }
