@@ -1,13 +1,22 @@
-//! Compile-time guard for the *Downstream consumers* policy:
-//! these three `quadraui` public primitives — `TextInput`, `Toolbar`,
-//! `Editor` — are `#[non_exhaustive]` and built via builders, not
-//! exhaustive struct literals. This file asserts the builders cover
-//! every field that external consumers' original literal-based code
-//! used to set, so migrations off literals never omit a field.
+//! Compile-time guard for the *Downstream consumers* policy.
+//!
+//! `TextInput`, `Toolbar` and `Editor` are `#[non_exhaustive]` and built
+//! via builders, not exhaustive struct literals; this file asserts the
+//! builders cover every field that external consumers' original
+//! literal-based code used to set, so migrations off literals never omit
+//! a field.
 //! ```text
 //! $ grep -rn 'TextInput {' ~/src/vimcode/src ~/src/coord-tui/src
 //! /home/john/src/vimcode/src/render.rs:13998:    TextInput {
 //! ```
+//!
+//! `Button`, `ComboBox`, `CommandCenter`, `Completions`, `DropZone`,
+//! `Float`, `NumberInput`, `RadioGroup`, `ScrollView`, `Switch` and
+//! `Terminal` are also `#[non_exhaustive]`; the pattern that survives a
+//! future field addition is `Default::default()` plus direct field
+//! assignment, exercised below. `Palette` gains `Default` here too, but
+//! stays a plain (non-`#[non_exhaustive]`) struct — a published consumer
+//! builds it with an exhaustive literal today.
 
 use quadraui::WidgetId;
 
@@ -204,7 +213,7 @@ fn app_shell_layout_exhaustive_struct_literal_still_compiles() {
 // ── v0.2 `#[non_exhaustive]` batch: `Default` + field mutation survives
 // field growth ──────────────────────────────────────────────────────────
 
-/// Twelve primitives gained `Default` and `#[non_exhaustive]` together so
+/// Eleven primitives gained `Default` and `#[non_exhaustive]` together so
 /// that adding a field to any of them stops being a breaking change.
 /// `#[non_exhaustive]` rejects every struct-literal form from outside the
 /// defining crate — even a literal naming every field with a trailing
@@ -214,8 +223,17 @@ fn app_shell_layout_exhaustive_struct_literal_still_compiles() {
 /// builds one of each newly-`#[non_exhaustive]` primitive with that
 /// pattern, from a file compiled as an external crate exactly like a real
 /// downstream consumer, proving the migration path the CHANGELOG
-/// documents actually compiles.
+/// documents actually compiles. `Palette` is included too: it gained
+/// `Default` in the same batch, and the pattern works for it regardless
+/// of `#[non_exhaustive]`, but it stays a plain struct (see the module
+/// doc above).
 #[test]
+// `Palette` alone could use a direct struct literal since it isn't
+// `#[non_exhaustive]`, but this test deliberately builds every type —
+// `Palette` included — through the same `Default::default()`-plus-field
+// pattern, so a reader sees one uniform migration shape rather than a
+// special case.
+#[allow(clippy::field_reassign_with_default)]
 fn non_exhaustive_batch_builds_via_default_plus_field_assignment() {
     use quadraui::{
         Button, ComboBox, CommandCenter, Completions, DropZone, Float, NumberInput, Palette,

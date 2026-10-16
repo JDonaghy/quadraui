@@ -14,13 +14,10 @@ use serde::{Deserialize, Serialize};
 /// ```
 /// use quadraui::{CommandCenter, CommandCenterHit, CommandCenterMeasure, Rect, WidgetId};
 ///
-/// let center = CommandCenter {
-///     id: WidgetId::new("command_center:main"),
-///     back_enabled: true,
-///     forward_enabled: false,
-///     search_label: "my-project".to_string(),
-///     ..Default::default()
-/// };
+/// let mut center = CommandCenter::default();
+/// center.id = WidgetId::new("command_center:main");
+/// center.back_enabled = true;
+/// center.search_label = "my-project".to_string();
 ///
 /// let bounds = Rect::new(0.0, 0.0, 400.0, 1.0);
 /// let measure = CommandCenterMeasure::from_char_width(&center.search_label, 8.0, 1.0);
