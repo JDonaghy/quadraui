@@ -59,6 +59,8 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-10-16
+
 ### Added
 
 - `descriptor_store` module (`DescriptorStore<T>`, `Handle<T>`) — a
