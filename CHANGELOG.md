@@ -269,6 +269,12 @@ only a push to `main` runs this workflow.
   border, every item still renders on the row and column its own bounds
   report, and nested levels are laid out in a reserved child viewport so
   their own chrome stays on-screen.
+- Win-GUI activity bar text runs are now recorded in surface-absolute
+  coordinates (matching GTK's `cr.user_to_device()` adjustment), so
+  `WinDriver::find` returns positions in the same coordinate space the
+  hit-test path expects — text painted inside a `with_translation`
+  scope (e.g. the activity bar's bar-relative rasteriser) no longer
+  drifts from its on-screen position when chrome dimensions change.
 - `AppShell::layout` now derives its own px-override-suppression and
   rounding rule from `line_height` alone (identity above `1.0`, `.round()`
   at or below it) instead of always rounding, so the hit-test-only path
