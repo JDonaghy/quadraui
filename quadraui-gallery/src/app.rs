@@ -858,7 +858,7 @@ mod tests {
     fn describe_event_extracts_mouse_down_widget() {
         let id = WidgetId::new("w");
         let ev = UiEvent::MouseDown {
-            widget: Some(id.clone()),
+            widget: Some(id),
             button: quadraui::MouseButton::Left,
             position: quadraui::Point::new(0.0, 0.0),
             modifiers: Default::default(),
