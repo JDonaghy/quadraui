@@ -2058,6 +2058,32 @@ pub trait Backend: sealed::Sealed {
         0.0
     }
 
+    /// Space, in this backend's native units, that [`Self::draw_context_menu`]
+    /// needs reserved along a [`crate::ContextMenu`]'s top and left edges
+    /// before the menu's own layout is computed — i.e. how far a caller
+    /// building the `viewport` rect passed to [`crate::ContextMenu::layout`]
+    /// / [`crate::ContextMenu::layout_at`] must inset that viewport's near
+    /// corner so the resulting [`crate::ContextMenuLayout`] (its `bounds`,
+    /// `visible_items`, and `hit_regions`) already accounts for the chrome
+    /// this backend paints outside the item area.
+    ///
+    /// Every pixel backend strokes the menu's border centred on
+    /// `bounds` (see `native_surface_paint::paint`'s `surface_stroke_rounded_rect`
+    /// call), so the default `0.0` is correct for GTK, Win-GUI, and
+    /// macOS. The TUI rasteriser instead paints the border on a whole
+    /// cell *outside* `bounds` on every side; when a menu is anchored
+    /// flush against the viewport's top-left corner there is no outside
+    /// cell left for that border to occupy without this inset, so
+    /// [`crate::tui::backend::TuiBackend`] overrides this to `1.0` (one
+    /// cell) and the caller shrinks the near edge of the viewport it
+    /// hands to layout accordingly. Doing the inset here — in the
+    /// geometry `hit_test` reads — rather than only shifting where the
+    /// TUI rasteriser paints keeps painted rows and hit-tested rows in
+    /// agreement.
+    fn context_menu_border_inset(&self) -> f32 {
+        0.0
+    }
+
     /// Whether this backend can render individual text rows at a larger
     /// font size (per-line scale), so layouts should reserve taller
     /// vertical space for scaled rows.

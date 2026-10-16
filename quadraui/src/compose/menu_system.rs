@@ -662,7 +662,13 @@ impl MenuSystem {
             raw_anchor.height + pad,
         );
         let viewport = backend.viewport();
-        let viewport_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+        let inset = backend.context_menu_border_inset();
+        let viewport_rect = Rect::new(
+            inset,
+            inset,
+            (viewport.width - inset).max(0.0),
+            (viewport.height - inset).max(0.0),
+        );
         let ctx_menu = self.build_dropdown(open_idx);
         let menu_width = dropdown_width(backend, &ctx_menu.items, lh);
         let item_h = (lh * 1.4).round().max(lh);
@@ -696,7 +702,13 @@ impl MenuSystem {
         let item_h = (lh * 1.4).round().max(lh);
         let sep_h = (lh * 0.5).round().max(1.0);
         let viewport = backend.viewport();
-        let vp = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+        let inset = backend.context_menu_border_inset();
+        let vp = Rect::new(
+            inset,
+            inset,
+            (viewport.width - inset).max(0.0),
+            (viewport.height - inset).max(0.0),
+        );
 
         for (depth, &path_idx) in self.submenu_path.iter().enumerate() {
             // Extract parent data before we push so the borrow checker is happy.
