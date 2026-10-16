@@ -62,6 +62,24 @@ pub enum ButtonVariant {
 /// let event = button.handle_key(&Key::Named(NamedKey::Enter), &Modifiers::default());
 /// assert_eq!(event, Some(ButtonEvent::Activated { id: button.id.clone() }));
 /// ```
+///
+/// `#[non_exhaustive]` rejects a struct literal from outside this crate —
+/// including a literal naming every field with a trailing
+/// `..Default::default()` — which is exactly what makes a future field
+/// addition non-breaking for a downstream consumer:
+///
+/// ```compile_fail
+/// use quadraui::{Button, ButtonVariant, WidgetId};
+///
+/// let _ = Button {
+///     id: WidgetId::new("dialog:ok"),
+///     label: "OK".to_string(),
+///     variant: ButtonVariant::default(),
+///     disabled: false,
+///     focused: false,
+///     ..Default::default()
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Button {

@@ -58,6 +58,12 @@ pub enum PaletteMode {
 
 /// Declarative description of a `Palette` widget.
 ///
+/// Stays a plain, non-`#[non_exhaustive]` struct: a published consumer
+/// builds it with an exhaustive struct literal today, so marking it
+/// `#[non_exhaustive]` would break that consumer's build. `Default` is
+/// still provided for consumers that want the
+/// `Default::default()`-plus-field-assignment pattern.
+///
 /// # Examples
 ///
 /// ```
@@ -94,7 +100,6 @@ pub enum PaletteMode {
 /// assert_eq!(layout.hit_test(0.0, 2.0), PaletteHit::Item(0));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct Palette {
     pub id: WidgetId,
     /// Header text shown above the query input, e.g. `"Commands"` or

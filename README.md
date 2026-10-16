@@ -10,7 +10,6 @@ the one-line runner call in `main` changing.
 
 ```rust
 use quadraui::prelude::*;
-use quadraui::{AppShellLayout, ScreenLayout, Surface};
 
 struct Hello { keys_pressed: u32 }
 
