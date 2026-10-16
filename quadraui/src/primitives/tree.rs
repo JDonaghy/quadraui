@@ -1234,12 +1234,12 @@ mod tests {
 
     /// `TreeStyle::row_height` is additive, not a required field.
     ///
-    /// A `TreeStyle` deserialized without a `row_height` key must
-    /// decode it as `None` — "keep deriving the row pitch from
-    /// `line_height`" — rather than failing the whole `TreeView`
-    /// deserialization with a missing-field error.
+    /// A `TreeStyle` deserialized without a `row_height` key must decode
+    /// it to the same px-first default as `TreeStyle::default()`
+    /// (`Some(22)`) rather than failing the whole `TreeView` deserialization
+    /// with a missing-field error.
     #[test]
-    fn tree_style_row_height_defaults_to_none_when_absent_from_json() {
+    fn tree_style_row_height_defaults_to_22_when_absent_from_json() {
         let legacy = r#"{
             "indent": 2,
             "show_chevrons": true,
@@ -1249,8 +1249,9 @@ mod tests {
         let style: TreeStyle =
             serde_json::from_str(legacy).expect("pre-#623 TreeStyle must decode");
         assert_eq!(
-            style.row_height, None,
-            "absent row_height means 'derive from line_height', not a decode error"
+            style.row_height,
+            Some(22),
+            "absent row_height falls back to the px-first default, not a decode error"
         );
         assert_eq!(style, TreeStyle::default());
     }

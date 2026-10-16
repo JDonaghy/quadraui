@@ -31,21 +31,25 @@ pub struct ShellConfig {
     /// See [`Self::activity_bar_width_px`] for a fixed-pixel alternative
     /// that doesn't move with the app's editor font.
     pub activity_bar_width: f32,
-    /// Fixed-pixel activity bar width override. `None` (the default)
-    /// leaves `activity_bar_width` (a line-height multiple) in charge.
-    /// Set via [`Self::with_activity_bar_width_px`] to pin the bar to an
-    /// exact width — e.g. `48.0` to match VS Code's activity bar and the
-    /// `ACTIVITY_ROW_PX` row height GTK/macOS already paint each item at
-    /// — regardless of `line_height`.
+    /// Fixed-pixel activity bar width override, on pixel backends. `Some(48.0)`
+    /// by default, matching VS Code's activity bar and the `ACTIVITY_ROW_PX`
+    /// row height GTK/macOS already paint each item at — regardless of
+    /// `line_height`. Set via [`Self::with_activity_bar_width_px`]; pass
+    /// `None` to fall back to `activity_bar_width` (a line-height multiple)
+    /// instead. **TUI ignores this field** — a cell grid has no literal
+    /// pixels, so a px override there would become a column count instead
+    /// of a width; `activity_bar_width` always drives TUI.
     pub activity_bar_width_px: Option<f32>,
     pub position: ShellPosition,
     pub has_title_bar: bool,
     pub title_bar_height_lh: f32,
-    /// Fixed-pixel floor under `title_bar_height_lh * line_height`. `None`
-    /// (the default) leaves the line-height multiple in sole charge — see
-    /// [`AppShell::with_title_bar_min_px`] for the full rationale and why
-    /// this is a floor rather than [`Self::activity_bar_width_px`]'s hard
-    /// override. Set via [`Self::with_title_bar_min_px`].
+    /// Fixed-pixel floor under `title_bar_height_lh * line_height`, on pixel
+    /// backends. `Some(35.0)` by default, matching VS Code's tab/title bar.
+    /// See [`AppShell::with_title_bar_min_px`] for the full rationale and
+    /// why this is a floor rather than [`Self::activity_bar_width_px`]'s
+    /// hard override. Set via [`Self::with_title_bar_min_px`]; pass `None`
+    /// to leave `title_bar_height_lh * line_height` in sole charge. **TUI
+    /// ignores this field**, for the same reason as `activity_bar_width_px`.
     pub title_bar_min_px: Option<f32>,
     /// Ask the backend not to also draw its own native titlebar band on
     /// top of an app-painted one. `false` (the default) leaves
@@ -80,6 +84,15 @@ pub struct ShellConfig {
     pub max_bottom_panel_height_lh: f32,
     pub has_command_line: bool,
     pub has_status_bar: bool,
+    /// Fixed-pixel status bar height, on pixel backends, when
+    /// [`Self::has_status_bar`] is set. `Some(22.0)` by default, matching
+    /// VS Code's status bar. `None` falls back to one line-height (the
+    /// same fallback [`AppShell`] has always used). Set via
+    /// [`Self::with_status_bar_height_px`]. **TUI ignores this field** —
+    /// a cell grid has no literal pixels, so a px override there would
+    /// become a row count instead of a height; the one-line-height
+    /// fallback always drives TUI.
+    pub status_bar_height_px: Option<f32>,
     /// Carve the status bar and command line from the main column's width
     /// instead of the full window width, letting the activity bar and
     /// sidebar run the full height below the title bar. Off by default.
@@ -181,11 +194,11 @@ impl ShellConfig {
             min_sidebar_width: 8.0,
             max_sidebar_width: 50.0,
             activity_bar_width: 3.0,
-            activity_bar_width_px: None,
+            activity_bar_width_px: Some(48.0),
             position: ShellPosition::Left,
             has_title_bar: false,
             title_bar_height_lh: 1.5,
-            title_bar_min_px: None,
+            title_bar_min_px: Some(35.0),
             client_side_titlebar: false,
             has_bottom_panel: false,
             bottom_panel_height_lh: 10.0,
@@ -193,6 +206,7 @@ impl ShellConfig {
             max_bottom_panel_height_lh: 30.0,
             has_command_line: false,
             has_status_bar: false,
+            status_bar_height_px: Some(22.0),
             status_bar_under_main_column: false,
             bottom_panel: None,
             bottom_bands: Vec::new(),
@@ -223,9 +237,11 @@ impl ShellConfig {
     }
 
     /// Pin the activity bar to a fixed pixel width, overriding
-    /// `activity_bar_width`. Independent of `line_height` — e.g. `48.0`
-    /// keeps the bar square against `ACTIVITY_ROW_PX` regardless of the
-    /// app's editor font size.
+    /// `activity_bar_width`. Independent of `line_height` — defaults to
+    /// `48.0`, keeping the bar square against `ACTIVITY_ROW_PX` regardless
+    /// of the app's editor font size. To fall back to the line-height
+    /// multiple instead, set the `activity_bar_width_px` field directly to
+    /// `None` (it is `pub`).
     pub fn with_activity_bar_width_px(mut self, width_px: f32) -> Self {
         self.activity_bar_width_px = Some(width_px);
         self
@@ -239,8 +255,9 @@ impl ShellConfig {
 
     /// Pin a fixed-pixel floor under the title bar's line-height-derived
     /// height — see [`AppShell::with_title_bar_min_px`] for the full
-    /// rationale. `None` (the default) leaves
-    /// `title_bar_height_lh * line_height` in sole charge.
+    /// rationale. Defaults to `35.0`. Set the `title_bar_min_px` field
+    /// directly to `None` to leave `title_bar_height_lh * line_height` in
+    /// sole charge instead.
     pub fn with_title_bar_min_px(mut self, min_px: f32) -> Self {
         self.title_bar_min_px = Some(min_px);
         self
@@ -279,6 +296,14 @@ impl ShellConfig {
 
     pub fn with_status_bar(mut self) -> Self {
         self.has_status_bar = true;
+        self
+    }
+
+    /// Pin the status bar to a fixed pixel height. Defaults to `22.0`,
+    /// matching VS Code's status bar. Set the `status_bar_height_px` field
+    /// directly to `None` to fall back to one line-height instead.
+    pub fn with_status_bar_height_px(mut self, height_px: f32) -> Self {
+        self.status_bar_height_px = Some(height_px);
         self
     }
 
@@ -846,14 +871,14 @@ mod tests {
         );
     }
 
-    /// A fresh `ShellConfig` keeps `AppShell`'s own default (3.0
-    /// line-heights) and no fixed-pixel override, so nothing that predates
-    /// this field changes behavior.
+    /// A fresh `ShellConfig` keeps `AppShell`'s own line-height-multiple
+    /// default (3.0) available as a fallback, but leads with a px-first
+    /// default matching VS Code's activity bar (`48.0`) on pixel backends.
     #[test]
     fn shell_config_activity_bar_width_defaults_match_app_shell() {
         let config = ShellConfig::new("test", Vec::new());
         assert_eq!(config.activity_bar_width, 3.0);
-        assert_eq!(config.activity_bar_width_px, None);
+        assert_eq!(config.activity_bar_width_px, Some(48.0));
     }
 
     /// `with_activity_bar_width` stores the line-height multiple
@@ -873,12 +898,12 @@ mod tests {
         assert_eq!(config.activity_bar_width_px, Some(48.0));
     }
 
-    /// A fresh `ShellConfig` has no title-bar-min-px floor —
-    /// nothing that predates this field changes behavior.
+    /// A fresh `ShellConfig` defaults the title-bar-min-px floor to `35.0`,
+    /// matching VS Code's tab/title bar on pixel backends.
     #[test]
-    fn shell_config_title_bar_min_px_defaults_to_none() {
+    fn shell_config_title_bar_min_px_defaults_to_35() {
         let config = ShellConfig::new("test", Vec::new());
-        assert_eq!(config.title_bar_min_px, None);
+        assert_eq!(config.title_bar_min_px, Some(35.0));
     }
 
     /// `with_title_bar_min_px` stores the floor for
@@ -887,6 +912,22 @@ mod tests {
     fn shell_config_with_title_bar_min_px_sets_the_floor() {
         let config = ShellConfig::new("test", Vec::new()).with_title_bar_min_px(34.0);
         assert_eq!(config.title_bar_min_px, Some(34.0));
+    }
+
+    /// A fresh `ShellConfig` defaults the status bar height to `22.0`,
+    /// matching VS Code's status bar on pixel backends.
+    #[test]
+    fn shell_config_status_bar_height_px_defaults_to_22() {
+        let config = ShellConfig::new("test", Vec::new());
+        assert_eq!(config.status_bar_height_px, Some(22.0));
+    }
+
+    /// `with_status_bar_height_px` stores the override for
+    /// `build_shell_adapter` to pass through to `AppShell`.
+    #[test]
+    fn shell_config_with_status_bar_height_px_sets_the_override() {
+        let config = ShellConfig::new("test", Vec::new()).with_status_bar_height_px(30.0);
+        assert_eq!(config.status_bar_height_px, Some(30.0));
     }
 
     /// A fresh `ShellConfig` has no panel-icon overrides — nothing
