@@ -41,6 +41,7 @@ mod tests {
     use crate::types::{Modifiers, WidgetId};
     use crate::win::testing::HeadlessSurface;
     use crate::win::text::DWrite;
+    use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 
     const W: u32 = 120;
     const H: u32 = 60;
@@ -72,6 +73,16 @@ mod tests {
     ) -> RadioGroupLayout {
         surface
             .paint(|target| {
+                // Clear to opaque black so anti-aliased strokes blend
+                // with a known background, not undefined DIB content.
+                unsafe {
+                    target.Clear(Some(&D2D1_COLOR_F {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 1.0,
+                    }));
+                }
                 let mut raw = super::super::surface::D2dSurface {
                     target,
                     dwrite: Some(dwrite),
@@ -99,7 +110,15 @@ mod tests {
         for dy in 0..size {
             for dx in 0..size {
                 let px = surface.pixel_at(x0 + dx, y0 + dy);
-                if (px.r, px.g, px.b) == (color.r, color.g, color.b) {
+                // Approximate match: anti-aliased strokes in Direct2D
+                // with ALPHA_MODE_IGNORE blend partial-coverage pixels
+                // with the background, so no pixel exactly equals the
+                // brush colour. A tolerance of ±2 per channel catches
+                // near-full-coverage pixels without false positives.
+                if (px.r as i16 - color.r as i16).abs() <= 2
+                    && (px.g as i16 - color.g as i16).abs() <= 2
+                    && (px.b as i16 - color.b as i16).abs() <= 2
+                {
                     return true;
                 }
             }

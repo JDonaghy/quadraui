@@ -35,6 +35,7 @@ mod tests {
     use crate::types::{Modifiers, WidgetId};
     use crate::win::testing::HeadlessSurface;
     use crate::win::text::DWrite;
+    use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 
     const W: u32 = 40;
     const H: u32 = 16;
@@ -57,6 +58,16 @@ mod tests {
     ) -> SwitchLayout {
         surface
             .paint(|target| {
+                // Clear to opaque black so anti-aliased edges blend
+                // with a known background, not undefined DIB content.
+                unsafe {
+                    target.Clear(Some(&D2D1_COLOR_F {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 1.0,
+                    }));
+                }
                 let mut raw = super::super::surface::D2dSurface {
                     target,
                     dwrite: Some(dwrite),
@@ -101,8 +112,10 @@ mod tests {
         paint(&surface, &dwrite, rect, &switch, &theme);
 
         // "off" parks the thumb at the left edge, so probe the right end
-        // for the track's own fill colour instead.
-        let px = surface.pixel_at(W - 2, H / 2);
+        // for the track's own fill colour. Use H/4 inset from the right
+        // edge to stay clear of the anti-aliased rounded cap and border
+        // stroke.
+        let px = surface.pixel_at(W - H / 4, H / 2);
         assert_eq!(
             (px.r, px.g, px.b),
             (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b)
