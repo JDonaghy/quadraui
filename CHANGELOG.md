@@ -146,31 +146,33 @@ only a push to `main` runs this workflow.
 
 ### Changed
 
-- `Default` + `#[non_exhaustive]` on eleven primitives (`Button`, `ComboBox`,
-  `CommandCenter`, `Completions`, `DropZone`, `Float`, `NumberInput`,
-  `RadioGroup`, `ScrollView`, `Switch`, `Terminal`): each now implements
-  `Default` and is `#[non_exhaustive]`, so a future field addition to any
-  of them stops being a breaking change for a downstream consumer.
-  **Migration note:** `#[non_exhaustive]` rejects every struct-literal form
-  from outside this crate, including a literal naming every field with a
-  trailing `..Default::default()` — that pattern still fails to compile.
-  The construction patterns that keep working are a constructor (e.g.
-  `Button::new(id)`) or `Default::default()` followed by direct field
-  assignment (`let mut b = Button::default(); b.id = ...;`), since every
-  field stays `pub`. `quadraui/tests/downstream_struct_literals.rs`
-  exercises the second pattern against all eleven types from an
-  external-crate-compiled test, and `Button`'s own doc comment carries a
-  `compile_fail` doctest proving the rejected literal actually fails to
-  compile. `Palette` also gains `Default` here but is **not**
-  `#[non_exhaustive]`: `vimcode` builds it with exhaustive struct literals
-  today (three live call sites), so marking it `#[non_exhaustive]` would
-  break that published consumer; it stays plain, the same reason
-  `Tooltip` is excluded below. `Scrollbar` keeps its existing `Default`
-  impl but is intentionally excluded from `#[non_exhaustive]` because a
-  sealed oracle acceptance fixture (`tests/acceptance/ms-11/
-  c0_paint_smoke.rs`) constructs it as an exhaustive literal and that file
-  cannot be edited by this change. `Tooltip` is intentionally excluded for
-  the same published-consumer reason as `Palette`.
+- `Default` + `#[non_exhaustive]` on eight primitives (`Button`, `ComboBox`,
+  `DropZone`, `Float`, `NumberInput`, `RadioGroup`, `ScrollView`, `Switch`):
+  each now implements `Default` and is `#[non_exhaustive]`, so a future
+  field addition to any of them stops being a breaking change for a
+  downstream consumer. **Migration note:** `#[non_exhaustive]` rejects
+  every struct-literal form from outside this crate, including a literal
+  naming every field with a trailing `..Default::default()` — that
+  pattern still fails to compile. The construction patterns that keep
+  working are a constructor (e.g. `Button::new(id)`) or
+  `Default::default()` followed by direct field assignment (`let mut b =
+  Button::default(); b.id = ...;`), since every field stays `pub`.
+  `quadraui/tests/downstream_struct_literals.rs` exercises the second
+  pattern against all eight types from an external-crate-compiled test,
+  and `Button`'s own doc comment carries a `compile_fail,E0639` doctest
+  proving the rejected literal actually fails to compile with the
+  expected error. `Palette`, `Terminal`, `CommandCenter` and `Completions`
+  also gain `Default` here but are **not** `#[non_exhaustive]`: `vimcode`
+  builds each of them with exhaustive struct literals today (`Palette`
+  has three live call sites; `Terminal`, `CommandCenter` and `Completions`
+  one apiece), so marking any of them `#[non_exhaustive]` would break
+  that published consumer; they stay plain, the same reason `Tooltip` is
+  excluded below. `Scrollbar` keeps its existing `Default` impl but is
+  intentionally excluded from `#[non_exhaustive]` because a sealed oracle
+  acceptance fixture (`tests/acceptance/ms-11/c0_paint_smoke.rs`)
+  constructs it as an exhaustive literal and that file cannot be edited
+  by this change. `Tooltip` is intentionally excluded for the same
+  published-consumer reason as `Palette`.
 - `macos::mac_tree_layout` takes a fourth `font: &CTFont` argument, so it
   can measure chevron glyphs for real (mirrors `mac_form_layout`'s existing
   `font` argument). `Backend::tree_layout` is unchanged — `MacBackend`

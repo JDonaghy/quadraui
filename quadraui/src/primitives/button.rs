@@ -68,7 +68,7 @@ pub enum ButtonVariant {
 /// `..Default::default()` — which is exactly what makes a future field
 /// addition non-breaking for a downstream consumer:
 ///
-/// ```compile_fail
+/// ```compile_fail,E0639
 /// use quadraui::{Button, ButtonVariant, WidgetId};
 ///
 /// let _ = Button {
