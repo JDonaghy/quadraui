@@ -101,7 +101,7 @@ impl Switch {
         }
         match key {
             Key::Named(NamedKey::Enter) | Key::Char(' ') => Some(SwitchEvent::Toggled {
-                id: self.id.clone(),
+                id: self.id,
                 value: !self.value,
             }),
             _ => None,
@@ -118,7 +118,7 @@ impl Switch {
             return None;
         }
         Some(SwitchEvent::Toggled {
-            id: self.id.clone(),
+            id: self.id,
             value: !self.value,
         })
     }

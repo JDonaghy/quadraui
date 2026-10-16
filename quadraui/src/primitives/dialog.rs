@@ -471,10 +471,10 @@ impl Dialog {
                 let b = Rect::new(content_x, y, content_w, btn_h);
                 visible_buttons.push(VisibleDialogButton {
                     button_idx: i,
-                    id: btn.id.clone(),
+                    id: btn.id,
                     bounds: b,
                 });
-                hit_regions.push((b, DialogHit::Button(btn.id.clone())));
+                hit_regions.push((b, DialogHit::Button(btn.id)));
             }
         } else {
             // Right-aligned horizontal row.
@@ -486,10 +486,10 @@ impl Dialog {
                 let b = Rect::new(x, cursor_y, measure.button_width, measure.button_row_height);
                 visible_buttons.push(VisibleDialogButton {
                     button_idx: i,
-                    id: btn.id.clone(),
+                    id: btn.id,
                     bounds: b,
                 });
-                hit_regions.push((b, DialogHit::Button(btn.id.clone())));
+                hit_regions.push((b, DialogHit::Button(btn.id)));
             }
         }
 
@@ -681,7 +681,7 @@ pub fn native_dialog_options(d: &Dialog) -> Option<MessageDialogOptions> {
             .buttons
             .iter()
             .map(|b| MessageDialogButton {
-                id: b.id.clone(),
+                id: b.id,
                 label: b.label.clone(),
                 is_default: b.is_default,
                 is_cancel: b.is_cancel,

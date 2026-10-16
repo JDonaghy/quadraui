@@ -504,7 +504,7 @@ impl DualModePaletteController {
             .unwrap_or(self.query.len());
 
         Palette {
-            id: self.id.clone(),
+            id: self.id,
             title,
             query: self.query.clone(),
             query_cursor,

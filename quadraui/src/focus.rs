@@ -78,7 +78,7 @@ impl FocusManager {
     /// doesn't hand focus to whatever now sits at its old index).
     /// Otherwise focus is cleared.
     pub fn sync_tab_order(&mut self, stops: &[(WidgetId, Rect)]) {
-        self.tab_order = stops.iter().map(|(id, _)| id.clone()).collect();
+        self.tab_order = stops.iter().map(|(id, _)| *id).collect();
         if let Some(cur) = &self.focused {
             if !self.tab_order.contains(cur) {
                 self.focused = None;
@@ -130,7 +130,7 @@ impl FocusManager {
                 (idx + dir).rem_euclid(len)
             }
         };
-        let next = self.tab_order[next_idx as usize].clone();
+        let next = self.tab_order[next_idx as usize];
         self.set_focus(Some(next))
     }
 

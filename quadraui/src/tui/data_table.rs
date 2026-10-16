@@ -260,7 +260,7 @@ pub fn draw_data_table(
             (area.height.saturating_sub(1).saturating_sub(footer_h)) as f32,
         );
         let sb = crate::primitives::scrollbar::Scrollbar::vertical(
-            table.id.clone(),
+            table.id,
             sb_track,
             table.scroll_offset as f32,
             table.rows.len() as f32,
@@ -277,7 +277,7 @@ pub fn draw_data_table(
         let hsb_track = crate::event::Rect::new(area.x as f32, hsb_y as f32, track_w, 1.0);
         let visible_w = (area.width as f32 - layout.scrollbar_width).max(1.0);
         let hsb = crate::primitives::scrollbar::Scrollbar::horizontal(
-            table.id.clone(),
+            table.id,
             hsb_track,
             table.h_scroll,
             layout.content_width,

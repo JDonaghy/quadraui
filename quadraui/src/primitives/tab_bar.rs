@@ -889,7 +889,7 @@ impl TabBar {
                     clickable,
                 });
                 if let Some(id) = &seg.id {
-                    hit_regions.push((bounds, TabBarHit::RightSegment(id.clone())));
+                    hit_regions.push((bounds, TabBarHit::RightSegment(*id)));
                 }
                 seg_x += w;
             }

@@ -27,7 +27,7 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
                 let items = toggles
                     .iter()
                     .map(|t| FormItemMeasure {
-                        id: t.id.clone(),
+                        id: t.id,
                         width: t.label.chars().count() as f32,
                     })
                     .collect();
@@ -52,7 +52,7 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
                             })
                             .unwrap_or(0);
                         FormItemMeasure {
-                            id: b.id.clone(),
+                            id: b.id,
                             width: (b.label.chars().count() + icon_w + 2) as f32,
                         }
                     })
@@ -73,8 +73,8 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
                     .iter()
                     .map(|btn| {
                         let id = match btn {
-                            ToolbarButton::Action { id, .. } => id.clone(),
-                            _ => field.id.clone(),
+                            ToolbarButton::Action { id, .. } => *id,
+                            _ => field.id,
                         };
                         FormItemMeasure {
                             id,

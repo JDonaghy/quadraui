@@ -202,9 +202,9 @@ impl Split {
 
         // Hit regions: divider first (specificity), then panes.
         let hit_regions: Vec<(Rect, SplitHit)> = vec![
-            (divider_bounds, SplitHit::Divider(self.id.clone())),
-            (first_bounds, SplitHit::FirstPane(self.id.clone())),
-            (second_bounds, SplitHit::SecondPane(self.id.clone())),
+            (divider_bounds, SplitHit::Divider(self.id)),
+            (first_bounds, SplitHit::FirstPane(self.id)),
+            (second_bounds, SplitHit::SecondPane(self.id)),
         ];
 
         SplitLayout {

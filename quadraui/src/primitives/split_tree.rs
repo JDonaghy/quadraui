@@ -132,7 +132,7 @@ impl SplitTree {
 
     fn collect_leaf_ids(&self, out: &mut Vec<WidgetId>) {
         match self {
-            SplitTree::Leaf(id) => out.push(id.clone()),
+            SplitTree::Leaf(id) => out.push(*id),
             SplitTree::Split { first, second, .. } => {
                 first.collect_leaf_ids(out);
                 second.collect_leaf_ids(out);
@@ -185,7 +185,7 @@ impl SplitTree {
         dividers: &mut Vec<SplitTreeDivider>,
     ) {
         match self {
-            SplitTree::Leaf(id) => leaves.push((id.clone(), bounds)),
+            SplitTree::Leaf(id) => leaves.push((*id, bounds)),
             SplitTree::Split {
                 direction,
                 ratio,

@@ -555,7 +555,7 @@ impl Minimap {
         // fine — callers that want on-screen thumb pixels recompute
         // `track` from their own bounds if they choose to paint this.
         Some(Scrollbar::vertical(
-            format!("{}-scrollbar", self.id.0),
+            format!("{}-scrollbar", self.id),
             Rect::new(0.0, 0.0, 0.0, 0.0),
             start_buffer_line as f32,
             total,

@@ -168,7 +168,7 @@ impl MenuBar {
             let clickable = !item.disabled;
             visible_items.push(VisibleMenuBarItem {
                 item_idx: i,
-                id: item.id.clone(),
+                id: item.id,
                 bounds: item_bounds,
                 clickable,
             });
@@ -685,10 +685,10 @@ mod tests {
 
     fn bar(n: usize) -> MenuBar {
         MenuBar {
-            id: WidgetId("bar".into()),
+            id: WidgetId::new("bar"),
             items: (0..n)
                 .map(|i| MenuBarItem {
-                    id: WidgetId(format!("item{i}")),
+                    id: WidgetId::new(format!("item{i}")),
                     label: format!("Item{i}"),
                     disabled: false,
                     submenu: None,

@@ -294,7 +294,7 @@ impl ScrollView {
             return None;
         }
         Some(Scrollbar {
-            id: self.id.clone(),
+            id: self.id,
             axis: self.axis,
             track,
             thumb_start,

@@ -294,7 +294,7 @@ impl BoardModel {
                 if let Some(ci) = cur_col {
                     let next = cur_card.map(|c| c + 1).unwrap_or(0);
                     if next < self.columns[ci].cards.len() {
-                        self.selected_card_id = Some(self.columns[ci].cards[next].id.clone());
+                        self.selected_card_id = Some(self.columns[ci].cards[next].id);
                     }
                 }
             }
@@ -302,7 +302,7 @@ impl BoardModel {
                 if let Some(ci) = cur_col {
                     if let Some(cc) = cur_card {
                         if cc > 0 {
-                            self.selected_card_id = Some(self.columns[ci].cards[cc - 1].id.clone());
+                            self.selected_card_id = Some(self.columns[ci].cards[cc - 1].id);
                         }
                     }
                 }
@@ -315,10 +315,10 @@ impl BoardModel {
                             .map(|c| c.min(self.columns[next_ci].cards.len().saturating_sub(1)));
                         self.selected_card_id = next_card
                             .and_then(|c| self.columns[next_ci].cards.get(c))
-                            .map(|card| card.id.clone());
+                            .map(|card| card.id);
                     }
                 } else if !self.columns.is_empty() && !self.columns[0].cards.is_empty() {
-                    self.selected_card_id = Some(self.columns[0].cards[0].id.clone());
+                    self.selected_card_id = Some(self.columns[0].cards[0].id);
                 }
             }
             MoveDir::Left => {
@@ -329,7 +329,7 @@ impl BoardModel {
                             .map(|c| c.min(self.columns[prev_ci].cards.len().saturating_sub(1)));
                         self.selected_card_id = next_card
                             .and_then(|c| self.columns[prev_ci].cards.get(c))
-                            .map(|card| card.id.clone());
+                            .map(|card| card.id);
                     }
                 }
             }
@@ -340,7 +340,7 @@ impl BoardModel {
     pub fn jump_to_top(&mut self) {
         if let Some(ci) = self.selected_col_index() {
             if let Some(card) = self.columns[ci].cards.first() {
-                self.selected_card_id = Some(card.id.clone());
+                self.selected_card_id = Some(card.id);
             }
         }
     }
@@ -349,7 +349,7 @@ impl BoardModel {
     pub fn jump_to_bottom(&mut self) {
         if let Some(ci) = self.selected_col_index() {
             if let Some(card) = self.columns[ci].cards.last() {
-                self.selected_card_id = Some(card.id.clone());
+                self.selected_card_id = Some(card.id);
             }
         }
     }
@@ -382,7 +382,7 @@ impl BoardModel {
             "k" | "Up" | "ArrowUp" => Some(BoardAction::MoveSelection(MoveDir::Up)),
             "h" | "Left" | "ArrowLeft" => Some(BoardAction::MoveSelection(MoveDir::Left)),
             "l" | "Right" | "ArrowRight" => Some(BoardAction::MoveSelection(MoveDir::Right)),
-            "Enter" => selected.map(|id| BoardAction::OpenIssue(id.clone())),
+            "Enter" => selected.map(|id| BoardAction::OpenIssue(*id)),
             "g" => Some(BoardAction::JumpToTop),
             "G" => Some(BoardAction::JumpToBottom),
             _ => None,
@@ -499,11 +499,11 @@ impl BoardLayout {
         let point = Point::new(x, y);
         for col in &self.columns {
             if col.header_bounds.contains(point) {
-                return BoardHit::ColumnHeader(col.col_id.clone());
+                return BoardHit::ColumnHeader(col.col_id);
             }
             for card in &col.cards {
                 if card.bounds.contains(point) {
-                    return BoardHit::Card(card.id.clone());
+                    return BoardHit::Card(card.id);
                 }
             }
         }
@@ -580,7 +580,7 @@ pub fn board_layout(
         for (ci, card) in col.cards[scroll_off..card_end].iter().enumerate() {
             let card_bounds = Rect::new(cx, cy, col_w, measure.card_height);
             card_layouts.push(CardLayout {
-                id: card.id.clone(),
+                id: card.id,
                 col_index: col_i,
                 card_index: scroll_off + ci,
                 bounds: card_bounds,
@@ -590,7 +590,7 @@ pub fn board_layout(
 
         columns.push(ColumnLayout {
             col_index: col_i,
-            col_id: col.id.clone(),
+            col_id: col.id,
             bounds: col_bounds,
             header_bounds,
             body_bounds,

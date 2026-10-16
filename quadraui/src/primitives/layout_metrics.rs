@@ -473,7 +473,7 @@ fn form_field_measure_inner(
             let items = toggles
                 .iter()
                 .map(|t| FormItemMeasure {
-                    id: t.id.clone(),
+                    id: t.id,
                     width: measure.width_of(&t.label),
                 })
                 .collect();
@@ -484,7 +484,7 @@ fn form_field_measure_inner(
             let items = buttons
                 .iter()
                 .map(|b| FormItemMeasure {
-                    id: b.id.clone(),
+                    id: b.id,
                     width: measure.width_of(&b.label) + pixel::FORM_BUTTON_ITEM_PADDING,
                 })
                 .collect();
@@ -512,8 +512,8 @@ fn form_field_measure_inner(
                 .iter()
                 .map(|btn| {
                     let id = match btn {
-                        ToolbarButton::Action { id, .. } => id.clone(),
-                        _ => field.id.clone(),
+                        ToolbarButton::Action { id, .. } => *id,
+                        _ => field.id,
                     };
                     // Single button-measure formula shared with every
                     // pixel rasteriser — see `measure_button`'s

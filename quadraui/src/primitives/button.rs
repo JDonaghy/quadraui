@@ -115,9 +115,9 @@ impl Button {
             return None;
         }
         match key {
-            Key::Named(NamedKey::Enter) | Key::Char(' ') => Some(ButtonEvent::Activated {
-                id: self.id.clone(),
-            }),
+            Key::Named(NamedKey::Enter) | Key::Char(' ') => {
+                Some(ButtonEvent::Activated { id: self.id })
+            }
             _ => None,
         }
     }
@@ -131,9 +131,7 @@ impl Button {
         if self.disabled {
             return None;
         }
-        Some(ButtonEvent::Activated {
-            id: self.id.clone(),
-        })
+        Some(ButtonEvent::Activated { id: self.id })
     }
 }
 

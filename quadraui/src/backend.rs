@@ -3835,7 +3835,7 @@ pub fn activity_bar_hits(rect: Rect, bar: &ActivityBar, lh: f32) -> Vec<Activity
     let mut y = 0.0_f32;
     for item in &bar.top_items {
         hits.push(ActivityBarRowHit {
-            id: item.id.clone(),
+            id: item.id,
             tooltip: item.tooltip.clone(),
             y_start: y,
             y_end: y + lh,
@@ -3846,7 +3846,7 @@ pub fn activity_bar_hits(rect: Rect, bar: &ActivityBar, lh: f32) -> Vec<Activity
     let mut by = bottom_start.max(y);
     for item in &bar.bottom_items {
         hits.push(ActivityBarRowHit {
-            id: item.id.clone(),
+            id: item.id,
             tooltip: item.tooltip.clone(),
             y_start: by,
             y_end: by + lh,

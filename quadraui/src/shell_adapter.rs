@@ -76,7 +76,7 @@ impl<A: ShellApp> ShellAdapter<A> {
             return false;
         };
         self.shell.show_panel(&panel_id);
-        self.active_panel_id = Some(panel_id.clone());
+        self.active_panel_id = Some(panel_id);
         self.notify_shell_event(backend, area, &AppShellEvent::PanelChanged { panel_id });
         true
     }
@@ -329,7 +329,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         let shell_ev = self.shell.handle(&event, backend, area);
         match &shell_ev {
             AppShellEvent::PanelChanged { panel_id } => {
-                self.active_panel_id = Some(panel_id.clone());
+                self.active_panel_id = Some(*panel_id);
                 return self.notify_shell_event(backend, area, &shell_ev);
             }
             AppShellEvent::SidebarHidden => {
@@ -392,7 +392,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
                     if let Some(ev) = self.shell.activity_activate_selected() {
                         self.shell.set_activity_keyboard_focused(false);
                         if let AppShellEvent::PanelChanged { ref panel_id } = ev {
-                            self.active_panel_id = Some(panel_id.clone());
+                            self.active_panel_id = Some(*panel_id);
                         }
                         self.notify_shell_event(backend, area, &ev);
                     }

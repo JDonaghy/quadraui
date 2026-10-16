@@ -2466,7 +2466,7 @@ impl Backend for GtkBackend {
         let row_h = self.line_height();
         let track = crate::primitives::list::hscrollbar_track(rect, list.bordered, char_w, row_h);
         Some(crate::Scrollbar::horizontal(
-            list.id.clone(),
+            list.id,
             track,
             list.h_scroll as f32 * char_w,
             content_px,
@@ -2748,8 +2748,7 @@ impl Backend for GtkBackend {
         // has no other way to reach a specific tab's geometry (every tab
         // paints the same close glyph, so `find` can't disambiguate tab
         // N's target).
-        self.tab_bar_layouts
-            .insert(bar.id.clone(), (rect, resolved_layout));
+        self.tab_bar_layouts.insert(bar.id, (rect, resolved_layout));
         hits
     }
 
@@ -2783,7 +2782,7 @@ impl Backend for GtkBackend {
         );
         pango_layout.set_font_description(saved_font.as_ref());
         self.tab_bar_layouts
-            .insert(bar.id.clone(), (rect, resolved_layout.clone()));
+            .insert(bar.id, (rect, resolved_layout.clone()));
         resolved_layout
     }
 
@@ -2816,8 +2815,7 @@ impl Backend for GtkBackend {
             hovered_close_tab,
         );
         pango_layout.set_font_description(saved_font.as_ref());
-        self.tab_bar_layouts
-            .insert(bar.id.clone(), (rect, resolved_layout));
+        self.tab_bar_layouts.insert(bar.id, (rect, resolved_layout));
         hits
     }
 
@@ -2852,7 +2850,7 @@ impl Backend for GtkBackend {
         );
         pango_layout.set_font_description(saved_font.as_ref());
         self.tab_bar_layouts
-            .insert(bar.id.clone(), (rect, resolved_layout.clone()));
+            .insert(bar.id, (rect, resolved_layout.clone()));
         resolved_layout
     }
 
@@ -2865,7 +2863,7 @@ impl Backend for GtkBackend {
         // Track keyboard focus so the GTK runner's key handler can
         // redirect KeyPressed events to this bar.
         if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id.clone());
+            self.focused_activity_bar = Some(bar.id);
         }
         let (cr, layout) = self
             .current_frame_refs()
@@ -2896,7 +2894,7 @@ impl Backend for GtkBackend {
         // Track keyboard focus so the GTK runner's key handler can
         // redirect KeyPressed events to this bar.
         if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id.clone());
+            self.focused_activity_bar = Some(bar.id);
         }
         let (cr, layout) = self
             .current_frame_refs()
@@ -3404,7 +3402,7 @@ impl Backend for GtkBackend {
 
         if let Some(ref sb_state) = term.scrollbar {
             let sb = crate::primitives::scrollbar::Scrollbar::vertical(
-                term.id.clone(),
+                term.id,
                 crate::event::Rect::new(
                     rect.x + cell_area_w as f32,
                     rect.y,
@@ -3422,12 +3420,12 @@ impl Backend for GtkBackend {
         // Terminal cell glyphs now reach painted-text tracking via
         // `surface_draw_text_run_styled`, closing the gap that existed before
         // `primitives::terminal::paint` unified all backend implementations.
-        self.register_zone(term.id.clone(), rect);
+        self.register_zone(term.id, rect);
 
         // Remember this frame's snapshot and geometry so the next
         // `draw_terminal` call for this id can attempt the fast path.
         self.term_paint_cache.insert(
-            term.id.clone(),
+            term.id,
             TermPaintCache {
                 term: term.clone(),
                 rect,
@@ -3612,7 +3610,7 @@ impl Backend for GtkBackend {
             self,
             &theme,
         );
-        self.register_zone(number_input.id.clone(), layout.bounds);
+        self.register_zone(number_input.id, layout.bounds);
     }
 
     fn draw_combo_box(
@@ -3624,7 +3622,7 @@ impl Backend for GtkBackend {
         // field and dropdown-row labels are chrome text.
         let theme = self.current_theme;
         crate::primitives::combo_box::native_surface_paint::paint(combo_box, layout, self, &theme);
-        self.register_zone(combo_box.id.clone(), layout.field_bounds);
+        self.register_zone(combo_box.id, layout.field_bounds);
     }
 
     fn draw_tooltip(&mut self, tooltip: &crate::Tooltip, layout_arg: &crate::TooltipLayout) {
@@ -3673,7 +3671,7 @@ impl Backend for GtkBackend {
         // comment on `TuiBackend::draw_tooltip`. GTK already painted a
         // full 4-sided box here before TUI did; this just makes
         // that box observable to a structural-parity assertion.
-        self.register_zone(tooltip.id.clone(), layout_arg.bounds);
+        self.register_zone(tooltip.id, layout_arg.bounds);
     }
 
     fn draw_context_menu(
@@ -3784,7 +3782,7 @@ impl Backend for GtkBackend {
         // Same convention `draw_scrollbar` uses for a chrome-only
         // primitive with no painted text of its own: register the
         // float's own bounds under its id so it's inventory-observable.
-        self.register_zone(float.id.clone(), layout.bounds);
+        self.register_zone(float.id, layout.bounds);
     }
 
     // ─── #13: trait coverage for the rest of the rasterised primitives ──
@@ -4082,7 +4080,7 @@ impl Backend for GtkBackend {
         // pixel backend it would otherwise be indistinguishable from the
         // no-op default. Register the primitive's own id at its own
         // track bounds (not `_rect`, which the primitive ignores).
-        self.register_zone(scrollbar.id.clone(), scrollbar.track);
+        self.register_zone(scrollbar.id, scrollbar.track);
     }
 
     fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
@@ -4186,7 +4184,7 @@ impl Backend for GtkBackend {
         // registered zone is the only way this frame is attributable to
         // the primitive rather than indistinguishable from the trait's
         // no-op default (C0 paint smoke, contract §5b).
-        self.register_zone(split.id.clone(), rect);
+        self.register_zone(split.id, rect);
         layout
     }
 
@@ -4407,7 +4405,7 @@ impl Backend for GtkBackend {
         let layout = crate::primitives::button::native_surface_paint::paint(
             button, self, &theme, rect, &style,
         );
-        self.register_zone(button.id.clone(), rect);
+        self.register_zone(button.id, rect);
         layout
     }
 
@@ -4434,7 +4432,7 @@ impl Backend for GtkBackend {
             group, self, &theme, rect, row_height,
         );
         for (option, item) in group.options.iter().zip(layout.items.iter()) {
-            self.register_zone(option.id.clone(), *item);
+            self.register_zone(option.id, *item);
         }
         layout
     }
@@ -4468,7 +4466,7 @@ impl Backend for GtkBackend {
         let theme = self.current_theme;
         let layout =
             crate::primitives::switch::native_surface_paint::paint(switch, self, &theme, rect);
-        self.register_zone(switch.id.clone(), rect);
+        self.register_zone(switch.id, rect);
         layout
     }
 
@@ -4828,7 +4826,7 @@ impl Backend for GtkBackend {
             dpi_scale,
             self.minimap_scale,
         );
-        self.register_zone(minimap.id.clone(), rect);
+        self.register_zone(minimap.id, rect);
         crate::backend::MinimapPaintResult {
             layout,
             painted: true,
@@ -4853,7 +4851,7 @@ impl Backend for GtkBackend {
         // Uses `super::image::draw_image_cached` for the decode cache.
         let result =
             super::image::draw_image_cached(cr, rect, image, &mut self.image_cache, dpi_scale);
-        self.register_zone(image.id.clone(), rect);
+        self.register_zone(image.id, rect);
         result
     }
 

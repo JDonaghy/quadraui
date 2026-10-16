@@ -98,7 +98,7 @@ impl ToolbarHoverTracker {
     /// Owned copy of the current hovered id. Convenience for hosts
     /// that need to compare against other state.
     pub fn current(&self) -> Option<WidgetId> {
-        self.hovered.clone()
+        self.hovered
     }
 }
 

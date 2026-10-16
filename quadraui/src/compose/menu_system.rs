@@ -200,7 +200,7 @@ impl MenuSystem {
             // "one call either way" shape
             // [`crate::compose::ContextMenuController::handle`] uses for
             // `ContextMenuItemActivated`.
-            UiEvent::MenuActivated(id) => MenuEvent::Activated(id.clone()),
+            UiEvent::MenuActivated(id) => MenuEvent::Activated(*id),
 
             // ── Keyboard ──────────────────────────────────────────
             UiEvent::KeyPressed {
@@ -453,7 +453,7 @@ impl MenuSystem {
                                 self.open_submenu(item_idx);
                                 return MenuEvent::StateChanged;
                             } else {
-                                let id = id.clone();
+                                let id = *id;
                                 self.close(backend);
                                 return MenuEvent::Activated(id);
                             }
@@ -612,7 +612,7 @@ impl MenuSystem {
                 .menus
                 .iter()
                 .map(|m| MenuBarItem {
-                    id: m.id.clone(),
+                    id: m.id,
                     label: m.label.clone(),
                     disabled: m.disabled,
                     // MenuSystem manages dropdowns out-of-band via
@@ -629,7 +629,7 @@ impl MenuSystem {
 
     fn build_dropdown(&self, menu_idx: usize) -> ContextMenu {
         ContextMenu {
-            id: self.dropdown_id.clone(),
+            id: self.dropdown_id,
             items: self.menus[menu_idx].items.clone(),
             selected_idx: self.dropdown_selected,
             bg: None,
@@ -767,7 +767,7 @@ impl MenuSystem {
             backend
                 .modal_stack_handle()
                 .borrow_mut()
-                .push(self.dropdown_id.clone(), layout.bounds);
+                .push(self.dropdown_id, layout.bounds);
         }
     }
 

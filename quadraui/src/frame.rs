@@ -802,32 +802,32 @@ impl<'a> ScreenLayout<'a> {
             .surfaces
             .iter()
             .filter_map(|s| match s {
-                Surface::Editor { rect, editor } => Some((editor.id.clone(), *rect)),
-                Surface::TabBar { rect, bar, .. } => Some((bar.id.clone(), *rect)),
-                Surface::StatusBar { rect, bar, .. } => Some((bar.id.clone(), *rect)),
-                Surface::ActivityBar { rect, bar, .. } => Some((bar.id.clone(), *rect)),
-                Surface::CommandLine { rect, cmd } => Some((cmd.id.clone(), *rect)),
-                Surface::Terminal { rect, term } => Some((term.id.clone(), *rect)),
-                Surface::TextDisplay { rect, td } => Some((td.id.clone(), *rect)),
-                Surface::MultiSectionView { rect, view } => Some((view.id.clone(), *rect)),
-                Surface::Tree { rect, tree } => Some((tree.id.clone(), *rect)),
-                Surface::List { rect, list } => Some((list.id.clone(), *rect)),
-                Surface::Form { rect, form } => Some((form.id.clone(), *rect)),
-                Surface::MenuBar { rect, bar } => Some((bar.id.clone(), *rect)),
-                Surface::Panel { rect, panel } => Some((panel.id.clone(), *rect)),
-                Surface::Palette { rect, palette } => Some((palette.id.clone(), *rect)),
-                Surface::DataTable { rect, table, .. } => Some((table.id.clone(), *rect)),
-                Surface::Chart { rect, chart, .. } => Some((chart.id.clone(), *rect)),
-                Surface::Board { rect, model } => Some((model.id.clone(), *rect)),
-                Surface::CommandCenter { rect, cc } => Some((cc.id.clone(), *rect)),
-                Surface::DiffView { rect, view } => Some((view.id.clone(), *rect)),
-                Surface::MessageList { rect, list } => Some((list.id.clone(), *rect)),
-                Surface::Minimap { rect, minimap } => Some((minimap.id.clone(), *rect)),
-                Surface::PipelineView { rect, view } => Some((view.id.clone(), *rect)),
-                Surface::Progress { rect, bar } if bar.cancellable => Some((bar.id.clone(), *rect)),
-                Surface::SidebarPanel { rect, panel, .. } => Some((panel.id.clone(), *rect)),
-                Surface::TextInput { rect, ti } => Some((ti.id.clone(), *rect)),
-                Surface::Toolbar { rect, bar, .. } => Some((bar.id.clone(), *rect)),
+                Surface::Editor { rect, editor } => Some((editor.id, *rect)),
+                Surface::TabBar { rect, bar, .. } => Some((bar.id, *rect)),
+                Surface::StatusBar { rect, bar, .. } => Some((bar.id, *rect)),
+                Surface::ActivityBar { rect, bar, .. } => Some((bar.id, *rect)),
+                Surface::CommandLine { rect, cmd } => Some((cmd.id, *rect)),
+                Surface::Terminal { rect, term } => Some((term.id, *rect)),
+                Surface::TextDisplay { rect, td } => Some((td.id, *rect)),
+                Surface::MultiSectionView { rect, view } => Some((view.id, *rect)),
+                Surface::Tree { rect, tree } => Some((tree.id, *rect)),
+                Surface::List { rect, list } => Some((list.id, *rect)),
+                Surface::Form { rect, form } => Some((form.id, *rect)),
+                Surface::MenuBar { rect, bar } => Some((bar.id, *rect)),
+                Surface::Panel { rect, panel } => Some((panel.id, *rect)),
+                Surface::Palette { rect, palette } => Some((palette.id, *rect)),
+                Surface::DataTable { rect, table, .. } => Some((table.id, *rect)),
+                Surface::Chart { rect, chart, .. } => Some((chart.id, *rect)),
+                Surface::Board { rect, model } => Some((model.id, *rect)),
+                Surface::CommandCenter { rect, cc } => Some((cc.id, *rect)),
+                Surface::DiffView { rect, view } => Some((view.id, *rect)),
+                Surface::MessageList { rect, list } => Some((list.id, *rect)),
+                Surface::Minimap { rect, minimap } => Some((minimap.id, *rect)),
+                Surface::PipelineView { rect, view } => Some((view.id, *rect)),
+                Surface::Progress { rect, bar } if bar.cancellable => Some((bar.id, *rect)),
+                Surface::SidebarPanel { rect, panel, .. } => Some((panel.id, *rect)),
+                Surface::TextInput { rect, ti } => Some((ti.id, *rect)),
+                Surface::Toolbar { rect, bar, .. } => Some((bar.id, *rect)),
                 Surface::Image { .. }
                 | Surface::Spinner { .. }
                 | Surface::Progress { .. }
@@ -1244,74 +1244,52 @@ fn capture_surface(surface: &Surface<'_>) -> (Rect, Option<WidgetId>, OwnedConte
     match surface {
         Surface::Editor { rect, editor } => (
             *rect,
-            Some(editor.id.clone()),
+            Some(editor.id),
             OwnedContent::Editor((*editor).clone()),
         ),
-        Surface::TabBar { rect, bar, .. } => (
-            *rect,
-            Some(bar.id.clone()),
-            OwnedContent::TabBar((*bar).clone()),
-        ),
-        Surface::StatusBar { rect, bar, .. } => (
-            *rect,
-            Some(bar.id.clone()),
-            OwnedContent::StatusBar((*bar).clone()),
-        ),
+        Surface::TabBar { rect, bar, .. } => {
+            (*rect, Some(bar.id), OwnedContent::TabBar((*bar).clone()))
+        }
+        Surface::StatusBar { rect, bar, .. } => {
+            (*rect, Some(bar.id), OwnedContent::StatusBar((*bar).clone()))
+        }
         Surface::ActivityBar { rect, bar, .. } => (
             *rect,
-            Some(bar.id.clone()),
+            Some(bar.id),
             OwnedContent::ActivityBar((*bar).clone()),
         ),
         Surface::CommandLine { rect, cmd } => (
             *rect,
-            Some(cmd.id.clone()),
+            Some(cmd.id),
             OwnedContent::CommandLine((*cmd).clone()),
         ),
         Surface::Terminal { rect, term } => (
             *rect,
-            Some(term.id.clone()),
+            Some(term.id),
             OwnedContent::Terminal((*term).clone()),
         ),
-        Surface::TextDisplay { rect, td } => (
-            *rect,
-            Some(td.id.clone()),
-            OwnedContent::TextDisplay((*td).clone()),
-        ),
+        Surface::TextDisplay { rect, td } => {
+            (*rect, Some(td.id), OwnedContent::TextDisplay((*td).clone()))
+        }
         Surface::MultiSectionView { rect, view } => (
             *rect,
-            Some(view.id.clone()),
+            Some(view.id),
             OwnedContent::MultiSectionView((*view).clone()),
         ),
-        Surface::Tree { rect, tree } => (
-            *rect,
-            Some(tree.id.clone()),
-            OwnedContent::Tree((*tree).clone()),
-        ),
-        Surface::List { rect, list } => (
-            *rect,
-            Some(list.id.clone()),
-            OwnedContent::List((*list).clone()),
-        ),
-        Surface::Form { rect, form } => (
-            *rect,
-            Some(form.id.clone()),
-            OwnedContent::Form((*form).clone()),
-        ),
-        Surface::MenuBar { rect, bar } => (
-            *rect,
-            Some(bar.id.clone()),
-            OwnedContent::MenuBar((*bar).clone()),
-        ),
+        Surface::Tree { rect, tree } => (*rect, Some(tree.id), OwnedContent::Tree((*tree).clone())),
+        Surface::List { rect, list } => (*rect, Some(list.id), OwnedContent::List((*list).clone())),
+        Surface::Form { rect, form } => (*rect, Some(form.id), OwnedContent::Form((*form).clone())),
+        Surface::MenuBar { rect, bar } => {
+            (*rect, Some(bar.id), OwnedContent::MenuBar((*bar).clone()))
+        }
         Surface::Split { rect, split } => (*rect, None, OwnedContent::Split((*split).clone())),
-        Surface::Panel { rect, panel } => (
-            *rect,
-            Some(panel.id.clone()),
-            OwnedContent::Panel((*panel).clone()),
-        ),
+        Surface::Panel { rect, panel } => {
+            (*rect, Some(panel.id), OwnedContent::Panel((*panel).clone()))
+        }
         Surface::Scrollbar { rect, sb } => (*rect, None, OwnedContent::Scrollbar((*sb).clone())),
         Surface::Palette { rect, palette } => (
             *rect,
-            Some(palette.id.clone()),
+            Some(palette.id),
             OwnedContent::Palette((*palette).clone()),
         ),
         Surface::Tooltip { tooltip, layout } => (
@@ -1347,58 +1325,50 @@ fn capture_surface(surface: &Surface<'_>) -> (Rect, Option<WidgetId>, OwnedConte
         Surface::Toast { rect, stack } => (*rect, None, OwnedContent::Toast((*stack).clone())),
         Surface::DataTable { rect, table, .. } => (
             *rect,
-            Some(table.id.clone()),
+            Some(table.id),
             OwnedContent::DataTable((*table).clone()),
         ),
-        Surface::Chart { rect, chart, .. } => (
-            *rect,
-            Some(chart.id.clone()),
-            OwnedContent::Chart((*chart).clone()),
-        ),
-        Surface::Board { rect, model } => (
-            *rect,
-            Some(model.id.clone()),
-            OwnedContent::Board((*model).clone()),
-        ),
+        Surface::Chart { rect, chart, .. } => {
+            (*rect, Some(chart.id), OwnedContent::Chart((*chart).clone()))
+        }
+        Surface::Board { rect, model } => {
+            (*rect, Some(model.id), OwnedContent::Board((*model).clone()))
+        }
         Surface::CommandCenter { rect, cc } => (
             *rect,
-            Some(cc.id.clone()),
+            Some(cc.id),
             OwnedContent::CommandCenter((*cc).clone()),
         ),
         Surface::DiffView { rect, view } => (
             *rect,
-            Some(view.id.clone()),
+            Some(view.id),
             OwnedContent::DiffView((*view).clone()),
         ),
         Surface::DropOverlay { overlay } => (overlay.bounds(), None, OwnedContent::DropOverlay),
         Surface::Image { rect, image } => (*rect, None, OwnedContent::Image((*image).clone())),
         Surface::MessageList { rect, list } => (
             *rect,
-            Some(list.id.clone()),
+            Some(list.id),
             OwnedContent::MessageList((*list).clone()),
         ),
         Surface::Minimap { rect, minimap } => (
             *rect,
-            Some(minimap.id.clone()),
+            Some(minimap.id),
             OwnedContent::Minimap((*minimap).clone()),
         ),
         Surface::PipelineView { rect, view } => (
             *rect,
-            Some(view.id.clone()),
+            Some(view.id),
             OwnedContent::PipelineView((*view).clone()),
         ),
         Surface::Progress { rect, bar } => (
             *rect,
-            if bar.cancellable {
-                Some(bar.id.clone())
-            } else {
-                None
-            },
+            if bar.cancellable { Some(bar.id) } else { None },
             OwnedContent::Progress((*bar).clone()),
         ),
         Surface::SidebarPanel { rect, panel, .. } => (
             *rect,
-            Some(panel.id.clone()),
+            Some(panel.id),
             OwnedContent::SidebarPanel((*panel).clone()),
         ),
         Surface::Spinner { rect, spinner } => {
@@ -1407,16 +1377,12 @@ fn capture_surface(surface: &Surface<'_>) -> (Rect, Option<WidgetId>, OwnedConte
         Surface::SplitTree { rect, tree } => {
             (*rect, None, OwnedContent::SplitTree((*tree).clone()))
         }
-        Surface::TextInput { rect, ti } => (
-            *rect,
-            Some(ti.id.clone()),
-            OwnedContent::TextInput((*ti).clone()),
-        ),
-        Surface::Toolbar { rect, bar, .. } => (
-            *rect,
-            Some(bar.id.clone()),
-            OwnedContent::Toolbar((*bar).clone()),
-        ),
+        Surface::TextInput { rect, ti } => {
+            (*rect, Some(ti.id), OwnedContent::TextInput((*ti).clone()))
+        }
+        Surface::Toolbar { rect, bar, .. } => {
+            (*rect, Some(bar.id), OwnedContent::Toolbar((*bar).clone()))
+        }
     }
 }
 

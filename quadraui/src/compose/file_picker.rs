@@ -439,7 +439,7 @@ impl FilePickerController {
         };
 
         Palette {
-            id: self.id.clone(),
+            id: self.id,
             title,
             query: self.query.clone(),
             query_cursor: self.query.len(),

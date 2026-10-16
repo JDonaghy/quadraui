@@ -175,7 +175,7 @@ impl ModalStack {
     /// `focusable` field is the single source of truth for whether it
     /// takes keyboard focus.
     pub fn push_float(&mut self, float: &crate::Float, bounds: Rect) {
-        self.push_focusable(float.id.clone(), bounds, float.focusable);
+        self.push_focusable(float.id, bounds, float.focusable);
     }
 
     /// Remove the modal with this id, if present. Returns true on
@@ -274,7 +274,7 @@ impl ModalStack {
         self.entries
             .iter()
             .filter(|e| !e.painted_this_frame)
-            .map(|e| e.id.clone())
+            .map(|e| e.id)
             .collect()
     }
 

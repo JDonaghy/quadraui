@@ -250,7 +250,7 @@ pub fn dispatch_mouse_down(
     // Case 1: click landed inside an open modal.
     if let Some(widget_id) = stack.hit_test(position) {
         return vec![UiEvent::MouseDown {
-            widget: Some(widget_id.clone()),
+            widget: Some(*widget_id),
             button,
             position,
             modifiers,
@@ -266,7 +266,7 @@ pub fn dispatch_mouse_down(
                 position,
                 modifiers,
             },
-            UiEvent::Palette(top.id.clone(), PaletteEvent::Closed),
+            UiEvent::Palette(top.id, PaletteEvent::Closed),
         ];
     }
 
@@ -321,7 +321,7 @@ pub fn dispatch_mouse_drag(
             let clamped = if *inverted { 1.0 - clamped } else { clamped };
             let new_offset = (clamped * *max_scroll as f32).round() as usize;
             events.push(UiEvent::ScrollOffsetChanged {
-                widget: widget.clone(),
+                widget: *widget,
                 new_offset,
             });
         }
@@ -340,13 +340,13 @@ pub fn dispatch_mouse_drag(
             let clamped = if *inverted { 1.0 - clamped } else { clamped };
             let new_offset = (clamped * *max_scroll as f32).round() as usize;
             events.push(UiEvent::ScrollOffsetChanged {
-                widget: widget.clone(),
+                widget: *widget,
                 new_offset,
             });
         }
         Some(DragTarget::TextSelection { region, anchor }) => {
             events.push(UiEvent::TextSelectionChanged {
-                region: region.clone(),
+                region: *region,
                 anchor: *anchor,
                 focus: position,
             });
@@ -364,7 +364,7 @@ pub fn dispatch_mouse_drag(
             };
             let new_ratio = ((cursor_axis - *axis_start) / *axis_size).clamp(0.0, 1.0);
             events.push(UiEvent::SplitDividerDragged {
-                tree: tree.clone(),
+                tree: *tree,
                 split_index: *split_index,
                 new_ratio,
             });
@@ -569,7 +569,7 @@ pub fn dispatch_scroll(
     // Case 1: scroll inside an open modal.
     if let Some(widget_id) = stack.hit_test(position) {
         return vec![UiEvent::Scroll {
-            widget: Some(widget_id.clone()),
+            widget: Some(*widget_id),
             delta,
             position,
         }];
@@ -588,7 +588,7 @@ pub fn dispatch_scroll(
             && position.y < surface.bounds.y + surface.bounds.height
         {
             return vec![UiEvent::Scroll {
-                widget: Some(surface.id.clone()),
+                widget: Some(surface.id),
                 delta,
                 position,
             }];
@@ -669,7 +669,7 @@ pub fn dispatch_click(
     // Case 1: click inside an open modal.
     if let Some(widget_id) = stack.hit_test(position) {
         return vec![UiEvent::MouseDown {
-            widget: Some(widget_id.clone()),
+            widget: Some(*widget_id),
             button,
             position,
             modifiers,
@@ -685,7 +685,7 @@ pub fn dispatch_click(
                 position,
                 modifiers,
             },
-            UiEvent::Palette(top.id.clone(), PaletteEvent::Closed),
+            UiEvent::Palette(top.id, PaletteEvent::Closed),
         ];
     }
 
@@ -708,7 +708,7 @@ pub fn dispatch_click(
                         ScrollAxis::Vertical => {
                             let grab_offset = position.y - sb.thumb_bounds.y;
                             drag.begin(DragTarget::ScrollbarY {
-                                widget: surface.id.clone(),
+                                widget: surface.id,
                                 track_start: sb.track_bounds.y,
                                 track_length: sb.track_bounds.height,
                                 thumb_length: sb.thumb_bounds.height,
@@ -720,7 +720,7 @@ pub fn dispatch_click(
                         ScrollAxis::Horizontal => {
                             let grab_offset = position.x - sb.thumb_bounds.x;
                             drag.begin(DragTarget::ScrollbarX {
-                                widget: surface.id.clone(),
+                                widget: surface.id,
                                 track_start: sb.track_bounds.x,
                                 track_length: sb.track_bounds.width,
                                 thumb_length: sb.thumb_bounds.width,
@@ -731,7 +731,7 @@ pub fn dispatch_click(
                         }
                     }
                     return vec![UiEvent::MouseDown {
-                        widget: Some(surface.id.clone()),
+                        widget: Some(surface.id),
                         button,
                         position,
                         modifiers,
@@ -757,7 +757,7 @@ pub fn dispatch_click(
                     (sb.scroll_offset + sb.visible_items).min(max_offset)
                 };
                 return vec![UiEvent::ScrollOffsetChanged {
-                    widget: surface.id.clone(),
+                    widget: surface.id,
                     new_offset,
                 }];
             }
@@ -768,11 +768,11 @@ pub fn dispatch_click(
         for tr in text_regions.iter().rev() {
             if tr.bounds.contains(position) {
                 drag.begin(DragTarget::TextSelection {
-                    region: tr.id.clone(),
+                    region: tr.id,
                     anchor: position,
                 });
                 return vec![UiEvent::MouseDown {
-                    widget: Some(tr.id.clone()),
+                    widget: Some(tr.id),
                     button,
                     position,
                     modifiers,
@@ -782,7 +782,7 @@ pub fn dispatch_click(
 
         // Case 6: body click (not on scrollbar, not on text region).
         return vec![UiEvent::MouseDown {
-            widget: Some(surface.id.clone()),
+            widget: Some(surface.id),
             button,
             position,
             modifiers,
@@ -794,11 +794,11 @@ pub fn dispatch_click(
     for tr in text_regions.iter().rev() {
         if tr.bounds.contains(position) {
             drag.begin(DragTarget::TextSelection {
-                region: tr.id.clone(),
+                region: tr.id,
                 anchor: position,
             });
             return vec![UiEvent::MouseDown {
-                widget: Some(tr.id.clone()),
+                widget: Some(tr.id),
                 button,
                 position,
                 modifiers,
@@ -881,7 +881,7 @@ pub(crate) fn route_pointer(
                 modifiers,
             );
             if let Some(DragTarget::TextSelection { region, .. }) = drag.target() {
-                text_state.track_focused_text_region(region.clone());
+                text_state.track_focused_text_region(*region);
             }
             events
         }

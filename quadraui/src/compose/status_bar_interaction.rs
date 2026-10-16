@@ -89,7 +89,7 @@ impl StatusBarInteraction {
                 if let Some(ref pressed_id) = was_pressed {
                     let hit = self.hit_test(bar_rect, *position);
                     if hit.as_ref() == Some(pressed_id) {
-                        return StatusBarAction::Clicked(pressed_id.clone());
+                        return StatusBarAction::Clicked(*pressed_id);
                     }
                 }
                 if was_pressed.is_some() {

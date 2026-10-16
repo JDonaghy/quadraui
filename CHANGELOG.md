@@ -140,6 +140,18 @@ only a push to `main` runs this workflow.
 
 ### Changed
 
+- `WidgetId` is now `Copy` and backed by a process-global string interner
+  instead of a `pub String` field: constructing one still takes any
+  `impl Into<String>` (`WidgetId::new`, `.into()` from `&str`/`String`),
+  and `as_str()` still returns the label, now as `&'static str`. Breaking
+  only for code that matched the old tuple-struct shape directly
+  (`WidgetId(s)` / `widget_id.0`) or relied on `Clone`-not-`Copy`
+  semantics; every in-repo call site used `WidgetId::new`/`as_str`/
+  `Display`/`From`, which are unchanged, so no widget-ID construction or
+  formatting call site needed touching. `Serialize`/`Deserialize` keep
+  the plain-string wire form. The 50+ in-repo `.clone()` calls on what is
+  now a `Copy` type were mechanically replaced with a plain copy
+  (`clippy::clone_on_copy`); none of those sites changed meaning.
 - `macos::mac_tree_layout` takes a fourth `font: &CTFont` argument, so it
   can measure chevron glyphs for real (mirrors `mac_form_layout`'s existing
   `font` argument). `Backend::tree_layout` is unchanged — `MacBackend`

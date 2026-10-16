@@ -373,7 +373,7 @@ impl ListView {
         // above the bottom border, rather than overpainting it.
         let track = hscrollbar_track(area, self.bordered, 1.0, row_height);
         Some(Scrollbar::horizontal(
-            self.id.clone(),
+            self.id,
             track,
             self.h_scroll as f32,
             total,
@@ -446,7 +446,7 @@ impl ListView {
         }
         let track = Rect::new(track_x, track_y, row_height, track_h);
         Some(Scrollbar::vertical(
-            self.id.clone(),
+            self.id,
             track,
             self.scroll_offset as f32,
             total,
@@ -956,7 +956,7 @@ pub(crate) mod native_surface_paint {
             };
             let hsb_track = Rect::new(track_x, track_y, track_w, line_height);
             let hsb = crate::primitives::scrollbar::Scrollbar::horizontal(
-                list.id.clone(),
+                list.id,
                 hsb_track,
                 list.h_scroll as f32 * char_w,
                 content_px,
