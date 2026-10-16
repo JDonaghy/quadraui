@@ -31,8 +31,8 @@ use crate::types::WidgetId;
 
 pub(crate) fn toolbar_item(field_id: &WidgetId, btn: &ToolbarButton) -> Option<(WidgetId, String)> {
     match btn {
-        ToolbarButton::Action { id, label, .. } => Some((id.clone(), label.clone())),
-        ToolbarButton::Label { text, .. } => Some((field_id.clone(), text.clone())),
+        ToolbarButton::Action { id, label, .. } => Some((*id, label.clone())),
+        ToolbarButton::Label { text, .. } => Some((*field_id, text.clone())),
         ToolbarButton::Separator => None,
     }
 }
@@ -253,7 +253,7 @@ mod tests {
         for vf in &layout.visible_fields {
             let cx = vf.bounds.x + 1.0;
             let cy = vf.bounds.y + vf.bounds.height / 2.0;
-            assert_eq!(layout.hit_test(cx, cy), FormHit::Field(vf.id.clone()));
+            assert_eq!(layout.hit_test(cx, cy), FormHit::Field(vf.id));
         }
 
         let toggle_field = &layout.visible_fields[1];
@@ -261,7 +261,7 @@ mod tests {
         for (id, item_rect) in &toggle_field.item_bounds {
             let cx = item_rect.x + item_rect.width / 2.0;
             let cy = item_rect.y + item_rect.height / 2.0;
-            assert_eq!(layout.hit_test(cx, cy), FormHit::Field(id.clone()));
+            assert_eq!(layout.hit_test(cx, cy), FormHit::Field(*id));
         }
     }
 

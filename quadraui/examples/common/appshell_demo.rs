@@ -106,19 +106,19 @@ impl AppShellDemo {
             "AppShell Demo",
             vec![
                 PanelDefinition {
-                    id: explorer.clone(),
+                    id: explorer,
                     icon: "E".into(),
                     tooltip: "Explorer".into(),
                     title: "EXPLORER".into(),
                 },
                 PanelDefinition {
-                    id: search.clone(),
+                    id: search,
                     icon: "S".into(),
                     tooltip: "Search".into(),
                     title: "SEARCH".into(),
                 },
                 PanelDefinition {
-                    id: git.clone(),
+                    id: git,
                     icon: "G".into(),
                     tooltip: "Source Control".into(),
                     title: "SOURCE CONTROL".into(),
@@ -126,7 +126,7 @@ impl AppShellDemo {
             ],
         )
         .with_bottom_items(vec![PanelDefinition {
-            id: settings.clone(),
+            id: settings,
             icon: "*".into(),
             tooltip: "Settings".into(),
             title: "Settings".into(),

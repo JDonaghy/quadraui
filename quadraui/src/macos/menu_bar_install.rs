@@ -442,11 +442,7 @@ fn append_menu_item(
         // `setTarget:` require `unsafe` (the target pointer's lifetime/type isn't
         // statically verified).
         ns_item.setTag(tag);
-        target
-            .ivars()
-            .tag_to_id
-            .borrow_mut()
-            .insert(tag, id.clone());
+        target.ivars().tag_to_id.borrow_mut().insert(tag, *id);
 
         unsafe { ns_item.setAction(Some(sel!(quadraMenuAction:))) };
         // SAFETY: target outlives the menu — MacBackend retains it for

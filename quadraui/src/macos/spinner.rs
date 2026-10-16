@@ -180,7 +180,7 @@ mod tests {
         let cy = layout.bounds.y + layout.bounds.height * 0.5;
         assert_eq!(
             layout.hit_test(cx, cy, &spinner.id),
-            SpinnerHit::Body(spinner.id.clone()),
+            SpinnerHit::Body(spinner.id),
         );
         // (-1, -1) is outside the bounds regardless of origin, since
         // both test origins used here are non-negative.
