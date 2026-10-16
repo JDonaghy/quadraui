@@ -2059,29 +2059,59 @@ pub trait Backend: sealed::Sealed {
     }
 
     /// Space, in this backend's native units, that [`Self::draw_context_menu`]
-    /// needs reserved along a [`crate::ContextMenu`]'s top and left edges
-    /// before the menu's own layout is computed — i.e. how far a caller
-    /// building the `viewport` rect passed to [`crate::ContextMenu::layout`]
-    /// / [`crate::ContextMenu::layout_at`] must inset that viewport's near
-    /// corner so the resulting [`crate::ContextMenuLayout`] (its `bounds`,
+    /// needs reserved along every edge of a [`crate::ContextMenu`] before
+    /// the menu's own layout is computed — i.e. how far a caller building
+    /// the `viewport` rect passed to [`crate::ContextMenu::layout`] /
+    /// [`crate::ContextMenu::layout_at`] must inset that viewport on each
+    /// side so the resulting [`crate::ContextMenuLayout`] (its `bounds`,
     /// `visible_items`, and `hit_regions`) already accounts for the chrome
     /// this backend paints outside the item area.
+    ///
+    /// [`Self::context_menu_viewport`] builds that inset rect; prefer it
+    /// over applying this value by hand.
     ///
     /// Every pixel backend strokes the menu's border centred on
     /// `bounds` (see `native_surface_paint::paint`'s `surface_stroke_rounded_rect`
     /// call), so the default `0.0` is correct for GTK, Win-GUI, and
     /// macOS. The TUI rasteriser instead paints the border on a whole
-    /// cell *outside* `bounds` on every side; when a menu is anchored
-    /// flush against the viewport's top-left corner there is no outside
-    /// cell left for that border to occupy without this inset, so
+    /// cell *outside* `bounds` on every side; when a menu is anchored or
+    /// clamped flush against a viewport edge there is no outside cell
+    /// left for that border to occupy without this inset, so
     /// [`crate::tui::backend::TuiBackend`] overrides this to `1.0` (one
-    /// cell) and the caller shrinks the near edge of the viewport it
-    /// hands to layout accordingly. Doing the inset here — in the
-    /// geometry `hit_test` reads — rather than only shifting where the
-    /// TUI rasteriser paints keeps painted rows and hit-tested rows in
-    /// agreement.
+    /// cell) and the caller shrinks the viewport it hands to layout
+    /// accordingly. Doing the inset here — in the geometry `hit_test`
+    /// reads — rather than only shifting where the TUI rasteriser paints
+    /// keeps painted rows and hit-tested rows in agreement.
     fn context_menu_border_inset(&self) -> f32 {
         0.0
+    }
+
+    /// The rect to pass as `viewport` to [`crate::ContextMenu::layout`] /
+    /// [`crate::ContextMenu::layout_at`]: this backend's full
+    /// [`Self::viewport`], inset on all four sides by
+    /// [`Self::context_menu_border_inset`] so the chrome
+    /// [`Self::draw_context_menu`] paints outside the item area has room
+    /// on every edge, however the menu ends up placed.
+    ///
+    /// Callers that own a `Backend` handle should use this instead of
+    /// building the rect themselves — it is the one place the inset is
+    /// applied, so a backend changing its chrome does not have to chase
+    /// every menu call site. On backends whose inset is `0.0` (every
+    /// pixel backend) the result is just the viewport as a rect.
+    ///
+    /// A caller working from some sub-region rather than the whole
+    /// surface (a split pane, a popup already offset inside the window)
+    /// insets that region the same way, by
+    /// [`Self::context_menu_border_inset`] on each side.
+    fn context_menu_viewport(&self) -> Rect {
+        let vp = self.viewport();
+        let inset = self.context_menu_border_inset();
+        Rect::new(
+            inset,
+            inset,
+            (vp.width - inset * 2.0).max(0.0),
+            (vp.height - inset * 2.0).max(0.0),
+        )
     }
 
     /// Whether this backend can render individual text rows at a larger

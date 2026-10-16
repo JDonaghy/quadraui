@@ -146,6 +146,8 @@ mod split_app;
 mod split_tree_app;
 #[path = "../examples/common/status_bar_priority_demo.rs"]
 mod status_bar_priority_demo;
+#[path = "../examples/common/submenu_app.rs"]
+mod submenu_app;
 #[path = "../examples/common/tab_chrome_demo.rs"]
 mod tab_chrome_demo;
 #[path = "../examples/common/tab_group_demo.rs"]
@@ -228,6 +230,7 @@ use sidebar_reveal_demo::SidebarRevealDemo;
 use split_app::SplitApp;
 use split_tree_app::SplitTreeApp;
 use status_bar_priority_demo::StatusBarPriorityDemo;
+use submenu_app::SubmenuApp;
 use tab_chrome_demo::TabChromeDemo;
 use tab_group_demo::TabGroupDemo;
 use tab_icons_demo::TabIconsDemo;
@@ -8734,4 +8737,97 @@ fn form_fields_stack_and_group_items_pack() {
     assert_packed_in_one_row(&bounds_of(&driver, &toggles), &toggles);
     let buttons = ["Find Next", "Replace]", "Replace All"];
     assert_packed_in_one_row(&bounds_of(&driver, &buttons), &buttons);
+}
+
+// ─── SubmenuApp: context menu chrome stays on-screen ────────────────────────
+
+/// Right-clicking low in a short terminal makes the context menu clamp
+/// against the top of its surface. The menu's box border is painted one
+/// cell *outside* the item region, so the surface the layout is anchored
+/// in has to reserve room for it (`Backend::context_menu_viewport`) —
+/// otherwise the first entry lands on row 0 and the top border has
+/// nowhere to go.
+#[test]
+fn submenu_app_context_menu_keeps_top_border_when_clamped_to_top() {
+    let mut driver = TuiDriver::new(SubmenuApp::new(), 60, 5);
+    driver.right_click(6.0, 3.0);
+    let screen = driver.screen();
+
+    let cut = driver
+        .find_bounds("Cut")
+        .unwrap_or_else(|| panic!("right-click must paint the context menu:\n{screen}"));
+    assert!(
+        cut.y >= 1.0,
+        "the first entry may not occupy row 0 — the border needs that row:\n{screen}"
+    );
+
+    let border_row = row_containing(&screen, "┌");
+    assert_eq!(
+        border_row,
+        screen
+            .lines()
+            .nth(cut.y as usize - 1)
+            .expect("the row above the first entry is inside the buffer"),
+        "the top border must be the row directly above the first entry:\n{screen}"
+    );
+    assert!(
+        matches!((border_row.find('┌'), border_row.rfind('┐')), (Some(l), Some(r)) if r > l),
+        "the top border must close on both corners:\n{screen}"
+    );
+
+    // Paint and hit-test still agree on the clamped layout: the entry
+    // that renders first is the one that activates.
+    let (x, y) = driver.find("Cut").expect("'Cut' is painted");
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("activated: cut"),
+        "clicking the first entry must activate it:\n{}",
+        driver.screen()
+    );
+}
+
+/// A nested level is laid out by the rasteriser, not the app, so it gets
+/// the same reservation: opening `Refactor` against the top of a short
+/// terminal keeps the child popup's own top border on-screen, and its
+/// leaf still activates.
+#[test]
+fn submenu_app_nested_level_keeps_its_border_and_activates_leaf() {
+    let mut driver = TuiDriver::new(SubmenuApp::new(), 60, 8);
+    driver.right_click(4.0, 5.0);
+    let (rx, ry) = driver
+        .find("Refactor")
+        .unwrap_or_else(|| panic!("root menu must paint:\n{}", driver.screen()));
+    driver.click(rx, ry);
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Rename") && screen.contains("Extract"),
+        "clicking a parent entry must open its submenu:\n{screen}"
+    );
+    let rename = driver.find_bounds("Rename").expect("'Rename' is painted");
+    assert!(
+        rename.y >= 1.0,
+        "the child's first entry may not occupy row 0:\n{screen}"
+    );
+    let child_border = screen
+        .lines()
+        .nth(rename.y as usize - 1)
+        .expect("the row above the child's first entry is inside the buffer");
+    assert!(
+        matches!((child_border.find('┌'), child_border.rfind('┐')), (Some(l), Some(r)) if r > l),
+        "the child popup's top border must be fully on-screen:\n{screen}"
+    );
+
+    let (x, y) = driver.find("Rename").expect("'Rename' is painted");
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("activated: rename"),
+        "clicking the nested leaf must activate it:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("Cut"),
+        "activating a leaf must close every level:\n{}",
+        driver.screen()
+    );
 }

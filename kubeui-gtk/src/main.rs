@@ -21,13 +21,17 @@ use gtk4::{Application, ApplicationWindow, DrawingArea, EventControllerKey, Gest
 
 use kubeui_core::{
     apply_action, bootstrap_state, build_list, build_picker_menu, build_status_bar,
-    build_yaml_view, picker_anchor, picker_current_index, picker_menu_width, resolve_click, theme,
-    Action, AppState,
+    build_yaml_view, picker_anchor, picker_current_index, picker_menu_viewport, picker_menu_width,
+    resolve_click, theme, Action, AppState,
 };
 use quadraui::{Color, ContextMenuItemMeasure};
 
 const APP_ID: &str = "io.github.jdonaghy.kubeui-gtk";
 const UI_FONT: &str = "Monospace 11";
+/// Cairo menu chrome is drawn inside the item region, so the dropdown
+/// needs no reservation outside its bounds — the pixel-backend value of
+/// `quadraui::Backend::context_menu_border_inset`.
+const MENU_BORDER_INSET: f32 = 0.0;
 
 fn main() -> anyhow::Result<()> {
     kubeui_core::install_crypto_provider()?;
@@ -125,6 +129,7 @@ fn build_ui(app: &Application, state: Rc<RefCell<AppState>>, rt: Rc<tokio::runti
                     y as f32,
                     metrics.char_w,
                     metrics.line_h,
+                    MENU_BORDER_INSET,
                 )
             };
             for a in actions {
@@ -284,7 +289,8 @@ fn paint(cr: &Cairo, w: f64, h: f64, state: &AppState, da: &DrawingArea) {
             let current = picker_current_index(state, picker.purpose);
             let menu = build_picker_menu(picker, current);
             let menu_w = picker_menu_width(picker, viewport, metrics.char_w);
-            let menu_layout = menu.layout_at(anchor, viewport, menu_w, |_| {
+            let menu_vp = picker_menu_viewport(viewport, MENU_BORDER_INSET);
+            let menu_layout = menu.layout_at(anchor, menu_vp, menu_w, |_| {
                 ContextMenuItemMeasure::new(metrics.line_h)
             });
             quadraui::gtk::draw_context_menu(cr, &layout, &menu, &menu_layout, line_h, &theme());

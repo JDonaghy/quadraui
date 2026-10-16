@@ -694,6 +694,54 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          no native scrollbar floated over the content edge; unrelated to the #19 stub gaps above \
          (#776)",
     ),
+    // `context_menu_border_inset` is the chrome a backend paints *outside* a
+    // `ContextMenuLayout`'s item region, which the caller must reserve when it lays the menu
+    // out. Only TUI has any: its box border lives on the cells around `bounds`. The pixel
+    // backends draw their frame inside the item region, so there is nothing to reserve.
+    // `context_menu_viewport` then applies whatever that inset is to all four viewport edges —
+    // identical arithmetic everywhere, so a backend tunes it by overriding the inset instead.
+    (
+        "gtk",
+        "context_menu_border_inset",
+        "menu chrome is painted inside the item region — Cairo's frame needs no cell reserved \
+         outside `bounds`, so `0.0` is the answer (#1560)",
+    ),
+    (
+        "macos",
+        "context_menu_border_inset",
+        "menu chrome is painted inside the item region — the CoreGraphics frame needs no cell \
+         reserved outside `bounds`, so `0.0` is the answer (#1560)",
+    ),
+    (
+        "win",
+        "context_menu_border_inset",
+        "menu chrome is painted inside the item region — the Direct2D frame needs no cell \
+         reserved outside `bounds`, so `0.0` is the answer (#1560)",
+    ),
+    (
+        "tui",
+        "context_menu_viewport",
+        "pure fn of viewport()/context_menu_border_inset() — see the block comment above; TUI's \
+         1-cell border is already expressed by its inset override (#1560)",
+    ),
+    (
+        "gtk",
+        "context_menu_viewport",
+        "pure fn of viewport()/context_menu_border_inset() — see the block comment above; with a \
+         `0.0` inset the menu surface is the whole viewport (#1560)",
+    ),
+    (
+        "macos",
+        "context_menu_viewport",
+        "pure fn of viewport()/context_menu_border_inset() — see the block comment above; with a \
+         `0.0` inset the menu surface is the whole viewport (#1560)",
+    ),
+    (
+        "win",
+        "context_menu_viewport",
+        "pure fn of viewport()/context_menu_border_inset() — see the block comment above; with a \
+         `0.0` inset the menu surface is the whole viewport (#1560)",
+    ),
     // `measure` bundles `char_width()`/`line_height()` into one `Metrics` value. Its trait
     // default is a pure function of those two *required* methods, so every backend's default
     // answer is that backend's own real metrics. There is nothing backend-specific left to add.

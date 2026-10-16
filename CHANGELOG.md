@@ -154,6 +154,18 @@ only a push to `main` runs this workflow.
   `TextDisplayLine`, alongside the primitives it already carried, so a
   README-style hello-world app can build against `quadraui::prelude::*`
   alone. Previously only `TextDisplayLine` of that list was re-exported.
+- `Backend::context_menu_border_inset` (default `0.0`; `TuiBackend`
+  returns `1.0`) and the provided `Backend::context_menu_viewport` built
+  on it — the surface a context menu or dropdown should be laid out in,
+  the viewport inset on all four sides by whatever chrome the backend
+  paints *outside* the menu's item region. Callers pass it to
+  `ContextMenu::layout`/`layout_at` instead of the raw viewport, so an
+  edge-anchored menu keeps its border without the rasteriser and
+  `hit_test` disagreeing about where the first item sits. Both are
+  defaulted, so existing `Backend` implementors are unaffected.
+- `quadraui::tui::CONTEXT_MENU_BORDER_INSET` — the TUI box border's width
+  in cells, for callers that drive `tui::draw_context_menu` directly
+  against a ratatui buffer and so have no `Backend` handle to ask.
 
 ### Changed
 
@@ -209,13 +221,20 @@ only a push to `main` runs this workflow.
 - TUI context menu: the top (and left) border no longer collides with the
   first item's row when the menu is anchored flush against the viewport
   edge (e.g. right-clicking a tab bar rendered at row 0). The fix lives in
-  geometry, not the rasteriser: a new `Backend::context_menu_border_inset`
-  method (default `0.0`; `TuiBackend` returns `1.0`) lets each
-  `ContextMenu::layout`/`layout_at` caller reserve the border's chrome
-  cell by insetting the viewport rect it passes in, so `hit_test` and
-  `draw_context_menu` agree on where the first item actually sits instead
-  of the rasteriser alone shifting painted rows away from the unshifted
-  hit-test geometry.
+  geometry, not the rasteriser: a caller lays the menu out in
+  `Backend::context_menu_viewport`, which reserves the chrome cell the
+  rasteriser paints outside the item region, so `hit_test` and
+  `draw_context_menu` agree on where the first item sits. Every in-tree
+  caller (`compose::ContextMenuController`, `compose::MenuSystem`, the
+  `submenu_app` example and the `kubeui` shells) goes through it.
+- `tui::draw_context_menu` and `tui::draw_context_menu_with_submenus` no
+  longer panic (debug) or wrap to `u16::MAX` (release) on a layout whose
+  `bounds.x` or `bounds.y` rounds to `0` — a menu laid out in a viewport
+  with no room reserved for the border. Such a layout degrades
+  cosmetically instead: the edge with no cell to paint on loses its
+  border, every item still renders on the row and column its own bounds
+  report, and nested levels are laid out in a reserved child viewport so
+  their own chrome stays on-screen.
 - `MacBackend::invalidate_rect` now calls AppKit's `setNeedsDisplayInRect:`
   on the recorded rect instead of only bookkeeping it in the shared
   `InvalidationLog`, completing the native partial-repaint wiring this
