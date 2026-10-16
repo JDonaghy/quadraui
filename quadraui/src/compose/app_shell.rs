@@ -212,6 +212,15 @@ pub struct AppShell {
     bottom_panel_visible: bool,
     has_command_line: bool,
     has_status_bar: bool,
+    /// Fixed-pixel status bar height override, set via
+    /// [`Self::with_status_bar_height_px`]. When `Some`, this wins over the
+    /// `line_height`-derived height used otherwise — VS Code's status bar is
+    /// a fixed 22px independent of editor font size, the same reasoning
+    /// [`Self::activity_bar_width_px`] already documents for the activity
+    /// bar. `None` (the default) leaves the status bar at one line height,
+    /// snapped per [`crate::Backend::snap_height`] — the pre-existing
+    /// behaviour.
+    status_bar_height_px: Option<f32>,
     /// When `true`, the activity bar and sidebar run the full height of the
     /// area below the title bar, and the status bar + command line bands
     /// are carved from the main column's width only (not the full window),
@@ -297,6 +306,7 @@ impl AppShell {
             bottom_panel_visible: true,
             has_command_line: false,
             has_status_bar: false,
+            status_bar_height_px: None,
             status_bar_under_main_column: false,
             bottom_panel_drag_offset: None,
             bottom_bands: Vec::new(),
@@ -453,6 +463,15 @@ impl AppShell {
 
     pub fn with_status_bar(mut self) -> Self {
         self.has_status_bar = true;
+        self
+    }
+
+    /// Fix the status bar to `height_px` native units, overriding the
+    /// `line_height`-derived height regardless of font size — VS Code's
+    /// status bar is a constant 22px. Call alongside [`Self::with_status_bar`];
+    /// has no visible effect unless that is also set.
+    pub fn with_status_bar_height_px(mut self, height_px: f32) -> Self {
+        self.status_bar_height_px = Some(height_px);
         self
     }
 
@@ -872,7 +891,12 @@ impl AppShell {
     /// Compute layout bounds without drawing. Use when only hit-testing
     /// is needed (e.g. in `handle`).
     pub fn layout(&self, area: Rect, line_height: f32) -> AppShellLayout {
-        self.compute_layout(area, line_height)
+        // Frozen at the legacy cell-grid rounding regardless of caller —
+        // this is the hit-test-only path `ShellAdapter` and direct
+        // `AppShell` consumers call without a `Backend` in hand, so there is
+        // no `Backend::snap_height` to defer to. `Self::render`/`Self::handle`
+        // are the backend-aware paths that drop rounding on GUI.
+        self.compute_layout(area, line_height, &|h: f32| h.round())
     }
 
     /// Build the [`ActivityBar`] primitive from current panel state.
@@ -988,7 +1012,7 @@ impl AppShell {
         // `set_theme` — the same palette every `draw_*` rasteriser call
         // below already paints with — so this chrome tracks the app's actual theme.
         let theme = backend.theme();
-        let layout = self.compute_layout(area, lh);
+        let layout = self.compute_layout(area, lh, &|h: f32| backend.snap_height(h));
         Self::register_chrome_zones(backend, &layout);
 
         let bar = self.build_activity_bar();
@@ -1055,7 +1079,7 @@ impl AppShell {
     /// is not [`AppShellEvent::Ignored`], the consumer should redraw.
     pub fn handle(&mut self, event: &UiEvent, backend: &dyn Backend, area: Rect) -> AppShellEvent {
         let lh = backend.chrome_line_height();
-        let layout = self.compute_layout(area, lh);
+        let layout = self.compute_layout(area, lh, &|h: f32| backend.snap_height(h));
 
         match event {
             UiEvent::MouseDown {
@@ -1077,7 +1101,7 @@ impl AppShell {
                     // Grip sits *above* the panel's top edge only. The panel's
                     // top row is the tab strip, whose clicks must reach the
                     // bottom-panel controller — so the grip must not overlap it.
-                    let grip_h = (lh * 0.5).max(1.0).round();
+                    let grip_h = backend.snap_height(lh * 0.5).max(1.0);
                     let grip = Rect::new(bp.x, bp.y - grip_h, bp.width, grip_h);
                     if contains(grip, p) {
                         self.bottom_panel_drag_offset = Some(p.y - bp.y);
@@ -1188,7 +1212,33 @@ impl AppShell {
 
     // ── Internal helpers ─────────────────────────────────────────────
 
-    fn compute_layout(&self, area: Rect, line_height: f32) -> AppShellLayout {
+    /// `snap` quantizes a native-unit extent to what the caller's backend
+    /// actually paints: the identity function on pixel backends (GUI drops
+    /// rounding — requirement of the px-first chrome sizing this method
+    /// implements), `.round()` on a cell grid (TUI, which still snaps to
+    /// whole rows). [`Self::layout`] freezes it at `.round()` regardless of
+    /// caller, for consumers with no [`crate::Backend`] in hand;
+    /// [`Self::render`]/[`Self::handle`] pass `backend.snap_height`.
+    fn compute_layout(
+        &self,
+        area: Rect,
+        line_height: f32,
+        snap: &dyn Fn(f32) -> f32,
+    ) -> AppShellLayout {
+        // `activity_bar_width_px`, `title_bar_min_px` and
+        // `status_bar_height_px` are literal screen pixels. On a cell grid
+        // (TUI), `line_height` is architecturally always exactly `1.0` — one
+        // character cell, never a real pixel measurement — so a "48px"
+        // override would silently become "48 columns". Suppress the three
+        // px fields on that backend so the line-height-multiple fields
+        // (`activity_bar_width`, `title_bar_height_lh`, and the implicit
+        // `snap(lh)` status-bar fallback) keep driving TUI's layout, exactly
+        // as they did before these fields gained px-first defaults.
+        let is_cell_grid = line_height <= 1.0;
+        let activity_bar_width_px = self.activity_bar_width_px.filter(|_| !is_cell_grid);
+        let title_bar_min_px = self.title_bar_min_px.filter(|_| !is_cell_grid);
+        let status_bar_height_px = self.status_bar_height_px.filter(|_| !is_cell_grid);
+
         let lh = line_height.max(1.0);
 
         // ── Vertical carve: title bar (top), then status/cmd/bottom (bottom) ──
@@ -1197,9 +1247,7 @@ impl AppShell {
         let mut band_h = area.height;
 
         let title_bar_bounds = if self.has_title_bar {
-            let h = (self.title_bar_height_lh * lh)
-                .round()
-                .max(self.title_bar_min_px.unwrap_or(0.0));
+            let h = snap(self.title_bar_height_lh * lh).max(title_bar_min_px.unwrap_or(0.0));
             let r = Rect::new(area.x, band_y, area.width, h);
             band_y += h;
             band_h -= h;
@@ -1208,12 +1256,12 @@ impl AppShell {
             None
         };
 
-        let status_h = if self.has_status_bar { lh.round() } else { 0.0 };
-        let cmd_h = if self.has_command_line {
-            lh.round()
+        let status_h = if self.has_status_bar {
+            status_bar_height_px.unwrap_or_else(|| snap(lh))
         } else {
             0.0
         };
+        let cmd_h = if self.has_command_line { snap(lh) } else { 0.0 };
 
         // Default carve: the status bar and command line consume height
         // from the shared band before the activity bar/sidebar/main split
@@ -1252,11 +1300,12 @@ impl AppShell {
             })
         .max(0.0);
         let bottom_panel_h = if self.has_bottom_panel && self.bottom_panel_visible {
-            let h = (self.bottom_panel_height_lh.clamp(
-                self.min_bottom_panel_height_lh,
-                self.max_bottom_panel_height_lh,
-            ) * lh)
-                .round();
+            let h = snap(
+                self.bottom_panel_height_lh.clamp(
+                    self.min_bottom_panel_height_lh,
+                    self.max_bottom_panel_height_lh,
+                ) * lh,
+            );
             Some(h.min(main_column_h * 0.6))
         } else {
             None
@@ -1304,7 +1353,7 @@ impl AppShell {
                 if !band.visible {
                     continue;
                 }
-                let h = (band.height_lh * lh).round().clamp(0.0, remaining.height);
+                let h = snap(band.height_lh * lh).clamp(0.0, remaining.height);
                 let above_h = (remaining.height - h).max(0.0);
                 let rect = Rect::new(remaining.x, remaining.y + above_h, remaining.width, h);
                 remaining = Rect::new(remaining.x, remaining.y, remaining.width, above_h);
@@ -1360,10 +1409,8 @@ impl AppShell {
         // `Toolbar` and `Form` (same shared engine, see those modules), so
         // `row_x_positions` delegates to it under the `layout` feature.
 
-        let ab_w = self
-            .activity_bar_width_px
-            .unwrap_or_else(|| (self.activity_bar_width * lh).round());
-        let divider_w = (lh * 0.25).max(1.0).round().min(4.0);
+        let ab_w = activity_bar_width_px.unwrap_or_else(|| snap(self.activity_bar_width * lh));
+        let divider_w = snap(lh * 0.25).clamp(1.0, 4.0);
 
         if !self.sidebar_visible || self.panels.is_empty() {
             let main_w = (area.width - ab_w).max(0.0);
@@ -1405,11 +1452,11 @@ impl AppShell {
             };
         }
 
-        let sidebar_w = (self
-            .sidebar_width
-            .clamp(self.min_sidebar_width, self.max_sidebar_width)
-            * lh)
-            .round();
+        let sidebar_w = snap(
+            self.sidebar_width
+                .clamp(self.min_sidebar_width, self.max_sidebar_width)
+                * lh,
+        );
         let remaining = (area.width - ab_w - divider_w).max(0.0);
         let sidebar_w = sidebar_w.min(remaining * 0.8);
         let header_h = lh;
@@ -2409,7 +2456,7 @@ mod tests {
     #[test]
     fn resize_drag_updates_width() {
         let mut s = shell();
-        let l = s.compute_layout(area(), 1.0);
+        let l = s.compute_layout(area(), 1.0, &|h: f32| h.round());
         let div = l.divider_bounds.unwrap();
         let _center = div.x + div.width / 2.0;
 

@@ -215,6 +215,34 @@ only a push to `main` runs this workflow.
   `quadraui::macos::mac_tree_layout` re-export only; neither published
   consumer (`vimcode`, `coord-tui`) calls it — both reach macOS tree
   layout through `Backend::tree_layout`.
+- `ShellConfig`'s px chrome fields are now primary on GUI backends, with
+  VS Code's own defaults, instead of deriving from `line_height`:
+  `activity_bar_width_px` defaults to `Some(48.0)` (was `None`),
+  `title_bar_min_px` (tab bar) defaults to `Some(35.0)` (was `None`), and
+  the new `status_bar_height_px` field defaults to `Some(22.0)` with a
+  `with_status_bar_height_px` builder to override it. `AppShell::
+  compute_layout` only applies these three px overrides when the active
+  backend's `line_height` is above `1.0` (a real pixel metric); a cell-grid
+  backend (`line_height <= 1.0`, true of `TuiBackend` only) still derives
+  every chrome dimension from `line_height` as before, so **TUI layout is
+  unaffected**. `Backend::snap_height` is identity on GUI and `.round()` on
+  TUI, so GUI chrome no longer snaps to a line-height multiple at all.
+  `TreeStyle::row_height` defaults to `Some(22)` (was `None`), matching VS
+  Code's tree row pitch independently of font size; TUI ignores this field
+  entirely and always renders one row per cell. **Migration note** (for
+  `vimcode`, `coord-tui`, `kubeui`): a GUI app that relied on the old
+  line-height-derived chrome sizing (activity bar / tab bar / status bar
+  width or height, or tree row pitch) must now set the affected
+  `ShellConfig`/`TreeStyle` field explicitly — `activity_bar_width_px:
+  None`, `title_bar_min_px: None`, `status_bar_height_px: None`, or
+  `TreeStyle { row_height: None, .. }` — to restore the previous
+  line-height-relative behavior; a default-constructed `ShellConfig` run
+  through `quadraui::gtk::run` now measures 48px/35px/22px chrome with no
+  app configuration at all. No published consumer constructs
+  `ShellConfig`/`TreeStyle` with `#[non_exhaustive]`-breaking exhaustive
+  literals that this would reject — both fields were already `pub
+  Option<f32>`/`Option<u16>` before this change, so existing explicit
+  overrides keep compiling unchanged.
 
 ### Fixed
 
