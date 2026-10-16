@@ -587,7 +587,7 @@ pub use event::{
 // The public paint-verb seam — see `paint_surface`'s module doc.
 pub use frame::{
     check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,
-    FrameZone, ScreenLayout, Surface,
+    FrameZone, OwnedContent, OwnedFrame, OwnedNode, ScreenLayout, Surface,
 };
 pub use paint_surface::{PaintSurface, PathVerb};
 // `InteractionState` — a single hover/pressed store keyed by `WidgetId`,

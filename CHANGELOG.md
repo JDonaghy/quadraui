@@ -61,6 +61,20 @@ only a push to `main` runs this workflow.
 
 ### Added
 
+- `OwnedFrame`/`OwnedNode`/`OwnedContent` — a lifetime-free, owned sibling
+  of `Surface`/`ScreenLayout`: `OwnedFrame::from_layout` clones a
+  `ScreenLayout<'_>`'s surfaces into a `Vec<OwnedNode>` (each carrying its
+  own `Rect`, optional `WidgetId`, optional `A11yInfo` and an owned
+  `OwnedContent` payload), fully `Serialize`/`Deserialize`. `OwnedFrame::
+  draw` replays the captured tree through any `&mut dyn Backend`
+  (returning a `FrameHitMap`); `OwnedFrame::hit_map` derives the same hit
+  map without a backend at all. Six overlay-companion primitives
+  (`Tooltip`, `ContextMenu`, `Dialog`, `Float`, `Completions`,
+  `RichTextPopup`) and the two non-serializable `DropOverlay`/
+  `FindReplacePanel` primitives are captured as zone-only, no-op-on-draw
+  variants since their `*Layout` companions and overlay handles aren't
+  serializable. Purely additive: `Surface<'a>`/`ScreenLayout<'a>` are
+  unchanged, so this is a sibling type rather than a breaking rewrite.
 - `transition` module (`Transition`, `lerp`, `lerp_rect`) — a
   backend-agnostic time-progress helper for chrome motion (fades, slides)
   that computes `0.0..=1.0` progress from a start `Instant` and `Duration`,
