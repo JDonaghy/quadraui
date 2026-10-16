@@ -1536,8 +1536,19 @@ jobs:
       # `cargo tree` puts the resolved source in the log for a human reading
       # it; the `cargo metadata` comparison is what actually gates. A
       # registry-resolved quadraui shows a `~/.cargo/registry` manifest path
-      # here and fails the job.
+      # here and the step exits non-zero.
+      #
+      # `continue-on-error: true` lets the job survive when this checkout's
+      # version exceeds vimcode's semver requirement (e.g. 0.2.0 vs a
+      # "0.1" requirement): cargo silently ignores the patch and resolves
+      # from crates.io, making the assertion fail through no fault of the
+      # PR under test. The `Evaluate` step below emits a COVERAGE GAP
+      # warning instead of blocking every PR until vimcode bumps its
+      # dependency. The vimcode `cargo check` step is gated on this
+      # assertion passing, so it never runs against the registry crate.
       - name: Assert vimcode actually resolves quadraui to this PR's checkout
+        id: assert_vimcode
+        continue-on-error: true
         working-directory: ../vimcode
         run: |
           set -euo pipefail
@@ -1554,6 +1565,7 @@ jobs:
 
       - name: cargo check — vimcode (this PR's quadraui)
         id: pr_vimcode
+        if: steps.assert_vimcode.outcome == 'success'
         continue-on-error: true
         working-directory: ../vimcode
         run: cargo check --all-targets
@@ -1656,7 +1668,9 @@ jobs:
           printf '\n[patch.crates-io]\nquadraui = { path = "%s" }\n' "$Q" >> "$D/.cargo/config.toml"
 
       - name: Assert vimcode (control) resolves quadraui to develop's tip
+        id: assert_vimcode_control
         if: steps.pr_vimcode.outcome == 'failure'
+        continue-on-error: true
         working-directory: ${{ runner.temp }}/control/vimcode
         run: |
           set -euo pipefail
@@ -1672,7 +1686,7 @@ jobs:
           fi
 
       - name: cargo check — vimcode (control, develop's tip quadraui)
-        if: steps.pr_vimcode.outcome == 'failure'
+        if: steps.pr_vimcode.outcome == 'failure' && steps.assert_vimcode_control.outcome == 'success'
         id: control_vimcode
         continue-on-error: true
         working-directory: ${{ runner.temp }}/control/vimcode
@@ -1693,6 +1707,15 @@ jobs:
           if [ "${{ steps.clone.outputs.coord_tui }}" != "true" ]; then
             echo "::warning::COVERAGE GAP: only vimcode was checked. coord-tui (JDonaghy/coord-tui) could not be cloned by this job — see the clone step's warning."
           fi
+          # The vimcode assertion fails when this checkout's version no
+          # longer satisfies vimcode's semver requirement (e.g. quadraui
+          # bumped to 0.2.0 while vimcode still requires 0.1.x).  The
+          # [patch.crates-io] override is silently unused in that case, so
+          # the vimcode leg cannot run at all — warn instead of blocking
+          # every PR until vimcode bumps its dependency.
+          if [ "${{ steps.assert_vimcode.outcome }}" = "failure" ]; then
+            echo "::warning::COVERAGE GAP: vimcode leg skipped — this checkout's quadraui version no longer satisfies vimcode's crates-io requirement, so the [patch.crates-io] override was unused. Bump vimcode's quadraui dependency to re-arm this gate."
+          fi
           if [ "${{ steps.pr_coord_tui.outcome }}" = "failure" ]; then
             if [ "${{ steps.control_coord_tui.outcome }}" = "failure" ]; then
               echo "::warning::coord-tui also fails to compile against develop's tip quadraui — pre-existing consumer breakage, not caused by this PR. Not failing this gate."
@@ -1704,6 +1727,8 @@ jobs:
           if [ "${{ steps.pr_vimcode.outcome }}" = "failure" ]; then
             if [ "${{ steps.control_vimcode.outcome }}" = "failure" ]; then
               echo "::warning::vimcode also fails to compile against develop's tip quadraui — pre-existing consumer breakage, not caused by this PR. Not failing this gate."
+            elif [ "${{ steps.assert_vimcode_control.outcome }}" = "failure" ]; then
+              echo "::warning::vimcode's control leg could not resolve develop's tip quadraui either (version incompatibility), so no valid comparison exists. Not failing this gate."
             else
               echo "::error::vimcode fails to compile against this PR's quadraui but builds fine against develop's tip. This PR broke vimcode."
               fail=1
