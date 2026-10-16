@@ -59,7 +59,7 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
-## [0.1.9] - 2026-10-16
+## [0.2.0] - 2026-10-16
 
 ### Added
 
