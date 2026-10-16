@@ -30,6 +30,10 @@ pub mod backend;
 /// see its module docs.
 #[cfg(target_os = "windows")]
 mod board;
+/// Direct2D / DirectWrite rasteriser for [`crate::Button`]. Windows-only
+/// in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod button;
 /// Direct2D / DirectWrite rasteriser for [`crate::primitives::chart::Chart`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -139,6 +143,10 @@ mod pipeline_view;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod progress;
+/// Direct2D / DirectWrite rasteriser for [`crate::RadioGroup`].
+/// Windows-only in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod radio_group;
 /// Direct2D / DirectWrite rasteriser for [`crate::RichTextPopup`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -185,6 +193,10 @@ mod status_bar;
 /// rasteriser modules above that consume it.
 #[cfg(target_os = "windows")]
 mod surface;
+/// Direct2D / DirectWrite rasteriser for [`crate::Switch`]. Windows-only
+/// in full — see its module docs.
+#[cfg(target_os = "windows")]
+mod switch;
 /// Direct2D / DirectWrite rasteriser for [`crate::TabBar`]. Issue
 /// Only its paint fns are Windows-only — see its module docs.
 mod tab_bar;
@@ -263,6 +275,8 @@ pub use backend::WinBackend;
 #[cfg(target_os = "windows")]
 pub use board::win_board_layout;
 #[cfg(target_os = "windows")]
+pub use button::win_button_layout;
+#[cfg(target_os = "windows")]
 pub use chart::win_chart_layout;
 #[cfg(target_os = "windows")]
 pub use command_center::{draw_command_center, win_command_center_layout};
@@ -304,6 +318,8 @@ pub use pipeline_view::win_pipeline_view_layout;
 #[cfg(target_os = "windows")]
 pub use progress::win_progress_layout;
 #[cfg(target_os = "windows")]
+pub use radio_group::win_radio_group_layout;
+#[cfg(target_os = "windows")]
 pub use rich_text_popup::draw_rich_text_popup;
 pub use run::{run, run_with, RunConfig};
 pub use services::WinPlatformServices;
@@ -317,6 +333,8 @@ pub use split::win_split_layout;
 #[cfg(target_os = "windows")]
 pub use split_tree::win_split_tree_layout;
 pub use status_bar::{win_status_bar_layout, MIN_GAP_DIP};
+#[cfg(target_os = "windows")]
+pub use switch::win_switch_layout;
 #[cfg(target_os = "windows")]
 #[allow(deprecated)]
 pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons};
