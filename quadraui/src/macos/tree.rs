@@ -392,7 +392,7 @@ mod tests {
             leaf(2, "gamma"),
             leaf(3, "delta"),
         ]);
-        tree.style.row_height = Some(22);
+        tree.style.row_height = Some(30);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
 
         let small = mac_tree_layout(&tree, area, 14.0, &font());
@@ -405,7 +405,7 @@ mod tests {
                 "row_height override must pin row {} bounds across line_heights",
                 s.row_idx
             );
-            assert_eq!(s.bounds.height, 22.0);
+            assert_eq!(s.bounds.height, 30.0);
 
             // Click at the row's center still resolves to the same row
             // at either line_height — paint and hit-test stay in sync.

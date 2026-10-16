@@ -218,8 +218,7 @@ pub struct AppShell {
     /// a fixed 22px independent of editor font size, the same reasoning
     /// [`Self::activity_bar_width_px`] already documents for the activity
     /// bar. `None` (the default) leaves the status bar at one line height,
-    /// snapped per [`crate::Backend::snap_height`] — the pre-existing
-    /// behaviour.
+    /// snapped per [`crate::Backend::snap_height`].
     status_bar_height_px: Option<f32>,
     /// When `true`, the activity bar and sidebar run the full height of the
     /// area below the title bar, and the status bar + command line bands
@@ -890,13 +889,23 @@ impl AppShell {
 
     /// Compute layout bounds without drawing. Use when only hit-testing
     /// is needed (e.g. in `handle`).
+    ///
+    /// Takes `line_height` rather than a `&dyn Backend` so callers that
+    /// only know the line height (external consumers, tests) can still
+    /// call it. It mirrors `Backend::snap_height`'s own threshold —
+    /// identity above one line height (a real pixel metric), `.round()`
+    /// at or below it (TUI's cell grid, whose `chrome_line_height` is
+    /// architecturally always exactly `1.0`) — so this path always agrees
+    /// with `Self::render`/`Self::handle`, which pass `backend.snap_height`
+    /// directly, for the same `area`/`line_height` on the same backend.
     pub fn layout(&self, area: Rect, line_height: f32) -> AppShellLayout {
-        // Frozen at the legacy cell-grid rounding regardless of caller —
-        // this is the hit-test-only path `ShellAdapter` and direct
-        // `AppShell` consumers call without a `Backend` in hand, so there is
-        // no `Backend::snap_height` to defer to. `Self::render`/`Self::handle`
-        // are the backend-aware paths that drop rounding on GUI.
-        self.compute_layout(area, line_height, &|h: f32| h.round())
+        self.compute_layout(area, line_height, &|h: f32| {
+            if line_height > 1.0 {
+                h
+            } else {
+                h.max(0.0).round()
+            }
+        })
     }
 
     /// Build the [`ActivityBar`] primitive from current panel state.
@@ -1213,12 +1222,13 @@ impl AppShell {
     // ── Internal helpers ─────────────────────────────────────────────
 
     /// `snap` quantizes a native-unit extent to what the caller's backend
-    /// actually paints: the identity function on pixel backends (GUI drops
-    /// rounding — requirement of the px-first chrome sizing this method
-    /// implements), `.round()` on a cell grid (TUI, which still snaps to
-    /// whole rows). [`Self::layout`] freezes it at `.round()` regardless of
-    /// caller, for consumers with no [`crate::Backend`] in hand;
-    /// [`Self::render`]/[`Self::handle`] pass `backend.snap_height`.
+    /// actually paints: the identity function on pixel backends (GUI paints
+    /// fractional heights exactly), `.round()` on a cell grid (TUI, which
+    /// snaps to whole rows). [`Self::layout`] derives this from
+    /// `line_height` alone (no [`crate::Backend`] in hand);
+    /// [`Self::render`]/[`Self::handle`] pass `backend.snap_height`
+    /// directly — the two agree because both apply the same
+    /// above-one-line-height threshold.
     fn compute_layout(
         &self,
         area: Rect,
@@ -1232,8 +1242,7 @@ impl AppShell {
         // override would silently become "48 columns". Suppress the three
         // px fields on that backend so the line-height-multiple fields
         // (`activity_bar_width`, `title_bar_height_lh`, and the implicit
-        // `snap(lh)` status-bar fallback) keep driving TUI's layout, exactly
-        // as they did before these fields gained px-first defaults.
+        // `snap(lh)` status-bar fallback) keep driving TUI's layout instead.
         let is_cell_grid = line_height <= 1.0;
         let activity_bar_width_px = self.activity_bar_width_px.filter(|_| !is_cell_grid);
         let title_bar_min_px = self.title_bar_min_px.filter(|_| !is_cell_grid);
@@ -1801,6 +1810,34 @@ mod tests {
         let s = shell().with_title_bar(1.5).with_title_bar_min_px(34.0);
         let h = s.layout(area(), 6.0).title_bar_bounds.unwrap().height;
         assert_eq!(h, 34.0);
+    }
+
+    /// On a cell grid (`line_height <= 1.0`, TUI's architecture), the three
+    /// px overrides are suppressed entirely — a "48px" activity bar would
+    /// otherwise become "48 columns", which is not what the caller asked
+    /// for. The line-height-multiple fields drive layout instead, exactly
+    /// as if the px overrides were never set.
+    #[test]
+    fn px_overrides_are_suppressed_on_a_cell_grid() {
+        let with_px = shell()
+            .with_activity_bar_width(3.0)
+            .with_activity_bar_width_px(48.0)
+            .with_title_bar(1.5)
+            .with_title_bar_min_px(34.0)
+            .with_status_bar_height_px(22.0);
+        let without_px = shell().with_activity_bar_width(3.0).with_title_bar(1.5);
+
+        let l_px = with_px.layout(area(), 1.0);
+        let l_plain = without_px.layout(area(), 1.0);
+
+        assert_eq!(
+            l_px.activity_bar_bounds.width,
+            l_plain.activity_bar_bounds.width
+        );
+        assert_eq!(
+            l_px.title_bar_bounds.unwrap().height,
+            l_plain.title_bar_bounds.unwrap().height
+        );
     }
 
     // ── Layout — sidebar hidden ─────────────────────────────────────

@@ -601,6 +601,12 @@ mod tests {
     /// dimensions (48px activity bar, 35px tab/title bar, 22px status bar)
     /// on a GUI backend (`line_height > 1.0`), with no app configuration
     /// beyond enabling the three bands and zero app-side pixel tuning.
+    ///
+    /// Drives `AppShell::render` (the paint path, through
+    /// [`crate::testing::RecordingBackend`]) rather than the hit-test-only
+    /// `AppShell::layout`, so this pins the dimensions a GUI backend
+    /// actually paints, not just what a caller without a `Backend` in hand
+    /// would compute.
     #[test]
     fn default_shell_config_measures_vs_code_chrome_px_on_a_gui_backend() {
         let config = ShellConfig::new("t", Vec::new())
@@ -612,9 +618,18 @@ mod tests {
         // title bar (`1.0 * 20.0 = 20.0`) would fall well short of the 35px
         // floor, proving the px default — not a lucky line-height
         // coincidence — is what produces 35.0.
+        let mut backend = crate::testing::RecordingBackend::with_viewport(
+            crate::Viewport {
+                width: 800.0,
+                height: 600.0,
+                scale: 1.0,
+            },
+            20.0,
+            8.0,
+        );
         let layout = adapter
             .shell
-            .layout(Rect::new(0.0, 0.0, 800.0, 600.0), 20.0);
+            .render(&mut backend, Rect::new(0.0, 0.0, 800.0, 600.0));
 
         assert_eq!(layout.activity_bar_bounds.width, 48.0);
         let tb = layout.title_bar_bounds.expect("title bar row reserved");

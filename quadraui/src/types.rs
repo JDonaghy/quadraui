@@ -524,9 +524,9 @@ pub struct TreeStyle {
     /// unit (pixels for GTK / macOS / Win-GUI). `Some(22)` by default,
     /// matching VS Code's tree row pitch, independent of editor font size.
     /// Header rows (`Decoration::Header`) are unaffected; they stay pitched
-    /// off `line_height`. Set to `None` to fall back to the old
-    /// line-height-derived pitch (`line_height * 1.4` for leaves and
-    /// branches) instead.
+    /// off `line_height`. Set to `None` to derive the pitch from
+    /// `line_height` instead (`line_height * 1.4` for leaves and
+    /// branches).
     ///
     /// **TUI ignores this field** — a cell grid has no literal pixels, so
     /// rows there stay a fixed 1 cell regardless of this override.
