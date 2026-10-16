@@ -474,6 +474,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fully_visible_file_paints_no_viewport_band_at_all() {
+        // An empty or short buffer whose viewport already spans every row
+        // has nothing to scroll to, so no row may carry the highlight
+        // tint -- otherwise the whole strip reads as one solid band
+        // instead of a position indicator.
+        let theme = Theme {
+            background: Color::rgb(20, 20, 20),
+            accent_bg: Color::rgb(0, 96, 191),
+            ..Theme::default()
+        };
+        let tint = ratatui_color(theme.background.blend(theme.accent_bg, 0.25));
+
+        for (lines, label) in [
+            (vec![""], "single empty line"),
+            (vec!["fn main() {}", "", "// short"], "three-line file"),
+        ] {
+            let total = lines.len();
+            let mut mm = minimap_from(lines, total);
+            mm.visible_row_start = 0;
+            // A host reporting its whole window's row budget, well past
+            // the end of the buffer.
+            mm.visible_row_count = 40;
+            let area = Rect::new(0, 0, 3, 6);
+            let mut buf = Buffer::empty(area);
+            let layout = draw_minimap(&mut buf, area, &mm, &theme);
+            assert_eq!(
+                layout.viewport_highlight.height, 0.0,
+                "{label}: layout must not report a viewport band"
+            );
+            assert!(
+                !layout.visible_lines.is_empty(),
+                "{label}: nothing was painted, so the tint check below is vacuous"
+            );
+            for y in area.y..area.y + area.height {
+                for x in area.x..area.x + area.width {
+                    assert_ne!(buf[(x, y)].bg, tint, "{label}: cell ({x},{y}) is tinted");
+                }
+            }
+        }
+    }
+
     /// Shared body for `paint_and_click_round_trip_returns_seek_for_the_clicked_fraction`
     /// — see `docs/PRIMITIVE_RULES.md`'s "Coordinate frames for
     /// `*_layout` methods": `minimap_layout` is documented
