@@ -263,6 +263,12 @@ only a push to `main` runs this workflow.
   border, every item still renders on the row and column its own bounds
   report, and nested levels are laid out in a reserved child viewport so
   their own chrome stays on-screen.
+- `AppShell::layout` now derives its own px-override-suppression and
+  rounding rule from `line_height` alone (identity above `1.0`, `.round()`
+  at or below it) instead of always rounding, so the hit-test-only path
+  agrees with `AppShell::render`/`AppShell::handle` (which pass
+  `backend.snap_height`) on the same `area`/`line_height` — paint and
+  hit-test no longer drift on a GUI backend.
 - `MacBackend::invalidate_rect` now calls AppKit's `setNeedsDisplayInRect:`
   on the recorded rect instead of only bookkeeping it in the shared
   `InvalidationLog`, completing the native partial-repaint wiring this

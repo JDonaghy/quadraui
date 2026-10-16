@@ -1393,10 +1393,11 @@ mod tests {
     }
 
     #[test]
-    fn tree_row_pitch_matches_tree_layout_non_header_pitch_by_default() {
+    fn tree_row_pitch_matches_tree_layout_non_header_pitch_without_override() {
         // Must stay identical to the `item_height` `tree_layout` computes
         // for non-header rows — that's the whole point of sharing this fn.
-        let tree = bare_tree();
+        let mut tree = bare_tree();
+        tree.style.row_height = None;
         assert_eq!(tree_row_pitch(&tree, 16.0), (16.0_f64 * 1.4).round());
     }
 
