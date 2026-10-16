@@ -62,16 +62,15 @@ use serde::{Deserialize, Serialize};
 ///     is_find_active: false,
 /// };
 ///
-/// let terminal = Terminal {
-///     id: WidgetId::new("terminal:shell"),
-///     cells: vec![vec![cell]],
-///     scrollbar: None,
-/// };
+/// let mut terminal = Terminal::default();
+/// terminal.id = WidgetId::new("terminal:shell");
+/// terminal.cells = vec![vec![cell]];
 ///
 /// let layout = terminal.layout(80.0, 24.0, 1.0, 1.0);
 /// assert_eq!(layout.hit_test(0.0, 0.0), TerminalHit::Cell { row: 0, col: 0 });
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Terminal {
     pub id: WidgetId,
     pub cells: Vec<Vec<TerminalCell>>,
@@ -79,6 +78,17 @@ pub struct Terminal {
     /// same style as editor scrollbars (`Backend::draw_scrollbar`).
     #[serde(default)]
     pub scrollbar: Option<TerminalScrollbar>,
+}
+
+impl Default for Terminal {
+    /// An empty-id terminal with no cells and no scrollbar.
+    fn default() -> Self {
+        Self {
+            id: WidgetId::new(""),
+            cells: Vec::new(),
+            scrollbar: None,
+        }
+    }
 }
 
 /// Scrollbar state for a `Terminal`. The rasteriser constructs a

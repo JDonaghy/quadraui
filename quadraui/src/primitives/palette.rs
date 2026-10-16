@@ -85,6 +85,7 @@ pub enum PaletteMode {
 ///     create_label: None,
 ///     preview: None,
 ///     mode: Default::default(),
+///     ..Default::default()
 /// };
 ///
 /// let layout = palette.layout(60.0, 20.0, 1.0, 1.0, 0.0, 1.0, |_| {
@@ -93,6 +94,7 @@ pub enum PaletteMode {
 /// assert_eq!(layout.hit_test(0.0, 2.0), PaletteHit::Item(0));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Palette {
     pub id: WidgetId,
     /// Header text shown above the query input, e.g. `"Commands"` or
@@ -139,6 +141,29 @@ pub struct Palette {
     /// [`PaletteEvent::InputConfirmed`] rather than activating a row.
     #[serde(default)]
     pub mode: PaletteMode,
+}
+
+impl Default for Palette {
+    /// An empty, unfocused palette with no title, query, or items and
+    /// the query row shown. Set fields directly afterwards (every
+    /// field is `pub`) — see `docs/PRIMITIVE_RULES.md` rule 8.
+    fn default() -> Self {
+        Palette {
+            id: WidgetId::new(""),
+            title: String::new(),
+            query: String::new(),
+            query_cursor: 0,
+            items: Vec::new(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            total_count: 0,
+            has_focus: false,
+            show_query: true,
+            create_label: None,
+            preview: None,
+            mode: PaletteMode::default(),
+        }
+    }
 }
 
 /// One row in a `Palette`'s filtered result list.

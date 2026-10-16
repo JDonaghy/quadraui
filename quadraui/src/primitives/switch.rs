@@ -53,6 +53,7 @@ use serde::{Deserialize, Serialize};
 /// );
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Switch {
     pub id: WidgetId,
     /// Current on/off state.
@@ -121,6 +122,14 @@ impl Switch {
             id: self.id.clone(),
             value: !self.value,
         })
+    }
+}
+
+impl Default for Switch {
+    /// An off, enabled, unfocused switch with an empty id. See
+    /// [`Switch::new`] for a switch with a real id.
+    fn default() -> Self {
+        Self::new(WidgetId::new(""))
     }
 }
 

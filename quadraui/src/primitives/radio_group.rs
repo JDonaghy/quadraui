@@ -89,6 +89,7 @@ impl RadioOption {
 /// assert_eq!(event, Some(RadioGroupEvent::SelectionChanged { index: 0 }));
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RadioGroup {
     pub id: WidgetId,
     pub options: Vec<RadioOption>,
@@ -197,6 +198,14 @@ impl RadioGroup {
             }
         }
         None
+    }
+}
+
+impl Default for RadioGroup {
+    /// An empty, unselected, unfocused group with no options. See
+    /// [`RadioGroup::new`] for a group with real options.
+    fn default() -> Self {
+        Self::new(WidgetId::new(""), Vec::new())
     }
 }
 

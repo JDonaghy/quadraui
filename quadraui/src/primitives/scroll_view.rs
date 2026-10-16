@@ -75,6 +75,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!((start, end), (5.0, 15.0));
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ScrollView {
     pub id: WidgetId,
     #[serde(default = "ScrollAxis::vertical_default")]
@@ -302,6 +303,14 @@ impl ScrollView {
             hovered: false,
             dragging: false,
         })
+    }
+}
+
+impl Default for ScrollView {
+    /// A vertical view with an empty viewport and no content. See
+    /// [`ScrollView::new`] for a view with a real viewport/extent.
+    fn default() -> Self {
+        Self::new(WidgetId::new(""), Rect::default(), 0.0)
     }
 }
 
