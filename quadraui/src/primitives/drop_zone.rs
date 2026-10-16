@@ -31,9 +31,10 @@ pub enum DropEdge {
 }
 
 /// What kind of drop zone the cursor is over.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum DropZoneKind {
     /// Drop onto the center — tab joins this group.
+    #[default]
     Center,
     /// Drop on an edge — split the group in this direction.
     Split(DropEdge),
@@ -61,7 +62,8 @@ pub enum DropZoneKind {
 /// assert_eq!(zone.group_idx, 0);
 /// assert_eq!(zone.kind, DropZoneKind::Center);
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
 pub struct DropZone {
     pub kind: DropZoneKind,
     /// Which group (index into the `groups` slice) this targets.

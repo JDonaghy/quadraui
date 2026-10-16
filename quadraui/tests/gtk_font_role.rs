@@ -64,8 +64,8 @@ use quadraui::gtk::testing::GtkDriver;
 use quadraui::{
     AppLogic, Backend, Color, CompletionItem, CompletionItemMeasure, CompletionKind, Completions,
     Decoration, DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView,
-    FieldKind, Form, FormField, MessageList, MessageRow, Palette, PaletteItem, PaletteMode, Panel,
-    Reaction, Rect, Spinner, StyledSpan, StyledText, Terminal, TerminalCell, TerminalCursorShape,
+    FieldKind, Form, FormField, MessageList, MessageRow, Palette, PaletteItem, Panel, Reaction,
+    Rect, Spinner, StyledSpan, StyledText, Terminal, TerminalCell, TerminalCursorShape,
     TextDisplay, TextDisplayLine, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity,
     Tooltip, TooltipMeasure, UiEvent, WidgetId,
 };
@@ -250,25 +250,23 @@ fn draw_text_display_paints_in_editor_font() {
 fn draw_terminal_paints_in_editor_font() {
     const CELL: &str = "Z";
     assert_run_paints_in_editor_font("draw_terminal", CELL, |b, area| {
-        let term = Terminal {
-            id: id("terminal"),
-            cells: vec![vec![TerminalCell {
-                text: CELL.to_string(),
-                fg: Color::rgb(220, 220, 220),
-                bg: Color::rgb(30, 30, 30),
-                bold: false,
-                italic: false,
-                underline: false,
-                dim: false,
-                selected: false,
-                is_cursor: false,
-                cursor_shape: TerminalCursorShape::Block,
-                cursor_blinking: false,
-                is_find_match: false,
-                is_find_active: false,
-            }]],
-            scrollbar: None,
-        };
+        let mut term = Terminal::default();
+        term.id = id("terminal");
+        term.cells = vec![vec![TerminalCell {
+            text: CELL.to_string(),
+            fg: Color::rgb(220, 220, 220),
+            bg: Color::rgb(30, 30, 30),
+            bold: false,
+            italic: false,
+            underline: false,
+            dim: false,
+            selected: false,
+            is_cursor: false,
+            cursor_shape: TerminalCursorShape::Block,
+            cursor_blinking: false,
+            is_find_match: false,
+            is_find_active: false,
+        }]];
         b.draw_terminal(area, &term);
     });
 }
@@ -376,29 +374,18 @@ fn draw_panel_paints_in_chrome_font() {
 #[test]
 fn draw_palette_paints_in_chrome_font() {
     assert_paints_in_chrome_font("draw_palette", |b, area| {
-        let palette = Palette {
-            id: id("palette"),
-            title: "Palette".to_string(),
-            query: String::new(),
-            query_cursor: 0,
-            items: vec![PaletteItem {
-                text: StyledText::plain(LABEL),
-                detail: None,
-                icon: None,
-                match_positions: vec![],
-                depth: 0,
-                expandable: false,
-                expanded: false,
-            }],
-            selected_idx: 0,
-            scroll_offset: 0,
-            total_count: 0,
-            has_focus: false,
-            show_query: true,
-            create_label: None,
-            preview: None,
-            mode: PaletteMode::List,
-        };
+        let mut palette = Palette::default();
+        palette.id = id("palette");
+        palette.title = "Palette".to_string();
+        palette.items = vec![PaletteItem {
+            text: StyledText::plain(LABEL),
+            detail: None,
+            icon: None,
+            match_positions: vec![],
+            depth: 0,
+            expandable: false,
+            expanded: false,
+        }];
         b.draw_palette(area, &palette);
     });
 }
@@ -420,19 +407,16 @@ fn draw_text_input_paints_in_chrome_font() {
 #[test]
 fn draw_completions_paints_in_chrome_font() {
     assert_paints_in_chrome_font("draw_completions", |b, area| {
-        let completions = Completions {
-            id: id("completions"),
-            items: vec![CompletionItem {
-                label: StyledText::plain(LABEL),
-                detail: None,
-                documentation: None,
-                kind: CompletionKind::Method,
-                icon: None,
-            }],
-            selected_idx: 0,
-            scroll_offset: 0,
-            has_focus: true,
-        };
+        let mut completions = Completions::default();
+        completions.id = id("completions");
+        completions.items = vec![CompletionItem {
+            label: StyledText::plain(LABEL),
+            detail: None,
+            documentation: None,
+            kind: CompletionKind::Method,
+            icon: None,
+        }];
+        completions.has_focus = true;
         let layout = completions.layout(
             area.x,
             area.y,

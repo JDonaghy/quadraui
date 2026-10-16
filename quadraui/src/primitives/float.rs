@@ -80,7 +80,7 @@
 //! `layout.content_bounds` afterwards, same as `Panel`.
 
 use crate::event::{Point, Rect};
-use crate::layout::{Anchor, ResolvedSide};
+use crate::layout::{Anchor, ResolvedSide, Side};
 use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -100,6 +100,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.hit_test(Point::new(15.0, 12.0)), FloatHit::Body);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Float {
     pub id: WidgetId,
     /// Where to anchor the float — relative to a point, a cell, or
@@ -149,6 +150,17 @@ impl Float {
             border: true,
             bg: None,
         }
+    }
+}
+
+impl Default for Float {
+    /// A focusable, bordered float anchored to the origin with an empty
+    /// id. See [`Float::new`] for a float with a real id/anchor.
+    fn default() -> Self {
+        Self::new(
+            WidgetId::new(""),
+            Anchor::new(Rect::default(), Side::default()),
+        )
     }
 }
 

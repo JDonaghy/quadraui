@@ -521,12 +521,10 @@ impl AppLogic for CommandCenterFixtureApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let cc = CommandCenter {
-            id: WidgetId::new("cc"),
-            back_enabled: true,
-            forward_enabled: false,
-            search_label: "my-project".into(),
-        };
+        let mut cc = CommandCenter::default();
+        cc.id = WidgetId::new("cc");
+        cc.back_enabled = true;
+        cc.search_label = "my-project".into();
         backend.draw_command_center(Rect::new(0.0, 0.0, W as f32, 32.0), &cc);
     }
 
@@ -547,35 +545,33 @@ impl AppLogic for CompletionsFixtureApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let completions = Completions {
-            id: WidgetId::new("comp"),
-            items: vec![
-                CompletionItem {
-                    label: StyledText::plain("len"),
-                    detail: None,
-                    documentation: None,
-                    kind: CompletionKind::Method,
-                    icon: None,
-                },
-                CompletionItem {
-                    label: StyledText::plain("clone"),
-                    detail: None,
-                    documentation: None,
-                    kind: CompletionKind::Method,
-                    icon: None,
-                },
-                CompletionItem {
-                    label: StyledText::plain("map"),
-                    detail: None,
-                    documentation: None,
-                    kind: CompletionKind::Method,
-                    icon: None,
-                },
-            ],
-            selected_idx: 1,
-            scroll_offset: 0,
-            has_focus: true,
-        };
+        let mut completions = Completions::default();
+        completions.id = WidgetId::new("comp");
+        completions.items = vec![
+            CompletionItem {
+                label: StyledText::plain("len"),
+                detail: None,
+                documentation: None,
+                kind: CompletionKind::Method,
+                icon: None,
+            },
+            CompletionItem {
+                label: StyledText::plain("clone"),
+                detail: None,
+                documentation: None,
+                kind: CompletionKind::Method,
+                icon: None,
+            },
+            CompletionItem {
+                label: StyledText::plain("map"),
+                detail: None,
+                documentation: None,
+                kind: CompletionKind::Method,
+                icon: None,
+            },
+        ];
+        completions.selected_idx = 1;
+        completions.has_focus = true;
         let layout = completions.layout(
             20.0,
             20.0,

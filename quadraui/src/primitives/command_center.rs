@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 ///     back_enabled: true,
 ///     forward_enabled: false,
 ///     search_label: "my-project".to_string(),
+///     ..Default::default()
 /// };
 ///
 /// let bounds = Rect::new(0.0, 0.0, 400.0, 1.0);
@@ -29,6 +30,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.hit_test(back.x, back.y), CommandCenterHit::Back);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CommandCenter {
     pub id: WidgetId,
     pub back_enabled: bool,
@@ -37,6 +39,20 @@ pub struct CommandCenter {
     /// Empty string hides the search box entirely.
     #[serde(default)]
     pub search_label: String,
+}
+
+impl Default for CommandCenter {
+    /// An empty-id command center with both nav arrows disabled and no
+    /// search box. Set fields directly afterwards (every field is
+    /// `pub`) — see `docs/PRIMITIVE_RULES.md` rule 8.
+    fn default() -> Self {
+        CommandCenter {
+            id: WidgetId::new(""),
+            back_enabled: false,
+            forward_enabled: false,
+            search_label: String::new(),
+        }
+    }
 }
 
 /// Measurement for a `CommandCenter`.

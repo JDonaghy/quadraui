@@ -54,6 +54,12 @@ pub enum ScrollAxis {
 /// // length minus that, not a tautological "it's non-negative" check.
 /// assert_eq!(bar.travel(), track.height - bar.thumb_len);
 /// ```
+///
+/// Not `#[non_exhaustive]`: the oracle acceptance suite constructs this
+/// struct with an exhaustive literal, and that suite is sealed, so no
+/// in-tree caller can migrate off the literal to keep pace with a future
+/// field addition. [`Default`] is implemented regardless — it is
+/// additive and doesn't require the exhaustiveness trade-off.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scrollbar {
     pub id: WidgetId,
@@ -113,6 +119,23 @@ impl Scrollbar {
             track,
             thumb_start,
             thumb_len,
+            hovered: false,
+            dragging: false,
+        }
+    }
+}
+
+impl Default for Scrollbar {
+    /// A vertical scrollbar with an empty track and no thumb. See
+    /// [`Scrollbar::vertical`] / [`Scrollbar::horizontal`] for a
+    /// scrollbar with real thumb geometry.
+    fn default() -> Self {
+        Self {
+            id: WidgetId::new(""),
+            axis: ScrollAxis::Vertical,
+            track: Rect::default(),
+            thumb_start: 0.0,
+            thumb_len: 0.0,
             hovered: false,
             dragging: false,
         }
