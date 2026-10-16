@@ -91,7 +91,6 @@ pub enum PaletteMode {
 ///     create_label: None,
 ///     preview: None,
 ///     mode: Default::default(),
-///     ..Default::default()
 /// };
 ///
 /// let layout = palette.layout(60.0, 20.0, 1.0, 1.0, 0.0, 1.0, |_| {

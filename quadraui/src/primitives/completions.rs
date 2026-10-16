@@ -23,6 +23,12 @@ use serde::{Deserialize, Serialize};
 
 /// Declarative description of a completion popup.
 ///
+/// Stays a plain, non-`#[non_exhaustive]` struct: a published consumer
+/// builds it with an exhaustive struct literal today, so marking it
+/// `#[non_exhaustive]` would break that consumer's build. `Default` is
+/// still provided for consumers that want the
+/// `Default::default()`-plus-field-assignment pattern.
+///
 /// # Examples
 ///
 /// ```
@@ -50,7 +56,6 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.hit_test(10.0, 6.0), CompletionsHit::Item(0));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct Completions {
     pub id: WidgetId,
     pub items: Vec<CompletionItem>,

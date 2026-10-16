@@ -41,6 +41,12 @@ use serde::{Deserialize, Serialize};
 /// columns left-to-right. Rows may be ragged (different lengths) but
 /// backends should treat missing trailing cells as blank.
 ///
+/// Stays a plain, non-`#[non_exhaustive]` struct: a published consumer
+/// builds it with an exhaustive struct literal today, so marking it
+/// `#[non_exhaustive]` would break that consumer's build. `Default` is
+/// still provided for consumers that want the
+/// `Default::default()`-plus-field-assignment pattern.
+///
 /// # Examples
 ///
 /// ```
@@ -70,7 +76,6 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.hit_test(0.0, 0.0), TerminalHit::Cell { row: 0, col: 0 });
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct Terminal {
     pub id: WidgetId,
     pub cells: Vec<Vec<TerminalCell>>,
