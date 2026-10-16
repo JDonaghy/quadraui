@@ -463,7 +463,7 @@ impl Chart {
 
         match self.kind {
             ChartKind::Sparkline => {
-                let hit_regions = vec![(bounds, ChartHit::Body(self.id.clone()))];
+                let hit_regions = vec![(bounds, ChartHit::Body(self.id))];
                 let mut data_point_positions = Vec::new();
                 if let Some(s) = self.series.first() {
                     let (y_min, y_max) = self.effective_y_range();
@@ -581,11 +581,11 @@ impl Chart {
                         };
                         hit_regions.push((
                             Rect::new(ex, lb.y, ew, lb.height),
-                            ChartHit::Legend(self.id.clone(), i),
+                            ChartHit::Legend(self.id, i),
                         ));
                     }
                 }
-                hit_regions.push((plot_area, ChartHit::Body(self.id.clone())));
+                hit_regions.push((plot_area, ChartHit::Body(self.id)));
 
                 let mut data_point_positions = Vec::new();
                 if self.kind.is_bar() {

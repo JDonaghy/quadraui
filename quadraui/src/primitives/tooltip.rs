@@ -260,7 +260,7 @@ impl TooltipLayout {
             && y >= self.bounds.y
             && y < self.bounds.y + self.bounds.height
         {
-            TooltipHit::Body(id.clone())
+            TooltipHit::Body(*id)
         } else {
             TooltipHit::Empty
         }

@@ -166,7 +166,7 @@ impl ComboBox {
         let filtered = self.filtered_indices();
         let dropdown = if self.open && !filtered.is_empty() {
             let completions = Completions {
-                id: self.id.clone(),
+                id: self.id,
                 items: filtered
                     .iter()
                     .map(|&i| CompletionItem {
@@ -228,37 +228,25 @@ impl ComboBox {
         match key {
             Key::Named(NamedKey::Down) => {
                 let index = self.move_highlight(1)?;
-                Some(ComboBoxEvent::HighlightChanged {
-                    id: self.id.clone(),
-                    index,
-                })
+                Some(ComboBoxEvent::HighlightChanged { id: self.id, index })
             }
             Key::Named(NamedKey::Up) => {
                 let index = self.move_highlight(-1)?;
-                Some(ComboBoxEvent::HighlightChanged {
-                    id: self.id.clone(),
-                    index,
-                })
+                Some(ComboBoxEvent::HighlightChanged { id: self.id, index })
             }
             Key::Named(NamedKey::Enter) => Some(self.commit()),
-            Key::Named(NamedKey::Escape) => self.open.then(|| ComboBoxEvent::Cancelled {
-                id: self.id.clone(),
-            }),
+            Key::Named(NamedKey::Escape) => self
+                .open
+                .then_some(ComboBoxEvent::Cancelled { id: self.id }),
             Key::Named(NamedKey::Backspace) => {
                 let mut text = self.text.clone();
                 text.pop();
-                Some(ComboBoxEvent::TextChanged {
-                    id: self.id.clone(),
-                    text,
-                })
+                Some(ComboBoxEvent::TextChanged { id: self.id, text })
             }
             Key::Char(c) => {
                 let mut text = self.text.clone();
                 text.push(*c);
-                Some(ComboBoxEvent::TextChanged {
-                    id: self.id.clone(),
-                    text,
-                })
+                Some(ComboBoxEvent::TextChanged { id: self.id, text })
             }
             _ => None,
         }
@@ -273,10 +261,7 @@ impl ComboBox {
             Some(&option_idx) if self.open => self.options[option_idx].clone(),
             _ => self.text.clone(),
         };
-        ComboBoxEvent::Committed {
-            id: self.id.clone(),
-            value,
-        }
+        ComboBoxEvent::Committed { id: self.id, value }
     }
 
     /// Pointer activation dispatcher: the host calls this after
@@ -293,7 +278,7 @@ impl ComboBox {
                 let filtered = self.filtered_indices();
                 let option_idx = *filtered.get(index)?;
                 Some(ComboBoxEvent::Committed {
-                    id: self.id.clone(),
+                    id: self.id,
                     value: self.options[option_idx].clone(),
                 })
             }

@@ -625,10 +625,10 @@ impl ToastOverlay {
                 .map(|r| shift_rect(*r, bounds.x, bounds.y))
                 .collect();
 
-            let toast_id = self.toasts[i].id.clone();
+            let toast_id = self.toasts[i].id;
             visible_toasts.push(VisibleToast {
                 toast_idx: i,
-                id: toast_id.clone(),
+                id: toast_id,
                 bounds,
                 dismiss_bounds,
                 action_rects: action_rects.clone(),
@@ -636,7 +636,7 @@ impl ToastOverlay {
 
             // Register hit regions in specificity order: dismiss, actions, body.
             if let Some(db) = dismiss_bounds {
-                hit_regions.push((db, ToastHit::Dismiss(toast_id.clone())));
+                hit_regions.push((db, ToastHit::Dismiss(toast_id)));
             }
             // Action hit regions carry the action's own id (not the
             // toast's) so the app can dispatch the intended action
@@ -644,7 +644,7 @@ impl ToastOverlay {
             // `Toast::actions`, matching `action_rects`'s documented
             // 1:1 order.
             for (ab, act) in action_rects.iter().zip(self.toasts[i].actions.iter()) {
-                hit_regions.push((*ab, ToastHit::Action(act.id.clone())));
+                hit_regions.push((*ab, ToastHit::Action(act.id)));
             }
             hit_regions.push((bounds, ToastHit::Body(toast_id)));
 
@@ -902,7 +902,7 @@ pub(crate) mod native_surface_paint {
             } else {
                 let shifted = VisibleToast {
                     toast_idx: vt.toast_idx,
-                    id: vt.id.clone(),
+                    id: vt.id,
                     bounds: shift_rect(vt.bounds, dx, 0.0),
                     dismiss_bounds: vt.dismiss_bounds.map(|r| shift_rect(r, dx, 0.0)),
                     action_rects: vt

@@ -166,10 +166,10 @@ impl ProgressBar {
 
         let mut hit_regions: Vec<(Rect, ProgressBarHit)> = Vec::new();
         if let Some(cb) = cancel_bounds {
-            hit_regions.push((cb, ProgressBarHit::Cancel(self.id.clone())));
+            hit_regions.push((cb, ProgressBarHit::Cancel(self.id)));
         }
         // Body is the entire bar; cancel comes first so it wins on overlap.
-        hit_regions.push((bounds, ProgressBarHit::Body(self.id.clone())));
+        hit_regions.push((bounds, ProgressBarHit::Body(self.id)));
 
         ProgressBarLayout {
             bounds,

@@ -156,7 +156,7 @@ impl ContextMenuController {
                 backend.show_context_menu(&menu, anchor);
             }
             ResolvedMenuStyle::Custom => {
-                let id = menu.id.clone();
+                let id = menu.id;
                 let layout = self.layout_for(&menu, anchor, backend);
                 backend
                     .modal_stack_handle()
@@ -213,7 +213,7 @@ impl ContextMenuController {
                 ..
             } => {
                 let item = open.menu.items.get(open.menu.selected_idx);
-                match item.and_then(|i| i.id.clone()) {
+                match item.and_then(|i| i.id) {
                     Some(id) => {
                         self.close(backend);
                         ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(id))

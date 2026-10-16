@@ -179,7 +179,7 @@ pub fn draw_activity_bar_with_style(
         regions.push(ActivityBarRowHit {
             y_start: rel_y,
             y_end: rel_y + 1.0,
-            id: item.id.clone(),
+            id: item.id,
             tooltip: item.tooltip.clone(),
         });
 

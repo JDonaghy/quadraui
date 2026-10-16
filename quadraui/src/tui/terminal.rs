@@ -102,7 +102,7 @@ pub fn draw_terminal(buf: &mut Buffer, area: Rect, term: &Terminal, theme: &Them
             area.height as f32,
         );
         let sb = Scrollbar::vertical(
-            term.id.clone(),
+            term.id,
             track,
             sb_state.effective_scroll_offset() as f32,
             sb_state.total_lines as f32,

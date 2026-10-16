@@ -381,7 +381,7 @@ impl TreeView {
             area.height,
         );
         Some(Scrollbar::vertical(
-            self.id.clone(),
+            self.id,
             track,
             self.scroll_offset as f32,
             total,
