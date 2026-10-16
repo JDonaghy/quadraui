@@ -375,7 +375,7 @@ pub fn mac_tab_bar_native_layout_icons(
         let seg = &bar.right_segments[segment_idx];
         let clickable = seg.id.is_some();
         if let Some(id) = &seg.id {
-            hit_regions.push((bounds, TabBarHit::RightSegment(id.clone())));
+            hit_regions.push((bounds, TabBarHit::RightSegment(*id)));
         }
         visible_segments.push(VisibleSegment {
             segment_idx,

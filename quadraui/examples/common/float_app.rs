@@ -382,7 +382,7 @@ impl AppLogic for FloatApp {
                     .modal_stack_handle()
                     .borrow()
                     .top_focusable()
-                    .map(|e| e.id.clone());
+                    .map(|e| e.id);
                 if focused == Some(WidgetId::new(MENU_ID)) {
                     self.menu_selected = self.menu_selected.saturating_sub(1);
                 } else {
@@ -398,7 +398,7 @@ impl AppLogic for FloatApp {
                     .modal_stack_handle()
                     .borrow()
                     .top_focusable()
-                    .map(|e| e.id.clone());
+                    .map(|e| e.id);
                 if focused == Some(WidgetId::new(MENU_ID)) {
                     self.menu_selected = (self.menu_selected + 1).min(MENU_ITEMS.len() - 1);
                 } else {
@@ -414,7 +414,7 @@ impl AppLogic for FloatApp {
                     .modal_stack_handle()
                     .borrow()
                     .top_focusable()
-                    .map(|e| e.id.clone());
+                    .map(|e| e.id);
                 if focused == Some(WidgetId::new(MENU_ID)) {
                     self.last_action = format!(
                         "{} / {}",

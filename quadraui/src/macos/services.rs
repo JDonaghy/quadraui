@@ -186,7 +186,7 @@ impl PlatformServices for MacPlatformServices {
         let response = alert.runModal();
         let idx = usize::try_from(response - NSAlertFirstButtonReturn).ok()?;
         let orig = *order.get(idx)?;
-        Some(opts.buttons[orig].id.clone())
+        Some(opts.buttons[orig].id)
     }
 
     /// Only `is_silent()` of the `Notification` fields has anywhere to go

@@ -344,7 +344,7 @@ mod tests {
             let cy = vis.bounds.y + vis.bounds.height * 0.5;
             assert_eq!(
                 layout.hit_test(cx, cy),
-                FormHit::Field(vis.id.clone()),
+                FormHit::Field(vis.id),
                 "field {:?} hit-test",
                 vis.id,
             );
@@ -380,7 +380,7 @@ mod tests {
             let local_y = abs_y - area.y;
             assert_eq!(
                 layout.hit_test(local_x, local_y),
-                FormHit::Field(vis.id.clone()),
+                FormHit::Field(vis.id),
                 "field {:?} click → wrong hit (coord-frame drift)",
                 vis.id,
             );
@@ -555,7 +555,7 @@ mod tests {
             let cy = rect.y + rect.height * 0.5;
             assert_eq!(
                 layout.hit_test(cx, cy),
-                FormHit::Field(id.clone()),
+                FormHit::Field(*id),
                 "click on toggle {id:?} should resolve to its own id",
             );
         }
@@ -663,7 +663,7 @@ mod tests {
             let hit = layout.hit_test(rect.x + 1.0, rect.y + rect.height * 0.5);
             assert_eq!(
                 hit,
-                FormHit::Field(id.clone()),
+                FormHit::Field(*id),
                 "click at button {id:?} should hit its own id",
             );
         }

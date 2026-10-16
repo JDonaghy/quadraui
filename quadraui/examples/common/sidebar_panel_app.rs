@@ -220,7 +220,7 @@ impl AppLogic for SidebarPanelApp {
         let layout = backend.draw_sidebar_panel_interactive(
             panel_rect,
             &self.panel(),
-            &InteractionState::from_parts(self.hover.current(), self.pressed.clone()),
+            &InteractionState::from_parts(self.hover.current(), self.pressed),
         );
 
         // Host paints into the returned content rect. Here: a list of

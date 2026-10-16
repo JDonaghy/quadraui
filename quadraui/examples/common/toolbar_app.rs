@@ -299,7 +299,7 @@ impl ToolbarApp {
         let bar = self.toolbar();
         if let Some(ToolbarButton::Action { id, enabled, .. }) = bar.buttons.get(idx) {
             if *enabled {
-                let id = id.clone();
+                let id = *id;
                 self.dispatch(&id);
                 return true;
             }
