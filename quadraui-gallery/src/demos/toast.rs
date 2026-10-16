@@ -156,7 +156,7 @@ impl Demo for ToastDemo {
                     .iter()
                     .find(|t| t.actions.iter().any(|a| a.id == id))
                 {
-                    let toast_id = t.id.clone();
+                    let toast_id = t.id;
                     self.toasts.retain(|t| t.id != toast_id);
                 }
                 return Reaction::Redraw;
