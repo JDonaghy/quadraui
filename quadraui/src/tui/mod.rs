@@ -126,7 +126,7 @@ pub use status_bar::draw_status_bar;
 pub use switch::{draw_switch, tui_switch_layout};
 pub use tab_bar::{
     draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome, draw_tab_bar_with_chrome,
-    TAB_CLOSE_CHAR, TAB_CLOSE_COLS,
+    TAB_CLOSE_CHAR, TAB_CLOSE_COLS, TAB_SEPARATOR_CHAR, TAB_SEPARATOR_COLS,
 };
 pub use terminal::{draw_terminal, draw_terminal_divider};
 pub use text::{char_cell_width, display_width, truncate_to_width, truncate_to_width_ellipsis};

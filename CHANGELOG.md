@@ -175,6 +175,16 @@ only a push to `main` runs this workflow.
   `Backend::tree_layout` and `macos::draw_tree` both route through it with
   the chrome `CTFont`.
 
+- TUI tab bar: a tab with no close button (`TabBar::show_tab_close: false`,
+  or a non-closable tab) now reserves and paints one trailing separator
+  column (`tui::TAB_SEPARATOR_CHAR`, `│`) between it and the next tab,
+  instead of zero inter-tab padding. Previously a bar like Problems/Output/
+  Terminal painted as one concatenated run of text with only bold-vs-not
+  distinguishing the active tab. `TuiBackend`'s eight tab-bar measurer call
+  sites in `backend.rs` now add `tui::TAB_SEPARATOR_COLS` to a tab's
+  measured width whenever it has no close-button reservation; tabs with a
+  close button, and bracket-framed active tabs, are unaffected.
+
 ## [0.1.8] - 2026-10-14
 
 ### Added

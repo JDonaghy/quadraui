@@ -164,8 +164,11 @@ pub struct TabBar {
     pub show_tab_close: bool,
     /// When `true`, the GTK rasteriser uses minimal padding (2px) and
     /// zero gap between tabs. Intended for compact chrome like terminal
-    /// toolbar tabs or bottom panel tab switchers. TUI is unaffected
-    /// (it already renders labels with no padding).
+    /// toolbar tabs or bottom panel tab switchers. TUI ignores this flag —
+    /// it never pads tabs, closable or not — but still separates adjacent
+    /// labels with a column reserved for a glyph (see
+    /// `tui::TAB_SEPARATOR_CHAR`) whenever a tab has no close button to
+    /// provide that boundary instead.
     #[serde(default)]
     pub compact: bool,
 }
