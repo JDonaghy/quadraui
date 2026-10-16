@@ -278,6 +278,10 @@ only a push to `main` runs this workflow.
   `layout_metrics::tree_layout` instead of re-deriving row pitch, indent
   and chevron geometry from `line_height` in a hand-inlined copy that had
   drifted from it.
+- `tree_row_pitch` now suppresses `TreeStyle::row_height` (a px value) on
+  cell-grid backends (TUI, where `line_height` ≤ 1.0), falling back to the
+  `line_height`-derived default. Without this guard, the default `Some(22)`
+  made each tree row 22 cells tall, breaking click hit-testing on TUI.
 
 - `Scrollbar`'s shared pixel-backend rasteriser (GTK/Win/macOS): thumb
   resting alpha raised from 0.50 to 0.65 (hover 0.70→0.80, drag 0.85→0.90)
