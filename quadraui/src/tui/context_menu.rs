@@ -53,9 +53,17 @@ pub fn draw_context_menu(
         return;
     }
     // `layout.bounds` is the **inner** items region; we draw the chrome
-    // border one cell outside on every side.
-    let bx = inner_x.saturating_sub(1);
-    let by = inner_y.saturating_sub(1);
+    // border one cell outside on every side. When the items region is
+    // flush against the buffer edge (x == 0 or y == 0) there is no cell
+    // left outside it for the border to occupy — `saturating_sub(1)`
+    // would clamp to the same row/column as the items, overwriting them.
+    // Shift the items inward by one cell in that case instead, so the
+    // border always gets its own row/column.
+    let x_shift: u16 = if inner_x == 0 { 1 } else { 0 };
+    let y_shift: u16 = if inner_y == 0 { 1 } else { 0 };
+    let item_x = inner_x + x_shift;
+    let bx = item_x - 1;
+    let by = (inner_y + y_shift) - 1;
     let bw = inner_w + 2;
     let bh = inner_h + 2;
 
@@ -90,10 +98,10 @@ pub fn draw_context_menu(
 
     for vis in &layout.visible_items {
         let item = &menu.items[vis.item_idx];
-        let row_y = vis.bounds.y.round() as u16;
+        let row_y = vis.bounds.y.round() as u16 + y_shift;
         if vis.is_separator {
             for dx in 0..inner_w {
-                set_cell(buf, inner_x + dx, row_y, '─', sep_fg, bg);
+                set_cell(buf, item_x + dx, row_y, '─', sep_fg, bg);
             }
             continue;
         }
@@ -106,13 +114,13 @@ pub fn draw_context_menu(
             (fg, bg)
         };
         for dx in 0..inner_w {
-            set_cell(buf, inner_x + dx, row_y, ' ', item_fg, item_bg);
+            set_cell(buf, item_x + dx, row_y, ' ', item_fg, item_bg);
         }
-        // Check prefix — sits in the left-padding column at inner_x.
+        // Check prefix — sits in the left-padding column at item_x.
         // `Some(false)` reserves the slot without filling it (so a
         // column of mixed checked/unchecked items aligns visually).
         if matches!(item.checked, Some(true)) {
-            set_cell(buf, inner_x, row_y, '✓', item_fg, item_bg);
+            set_cell(buf, item_x, row_y, '✓', item_fg, item_bg);
         }
         let label = item
             .label
@@ -121,8 +129,8 @@ pub fn draw_context_menu(
             .map(|s| s.text.as_str())
             .unwrap_or("");
         for (i, ch) in label.chars().enumerate() {
-            let col = inner_x + 1 + i as u16;
-            if col >= inner_x + inner_w {
+            let col = item_x + 1 + i as u16;
+            if col >= item_x + inner_w {
                 break;
             }
             set_cell(buf, col, row_y, ch, item_fg, item_bg);
@@ -137,11 +145,11 @@ pub fn draw_context_menu(
                 dim_fg
             };
             if inner_w > 0 {
-                set_cell(buf, inner_x + inner_w - 1, row_y, '▶', arrow_fg, item_bg);
+                set_cell(buf, item_x + inner_w - 1, row_y, '▶', arrow_fg, item_bg);
             }
         } else if let Some(shortcut) = shortcut_text(item, Platform::Tui) {
             let sc_w = shortcut.chars().count() as u16;
-            let sc_start = inner_x + inner_w.saturating_sub(sc_w + 1);
+            let sc_start = item_x + inner_w.saturating_sub(sc_w + 1);
             let sc_fg = if is_selected && vis.clickable {
                 item_fg
             } else {
@@ -149,7 +157,7 @@ pub fn draw_context_menu(
             };
             for (i, ch) in shortcut.chars().enumerate() {
                 let col = sc_start + i as u16;
-                if col >= inner_x + inner_w {
+                if col >= item_x + inner_w {
                     break;
                 }
                 set_cell(buf, col, row_y, ch, sc_fg, item_bg);
@@ -689,6 +697,68 @@ mod tests {
             cell_char(&buf, 3, 0),
             '┌',
             "flipped child popup top-left corner should be at x=3 (left-flip)",
+        );
+    }
+
+    #[test]
+    fn top_border_survives_when_menu_anchored_at_viewport_top_row() {
+        // Anchored at y=0 (e.g. a right-click on a tab bar rendered at the
+        // very top row of the viewport) — there is no row above the first
+        // item for the border to occupy, so the rasteriser must shift the
+        // items down by one instead of drawing the border and the first
+        // item on top of each other.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let menu = make_menu();
+        let layout = menu.layout(
+            2.0,
+            0.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+
+        let inner_x = layout.bounds.x.round() as u16;
+        let bx = inner_x - 1;
+        // Top border must still be drawn, and on a different row than the
+        // first item's label.
+        assert_eq!(
+            cell_char(&buf, bx, 0),
+            '┌',
+            "top-left corner must be visible when anchored at y=0"
+        );
+        assert_eq!(
+            cell_char(&buf, inner_x + 1, 1),
+            'O',
+            "first item (\"Open\") must render one row below the top border"
+        );
+    }
+
+    #[test]
+    fn left_border_survives_when_menu_anchored_at_viewport_left_edge() {
+        // Symmetric case: anchored at x=0, no column left of the items for
+        // the border to occupy.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let menu = make_menu();
+        let layout = menu.layout(
+            0.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, 0, row_y),
+            '│',
+            "left border must be visible when anchored at x=0"
+        );
+        assert_eq!(
+            cell_char(&buf, 2, row_y),
+            'O',
+            "first item (\"Open\") label must still start after the left border"
         );
     }
 }
