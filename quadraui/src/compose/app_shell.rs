@@ -599,7 +599,7 @@ impl AppShell {
     /// [`AppShellEvent::BottomItemClicked`]. Does **not** clear keyboard
     /// focus — the consumer decides whether to do that.
     pub fn activity_activate_selected(&mut self) -> Option<AppShellEvent> {
-        let id = self.activity_selected_id()?.clone();
+        let id = *self.activity_selected_id()?;
         Some(self.handle_activity_click(&id))
     }
 
@@ -893,7 +893,7 @@ impl AppShell {
             .iter()
             .enumerate()
             .map(|(i, p)| ActivityItem {
-                id: p.id.clone(),
+                id: p.id,
                 icon: self.resolved_icon(p),
                 tooltip: p.tooltip.clone(),
                 // A top panel only shows as active while it — not a bottom
@@ -913,7 +913,7 @@ impl AppShell {
             .iter()
             .enumerate()
             .map(|(j, p)| ActivityItem {
-                id: p.id.clone(),
+                id: p.id,
                 icon: self.resolved_icon(p),
                 tooltip: p.tooltip.clone(),
                 // Bottom items (gear/bell-style) never paint a persistent
@@ -1006,7 +1006,7 @@ impl AppShell {
                 layout.activity_bar_bounds.width,
                 hit.y_end - hit.y_start,
             );
-            backend.register_zone(hit.id.clone(), item_bounds);
+            backend.register_zone(hit.id, item_bounds);
         }
         *self.cached_activity_hits.borrow_mut() = hits;
         *self.cached_activity_bar_bounds.borrow_mut() = Some(layout.activity_bar_bounds);
@@ -1308,7 +1308,7 @@ impl AppShell {
                 let above_h = (remaining.height - h).max(0.0);
                 let rect = Rect::new(remaining.x, remaining.y + above_h, remaining.width, h);
                 remaining = Rect::new(remaining.x, remaining.y, remaining.width, above_h);
-                band_bounds.push((band.id.clone(), rect));
+                band_bounds.push((band.id, rect));
             }
             let bottom_panel_bounds = match bottom_panel_h {
                 Some(h) => {
@@ -1505,18 +1505,14 @@ impl AppShell {
                     self.active_panel = Some(i);
                     self.sidebar_bottom_owner = None;
                     self.sidebar_visible = true;
-                    return AppShellEvent::PanelChanged {
-                        panel_id: panel.id.clone(),
-                    };
+                    return AppShellEvent::PanelChanged { panel_id: panel.id };
                 }
             }
         }
 
         for item in &self.bottom_items {
             if item.id == *clicked_id {
-                return AppShellEvent::BottomItemClicked {
-                    id: item.id.clone(),
-                };
+                return AppShellEvent::BottomItemClicked { id: item.id };
             }
         }
 
@@ -1532,7 +1528,7 @@ impl AppShell {
                 && position.x >= ab.x
                 && position.x < ab.x + ab.width
             {
-                return Some(hit.id.clone());
+                return Some(hit.id);
             }
         }
         None

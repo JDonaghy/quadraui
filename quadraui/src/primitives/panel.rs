@@ -187,15 +187,15 @@ impl Panel {
                 let ab = Rect::new(ax, tb.y, measure.action_button_width, tb.height);
                 visible_actions.push(VisiblePanelAction {
                     action_idx: i,
-                    id: action.id.clone(),
+                    id: action.id,
                     bounds: ab,
                 });
-                hit_regions.push((ab, PanelHit::Action(action.id.clone())));
+                hit_regions.push((ab, PanelHit::Action(action.id)));
                 action_area_right = ax;
             }
             // Title-bar body (left of action buttons).
             let tb_body = Rect::new(tb.x, tb.y, action_area_right - tb.x, tb.height);
-            hit_regions.push((tb_body, PanelHit::TitleBar(self.id.clone())));
+            hit_regions.push((tb_body, PanelHit::TitleBar(self.id)));
         }
 
         // Content region.
@@ -219,7 +219,7 @@ impl Panel {
         };
 
         if content_bounds.width > 0.0 && content_bounds.height > 0.0 {
-            hit_regions.push((content_bounds, PanelHit::Content(self.id.clone())));
+            hit_regions.push((content_bounds, PanelHit::Content(self.id)));
         }
 
         PanelLayout {

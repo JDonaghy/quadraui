@@ -110,7 +110,7 @@ impl MessageDialogController {
             .buttons
             .iter()
             .map(|b| DialogButton {
-                id: b.id.clone(),
+                id: b.id,
                 label: b.label.clone(),
                 is_default: b.is_default,
                 is_cancel: b.is_cancel,
@@ -225,12 +225,12 @@ impl MessageDialogController {
                     .cancel_button_id()
                     .or_else(|| self.dialog.default_button_id())
                 {
-                    Some(id) => MessageDialogEvent::Resolved(id.clone()),
+                    Some(id) => MessageDialogEvent::Resolved(*id),
                     None => MessageDialogEvent::Ignored,
                 }
             }
             Key::Named(NamedKey::Enter) => match self.dialog.buttons.get(self.focused) {
-                Some(b) => MessageDialogEvent::Resolved(b.id.clone()),
+                Some(b) => MessageDialogEvent::Resolved(b.id),
                 None => MessageDialogEvent::Ignored,
             },
             Key::Named(NamedKey::Left) if n > 0 => {

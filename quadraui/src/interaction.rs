@@ -228,7 +228,7 @@ impl InteractionState {
                 button: MouseButton::Left,
                 ..
             } => {
-                let id = widget.clone().or_else(|| hit_test(position.x, position.y));
+                let id = (*widget).or_else(|| hit_test(position.x, position.y));
                 self.set_pressed(id)
             }
             UiEvent::MouseUp {

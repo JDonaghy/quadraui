@@ -957,7 +957,7 @@ impl TuiBackend {
                     modifiers,
                     repeat,
                 } => {
-                    if let Some(id) = self.focused_activity_bar.clone() {
+                    if let Some(id) = self.focused_activity_bar {
                         let key_str =
                             crate::primitives::activity_bar::key_to_activity_bar_string(&key);
                         out.push(UiEvent::ActivityBar(
@@ -2541,8 +2541,7 @@ impl Backend for TuiBackend {
         // outside the app has no other way to reach a specific tab's
         // geometry (every tab paints the same close glyph, so `find`
         // can't disambiguate tab N's target).
-        self.tab_bar_layouts
-            .insert(bar.id.clone(), (rect, layout.clone()));
+        self.tab_bar_layouts.insert(bar.id, (rect, layout.clone()));
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
                 false,
@@ -2615,8 +2614,7 @@ impl Backend for TuiBackend {
             },
             |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
         );
-        self.tab_bar_layouts
-            .insert(bar.id.clone(), (rect, layout.clone()));
+        self.tab_bar_layouts.insert(bar.id, (rect, layout.clone()));
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
                 false,
@@ -2690,8 +2688,7 @@ impl Backend for TuiBackend {
             },
             |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
         );
-        self.tab_bar_layouts
-            .insert(bar.id.clone(), (rect, layout.clone()));
+        self.tab_bar_layouts.insert(bar.id, (rect, layout.clone()));
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
                 false,
@@ -2762,8 +2759,7 @@ impl Backend for TuiBackend {
             },
             |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
         );
-        self.tab_bar_layouts
-            .insert(bar.id.clone(), (rect, layout.clone()));
+        self.tab_bar_layouts.insert(bar.id, (rect, layout.clone()));
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
                 false,
@@ -2793,7 +2789,7 @@ impl Backend for TuiBackend {
         // record its id so `apply_dispatch` can convert incoming `KeyPressed`
         // events to `UiEvent::ActivityBar(id, KeyPressed { … })`.
         if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id.clone());
+            self.focused_activity_bar = Some(bar.id);
         }
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
@@ -2826,7 +2822,7 @@ impl Backend for TuiBackend {
         // record its id so `apply_dispatch` can convert incoming `KeyPressed`
         // events to `UiEvent::ActivityBar(id, KeyPressed { … })`.
         if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id.clone());
+            self.focused_activity_bar = Some(bar.id);
         }
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
@@ -3317,10 +3313,7 @@ impl Backend for TuiBackend {
         // `layout.bounds` — `draw_tooltip` rounds to whole cells before
         // painting, and registering the unrounded rect would report a
         // surface that doesn't match what was actually drawn.
-        self.register_zone(
-            tooltip.id.clone(),
-            crate::tui::tooltip_painted_bounds(layout),
-        );
+        self.register_zone(tooltip.id, crate::tui::tooltip_painted_bounds(layout));
     }
 
     fn draw_context_menu(
@@ -3351,9 +3344,7 @@ impl Backend for TuiBackend {
             .hit_regions
             .iter()
             .filter_map(|(rect, hit)| match hit {
-                crate::primitives::context_menu::ContextMenuHit::Item(id) => {
-                    Some((*rect, id.clone()))
-                }
+                crate::primitives::context_menu::ContextMenuHit::Item(id) => Some((*rect, *id)),
                 _ => None,
             })
             .collect()
@@ -3406,7 +3397,7 @@ impl Backend for TuiBackend {
         // primitive: register the float's own bounds under its id so
         // it's inventory-observable even when `border: false` leaves no
         // painted glyph behind.
-        self.register_zone(float.id.clone(), layout.bounds);
+        self.register_zone(float.id, layout.bounds);
     }
 
     // ─── #13: trait coverage for the rest of the rasterised primitives ──
@@ -3629,7 +3620,7 @@ impl Backend for TuiBackend {
             return;
         };
         crate::tui::draw_number_input(frame.buffer_mut(), number_input, layout, &theme);
-        self.register_zone(number_input.id.clone(), layout.bounds);
+        self.register_zone(number_input.id, layout.bounds);
     }
 
     fn draw_combo_box(
@@ -3646,7 +3637,7 @@ impl Backend for TuiBackend {
             return;
         };
         crate::tui::draw_combo_box(frame.buffer_mut(), combo_box, layout, &theme);
-        self.register_zone(combo_box.id.clone(), layout.field_bounds);
+        self.register_zone(combo_box.id, layout.field_bounds);
     }
 
     fn draw_scrollbar(
@@ -3671,7 +3662,7 @@ impl Backend for TuiBackend {
         // pixel backend it would otherwise be indistinguishable from the
         // no-op default. Register the primitive's own id at its own
         // track bounds (not `_rect`, which the primitive ignores).
-        self.register_zone(scrollbar.id.clone(), scrollbar.track);
+        self.register_zone(scrollbar.id, scrollbar.track);
     }
 
     fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
@@ -3736,7 +3727,7 @@ impl Backend for TuiBackend {
         // registered zone is the only way this frame is attributable to
         // the primitive rather than indistinguishable from the trait's
         // no-op default (C0 paint smoke, contract §5b).
-        self.register_zone(split.id.clone(), rect);
+        self.register_zone(split.id, rect);
         layout
     }
 
@@ -4197,7 +4188,7 @@ impl Backend for TuiBackend {
             };
         };
         let layout = crate::tui::draw_minimap(frame.buffer_mut(), area, minimap, &theme);
-        self.register_zone(minimap.id.clone(), rect);
+        self.register_zone(minimap.id, rect);
         crate::backend::MinimapPaintResult {
             layout,
             painted: true,
@@ -4229,7 +4220,7 @@ impl Backend for TuiBackend {
             return crate::backend::ImagePaintResult::Unsupported;
         };
         let result = crate::tui::draw_image(frame.buffer_mut(), area, image, &theme);
-        self.register_zone(image.id.clone(), rect);
+        self.register_zone(image.id, rect);
         result
     }
 

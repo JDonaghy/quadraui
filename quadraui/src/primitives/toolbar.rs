@@ -342,7 +342,7 @@ impl ToolbarIcons {
             return bar.clone();
         }
         Toolbar {
-            id: bar.id.clone(),
+            id: bar.id,
             buttons: bar
                 .buttons
                 .iter()
@@ -427,7 +427,7 @@ impl ToolbarLayout {
             let r = vis.bounds;
             if x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height {
                 if let Some(id) = &vis.action_id {
-                    return ToolbarHit::Button(id.clone());
+                    return ToolbarHit::Button(*id);
                 }
             }
         }
@@ -620,7 +620,7 @@ impl Toolbar {
                 ToolbarButton::Action { id, enabled, .. } => (
                     ToolbarItemKind::Action,
                     *enabled && visible_w > 0.0,
-                    Some(id.clone()),
+                    Some(*id),
                 ),
                 ToolbarButton::Separator => (ToolbarItemKind::Separator, false, None),
                 ToolbarButton::Label { .. } => (ToolbarItemKind::Label, false, None),

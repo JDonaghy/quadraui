@@ -890,7 +890,7 @@ impl TreeController {
             }
         }
         TreeView {
-            id: self.id.clone(),
+            id: self.id,
             rows,
             selection_mode: SelectionMode::Single,
             selected_path: self.selected_path.clone(),
@@ -958,7 +958,7 @@ impl TreeController {
         let min_thumb = track_w.max(1.0);
         let is_dragging = self.scroll_drag.is_some();
         let mut sb = Scrollbar::vertical(
-            format!("{}-scrollbar", self.id.0),
+            format!("{}-scrollbar", self.id),
             sb_rect,
             self.scroll_offset as f32,
             total,

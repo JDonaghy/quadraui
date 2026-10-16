@@ -8,6 +8,9 @@
 //! - No Rust closures cross the Rust/plugin boundary; events are plain data.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::{OnceLock, RwLock};
 
 /// RGBA colour, 0-255 each channel.
 ///
@@ -273,33 +276,137 @@ impl From<String> for Icon {
     }
 }
 
+/// Process-global string interner backing [`WidgetId`].
+///
+/// A widget's label is looked up once per distinct string and then shared:
+/// every `WidgetId::new("same-label")` call after the first returns a
+/// `Copy` handle into this table instead of allocating again. Interned
+/// strings are leaked (never freed) for the process lifetime, which is the
+/// standard trade-off for this pattern — apps generate widget IDs from a
+/// bounded set of labels (one per widget, maybe with a handful of runtime
+/// suffixes), not an unbounded one per frame.
+struct WidgetIdTable {
+    strings: Vec<&'static str>,
+    index: HashMap<&'static str, u32>,
+}
+
+impl WidgetIdTable {
+    fn new() -> Self {
+        Self {
+            strings: Vec::new(),
+            index: HashMap::new(),
+        }
+    }
+}
+
+impl Default for WidgetIdTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn widget_id_table() -> &'static RwLock<WidgetIdTable> {
+    static TABLE: OnceLock<RwLock<WidgetIdTable>> = OnceLock::new();
+    TABLE.get_or_init(|| RwLock::new(WidgetIdTable::new()))
+}
+
+fn intern_widget_id(label: impl Into<String>) -> u32 {
+    let label = label.into();
+    {
+        let table = widget_id_table()
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(&idx) = table.index.get(label.as_str()) {
+            return idx;
+        }
+    }
+    let mut table = widget_id_table()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Re-check: another thread may have interned the same label while we
+    // were waiting for the write lock.
+    if let Some(&idx) = table.index.get(label.as_str()) {
+        return idx;
+    }
+    let leaked: &'static str = Box::leak(label.into_boxed_str());
+    let idx = table.strings.len() as u32;
+    table.strings.push(leaked);
+    table.index.insert(leaked, idx);
+    idx
+}
+
+fn resolve_widget_id(idx: u32) -> &'static str {
+    widget_id_table()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .strings[idx as usize]
+}
+
 /// Stable identifier for a widget across frames.
 ///
-/// Owned `String` so plugins can generate IDs at runtime. Apps should
-/// namespace IDs (e.g. `"plugin:my-ext:main-form"`) to avoid collisions
-/// with core widget IDs.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct WidgetId(pub String);
+/// `Copy` and cheap to pass around: the label lives once in a process-global
+/// interning table (see [`WidgetIdTable`]) and a `WidgetId` is just an index
+/// into it. Construct one from any string — `WidgetId::new("my-id")` or
+/// `"my-id".into()` — and read the label back with [`WidgetId::as_str`].
+/// Apps should namespace labels (e.g. `"plugin:my-ext:main-form"`) to avoid
+/// collisions with core widget IDs.
+///
+/// Serializes and deserializes as its plain string label — the wire form is
+/// unchanged by interning, so JSON/plugin boundaries that produce or consume
+/// a `WidgetId` keep working unmodified.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WidgetId(u32);
 
 impl WidgetId {
     pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
+        Self(intern_widget_id(id.into()))
     }
 
-    pub fn as_str(&self) -> &str {
-        &self.0
+    /// The label this handle was interned from.
+    pub fn as_str(&self) -> &'static str {
+        resolve_widget_id(self.0)
+    }
+}
+
+impl fmt::Debug for WidgetId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("WidgetId").field(&self.as_str()).finish()
+    }
+}
+
+impl fmt::Display for WidgetId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for WidgetId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for WidgetId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        String::deserialize(deserializer).map(WidgetId::new)
     }
 }
 
 impl From<&str> for WidgetId {
     fn from(s: &str) -> Self {
-        Self(s.to_string())
+        Self::new(s)
     }
 }
 
 impl From<String> for WidgetId {
     fn from(s: String) -> Self {
-        Self(s)
+        Self::new(s)
     }
 }
 
@@ -621,6 +728,36 @@ mod tests {
         assert_eq!(id.as_str(), "sc-tree");
         let id2: WidgetId = "sc-tree".into();
         assert_eq!(id, id2);
+    }
+
+    #[test]
+    fn widget_id_is_copy_not_just_clone() {
+        // `WidgetId` derives `Copy`; this compiles only because passing
+        // `id` by value to the first `as_str()` call doesn't move it out
+        // from under the second.
+        let id = WidgetId::new("copy-check");
+        assert_eq!(id.as_str(), "copy-check");
+        assert_eq!(id.as_str(), "copy-check");
+    }
+
+    #[test]
+    fn widget_id_serializes_as_plain_string() {
+        let id = WidgetId::new("wire-format-check");
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "\"wire-format-check\"");
+        let back: WidgetId = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, id);
+    }
+
+    #[test]
+    fn widget_id_interns_equal_labels_to_equal_handles() {
+        // Two handles built from the same label are `==` and share the
+        // same resolved label, whether or not they came from the same
+        // `intern_widget_id` call — the interning table is process-global.
+        let a = WidgetId::new("shared-label");
+        let b = WidgetId::new("shared-label".to_string());
+        assert_eq!(a, b);
+        assert_eq!(a.as_str(), b.as_str());
     }
 
     #[test]

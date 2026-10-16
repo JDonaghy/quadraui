@@ -144,7 +144,7 @@ impl ToastStackController {
         match stack.toasts.last() {
             Some(t) => {
                 self.focus = Some(ToastFocus {
-                    toast_id: t.id.clone(),
+                    toast_id: t.id,
                     target: ToastFocusTarget::Dismiss,
                 });
                 true
@@ -189,7 +189,7 @@ impl ToastStackController {
             Key::Named(NamedKey::Enter) => match focus.target {
                 ToastFocusTarget::Dismiss => ToastStackEvent::Dismiss(focus.toast_id),
                 ToastFocusTarget::Action(i) => match stack.toasts[toast_idx].actions.get(i) {
-                    Some(a) => ToastStackEvent::Action(a.id.clone()),
+                    Some(a) => ToastStackEvent::Action(a.id),
                     None => ToastStackEvent::Consumed,
                 },
             },
@@ -241,7 +241,7 @@ impl ToastStackController {
 
     fn set_index(&mut self, toast_id: &WidgetId, index: usize) {
         self.focus = Some(ToastFocus {
-            toast_id: toast_id.clone(),
+            toast_id: *toast_id,
             target: index_to_target(index),
         });
     }
@@ -249,7 +249,7 @@ impl ToastStackController {
     fn focus_toast_at(&mut self, stack: &ToastOverlay, idx: usize) {
         if let Some(t) = stack.toasts.get(idx) {
             self.focus = Some(ToastFocus {
-                toast_id: t.id.clone(),
+                toast_id: t.id,
                 target: ToastFocusTarget::Dismiss,
             });
         }

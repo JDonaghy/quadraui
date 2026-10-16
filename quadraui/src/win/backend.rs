@@ -1265,7 +1265,7 @@ impl WinBackend {
     fn register_menu_bar_item_zones(&mut self, layout: &MenuBarLayout) {
         for item in &layout.visible_items {
             if item.clickable {
-                self.register_zone(item.id.clone(), item.bounds);
+                self.register_zone(item.id, item.bounds);
             }
         }
     }
@@ -1291,7 +1291,7 @@ impl WinBackend {
         for (bounds, hit) in &layout.hit_regions {
             if let StatusBarHit::Segment(id) = hit {
                 self.register_zone(
-                    id.clone(),
+                    *id,
                     Rect::new(
                         rect.x + bounds.x,
                         rect.y + bounds.y,
@@ -2678,7 +2678,7 @@ impl Backend for WinBackend {
         let row_h = self.current_line_height;
         let track = crate::primitives::list::hscrollbar_track(rect, list.bordered, char_w, row_h);
         Some(crate::Scrollbar::horizontal(
-            list.id.clone(),
+            list.id,
             track,
             list.h_scroll as f32 * char_w,
             content_px,
@@ -3117,7 +3117,7 @@ impl Backend for WinBackend {
         // `GtkBackend`/`MacBackend::draw_activity_bar` implement. Runs
         // regardless of whether a surface is attached yet.
         if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id.clone());
+            self.focused_activity_bar = Some(bar.id);
         }
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
@@ -3248,7 +3248,7 @@ impl Backend for WinBackend {
                 ActivityBarRowHit {
                     y_start: vi.bounds.y,
                     y_end: vi.bounds.y + vi.bounds.height,
-                    id: item.id.clone(),
+                    id: item.id,
                     tooltip: item.tooltip.clone(),
                 }
             })
@@ -3645,12 +3645,7 @@ impl Backend for WinBackend {
             .visible_items
             .iter()
             .filter(|vis| vis.clickable)
-            .filter_map(|vis| {
-                menu.items[vis.item_idx]
-                    .id
-                    .clone()
-                    .map(|id| (vis.bounds, id))
-            })
+            .filter_map(|vis| menu.items[vis.item_idx].id.map(|id| (vis.bounds, id)))
             .collect()
     }
 
@@ -3716,7 +3711,7 @@ impl Backend for WinBackend {
         // Same convention `draw_image`/`draw_solid_fill` use for a
         // chrome-only primitive: register the float's own bounds under
         // its id so it's inventory-observable.
-        self.register_zone(float.id.clone(), layout.bounds);
+        self.register_zone(float.id, layout.bounds);
     }
 
     /// Same "no `target_os` gate needed" shape as [`Self::draw_float`]
@@ -3735,7 +3730,7 @@ impl Backend for WinBackend {
             self,
             &theme,
         );
-        self.register_zone(number_input.id.clone(), layout.bounds);
+        self.register_zone(number_input.id, layout.bounds);
     }
 
     /// Same shape as [`Self::draw_number_input`] above.
@@ -3746,7 +3741,7 @@ impl Backend for WinBackend {
     ) {
         let theme = self.current_theme;
         crate::primitives::combo_box::native_surface_paint::paint(combo_box, layout, self, &theme);
-        self.register_zone(combo_box.id.clone(), layout.field_bounds);
+        self.register_zone(combo_box.id, layout.field_bounds);
     }
 
     /// Real Direct2D/DirectWrite rasteriser via `win::multi_section_view`
@@ -4693,7 +4688,7 @@ impl Backend for WinBackend {
         // No surface/DWrite yet — return the real (pure-geometry) layout
         // via `button_layout` and paint nothing.
         let layout = self.button_layout(rect, button);
-        self.register_zone(button.id.clone(), rect);
+        self.register_zone(button.id, rect);
         layout
     }
     fn button_layout(&self, rect: Rect, button: &Button) -> ButtonLayout {
@@ -4719,7 +4714,7 @@ impl Backend for WinBackend {
         // via `radio_group_layout` and paint nothing.
         let layout = self.radio_group_layout(rect, group);
         for (option, item) in group.options.iter().zip(layout.items.iter()) {
-            self.register_zone(option.id.clone(), *item);
+            self.register_zone(option.id, *item);
         }
         layout
     }
@@ -4745,7 +4740,7 @@ impl Backend for WinBackend {
         // No surface/DWrite yet — return the real (pure-geometry) layout
         // via `switch_layout` and paint nothing.
         let layout = self.switch_layout(rect, switch);
-        self.register_zone(switch.id.clone(), rect);
+        self.register_zone(switch.id, rect);
         layout
     }
     fn switch_layout(&self, rect: Rect, switch: &Switch) -> SwitchLayout {

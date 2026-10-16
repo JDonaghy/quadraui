@@ -548,7 +548,7 @@ where
         focus,
     } = event
     {
-        backend.set_active_text_selection(region.clone(), anchor, focus);
+        backend.set_active_text_selection(*region, anchor, focus);
         force_redraw = true;
     }
 

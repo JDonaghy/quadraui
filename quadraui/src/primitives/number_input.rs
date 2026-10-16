@@ -179,26 +179,19 @@ impl NumberInput {
             Key::Named(NamedKey::Up) => self.increment(),
             Key::Named(NamedKey::Down) => self.decrement(),
             Key::Named(NamedKey::Enter) => Some(self.commit()),
-            Key::Named(NamedKey::Escape) => {
-                self.draft.is_some().then(|| NumberInputEvent::Cancelled {
-                    id: self.id.clone(),
-                })
-            }
+            Key::Named(NamedKey::Escape) => self
+                .draft
+                .is_some()
+                .then_some(NumberInputEvent::Cancelled { id: self.id }),
             Key::Named(NamedKey::Backspace) => {
                 let mut draft = self.draft.clone().unwrap_or_default();
                 draft.pop();
-                Some(NumberInputEvent::DraftChanged {
-                    id: self.id.clone(),
-                    draft,
-                })
+                Some(NumberInputEvent::DraftChanged { id: self.id, draft })
             }
             Key::Char(c) if is_number_char(*c) => {
                 let mut draft = self.draft.clone().unwrap_or_default();
                 draft.push(*c);
-                Some(NumberInputEvent::DraftChanged {
-                    id: self.id.clone(),
-                    draft,
-                })
+                Some(NumberInputEvent::DraftChanged { id: self.id, draft })
             }
             _ => None,
         }
@@ -214,7 +207,7 @@ impl NumberInput {
             _ => self.value,
         };
         NumberInputEvent::Committed {
-            id: self.id.clone(),
+            id: self.id,
             value: self.clamp_value(parsed),
         }
     }
@@ -227,7 +220,7 @@ impl NumberInput {
             return None;
         }
         Some(NumberInputEvent::ValueChanged {
-            id: self.id.clone(),
+            id: self.id,
             value: self.clamp_value(self.value + self.step),
         })
     }
@@ -238,7 +231,7 @@ impl NumberInput {
             return None;
         }
         Some(NumberInputEvent::ValueChanged {
-            id: self.id.clone(),
+            id: self.id,
             value: self.clamp_value(self.value - self.step),
         })
     }
@@ -266,7 +259,7 @@ impl NumberInput {
             return None;
         }
         Some(NumberInputEvent::ValueChanged {
-            id: self.id.clone(),
+            id: self.id,
             value: self.clamp_value(self.value + (delta.y as f64) * step),
         })
     }

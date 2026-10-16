@@ -487,7 +487,7 @@ impl PlatformServices for GtkPlatformServices {
         let idx = pump_until_ready(&result, &self.pumping).ok()?;
         let pos = usize::try_from(idx).ok()?;
         let orig = *order.get(pos)?;
-        Some(opts.buttons[orig].id.clone())
+        Some(opts.buttons[orig].id)
     }
 
     /// `gio::Notification` sent through the window's owning

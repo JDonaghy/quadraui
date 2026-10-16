@@ -382,7 +382,7 @@ impl ActivityBar {
                 item_idx: i,
                 bounds,
             });
-            hit_regions.push((bounds, ActivityBarHit::Item(item.id.clone())));
+            hit_regions.push((bounds, ActivityBarHit::Item(item.id)));
         }
 
         // Top items: place from top, stop at the bottom-items region.
@@ -412,7 +412,7 @@ impl ActivityBar {
                 item_idx: i,
                 bounds,
             });
-            hit_regions.push((bounds, ActivityBarHit::Item(item.id.clone())));
+            hit_regions.push((bounds, ActivityBarHit::Item(item.id)));
         }
 
         ActivityBarLayout {
@@ -654,7 +654,7 @@ pub(crate) mod native_surface_paint {
             regions.push(ActivityBarRowHit {
                 y_start: y,
                 y_end: y + row_h,
-                id: item.id.clone(),
+                id: item.id,
                 tooltip: item.tooltip.clone(),
             });
         }

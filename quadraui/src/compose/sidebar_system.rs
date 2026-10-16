@@ -1463,7 +1463,7 @@ fn form_field_measure(
             let items = toggles
                 .iter()
                 .map(|t| FormItemMeasure {
-                    id: t.id.clone(),
+                    id: t.id,
                     width: (t.label.chars().count() as f32 + 2.0) * char_w,
                 })
                 .collect();
@@ -1492,7 +1492,7 @@ fn form_field_measure(
                         })
                         .unwrap_or(0.0);
                     FormItemMeasure {
-                        id: b.id.clone(),
+                        id: b.id,
                         width: (b.label.chars().count() as f32 + icon_w + 2.0) * char_w,
                     }
                 })
