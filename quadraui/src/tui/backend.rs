@@ -2239,6 +2239,14 @@ impl Backend for TuiBackend {
         h.max(0.0).round()
     }
 
+    /// `draw_context_menu` paints the menu's border on a whole cell
+    /// outside `layout.bounds`, one cell on every side — a one-character
+    /// reservation on the viewport's top and left edges keeps that border
+    /// cell on-screen when the menu is anchored flush against either.
+    fn context_menu_border_inset(&self) -> f32 {
+        1.0
+    }
+
     // ─── Drawing ───────────────────────────────────────────────────────────
     //
     // Implementations call into the public `crate::tui::draw_*` free

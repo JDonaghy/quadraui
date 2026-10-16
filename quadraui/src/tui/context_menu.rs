@@ -52,18 +52,16 @@ pub fn draw_context_menu(
     if inner_w == 0 || inner_h == 0 {
         return;
     }
-    // `layout.bounds` is the **inner** items region; we draw the chrome
-    // border one cell outside on every side. When the items region is
-    // flush against the buffer edge (x == 0 or y == 0) there is no cell
-    // left outside it for the border to occupy — `saturating_sub(1)`
-    // would clamp to the same row/column as the items, overwriting them.
-    // Shift the items inward by one cell in that case instead, so the
-    // border always gets its own row/column.
-    let x_shift: u16 = if inner_x == 0 { 1 } else { 0 };
-    let y_shift: u16 = if inner_y == 0 { 1 } else { 0 };
-    let item_x = inner_x + x_shift;
-    let bx = item_x - 1;
-    let by = (inner_y + y_shift) - 1;
+    // `layout.bounds` is the **inner** items region; the chrome border
+    // paints one cell outside it on every side. `Backend::context_menu_border_inset`
+    // reserves that outside cell by insetting the viewport a caller
+    // passes to `ContextMenu::layout`/`layout_at`, so `inner_x`/`inner_y`
+    // are already `>= 1` whenever the menu is anchored flush against the
+    // viewport's top-left corner — the border and the items it encloses
+    // stay in the same coordinate space `hit_test` uses.
+    let item_x = inner_x;
+    let bx = inner_x - 1;
+    let by = inner_y - 1;
     let bw = inner_w + 2;
     let bh = inner_h + 2;
 
@@ -98,7 +96,7 @@ pub fn draw_context_menu(
 
     for vis in &layout.visible_items {
         let item = &menu.items[vis.item_idx];
-        let row_y = vis.bounds.y.round() as u16 + y_shift;
+        let row_y = vis.bounds.y.round() as u16;
         if vis.is_separator {
             for dx in 0..inner_w {
                 set_cell(buf, item_x + dx, row_y, '─', sep_fg, bg);
@@ -279,7 +277,9 @@ pub fn draw_context_menu_with_submenus(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::context_menu::{ContextMenu, ContextMenuItem, ContextMenuItemMeasure};
+    use crate::primitives::context_menu::{
+        ContextMenu, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure,
+    };
     use crate::types::{StyledSpan, StyledText, WidgetId};
     use ratatui::layout::Rect;
 
@@ -703,16 +703,19 @@ mod tests {
     #[test]
     fn top_border_survives_when_menu_anchored_at_viewport_top_row() {
         // Anchored at y=0 (e.g. a right-click on a tab bar rendered at the
-        // very top row of the viewport) — there is no row above the first
-        // item for the border to occupy, so the rasteriser must shift the
-        // items down by one instead of drawing the border and the first
-        // item on top of each other.
+        // very top row of the viewport). Production callers reserve a row
+        // for the border by insetting the viewport they pass to `layout()`
+        // via `Backend::context_menu_border_inset` (1 cell for TUI); this
+        // test passes that already-inset viewport directly, so
+        // `layout_at`'s own clamping — not the rasteriser — pushes the
+        // menu's `bounds.y` down to row 1, leaving row 0 free for the
+        // border.
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
         let menu = make_menu();
         let layout = menu.layout(
             2.0,
             0.0,
-            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            crate::event::Rect::new(1.0, 1.0, 29.0, 9.0),
             20.0,
             |_| ContextMenuItemMeasure::new(1.0),
         );
@@ -736,14 +739,15 @@ mod tests {
 
     #[test]
     fn left_border_survives_when_menu_anchored_at_viewport_left_edge() {
-        // Symmetric case: anchored at x=0, no column left of the items for
-        // the border to occupy.
+        // Symmetric case: anchored at x=0 with an already-inset viewport
+        // (see the top-row test above), so `layout_at` pushes `bounds.x`
+        // to column 1, leaving column 0 free for the border.
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
         let menu = make_menu();
         let layout = menu.layout(
             0.0,
             1.0,
-            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            crate::event::Rect::new(1.0, 1.0, 29.0, 9.0),
             20.0,
             |_| ContextMenuItemMeasure::new(1.0),
         );
@@ -759,6 +763,56 @@ mod tests {
             cell_char(&buf, 2, row_y),
             'O',
             "first item (\"Open\") label must still start after the left border"
+        );
+    }
+
+    #[test]
+    fn clicks_land_on_painted_row_when_menu_anchored_at_viewport_corner() {
+        // Paint↔click round-trip: a menu anchored flush against the
+        // viewport's top-left corner (the inset viewport a `Backend`
+        // caller would build via `context_menu_border_inset`) must paint
+        // its first item on the exact row/column `hit_test` reports for
+        // that item's `WidgetId` — not one row/column off from the border
+        // shift the rasteriser applies.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let menu = make_menu();
+        let layout = menu.layout(
+            0.0,
+            0.0,
+            crate::event::Rect::new(1.0, 1.0, 29.0, 9.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+
+        let first = &layout.visible_items[0];
+        let item_x = first.bounds.x;
+        let row_y = first.bounds.y;
+
+        // Sanity: the painted label starts one column right of the item's
+        // left edge (the check-mark/padding column), on the item's row.
+        assert_eq!(
+            cell_char(&buf, item_x.round() as u16 + 1, row_y.round() as u16),
+            'O',
+            "\"Open\" must be painted at the row/column its own bounds report"
+        );
+
+        // The border occupies the row/column directly outside `bounds` —
+        // hit-testing that cell must miss the menu, not resolve to the item.
+        assert_eq!(
+            layout.hit_test(item_x - 1.0, row_y - 1.0),
+            ContextMenuHit::Empty,
+            "the border cell must not be classified as the first item"
+        );
+
+        // Hit-testing the exact cell the item was painted at must resolve
+        // to that item's id — agreement between paint and hit-test is the
+        // whole point of reserving the border via the viewport inset
+        // rather than shifting only where the rasteriser paints.
+        assert_eq!(
+            layout.hit_test(item_x, row_y),
+            ContextMenuHit::Item(WidgetId::new("Open")),
+            "clicking the painted row of the first item must hit \"Open\""
         );
     }
 }

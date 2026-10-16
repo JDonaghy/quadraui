@@ -266,7 +266,13 @@ impl ContextMenuController {
         let lh = backend.chrome_line_height();
         let (item_h, sep_h, menu_width) = item_measure(lh);
         let viewport = backend.viewport();
-        let vp = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+        let inset = backend.context_menu_border_inset();
+        let vp = Rect::new(
+            inset,
+            inset,
+            (viewport.width - inset).max(0.0),
+            (viewport.height - inset).max(0.0),
+        );
         menu.layout(anchor.x, anchor.y, vp, menu_width, |i| {
             if menu.items[i].is_separator() {
                 crate::primitives::context_menu::ContextMenuItemMeasure::new(sep_h)
@@ -345,12 +351,15 @@ mod tests {
         let mut ctl = ContextMenuController::new();
         ctl.open(menu(), Point::new(0.0, 0.0), &mut backend);
 
-        // Item "copy" is the first row at the anchor origin.
+        // Anchored flush at the viewport's top-left corner: `TuiBackend`'s
+        // `context_menu_border_inset` reserves row/column 0 for the box
+        // border, so the first item ("copy") actually lands at (1.0, 1.0),
+        // not at the raw anchor origin.
         let outcome = ctl.handle(
             &UiEvent::MouseDown {
                 widget: None,
                 button: MouseButton::Left,
-                position: Point::new(1.0, 0.0),
+                position: Point::new(1.0, 1.0),
                 modifiers: Modifiers::default(),
             },
             &mut backend,
