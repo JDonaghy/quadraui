@@ -129,14 +129,17 @@ pub fn draw_editor_with_options_and_v_scrollbar_w(
     // below; see [`text_v_offset`]'s doc.
     let text_v_offset = text_v_offset(dwrite, line_height);
 
-    // ── Cursorline (spans the full width, including the gutter — same
-    //    as `gtk::editor`, so it's painted before any clip is pushed) ──
+    // ── Cursorline (spans the gutter + text columns, including the
+    //    gutter — same as `gtk::editor` — but stops short of the
+    //    reserved vertical scrollbar column, so it's painted before any
+    //    clip is pushed but still narrowed to `text_bounds`) ──────────
+    let cursorline_w = (layout.text_bounds.x + layout.text_bounds.width - rect.x).max(0.0);
     for (view_idx, line) in editor.lines.iter().enumerate() {
         if line.is_current_line && editor.is_active && editor.cursorline {
             let y = rect.y + view_idx as f32 * line_height;
             let _ = fill_rect(
                 target,
-                Rect::new(rect.x, y, rect.width, line_height),
+                Rect::new(rect.x, y, cursorline_w, line_height),
                 theme.cursorline_bg,
             );
         }

@@ -186,6 +186,12 @@ pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
     // Cursorline / diff / DAP stopped-line backgrounds — painted before
     // text. Priority mirrors GTK: DAP-stopped > diff status >
     // cursorline (crate::gtk::editor::draw_editor).
+    //
+    // Stops short of the reserved vertical scrollbar column, mirroring
+    // the text clip below — `text_bounds.x + text_bounds.width` already
+    // excludes `v_scrollbar_bounds` when present.
+    let row_bg_w =
+        (editor_geom.text_bounds.x as f64 + editor_geom.text_bounds.width as f64 - x).max(0.0);
     for (view_idx, line) in editor.lines.iter().enumerate() {
         let row_bg = if line.is_dap_current {
             Some(theme.dap_stopped_bg)
@@ -203,7 +209,7 @@ pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
         };
         if let Some(color) = row_bg {
             let line_y = y + view_idx as f64 * line_height;
-            fill_rect(ctx, x, line_y, w, line_height, color);
+            fill_rect(ctx, x, line_y, row_bg_w, line_height, color);
         }
     }
 
