@@ -467,7 +467,14 @@ pub enum SelectionGesture {
 impl SelectionGesture {
     /// Derives the gesture a click or keyboard-extension input should use
     /// from its modifier state. Shift takes priority over Ctrl/Cmd when
-    /// both are held, matching common list/tree UI conventions.
+    /// both are held: the result is always [`SelectionGesture::Range`], the
+    /// same as Shift alone. This matches Shift-only and Ctrl/Cmd-only
+    /// conventions on every major desktop platform; the combined
+    /// Ctrl/Cmd+Shift chord has no single cross-platform convention (some
+    /// apps use it for an *additive* range that preserves the existing
+    /// selection, which this function does not model), so treat that case
+    /// as an intentional simplification rather than a claim of parity with
+    /// any specific app.
     pub fn from_modifiers(modifiers: Modifiers) -> Self {
         if modifiers.shift {
             SelectionGesture::Range
@@ -856,9 +863,15 @@ mod tests {
     #[test]
     fn selection_gesture_from_modifiers_prefers_shift_over_ctrl() {
         let mut m = Modifiers::default();
-        assert_eq!(SelectionGesture::from_modifiers(m), SelectionGesture::Replace);
+        assert_eq!(
+            SelectionGesture::from_modifiers(m),
+            SelectionGesture::Replace
+        );
         m.ctrl = true;
-        assert_eq!(SelectionGesture::from_modifiers(m), SelectionGesture::Toggle);
+        assert_eq!(
+            SelectionGesture::from_modifiers(m),
+            SelectionGesture::Toggle
+        );
         m.shift = true;
         assert_eq!(SelectionGesture::from_modifiers(m), SelectionGesture::Range);
         let cmd_only = Modifiers {

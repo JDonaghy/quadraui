@@ -112,6 +112,7 @@ impl SearchPanelDemo {
             rows,
             selection_mode: quadraui::SelectionMode::Single,
             selected_path: self.selected_path[variant].clone(),
+            selected_paths: Vec::new(),
             scroll_offset: 0,
             style: quadraui::TreeStyle::default(),
             has_focus: true,

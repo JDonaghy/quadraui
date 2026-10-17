@@ -265,15 +265,10 @@ impl Default for TimeOfDay {
 /// # Examples
 ///
 /// ```
-/// use quadraui::{CalendarDate, DatePicker, DateLocale, WidgetId};
+/// use quadraui::{CalendarDate, DatePicker, WidgetId};
 ///
-/// let picker = DatePicker {
-///     id: WidgetId::new("due-date"),
-///     visible_month: CalendarDate::new(2024, 3, 1),
-///     focused: CalendarDate::new(2024, 3, 15),
-///     has_focus: true,
-///     ..Default::default()
-/// };
+/// let mut picker = DatePicker::new(WidgetId::new("due-date"), CalendarDate::new(2024, 3, 15));
+/// picker.has_focus = true;
 ///
 /// assert_eq!(picker.month_grid().len(), 42);
 /// ```
@@ -385,7 +380,12 @@ impl DatePicker {
         let grid_top = origin_y + header_height;
 
         let header_bounds = if header_height > 0.0 {
-            Some(Rect::new(origin_x, origin_y, cell_width * 7.0, header_height))
+            Some(Rect::new(
+                origin_x,
+                origin_y,
+                cell_width * 7.0,
+                header_height,
+            ))
         } else {
             None
         };
@@ -424,7 +424,12 @@ impl DatePicker {
 
         let grid_bottom = grid_top + cell_height * 6.0;
         let time_bounds = if time_height > 0.0 {
-            Some(Rect::new(origin_x, grid_bottom, cell_width * 7.0, time_height))
+            Some(Rect::new(
+                origin_x,
+                grid_bottom,
+                cell_width * 7.0,
+                time_height,
+            ))
         } else {
             None
         };
@@ -440,7 +445,7 @@ impl DatePicker {
 }
 
 /// One resolved day cell in a [`DatePickerLayout`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[non_exhaustive]
 pub struct DayCell {
     pub date: CalendarDate,
@@ -452,20 +457,8 @@ pub struct DayCell {
     pub bounds: Rect,
 }
 
-impl Default for DayCell {
-    fn default() -> Self {
-        DayCell {
-            date: CalendarDate::default(),
-            in_visible_month: false,
-            is_selected: false,
-            is_focused: false,
-            bounds: Rect::default(),
-        }
-    }
-}
-
 /// Fully-resolved date-picker layout.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 #[non_exhaustive]
 pub struct DatePickerLayout {
     /// Present iff the caller reserved a non-zero `header_height`.
@@ -480,18 +473,6 @@ pub struct DatePickerLayout {
     pub day_cells: Vec<DayCell>,
     /// Present iff the caller reserved a non-zero `time_height`.
     pub time_bounds: Option<Rect>,
-}
-
-impl Default for DatePickerLayout {
-    fn default() -> Self {
-        DatePickerLayout {
-            header_bounds: None,
-            prev_bounds: None,
-            next_bounds: None,
-            day_cells: Vec::new(),
-            time_bounds: None,
-        }
-    }
 }
 
 /// Classification of a hit-test result.
@@ -557,7 +538,11 @@ mod tests {
         ];
         for d in dates {
             let z = d.days_from_civil();
-            assert_eq!(CalendarDate::from_days_since_epoch(z), d, "round-trip for {d:?}");
+            assert_eq!(
+                CalendarDate::from_days_since_epoch(z),
+                d,
+                "round-trip for {d:?}"
+            );
         }
     }
 
@@ -698,7 +683,9 @@ mod tests {
         };
         assert_eq!(
             picker.navigate("Enter"),
-            Some(DatePickerEvent::DateSelected(CalendarDate::new(2024, 3, 15)))
+            Some(DatePickerEvent::DateSelected(CalendarDate::new(
+                2024, 3, 15
+            )))
         );
     }
 

@@ -7423,6 +7423,7 @@ mod tests {
             rows: Vec::new(),
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
+            selected_paths: Vec::new(),
             scroll_offset: 0,
             style: crate::TreeStyle::default(),
             has_focus: false,

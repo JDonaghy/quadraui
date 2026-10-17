@@ -10,7 +10,7 @@
 
 use quadraui::{
     Backend, BackendCaps, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable,
-    DataTableHit, InteractionState, Key, Reaction, Rect, SortDirection, StatusBar,
+    DataTableHit, InteractionState, Key, Reaction, Rect, SelectionMode, SortDirection, StatusBar,
     StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
@@ -155,6 +155,8 @@ impl DataTableDemo {
                 columns: self.columns.clone(),
                 rows,
                 selected_idx: self.selected,
+                selection_mode: SelectionMode::default(),
+                selected_indices: Vec::new(),
                 scroll_offset: 0,
                 sort: self.sort_col.map(|c| {
                     (
@@ -194,6 +196,8 @@ impl DataTableDemo {
                 ],
                 rows: Self::keybinding_rows(),
                 selected_idx: None,
+                selection_mode: SelectionMode::default(),
+                selected_indices: Vec::new(),
                 scroll_offset: 0,
                 sort: None,
                 has_focus: false,

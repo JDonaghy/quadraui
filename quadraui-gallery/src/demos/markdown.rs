@@ -13,7 +13,7 @@
 use quadraui::{
     render_markdown_to_styled, render_markdown_to_styled_wrapped, Backend, BackendCaps, Decoration,
     FontRole, Key, ListItem, ListView, NamedKey, PopupPlacement, Reaction, Rect, RichTextPopup,
-    RichTextPopupMeasure, StyledText, Theme, UiEvent, WidgetId,
+    RichTextPopupMeasure, SelectionMode, StyledText, Theme, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -184,6 +184,8 @@ impl MarkdownDemo {
             title: Some(StyledText::plain(" word-wrapped ")),
             items,
             selected_idx: self.wrap.selected_idx.min(n.saturating_sub(1)),
+            selection_mode: SelectionMode::default(),
+            selected_indices: Vec::new(),
             scroll_offset: self.wrap.scroll_offset,
             has_focus: true,
             bordered: false,

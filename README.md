@@ -208,13 +208,16 @@ Pick the backends you ship; `terminal` is independent of them.
 ## What's in the box
 
 **49 primitives**, one module each under `quadraui/src/primitives/`: a
-declarative description, a shared layout, and a rasteriser per backend.
-Among them:
+declarative description and a shared layout, each with a rasteriser per
+backend — except `DatePicker`, which currently ships layout/hit-test
+logic only and has no backend rasteriser yet (it is a seam, exercised
+headlessly via `quadraui/tests/date_picker_driver.rs`). Among them:
 
 - Content: `TreeView`, `ListView`, `DataTable`, `Form`, `Editor`,
   `TextDisplay`, `MessageList`, `DiffView`, `Chart`, `Board`, `Terminal`,
-  `Minimap`, `DatePicker`, `Canvas` (app-defined drawing, painted through
-  the public `PaintSurface` seam).
+  `Minimap`, `DatePicker` (layout/hit-test only — no rasteriser yet),
+  `Canvas` (app-defined drawing, painted through the public
+  `PaintSurface` seam).
 - Chrome: `TabBar`, `StatusBar`, `MenuBar`, `ActivityBar`, `Toolbar`,
   `CommandCenter`, `Scrollbar`.
 - Containers: `Split`, `SplitTree`, `Panel`, `MultiSectionView`.

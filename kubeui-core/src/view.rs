@@ -8,8 +8,8 @@
 
 use quadraui::{
     Color, ContextMenu, ContextMenuItem, ContextMenuPlacement, Decoration, ListItem, ListView,
-    Rect, StatusBar, StatusBarSegment, StatusSegmentMeasure, StatusSegmentSide, StyledSpan,
-    StyledText, TextDisplay, TextDisplayLine, WidgetId,
+    Rect, SelectionMode, StatusBar, StatusBarSegment, StatusSegmentMeasure, StatusSegmentSide,
+    StyledSpan, StyledText, TextDisplay, TextDisplayLine, WidgetId,
 };
 
 use crate::state::{AppState, Focus, Picker, PickerPurpose, ResourceKind};
@@ -75,6 +75,8 @@ pub fn build_list(state: &AppState) -> ListView {
         }),
         items,
         selected_idx: state.selected,
+        selection_mode: SelectionMode::default(),
+        selected_indices: Vec::new(),
         scroll_offset: 0,
         has_focus: state.focus == Focus::Resources,
         bordered: false,
