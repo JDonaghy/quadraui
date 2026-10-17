@@ -3,7 +3,7 @@
 //! Cell-based equivalent of the GTK activity-bar drawing path. Uses the
 //! primitive's [`crate::ActivityBarLayout`] for positioning and paints
 //! into a ratatui buffer. Activity bar width is caller-determined (typically
-//! 3 cells: 1 accent + 2 icon).
+//! 4 cells: 1 accent + 2 icon + 1 separator).
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -13,6 +13,7 @@ use super::{qc, set_cell, set_cell_wide};
 use crate::primitives::activity_bar::{
     ActivityBar, ActivityBarRowHit, ActivityBarStyle, ActivitySide,
 };
+use crate::text_util::char_cell_width;
 use crate::theme::Theme;
 
 /// Equivalent to [`draw_activity_bar_with_style`] with
@@ -157,11 +158,14 @@ pub fn draw_activity_bar_with_style(
         let content_start = area.x + 1; // after accent column
         let content_end = sep_col; // before separator
         let content_w = content_end.saturating_sub(content_start);
-        if content_w >= 2 {
-            let icon_x = content_start + (content_w - 2) / 2;
-            set_cell_wide(buf, icon_x, y, icon_ch, fg, row_bg);
-        } else if content_w >= 1 {
-            set_cell(buf, content_start, y, icon_ch, fg, row_bg);
+        let icon_w = char_cell_width(icon_ch).max(1);
+        if content_w >= icon_w {
+            let icon_x = content_start + (content_w - icon_w) / 2;
+            if icon_w >= 2 {
+                set_cell_wide(buf, icon_x, y, icon_ch, fg, row_bg);
+            } else {
+                set_cell(buf, icon_x, y, icon_ch, fg, row_bg);
+            }
         }
 
         // Keyboard selection highlight — REVERSED fallback when no explicit

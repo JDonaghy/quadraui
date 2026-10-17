@@ -860,6 +860,7 @@ fn activate<A: AppLogic + 'static>(
     setup_file_drop_controller(&da, &window, &app, &backend, &pump_depth);
     setup_close_request(&window, &da, &app, &backend, &pump_depth, &events_handle);
     setup_event_drain(&da, &window, &app, &backend, &pump_depth, &events_handle);
+    setup_caret_blink(&da, &backend);
 
     window.present();
     // On macOS, hand the process frontmost status too — see
@@ -1443,6 +1444,35 @@ fn setup_hidpi_controller<A: AppLogic + 'static>(
     });
 }
 
+/// Installs the recurring `glib::timeout_add_local` that drives
+/// `backend`'s [`crate::caret_blink::CaretBlinkState`] — the GTK-specific
+/// timer mechanism [`crate::caret_blink`]'s module doc prescribes for this
+/// backend, mirroring `macos::caret_blink::install_blink_timer`'s
+/// `NSTimer`. Fires every [`GtkBackend::caret_blink_period`] (read once
+/// here; the period itself never changes after construction), ticks the
+/// state machine, and queues a redraw on `da` only when the phase actually
+/// flipped — a tick during an active typing pause (see
+/// `dispatch_event`'s caret-blink bump) is a no-op and skips the redraw.
+fn setup_caret_blink(da: &DrawingArea, backend: &Rc<RefCell<GtkBackend>>) {
+    let period = backend.borrow().caret_blink_period();
+    let da = da.clone();
+    let backend = backend.clone();
+    glib::source::timeout_add_local(period, move || {
+        // Degrade instead of panicking on a double borrow — the same
+        // re-entrancy backstop every other recurring source in this module
+        // uses. The next tick picks up the phase this one would have set.
+        let Ok(mut backend_mut) = backend.try_borrow_mut() else {
+            return glib::ControlFlow::Continue;
+        };
+        let flipped = backend_mut.tick_caret_blink(std::time::Instant::now());
+        drop(backend_mut);
+        if flipped {
+            da.queue_draw();
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
 /// Wires `da`'s OS file-drop target. `gtk::DropTarget` is a
 /// `gtk::EventController` added to `da` the same way the click/motion/
 /// scroll controllers are, not a separate widget — GTK4's DnD model
@@ -1932,11 +1962,21 @@ pub(crate) fn render_frame<A: AppLogic>(
 /// order. This wrapper exists only because `preprocess_event` is
 /// generic and GTK's signal closures call a concretely-typed
 /// `dispatch_event(UiEvent, &mut GtkBackend, &mut A)`.
+///
+/// Caret-blink bump: any `KeyPressed`/`CharTyped` calls
+/// [`GtkBackend::note_caret_activity`] first, holding the
+/// `MultiSectionView` aux-row caret solid for the typing-pause window —
+/// mirrors `MacBackend::dispatch_event`'s `caret_visible`/`caret_pause`
+/// bump. The recurring blink timer that ticks the caret while idle is
+/// installed by `setup_caret_blink`.
 pub(crate) fn dispatch_event<A: AppLogic>(
     event: UiEvent,
     backend: &mut GtkBackend,
     app: &mut A,
 ) -> EventOutcome {
+    if matches!(event, UiEvent::KeyPressed { .. } | UiEvent::CharTyped(_)) {
+        backend.note_caret_activity(std::time::Instant::now());
+    }
     crate::runtime::preprocess_event(event, backend, app)
 }
 

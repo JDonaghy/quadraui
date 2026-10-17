@@ -18,12 +18,13 @@
 //! - GTK: a `glib::timeout_add_local` (or [`glib::source`]) firing every
 //!   [`CaretBlinkState::period`], calling [`CaretBlinkState::tick`] and
 //!   queuing a redraw when it returns `true`.
-//! - Windows: an `AppLogic::tick` wake scheduled via
-//!   [`crate::backend::Backend::request_frame_in`] with
-//!   [`CaretBlinkState::next_wake_delay`] as the delay, calling
-//!   [`CaretBlinkState::tick`] on each wake — the precise-scheduling path
-//!   `Reaction::RedrawAfter` already provides, rather than a raw
-//!   `SetTimer`.
+//! - Windows: a dedicated, always-repeating `SetTimer` (armed once at
+//!   startup, never killed — the same posture as `win::run`'s idle-poll
+//!   timer) firing every [`CaretBlinkState::period`], calling
+//!   [`CaretBlinkState::tick`] on each `WM_TIMER` and invalidating the
+//!   window only when it returns `true`. This bypasses the shared
+//!   `AppLogic::tick` wake path entirely, so it can never double-tick
+//!   against that path's own frame/idle timers.
 //!
 //! Either way, a `KeyPressed`/`CharTyped` event calls
 //! [`CaretBlinkState::on_activity`] to hold the caret solid while typing,

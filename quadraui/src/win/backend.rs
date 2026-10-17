@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::backend::{
     Backend, BackendError, EditorPaintResult, PlatformServices, PointerShape, ServiceResult,
@@ -655,6 +655,20 @@ pub struct WinBackend {
     /// `target_os`-gated: a plain value with no WinAPI dependency, same
     /// rationale as `zones`/`user_events` above.
     frame_scheduler: crate::runtime::FrameScheduler,
+    /// Backend-neutral caret-blink phase for `MultiSectionView` aux-row
+    /// text inputs (`SectionAux::Input`/`Search`) — see
+    /// [`crate::caret_blink`]'s module doc for the state machine and the
+    /// Windows-specific wiring it prescribes. `super::run`'s
+    /// `CARET_BLINK_TIMER_ID` timer, armed once at startup, ticks this
+    /// every [`crate::caret_blink::CaretBlinkState::period`] via
+    /// `WM_TIMER` and invalidates the window when the phase flips;
+    /// `super::run::dispatch_event` calls [`Self::note_caret_activity`]
+    /// on `KeyPressed`/`CharTyped` so the caret holds solid while typing,
+    /// mirroring `MacBackend`'s `caret_visible`/`paused_until` cells and
+    /// `GtkBackend::caret_blink`. Not `target_os`-gated: a plain value
+    /// with no WinAPI dependency, same rationale as `zones`/`user_events`
+    /// above.
+    caret_blink: crate::caret_blink::CaretBlinkState,
 }
 
 impl WinBackend {
@@ -742,6 +756,7 @@ impl WinBackend {
             user_events: crate::runtime::UserEventQueue::new(),
             zones: Vec::new(),
             frame_scheduler: crate::runtime::FrameScheduler::new(),
+            caret_blink: crate::caret_blink::CaretBlinkState::default(),
         }
     }
 
@@ -1374,6 +1389,68 @@ impl WinBackend {
     /// `target_os`-gated, same reason as [`Self::frame_requests`].
     pub fn pending_frame_delay(&self) -> Option<Duration> {
         self.frame_scheduler.pending_delay()
+    }
+
+    // ── Caret blink ──────────────────────────────────────────────────────
+    //
+    // Thin delegation onto `self.caret_blink` — see that field's doc for
+    // the full `CARET_BLINK_TIMER_ID` wiring in `super::run`.
+
+    /// Whether the `MultiSectionView` aux-row caret should currently
+    /// paint — read by [`super::multi_section_view::draw_multi_section_view`]
+    /// via [`Self::draw_multi_section_view`].
+    ///
+    /// `#[allow(dead_code)]`: this method's only non-test callers —
+    /// [`Self::draw_multi_section_view`]'s `target_os = "windows"` arm and
+    /// `mod win32`'s `WM_TIMER` handler — are both windows-gated, so on a
+    /// non-Windows host (`cargo check --features win` on the
+    /// `ubuntu-latest` CI leg) it has no caller outside this file's own
+    /// `#[cfg(test)]` module and would trip `-D warnings`' dead-code lint
+    /// there despite being genuinely used on the `windows-latest` leg —
+    /// same rationale as `win::run::dispatch_event`'s identical allow.
+    #[allow(dead_code)]
+    pub(crate) fn caret_visible(&self) -> bool {
+        self.caret_blink.visible()
+    }
+
+    /// Advance the caret-blink phase to `now`. Called from
+    /// `super::run`'s `CARET_BLINK_TIMER_ID` `WM_TIMER` handler; returns
+    /// `true` when the phase flipped, telling the caller to invalidate
+    /// the window.
+    ///
+    /// `#[allow(dead_code)]`: see [`Self::caret_visible`]'s doc — this
+    /// method's only non-test caller is windows-gated too.
+    #[allow(dead_code)]
+    pub(crate) fn tick_caret_blink(&mut self, now: Instant) -> bool {
+        self.caret_blink.tick(now)
+    }
+
+    /// The configured caret-blink period — the interval `super::run`
+    /// arms `CARET_BLINK_TIMER_ID` at.
+    ///
+    /// `#[allow(dead_code)]`: see [`Self::caret_visible`]'s doc — this
+    /// method's only non-test caller is windows-gated too.
+    #[allow(dead_code)]
+    pub(crate) fn caret_blink_period(&self) -> Duration {
+        self.caret_blink.period()
+    }
+
+    /// Record typing activity at `now`, holding the caret solid for a
+    /// typing pause. Called from `super::run::dispatch_event` on
+    /// `KeyPressed`/`CharTyped`.
+    pub(crate) fn note_caret_activity(&mut self, now: Instant) {
+        self.caret_blink.on_activity(now);
+    }
+
+    /// Test-only: force the caret-blink phase to `visible` for
+    /// reproducible paint snapshots, mirroring
+    /// `MacBackend::set_caret_visible`/`GtkBackend::set_caret_visible`.
+    #[cfg(test)]
+    pub(crate) fn set_caret_visible(&mut self, visible: bool) {
+        if self.caret_blink.visible() != visible {
+            let far_future = Instant::now() + Duration::from_secs(3600);
+            self.caret_blink.tick(far_future);
+        }
     }
 
     // ── Text selection ───────────────────────────────────────────────────
@@ -3761,6 +3838,7 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            let caret_visible = self.caret_visible();
             super::multi_section_view::draw_multi_section_view(
                 &surface.target,
                 dwrite,
@@ -3768,6 +3846,7 @@ impl Backend for WinBackend {
                 view,
                 self.current_line_height,
                 self.current_char_width,
+                caret_visible,
             );
             return;
         }
@@ -3808,16 +3887,34 @@ impl Backend for WinBackend {
         crate::primitives::layout_metrics::msv_metrics(self.current_line_height as f64, false)
     }
 
-    /// Like [`Self::activity_bar_layout`], this needs no measurer
-    /// at all — chevron width is a `line_height`-derived estimate (see
-    /// `win::tree::win_tree_layout`'s doc), not a real DirectWrite
-    /// measurement — so this doesn't even need `self.dwrite`, only the
-    /// `target_os = "windows"` gate every method in this file shares
-    /// (the callee lives in a Windows-only module).
+    /// Pure measurement — only needs `self.dwrite`, not a live render
+    /// target. See [`Self::data_table_layout`]'s doc. Prefers
+    /// `chrome_dwrite`, matching [`Self::draw_tree`]'s paint font — both
+    /// must resolve the same handle or the chevron boundary measured
+    /// here would disagree with what the paint actually fits.
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
-        // `crate::primitives::layout_metrics::tree_layout` is fully
-        // portable — see `msv_layout`'s doc.
-        crate::primitives::layout_metrics::tree_layout(tree, rect, self.current_line_height as f64)
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
+            return super::tree::win_tree_layout_measured(
+                dwrite,
+                rect,
+                tree,
+                self.current_line_height,
+            );
+        }
+        // No live DWrite handle yet (fresh backend, device lost, or a
+        // non-Windows host, where `win::tree` never compiles) — nominal
+        // char-width estimate for the chevron glyph instead; real
+        // per-glyph measurement resumes once
+        // `attach_surface`/`attach_headless` builds one.
+        crate::primitives::layout_metrics::tree_layout_measured(
+            tree,
+            rect,
+            self.current_line_height as f64,
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
+        )
     }
 
     /// `vscrollbar` deals purely in row counts/row-height, so
@@ -11412,5 +11509,41 @@ mod tests {
         let (w2, h2) = PaintSurface::surface_measure_text_styled(&backend, "hello", true);
         assert_eq!(w2, 5.0 * backend.current_char_width);
         assert_eq!(h2, backend.current_line_height);
+    }
+
+    // ── Caret blink ──────────────────────────────────────────────────────
+
+    /// `WinBackend`'s caret-blink accessors forward to
+    /// [`crate::caret_blink::CaretBlinkState`] faithfully: `tick_caret_blink`
+    /// flips `caret_visible` after `caret_blink_period` elapses,
+    /// `note_caret_activity` holds it solid through a typing pause, and
+    /// `set_caret_visible` lets a test pin the phase directly — mirrors
+    /// `GtkBackend`/`MacBackend`'s equivalent coverage for the same state
+    /// machine.
+    #[test]
+    fn win_backend_caret_blink_methods_drive_the_shared_state_machine() {
+        let mut backend = WinBackend::new();
+        let period = backend.caret_blink_period();
+        assert!(period > std::time::Duration::ZERO);
+
+        backend.set_caret_visible(true);
+        assert!(backend.caret_visible());
+        backend.set_caret_visible(false);
+        assert!(!backend.caret_visible());
+
+        let start = Instant::now();
+        let flipped = backend.tick_caret_blink(start + period);
+        assert!(flipped, "a tick a full period later must flip the phase");
+        assert!(backend.caret_visible());
+
+        // A typing-pause bump holds the caret solid: a tick that would
+        // otherwise flip it must now be a no-op.
+        backend.note_caret_activity(start + period);
+        let flipped_during_pause = backend.tick_caret_blink(start + period);
+        assert!(
+            !flipped_during_pause,
+            "a tick during an active typing pause must not flip the phase"
+        );
+        assert!(backend.caret_visible());
     }
 }

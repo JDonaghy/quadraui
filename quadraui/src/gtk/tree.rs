@@ -15,6 +15,7 @@
 use gtk4::cairo::Context;
 use gtk4::pango;
 
+use super::toolbar::PangoMeasure;
 use crate::event::Rect as QRect;
 use crate::primitives::tree::{TreeView, TreeViewLayout};
 use crate::theme::Theme;
@@ -24,18 +25,39 @@ use crate::theme::Theme;
 /// hit-testing without re-deriving row pitch (`1.0 × line_height` for
 /// `Decoration::Header`, `1.4 × line_height` for everything else, unless
 /// `tree.style.row_height` overrides the non-header pitch).
-/// `draw_tree` uses this same helper internally so paint and hit_test
-/// consume one layout instance per frame — the source-of-truth
-/// contract `TreeView` exists to enforce.
 ///
 /// Mirrors TUI's [`crate::tui::tui_tree_layout`] in spirit; differs
 /// in row pitch (TUI = 1 cell uniform; GTK = mixed via decoration).
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::tree_layout`]
 /// — the row-pitch/chevron math is identical across every pixel
-/// backend, so it lives there once instead of once per backend.
+/// backend, so it lives there once instead of once per backend. The
+/// chevron glyph width is an *estimate* (`line_height * 0.65`); callers
+/// with a live `pango::Layout` should prefer [`gtk_tree_layout_measured`]
+/// (`draw_tree` and `GtkBackend::tree_layout` both do).
 pub fn gtk_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
     crate::primitives::layout_metrics::tree_layout(tree, area, line_height)
+}
+
+/// Like [`gtk_tree_layout`], but measures the chevron glyph actually
+/// configured on `tree.style` (`chevron_expanded`/`chevron_collapsed`)
+/// through Pango instead of estimating its pixel width as
+/// `line_height * 0.65` — the same correctness `macos::tree::mac_tree_layout`
+/// already gets from a real `CTFont`. `pango_layout` is `Some` inside a
+/// draw frame (Pango can measure); pass `None` only when no live layout
+/// is available, which falls back to `char_width`-based estimation.
+pub fn gtk_tree_layout_measured(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    pango_layout: Option<&pango::Layout>,
+    char_width: f64,
+) -> TreeViewLayout {
+    let measure = PangoMeasure {
+        pango_layout,
+        char_width,
+    };
+    crate::primitives::layout_metrics::tree_layout_measured(tree, area, line_height, &measure)
 }
 
 /// Draw a [`TreeView`] into `(x, y, w, h)` on `cr`. `nerd_fonts_enabled`
@@ -94,7 +116,13 @@ pub fn draw_tree(
 
     layout.set_attributes(None);
 
-    let tree_layout = gtk_tree_layout(tree, QRect::new(0.0, 0.0, w as f32, h as f32), line_height);
+    let tree_layout = gtk_tree_layout_measured(
+        tree,
+        QRect::new(0.0, 0.0, w as f32, h as f32),
+        line_height,
+        Some(layout),
+        0.0,
+    );
 
     let area = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
     let mut surface = super::surface::CairoSurface {
@@ -124,9 +152,10 @@ pub fn draw_tree(
 // The bug class this catches: `scroll_offset` drift (paint advances by
 // scroll_offset but click forgets, or vice versa) and row-pitch drift
 // (mixed-decoration trees where headers are 1.0×line_height and leaves
-// are 1.4×line_height stack inconsistently). GTK's `draw_tree` uses
-// `gtk_tree_layout` for both paint and hit-test, so the contract is
-// "they consume the same layout" — these tests verify that contract.
+// are 1.4×line_height stack inconsistently). GTK's `draw_tree` and
+// `GtkBackend::tree_layout` both build on `gtk_tree_layout_measured`
+// with a live Pango layout, so the contract is "they consume the same
+// layout" — these tests verify that contract.
 //
 // Tests gated `#[cfg(all(test, feature = "gtk"))]` so they only run
 // under `cargo test --features gtk`. They don't need a real display.
@@ -582,6 +611,50 @@ mod tests {
                 hit
             );
         }
+    }
+
+    /// `gtk_tree_layout_measured` must use the real Pango-measured
+    /// chevron glyph width, not `gtk_tree_layout`'s `line_height * 0.65`
+    /// estimate — mirrors `macos::tree`'s
+    /// `mac_tree_layout_uses_real_chevron_glyph_width_not_the_estimate`.
+    #[test]
+    fn gtk_tree_layout_measured_uses_real_chevron_glyph_width_not_the_estimate() {
+        let tree = make_tree(vec![branch(0, "alpha", true)]);
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+
+        let estimated = gtk_tree_layout(&tree, area, LINE_HEIGHT);
+        let measured = gtk_tree_layout_measured(&tree, area, LINE_HEIGHT, Some(&pango_layout), 0.0);
+
+        // The Chevron hit-region's width *is* the row's chevron_end_x
+        // (see `TreeView::layout`'s hit-region split).
+        let est_x = estimated.hit_regions[0].0.width;
+        let measured_x = measured.hit_regions[0].0.width;
+        assert_ne!(
+            est_x, measured_x,
+            "measured chevron end-x must use the real Pango glyph width ({measured_x}), \
+             not the line_height * 0.65 estimate ({est_x})",
+        );
+        // Exact geometry: 2px left margin + indent (0 here, `branch`'s
+        // `indent` field) * round(line_height * 0.9) + the real glyph
+        // advance + 4px gap.
+        pango_layout.set_text(&tree.style.chevron_expanded);
+        let glyph_w = pango_layout.pixel_size().0.max(0) as f32;
+        let indent_px = (LINE_HEIGHT as f32 * 0.9).round();
+        let expected = 2.0 + tree.rows[0].indent as f32 * indent_px + glyph_w + 4.0;
+        assert!(
+            (measured_x - expected).abs() < 0.01,
+            "measured chevron end-x {measured_x} must equal the Pango-measured \
+             geometry {expected} (glyph advance {glyph_w})",
+        );
+        assert_eq!(
+            measured.hit_test(measured_x - 1.0, 4.0),
+            TreeViewHit::Chevron(0),
+            "the measured boundary itself must still resolve to the chevron hit region",
+        );
     }
 
     /// With `row_height` set, the painted row pitch is identical at two

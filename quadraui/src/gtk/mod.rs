@@ -127,7 +127,7 @@ pub use text_input::{draw_text_input, gtk_text_input_layout};
 pub use toast::gtk_toast_stack_layout;
 pub use toolbar::{draw_toolbar, draw_toolbar_with_options, gtk_toolbar_layout};
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
-pub use tree::{draw_tree, gtk_tree_layout};
+pub use tree::{draw_tree, gtk_tree_layout, gtk_tree_layout_measured};
 
 /// Convert a `quadraui::Color` (0-255 RGBA) into Cairo's normalised
 /// `(r, g, b)` tuple. Alpha is dropped — Cairo supports

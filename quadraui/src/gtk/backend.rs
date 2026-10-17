@@ -438,6 +438,17 @@ pub struct GtkBackend {
     /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
     /// read elsewhere via [`Backend::focus_manager`].
     focus: crate::focus::FocusManager,
+    /// Backend-neutral caret-blink phase for `MultiSectionView` aux-row
+    /// text inputs (`SectionAux::Input`/`Search`) — see
+    /// [`crate::caret_blink`]'s module doc for the state machine and the
+    /// GTK-specific wiring it prescribes. `super::run::setup_caret_blink`
+    /// ticks this once per [`crate::caret_blink::CaretBlinkState::period`]
+    /// via a `glib::timeout_add_local` and queues a redraw when the phase
+    /// flips; `super::run::dispatch_event` calls
+    /// [`Self::note_caret_activity`] on `KeyPressed`/`CharTyped` so the
+    /// caret holds solid while typing, mirroring `MacBackend`'s
+    /// `caret_visible`/`paused_until` cells.
+    caret_blink: crate::caret_blink::CaretBlinkState,
     /// Thread-safe inbox for [`crate::UiEvent::User`] payloads
     /// — see [`crate::runtime::UserEventQueue`]'s doc. [`Self::waker`]
     /// clones this `Arc` into the closure it hands out; [`Self::poll_events`]
@@ -611,6 +622,7 @@ impl GtkBackend {
             double_click: DoubleClickDetector::with_radius(GTK_DOUBLE_CLICK_RADIUS),
             double_click_folding: true,
             focus: crate::focus::FocusManager::new(),
+            caret_blink: crate::caret_blink::CaretBlinkState::default(),
             user_events: crate::runtime::UserEventQueue::new(),
             wake_id: WakeId::next(),
         }
@@ -1417,6 +1429,54 @@ impl GtkBackend {
     /// — mirrors `TuiBackend::set_double_click_folding`.
     pub(crate) fn set_double_click_folding(&mut self, enabled: bool) {
         self.double_click_folding = enabled;
+    }
+
+    // ── Caret blink ──────────────────────────────────────────────────────
+
+    /// Current blink phase for `MultiSectionView` aux-row text inputs —
+    /// threaded into [`crate::primitives::multi_section_view::native_surface_paint::paint_aux`]
+    /// by [`Backend::draw_multi_section_view`]. See
+    /// [`Self::caret_blink`]'s field doc for the wiring.
+    pub(crate) fn caret_visible(&self) -> bool {
+        self.caret_blink.visible()
+    }
+
+    /// Advance the blink clock. Called once per
+    /// [`crate::caret_blink::CaretBlinkState::period`] by the
+    /// `glib::timeout_add_local` `super::run::setup_caret_blink`
+    /// installs; returns `true` when the phase flipped, so the caller
+    /// knows to queue a redraw.
+    pub(crate) fn tick_caret_blink(&mut self, now: std::time::Instant) -> bool {
+        self.caret_blink.tick(now)
+    }
+
+    /// The interval `setup_caret_blink` schedules its recurring
+    /// `glib::timeout_add_local` at — see [`crate::caret_blink::CaretBlinkState::period`].
+    pub(crate) fn caret_blink_period(&self) -> std::time::Duration {
+        self.caret_blink.period()
+    }
+
+    /// Hold the caret solid for a typing pause, matching AppKit's
+    /// "caret stays visible while typing" convention. Called by the
+    /// shared `dispatch_event` funnel on `UiEvent::KeyPressed`/
+    /// `UiEvent::CharTyped` — mirrors `MacBackend`'s key handler in
+    /// `macos::run::dispatch_event`.
+    pub(crate) fn note_caret_activity(&mut self, now: std::time::Instant) {
+        self.caret_blink.on_activity(now);
+    }
+
+    /// Test-only hook to pin the caret phase for deterministic paint
+    /// snapshots — mirrors `MacBackend::set_caret_visible`. Built on
+    /// [`crate::caret_blink::CaretBlinkState`]'s public `tick` rather than
+    /// a new setter on that shared type: a far-future `now` always clears
+    /// any pending typing-pause, so `tick` unconditionally flips
+    /// `visible` when it doesn't already match `visible`.
+    #[cfg(test)]
+    pub(crate) fn set_caret_visible(&mut self, visible: bool) {
+        if self.caret_blink.visible() != visible {
+            let far_future = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+            self.caret_blink.tick(far_future);
+        }
     }
 
     // ── Accelerators ────────────────────────────────────────────────────────
@@ -3795,6 +3855,7 @@ impl Backend for GtkBackend {
         let line_height = self.current_line_height;
         let theme = self.current_theme;
         let nerd_fonts = self.nerd_fonts_enabled;
+        let caret_visible = self.caret_visible();
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
@@ -3818,6 +3879,7 @@ impl Backend for GtkBackend {
             &theme,
             line_height,
             nerd_fonts,
+            caret_visible,
         );
         layout.set_font_description(saved_font.as_ref());
     }
@@ -3834,8 +3896,22 @@ impl Backend for GtkBackend {
         crate::gtk::multi_section_view::metrics_for(self.current_line_height, false)
     }
 
+    /// Mirrors [`Self::form_layout`]'s pattern: measures the chevron
+    /// glyph actually configured on `tree.style` through a real Pango
+    /// layout (via [`Self::chrome_measure_layout`]) instead of
+    /// `gtk_tree_layout`'s `line_height * 0.65` estimate, so a caller
+    /// hit-testing outside a paint frame agrees with what
+    /// `Self::draw_tree` paints.
     fn tree_layout(&self, rect: QRect, tree: &TreeView) -> crate::primitives::tree::TreeViewLayout {
-        crate::gtk::gtk_tree_layout(tree, rect, self.current_line_height)
+        let char_w = self.current_char_width;
+        let pango_layout = self.chrome_measure_layout();
+        crate::gtk::gtk_tree_layout_measured(
+            tree,
+            rect,
+            self.current_line_height,
+            pango_layout.as_ref(),
+            char_w,
+        )
     }
 
     fn tree_vscrollbar(&self, rect: QRect, tree: &TreeView) -> Option<crate::Scrollbar> {
@@ -11140,5 +11216,40 @@ mod tests {
         // (its own doc comment) — this pins that the derived dark/light
         // read agrees with that claim.
         assert!(theme_prefers_dark(crate::Theme::default()));
+    }
+
+    // ── Caret blink ──────────────────────────────────────────────────────
+
+    /// `GtkBackend`'s caret-blink accessors forward to
+    /// [`crate::caret_blink::CaretBlinkState`] faithfully: `tick_caret_blink`
+    /// flips `caret_visible` after `caret_blink_period` elapses,
+    /// `note_caret_activity` holds it solid through a typing pause, and
+    /// `set_caret_visible` lets a test pin the phase directly — mirrors
+    /// `MacBackend`'s equivalent coverage for the same state machine.
+    #[test]
+    fn gtk_backend_caret_blink_methods_drive_the_shared_state_machine() {
+        let mut backend = GtkBackend::new();
+        let period = backend.caret_blink_period();
+        assert!(period > std::time::Duration::ZERO);
+
+        backend.set_caret_visible(true);
+        assert!(backend.caret_visible());
+        backend.set_caret_visible(false);
+        assert!(!backend.caret_visible());
+
+        let start = std::time::Instant::now();
+        let flipped = backend.tick_caret_blink(start + period);
+        assert!(flipped, "a tick a full period later must flip the phase");
+        assert!(backend.caret_visible());
+
+        // A typing-pause bump holds the caret solid: a tick that would
+        // otherwise flip it must now be a no-op.
+        backend.note_caret_activity(start + period);
+        let flipped_during_pause = backend.tick_caret_blink(start + period);
+        assert!(
+            !flipped_during_pause,
+            "a tick during an active typing pause must not flip the phase"
+        );
+        assert!(backend.caret_visible());
     }
 }

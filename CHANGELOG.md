@@ -59,6 +59,43 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-17
+### Fixed
+
+- GTK's `MultiSectionView` aux-row text input caret now blinks, matching
+  macOS's `caret_blink` behaviour. `GtkBackend` owns a
+  `caret_blink::CaretBlinkState`, ticked every `CaretBlinkState::period`
+  by a recurring `glib::timeout_add_local` installed in
+  `gtk::run::setup_caret_blink`, with `KeyPressed`/`CharTyped` events
+  holding the caret solid through a typing pause via
+  `GtkBackend::note_caret_activity`. Previously the caret was always
+  painted solid (`caret_visible: true` was hardcoded).
+- Windows' `MultiSectionView` aux-row text input caret now blinks, matching
+  macOS/GTK's `caret_blink` behaviour. `WinBackend` owns a
+  `caret_blink::CaretBlinkState`, ticked every `CaretBlinkState::period`
+  by a dedicated, always-repeating `SetTimer` (`CARET_BLINK_TIMER_ID`)
+  armed once at startup, with `KeyPressed`/`CharTyped` events holding the
+  caret solid through a typing pause via `WinBackend::note_caret_activity`.
+  Previously the caret was always painted solid whenever focused.
+- GTK `TreeView` chevron hit-region width now comes from a real Pango
+  glyph measurement of `tree.style`'s configured chevron character,
+  instead of the `line_height * 0.65` estimate `gtk_tree_layout` uses.
+  Both `draw_tree`'s paint path and `GtkBackend::tree_layout`'s
+  hit-test path go through the new `gtk_tree_layout_measured` (backed
+  by a fresh Pango layout from `GtkBackend::chrome_measure_layout` when
+  no live layout is already in hand), so chevron hit-testing agrees
+  with what's actually painted — mirroring the macOS backend's
+  `mac_tree_layout`.
+- Windows `TreeView` chevron hit-region width now comes from a real
+  DirectWrite glyph measurement of `tree.style`'s configured chevron
+  character, instead of the `line_height * 0.65` estimate
+  `win_tree_layout` uses. Both `draw_tree`'s paint path and
+  `WinBackend::tree_layout`'s hit-test path go through the new
+  `win_tree_layout_measured` (backed by the live `DWrite` handle), so
+  chevron hit-testing agrees with what's actually painted — mirroring
+  the GTK and macOS backends' `gtk_tree_layout_measured` /
+  `mac_tree_layout`.
+
 ## [0.2.1] - 2026-10-16
 ### Added
 

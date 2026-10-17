@@ -38,12 +38,6 @@
 //!
 //! - **Custom-icon empty bodies** — the `EmptyBody::action` button is
 //!   rendered as plain centred text, no clickable button chrome.
-//! - **Caret blink** — `WinBackend` has no caret-blink timer
-//!   infrastructure yet (unlike `macos::caret_blink`), so the
-//!   `SectionAux::Input`/`Search` caret paints unconditionally whenever
-//!   the input `has_focus`, matching `gtk::multi_section_view`'s
-//!   simpler (non-blinking) convention rather than macOS's blink-aware
-//!   one.
 //! - **Translucent overlays** — the per-section scrollbar paints through
 //!   the shared [`crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar`],
 //!   which fills with real alpha (`Color::with_alpha`) the same way
@@ -107,6 +101,7 @@ pub fn draw_multi_section_view(
     view: &MultiSectionView,
     line_height: f32,
     char_width: f32,
+    caret_visible: bool,
 ) {
     if rect.width <= 0.0 || rect.height <= 0.0 || view.axis == Axis::Horizontal {
         return;
@@ -132,7 +127,7 @@ pub fn draw_multi_section_view(
 
         if !s_layout.collapsed {
             if let (Some(aux), Some(aux_b)) = (&section.aux, s_layout.aux_bounds) {
-                paint_aux(target, dwrite, aux_b, aux, &theme);
+                paint_aux(target, dwrite, aux_b, aux, &theme, caret_visible);
             }
 
             paint_body(
@@ -211,21 +206,22 @@ fn paint_aux(
     bounds: Rect,
     aux: &SectionAux,
     theme: &Theme,
+    caret_visible: bool,
 ) {
     let mut surface = super::surface::D2dSurface {
         target,
         dwrite: Some(dwrite),
     };
-    // `caret_visible: true` — see this module's "Caret blink" scope-
-    // omission note: Win-GUI has no blink timer for MSV aux inputs, so
-    // the caret always paints while focused, matching this rasteriser's
-    // pre-port behaviour exactly.
+    // `caret_visible` comes from `WinBackend::caret_visible` — see
+    // `crate::caret_blink`'s module doc and this crate's
+    // `CARET_BLINK_TIMER_ID` wiring in `super::run` for the blink-timer
+    // mechanism driving it.
     crate::primitives::multi_section_view::native_surface_paint::paint_aux(
         &mut surface,
         bounds,
         aux,
         theme,
-        true,
+        caret_visible,
     );
 }
 
@@ -482,8 +478,8 @@ fn paint_panel_scrollbar(
 mod tests {
     use super::*;
     use crate::primitives::multi_section_view::{
-        InlineInput, MultiSectionViewHit, ScrollMode, ScrollbarHit, Section, SectionHeader,
-        SectionSize,
+        InlineInput, MultiSectionViewHit, ScrollMode, ScrollbarHit, Section, SectionAux,
+        SectionHeader, SectionSize,
     };
     use crate::primitives::tree::{TreeRow, TreeView};
     use crate::types::{Decoration, SelectionMode, StyledText, TreeStyle, WidgetId};
@@ -549,17 +545,86 @@ mod tests {
         }
     }
 
+    /// Paints with the caret phase on, same as [`paint_via_with_caret`]
+    /// called with `true`; most tests here don't exercise
+    /// `SectionAux::Input`/`Search` caret painting.
     fn paint_via(view: &MultiSectionView) -> (HeadlessSurface, MultiSectionViewLayout) {
+        paint_via_with_caret(view, true)
+    }
+
+    /// Same as [`paint_via`], with an explicit caret-blink phase
+    /// threaded into the aux-row text-input caret — mirrors
+    /// `gtk::multi_section_view::tests::paint_then_layout_with_caret`.
+    fn paint_via_with_caret(
+        view: &MultiSectionView,
+        caret_visible: bool,
+    ) -> (HeadlessSurface, MultiSectionViewLayout) {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let rect = Rect::new(0.0, 0.0, W, H);
         let layout = surface
             .paint(|target| {
-                draw_multi_section_view(target, &dwrite, rect, view, LINE_HEIGHT, 8.0);
+                draw_multi_section_view(
+                    target,
+                    &dwrite,
+                    rect,
+                    view,
+                    LINE_HEIGHT,
+                    8.0,
+                    caret_visible,
+                );
             })
             .map(|_| win_msv_layout(view, rect, LINE_HEIGHT))
             .expect("paint msv");
         (surface, layout)
+    }
+
+    /// Single-section view with a focused, empty `Search` aux row — the
+    /// caret sits at `aux.x + 4` (text is empty, `caret: 0`), so a
+    /// single pixel probe distinguishes "caret painted" from "caret
+    /// skipped" without measuring glyph widths. Mirrors
+    /// `gtk::multi_section_view::tests::search_section`.
+    fn search_section() -> MultiSectionView {
+        MultiSectionView {
+            id: WidgetId::new("msv"),
+            sections: vec![Section {
+                id: "search".into(),
+                header: SectionHeader {
+                    icon: None,
+                    title: StyledText::plain("Search"),
+                    badge: None,
+                    actions: vec![],
+                    show_chevron: true,
+                },
+                aux: Some(SectionAux::Search(InlineInput {
+                    id: WidgetId::new("query"),
+                    text: String::new(),
+                    caret: 0,
+                    placeholder: None,
+                    has_focus: true,
+                })),
+                body: SectionBody::Tree(TreeView {
+                    id: WidgetId::new("tree:search"),
+                    rows: vec![],
+                    selection_mode: SelectionMode::Single,
+                    selected_path: None,
+                    scroll_offset: 0,
+                    style: TreeStyle::default(),
+                    has_focus: false,
+                }),
+                size: SectionSize::EqualShare,
+                collapsed: false,
+                min_size: None,
+                max_size: None,
+            }],
+            active_section: Some(0),
+            axis: Axis::Vertical,
+            allow_resize: false,
+            allow_collapse: false,
+            scroll_mode: ScrollMode::PerSection,
+            has_focus: true,
+            panel_scroll: 0.0,
+        }
     }
 
     #[test]
@@ -785,46 +850,7 @@ mod tests {
 
     #[test]
     fn focused_input_paints_caret_bar() {
-        let view = MultiSectionView {
-            id: WidgetId::new("msv"),
-            sections: vec![Section {
-                id: "search".into(),
-                header: SectionHeader {
-                    icon: None,
-                    title: StyledText::plain("Search"),
-                    badge: None,
-                    actions: vec![],
-                    show_chevron: true,
-                },
-                aux: Some(SectionAux::Search(InlineInput {
-                    id: WidgetId::new("query"),
-                    text: String::new(),
-                    caret: 0,
-                    placeholder: None,
-                    has_focus: true,
-                })),
-                body: SectionBody::Tree(TreeView {
-                    id: WidgetId::new("tree:search"),
-                    rows: vec![],
-                    selection_mode: SelectionMode::Single,
-                    selected_path: None,
-                    scroll_offset: 0,
-                    style: TreeStyle::default(),
-                    has_focus: false,
-                }),
-                size: SectionSize::EqualShare,
-                collapsed: false,
-                min_size: None,
-                max_size: None,
-            }],
-            active_section: Some(0),
-            axis: Axis::Vertical,
-            allow_resize: false,
-            allow_collapse: false,
-            scroll_mode: ScrollMode::PerSection,
-            has_focus: true,
-            panel_scroll: 0.0,
-        };
+        let view = search_section();
         let (surface, layout) = paint_via(&view);
         let theme = Theme::default();
         let aux = layout.sections[0].aux_bounds.expect("aux bounds present");
@@ -835,6 +861,76 @@ mod tests {
             (c.r, c.g, c.b),
             (theme.foreground.r, theme.foreground.g, theme.foreground.b),
             "focused empty input should paint the caret bar at x=aux.x+4",
+        );
+    }
+
+    // ── Caret blink threading ────────────────────────────────────────────
+    //
+    // `caret_visible` flows from `WinBackend::caret_visible`
+    // (`crate::caret_blink::CaretBlinkState`) through
+    // `draw_multi_section_view`/`paint_aux` into
+    // `native_surface_paint::paint_aux`. These tests pin the phase at the
+    // paint-function boundary (bypassing the timer entirely) and assert
+    // the single caret pixel flips between `theme.foreground` and
+    // `theme.input_bg` — mirrors `gtk::multi_section_view::tests`'
+    // `gtk_caret_visible_true_paints_foreground_at_caret_position`/
+    // `gtk_caret_visible_false_leaves_caret_column_as_input_bg`/
+    // `gtk_unfocused_input_skips_caret_regardless_of_phase` tests.
+
+    /// Pixel the empty, focused `search_section` input's caret paints
+    /// at: `aux.x + 4` (text is empty so there's no glyph run before
+    /// it), vertically centered in the aux row.
+    fn caret_pixel(layout: &MultiSectionViewLayout) -> (u32, u32) {
+        let aux = layout.sections[0]
+            .aux_bounds
+            .expect("search_section always has an aux row");
+        ((aux.x + 4.0) as u32, (aux.y + aux.height / 2.0) as u32)
+    }
+
+    #[test]
+    fn win_caret_visible_true_paints_foreground_at_caret_position() {
+        let view = search_section();
+        let (surface, layout) = paint_via_with_caret(&view, true);
+        let (x, y) = caret_pixel(&layout);
+        let fg = Theme::default().foreground;
+        let c = surface.pixel_at(x, y);
+        assert_eq!(
+            (c.r, c.g, c.b),
+            (fg.r, fg.g, fg.b),
+            "caret_visible=true must paint the caret at ({x}, {y})",
+        );
+    }
+
+    #[test]
+    fn win_caret_visible_false_leaves_caret_column_as_input_bg() {
+        let view = search_section();
+        let (surface, layout) = paint_via_with_caret(&view, false);
+        let (x, y) = caret_pixel(&layout);
+        let input_bg = Theme::default().input_bg;
+        let c = surface.pixel_at(x, y);
+        assert_eq!(
+            (c.r, c.g, c.b),
+            (input_bg.r, input_bg.g, input_bg.b),
+            "caret_visible=false must skip the caret fill at ({x}, {y})",
+        );
+    }
+
+    #[test]
+    fn win_unfocused_input_skips_caret_regardless_of_phase() {
+        let mut view = search_section();
+        if let Some(SectionAux::Search(input)) = view.sections[0].aux.as_mut() {
+            input.has_focus = false;
+        } else {
+            panic!("search_section must build a Search aux");
+        }
+        let (surface, layout) = paint_via_with_caret(&view, true);
+        let (x, y) = caret_pixel(&layout);
+        let input_bg = Theme::default().input_bg;
+        let c = surface.pixel_at(x, y);
+        assert_eq!(
+            (c.r, c.g, c.b),
+            (input_bg.r, input_bg.g, input_bg.b),
+            "an unfocused input must never paint a caret, even with caret_visible=true",
         );
     }
 
