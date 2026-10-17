@@ -640,8 +640,13 @@ mod tests {
         );
         // Exact geometry: 2px left margin + indent (0 here, `branch`'s
         // `indent` field) * round(line_height * 0.9) + the real glyph
-        // advance + 4px gap.
-        pango_layout.set_text(&tree.style.chevron_expanded);
+        // advance + 4px gap. The default `chevron_expanded` is swapped for
+        // the codicon `CHEVRON_DOWN` glyph before painting/measuring (see
+        // `tree::tree_chevron_glyph`), so that is what must be measured here.
+        pango_layout.set_text(&crate::primitives::tree::tree_chevron_glyph(
+            &tree.style,
+            true,
+        ));
         let glyph_w = pango_layout.pixel_size().0.max(0) as f32;
         let indent_px = (LINE_HEIGHT as f32 * 0.9).round();
         let expected = 2.0 + tree.rows[0].indent as f32 * indent_px + glyph_w + 4.0;

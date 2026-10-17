@@ -58,6 +58,18 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Fixed
+
+- `tree_layout_measured` (the shared pixel-layout math `gtk_tree_layout_measured` /
+  `win_tree_layout_measured` / `mac_tree_layout` all call) now measures the same
+  chevron glyph the GUI paint path actually draws. Both now go through a new
+  shared `primitives::tree::tree_chevron_glyph` helper, which substitutes the
+  codicon `CHEVRON_DOWN`/`CHEVRON_RIGHT` glyph only when `TreeStyle`'s
+  `chevron_expanded`/`chevron_collapsed` still hold their defaults (`▾`/`▸`),
+  honouring an app-supplied override verbatim otherwise. Previously layout
+  measured the configured string literally even when paint substituted the
+  codicon glyph for the default style, so the chevron hit-region's end-x could
+  disagree with where the glyph paint drew.
 
 ## [0.2.2] - 2026-10-17
 ### Fixed

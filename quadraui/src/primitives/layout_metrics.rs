@@ -218,8 +218,14 @@ fn tree_layout_inner(
         //   2px left margin + indent levels + glyph width + 4px gap.
         let chevron_end_x = if row.is_expanded.is_some() && show_chevrons {
             let glyph_w = match (measure, row.is_expanded) {
-                (Some(m), Some(true)) => m.width_of(&tree.style.chevron_expanded) as f64,
-                (Some(m), Some(false)) => m.width_of(&tree.style.chevron_collapsed) as f64,
+                #[cfg(any(
+                    feature = "gtk",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                ))]
+                (Some(m), Some(expanded)) => m.width_of(
+                    &crate::primitives::tree::tree_chevron_glyph(&tree.style, expanded),
+                ) as f64,
                 _ => line_height * 0.65,
             };
             Some((2.0 + row.indent as f64 * indent_px + glyph_w + 4.0) as f32)
@@ -1423,11 +1429,22 @@ mod tests {
         tree
     }
 
+    // Only gtk/win/macos ever call `tree_layout_measured` with `Some(measure)`
+    // (see `gtk_tree_layout_measured`/`win_tree_layout_measured`/
+    // `mac_tree_layout`); gate this test the same way so it only runs where
+    // the codicon substitution it exercises is actually reachable.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn tree_layout_measured_uses_real_chevron_glyph_width_not_the_estimate() {
-        // `tree.style.chevron_expanded` defaults to "▾" (one char); FakeMeasure
-        // reports 6.0px/char, so the measured chevron end-x must differ from
-        // `tree_layout`'s `line_height * 0.65` estimate.
+        // The default `chevron_expanded` ("▾") is swapped for the codicon
+        // `CHEVRON_DOWN` glyph (see `tree::tree_chevron_glyph`) before
+        // measuring — also one char, so FakeMeasure's 6.0px/char still
+        // yields 6.0, but it is the substituted glyph's width being
+        // measured here, not the configured string's.
         let tree = tree_with_expanded_row();
         let area = QRect::new(0.0, 0.0, 100.0, 80.0);
         let estimated = tree_layout(&tree, area, 16.0);
