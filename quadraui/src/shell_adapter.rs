@@ -145,6 +145,13 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
         shell = shell.with_panel_icon(id, icon);
     }
 
+    if let Some(color) = config.active_accent {
+        shell = shell.with_active_accent(color);
+    }
+    if let Some(color) = config.selection_bg {
+        shell = shell.with_selection_bg(color);
+    }
+
     // Fixed-pixel override wins over the line-height multiple set just
     // above — see `AppShell::with_activity_bar_width_px`.
     if let Some(width_px) = config.activity_bar_width_px {
