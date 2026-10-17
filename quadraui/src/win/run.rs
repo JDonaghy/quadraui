@@ -248,12 +248,23 @@ use crate::{ButtonMask, Modifiers, MouseButton, UiEvent};
 /// WinBackend` is not `UnwindSafe` — see [`crate::desktop::report_caught_panic_once`]'s
 /// doc for the once-per-site reporting this uses instead of logging
 /// every single frame's re-panic.
+///
+/// # Caret-blink bump
+///
+/// Any `KeyPressed`/`CharTyped` calls [`WinBackend::note_caret_activity`]
+/// first, holding the `MultiSectionView` aux-row caret solid for the
+/// typing-pause window — mirrors `gtk::run::dispatch_event`'s identical
+/// bump. The recurring blink timer that ticks the caret while idle is
+/// `CARET_BLINK_TIMER_ID`, armed once by `win32::run_inner`.
 #[allow(dead_code)]
 pub(crate) fn dispatch_event<A: AppLogic>(
     event: UiEvent,
     backend: &mut WinBackend,
     app: &mut A,
 ) -> EventOutcome {
+    if matches!(event, UiEvent::KeyPressed { .. } | UiEvent::CharTyped(_)) {
+        backend.note_caret_activity(std::time::Instant::now());
+    }
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         crate::runtime::preprocess_event(event, backend, app)
     })) {
@@ -723,6 +734,7 @@ mod win32 {
     use std::ffi::c_void;
     use std::mem::size_of;
     use std::rc::Rc;
+    use std::time::Instant;
 
     use windows::core::{Error as WinError, PCWSTR};
     use windows::Win32::Foundation::{
@@ -860,6 +872,18 @@ mod win32 {
     /// whether or not anything explicitly asked to be woken" contract
     /// this safety net exists for.
     const IDLE_POLL_TIMER_ID: usize = 4;
+    /// `SetTimer`'s `nIDEvent` for the caret-blink tick — see
+    /// [`crate::caret_blink::CaretBlinkState`]'s doc. Distinct from
+    /// [`SMOKE_TIMER_ID`]/[`RESIZE_TIMER_ID`]/[`IDLE_POLL_TIMER_ID`]/
+    /// [`crate::win::backend::FRAME_TIMER_ID`] — all five can legitimately
+    /// be live on the same `hwnd` at once. Armed once at startup with
+    /// `SetTimer`'s native repeat behaviour, at
+    /// `WinBackend::caret_blink_period()`, and never killed — same
+    /// always-on posture as `IDLE_POLL_TIMER_ID`. Its `WM_TIMER` arm ticks
+    /// `WinBackend::tick_caret_blink` directly rather than going through
+    /// the shared `tick()`/`AppLogic::tick` wake path, so it can never
+    /// double-tick against that path's own frame/idle timers.
+    const CARET_BLINK_TIMER_ID: usize = 5;
 
     /// Everything a live window needs, reachable from `wndproc::<A>` via
     /// `GWLP_USERDATA` (see module docs).
@@ -1482,6 +1506,33 @@ mod win32 {
                     .min(u32::MAX as u128) as u32,
                 None,
             );
+        }
+
+        // Arm the caret-blink timer, unconditionally — see
+        // `CARET_BLINK_TIMER_ID`'s doc above. Same once-armed,
+        // native-repeat, never-killed posture as `IDLE_POLL_TIMER_ID`
+        // immediately above, just at `WinBackend::caret_blink_period()`
+        // instead of `IDLE_POLL_CEILING`.
+        {
+            // SAFETY: `state_ptr` is valid and not concurrently
+            // referenced here — same as the other `state_ptr` borrows in
+            // this function.
+            let ws: &WindowState<A> = unsafe { &*state_ptr };
+            let period_ms = ws
+                .state
+                .borrow()
+                .backend
+                .caret_blink_period()
+                .as_millis()
+                .min(u32::MAX as u128) as u32;
+            // SAFETY: `hwnd` is the live window just shown above;
+            // `SetTimer` with `lpTimerFunc: None` posts `WM_TIMER`
+            // through the normal message queue to `wndproc` rather than
+            // calling a raw function pointer, so there is no
+            // callback-signature precondition here.
+            unsafe {
+                SetTimer(Some(hwnd), CARET_BLINK_TIMER_ID, period_ms, None);
+            }
         }
 
         // Arm the one-shot smoke-check timer, if enabled. See the
@@ -2419,6 +2470,9 @@ mod win32 {
                 // `IDLE_POLL_TIMER_ID` — the coarse idle-poll safety net
                 // armed once by `run_inner`, mirroring the
                 // `IDLE_POLL_CEILING` fallback TUI/GTK/macOS also keep.
+                // `CARET_BLINK_TIMER_ID` — the caret-blink tick armed once
+                // by `run_inner`, ticking `WinBackend::tick_caret_blink`
+                // directly rather than going through `tick`.
                 // Any other timer id is none of this runner's business
                 // and falls through to `DefWindowProcW` untouched.
                 //
@@ -2475,6 +2529,28 @@ mod win32 {
                     // be woken, exactly like TUI/GTK's unconditional idle
                     // poll and macOS's repeating `idlePollTick:` `NSTimer`.
                     tick(ws, hwnd);
+                    LRESULT(0)
+                } else if wparam.0 == CARET_BLINK_TIMER_ID {
+                    // Deliberately never `KillTimer`'d, same posture as
+                    // `IDLE_POLL_TIMER_ID` immediately above. Ticks
+                    // `WinBackend::tick_caret_blink` directly instead of
+                    // going through `tick`/`AppLogic::tick`, so this can
+                    // never double-tick against that path's own
+                    // frame/idle timers; only invalidates the window when
+                    // the blink state actually flipped phase.
+                    let redraw = ws
+                        .state
+                        .borrow_mut()
+                        .backend
+                        .tick_caret_blink(Instant::now());
+                    if redraw {
+                        // SAFETY: `hwnd` is this dispatch's own, still-live
+                        // window; `InvalidateRect` takes only
+                        // handles/rects, no raw pointer arithmetic.
+                        unsafe {
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                        }
+                    }
                     LRESULT(0)
                 } else {
                     // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW`
