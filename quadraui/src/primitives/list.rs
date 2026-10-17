@@ -1322,6 +1322,48 @@ pub enum ListViewEvent {
     /// did not consume it. App may interpret it (e.g. `q` closes the
     /// quickfix panel).
     KeyPressed { key: String, modifiers: Modifiers },
+    /// The full multi-selection changed (`SelectionMode::Multi`): Ctrl/Cmd
+    /// click toggled a row, Shift click/extend selected a range, or a
+    /// keyboard extension grew the set. `indices` is the complete,
+    /// sorted, de-duplicated selection, not just the row that changed —
+    /// see [`crate::types::apply_selection_gesture`].
+    SelectionSet { indices: Vec<usize> },
+}
+
+#[cfg(test)]
+mod multi_select_tests {
+    use super::ListViewEvent;
+    use crate::types::{apply_selection_gesture, Modifiers, SelectionGesture};
+
+    #[test]
+    fn ctrl_click_toggle_emits_selection_set_with_full_set() {
+        let current = [0usize, 2];
+        let gesture = SelectionGesture::from_modifiers(Modifiers {
+            ctrl: true,
+            ..Default::default()
+        });
+        let indices = apply_selection_gesture(&current, 2, 4, gesture);
+        let event = ListViewEvent::SelectionSet {
+            indices: indices.clone(),
+        };
+        assert_eq!(indices, vec![0, 2, 4]);
+        assert_eq!(event, ListViewEvent::SelectionSet { indices });
+    }
+
+    #[test]
+    fn shift_extend_emits_selection_set_covering_range() {
+        let gesture = SelectionGesture::from_modifiers(Modifiers {
+            shift: true,
+            ..Default::default()
+        });
+        let indices = apply_selection_gesture(&[], 1, 3, gesture);
+        assert_eq!(
+            ListViewEvent::SelectionSet { indices },
+            ListViewEvent::SelectionSet {
+                indices: vec![1, 2, 3]
+            }
+        );
+    }
 }
 
 #[cfg(test)]

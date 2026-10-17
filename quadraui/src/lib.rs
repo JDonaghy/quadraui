@@ -16,7 +16,7 @@
 //!
 //! ## What's in the box
 //!
-//! 48 primitives (one module each under `src/primitives/`), each
+//! 49 primitives (one module each under `src/primitives/`), each
 //! declarative + serde-friendly so apps and Lua plugins can describe UI
 //! as data. A representative sample:
 //!
@@ -103,7 +103,7 @@
 //! `0.2.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
-//! `quadraui/docs/decisions/DECISIONS.md`. 48 primitives shipped. The TUI
+//! `quadraui/docs/decisions/DECISIONS.md`. 49 primitives shipped. The TUI
 //! and GTK backends have full feature parity and are battle-tested by
 //! vimcode (5000+ tests). The macOS backend implements the whole
 //! `Backend` trait and is built/tested for real on `macos-latest` CI. The
@@ -433,6 +433,10 @@ pub use primitives::context_menu::{
 pub use primitives::data_table::{
     Column, ColumnAlign, ColumnMeasure, ColumnWidth, DataRow, DataTable, DataTableEvent,
     DataTableHit, DataTableLayout, ResolvedColumn, SortDirection,
+};
+pub use primitives::date_picker::{
+    CalendarDate, DateFormat, DateLocale, DatePicker, DatePickerEvent, DatePickerHit,
+    DatePickerLayout, DayCell, TimeOfDay, Weekday,
 };
 pub use primitives::dialog::{
     native_dialog_options, Dialog, DialogButton, DialogHit, DialogInput, DialogLayout,

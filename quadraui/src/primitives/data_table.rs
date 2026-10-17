@@ -225,6 +225,43 @@ pub enum DataTableEvent {
     /// the left of the divider. `width` is the new width in surface
     /// units. App should update `column_overrides[col]`.
     ColumnResized { col: usize, width: f32 },
+    /// The full multi-selection changed (`SelectionMode::Multi`): Ctrl/Cmd
+    /// click toggled a row, Shift click/extend selected a range, or a
+    /// keyboard extension grew the set. `indices` is the complete,
+    /// sorted, de-duplicated selection, not just the row that changed —
+    /// see [`crate::types::apply_selection_gesture`].
+    SelectionSet { indices: Vec<usize> },
+}
+
+#[cfg(test)]
+mod multi_select_tests {
+    use super::DataTableEvent;
+    use crate::types::{apply_selection_gesture, Modifiers, SelectionGesture};
+
+    #[test]
+    fn ctrl_click_toggle_emits_selection_set_with_full_set() {
+        let gesture = SelectionGesture::from_modifiers(Modifiers {
+            ctrl: true,
+            ..Default::default()
+        });
+        let indices = apply_selection_gesture(&[0, 2], 2, 4, gesture);
+        assert_eq!(
+            DataTableEvent::SelectionSet { indices },
+            DataTableEvent::SelectionSet {
+                indices: vec![0, 2, 4]
+            }
+        );
+    }
+
+    #[test]
+    fn shift_extend_emits_selection_set_covering_range() {
+        let gesture = SelectionGesture::from_modifiers(Modifiers {
+            shift: true,
+            ..Default::default()
+        });
+        let indices = apply_selection_gesture(&[], 1, 3, gesture);
+        assert_eq!(indices, vec![1, 2, 3]);
+    }
 }
 
 // ── Layout ──────────────────────────────────────────────────────────────
