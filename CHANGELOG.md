@@ -59,6 +59,17 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+### Added
+
+- `AppShell::with_active_accent`/`set_active_accent` and
+  `AppShell::with_selection_bg`/`set_selection_bg` — builder and runtime
+  setters that feed `AppShell::build_activity_bar`'s previously-hardcoded
+  `ActivityBar::active_accent`/`selection_bg` fields. A host app sources
+  colours from its own `Theme` and passes them through these before
+  `AppShell::render`, so the activity bar paints an active-panel accent
+  line and a keyboard-selection highlight. Unset (the default) still
+  paints neither, matching the pre-existing behaviour.
+
 ### Fixed
 
 - `Minimap::layout_with_sizing` no longer paints an oversized
