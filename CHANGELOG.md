@@ -59,6 +59,29 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-16
+### Added
+
+- `AppShell::with_active_accent`/`set_active_accent` and
+  `AppShell::with_selection_bg`/`set_selection_bg` — builder and runtime
+  setters that feed `AppShell::build_activity_bar`'s previously-hardcoded
+  `ActivityBar::active_accent`/`selection_bg` fields. A host app sources
+  colours from its own `Theme` and passes them through these before
+  `AppShell::render`, so the activity bar paints an active-panel accent
+  line and a keyboard-selection highlight. Unset (the default) still
+  paints neither, matching the pre-existing behaviour.
+
+### Fixed
+
+- `Minimap::layout_with_sizing` no longer paints an oversized
+  `viewport_highlight` band across the whole strip when the editor's
+  viewport already spans every row of the file (an empty or very short
+  buffer that fits entirely on-screen). The highlight is now zero-height
+  in that case, matching the "nothing to scroll, nothing to indicate"
+  convention `Minimap::scroll_thumb` already follows. Affects every
+  backend that renders the minimap (GTK, TUI, macOS, Win-GUI), since they
+  all consume the same shared layout.
+
 ## [0.2.0] - 2026-10-16
 
 ### Added

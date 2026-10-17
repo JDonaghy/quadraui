@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit, ActivityItem};
 use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
-use crate::types::{Icon, WidgetId};
+use crate::types::{Color, Icon, WidgetId};
 use crate::{Backend, ButtonMask, InteractionState, MouseButton, Point, Rect, UiEvent};
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -276,6 +276,19 @@ pub struct AppShell {
     /// single [`PanelDefinition::icon`] string. Covers both
     /// top panels and bottom items.
     icon_overrides: HashMap<WidgetId, Icon>,
+    /// Colour [`Self::build_activity_bar`] sets on the emitted
+    /// [`ActivityBar::active_accent`] — the active-panel accent line/strip
+    /// each backend's `draw_activity_bar_with_style` paints when `Some`.
+    /// `None` (the default) paints no accent, matching the pre-existing
+    /// behaviour for a host that never calls
+    /// [`Self::set_active_accent`]/[`Self::with_active_accent`].
+    active_accent: Option<Color>,
+    /// Colour [`Self::build_activity_bar`] sets on the emitted
+    /// [`ActivityBar::selection_bg`] — the keyboard-selection highlight
+    /// each backend paints on the [`Self::activity_cursor`] row when the
+    /// bar [`Self::activity_keyboard_focused`]. `None` (the default) falls
+    /// back to each backend's own reversed/brightened default fill.
+    selection_bg: Option<Color>,
 }
 
 impl AppShell {
@@ -315,6 +328,8 @@ impl AppShell {
             activity_keyboard_focused: false,
             activity_cursor: 0,
             icon_overrides: HashMap::new(),
+            active_accent: None,
+            selection_bg: None,
         }
     }
 
@@ -396,6 +411,29 @@ impl AppShell {
     /// width in place — this call is additive, not a replacement.
     pub fn with_activity_bar_width_px(mut self, width_px: f32) -> Self {
         self.activity_bar_width_px = Some(width_px);
+        self
+    }
+
+    /// Colour painted on the active top panel's row in the built
+    /// [`ActivityBar`] (its `active_accent` field) — e.g. a theme's accent
+    /// colour, so the activity bar shows an active-panel indicator line.
+    /// `AppShell` has no `Theme` in scope itself; a host app sources the
+    /// colour from its own theme and passes it here before the first
+    /// [`Self::render`]. Unset (the default) paints no accent, matching the
+    /// pre-existing behaviour.
+    #[must_use]
+    pub fn with_active_accent(mut self, color: Color) -> Self {
+        self.active_accent = Some(color);
+        self
+    }
+
+    /// Colour painted behind the keyboard-selected row in the built
+    /// [`ActivityBar`] (its `selection_bg` field) when
+    /// [`Self::activity_keyboard_focused`]. Unset (the default) leaves each
+    /// backend's own reversed/brightened fallback fill in charge.
+    #[must_use]
+    pub fn with_selection_bg(mut self, color: Color) -> Self {
+        self.selection_bg = Some(color);
         self
     }
 
@@ -566,6 +604,23 @@ impl AppShell {
     /// `set_activity_keyboard_focused(true)` then `activity_set_cursor(0)`.
     pub fn set_activity_keyboard_focused(&mut self, focused: bool) {
         self.activity_keyboard_focused = focused;
+    }
+
+    /// Set (or clear, with `None`) the active-panel accent colour
+    /// [`Self::build_activity_bar`] passes through as
+    /// [`ActivityBar::active_accent`]. Runtime counterpart to
+    /// [`Self::with_active_accent`] — call this after a theme switch
+    /// instead of rebuilding the `AppShell`.
+    pub fn set_active_accent(&mut self, color: Option<Color>) {
+        self.active_accent = color;
+    }
+
+    /// Set (or clear, with `None`) the keyboard-selection highlight colour
+    /// [`Self::build_activity_bar`] passes through as
+    /// [`ActivityBar::selection_bg`]. Runtime counterpart to
+    /// [`Self::with_selection_bg`].
+    pub fn set_selection_bg(&mut self, color: Option<Color>) {
+        self.selection_bg = color;
     }
 
     /// Move the keyboard cursor to the next item in the logical sequence
@@ -917,6 +972,11 @@ impl AppShell {
     /// - The item at [`Self::activity_cursor`] (in the top-then-bottom
     ///   logical sequence) has `is_keyboard_selected = true`, painting the
     ///   selection ring on that icon.
+    ///
+    /// `ActivityBar::active_accent`/`selection_bg` carry whatever colours
+    /// were last set via [`Self::with_active_accent`]/[`Self::set_active_accent`]
+    /// and [`Self::with_selection_bg`]/[`Self::set_selection_bg`] — `None`
+    /// (no accent/highlight painted) until a host app opts in.
     pub fn build_activity_bar(&self) -> ActivityBar {
         let np = self.panels.len();
         let focused = self.activity_keyboard_focused;
@@ -961,12 +1021,12 @@ impl AppShell {
             id: WidgetId::new("app-shell:activity-bar"),
             top_items,
             bottom_items,
-            // `AppShell` has no `Theme` in scope here to source a colour
-            // from, so the accent line is left unset. The built-in shell
-            // chrome paints no active-item indicator for the activity bar
-            // itself (row fill is painted via `Backend::draw_activity_bar_with_style`).
-            active_accent: None,
-            selection_bg: None,
+            // Colours a host app supplies via `with_active_accent`/
+            // `set_active_accent` and `with_selection_bg`/`set_selection_bg`
+            // — `None` unless the host opts in, matching the pre-existing
+            // behaviour.
+            active_accent: self.active_accent,
+            selection_bg: self.selection_bg,
             is_keyboard_focused: focused,
         }
     }
@@ -2092,6 +2152,46 @@ mod tests {
         assert!(bar.top_items[0].is_active);
         assert!(!bar.top_items[1].is_active);
         assert!(!bar.top_items[2].is_active);
+    }
+
+    #[test]
+    fn build_activity_bar_accent_and_selection_bg_default_to_none() {
+        let s = shell();
+        let bar = s.build_activity_bar();
+        assert_eq!(bar.active_accent, None);
+        assert_eq!(bar.selection_bg, None);
+    }
+
+    #[test]
+    fn build_activity_bar_carries_colors_set_via_builder() {
+        let accent = Color::rgb(80, 140, 255);
+        let selection = Color::rgb(60, 60, 60);
+        let s = shell()
+            .with_active_accent(accent)
+            .with_selection_bg(selection);
+        let bar = s.build_activity_bar();
+        assert_eq!(bar.active_accent, Some(accent));
+        assert_eq!(bar.selection_bg, Some(selection));
+    }
+
+    #[test]
+    fn set_active_accent_and_selection_bg_update_at_runtime() {
+        let accent = Color::rgb(10, 20, 30);
+        let selection = Color::rgb(40, 50, 60);
+        let mut s = shell();
+        assert_eq!(s.build_activity_bar().active_accent, None);
+
+        s.set_active_accent(Some(accent));
+        s.set_selection_bg(Some(selection));
+        let bar = s.build_activity_bar();
+        assert_eq!(bar.active_accent, Some(accent));
+        assert_eq!(bar.selection_bg, Some(selection));
+
+        s.set_active_accent(None);
+        s.set_selection_bg(None);
+        let bar = s.build_activity_bar();
+        assert_eq!(bar.active_accent, None);
+        assert_eq!(bar.selection_bg, None);
     }
 
     #[test]
