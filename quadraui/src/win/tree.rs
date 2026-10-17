@@ -606,8 +606,10 @@ mod tests {
     }
 
     /// [`win_tree_layout_measured`] must size the chevron end-x from the
-    /// real DirectWrite glyph width of `tree.style.chevron_expanded`,
-    /// not [`win_tree_layout`]'s `line_height * 0.65` estimate — and the
+    /// real DirectWrite glyph width of the glyph paint actually draws
+    /// (the codicon substitute for the default style, an app override
+    /// verbatim otherwise — see `tree::tree_chevron_glyph`), not
+    /// [`win_tree_layout`]'s `line_height * 0.65` estimate — and the
     /// resulting boundary must still resolve to `TreeViewHit::Chevron`.
     #[test]
     fn win_tree_layout_measured_uses_real_chevron_glyph_width_not_the_estimate() {
@@ -628,7 +630,13 @@ mod tests {
              ({measured_x}), not the line_height * 0.65 estimate ({est_x})",
         );
 
-        let glyph_w = dwrite.width_of(&tree.style.chevron_expanded);
+        // The default `chevron_expanded` is swapped for the codicon
+        // `CHEVRON_DOWN` glyph before painting/measuring (see
+        // `tree::tree_chevron_glyph`), so that is what must be measured here.
+        let glyph_w = dwrite.width_of(&crate::primitives::tree::tree_chevron_glyph(
+            &tree.style,
+            true,
+        ));
         let indent_px = (LINE_HEIGHT * 0.9).round();
         let expected = 2.0 + tree.rows[0].indent as f32 * indent_px + glyph_w + 4.0;
         assert!(

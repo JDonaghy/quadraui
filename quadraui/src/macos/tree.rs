@@ -344,9 +344,12 @@ mod tests {
         );
         // Exact geometry: 2px left margin + one indent level
         // (`round(line_height * 0.9)`) + the real glyph advance + 4px gap.
+        // The default `chevron_expanded` is swapped for the codicon
+        // `CHEVRON_DOWN` glyph before painting/measuring (see
+        // `tree::tree_chevron_glyph`), so that is what must be measured here.
         let glyph_w = crate::primitives::layout_metrics::TextMeasure::width_of(
             &font(),
-            &tree.style.chevron_expanded,
+            &crate::primitives::tree::tree_chevron_glyph(&tree.style, true),
         );
         let expected = 2.0 + (16.0f32 * 0.9).round() + glyph_w + 4.0;
         assert!(

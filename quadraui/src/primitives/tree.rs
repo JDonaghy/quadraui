@@ -216,6 +216,45 @@ pub struct TreeViewLayout {
     pub resolved_scroll_offset: usize,
 }
 
+/// The chevron glyph a pixel backend's shared paint path
+/// (`native_surface_paint::paint`, below) actually draws for a row at
+/// the given expand state, given `style`.
+///
+/// An app-supplied `chevron_expanded`/`chevron_collapsed` override is
+/// honoured verbatim; only the *default* `▾`/`▸` strings are swapped
+/// for the sharper codicon glyph (`crate::codicon::CHEVRON_DOWN` /
+/// `CHEVRON_RIGHT`) — a codicon-patched font can't be assumed on a
+/// terminal cell grid, so TUI's own paint path
+/// (`tui::tree::draw_tree`) always reads the two fields directly and
+/// never calls this.
+///
+/// [`crate::primitives::layout_metrics::tree_layout_measured`] calls
+/// this too, so the glyph it measures is the one pixel paint actually
+/// substitutes — keeping layout and paint in lockstep for the default
+/// style, not just for app overrides.
+///
+/// Gated to the same feature set as `crate::codicon`: GTK/win/macos are
+/// the only backends that ever substitute a codicon in the first place.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn tree_chevron_glyph(style: &TreeStyle, expanded: bool) -> std::borrow::Cow<'_, str> {
+    let default_style = TreeStyle::default();
+    if expanded {
+        if style.chevron_expanded == default_style.chevron_expanded {
+            std::borrow::Cow::Owned(crate::codicon::CHEVRON_DOWN.to_string())
+        } else {
+            std::borrow::Cow::Borrowed(style.chevron_expanded.as_str())
+        }
+    } else if style.chevron_collapsed == default_style.chevron_collapsed {
+        std::borrow::Cow::Owned(crate::codicon::CHEVRON_RIGHT.to_string())
+    } else {
+        std::borrow::Cow::Borrowed(style.chevron_collapsed.as_str())
+    }
+}
+
 impl TreeViewLayout {
     /// Test which row (if any) contains point `(x, y)`. Returns
     /// `TreeViewHit::Empty` when the point is below the last visible row.
@@ -492,26 +531,7 @@ pub(crate) mod native_surface_paint {
 
             if let Some(expanded) = row.is_expanded {
                 if tree.style.show_chevrons {
-                    // On GUI, an app-supplied `chevron_expanded`/
-                    // `chevron_collapsed` override is still honoured —
-                    // only the *default* `▾`/`▸` strings are swapped
-                    // for the sharper codicon glyph. TUI's own paint
-                    // path (`tui::tree::draw_tree`) always reads the
-                    // two fields directly and never substitutes a
-                    // codicon, since a terminal cell can't assume a
-                    // codicon-patched font is installed.
-                    let default_style = crate::types::TreeStyle::default();
-                    let chevron = if expanded {
-                        if tree.style.chevron_expanded == default_style.chevron_expanded {
-                            crate::codicon::CHEVRON_DOWN.to_string()
-                        } else {
-                            tree.style.chevron_expanded.clone()
-                        }
-                    } else if tree.style.chevron_collapsed == default_style.chevron_collapsed {
-                        crate::codicon::CHEVRON_RIGHT.to_string()
-                    } else {
-                        tree.style.chevron_collapsed.clone()
-                    };
+                    let chevron = super::tree_chevron_glyph(&tree.style, expanded);
                     let (cw, ch) = surface.surface_measure_text(&chevron);
                     let cy = row_y + (row_h - ch) / 2.0;
                     surface.surface_draw_icon_glyph(
