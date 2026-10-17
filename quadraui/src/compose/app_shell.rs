@@ -270,6 +270,13 @@ pub struct AppShell {
     /// (indices `panels.len()..panels.len()+bottom_items.len()`).
     /// Saturates at the ends; does not wrap.
     activity_cursor: usize,
+    /// Show the keyboard cursor highlight without enabling the key-event
+    /// redirect that [`Self::activity_keyboard_focused`] triggers. A
+    /// `ShellApp` consumer that handles toolbar keys itself (via its own
+    /// `route_sidebar_chord_key` / `handle_activity_bar_key` in
+    /// `ShellApp::handle`) uses this to paint the cursor without having
+    /// the TUI backend redirect keys to `UiEvent::ActivityBar(…)`.
+    activity_cursor_visible: bool,
     /// Per-panel Nerd-Font glyph + ASCII fallback pairs, keyed by
     /// [`WidgetId`], registered via [`Self::with_panel_icon`]. Consulted by
     /// [`Self::build_activity_bar`] in preference to widening the panel's
@@ -326,6 +333,7 @@ impl AppShell {
             cached_activity_hits: RefCell::new(Vec::new()),
             cached_activity_bar_bounds: RefCell::new(None),
             activity_keyboard_focused: false,
+            activity_cursor_visible: false,
             activity_cursor: 0,
             icon_overrides: HashMap::new(),
             active_accent: None,
@@ -604,6 +612,20 @@ impl AppShell {
     /// `set_activity_keyboard_focused(true)` then `activity_set_cursor(0)`.
     pub fn set_activity_keyboard_focused(&mut self, focused: bool) {
         self.activity_keyboard_focused = focused;
+    }
+
+    /// Show (or hide) the keyboard cursor highlight on the activity bar
+    /// **without** enabling the key-event redirect that
+    /// [`Self::set_activity_keyboard_focused`] triggers.
+    ///
+    /// A `ShellApp` consumer that routes toolbar keys itself — through its
+    /// own chord / key-action handlers inside `ShellApp::handle`, receiving
+    /// plain `UiEvent::KeyPressed` events — calls this instead of
+    /// `set_activity_keyboard_focused(true)` so the cursor paints but the
+    /// TUI / GTK backends leave key events as `KeyPressed` rather than
+    /// rewriting them to `UiEvent::ActivityBar(…)`.
+    pub fn set_activity_cursor_visible(&mut self, visible: bool) {
+        self.activity_cursor_visible = visible;
     }
 
     /// Set (or clear, with `None`) the active-panel accent colour
@@ -980,6 +1002,7 @@ impl AppShell {
     pub fn build_activity_bar(&self) -> ActivityBar {
         let np = self.panels.len();
         let focused = self.activity_keyboard_focused;
+        let show_cursor = focused || self.activity_cursor_visible;
 
         let top_items: Vec<ActivityItem> = self
             .panels
@@ -997,7 +1020,7 @@ impl AppShell {
                 is_active: self.sidebar_bottom_owner.is_none()
                     && self.active_panel == Some(i)
                     && self.sidebar_visible,
-                is_keyboard_selected: focused && self.activity_cursor == i,
+                is_keyboard_selected: show_cursor && self.activity_cursor == i,
             })
             .collect();
 
@@ -1013,7 +1036,7 @@ impl AppShell {
                 // active accent. The `sidebar_owner_panel()` call titles the
                 // header when a bottom item owns it.
                 is_active: false,
-                is_keyboard_selected: focused && self.activity_cursor == np + j,
+                is_keyboard_selected: show_cursor && self.activity_cursor == np + j,
             })
             .collect();
 
