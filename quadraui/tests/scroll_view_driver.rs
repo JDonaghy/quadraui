@@ -48,6 +48,7 @@ impl ScrollViewApp {
                 self.view.scroll_offset = offset;
                 Reaction::Redraw
             }
+            Some(_) => Reaction::Redraw,
             None => Reaction::Continue,
         }
     }

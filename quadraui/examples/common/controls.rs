@@ -113,7 +113,9 @@ impl ControlsApp {
             }
             Focus::Switch => {
                 if let Some(event) = self.switch().click() {
-                    let quadraui::SwitchEvent::Toggled { value, .. } = event;
+                    let quadraui::SwitchEvent::Toggled { value, .. } = event else {
+                        return;
+                    };
                     self.wrap_enabled = value;
                     self.last_message = format!("Switch -> {}", value);
                 }

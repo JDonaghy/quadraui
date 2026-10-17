@@ -97,6 +97,7 @@ pub struct MenuDef {
 
 /// What happened after [`MenuSystem::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum MenuEvent {
     /// An action item was activated (clicked or Enter'd).
     Activated(WidgetId),

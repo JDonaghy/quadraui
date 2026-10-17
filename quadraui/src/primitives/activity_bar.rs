@@ -428,6 +428,7 @@ impl ActivityBar {
 /// vimcode (click path dispatches by row arithmetic + engine-side
 /// `SidebarPanel` enum), but defined for plugin invariants §10.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ActivityBarEvent {
     /// An item was clicked (or activated via Enter while keyboard-focused).
     ItemClicked { id: WidgetId },

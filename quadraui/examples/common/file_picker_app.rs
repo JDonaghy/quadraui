@@ -151,6 +151,7 @@ impl AppLogic for FilePickerApp {
                 }
                 FilePickerEvent::Consumed => return Reaction::Redraw,
                 FilePickerEvent::Ignored => {}
+                _ => {}
             }
         } else if let UiEvent::KeyPressed { ref key, .. } = event {
             match key {

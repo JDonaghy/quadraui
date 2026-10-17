@@ -130,6 +130,7 @@ impl Default for BottomPanelConfig {
 ///
 /// The shell runner delivers these to [`crate::ShellApp::on_bottom_panel_event`].
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum BottomPanelEvent {
     /// User switched to a different tab. Payload is the new active tab `id`.
     ///

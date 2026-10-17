@@ -94,6 +94,7 @@ impl SidebarSectionDef {
 
 /// What happened after [`SidebarSystem::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum SidebarEvent {
     /// Header clicked — section activated.
     HeaderActivated { section: usize },

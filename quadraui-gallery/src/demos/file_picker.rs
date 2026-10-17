@@ -181,6 +181,7 @@ impl Demo for FilePickerDemo {
                 }
                 FilePickerEvent::Consumed => Reaction::Redraw,
                 FilePickerEvent::Ignored => Reaction::Continue,
+                _ => Reaction::Continue,
             },
             1 => match self.save_picker.handle(event, visible_rows) {
                 FilePickerEvent::Confirmed { path } => {
@@ -193,6 +194,7 @@ impl Demo for FilePickerDemo {
                 }
                 FilePickerEvent::Consumed => Reaction::Redraw,
                 FilePickerEvent::Ignored => Reaction::Continue,
+                _ => Reaction::Continue,
             },
             _ => match self.folder_picker.handle(event, visible_rows) {
                 FolderPickerEvent::Confirmed { path } => {
@@ -205,6 +207,7 @@ impl Demo for FilePickerDemo {
                 }
                 FolderPickerEvent::Consumed => Reaction::Redraw,
                 FolderPickerEvent::Ignored => Reaction::Continue,
+                _ => Reaction::Continue,
             },
         }
     }

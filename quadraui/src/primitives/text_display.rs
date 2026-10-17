@@ -596,6 +596,7 @@ impl TextDisplay {
 
 /// Events a `TextDisplay` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum TextDisplayEvent {
     /// User scrolled the view (mouse wheel, PageUp/Down, etc.).
     /// `new_offset` is the post-scroll `scroll_offset`. Apps update

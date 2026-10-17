@@ -88,6 +88,7 @@ pub const DEFAULT_IGNORE_DIRS: &[&str] = &["target", "node_modules", "__pycache_
 
 /// What happened after [`FolderPickerController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum FolderPickerEvent {
     /// The user confirmed a selection. The resolved absolute path is returned.
     ///

@@ -110,6 +110,7 @@ impl NumberComboApp {
                 self.number.draft = None;
                 self.events.push("NumberCancelled".to_string());
             }
+            _ => {}
         }
     }
 
@@ -137,6 +138,7 @@ impl NumberComboApp {
                 self.combo.open = false;
                 self.combo.highlighted = None;
             }
+            _ => {}
         }
     }
 }

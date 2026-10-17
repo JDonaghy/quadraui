@@ -507,6 +507,7 @@ pub enum TerminalSplitHit {
 /// `terminal_*` methods), but defined for plugin invariants §10 — a
 /// plugin-declared terminal would route events through this enum.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum TerminalEvent {
     /// A key was pressed with the terminal focused. Routed to the
     /// underlying PTY by the app.

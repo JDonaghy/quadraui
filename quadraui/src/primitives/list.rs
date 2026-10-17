@@ -1313,6 +1313,7 @@ pub(crate) mod native_surface_paint {
 
 /// Events a `ListView` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ListViewEvent {
     /// Keyboard / mouse moved selection to a different row.
     SelectionChanged { idx: usize },

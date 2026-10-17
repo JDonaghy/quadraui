@@ -221,6 +221,7 @@ impl AppLogic for FormScrollApp {
             }
             FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => Reaction::Redraw,
             FormControllerEvent::Ignored => Reaction::Continue,
+            _ => Reaction::Continue,
         }
     }
 }

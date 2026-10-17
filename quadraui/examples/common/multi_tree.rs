@@ -225,6 +225,7 @@ impl AppLogic for DebugSidebar {
                 UiEvent::WindowResized { .. } => Reaction::Redraw,
                 _ => Reaction::Continue,
             },
+            _ => Reaction::Redraw,
         }
     }
 }

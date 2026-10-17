@@ -156,6 +156,7 @@ impl PipelineDemo {
             PipelineEvent::KeyPressed { key, .. } => {
                 self.last_message = format!("Key: {key}");
             }
+            _ => {}
         }
     }
 }

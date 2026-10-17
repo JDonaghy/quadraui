@@ -109,6 +109,7 @@ pub struct ScrollView {
 /// take `&self` and return this instead of mutating — the host applies
 /// `offset` back onto [`ScrollView::scroll_offset`] itself.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ScrollViewEvent {
     /// The resolved new offset, already clamped to `[0, max_offset()]`.
     Scrolled { offset: f32 },

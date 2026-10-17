@@ -109,6 +109,7 @@ impl AppLogic for MessageDialogApp {
                 }
                 MessageDialogEvent::Consumed => return Reaction::Redraw,
                 MessageDialogEvent::Ignored => {}
+                _ => {}
             }
         } else if let UiEvent::KeyPressed { ref key, .. } = event {
             match key {

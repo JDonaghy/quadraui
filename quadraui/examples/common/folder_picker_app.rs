@@ -174,6 +174,7 @@ impl AppLogic for FolderPickerApp {
                 }
                 FolderPickerEvent::Consumed => return Reaction::Redraw,
                 FolderPickerEvent::Ignored => {}
+                _ => {}
             }
         } else {
             // Picker is closed — handle reopen / quit.

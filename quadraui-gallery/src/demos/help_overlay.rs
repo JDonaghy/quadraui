@@ -176,6 +176,7 @@ impl Demo for HelpOverlayDemo {
                 Reaction::Redraw
             }
             HelpOverlayEvent::Ignored => Reaction::Continue,
+            _ => Reaction::Continue,
         }
     }
 

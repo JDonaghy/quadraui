@@ -85,6 +85,7 @@ pub enum FilePickerMode {
 
 /// What happened after [`FilePickerController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum FilePickerEvent {
     /// The user confirmed a file path — an existing file in
     /// [`FilePickerMode::Open`], or `root.join(query)` in

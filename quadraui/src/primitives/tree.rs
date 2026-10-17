@@ -1186,6 +1186,7 @@ pub(crate) mod native_surface_paint {
 
 /// Events a `TreeView` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum TreeEvent {
     /// Single-click (or Enter on the keyboard) on a row.
     RowClicked {

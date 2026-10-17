@@ -572,5 +572,6 @@ fn format_event(ev: &TabGroupEvent) -> String {
         } => format!(
             "tab {tab_id} split from pane {from_pane_idx} to new pane {new_pane_idx} ({edge:?})"
         ),
+        _ => format!("{ev:?}"),
     }
 }

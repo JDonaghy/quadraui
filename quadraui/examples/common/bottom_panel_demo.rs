@@ -295,6 +295,7 @@ impl ShellApp for BottomPanelDemo {
             }
             BottomPanelEvent::MaximiseToggled => "Maximise toggled".into(),
             BottomPanelEvent::Resized(h) => format!("Panel resized: {h:.0}"),
+            _ => format!("{event:?}"),
         };
     }
 }

@@ -71,6 +71,7 @@ use crate::{
 
 /// What happened after [`FormController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum FormControllerEvent {
     /// A field-level event occurred (toggle changed, text input, etc.).
     FormAction(FormEvent),

@@ -210,6 +210,7 @@ impl Demo for BottomPanelDemo {
                     BottomPanelEvent::TabClosed(id) => format!("Tab closed: {id}"),
                     BottomPanelEvent::MaximiseToggled => "Maximise toggled".into(),
                     BottomPanelEvent::Resized(h) => format!("Resized: {h:.0}"),
+                    _ => format!("{ev:?}"),
                 };
                 return Reaction::Redraw;
             }
