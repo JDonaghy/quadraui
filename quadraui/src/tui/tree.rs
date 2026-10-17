@@ -75,7 +75,7 @@ pub fn draw_tree(
         }
 
         let is_header = matches!(row.decoration, Decoration::Header);
-        let path_selected = tree.selected_path.as_ref().is_some_and(|p| p == &row.path);
+        let path_selected = tree.is_path_selected(&row.path);
         let is_selected = tree.has_focus && path_selected;
         let is_inactive_selected = !tree.has_focus && path_selected;
 
