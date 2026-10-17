@@ -325,16 +325,18 @@ impl FindReplacePanel {
     /// paints cells, so it needs that), but the comparison below is done
     /// in px: every region's cell rect is projected to a px rect — `rx0
     /// = ox + col * char_width`, `rx1 = rx0 + width * char_width`, and
-    /// likewise for `y` — mirroring `native_surface_paint::region_rect`'s
-    /// own cell-to-px math exactly, and then `(x, y)` is tested against
-    /// that px rect directly. This is equivalent to the previous
-    /// floor-the-click-to-a-cell-then-compare-integers approach for every
-    /// exact `char_width`/`line_height` pair a backend actually passes
-    /// (`floor((x - ox) / cw) == col` for some `col` in `[region.col,
-    /// region.col + region.width)` iff `x` is in `[rx0, rx1)`), so no
-    /// caller-visible behaviour changes — TUI in particular always calls
-    /// this with `char_width = line_height = 1.0`, where px and cell
-    /// space are numerically identical.
+    /// likewise for `y` — using the same cell-to-px projection as
+    /// `native_surface_paint::region_rect`, and then `(x, y)` is tested
+    /// against that px rect directly. Note `region_rect` additionally
+    /// floors its width to `.max(1.0)` for painting a visible rect, which
+    /// this comparison does not need (a zero-width region simply never
+    /// matches). For every `char_width`/`line_height` pair a backend
+    /// actually passes, `x` falls in `[rx0, rx1)` iff `floor((x - ox) /
+    /// cw)` lands in `[region.col, region.col + region.width)` — so this
+    /// is a direct px-space comparison with no caller-visible behaviour
+    /// difference. TUI in particular always calls this with `char_width =
+    /// line_height = 1.0`, where px and cell space are numerically
+    /// identical.
     pub fn hit_test(
         &self,
         x: f32,
@@ -979,33 +981,84 @@ mod native_surface_paint {
         }
 
         /// GUI backends (GTK/macOS/Win — anything routing through this
-        /// shared `paint`) must render the four toggle buttons as
-        /// codicon glyphs, not the TUI's literal text pairs. TUI's own
-        /// rasteriser (`tui::find_replace`) is untouched and keeps
-        /// painting "Aa"/"ab"/".*"/"AB" — this test only covers the
-        /// `PaintSurface` path this module owns.
+        /// shared `paint`) render the four toggle buttons as codicon
+        /// glyphs, not the TUI's literal text pairs. TUI's own
+        /// rasteriser (`tui::find_replace`) has no `PaintSurface` impl
+        /// and keeps painting `"Aa"`/`"ab"`/`".*"`/`"AB"`; this test
+        /// covers only the `PaintSurface` path this module owns.
+        ///
+        /// Beyond "each glyph is painted somewhere", this binds each
+        /// glyph to *its own* hit region's projected x — the same
+        /// `region_rect`/centering math `paint_toggle` uses — so a slot
+        /// mix-up (e.g. the case-sensitive glyph landing in the regex
+        /// toggle's rect) would fail here even though every glyph would
+        /// still technically appear in `text_runs`.
         #[test]
         fn toggle_buttons_paint_codicon_glyphs_not_literal_text() {
             let mut panel = sample_panel("needle", 6, None);
             panel.show_replace = true;
             let (hit_regions, _input_width) = compute_hit_regions(50, true, "1 of 3", 2, 2);
-            panel.hit_regions = hit_regions;
+            panel.hit_regions = hit_regions.clone();
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
             paint(&panel, &mut surface, &theme);
 
-            let expected = [
-                crate::codicon::CASE_SENSITIVE,
-                crate::codicon::WHOLE_WORD,
-                crate::codicon::REGEX,
-                crate::codicon::PRESERVE_CASE,
+            // Derive content_x the same way `paint` does — from the
+            // popup background fill it always records first — rather
+            // than re-deriving the popup-placement arithmetic by hand.
+            let cw = surface.surface_char_width();
+            let popup_rect = surface
+                .fills
+                .first()
+                .map(|(r, _)| *r)
+                .expect("popup background fill recorded first");
+            let content_x = popup_rect.x + cw;
+
+            let toggles = [
+                (
+                    FindReplaceClickTarget::ToggleCase,
+                    crate::codicon::CASE_SENSITIVE,
+                ),
+                (
+                    FindReplaceClickTarget::ToggleWholeWord,
+                    crate::codicon::WHOLE_WORD,
+                ),
+                (FindReplaceClickTarget::ToggleRegex, crate::codicon::REGEX),
+                (
+                    FindReplaceClickTarget::TogglePreserveCase,
+                    crate::codicon::PRESERVE_CASE,
+                ),
             ];
-            for glyph in expected {
+
+            for (target, glyph) in toggles {
+                let (region, _) = hit_regions
+                    .iter()
+                    .find(|(_, t)| *t == target)
+                    .unwrap_or_else(|| panic!("{target:?} region must exist"));
                 let label = glyph.to_string();
+                let (tw, _) = surface.surface_measure_text(&label);
+                let rect_width = region.width as f32 * cw;
+                let expected_x =
+                    content_x + region.col as f32 * cw + ((rect_width - tw) / 2.0).max(0.0);
+
+                let run = surface
+                    .text_runs
+                    .iter()
+                    .find(|(_, t, _)| t == &label)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "expected codicon glyph {glyph:?} for {target:?} to be painted, \
+                             text runs were {:?}",
+                            surface.text_runs
+                        )
+                    });
                 assert!(
-                    surface.text_runs.iter().any(|(_, t, _)| t == &label),
-                    "expected codicon glyph {glyph:?} to be painted as its own text run, \
+                    (run.0.x - expected_x).abs() < 0.01,
+                    "{target:?}'s glyph {glyph:?} painted at x={}, expected x={} \
+                     (its own region's projected rx0, not a neighbouring toggle's) — \
                      text runs were {:?}",
+                    run.0.x,
+                    expected_x,
                     surface.text_runs,
                 );
             }
@@ -1144,6 +1197,52 @@ mod hit_test_tests {
             p.hit_test(11.0, 12.0, (10.0, 10.0), 0.0, 16.0),
             FindReplaceHit::Empty
         );
+    }
+
+    #[test]
+    fn hit_test_right_edge_is_exclusive() {
+        let p = panel(false);
+        let (region, target) = p
+            .hit_regions
+            .iter()
+            .find(|(_, t)| matches!(t, FindReplaceClickTarget::ToggleCase))
+            .expect("ToggleCase region present");
+        let target = *target;
+        let rx1 = 10.0 + (region.col as f32 + region.width as f32) * 8.0;
+        let y = 10.0 + (region.row as f32 + 0.5) * 16.0;
+
+        // Exactly on the right edge: must miss this region (half-open
+        // interval — `x < rx1`, not `x <= rx1`).
+        let hit_at_edge = p.hit_test(rx1, y, (10.0, 10.0), 8.0, 16.0);
+        assert_ne!(hit_at_edge, FindReplaceHit::Target(target));
+
+        // A hair inside the edge: must still hit.
+        let eps = 0.01;
+        let hit_just_inside = p.hit_test(rx1 - eps, y, (10.0, 10.0), 8.0, 16.0);
+        assert_eq!(hit_just_inside, FindReplaceHit::Target(target));
+    }
+
+    #[test]
+    fn hit_test_fractional_char_width_diverges_from_cell_space() {
+        let p = panel(false);
+        let (region, target) = p
+            .hit_regions
+            .iter()
+            .find(|(_, t)| matches!(t, FindReplaceClickTarget::ToggleCase))
+            .expect("ToggleCase region present");
+        let target = *target;
+        // char_width = 7.5: px and cell-index space diverge (unlike the
+        // integer-cw cases above, `col` is no longer an integer multiple
+        // of 1px). Pick a point inside the region's px rect and confirm
+        // it still resolves — exercising the px comparison directly
+        // rather than any cell-space shortcut.
+        let cw = 7.5_f32;
+        let lh = 16.0_f32;
+        let rx0 = 10.0 + region.col as f32 * cw;
+        let x = rx0 + 0.5;
+        let y = 10.0 + (region.row as f32 + 0.5) * lh;
+        let hit = p.hit_test(x, y, (10.0, 10.0), cw, lh);
+        assert_eq!(hit, FindReplaceHit::Target(target));
     }
 }
 
