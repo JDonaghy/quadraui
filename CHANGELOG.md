@@ -59,6 +59,7 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-16
 ### Added
 
 - `AppShell::with_active_accent`/`set_active_accent` and
