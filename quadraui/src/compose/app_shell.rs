@@ -303,7 +303,7 @@ impl AppShell {
             sidebar_width: default_sidebar_width,
             min_sidebar_width: 8.0,
             max_sidebar_width: 800.0,
-            activity_bar_width: 3.0,
+            activity_bar_width: 4.0,
             activity_bar_width_px: None,
             position: ShellPosition::Left,
             drag_offset: None,
@@ -1803,13 +1803,13 @@ mod tests {
 
     // ── Activity bar width ──────────────────────────────────────────
 
-    /// The default activity bar width (3.0 line-heights) tracks
+    /// The default activity bar width (4.0 line-heights) tracks
     /// `line_height`, same as every other chrome dimension.
     #[test]
     fn activity_bar_width_tracks_line_height_by_default() {
         let s = shell();
-        assert_eq!(s.layout(area(), 20.0).activity_bar_bounds.width, 60.0);
-        assert_eq!(s.layout(area(), 10.0).activity_bar_bounds.width, 30.0);
+        assert_eq!(s.layout(area(), 20.0).activity_bar_bounds.width, 80.0);
+        assert_eq!(s.layout(area(), 10.0).activity_bar_bounds.width, 40.0);
     }
 
     /// `with_activity_bar_width` overrides the line-height multiple itself

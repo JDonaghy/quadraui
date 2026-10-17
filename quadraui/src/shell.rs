@@ -14,7 +14,7 @@ use crate::compose::app_shell::{
 use crate::compose::bottom_panel::{BottomPanelConfig, BottomPanelEvent};
 use crate::event::{Point, Rect};
 use crate::primitives::image::ImageSource;
-use crate::types::{Icon, WidgetId};
+use crate::types::{Color, Icon, WidgetId};
 use crate::{Backend, Reaction, ResizeEdge, UiEvent};
 
 /// Configuration for creating an AppShell.
@@ -25,8 +25,9 @@ pub struct ShellConfig {
     pub default_sidebar_width: f32,
     pub min_sidebar_width: f32,
     pub max_sidebar_width: f32,
-    /// Activity bar width in line-height multiples (`3.0` by default,
-    /// matching [`AppShell`]'s own default) — same unit as
+    /// Activity bar width in line-height multiples (`4.0` by default,
+    /// giving 4 TUI columns: 1 accent + 2 icon cells (double-width nerd
+    /// font glyph) + 1 separator) — same unit as
     /// `default_sidebar_width`. Set via [`Self::with_activity_bar_width`].
     /// See [`Self::activity_bar_width_px`] for a fixed-pixel alternative
     /// that doesn't move with the app's editor font.
@@ -182,6 +183,19 @@ pub struct ShellConfig {
     ///
     /// Set via [`Self::with_app_icon`].
     pub app_icon: Option<ImageSource>,
+    /// Activity-bar accent colour, forwarded to
+    /// [`AppShell::with_active_accent`] at construction and available via
+    /// [`AppShell::set_active_accent`] at runtime.  `None` (the default)
+    /// paints no accent strip — see [`crate::ActivityBar::active_accent`].
+    ///
+    /// Set via [`Self::with_active_accent`].
+    pub active_accent: Option<Color>,
+    /// Keyboard-selection background, forwarded to
+    /// [`AppShell::with_selection_bg`].  `None` (the default) lets each
+    /// backend fall back to its own default.
+    ///
+    /// Set via [`Self::with_selection_bg`].
+    pub selection_bg: Option<Color>,
 }
 
 impl ShellConfig {
@@ -193,7 +207,7 @@ impl ShellConfig {
             default_sidebar_width: 20.0,
             min_sidebar_width: 8.0,
             max_sidebar_width: 50.0,
-            activity_bar_width: 3.0,
+            activity_bar_width: 4.0,
             activity_bar_width_px: Some(48.0),
             position: ShellPosition::Left,
             has_title_bar: false,
@@ -215,6 +229,8 @@ impl ShellConfig {
             icon_name: None,
             panel_icons: Vec::new(),
             app_icon: None,
+            active_accent: None,
+            selection_bg: None,
         }
     }
 
@@ -228,7 +244,7 @@ impl ShellConfig {
         self
     }
 
-    /// Override the activity bar width in line-height multiples (`3.0` by
+    /// Override the activity bar width in line-height multiples (`4.0` by
     /// default). Same unit as `default_sidebar_width`. See
     /// [`Self::with_activity_bar_width_px`] for a fixed-pixel alternative
     pub fn with_activity_bar_width(mut self, width_lh: f32) -> Self {
@@ -391,6 +407,22 @@ impl ShellConfig {
     /// Win-GUI) — see [`Self::app_icon`] for the per-backend contract
     pub fn with_app_icon(mut self, icon: ImageSource) -> Self {
         self.app_icon = Some(icon);
+        self
+    }
+
+    /// Set the activity-bar accent colour forwarded to
+    /// [`AppShell::with_active_accent`] at construction. See
+    /// [`Self::active_accent`] for the full contract.
+    pub fn with_active_accent(mut self, color: Color) -> Self {
+        self.active_accent = Some(color);
+        self
+    }
+
+    /// Set the keyboard-selection background forwarded to
+    /// [`AppShell::with_selection_bg`] at construction. See
+    /// [`Self::selection_bg`] for the full contract.
+    pub fn with_selection_bg(mut self, color: Color) -> Self {
+        self.selection_bg = Some(color);
         self
     }
 }
@@ -872,12 +904,14 @@ mod tests {
     }
 
     /// A fresh `ShellConfig` keeps `AppShell`'s own line-height-multiple
-    /// default (3.0) available as a fallback, but leads with a px-first
-    /// default matching VS Code's activity bar (`48.0`) on pixel backends.
+    /// default (4.0, giving 4 TUI columns: 1 accent + 2 icon cells for
+    /// double-width nerd font glyphs + 1 separator) available as a
+    /// fallback, but leads with a px-first default matching VS Code's
+    /// activity bar (`48.0`) on pixel backends.
     #[test]
     fn shell_config_activity_bar_width_defaults_match_app_shell() {
         let config = ShellConfig::new("test", Vec::new());
-        assert_eq!(config.activity_bar_width, 3.0);
+        assert_eq!(config.activity_bar_width, 4.0);
         assert_eq!(config.activity_bar_width_px, Some(48.0));
     }
 
@@ -971,6 +1005,28 @@ mod tests {
         let config =
             ShellConfig::new("test", Vec::new()).with_app_icon(ImageSource::Bytes(vec![1, 2, 3]));
         assert_eq!(config.app_icon, Some(ImageSource::Bytes(vec![1, 2, 3])));
+    }
+
+    /// A fresh `ShellConfig` has no accent or selection background
+    /// override — nothing that predates these fields changes behavior.
+    #[test]
+    fn shell_config_accent_defaults_to_none() {
+        let config = ShellConfig::new("test", Vec::new());
+        assert_eq!(config.active_accent, None);
+        assert_eq!(config.selection_bg, None);
+    }
+
+    /// `with_active_accent` and `with_selection_bg` store the colours
+    /// verbatim for `build_shell_adapter` to forward to `AppShell`.
+    #[test]
+    fn shell_config_accent_flows_to_app_shell_via_adapter() {
+        let accent = Color::rgb(100, 200, 50);
+        let sel = Color::rgb(50, 50, 80);
+        let config = ShellConfig::new("test", Vec::new())
+            .with_active_accent(accent)
+            .with_selection_bg(sel);
+        assert_eq!(config.active_accent, Some(accent));
+        assert_eq!(config.selection_bg, Some(sel));
     }
 
     /// A fresh `ShellConfig` registers no bottom bands — nothing

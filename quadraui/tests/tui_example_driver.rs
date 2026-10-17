@@ -3391,14 +3391,14 @@ fn shell_menu_dropdown_item_over_activity_bar_activates() {
 /// behave as a normal chrome click (toggle/switch panels) — the fix must not
 /// turn off chrome hit-testing unconditionally, only when a modal is actually
 /// open under the cursor. Locates the click target instead of guessing a row:
-/// search for `"E│"` — the Explorer icon glyph immediately followed by the
+/// search for `"E │"` — the Explorer icon glyph followed by padding and the
 /// activity bar's right-edge separator column, which only the activity bar's
-/// renderer paints, so the pair unambiguously locates the Explorer row.
+/// renderer paints, so the sequence unambiguously locates the Explorer row.
 #[test]
 fn shell_menu_activity_bar_click_still_switches_panel_when_no_modal_open() {
     let mut driver = driver_with_shell(ShellMenuDemo::new(), ShellMenuDemo::config(), 100, 30);
 
-    let (x, y) = driver.find("E│").unwrap_or_else(|| {
+    let (x, y) = driver.find("E │").unwrap_or_else(|| {
         panic!(
             "Explorer's activity-bar row (icon + separator) should be painted:\n{}",
             driver.screen()
