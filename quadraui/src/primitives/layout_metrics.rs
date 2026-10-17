@@ -1414,6 +1414,12 @@ mod tests {
         assert_eq!(tree_row_pitch(&tree, 16.0), (16.0_f64 * 1.4).round());
     }
 
+    // Only used by the gtk/win/macos-gated test below.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     fn tree_with_expanded_row() -> TreeView {
         let mut tree = bare_tree();
         tree.rows = vec![crate::primitives::tree::TreeRow {
