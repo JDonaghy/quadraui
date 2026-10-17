@@ -23,7 +23,7 @@
 //! `days_from_civil` / `civil_from_days`), good for any date a `u8` month
 //! (1-12) and `u8` day (1-31) pairing with an `i32` year can express.
 
-use crate::event::Rect;
+use crate::event::{Point, Rect};
 use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
 
@@ -83,7 +83,10 @@ pub enum DateFormat {
 /// starts a week, and how a date formats as text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DateLocale {
+    /// The weekday a week starts on (e.g. `Sunday` in the US, `Monday` in
+    /// most of Europe); drives [`DatePicker::month_grid`]'s column order.
     pub first_weekday: Weekday,
+    /// How [`CalendarDate::format`] renders a date.
     pub format: DateFormat,
 }
 
@@ -101,8 +104,11 @@ impl Default for DateLocale {
 /// [`CalendarDate::days_in_month`] for the given `year`/`month`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct CalendarDate {
+    /// Proleptic Gregorian year; may be negative (there is no year 0).
     pub year: i32,
+    /// `1..=12`.
     pub month: u8,
+    /// `1..=31`, bounded by [`CalendarDate::days_in_month`] for `year`/`month`.
     pub day: u8,
 }
 
@@ -116,7 +122,10 @@ impl CalendarDate {
         year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
     }
 
-    /// Number of days in `month` (`1..=12`) of `year`.
+    /// Number of days in `month` (`1..=12`) of `year`. An out-of-range
+    /// `month` (`0` or `>12`) is not a documented input; it falls back to
+    /// `30` rather than panicking, so callers passing already-validated
+    /// months never need to handle an error case.
     pub fn days_in_month(year: i32, month: u8) -> u8 {
         match month {
             1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -195,12 +204,32 @@ impl CalendarDate {
     }
 
     /// Formats this date per `format`, zero-padded.
+    ///
+    /// `Iso8601`'s zero-padding applies to the magnitude only, so a
+    /// negative `year` still reads as a sign followed by 4+ digits
+    /// (`-0005-01-01`), not a sign eating into the pad width
+    /// (`-005-01-01`).
     pub fn format(self, format: DateFormat) -> String {
         match format {
-            DateFormat::Iso8601 => format!("{:04}-{:02}-{:02}", self.year, self.month, self.day),
+            DateFormat::Iso8601 => {
+                let sign = if self.year < 0 { "-" } else { "" };
+                format!(
+                    "{sign}{:04}-{:02}-{:02}",
+                    self.year.unsigned_abs(),
+                    self.month,
+                    self.day
+                )
+            }
             DateFormat::UsSlash => format!("{:02}/{:02}/{:04}", self.month, self.day, self.year),
             DateFormat::EuSlash => format!("{:02}/{:02}/{:04}", self.day, self.month, self.year),
         }
+    }
+}
+
+impl Default for CalendarDate {
+    /// The 1970-01-01 civil epoch.
+    fn default() -> Self {
+        CalendarDate::new(1970, 1, 1)
     }
 }
 
@@ -208,7 +237,9 @@ impl CalendarDate {
 /// `hour` is `0..=23`, `minute` is `0..=59`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeOfDay {
+    /// `0..=23`.
     pub hour: u8,
+    /// `0..=59`.
     pub minute: u8,
 }
 
@@ -223,6 +254,12 @@ impl TimeOfDay {
     }
 }
 
+impl Default for TimeOfDay {
+    fn default() -> Self {
+        TimeOfDay::new(0, 0)
+    }
+}
+
 /// Declarative description of a `DatePicker` widget.
 ///
 /// # Examples
@@ -233,16 +270,15 @@ impl TimeOfDay {
 /// let picker = DatePicker {
 ///     id: WidgetId::new("due-date"),
 ///     visible_month: CalendarDate::new(2024, 3, 1),
-///     selected: None,
 ///     focused: CalendarDate::new(2024, 3, 15),
-///     locale: DateLocale::default(),
-///     time: None,
 ///     has_focus: true,
+///     ..Default::default()
 /// };
 ///
 /// assert_eq!(picker.month_grid().len(), 42);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct DatePicker {
     pub id: WidgetId,
     /// The month this picker displays. `day` is ignored for grid purposes
@@ -250,6 +286,7 @@ pub struct DatePicker {
     pub visible_month: CalendarDate,
     /// The confirmed date, if any (set by an `Enter` / click
     /// [`DatePickerEvent::DateSelected`]).
+    #[serde(default)]
     pub selected: Option<CalendarDate>,
     /// The keyboard-navigable cursor within the grid. Independent of
     /// `selected` until confirmed, so arrow keys can preview a date
@@ -257,12 +294,38 @@ pub struct DatePicker {
     pub focused: CalendarDate,
     pub locale: DateLocale,
     /// Optional time-of-day field rendered alongside the date grid.
+    #[serde(default)]
     pub time: Option<TimeOfDay>,
     #[serde(default)]
     pub has_focus: bool,
 }
 
+impl Default for DatePicker {
+    fn default() -> Self {
+        DatePicker {
+            id: WidgetId::new(""),
+            visible_month: CalendarDate::default(),
+            selected: None,
+            focused: CalendarDate::default(),
+            locale: DateLocale::default(),
+            time: None,
+            has_focus: false,
+        }
+    }
+}
+
 impl DatePicker {
+    /// A new picker showing `focused`'s month, with nothing selected and
+    /// no time field.
+    pub fn new(id: WidgetId, focused: CalendarDate) -> Self {
+        DatePicker {
+            id,
+            visible_month: focused.first_of_month(),
+            focused,
+            ..Default::default()
+        }
+    }
+
     /// A 42-cell (6 week rows x 7 days), always-complete month grid for
     /// `visible_month`, in visual row-major order starting from
     /// `locale.first_weekday`. Cells outside `visible_month` (the leading
@@ -326,13 +389,19 @@ impl DatePicker {
         } else {
             None
         };
-        let prev_bounds = Rect::new(origin_x, origin_y, cell_width, header_height.max(1.0));
-        let next_bounds = Rect::new(
-            origin_x + cell_width * 6.0,
-            origin_y,
-            cell_width,
-            header_height.max(1.0),
-        );
+        let (prev_bounds, next_bounds) = if header_height > 0.0 {
+            (
+                Some(Rect::new(origin_x, origin_y, cell_width, header_height)),
+                Some(Rect::new(
+                    origin_x + cell_width * 6.0,
+                    origin_y,
+                    cell_width,
+                    header_height,
+                )),
+            )
+        } else {
+            (None, None)
+        };
 
         let mut day_cells: Vec<DayCell> = Vec::with_capacity(grid.len());
         for (i, date) in grid.into_iter().enumerate() {
@@ -372,6 +441,7 @@ impl DatePicker {
 
 /// One resolved day cell in a [`DatePickerLayout`].
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct DayCell {
     pub date: CalendarDate,
     /// `false` for the leading/trailing days of adjacent months that fill
@@ -382,17 +452,46 @@ pub struct DayCell {
     pub bounds: Rect,
 }
 
+impl Default for DayCell {
+    fn default() -> Self {
+        DayCell {
+            date: CalendarDate::default(),
+            in_visible_month: false,
+            is_selected: false,
+            is_focused: false,
+            bounds: Rect::default(),
+        }
+    }
+}
+
 /// Fully-resolved date-picker layout.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct DatePickerLayout {
     /// Present iff the caller reserved a non-zero `header_height`.
     pub header_bounds: Option<Rect>,
-    pub prev_bounds: Rect,
-    pub next_bounds: Rect,
+    /// Present iff the caller reserved a non-zero `header_height` (the
+    /// prev/next controls live inside the header row, so there is nowhere
+    /// to put them when it is absent).
+    pub prev_bounds: Option<Rect>,
+    /// See [`DatePickerLayout::prev_bounds`].
+    pub next_bounds: Option<Rect>,
     /// Always 42 cells (6 complete weeks), row-major, top-left first.
     pub day_cells: Vec<DayCell>,
     /// Present iff the caller reserved a non-zero `time_height`.
     pub time_bounds: Option<Rect>,
+}
+
+impl Default for DatePickerLayout {
+    fn default() -> Self {
+        DatePickerLayout {
+            header_bounds: None,
+            prev_bounds: None,
+            next_bounds: None,
+            day_cells: Vec::new(),
+            time_bounds: None,
+        }
+    }
 }
 
 /// Classification of a hit-test result.
@@ -410,24 +509,20 @@ impl DatePickerLayout {
     /// Test which element (prev/next control, a day cell, the time field,
     /// or nothing) contains `(x, y)`.
     pub fn hit_test(&self, x: f32, y: f32) -> DatePickerHit {
-        let contains = |r: &Rect| {
-            x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
-        };
-        if contains(&self.prev_bounds) {
+        let p = Point::new(x, y);
+        if self.prev_bounds.is_some_and(|r| r.contains(p)) {
             return DatePickerHit::PrevMonth;
         }
-        if contains(&self.next_bounds) {
+        if self.next_bounds.is_some_and(|r| r.contains(p)) {
             return DatePickerHit::NextMonth;
         }
         for cell in &self.day_cells {
-            if contains(&cell.bounds) {
+            if cell.bounds.contains(p) {
                 return DatePickerHit::Day(cell.date);
             }
         }
-        if let Some(t) = &self.time_bounds {
-            if contains(t) {
-                return DatePickerHit::Time;
-            }
+        if self.time_bounds.is_some_and(|r| r.contains(p)) {
+            return DatePickerHit::Time;
         }
         DatePickerHit::Empty
     }
@@ -666,5 +761,29 @@ mod tests {
         let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 0.0, 0.0);
         assert_eq!(layout.header_bounds, None);
         assert_eq!(layout.time_bounds, None);
+        assert_eq!(layout.prev_bounds, None);
+        assert_eq!(layout.next_bounds, None);
+    }
+
+    #[test]
+    fn hit_test_resolves_top_row_edge_cells_to_day_when_header_height_is_zero() {
+        // Regression test: with no header row reserved, there is no phantom
+        // prev/next band at the grid's top edge, so clicks on the first
+        // row's leftmost and rightmost cells must resolve to `Day(..)`, not
+        // be misrouted to `PrevMonth`/`NextMonth`.
+        let picker = DatePicker::new(WidgetId::new("dp"), CalendarDate::new(2024, 3, 1));
+        let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 0.0, 0.0);
+
+        let top_left = layout.day_cells[0];
+        assert_eq!(
+            layout.hit_test(top_left.bounds.x + 1.0, top_left.bounds.y + 1.0),
+            DatePickerHit::Day(top_left.date)
+        );
+
+        let top_right = layout.day_cells[6];
+        assert_eq!(
+            layout.hit_test(top_right.bounds.x + 1.0, top_right.bounds.y + 1.0),
+            DatePickerHit::Day(top_right.date)
+        );
     }
 }

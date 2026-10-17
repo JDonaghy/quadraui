@@ -83,7 +83,7 @@ mod tests {
         Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableHit, SortDirection,
     };
     use crate::theme::Theme;
-    use crate::types::{Decoration, StyledText, WidgetId};
+    use crate::types::{Decoration, SelectionMode, StyledText, WidgetId};
     use crate::Backend;
 
     const W: u32 = 320;
@@ -131,6 +131,8 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
+            selection_mode: SelectionMode::default(),
+            selected_indices: Vec::new(),
         }
     }
 

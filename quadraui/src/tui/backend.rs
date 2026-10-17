@@ -5295,6 +5295,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            ..Default::default()
         }
     }
 
@@ -5629,6 +5630,8 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            selection_mode: crate::SelectionMode::default(),
+            selected_indices: Vec::new(),
         }
     }
 

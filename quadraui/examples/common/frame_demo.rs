@@ -131,6 +131,7 @@ impl FrameDemo {
             h_scroll: self.h_scroll,
             max_content_width: Some(self.max_content_width()),
             show_v_scrollbar: self.show_v_scroll,
+            ..Default::default()
         }
     }
 

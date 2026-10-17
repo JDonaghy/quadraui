@@ -27,8 +27,8 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use quadraui::{
-    Column, ColumnAlign, ColumnMeasure, ColumnWidth, DataRow, DataTable, Decoration, StyledText,
-    WidgetId,
+    Column, ColumnAlign, ColumnMeasure, ColumnWidth, DataRow, DataTable, Decoration,
+    SelectionMode, StyledText, WidgetId,
 };
 use std::hint::black_box;
 
@@ -68,6 +68,8 @@ fn build_table(nrows: usize, ncols: usize) -> DataTable {
         h_scroll: 0.0,
         column_overrides: Vec::new(),
         footer: None,
+        selection_mode: SelectionMode::default(),
+        selected_indices: Vec::new(),
     }
 }
 

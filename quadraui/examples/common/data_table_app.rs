@@ -20,8 +20,8 @@
 use quadraui::primitives::scrollbar::fit_thumb;
 use quadraui::{
     AppLogic, Backend, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableHit,
-    DataTableLayout, InteractionState, Key, NamedKey, Reaction, Rect, SortDirection, StatusBar,
-    StatusBarSegment, StyledText, UiEvent, WidgetId,
+    DataTableLayout, InteractionState, Key, NamedKey, Reaction, Rect, SelectionMode, SortDirection,
+    StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct DataTableApp {
@@ -236,6 +236,8 @@ impl DataTableApp {
             } else {
                 None
             },
+            selection_mode: SelectionMode::default(),
+            selected_indices: Vec::new(),
         }
     }
 
