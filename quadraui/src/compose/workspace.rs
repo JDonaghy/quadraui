@@ -220,7 +220,6 @@ impl WorkspaceDoc {
 /// `_ => {}` arm.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum WorkspaceEvent {
     /// A document was added to the strip and made active.
     Opened {
