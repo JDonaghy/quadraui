@@ -383,6 +383,7 @@ impl Demo for SidebarDemo {
                     rows: self.body_rows.clone(),
                     selection_mode: quadraui::SelectionMode::Single,
                     selected_path: None,
+                    selected_paths: Vec::new(),
                     scroll_offset: self.body_scroll,
                     style: TreeStyle::default(),
                     has_focus: true,

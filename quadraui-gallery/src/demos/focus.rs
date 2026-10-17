@@ -11,7 +11,7 @@ use std::cell::{Cell, RefCell};
 
 use quadraui::{
     Backend, BackendCaps, Color, FocusRing, Key, ListItem, ListView, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
+    SelectionMode, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -73,6 +73,8 @@ impl FocusDemo {
                 })
                 .collect(),
             selected_idx: 0,
+            selection_mode: SelectionMode::default(),
+            selected_indices: Vec::new(),
             scroll_offset: 0,
             has_focus: focused,
             bordered: true,

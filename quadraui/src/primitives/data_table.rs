@@ -259,37 +259,6 @@ pub enum DataTableEvent {
     SelectionSet { indices: Vec<usize> },
 }
 
-#[cfg(test)]
-mod multi_select_tests {
-    use super::DataTableEvent;
-    use crate::types::{apply_selection_gesture, Modifiers, SelectionGesture};
-
-    #[test]
-    fn ctrl_click_toggle_emits_selection_set_with_full_set() {
-        let gesture = SelectionGesture::from_modifiers(Modifiers {
-            ctrl: true,
-            ..Default::default()
-        });
-        let indices = apply_selection_gesture(&[0, 2], 2, 4, gesture);
-        assert_eq!(
-            DataTableEvent::SelectionSet { indices },
-            DataTableEvent::SelectionSet {
-                indices: vec![0, 2, 4]
-            }
-        );
-    }
-
-    #[test]
-    fn shift_extend_emits_selection_set_covering_range() {
-        let gesture = SelectionGesture::from_modifiers(Modifiers {
-            shift: true,
-            ..Default::default()
-        });
-        let indices = apply_selection_gesture(&[], 1, 3, gesture);
-        assert_eq!(indices, vec![1, 2, 3]);
-    }
-}
-
 // ── Layout ──────────────────────────────────────────────────────────────
 
 /// Measure result for a single column — returned by the measurer
@@ -1143,7 +1112,7 @@ pub(crate) mod native_surface_paint {
         use crate::backend::ImagePaintResult;
         use crate::primitives::data_table::{Column, ColumnWidth, DataRow};
         use crate::theme::Theme;
-        use crate::types::{Color, StyledSpan, StyledText, WidgetId};
+        use crate::types::{Color, SelectionMode, StyledSpan, StyledText, WidgetId};
         use crate::Image;
 
         /// Records every surface verb this primitive's paint uses —
@@ -1472,6 +1441,37 @@ pub(crate) mod native_surface_paint {
             // One in the header band, one per visible body row (2 rows).
             assert_eq!(sep_fills.len(), 3);
         }
+    }
+}
+
+#[cfg(test)]
+mod multi_select_tests {
+    use super::DataTableEvent;
+    use crate::types::{apply_selection_gesture, Modifiers, SelectionGesture};
+
+    #[test]
+    fn ctrl_click_toggle_emits_selection_set_with_full_set() {
+        let gesture = SelectionGesture::from_modifiers(Modifiers {
+            ctrl: true,
+            ..Default::default()
+        });
+        let indices = apply_selection_gesture(&[0, 2], 2, 4, gesture);
+        assert_eq!(
+            DataTableEvent::SelectionSet { indices },
+            DataTableEvent::SelectionSet {
+                indices: vec![0, 2, 4]
+            }
+        );
+    }
+
+    #[test]
+    fn shift_extend_emits_selection_set_covering_range() {
+        let gesture = SelectionGesture::from_modifiers(Modifiers {
+            shift: true,
+            ..Default::default()
+        });
+        let indices = apply_selection_gesture(&[], 1, 3, gesture);
+        assert_eq!(indices, vec![1, 2, 3]);
     }
 }
 

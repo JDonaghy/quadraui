@@ -18,7 +18,12 @@ use quadraui::{
     Weekday, WidgetId,
 };
 
-const VIEWPORT: Rect = Rect { x: 0.0, y: 0.0, width: 40.0, height: 12.0 };
+const VIEWPORT: Rect = Rect {
+    x: 0.0,
+    y: 0.0,
+    width: 40.0,
+    height: 12.0,
+};
 
 struct DatePickerApp {
     picker: DatePicker,
@@ -26,9 +31,13 @@ struct DatePickerApp {
 
 impl DatePickerApp {
     fn new() -> Self {
-        let mut picker = DatePicker::new(WidgetId::new("test:date"), CalendarDate::new(2024, 3, 15));
+        let mut picker =
+            DatePicker::new(WidgetId::new("test:date"), CalendarDate::new(2024, 3, 15));
         picker.has_focus = true;
-        picker.locale = DateLocale { first_weekday: Weekday::Monday, format: DateFormat::UsSlash };
+        picker.locale = DateLocale {
+            first_weekday: Weekday::Monday,
+            format: DateFormat::UsSlash,
+        };
         Self { picker }
     }
 
@@ -50,7 +59,11 @@ impl DatePickerApp {
     }
 
     fn line(text: String) -> TextDisplayLine {
-        TextDisplayLine { spans: vec![StyledSpan::plain(text)], decoration: Decoration::default(), timestamp: None }
+        TextDisplayLine {
+            spans: vec![StyledSpan::plain(text)],
+            decoration: Decoration::default(),
+            timestamp: None,
+        }
     }
 }
 
@@ -143,7 +156,10 @@ fn page_down_moves_focus_to_the_next_month_and_updates_the_visible_grid() {
     let mut driver = driver();
     driver.press_named(NamedKey::PageDown);
     assert_eq!(driver.app().picker.focused, CalendarDate::new(2024, 4, 15));
-    assert_eq!(driver.app().picker.visible_month, CalendarDate::new(2024, 4, 1));
+    assert_eq!(
+        driver.app().picker.visible_month,
+        CalendarDate::new(2024, 4, 1)
+    );
     assert!(driver.screen_contains("2024-04"));
 }
 
@@ -152,7 +168,10 @@ fn enter_confirms_the_focused_date_as_selected() {
     let mut driver = driver();
     driver.press_named(NamedKey::Right);
     driver.press_named(NamedKey::Enter);
-    assert_eq!(driver.app().picker.selected, Some(CalendarDate::new(2024, 3, 16)));
+    assert_eq!(
+        driver.app().picker.selected,
+        Some(CalendarDate::new(2024, 3, 16))
+    );
     assert!(driver.screen_contains("Selected: 03/16/2024"));
 }
 

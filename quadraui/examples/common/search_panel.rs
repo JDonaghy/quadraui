@@ -180,6 +180,7 @@ impl SearchPanelApp {
             rows,
             selection_mode: quadraui::SelectionMode::Single,
             selected_path: self.selected_path.clone(),
+            selected_paths: Vec::new(),
             scroll_offset: self.scroll_offset,
             style: quadraui::TreeStyle::default(),
             has_focus: !self.input_active,

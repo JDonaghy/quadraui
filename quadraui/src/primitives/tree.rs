@@ -59,6 +59,7 @@ use serde::{Deserialize, Serialize};
 ///     }],
 ///     selection_mode: SelectionMode::Single,
 ///     selected_path: Some(vec![0]),
+///     selected_paths: Vec::new(),
 ///     scroll_offset: 0,
 ///     style: TreeStyle::default(),
 ///     has_focus: true,
@@ -74,6 +75,12 @@ pub struct TreeView {
     pub rows: Vec<TreeRow>,
     pub selection_mode: SelectionMode,
     pub selected_path: Option<TreePath>,
+    /// Additional selected paths when `selection_mode` is
+    /// [`SelectionMode::Multi`]. `selected_path` still names the anchor /
+    /// most-recently-activated row; `selected_paths` holds the rest of the
+    /// set. Ignored in `Single`/`None` mode. See [`TreeView::is_path_selected`].
+    #[serde(default)]
+    pub selected_paths: Vec<TreePath>,
     /// How many rows have been scrolled past (app-owned in v1; primitive-owned
     /// scroll state with `ScrollState::id(widget_id)` is a later stage per
     /// `docs/UI_CRATE_DESIGN.md` §3.1).
@@ -82,6 +89,22 @@ pub struct TreeView {
     pub style: TreeStyle,
     #[serde(default)]
     pub has_focus: bool,
+}
+
+impl TreeView {
+    /// Whether `path` is part of the current selection, honouring
+    /// `selection_mode`. In `Multi` mode a path is selected if it equals
+    /// `selected_path` (the anchor) or appears in `selected_paths`; in
+    /// `Single`/`None` mode only `selected_path` is consulted.
+    pub fn is_path_selected(&self, path: &TreePath) -> bool {
+        let anchor_selected = self.selected_path.as_ref().is_some_and(|p| p == path);
+        match self.selection_mode {
+            SelectionMode::Multi => {
+                anchor_selected || self.selected_paths.iter().any(|p| p == path)
+            }
+            SelectionMode::Single | SelectionMode::None => anchor_selected,
+        }
+    }
 }
 
 /// One visible row in a `TreeView`.
@@ -466,7 +489,7 @@ pub(crate) mod native_surface_paint {
                 continue;
             }
 
-            let path_selected = tree.selected_path.as_ref().is_some_and(|p| p == &row.path);
+            let path_selected = tree.is_path_selected(&row.path);
             let is_selected = tree.has_focus && path_selected;
             let is_inactive_selected = !tree.has_focus && path_selected;
 
@@ -813,6 +836,7 @@ pub(crate) mod native_surface_paint {
                 rows,
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
+                selected_paths: Vec::new(),
                 scroll_offset: 0,
                 style: TreeStyle::default(),
                 has_focus: true,
@@ -1203,10 +1227,11 @@ pub enum TreeEvent {
     KeyPressed { key: String, modifiers: Modifiers },
     /// The full multi-selection changed (`SelectionMode::Multi`): Ctrl/Cmd
     /// click toggled a row, Shift click/extend selected a range, or a
-    /// keyboard extension grew the set. `paths` is the complete selection,
-    /// in the same visual order as `rows` — see
-    /// [`selected_paths_for_indices`] for mapping the flattened-row indices
-    /// [`crate::types::apply_selection_gesture`] works in back to paths.
+    /// keyboard extension grew the set. `paths` is the complete, de-duplicated
+    /// selection, not just the row that changed, in the same visual order as
+    /// `rows`. [`crate::types::apply_selection_gesture`] computes the
+    /// selection as flattened-row indices; use [`selected_paths_for_indices`]
+    /// to map those indices back to `TreePath`s before emitting this event.
     SelectionSet { paths: Vec<TreePath> },
 }
 
@@ -1292,6 +1317,7 @@ mod tests {
             }],
             selection_mode: SelectionMode::Single,
             selected_path: Some(vec![0]),
+            selected_paths: Vec::new(),
             scroll_offset: 0,
             style: TreeStyle::default(),
             has_focus: true,
@@ -1361,6 +1387,7 @@ mod tests {
             rows,
             selection_mode: SelectionMode::Single,
             selected_path: None,
+            selected_paths: Vec::new(),
             scroll_offset: scroll,
             style: TreeStyle::default(),
             has_focus: true,
