@@ -1221,6 +1221,75 @@ pub enum TreeEvent {
     /// A key was pressed while the tree had focus and the primitive did not
     /// consume it. App may interpret it (e.g. `s` stages a file).
     KeyPressed { key: String, modifiers: Modifiers },
+    /// The full multi-selection changed (`SelectionMode::Multi`): Ctrl/Cmd
+    /// click toggled a row, Shift click/extend selected a range, or a
+    /// keyboard extension grew the set. `paths` is the complete selection,
+    /// in the same visual order as `rows` — see
+    /// [`selected_paths_for_indices`] for mapping the flattened-row indices
+    /// [`crate::types::apply_selection_gesture`] works in back to paths.
+    SelectionSet { paths: Vec<TreePath> },
+}
+
+/// Maps flattened-row indices (as produced by
+/// [`crate::types::apply_selection_gesture`]) back to the `TreePath`s of
+/// those rows, in `rows`' visual order.
+///
+/// `rows` must be the same pre-flattened, visual-order slice the indices
+/// were computed against; out-of-range indices are skipped.
+pub fn selected_paths_for_indices(rows: &[TreeRow], indices: &[usize]) -> Vec<TreePath> {
+    indices
+        .iter()
+        .filter_map(|&idx| rows.get(idx).map(|row| row.path.clone()))
+        .collect()
+}
+
+#[cfg(test)]
+mod multi_select_tests {
+    use super::{selected_paths_for_indices, Decoration, TreeEvent, TreeRow};
+    use crate::types::{apply_selection_gesture, Modifiers, SelectionGesture, StyledText};
+
+    fn leaf(idx: u16, label: &str) -> TreeRow {
+        TreeRow {
+            path: vec![idx],
+            indent: 0,
+            icon: None,
+            text: StyledText::plain(label.to_string()),
+            badge: None,
+            is_expanded: None,
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
+    #[test]
+    fn shift_range_maps_flattened_indices_back_to_paths() {
+        let rows = vec![leaf(0, "a"), leaf(1, "b"), leaf(2, "c"), leaf(3, "d")];
+        let gesture = SelectionGesture::from_modifiers(Modifiers {
+            shift: true,
+            ..Default::default()
+        });
+        let indices = apply_selection_gesture(&[], 0, 2, gesture);
+        let paths = selected_paths_for_indices(&rows, &indices);
+        assert_eq!(paths, vec![vec![0], vec![1], vec![2]]);
+        assert_eq!(
+            TreeEvent::SelectionSet {
+                paths: paths.clone()
+            },
+            TreeEvent::SelectionSet { paths }
+        );
+    }
+
+    #[test]
+    fn ctrl_toggle_removes_a_previously_selected_row() {
+        let rows = vec![leaf(0, "a"), leaf(1, "b"), leaf(2, "c")];
+        let gesture = SelectionGesture::from_modifiers(Modifiers {
+            ctrl: true,
+            ..Default::default()
+        });
+        let indices = apply_selection_gesture(&[0, 1, 2], 1, 1, gesture);
+        let paths = selected_paths_for_indices(&rows, &indices);
+        assert_eq!(paths, vec![vec![0], vec![2]]);
+    }
 }
 
 #[cfg(test)]
