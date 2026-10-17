@@ -58,6 +58,8 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+
+## [0.2.2] - 2026-10-17
 ### Fixed
 
 - GTK's `MultiSectionView` aux-row text input caret now blinks, matching
