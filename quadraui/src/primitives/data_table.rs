@@ -74,7 +74,7 @@
 //! whose resolved boundaries aren't integers (`Flex`/`Content` widths that
 //! don't divide evenly) the two can disagree by up to one cell.
 
-use crate::types::{Decoration, Modifiers, StyledText, WidgetId};
+use crate::types::{Decoration, Modifiers, SelectionMode, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Column definition for a `DataTable`.
@@ -162,6 +162,8 @@ pub enum SortDirection {
 ///     h_scroll: 0.0,
 ///     column_overrides: vec![],
 ///     footer: None,
+///     selection_mode: Default::default(),
+///     selected_indices: Vec::new(),
 /// };
 ///
 /// let layout = table.layout(80.0, 10.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(20.0));
@@ -208,6 +210,30 @@ pub struct DataTable {
     /// byte-for-byte identical to a table with no footer.
     #[serde(default)]
     pub footer: Option<DataRow>,
+    /// `Single` (default): only `selected_idx` is highlighted. `Multi`: the
+    /// app has opted into tracking a selection set in `selected_indices`
+    /// (built with [`crate::types::SelectionGesture`] /
+    /// [`crate::types::apply_selection_gesture`]); backends then highlight
+    /// every row in `selected_indices` instead of just `selected_idx`.
+    #[serde(default)]
+    pub selection_mode: SelectionMode,
+    /// The current multi-selection when `selection_mode == Multi`. Ignored
+    /// in `Single`/`None` mode, where `selected_idx` alone drives the
+    /// highlight. Not required to include `selected_idx`.
+    #[serde(default)]
+    pub selected_indices: Vec<usize>,
+}
+
+impl DataTable {
+    /// Whether row `idx` should paint as selected: in `Multi` mode this is
+    /// set membership in `selected_indices`; otherwise it is `idx ==
+    /// selected_idx`.
+    pub fn is_row_selected(&self, idx: usize) -> bool {
+        match self.selection_mode {
+            SelectionMode::Multi => self.selected_indices.contains(&idx),
+            SelectionMode::Single | SelectionMode::None => self.selected_idx == Some(idx),
+        }
+    }
 }
 
 /// Events a `DataTable` emits back to the app.
@@ -940,7 +966,7 @@ pub(crate) mod native_surface_paint {
             let abs_idx = table.scroll_offset + row_idx;
             let row = &table.rows[abs_idx];
             let row_y = body_y + row_idx as f32 * line_height;
-            let is_selected = table.selected_idx == Some(abs_idx);
+            let is_selected = table.is_row_selected(abs_idx);
             let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
 
             if is_selected {
@@ -1238,6 +1264,8 @@ pub(crate) mod native_surface_paint {
                 h_scroll: 0.0,
                 column_overrides: Vec::new(),
                 footer: None,
+                selection_mode: SelectionMode::default(),
+                selected_indices: Vec::new(),
             }
         }
 
@@ -1481,6 +1509,8 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            selection_mode: SelectionMode::default(),
+            selected_indices: Vec::new(),
         }
     }
 

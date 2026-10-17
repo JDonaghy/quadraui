@@ -18,7 +18,7 @@
 
 use crate::event::Rect;
 use crate::primitives::scrollbar::Scrollbar;
-use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
+use crate::types::{Decoration, Icon, Modifiers, SelectionMode, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a `ListView` widget.
@@ -44,6 +44,8 @@ use serde::{Deserialize, Serialize};
 ///     h_scroll: 0,
 ///     max_content_width: None,
 ///     show_v_scrollbar: false,
+///     selection_mode: Default::default(),
+///     selected_indices: Vec::new(),
 /// };
 ///
 /// let layout = list.layout(80.0, 10.0, 0.0, |_| ListItemMeasure::new(1.0));
@@ -91,6 +93,51 @@ pub struct ListView {
     /// both scrollbars can be active simultaneously.
     #[serde(default)]
     pub show_v_scrollbar: bool,
+    /// `Single` (default): only `selected_idx` is highlighted. `Multi`: the
+    /// app has opted into tracking a selection set in `selected_indices`
+    /// (built with [`crate::types::SelectionGesture`] /
+    /// [`crate::types::apply_selection_gesture`]); backends then highlight
+    /// every row in `selected_indices` instead of just `selected_idx`.
+    #[serde(default)]
+    pub selection_mode: SelectionMode,
+    /// The current multi-selection when `selection_mode == Multi`. Ignored
+    /// in `Single`/`None` mode, where `selected_idx` alone drives the
+    /// highlight. Not required to include `selected_idx`.
+    #[serde(default)]
+    pub selected_indices: Vec<usize>,
+}
+
+impl ListView {
+    /// Whether row `idx` should paint as selected: in `Multi` mode this is
+    /// set membership in `selected_indices`; otherwise it is `idx ==
+    /// selected_idx` (and the list must have focus).
+    pub fn is_row_selected(&self, idx: usize) -> bool {
+        match self.selection_mode {
+            SelectionMode::Multi => self.selected_indices.contains(&idx),
+            SelectionMode::Single | SelectionMode::None => {
+                self.has_focus && idx == self.selected_idx
+            }
+        }
+    }
+}
+
+impl Default for ListView {
+    fn default() -> Self {
+        Self {
+            id: WidgetId::new(""),
+            title: None,
+            items: Vec::new(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: false,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+            selection_mode: SelectionMode::default(),
+            selected_indices: Vec::new(),
+        }
+    }
 }
 
 /// One row in a `ListView`.
@@ -480,6 +527,7 @@ mod hscrollbar_tests {
             h_scroll,
             max_content_width: max.then_some(content_width),
             show_v_scrollbar: false,
+            ..Default::default()
         }
     }
 
@@ -612,6 +660,7 @@ mod vscrollbar_tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: true,
+            ..Default::default()
         }
     }
 
@@ -838,7 +887,7 @@ pub(crate) mod native_surface_paint {
             let row_w = vis_item.bounds.width;
             let row_h = vis_item.bounds.height;
 
-            let is_selected = vis_item.item_idx == list.selected_idx && list.has_focus;
+            let is_selected = list.is_row_selected(vis_item.item_idx);
             let decoration_fg = match item.decoration {
                 Decoration::Error => theme.error_fg,
                 Decoration::Warning => theme.warning_fg,
@@ -1057,6 +1106,7 @@ pub(crate) mod native_surface_paint {
                 h_scroll: 0,
                 max_content_width: None,
                 show_v_scrollbar: true,
+                ..Default::default()
             }
         }
 
@@ -1396,6 +1446,8 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            selection_mode: SelectionMode::Multi,
+            selected_indices: vec![0, 1],
         };
         let json = serde_json::to_string(&list).unwrap();
         let back: ListView = serde_json::from_str(&json).unwrap();
@@ -1430,6 +1482,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            ..Default::default()
         }
     }
 

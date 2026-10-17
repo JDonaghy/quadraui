@@ -564,8 +564,8 @@ pub use primitives::tooltip::{
     TooltipMeasure, TooltipPlacement,
 };
 pub use primitives::tree::{
-    TreeEvent, TreeRow, TreeRowEditState, TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout,
-    VisibleTreeRow,
+    selected_paths_for_indices, TreeEvent, TreeRow, TreeRowEditState, TreeRowMeasure, TreeView,
+    TreeViewHit, TreeViewLayout, VisibleTreeRow,
 };
 pub use style::Style;
 pub use text_util::{
@@ -575,8 +575,8 @@ pub use text_util::{
 pub use theme::Theme;
 pub use transition::{lerp, lerp_rect, Transition};
 pub use types::{
-    Badge, Color, Decoration, Icon, Modifiers, SelectionMode, StyledSpan, StyledText, TreePath,
-    TreeStyle, WidgetId,
+    apply_selection_gesture, Badge, Color, Decoration, Icon, Modifiers, SelectionGesture,
+    SelectionMode, StyledSpan, StyledText, TreePath, TreeStyle, WidgetId,
 };
 pub use undo::UndoStack;
 

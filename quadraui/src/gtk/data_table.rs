@@ -163,7 +163,7 @@ pub fn draw_data_table(
         let abs_idx = table.scroll_offset + row_idx;
         let row = &table.rows[abs_idx];
         let row_y = body_y + row_idx as f64 * line_height;
-        let is_selected = table.selected_idx == Some(abs_idx);
+        let is_selected = table.is_row_selected(abs_idx);
         let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
 
         if is_selected {
@@ -438,7 +438,7 @@ mod tests {
     use super::*;
     use crate::primitives::data_table::{Column, ColumnWidth, DataRow};
     use crate::theme::Theme;
-    use crate::types::{Color, Decoration, StyledText, WidgetId};
+    use crate::types::{Color, Decoration, SelectionMode, StyledText, WidgetId};
     use pangocairo::cairo::{Context, Format, ImageSurface};
 
     const W: i32 = 300;
@@ -493,6 +493,8 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
+            selection_mode: SelectionMode::default(),
+            selected_indices: Vec::new(),
         }
     }
 
