@@ -95,6 +95,21 @@ only a push to `main` runs this workflow.
   chevron hit-testing agrees with what's actually painted — mirroring
   the GTK and macOS backends' `gtk_tree_layout_measured` /
   `mac_tree_layout`.
+### Added
+
+- `FindReplacePanel`'s GUI toggle buttons (match case, whole word, regex,
+  preserve case) now paint codicon glyphs instead of literal `Aa`/`ab`/
+  `.*`/`AB` text on every pixel backend (GTK, macOS, Win-GUI) that goes
+  through `native_surface_paint`. TUI (`tui::find_replace`) is unaffected
+  and keeps painting the plain-text pairs. Additive — no public shape
+  changed.
+
+### Fixed
+
+- `FindReplacePanel::hit_test` now compares the click point against each
+  region's pixel rect directly instead of flooring the click to a cell
+  first. Behaviour-preserving for every `char_width`/`line_height` pair a
+  backend actually passes.
 
 ## [0.2.1] - 2026-10-16
 ### Added
