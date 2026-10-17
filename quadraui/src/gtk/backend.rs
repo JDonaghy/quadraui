@@ -3834,8 +3834,22 @@ impl Backend for GtkBackend {
         crate::gtk::multi_section_view::metrics_for(self.current_line_height, false)
     }
 
+    /// Mirrors [`Self::form_layout`]'s pattern: measures the chevron
+    /// glyph actually configured on `tree.style` through a real Pango
+    /// layout (via [`Self::chrome_measure_layout`]) instead of
+    /// `gtk_tree_layout`'s `line_height * 0.65` estimate, so a caller
+    /// hit-testing outside a paint frame agrees with what
+    /// `Self::draw_tree` paints.
     fn tree_layout(&self, rect: QRect, tree: &TreeView) -> crate::primitives::tree::TreeViewLayout {
-        crate::gtk::gtk_tree_layout(tree, rect, self.current_line_height)
+        let char_w = self.current_char_width;
+        let pango_layout = self.chrome_measure_layout();
+        crate::gtk::gtk_tree_layout_measured(
+            tree,
+            rect,
+            self.current_line_height,
+            pango_layout.as_ref(),
+            char_w,
+        )
     }
 
     fn tree_vscrollbar(&self, rect: QRect, tree: &TreeView) -> Option<crate::Scrollbar> {
