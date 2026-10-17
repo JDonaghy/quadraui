@@ -276,6 +276,187 @@ mod tests {
         }
     }
 
+    /// Falling inside the PUA numeric range (the test above) only rules
+    /// out a wildly wrong codepoint — it does not catch a transposed
+    /// digit that lands on some *other*, unmapped-but-in-range PUA
+    /// codepoint `codicon.ttf` has no glyph for. This checks the actual
+    /// `cmap` table: every glyph constant must resolve to a non-`.notdef`
+    /// (non-zero) glyph ID, so a future addition that compiles and
+    /// passes the range check can still be caught here if it names a
+    /// codepoint the font doesn't define.
+    #[test]
+    fn glyph_constants_have_a_real_glyph_in_the_bundled_fonts_cmap() {
+        let glyphs = [
+            CHEVRON_DOWN,
+            CHEVRON_RIGHT,
+            CHEVRON_LEFT,
+            SEARCH,
+            CHECK,
+            CLOSE,
+            DIRTY,
+            SORT_ASCENDING,
+            SORT_DESCENDING,
+            CASE_SENSITIVE,
+            WHOLE_WORD,
+            REGEX,
+            PRESERVE_CASE,
+        ];
+        for g in glyphs {
+            let glyph_id = cmap_glyph_id(FONT_BYTES, g as u32)
+                .unwrap_or_else(|| panic!("codicon.ttf's cmap table could not be parsed at all"));
+            assert_ne!(
+                glyph_id, 0,
+                "{g:?} (U+{:04X}) falls inside the PUA numeric range but has no glyph \
+                 mapped in codicon.ttf's own cmap table — likely a transposed digit \
+                 landing on an unmapped codepoint",
+                g as u32
+            );
+        }
+    }
+
+    /// Look up a Unicode codepoint's glyph ID in an sfnt's `cmap` table —
+    /// just enough of
+    /// <https://learn.microsoft.com/en-us/typography/opentype/spec/cmap>
+    /// to answer
+    /// [`glyph_constants_have_a_real_glyph_in_the_bundled_fonts_cmap`]
+    /// without a font-parsing dependency. Supports the two subtable
+    /// formats a Unicode `cmap` subtable realistically uses — format 4
+    /// (segment mapping, the common case for a BMP-only font) and
+    /// format 12 (segmented coverage, used by fonts that map codepoints
+    /// outside the BMP; included for robustness even though
+    /// `codicon.ttf`'s own PUA range fits inside the BMP). Returns `0`
+    /// (the `.notdef` glyph — "not mapped") when the codepoint isn't
+    /// covered, matching how cmap readers conventionally report a miss;
+    /// returns `None` only when the table itself is missing or
+    /// malformed.
+    fn cmap_glyph_id(bytes: &[u8], codepoint: u32) -> Option<u32> {
+        let num_tables = u16::from_be_bytes(bytes.get(4..6)?.try_into().ok()?) as usize;
+        let records_start = 12;
+        let mut cmap_offset = None;
+        for i in 0..num_tables {
+            let rec = records_start + i * 16;
+            let tag = bytes.get(rec..rec + 4)?;
+            if tag == b"cmap" {
+                let offset =
+                    u32::from_be_bytes(bytes.get(rec + 8..rec + 12)?.try_into().ok()?) as usize;
+                cmap_offset = Some(offset);
+                break;
+            }
+        }
+        let cmap = cmap_offset?;
+        let num_subtables =
+            u16::from_be_bytes(bytes.get(cmap + 2..cmap + 4)?.try_into().ok()?) as usize;
+        let mut best_subtable_offset = None;
+        for i in 0..num_subtables {
+            let rec = cmap + 4 + i * 8;
+            let platform_id = u16::from_be_bytes(bytes.get(rec..rec + 2)?.try_into().ok()?);
+            let encoding_id = u16::from_be_bytes(bytes.get(rec + 2..rec + 4)?.try_into().ok()?);
+            let offset = u32::from_be_bytes(bytes.get(rec + 4..rec + 8)?.try_into().ok()?) as usize;
+            // Prefer Windows Unicode full-repertoire (3,10) over Windows
+            // Unicode BMP (3,1) — the two encodings an OpenType font's
+            // Unicode cmap actually uses.
+            let is_better = match (platform_id, encoding_id) {
+                (3, 10) => true,
+                (3, 1) if best_subtable_offset.is_none() => true,
+                _ => false,
+            };
+            if is_better {
+                best_subtable_offset = Some(cmap + offset);
+            }
+        }
+        let sub = best_subtable_offset?;
+        let format = u16::from_be_bytes(bytes.get(sub..sub + 2)?.try_into().ok()?);
+        match format {
+            4 => cmap_format4_glyph_id(bytes, sub, codepoint),
+            12 => cmap_format12_glyph_id(bytes, sub, codepoint),
+            _ => None,
+        }
+    }
+
+    /// Format-4 (segment mapping to delta values) `cmap` subtable
+    /// lookup — see [`cmap_glyph_id`]'s doc for why this format matters.
+    fn cmap_format4_glyph_id(bytes: &[u8], sub: usize, codepoint: u32) -> Option<u32> {
+        if codepoint > 0xFFFF {
+            return Some(0);
+        }
+        let c = codepoint as u16;
+        let seg_count_x2 =
+            u16::from_be_bytes(bytes.get(sub + 6..sub + 8)?.try_into().ok()?) as usize;
+        let seg_count = seg_count_x2 / 2;
+        let end_codes_start = sub + 14;
+        let start_codes_start = end_codes_start + seg_count_x2 + 2; // +2 reservedPad
+        let id_deltas_start = start_codes_start + seg_count_x2;
+        let id_range_offsets_start = id_deltas_start + seg_count_x2;
+        for i in 0..seg_count {
+            let end_code = u16::from_be_bytes(
+                bytes
+                    .get(end_codes_start + i * 2..end_codes_start + i * 2 + 2)?
+                    .try_into()
+                    .ok()?,
+            );
+            if c > end_code {
+                continue;
+            }
+            let start_code = u16::from_be_bytes(
+                bytes
+                    .get(start_codes_start + i * 2..start_codes_start + i * 2 + 2)?
+                    .try_into()
+                    .ok()?,
+            );
+            if c < start_code {
+                return Some(0);
+            }
+            let id_delta = i16::from_be_bytes(
+                bytes
+                    .get(id_deltas_start + i * 2..id_deltas_start + i * 2 + 2)?
+                    .try_into()
+                    .ok()?,
+            );
+            let id_range_offset_pos = id_range_offsets_start + i * 2;
+            let id_range_offset = u16::from_be_bytes(
+                bytes
+                    .get(id_range_offset_pos..id_range_offset_pos + 2)?
+                    .try_into()
+                    .ok()?,
+            );
+            if id_range_offset == 0 {
+                return Some(((c as i32 + id_delta as i32) as u16) as u32);
+            }
+            let glyph_index_addr =
+                id_range_offset_pos + id_range_offset as usize + 2 * (c - start_code) as usize;
+            let raw_glyph_id = u16::from_be_bytes(
+                bytes
+                    .get(glyph_index_addr..glyph_index_addr + 2)?
+                    .try_into()
+                    .ok()?,
+            );
+            if raw_glyph_id == 0 {
+                return Some(0);
+            }
+            return Some(((raw_glyph_id as i32 + id_delta as i32) as u16) as u32);
+        }
+        Some(0)
+    }
+
+    /// Format-12 (segmented coverage) `cmap` subtable lookup — see
+    /// [`cmap_glyph_id`]'s doc for why this format is also supported.
+    fn cmap_format12_glyph_id(bytes: &[u8], sub: usize, codepoint: u32) -> Option<u32> {
+        let num_groups =
+            u32::from_be_bytes(bytes.get(sub + 12..sub + 16)?.try_into().ok()?) as usize;
+        let groups_start = sub + 16;
+        for i in 0..num_groups {
+            let rec = groups_start + i * 12;
+            let start_char = u32::from_be_bytes(bytes.get(rec..rec + 4)?.try_into().ok()?);
+            let end_char = u32::from_be_bytes(bytes.get(rec + 4..rec + 8)?.try_into().ok()?);
+            if codepoint < start_char || codepoint > end_char {
+                continue;
+            }
+            let start_glyph = u32::from_be_bytes(bytes.get(rec + 8..rec + 12)?.try_into().ok()?);
+            return Some(start_glyph + (codepoint - start_char));
+        }
+        Some(0)
+    }
+
     #[test]
     fn font_family_matches_the_bundled_fonts_own_name_table() {
         // Keeps `FONT_FAMILY` honest against a future font-asset bump:
