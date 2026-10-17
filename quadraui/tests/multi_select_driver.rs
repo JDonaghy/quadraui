@@ -155,6 +155,16 @@ fn list_ctrl_click_toggles_membership() {
     driver.click_with(MouseButton::Left, ctrl, x4, y4);
     assert_eq!(driver.app().list.selected_indices, vec![2, 4]);
 
+    // Both non-adjacent rows must actually paint with the selected
+    // background — not just the anchor row — which is the whole point
+    // of the shared `is_row_selected` seam this test exercises.
+    let (x0, y0) = driver.find("item 0").unwrap();
+    let bg2 = driver.style_at(x2 as u16, y2 as u16).unwrap().bg;
+    let bg4 = driver.style_at(x4 as u16, y4 as u16).unwrap().bg;
+    let bg0 = driver.style_at(x0 as u16, y0 as u16).unwrap().bg;
+    assert_eq!(bg2, bg4, "both selected rows should share the selected bg");
+    assert_ne!(bg2, bg0, "unselected row should not paint the selected bg");
+
     // Ctrl-clicking the same row again removes it from the set.
     driver.click_with(MouseButton::Left, ctrl, x4, y4);
     assert_eq!(driver.app().list.selected_indices, vec![2]);
@@ -322,6 +332,16 @@ fn tree_ctrl_click_toggles_membership() {
     driver.click_with(MouseButton::Left, ctrl, x4, y4);
     assert_eq!(driver.app().tree.selected_paths, vec![vec![2], vec![4]]);
 
+    // Both non-adjacent rows must actually paint with the selected
+    // background on the real TUI tree rasteriser — not just the anchor
+    // row held in the now-legacy `selected_path` field.
+    let (x0, y0) = driver.find("node 0").unwrap();
+    let bg2 = driver.style_at(x2 as u16, y2 as u16).unwrap().bg;
+    let bg4 = driver.style_at(x4 as u16, y4 as u16).unwrap().bg;
+    let bg0 = driver.style_at(x0 as u16, y0 as u16).unwrap().bg;
+    assert_eq!(bg2, bg4, "both selected rows should share the selected bg");
+    assert_ne!(bg2, bg0, "unselected row should not paint the selected bg");
+
     driver.click_with(MouseButton::Left, ctrl, x4, y4);
     assert_eq!(driver.app().tree.selected_paths, vec![vec![2]]);
 }
@@ -465,6 +485,15 @@ fn data_table_ctrl_click_toggles_membership() {
     let (x4, y4) = driver.find("row 4").unwrap();
     driver.click_with(MouseButton::Left, ctrl, x4, y4);
     assert_eq!(driver.app().table.selected_indices, vec![2, 4]);
+
+    // Both non-adjacent rows must actually paint with the selected
+    // background — not just the anchor row.
+    let (x0, y0) = driver.find("row 0").unwrap();
+    let bg2 = driver.style_at(x2 as u16, y2 as u16).unwrap().bg;
+    let bg4 = driver.style_at(x4 as u16, y4 as u16).unwrap().bg;
+    let bg0 = driver.style_at(x0 as u16, y0 as u16).unwrap().bg;
+    assert_eq!(bg2, bg4, "both selected rows should share the selected bg");
+    assert_ne!(bg2, bg0, "unselected row should not paint the selected bg");
 
     driver.click_with(MouseButton::Left, ctrl, x4, y4);
     assert_eq!(driver.app().table.selected_indices, vec![2]);
