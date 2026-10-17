@@ -359,7 +359,7 @@ pub use toolbar::{draw_toolbar, draw_toolbar_with_options, win_toolbar_layout};
 #[cfg(target_os = "windows")]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 #[cfg(target_os = "windows")]
-pub use tree::{draw_tree, win_tree_layout};
+pub use tree::{draw_tree, win_tree_layout, win_tree_layout_measured};
 
 /// Serialises every `#[test]` fn in this module tree that drives the
 /// **one real systemwide Windows clipboard**.

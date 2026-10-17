@@ -8,11 +8,12 @@
 //! treatment like every other backend.
 //!
 //! [`TreeView::layout`] (the D6 layout API) does every positioning and
-//! row-clipping decision; this module only estimates row geometry
-//! (chevron width is an estimate, not a real DirectWrite measurement —
-//! see [`win_tree_layout`]'s doc, same shortcut `gtk::tree::gtk_tree_layout`
-//! takes). Paint and hit-test both derive from one [`win_tree_layout`]
-//! call, so they can't drift apart.
+//! row-clipping decision; this module measures chevron width with a
+//! real `DWrite::measure_text` call via [`win_tree_layout_measured`] —
+//! see that fn's doc. [`win_tree_layout`]'s `line_height * 0.65` estimate
+//! only runs when no live DWrite handle is attached yet. Paint and
+//! hit-test both derive from the same layout call for whatever handle
+//! is live, so they can't drift apart.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod tree;` and `backend.rs`'s module
@@ -36,25 +37,42 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::DWrite;
 use crate::event::Rect;
+use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::tree::{TreeView, TreeViewLayout};
 use crate::theme::Theme;
 
-/// Compute a [`TreeView`]'s layout without painting — the DirectWrite
-/// twin of [`draw_tree`]'s internal layout call. `line_height` is the
-/// backend's resolved line height (DIPs); row pitch and chevron
-/// boundary are derived from it exactly as [`draw_tree`] does, so a
-/// no-paint hit-test call always agrees with what the last paint drew.
+/// Compute a [`TreeView`]'s layout without painting and without a real
+/// measurer — the `line_height * 0.65` chevron-width *estimate*, for
+/// callers with no live `&dyn TextMeasure` (no surface/DWrite attached
+/// yet). Prefer [`win_tree_layout_measured`] whenever a `DWrite` handle
+/// is available — it measures the real chevron glyph instead.
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::tree_layout`]
 /// — the row-pitch/chevron math is identical across every pixel backend,
-/// so it lives there once instead of once per backend. `chevron_end_x` is
-/// a **layout estimate** (`line_height * 0.65` for the glyph width), not a
-/// real `DWrite::measure_text` call — same shortcut
-/// `gtk::tree::gtk_tree_layout` / `macos::tree::mac_tree_layout` take,
-/// since exact glyph metrics aren't available without laying out each
-/// chevron per row.
+/// so it lives there once instead of once per backend.
 pub fn win_tree_layout(tree: &TreeView, rect: Rect, line_height: f32) -> TreeViewLayout {
     crate::primitives::layout_metrics::tree_layout(tree, rect, line_height as f64)
+}
+
+/// Like [`win_tree_layout`], but measures the chevron glyph actually
+/// configured on `tree.style` (`chevron_expanded` / `chevron_collapsed`)
+/// through `measure` instead of estimating its pixel width as
+/// `line_height * 0.65`. `DWrite` implements
+/// [`TextMeasure`](crate::primitives::layout_metrics::TextMeasure)
+/// directly (see `win::text`'s impl), so callers pass a live `&DWrite`
+/// straight through — no adapter type needed, same shape
+/// `macos::tree::mac_tree_layout` takes with `&CTFont`.
+///
+/// [`draw_tree`] and [`crate::win::WinBackend::tree_layout`] both go
+/// through this so paint and hit-test never disagree about where the
+/// chevron ends.
+pub fn win_tree_layout_measured(
+    measure: &dyn TextMeasure,
+    rect: Rect,
+    tree: &TreeView,
+    line_height: f32,
+) -> TreeViewLayout {
+    crate::primitives::layout_metrics::tree_layout_measured(tree, rect, line_height as f64, measure)
 }
 
 /// Draw a [`TreeView`] into `rect` (DIPs) on `target`. Returns the
@@ -96,7 +114,7 @@ pub fn draw_tree(
     nerd_fonts_enabled: bool,
     theme: &Theme,
 ) -> TreeViewLayout {
-    let layout = win_tree_layout(tree, rect, line_height);
+    let layout = win_tree_layout_measured(dwrite, rect, tree, line_height);
 
     let mut surface = super::surface::D2dSurface {
         target,
@@ -584,6 +602,44 @@ mod tests {
             (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
             "expected the v-scrollbar track at ({probe_x}, {probe_y}) to be painted \
              (non-background) — the #1075 regression this test guards"
+        );
+    }
+
+    /// [`win_tree_layout_measured`] must size the chevron end-x from the
+    /// real DirectWrite glyph width of `tree.style.chevron_expanded`,
+    /// not [`win_tree_layout`]'s `line_height * 0.65` estimate — and the
+    /// resulting boundary must still resolve to `TreeViewHit::Chevron`.
+    #[test]
+    fn win_tree_layout_measured_uses_real_chevron_glyph_width_not_the_estimate() {
+        let tree = make_tree(vec![branch(0, "alpha", true)]);
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+
+        let estimated = win_tree_layout(&tree, rect, LINE_HEIGHT);
+        let measured = win_tree_layout_measured(&dwrite, rect, &tree, LINE_HEIGHT);
+
+        // The Chevron hit-region's width *is* the row's chevron_end_x
+        // (see `TreeView::layout`'s hit-region split).
+        let est_x = estimated.hit_regions[0].0.width;
+        let measured_x = measured.hit_regions[0].0.width;
+        assert_ne!(
+            est_x, measured_x,
+            "measured chevron end-x must use the real DirectWrite glyph width \
+             ({measured_x}), not the line_height * 0.65 estimate ({est_x})",
+        );
+
+        let glyph_w = dwrite.width_of(&tree.style.chevron_expanded);
+        let indent_px = (LINE_HEIGHT * 0.9).round();
+        let expected = 2.0 + tree.rows[0].indent as f32 * indent_px + glyph_w + 4.0;
+        assert!(
+            (measured_x - expected).abs() < 0.01,
+            "measured chevron end-x {measured_x} must equal the DirectWrite-measured \
+             geometry {expected} (glyph advance {glyph_w})",
+        );
+        assert_eq!(
+            measured.hit_test(measured_x - 1.0, 4.0),
+            TreeViewHit::Chevron(0),
+            "the measured boundary itself must still resolve to the chevron hit region",
         );
     }
 }
