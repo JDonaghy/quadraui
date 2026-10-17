@@ -3808,16 +3808,34 @@ impl Backend for WinBackend {
         crate::primitives::layout_metrics::msv_metrics(self.current_line_height as f64, false)
     }
 
-    /// Like [`Self::activity_bar_layout`], this needs no measurer
-    /// at all — chevron width is a `line_height`-derived estimate (see
-    /// `win::tree::win_tree_layout`'s doc), not a real DirectWrite
-    /// measurement — so this doesn't even need `self.dwrite`, only the
-    /// `target_os = "windows"` gate every method in this file shares
-    /// (the callee lives in a Windows-only module).
+    /// Pure measurement — only needs `self.dwrite`, not a live render
+    /// target. See [`Self::data_table_layout`]'s doc. Prefers
+    /// `chrome_dwrite`, matching [`Self::draw_tree`]'s paint font — both
+    /// must resolve the same handle or the chevron boundary measured
+    /// here would disagree with what the paint actually fits.
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
-        // `crate::primitives::layout_metrics::tree_layout` is fully
-        // portable — see `msv_layout`'s doc.
-        crate::primitives::layout_metrics::tree_layout(tree, rect, self.current_line_height as f64)
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
+            return super::tree::win_tree_layout_measured(
+                dwrite,
+                rect,
+                tree,
+                self.current_line_height,
+            );
+        }
+        // No live DWrite handle yet (fresh backend, device lost, or a
+        // non-Windows host, where `win::tree` never compiles) — nominal
+        // char-width estimate for the chevron glyph instead; real
+        // per-glyph measurement resumes once
+        // `attach_surface`/`attach_headless` builds one.
+        crate::primitives::layout_metrics::tree_layout_measured(
+            tree,
+            rect,
+            self.current_line_height as f64,
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
+        )
     }
 
     /// `vscrollbar` deals purely in row counts/row-height, so
