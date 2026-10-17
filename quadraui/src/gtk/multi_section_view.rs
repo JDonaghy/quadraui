@@ -66,6 +66,7 @@ pub fn draw_multi_section_view(
     theme: &Theme,
     line_height: f64,
     nerd_fonts_enabled: bool,
+    caret_visible: bool,
 ) {
     if w <= 0.0 || h <= 0.0 || view.axis == Axis::Horizontal {
         return;
@@ -104,7 +105,7 @@ pub fn draw_multi_section_view(
 
         if !s_layout.collapsed {
             if let (Some(aux), Some(aux_b)) = (&section.aux, s_layout.aux_bounds) {
-                paint_aux(cr, layout, aux_b, aux, theme);
+                paint_aux(cr, layout, aux_b, aux, theme, caret_visible);
             }
 
             paint_body(
@@ -187,20 +188,28 @@ fn paint_header(
     );
 }
 
-fn paint_aux(cr: &Context, layout: &pango::Layout, bounds: QRect, aux: &SectionAux, theme: &Theme) {
+fn paint_aux(
+    cr: &Context,
+    layout: &pango::Layout,
+    bounds: QRect,
+    aux: &SectionAux,
+    theme: &Theme,
+    caret_visible: bool,
+) {
     let mut surface = super::surface::CairoSurface {
         cr,
         layout: Some(layout),
         translucent_fill: true,
     };
-    // `caret_visible: true` — GTK has no caret-blink timer for MSV aux
-    // inputs, so the caret always paints while focused.
+    // `caret_visible` comes from `GtkBackend::caret_blink` — see
+    // `crate::caret_blink`'s module doc and
+    // `super::run::setup_caret_blink`'s blink-timer wiring.
     crate::primitives::multi_section_view::native_surface_paint::paint_aux(
         &mut surface,
         bounds,
         aux,
         theme,
-        true,
+        caret_visible,
     );
 }
 
@@ -500,7 +509,7 @@ fn paint_divider(cr: &Context, bounds: QRect, theme: &Theme) {
 mod tests {
     use super::*;
     use crate::primitives::multi_section_view::{
-        MultiSectionViewHit, ScrollMode, ScrollbarHit, Section, SectionSize,
+        InlineInput, MultiSectionViewHit, ScrollMode, ScrollbarHit, Section, SectionSize,
     };
     use crate::primitives::tree::{TreeRow, TreeView};
     use crate::types::{Color, Decoration, SelectionMode, WidgetId};
@@ -581,10 +590,59 @@ mod tests {
         }
     }
 
+    /// Single-section view with a focused, empty `Search` aux row — the
+    /// caret sits at `aux.x + 4` (text is empty, `caret: 0`), so a
+    /// single pixel probe distinguishes "caret painted" from "caret
+    /// skipped" without measuring glyph widths. Mirrors macOS's
+    /// `search_section` test fixture.
+    fn search_section() -> MultiSectionView {
+        view_with(vec![Section {
+            id: "search".into(),
+            header: SectionHeader {
+                title: StyledText::plain("Search"),
+                show_chevron: false,
+                ..Default::default()
+            },
+            aux: Some(SectionAux::Search(InlineInput {
+                id: WidgetId::new("query"),
+                text: String::new(),
+                caret: 0,
+                placeholder: None,
+                has_focus: true,
+            })),
+            body: SectionBody::Tree(TreeView {
+                id: WidgetId::new("tree:search"),
+                rows: vec![],
+                selection_mode: SelectionMode::Single,
+                selected_path: None,
+                scroll_offset: 0,
+                style: Default::default(),
+                has_focus: false,
+            }),
+            size: SectionSize::EqualShare,
+            collapsed: false,
+            min_size: None,
+            max_size: None,
+        }])
+    }
+
     /// Paint `view` into a fresh surface; return (surface, layout).
     /// Hit-test uses the SAME layout the rasteriser used internally —
     /// that's the source-of-truth contract `gtk_msv_layout` enforces.
+    /// Paints with the caret phase on, same as
+    /// [`paint_then_layout_with_caret`] called with `true`; most tests
+    /// here don't exercise `SectionAux::Input`/`Search` caret painting.
     fn paint_then_layout(view: &MultiSectionView) -> (ImageSurface, MultiSectionViewLayout) {
+        paint_then_layout_with_caret(view, true)
+    }
+
+    /// Same as [`paint_then_layout`], with an explicit caret-blink
+    /// phase threaded into the aux-row text-input caret — mirrors
+    /// macOS's `paint_with_caret_phase` test helper.
+    fn paint_then_layout_with_caret(
+        view: &MultiSectionView,
+        caret_visible: bool,
+    ) -> (ImageSurface, MultiSectionViewLayout) {
         let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
         // Clear surface to white so non-white pixels uniquely identify
         // painted regions.
@@ -604,6 +662,7 @@ mod tests {
                 &test_theme(),
                 LINE_HEIGHT,
                 /* nerd_fonts */ false,
+                caret_visible,
             );
         }
         let bounds = QRect::new(0.0, 0.0, W as f32, H as f32);
@@ -1173,6 +1232,79 @@ mod tests {
             (bg.r, bg.g, bg.b),
             "an overlong title must not bleed ink into the header's trailing margin \
              at ({probe_x}, {probe_y}); got ({r}, {g}, {b}), expected header_bg {bg:?}",
+        );
+    }
+
+    // ── Caret blink threading ────────────────────────────────────────────
+    //
+    // `caret_visible` flows from `GtkBackend::caret_blink`
+    // (`crate::caret_blink::CaretBlinkState`) through
+    // `draw_multi_section_view`/`paint_aux` into
+    // `native_surface_paint::paint_aux`. These tests pin the phase at
+    // the paint-function boundary (bypassing the timer entirely) and
+    // assert the single caret pixel flips between `theme.foreground`
+    // and `theme.input_bg` — mirrors macOS's
+    // `caret_visible_true_paints_foreground_at_caret_position`/
+    // `caret_visible_false_leaves_caret_column_as_input_bg`/
+    // `unfocused_input_skips_caret_regardless_of_phase` tests.
+
+    /// Pixel the empty, focused `search_section` input's caret paints
+    /// at: `aux.x + 4` (text is empty so there's no glyph run before
+    /// it), vertically centered in the aux row.
+    fn caret_pixel(layout: &MultiSectionViewLayout) -> (i32, i32) {
+        let aux = layout.sections[0]
+            .aux_bounds
+            .expect("search_section always has an aux row");
+        ((aux.x + 4.0) as i32, (aux.y + aux.height / 2.0) as i32)
+    }
+
+    #[test]
+    fn gtk_caret_visible_true_paints_foreground_at_caret_position() {
+        let v = search_section();
+        let (mut surface, layout) = paint_then_layout_with_caret(&v, true);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let (x, y) = caret_pixel(&layout);
+        let fg = test_theme().foreground;
+        assert_eq!(
+            pixel(&data, stride, x, y),
+            (fg.r, fg.g, fg.b),
+            "caret_visible=true must paint the caret at ({x}, {y})",
+        );
+    }
+
+    #[test]
+    fn gtk_caret_visible_false_leaves_caret_column_as_input_bg() {
+        let v = search_section();
+        let (mut surface, layout) = paint_then_layout_with_caret(&v, false);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let (x, y) = caret_pixel(&layout);
+        let input_bg = test_theme().input_bg;
+        assert_eq!(
+            pixel(&data, stride, x, y),
+            (input_bg.r, input_bg.g, input_bg.b),
+            "caret_visible=false must skip the caret fill at ({x}, {y})",
+        );
+    }
+
+    #[test]
+    fn gtk_unfocused_input_skips_caret_regardless_of_phase() {
+        let mut v = search_section();
+        if let Some(SectionAux::Search(input)) = v.sections[0].aux.as_mut() {
+            input.has_focus = false;
+        } else {
+            panic!("search_section must build a Search aux");
+        }
+        let (mut surface, layout) = paint_then_layout_with_caret(&v, true);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let (x, y) = caret_pixel(&layout);
+        let input_bg = test_theme().input_bg;
+        assert_eq!(
+            pixel(&data, stride, x, y),
+            (input_bg.r, input_bg.g, input_bg.b),
+            "an unfocused input must never paint a caret, even with caret_visible=true",
         );
     }
 }

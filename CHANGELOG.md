@@ -60,6 +60,14 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Fixed
 
+- GTK's `MultiSectionView` aux-row text input caret now blinks, matching
+  macOS's `caret_blink` behaviour. `GtkBackend` owns a
+  `caret_blink::CaretBlinkState`, ticked every `CaretBlinkState::period`
+  by a recurring `glib::timeout_add_local` installed in
+  `gtk::run::setup_caret_blink`, with `KeyPressed`/`CharTyped` events
+  holding the caret solid through a typing pause via
+  `GtkBackend::note_caret_activity`. Previously the caret was always
+  painted solid (`caret_visible: true` was hardcoded).
 - GTK `TreeView` chevron hit-region width now comes from a real Pango
   glyph measurement of `tree.style`'s configured chevron character,
   instead of the `line_height * 0.65` estimate `gtk_tree_layout` uses.
