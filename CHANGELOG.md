@@ -58,6 +58,17 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Fixed
+
+- GTK `TreeView` chevron hit-region width now comes from a real Pango
+  glyph measurement of `tree.style`'s configured chevron character,
+  instead of the `line_height * 0.65` estimate `gtk_tree_layout` uses.
+  Both `draw_tree`'s paint path and `GtkBackend::tree_layout`'s
+  hit-test path go through the new `gtk_tree_layout_measured` (backed
+  by a fresh Pango layout from `GtkBackend::chrome_measure_layout` when
+  no live layout is already in hand), so chevron hit-testing agrees
+  with what's actually painted — mirroring the macOS backend's
+  `mac_tree_layout`.
 
 ## [0.2.1] - 2026-10-16
 ### Added
