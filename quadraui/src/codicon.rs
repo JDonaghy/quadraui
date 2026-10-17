@@ -159,6 +159,62 @@ pub(crate) const SORT_ASCENDING: char = '\u{eb71}';
 /// Win-GUI both go through.
 pub(crate) const SORT_DESCENDING: char = '\u{eb6e}';
 
+/// Find/replace "Match Case" toggle — `codicon-case-sensitive` (TUI
+/// paints the plain glyph pair `Aa`). Painted by the shared
+/// `primitives::find_replace::native_surface_paint` path every pixel
+/// backend (GTK, macOS, Win-GUI) goes through.
+#[cfg_attr(
+    not(any(
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        all(feature = "win", target_os = "windows")
+    )),
+    allow(dead_code)
+)]
+pub(crate) const CASE_SENSITIVE: char = '\u{eab1}';
+
+/// Find/replace "Match Whole Word" toggle — `codicon-whole-word` (TUI
+/// paints the plain glyph pair `ab`). Painted by the shared
+/// `primitives::find_replace::native_surface_paint` path every pixel
+/// backend (GTK, macOS, Win-GUI) goes through.
+#[cfg_attr(
+    not(any(
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        all(feature = "win", target_os = "windows")
+    )),
+    allow(dead_code)
+)]
+pub(crate) const WHOLE_WORD: char = '\u{eb7e}';
+
+/// Find/replace "Use Regular Expression" toggle — `codicon-regex`
+/// (TUI paints the plain glyph pair `.*`). Painted by the shared
+/// `primitives::find_replace::native_surface_paint` path every pixel
+/// backend (GTK, macOS, Win-GUI) goes through.
+#[cfg_attr(
+    not(any(
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        all(feature = "win", target_os = "windows")
+    )),
+    allow(dead_code)
+)]
+pub(crate) const REGEX: char = '\u{eb38}';
+
+/// Replace-row "Preserve Case" toggle — `codicon-preserve-case` (TUI
+/// paints the plain glyph pair `AB`). Painted by the shared
+/// `primitives::find_replace::native_surface_paint` path every pixel
+/// backend (GTK, macOS, Win-GUI) goes through.
+#[cfg_attr(
+    not(any(
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        all(feature = "win", target_os = "windows")
+    )),
+    allow(dead_code)
+)]
+pub(crate) const PRESERVE_CASE: char = '\u{eb2e}';
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +258,10 @@ mod tests {
             DIRTY,
             SORT_ASCENDING,
             SORT_DESCENDING,
+            CASE_SENSITIVE,
+            WHOLE_WORD,
+            REGEX,
+            PRESERVE_CASE,
         ];
         for g in glyphs {
             assert!(
