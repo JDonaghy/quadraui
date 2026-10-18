@@ -74,7 +74,7 @@ use serde::{Deserialize, Serialize};
 ///         validation: None,
 ///     }],
 ///     focused_field: None,
-///     scroll_offset: 0,
+///     scroll_offset: 0.0,
 ///     has_focus: true,
 /// };
 ///

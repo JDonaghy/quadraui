@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 ///     }],
 ///     selection_mode: SelectionMode::Single,
 ///     selected_path: Some(vec![0]),
-///     scroll_offset: 0,
+///     scroll_offset: 0.0,
 ///     style: TreeStyle::default(),
 ///     has_focus: true,
 /// };

@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 ///         decoration: Default::default(),
 ///     }],
 ///     selected_idx: 0,
-///     scroll_offset: 0,
+///     scroll_offset: 0.0,
 ///     has_focus: true,
 ///     bordered: false,
 ///     h_scroll: 0,

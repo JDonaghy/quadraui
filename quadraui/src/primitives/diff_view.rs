@@ -428,7 +428,7 @@ fn scroll_window(scroll_offset: usize, visible_rows: usize, total: usize) -> (us
 ///     }],
 ///     mode: DiffMode::SideBySide,
 ///     editability: Default::default(),
-///     scroll_offset: 0,
+///     scroll_offset: 0.0,
 ///     focused_pane: Default::default(),
 ///     has_focus: false,
 /// };

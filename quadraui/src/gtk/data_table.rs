@@ -276,7 +276,7 @@ pub fn draw_data_table(
         let sb = crate::primitives::scrollbar::Scrollbar::vertical(
             table.id,
             sb_track,
-            table.scroll_offset as f32,
+            table.scroll_offset,
             table.rows.len() as f32,
             layout.visible_rows as f32,
             line_height as f32,

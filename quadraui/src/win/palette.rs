@@ -100,7 +100,7 @@ mod tests {
             query_cursor: 2,
             items: vec![item("open file", vec![0, 1]), item("close", vec![])],
             selected_idx: 0,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             total_count: 0,
             has_focus: true,
             show_query: true,

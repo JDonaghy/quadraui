@@ -154,7 +154,7 @@ pub enum SortDirection {
 ///         decoration: Default::default(),
 ///     }],
 ///     selected_idx: None,
-///     scroll_offset: 0,
+///     scroll_offset: 0.0,
 ///     sort: None,
 ///     has_focus: true,
 ///     show_scrollbar: false,
@@ -1001,7 +1001,7 @@ pub(crate) mod native_surface_paint {
             let sb = Scrollbar::vertical(
                 table.id,
                 track,
-                table.scroll_offset as f32,
+                table.scroll_offset,
                 table.rows.len() as f32,
                 layout.visible_rows as f32,
                 line_height,

@@ -84,7 +84,7 @@ pub enum PaletteMode {
 ///         expanded: false,
 ///     }],
 ///     selected_idx: 0,
-///     scroll_offset: 0,
+///     scroll_offset: 0.0,
 ///     total_count: 1,
 ///     has_focus: true,
 ///     show_query: true,

@@ -193,10 +193,10 @@ pub struct BoardColumn {
 ///             badges: vec![],
 ///             hint: None,
 ///         }],
-///         scroll_offset: 0,
+///         scroll_offset: 0.0,
 ///     }],
 ///     selected_card_id: None,
-///     col_scroll_offset: 0,
+///     col_scroll_offset: 0.0,
 /// };
 ///
 /// let measure = BoardMeasure::new(20.0, 1.0, 1.0, 3.0, 1.0);

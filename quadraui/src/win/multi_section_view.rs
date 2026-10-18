@@ -519,7 +519,7 @@ mod tests {
                     .collect(),
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 style: TreeStyle::default(),
                 has_focus: false,
             }),
@@ -608,7 +608,7 @@ mod tests {
                     rows: vec![],
                     selection_mode: SelectionMode::Single,
                     selected_path: None,
-                    scroll_offset: 0,
+                    scroll_offset: 0.0,
                     style: TreeStyle::default(),
                     has_focus: false,
                 }),
@@ -949,7 +949,7 @@ mod tests {
                 MessageRow::new("line one\nline two", Color::rgb(255, 255, 255), 0.0),
                 MessageRow::new("single line", Color::rgb(255, 255, 255), 0.0),
             ],
-            scroll_top: 0,
+            scroll_top: 0.0,
         });
 
         let view = MultiSectionView {
@@ -1022,7 +1022,7 @@ mod tests {
                 Color::rgb(255, 255, 255),
                 0.0,
             )],
-            scroll_top: 0,
+            scroll_top: 0.0,
         });
         let view = MultiSectionView {
             id: WidgetId::new("msv"),

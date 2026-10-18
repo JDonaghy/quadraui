@@ -854,7 +854,7 @@ fn paint_scrollbars(ctx: &EditorPaintCtx) {
         let sb = Scrollbar::vertical(
             "gtk:editor:v_scrollbar",
             v_track,
-            editor.scroll_top as f32,
+            editor.scroll_top,
             editor.total_lines as f32,
             editor_geom.visible_lines as f32,
             line_height as f32,

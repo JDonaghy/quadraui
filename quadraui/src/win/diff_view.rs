@@ -50,7 +50,7 @@ mod tests {
             hunks: compute_hunks(left, right),
             mode,
             editability: Default::default(),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             focused_pane: Default::default(),
             has_focus: false,
         }

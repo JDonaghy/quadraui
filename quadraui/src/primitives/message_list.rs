@@ -105,7 +105,7 @@ impl MessageRow {
 ///         MessageRow::new("You: hello", Color::rgb(200, 200, 200), 0.0),
 ///         MessageRow::new("AI: hi there", Color::rgb(100, 200, 255), 0.0),
 ///     ],
-///     scroll_top: 0,
+///     scroll_top: 0.0,
 /// };
 ///
 /// let rect = Rect::new(0.0, 0.0, 80.0, 10.0);

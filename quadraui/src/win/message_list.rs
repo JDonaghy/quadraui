@@ -88,7 +88,7 @@ mod tests {
                 MessageRow::new("AI:", Color::rgb(0, 200, 255), 0.0),
                 MessageRow::new("hello", Color::rgb(220, 220, 220), 8.0),
             ],
-            scroll_top: 0,
+            scroll_top: 0.0,
         }
     }
 
@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn scroll_top_skips_leading_rows() {
         let mut list = sample_list();
-        list.scroll_top = 2;
+        list.scroll_top = 2.0;
         let s = paint(&list);
         let mut has_paint = false;
         'outer: for y in 0..LINE_HEIGHT as u32 {

@@ -363,7 +363,7 @@ mod tests {
         #[test]
         fn scroll_offset_paint_and_click_agree() {
             let mut list = make_list((0..6).map(|i| item(&format!("row-{i}"))).collect());
-            list.scroll_offset = 2;
+            list.scroll_offset = 2.0;
             let rect = Rect::new(0.0, 0.0, W, H);
             let layout = win_list_layout(&list, rect, LINE_HEIGHT, CHAR_WIDTH);
             let first = layout.visible_items.first().expect("has items");

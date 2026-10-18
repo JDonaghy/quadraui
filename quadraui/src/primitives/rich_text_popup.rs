@@ -71,7 +71,7 @@ use serde::{Deserialize, Serialize};
 ///     lines: vec![StyledText::plain("fn main() -> ()")],
 ///     line_text: vec!["fn main() -> ()".to_string()],
 ///     line_scales: vec![],
-///     scroll_top: 0,
+///     scroll_top: 0.0,
 ///     max_visible_rows: 10,
 ///     has_focus: true,
 ///     selection: None,
