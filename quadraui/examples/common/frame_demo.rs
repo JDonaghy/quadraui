@@ -193,16 +193,16 @@ impl AppLogic for FrameDemo {
         let mut frame = ScreenLayout::new();
         frame.push(Surface::TabBar {
             rect: tab_rect,
-            bar: &tab_bar,
+            bar: tab_bar,
             hovered_close: None,
         });
         frame.push(Surface::List {
             rect: list_rect,
-            list: &list,
+            list,
         });
         frame.push(Surface::StatusBar {
             rect: status_rect,
-            bar: &status,
+            bar: status,
             hovered: None,
             pressed: None,
         });

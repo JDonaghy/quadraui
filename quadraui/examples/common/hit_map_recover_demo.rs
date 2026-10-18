@@ -3,15 +3,15 @@
 //! `render()` paints the TabBar, ListView, and StatusBar with direct
 //! `backend.draw_*()` calls — three independent call sites, standing in
 //! for an app whose real paint pass interleaves `Surface` painting with
-//! other non-`Surface` rendering. Only *after* all three are on screen does the
-//! demo build a `ScreenLayout`, push the same objects it just painted,
-//! and call [`ScreenLayout::hit_map`] — never `.draw()` — to
-//! recover a `FrameHitMap` for click dispatch.
+//! other non-`Surface` rendering. Only *after* all three are on screen
+//! does the demo build a fresh `ScreenLayout`, hand it the very objects
+//! it just painted, and call [`ScreenLayout::hit_map`] — never
+//! `.draw()` — to recover a `FrameHitMap` for click dispatch.
 //!
-//! `hit_map()` makes no `backend.draw_*()` calls, so pushing surfaces
-//! into it can never reorder or repeat the real painting above. Compare
-//! with `FrameDemo` (`frame_demo.rs`), which paints *and* hit-maps in a
-//! single `ScreenLayout::draw()` batch.
+//! `hit_map()` makes no `backend.draw_*()` calls, so handing surfaces to
+//! a `ScreenLayout` can never reorder or repeat the real painting above.
+//! Compare with `FrameDemo` (`frame_demo.rs`), which paints *and*
+//! hit-maps in a single `ScreenLayout::draw()` batch.
 
 use std::cell::RefCell;
 
@@ -154,24 +154,26 @@ impl AppLogic for HitMapRecoverDemo {
         backend.draw_status_bar_interactive(status_rect, &status, &InteractionState::new());
 
         // ── Hit-map recovery: zero additional backend calls. ────────
-        // Push the *same* objects just painted above into a fresh
-        // `ScreenLayout`, purely to recover a `FrameHitMap`. `hit_map()`
-        // never touches `backend`, so this can run after — or be
-        // reordered relative to — any of the paint calls above with no
-        // risk of re-rendering or reordering real output.
+        // Hand the *same* objects just painted above to a fresh
+        // `ScreenLayout`, purely to recover a `FrameHitMap`. The paint
+        // calls above are done with them, so each one moves into its
+        // surface — no clone. `hit_map()` never touches `backend`, so
+        // this can run after — or be reordered relative to — any of the
+        // paint calls above with no risk of re-rendering or reordering
+        // real output.
         let mut frame = ScreenLayout::new();
         frame.push(Surface::TabBar {
             rect: tab_rect,
-            bar: &tab_bar,
+            bar: tab_bar,
             hovered_close: None,
         });
         frame.push(Surface::List {
             rect: list_rect,
-            list: &list,
+            list,
         });
         frame.push(Surface::StatusBar {
             rect: status_rect,
-            bar: &status,
+            bar: status,
             hovered: None,
             pressed: None,
         });
