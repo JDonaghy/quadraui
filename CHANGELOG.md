@@ -60,6 +60,24 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Changed
 
+- `Surface` no longer has a lifetime parameter: every variant carries its
+  primitive descriptor by value (`Surface::StatusBar { bar: StatusBar, .. }`
+  rather than `bar: &'a StatusBar`), including the six overlay variants'
+  companion `*Layout` values, and `hovered`/`pressed` take
+  `Option<WidgetId>` instead of `Option<&WidgetId>`. `ScreenLayout` loses
+  its lifetime parameter accordingly, so a `ScreenLayout` can be stored in
+  a struct, returned from a function, or built well ahead of the frame that
+  draws it, rather than being pinned to the scope holding the borrowed
+  descriptors.
+
+  **Breaking, authorized for the v0.2 batch.** A lifetime removal admits
+  no deprecation shim — `Surface<'a>` and `Surface` cannot coexist under
+  one name — so rule 8's two-PR protocol does not apply here. The caller
+  migration is mechanical: drop the `&` on each `Surface` field, cloning
+  the primitive only where the caller still needs it after the push, and
+  pass `Option<WidgetId>` instead of `Option<&WidgetId>` for `hovered` and
+  `pressed`. Every in-tree call site (`examples/hello.rs`, the shared
+  `examples/common/` demos, `templates/app`) was a move, not a clone.
 - `A11yInfo`'s role is now typed instead of a free string: a new
   `#[non_exhaustive]` `A11yRole` enum covers window, toolbar, button,
   tab/tab list, menu/menu item, tree/tree item, list/list item,

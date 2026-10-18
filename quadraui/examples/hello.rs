@@ -57,7 +57,7 @@ impl ShellApp for Hello {
         let mut frame = ScreenLayout::new();
         frame.push(Surface::StatusBar {
             rect,
-            bar: &bar,
+            bar,
             hovered: None,
             pressed: None,
         });

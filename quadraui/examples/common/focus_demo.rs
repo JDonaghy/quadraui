@@ -173,15 +173,15 @@ impl AppLogic for FocusDemo {
         let mut frame = ScreenLayout::new();
         frame.push(Surface::List {
             rect: Rect::new(0.0, 0.0, half_w, body_h),
-            list: &left,
+            list: left,
         });
         frame.push(Surface::List {
             rect: Rect::new(half_w, 0.0, vp.width - half_w, body_h),
-            list: &right,
+            list: right,
         });
         frame.push(Surface::StatusBar {
             rect: Rect::new(0.0, body_h, vp.width, status_h),
-            bar: &status,
+            bar: status,
             hovered: None,
             pressed: None,
         });
