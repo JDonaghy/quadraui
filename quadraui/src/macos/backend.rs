@@ -6113,6 +6113,8 @@ mod tests {
                 decoration: crate::types::Decoration::default(),
             }],
             selected_idx: 0,
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             scroll_offset: 0,
             has_focus: true,
             bordered,
