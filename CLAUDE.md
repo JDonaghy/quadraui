@@ -79,6 +79,15 @@ three load-bearing properties** (`working-directory:` not `--manifest-path`,
    deliberately has no defaults); `#[non_exhaustive]` on public structs/enums; a
    new `Default` field or builder instead of a new required argument; a new
    function alongside the old one instead of a rename.
+
+   **Descriptors carry no renderer-derived state.** The declarative descriptors
+   (`primitives/*`) are built by consumers with full struct literals, so they can
+   be neither `#[non_exhaustive]` nor given a new field without breaking every call
+   site: a required-field add (#1451) or a field-type change (#1584) is a break no
+   work leg can land — it fails the sealed oracle + the downstream compile-truth
+   gate, both unfixable from a work diff. Keep selection / scroll / focus state the
+   renderer derives in a controller (`compose/`), not on the descriptor — selection
+   in the app (#1451), the scroll fraction in the controller (#1584).
 3. **If it must break, deprecate first — two PRs.** PR 1 adds the new shape and
    keeps the old one compiling behind `#[deprecated(since = "…", note = "use X
    instead")]` (alias / `From` / forwarding method), migrates every **in-repo**
