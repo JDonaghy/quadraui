@@ -101,6 +101,12 @@ only a push to `main` runs this workflow.
   keyboard extension. Each of `ListViewEvent`, `TreeEvent` and
   `DataTableEvent` gains a new `SelectionSet` variant carrying the
   resulting selection; existing `Single`-mode call sites are unaffected.
+- `FindReplacePanel`'s GUI toggle buttons (match case, whole word, regex,
+  preserve case) now paint codicon glyphs instead of literal `Aa`/`ab`/
+  `.*`/`AB` text on every pixel backend (GTK, macOS, Win-GUI) that goes
+  through `native_surface_paint`. TUI (`tui::find_replace`) is unaffected
+  and keeps painting the plain-text pairs. Additive — no public shape
+  changed.
 
 ### Fixed
 
@@ -114,6 +120,10 @@ only a push to `main` runs this workflow.
   measured the configured string literally even when paint substituted the
   codicon glyph for the default style, so the chevron hit-region's end-x could
   disagree with where the glyph paint drew.
+- `FindReplacePanel::hit_test` now compares the click point against each
+  region's pixel rect directly instead of flooring the click to a cell
+  first. Behaviour-preserving for every `char_width`/`line_height` pair a
+  backend actually passes.
 
 ## [0.2.2] - 2026-10-17
 ### Fixed
@@ -151,21 +161,6 @@ only a push to `main` runs this workflow.
   chevron hit-testing agrees with what's actually painted — mirroring
   the GTK and macOS backends' `gtk_tree_layout_measured` /
   `mac_tree_layout`.
-### Added
-
-- `FindReplacePanel`'s GUI toggle buttons (match case, whole word, regex,
-  preserve case) now paint codicon glyphs instead of literal `Aa`/`ab`/
-  `.*`/`AB` text on every pixel backend (GTK, macOS, Win-GUI) that goes
-  through `native_surface_paint`. TUI (`tui::find_replace`) is unaffected
-  and keeps painting the plain-text pairs. Additive — no public shape
-  changed.
-
-### Fixed
-
-- `FindReplacePanel::hit_test` now compares the click point against each
-  region's pixel rect directly instead of flooring the click to a cell
-  first. Behaviour-preserving for every `char_width`/`line_height` pair a
-  backend actually passes.
 
 ## [0.2.1] - 2026-10-16
 ### Added

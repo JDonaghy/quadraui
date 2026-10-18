@@ -1232,7 +1232,7 @@ mod hit_test_tests {
             .expect("ToggleCase region present");
         let target = *target;
         // char_width = 7.5: px and cell-index space diverge (unlike the
-        // integer-cw cases above, `col` is no longer an integer multiple
+        // integer-cw cases above, `col` here is not an integer multiple
         // of 1px). Pick a point inside the region's px rect and confirm
         // it still resolves — exercising the px comparison directly
         // rather than any cell-space shortcut.
