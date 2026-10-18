@@ -63,9 +63,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::accelerator::KeyBinding;
 use crate::event::{Key, NamedKey, Rect};
+use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Modifiers, WidgetId};
 use crate::undo::UndoStack;
-use crate::primitives::scrollbar::scroll_rows;
 
 /// Multi-line text input. Text is stored as one entry per line — empty
 /// lines are empty strings. Cursor is `(line, col)` in *char columns*

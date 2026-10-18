@@ -175,7 +175,7 @@ mod tests {
                 },
             ],
             selected_idx: 1,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
         }
     }

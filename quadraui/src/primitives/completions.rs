@@ -18,9 +18,9 @@
 //! Tab follow their typical IDE semantics.
 
 use crate::event::Rect;
+use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Icon, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
-use crate::primitives::scrollbar::scroll_rows;
 
 /// Declarative description of a completion popup.
 ///
@@ -242,8 +242,10 @@ impl Completions {
         F: Fn(usize) -> CompletionItemMeasure,
     {
         // Clamp scroll offset.
-        let resolved_scroll_offset =
-            crate::primitives::scrollbar::clamp_scroll_offset(scroll_rows(self.scroll_offset), self.items.len());
+        let resolved_scroll_offset = crate::primitives::scrollbar::clamp_scroll_offset(
+            scroll_rows(self.scroll_offset),
+            self.items.len(),
+        );
 
         // Determine the popup's height (bounded by max and total content).
         let total_content: f32 = (resolved_scroll_offset..self.items.len())

@@ -126,7 +126,7 @@
 //! or a transcript click last parked the cursor.
 
 use crate::compose::markdown::render_markdown_to_styled;
-use crate::primitives::scrollbar::{scroll_by_clamped, PressZone, ThumbDrag};
+use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
 use crate::text_util::{
     next_char_boundary, prev_char_boundary, safe_prefix, snap_to_char_boundary, wrap_spans,
     WrapPolicy,
@@ -141,6 +141,11 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+
+/// Transcript rows moved by one notch of a classic mouse wheel
+/// (`ScrollDelta::y == ±1.0`). A finer-grained trackpad delta scrolls
+/// proportionally less, a coarser one proportionally more.
+const TRANSCRIPT_ROWS_PER_NOTCH: f32 = 3.0;
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
@@ -851,8 +856,9 @@ impl ChatController {
                 let col_budget =
                     self.transcript_col_budget(backend.char_width(), layout.transcript);
                 let total = self.build_transcript_rows(col_budget).len();
-                // Positive delta.y = scroll content up (decrease offset).
-                let rows: isize = if delta.y > 0.0 { -3 } else { 3 };
+                // Three rows per wheel notch; a larger trackpad delta
+                // scrolls proportionally further.
+                let rows = wheel_row_delta(delta.y, TRANSCRIPT_ROWS_PER_NOTCH);
                 self.scroll_transcript_by(rows, total, visible);
                 ChatControllerEvent::Consumed
             }
@@ -2448,6 +2454,58 @@ mod tests {
         cc.set_transcript_scroll_top(10);
         cc.scroll_transcript_by(-5, 20, 5);
         assert_eq!(cc.transcript_scroll_top(), 5);
+    }
+
+    /// A two-notch wheel gesture scrolls twice as far as a one-notch one:
+    /// the handler consumes the delta's magnitude, not only its sign.
+    #[test]
+    fn wheel_scroll_consumes_the_delta_magnitude_not_just_its_sign() {
+        let mut cc = ChatController::new("c");
+        cc.set_transcript(
+            (0..60)
+                .map(|i| make_turn(ChatRole::User, &format!("line {i}")))
+                .collect(),
+        );
+        cc.set_transcript_scroll_top(40);
+
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, 2.0),
+            position: crate::Point::new(5.0, 5.0),
+        };
+        assert_eq!(
+            cc.handle(&ev, &RecordingBackend::new(), make_rect()),
+            ChatControllerEvent::Consumed
+        );
+        assert_eq!(
+            cc.transcript_scroll_top(),
+            40 - 2 * TRANSCRIPT_ROWS_PER_NOTCH as usize,
+            "two notches move two notches' worth of rows"
+        );
+    }
+
+    /// A fractional trackpad delta still moves the transcript: rounding the
+    /// magnitude must never swallow a slow gesture entirely.
+    #[test]
+    fn wheel_scroll_still_moves_for_a_sub_notch_gesture() {
+        let mut cc = ChatController::new("c");
+        cc.set_transcript(
+            (0..60)
+                .map(|i| make_turn(ChatRole::User, &format!("line {i}")))
+                .collect(),
+        );
+        cc.set_transcript_scroll_top(40);
+
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, 0.1),
+            position: crate::Point::new(5.0, 5.0),
+        };
+        cc.handle(&ev, &RecordingBackend::new(), make_rect());
+        assert!(
+            cc.transcript_scroll_top() < 40,
+            "a sub-notch gesture still scrolls at least one row"
+        );
     }
 
     // ── Follow-tail (stick-to-bottom) ─────────────────────────────────

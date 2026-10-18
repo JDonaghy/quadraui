@@ -31,10 +31,9 @@
 //! open? If yes, route here instead."
 
 use crate::event::Rect;
-use crate::primitives::scrollbar::fit_thumb;
+use crate::primitives::scrollbar::{fit_thumb, scroll_rows};
 use crate::types::{Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
-use crate::primitives::scrollbar::scroll_rows;
 
 /// Which interaction mode the palette is operating in.
 ///

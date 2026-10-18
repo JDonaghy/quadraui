@@ -363,6 +363,46 @@ pub fn clamp_scroll_offset_f32(scroll_offset: f32, content_len: usize) -> f32 {
     }
 }
 
+/// Convert the signed `y` component of a wheel/trackpad
+/// [`ScrollDelta`](crate::ScrollDelta) into a scroll-offset delta in the
+/// surface's own units, preserving the gesture's magnitude.
+///
+/// `units_per_notch` is how far one notch of a classic mouse wheel
+/// (`delta.y == ±1.0`) should move the content: `1.0` for a one-row list,
+/// `3.0` for a three-rows-per-notch transcript, `line_height` for a
+/// pixel-space panel.
+///
+/// The sign is flipped because positive `delta.y` means "scroll the
+/// content up", which *decreases* a scroll offset. Non-finite inputs
+/// resolve to `0.0`.
+pub fn wheel_delta(delta_y: f32, units_per_notch: f32) -> f32 {
+    if delta_y.is_finite() && units_per_notch.is_finite() {
+        -delta_y * units_per_notch
+    } else {
+        0.0
+    }
+}
+
+/// Whole-row counterpart of [`wheel_delta`], for controllers whose scroll
+/// offset is a row index rather than a continuous position.
+///
+/// Rounds the magnitude half away from zero, but never rounds a non-zero
+/// gesture down to nothing: a fractional trackpad delta still moves one
+/// row, so slow scrolling is not silently swallowed. A zero (or
+/// non-finite) delta returns `0`.
+pub fn wheel_row_delta(delta_y: f32, rows_per_notch: f32) -> isize {
+    let rows = wheel_delta(delta_y, rows_per_notch);
+    if rows == 0.0 {
+        return 0;
+    }
+    let magnitude = rows.abs().round().max(1.0) as isize;
+    if rows < 0.0 {
+        -magnitude
+    } else {
+        magnitude
+    }
+}
+
 /// Visible window `[start, end)` into a `content_len`-item list, given a
 /// (possibly stale) `scroll_offset` and how many rows fit in the
 /// viewport (`viewport_rows` — typically `(body_len / row_step).floor()`,
@@ -868,5 +908,83 @@ mod tests {
     fn scroll_by_clamped_clamps_to_bounds() {
         assert_eq!(scroll_by_clamped(5, -100, 20), 0);
         assert_eq!(scroll_by_clamped(5, 100, 20), 20);
+    }
+
+    // ── scroll_rows ───────────────────────────────────────────
+
+    #[test]
+    fn scroll_rows_rounds_sub_row_offsets_to_the_nearest_row() {
+        assert_eq!(scroll_rows(0.0), 0);
+        assert_eq!(scroll_rows(0.4), 0);
+        assert_eq!(scroll_rows(0.5), 1);
+        assert_eq!(scroll_rows(2.49), 2);
+        assert_eq!(scroll_rows(2.5), 3);
+        assert_eq!(scroll_rows(7.0), 7);
+    }
+
+    #[test]
+    fn scroll_rows_floors_degenerate_offsets_to_zero() {
+        assert_eq!(scroll_rows(-3.0), 0);
+        assert_eq!(scroll_rows(f32::NAN), 0);
+        assert_eq!(scroll_rows(f32::INFINITY), 0);
+        assert_eq!(scroll_rows(f32::NEG_INFINITY), 0);
+    }
+
+    // ── f32 clamping ─────────────────────────────────────────
+
+    #[test]
+    fn scroll_by_clamped_f32_preserves_sub_row_precision() {
+        assert_eq!(scroll_by_clamped_f32(1.25, 0.5, 20.0), 1.75);
+        assert_eq!(scroll_by_clamped_f32(1.25, -0.5, 20.0), 0.75);
+    }
+
+    #[test]
+    fn scroll_by_clamped_f32_clamps_to_bounds() {
+        assert_eq!(scroll_by_clamped_f32(5.0, -100.0, 20.0), 0.0);
+        assert_eq!(scroll_by_clamped_f32(5.0, 100.0, 20.0), 20.0);
+        assert_eq!(scroll_by_clamped_f32(5.0, 1.0, -4.0), 0.0);
+        assert_eq!(scroll_by_clamped_f32(5.0, f32::NAN, 20.0), 0.0);
+    }
+
+    #[test]
+    fn clamp_scroll_offset_f32_pins_the_last_item_reachable() {
+        assert_eq!(clamp_scroll_offset_f32(2.5, 0), 0.0);
+        assert_eq!(clamp_scroll_offset_f32(2.5, 10), 2.5);
+        assert_eq!(clamp_scroll_offset_f32(40.0, 10), 9.0);
+        assert_eq!(clamp_scroll_offset_f32(-1.5, 10), 0.0);
+    }
+
+    // ── wheel deltas ─────────────────────────────────────────
+
+    #[test]
+    fn wheel_delta_flips_sign_and_scales_by_units_per_notch() {
+        assert_eq!(wheel_delta(1.0, 1.0), -1.0);
+        assert_eq!(wheel_delta(-1.0, 1.0), 1.0);
+        assert_eq!(wheel_delta(-2.5, 3.0), 7.5);
+        assert_eq!(wheel_delta(0.25, 16.0), -4.0);
+    }
+
+    #[test]
+    fn wheel_delta_resolves_non_finite_input_to_zero() {
+        assert_eq!(wheel_delta(f32::NAN, 1.0), 0.0);
+        assert_eq!(wheel_delta(f32::INFINITY, 1.0), 0.0);
+        assert_eq!(wheel_delta(1.0, f32::NAN), 0.0);
+    }
+
+    #[test]
+    fn wheel_row_delta_carries_the_gesture_magnitude_not_just_its_sign() {
+        assert_eq!(wheel_row_delta(1.0, 1.0), -1);
+        assert_eq!(wheel_row_delta(-1.0, 1.0), 1);
+        assert_eq!(wheel_row_delta(-4.0, 1.0), 4);
+        assert_eq!(wheel_row_delta(5.0, 1.0), -5);
+        assert_eq!(wheel_row_delta(-2.0, 3.0), 6);
+    }
+
+    #[test]
+    fn wheel_row_delta_never_swallows_a_sub_row_gesture() {
+        assert_eq!(wheel_row_delta(0.1, 1.0), -1);
+        assert_eq!(wheel_row_delta(-0.1, 1.0), 1);
+        assert_eq!(wheel_row_delta(0.0, 1.0), 0);
+        assert_eq!(wheel_row_delta(f32::NAN, 1.0), 0);
     }
 }

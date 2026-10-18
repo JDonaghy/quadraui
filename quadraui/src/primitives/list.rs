@@ -17,10 +17,9 @@
 //! `scroll_offset` for the next frame.
 
 use crate::event::Rect;
-use crate::primitives::scrollbar::Scrollbar;
+use crate::primitives::scrollbar::{scroll_rows, Scrollbar};
 use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
-use crate::primitives::scrollbar::scroll_rows;
 
 /// Declarative description of a `ListView` widget.
 ///
@@ -296,8 +295,10 @@ impl ListView {
         };
 
         // Clamp scroll_offset.
-        let resolved_scroll_offset =
-            crate::primitives::scrollbar::clamp_scroll_offset(scroll_rows(self.scroll_offset), self.items.len());
+        let resolved_scroll_offset = crate::primitives::scrollbar::clamp_scroll_offset(
+            scroll_rows(self.scroll_offset),
+            self.items.len(),
+        );
 
         let items_y_end = if self.bordered {
             inset_y + items_h_max
@@ -449,7 +450,7 @@ impl ListView {
         Some(Scrollbar::vertical(
             self.id,
             track,
-            self.scroll_offset as f32,
+            self.scroll_offset,
             total,
             visible,
             row_height,

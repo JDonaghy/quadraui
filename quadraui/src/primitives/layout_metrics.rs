@@ -39,6 +39,7 @@ use crate::primitives::multi_section_view::{
 use crate::primitives::panel::{Panel, PanelLayout, PanelMeasure};
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout, PipelineViewMeasure};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout, ProgressBarMeasure};
+use crate::primitives::scrollbar::scroll_rows;
 use crate::primitives::split::{Split, SplitLayout, SplitMeasure};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout, SplitTreeMeasure};
 use crate::primitives::tab_bar::{
@@ -48,7 +49,6 @@ use crate::primitives::toast::{ToastMeasure, ToastOverlay, ToastStackLayout};
 use crate::primitives::tree::{TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::types::Decoration;
 use crate::WidgetId;
-use crate::primitives::scrollbar::scroll_rows;
 
 /// Backend-supplied text measurement. Implemented per-backend over
 /// whatever live font/context object it already carries (a

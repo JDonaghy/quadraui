@@ -166,7 +166,7 @@ mod tests {
             rows,
             selection_mode: SelectionMode::Single,
             selected_path: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             style: TreeStyle::default(),
             has_focus: true,
         }
@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn scroll_offset_shifts_visible_window() {
         let mut tree = make_tree((0..30).map(|i| leaf(i, &format!("item-{}", i))).collect());
-        tree.scroll_offset = 5;
+        tree.scroll_offset = 5.0;
         let (_surface, layout) = paint_via_backend(&tree);
         let first = layout.visible_rows.first().expect("rows visible");
         assert_eq!(

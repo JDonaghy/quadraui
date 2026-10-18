@@ -33,7 +33,7 @@ use crate::primitives::form::{
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionViewLayout, SectionMeasure,
 };
-use crate::primitives::scrollbar::ThumbDrag;
+use crate::primitives::scrollbar::{wheel_delta, wheel_row_delta, ThumbDrag};
 use crate::{
     Backend, ButtonMask, Key, Modifiers, MouseButton, MsvAxis, MultiSectionView,
     MultiSectionViewHit, NamedKey, Point, Rect, ScrollMode, ScrollbarHit, Section, SectionBody,
@@ -581,10 +581,10 @@ impl SidebarSystem {
                 delta, position, ..
             } => {
                 if self.scroll_mode == ScrollMode::WholePanel {
-                    let dy = if delta.y > 0.0 { -lh } else { lh };
+                    let dy = wheel_delta(delta.y, lh);
                     self.scroll_panel(rect, dy, lh, metrics);
                 } else {
-                    let rows = if delta.y > 0.0 { -1 } else { 1 };
+                    let rows = wheel_row_delta(delta.y, 1.0);
                     if !self.scroll_section_at(*position, rect, rows, lh, metrics) {
                         self.scroll_active(rect, rows, lh, metrics);
                     }
@@ -3118,6 +3118,73 @@ mod tests {
         ss.handle_cached(&ev, rect);
         assert_eq!(ss.scroll_offset(1), 4, "scroll up should decrement offset");
         assert_eq!(ss.scroll_offset(0), 0, "section 0 should be untouched");
+    }
+
+    /// Per-section scrolling moves as many rows as the gesture asks for,
+    /// not one row per event regardless of magnitude.
+    #[test]
+    fn section_scroll_consumes_the_delta_magnitude_not_just_its_sign() {
+        let mut ss = scroll_routing_sidebar();
+        let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
+        let y1 = section_body_y(&ss, 1, rect);
+
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -4.0),
+            position: Point::new(5.0, y1),
+        };
+        assert_eq!(ss.handle_cached(&ev, rect), SidebarEvent::Consumed);
+        assert_eq!(
+            ss.scroll_offset(1),
+            4,
+            "a four-notch gesture moves four rows"
+        );
+    }
+
+    /// A sub-row trackpad gesture still moves one row rather than being
+    /// rounded away to nothing.
+    #[test]
+    fn section_scroll_still_moves_one_row_for_a_sub_row_gesture() {
+        let mut ss = scroll_routing_sidebar();
+        let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
+        let y1 = section_body_y(&ss, 1, rect);
+
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -0.25),
+            position: Point::new(5.0, y1),
+        };
+        ss.handle_cached(&ev, rect);
+        assert_eq!(ss.scroll_offset(1), 1);
+    }
+
+    /// Whole-panel scrolling works in pixels: the panel offset moves by
+    /// `delta.y * line_height`, so a sub-notch trackpad delta produces a
+    /// sub-line pixel offset rather than a whole-line jump.
+    #[test]
+    fn panel_scroll_consumes_the_delta_magnitude_in_pixels() {
+        let defs = vec![
+            SidebarSectionDef::new("top", "TOP"),
+            SidebarSectionDef::new("bottom", "BOTTOM"),
+        ];
+        let mut ss = SidebarSystem::new(defs);
+        ss.set_rows(0, fake_rows("t", 50));
+        ss.set_rows(1, fake_rows("b", 50));
+        ss.set_scroll_mode(ScrollMode::WholePanel);
+        ss.set_backend_info(10.0, MsvLayoutMetrics::default());
+
+        let rect = Rect::new(0.0, 0.0, 20.0, 400.0);
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -2.5),
+            position: Point::new(5.0, 50.0),
+        };
+        assert_eq!(ss.handle_cached(&ev, rect), SidebarEvent::Consumed);
+        assert_eq!(
+            ss.panel_scroll(),
+            25.0,
+            "2.5 notches × line_height 10.0 = 25px"
+        );
     }
 
     // ── RowToggleExpand ─────────────────────────────────────────────

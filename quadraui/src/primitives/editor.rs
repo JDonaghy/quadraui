@@ -33,10 +33,10 @@
 //! [`SelectionCols`] to on-screen positions.
 
 use crate::event::Rect;
+use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use crate::primitives::scrollbar::scroll_rows;
 
 // ─── DiagnosticSeverity ─────────────────────────────────────────────────────
 

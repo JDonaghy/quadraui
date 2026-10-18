@@ -107,9 +107,9 @@
 //! and `src/tui_main/mod.rs` (post-`terminal.draw` block) for TUI.
 
 use crate::event::Rect;
+use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
-use crate::primitives::scrollbar::scroll_rows;
 
 /// Declarative description of a tab bar.
 ///

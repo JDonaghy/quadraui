@@ -25,9 +25,9 @@
 //!   apply `scale` (GTK `AttrFloat::new_scale`, TUI ignores it).
 
 use crate::event::Rect;
+use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Color, StyledSpan, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
-use crate::primitives::scrollbar::scroll_rows;
 
 /// A single row in a [`MessageList`].
 ///
@@ -272,7 +272,12 @@ pub(crate) mod native_surface_paint {
         }
         let max_y = rect.y + rect.height;
 
-        for (i, row) in list.rows.iter().skip(scroll_rows(list.scroll_top)).enumerate() {
+        for (i, row) in list
+            .rows
+            .iter()
+            .skip(scroll_rows(list.scroll_top))
+            .enumerate()
+        {
             let ry = rect.y + i as f32 * line_height;
             if ry + line_height > max_y {
                 break;

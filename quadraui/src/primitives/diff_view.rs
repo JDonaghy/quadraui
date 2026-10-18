@@ -42,10 +42,10 @@
 //! instead of carrying its own copy.
 
 use crate::event::Rect;
+use crate::primitives::scrollbar::scroll_rows;
 use crate::theme::Theme;
 use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
-use crate::primitives::scrollbar::scroll_rows;
 
 /// The kind of change a [`DiffRow`] represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -587,7 +587,8 @@ impl DiffView {
         let total_display = sequence.len();
 
         let visible_rows = (viewport.height / line_height).floor() as usize;
-        let (start, end) = scroll_window(scroll_rows(self.scroll_offset), visible_rows, total_display);
+        let (start, end) =
+            scroll_window(scroll_rows(self.scroll_offset), visible_rows, total_display);
 
         let mut lines = Vec::with_capacity(end.saturating_sub(start));
         for (i, content) in sequence[start..end].iter().enumerate() {

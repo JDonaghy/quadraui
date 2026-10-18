@@ -13,8 +13,8 @@ use super::{ratatui_color, set_cell};
 use crate::primitives::data_table::{
     ColumnAlign, ColumnMeasure, DataTable, DataTableLayout, SortDirection,
 };
-use crate::theme::Theme;
 use crate::primitives::scrollbar::scroll_rows;
+use crate::theme::Theme;
 
 /// Resolve the layout `draw_data_table` paints `table` at, without
 /// touching a buffer.
@@ -264,7 +264,7 @@ pub fn draw_data_table(
         let sb = crate::primitives::scrollbar::Scrollbar::vertical(
             table.id,
             sb_track,
-            table.scroll_offset as f32,
+            table.scroll_offset,
             table.rows.len() as f32,
             layout.visible_rows as f32,
             1.0,

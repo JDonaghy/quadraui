@@ -32,8 +32,8 @@ use ratatui::layout::Rect;
 
 use super::{ratatui_color, set_cell};
 use crate::primitives::palette::{Palette, PaletteItemMeasure, PaletteLayout, PaletteMode};
-use crate::theme::Theme;
 use crate::primitives::scrollbar::scroll_rows;
+use crate::theme::Theme;
 
 /// Compute the TUI [`Palette`] layout — the shared geometry this
 /// module's [`draw_palette`] paints from and `Backend::palette_layout`

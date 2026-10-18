@@ -81,7 +81,7 @@ mod tests {
                 MessageRow::new("AI:", Color::rgb(0, 200, 255), 0.0),
                 MessageRow::new("hello", Color::rgb(220, 220, 220), 8.0),
             ],
-            scroll_top: 0,
+            scroll_top: 0.0,
         }
     }
 
@@ -144,7 +144,7 @@ mod tests {
         // scroll_top=2 should skip "You:" + "hi there", drawing "AI:"
         // first.
         let mut list = sample_list();
-        list.scroll_top = 2;
+        list.scroll_top = 2.0;
         let s = paint(&list);
         let scrolled_panel_bg = (13, 13, 13);
         // The top band must hold the "AI:" glyph (cyan-ish) and have
@@ -190,7 +190,7 @@ mod tests {
                 MessageRow::new("You:", you, 0.0),
                 MessageRow::new("thanks!", body, 12.0),
             ],
-            scroll_top: 0,
+            scroll_top: 0.0,
         };
         let s = paint(&list);
         s.write_ppm_and_open("/tmp/quadraui_message_list.ppm");

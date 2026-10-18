@@ -37,11 +37,11 @@ use crate::primitives::chart::Chart;
 use crate::primitives::form::Form;
 use crate::primitives::list::ListView;
 use crate::primitives::message_list::MessageList;
+use crate::primitives::scrollbar::scroll_rows;
 use crate::primitives::terminal::Terminal;
 use crate::primitives::tree::TreeView;
 use crate::types::{Icon, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
-use crate::primitives::scrollbar::scroll_rows;
 
 // ── Public alias-style identifiers ─────────────────────────────────────────
 

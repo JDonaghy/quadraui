@@ -61,7 +61,7 @@
 use crate::primitives::form::{
     FieldKind, Form, FormEvent, FormFieldMeasure, FormHit, FormItemMeasure,
 };
-use crate::primitives::scrollbar::{scroll_by_clamped, PressZone, ThumbDrag};
+use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
 use crate::primitives::text_input::{EditOp, TextEditor, TextInput};
 use crate::text_util::snap_to_char_boundary;
 use crate::{
@@ -289,7 +289,7 @@ impl FormController {
 
             UiEvent::Scroll { delta, .. } => {
                 let vr = viewport_rows_lh(lh, rect);
-                let rows = if delta.y > 0.0 { -1 } else { 1 };
+                let rows = wheel_row_delta(delta.y, 1.0);
                 self.scroll_by(rows, vr);
                 FormControllerEvent::Consumed
             }
@@ -1317,6 +1317,22 @@ mod tests {
         );
         assert_eq!(ev, FormControllerEvent::Consumed);
         assert_eq!(fc.scroll_offset(), 1);
+    }
+
+    #[test]
+    fn handle_cached_scroll_consumes_the_delta_magnitude_not_just_its_sign() {
+        let mut fc = test_controller(20);
+        fc.set_backend_info(1.0);
+        let ev = fc.handle_cached(
+            &UiEvent::Scroll {
+                widget: None,
+                delta: crate::ScrollDelta { x: 0.0, y: -3.0 },
+                position: crate::Point { x: 5.0, y: 2.0 },
+            },
+            Rect::new(0.0, 0.0, 40.0, 5.0),
+        );
+        assert_eq!(ev, FormControllerEvent::Consumed);
+        assert_eq!(fc.scroll_offset(), 3);
     }
 
     #[test]

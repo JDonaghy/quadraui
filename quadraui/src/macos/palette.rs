@@ -135,7 +135,7 @@ mod tests {
                 },
             ],
             selected_idx: 1,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             total_count: 25,
             has_focus: true,
             show_query: true,

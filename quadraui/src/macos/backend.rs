@@ -6113,7 +6113,7 @@ mod tests {
                 decoration: crate::types::Decoration::default(),
             }],
             selected_idx: 0,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
             bordered,
             h_scroll,
@@ -7166,7 +7166,7 @@ mod tests {
                 ),
             ],
             focused_field: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
         };
 
@@ -7982,7 +7982,7 @@ mod tests {
         TextDisplayModel {
             id: WidgetId::new("td"),
             lines: (0..lines).map(|i| td_line(&format!("ln{i}"))).collect(),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -8770,7 +8770,7 @@ mod tests {
                 }],
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 style: TreeStyle::default(),
                 has_focus: false,
             };
@@ -8830,7 +8830,7 @@ mod tests {
                 .collect(),
             selection_mode: crate::types::SelectionMode::Single,
             selected_path: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             style: crate::types::TreeStyle::default(),
             has_focus: false,
         }
@@ -9304,7 +9304,7 @@ mod tests {
                 is_active: true,
                 ..Default::default()
             }],
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             right_segments: vec![],
             active_accent: None,
             show_tab_close: false,

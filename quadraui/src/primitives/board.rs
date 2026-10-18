@@ -39,10 +39,10 @@
 //! backend's rasteriser as it lands.
 
 use crate::event::{Point, Rect};
+use crate::primitives::scrollbar::scroll_rows;
 use crate::theme::Theme;
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
-use crate::primitives::scrollbar::scroll_rows;
 
 // ── Shared layout constants ─────────────────────────────────────────────────
 // These constants are shared by pixel/DIP-unit backends (gtk, macos, win).
@@ -546,7 +546,10 @@ pub fn board_layout(
     let col_w = natural.max(measure.col_min_width).max(1.0);
 
     // Count how many columns fit in the viewport from col_scroll_offset.
-    let start = crate::primitives::scrollbar::clamp_scroll_offset(scroll_rows(model.col_scroll_offset), n_total);
+    let start = crate::primitives::scrollbar::clamp_scroll_offset(
+        scroll_rows(model.col_scroll_offset),
+        n_total,
+    );
     let n_fit = count_fitting_columns(n_total - start, col_w, measure.col_gap, total_width);
     let end = (start + n_fit).min(n_total);
 

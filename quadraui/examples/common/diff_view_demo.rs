@@ -200,7 +200,8 @@ impl AppLogic for DiffViewApp {
                 ..
             } => {
                 if total > visible {
-                    self.view.scroll_offset = (self.view.scroll_offset + 1.0).min((total - visible) as f32);
+                    self.view.scroll_offset =
+                        (self.view.scroll_offset + 1.0).min((total - visible) as f32);
                 }
                 Reaction::Redraw
             }

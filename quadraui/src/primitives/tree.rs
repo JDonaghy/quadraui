@@ -29,12 +29,11 @@
 //! the viewport row count.
 
 use crate::event::Rect;
-use crate::primitives::scrollbar::Scrollbar;
+use crate::primitives::scrollbar::{scroll_rows, Scrollbar};
 use crate::types::{
     Badge, Decoration, Icon, Modifiers, SelectionMode, StyledText, TreePath, TreeStyle, WidgetId,
 };
 use serde::{Deserialize, Serialize};
-use crate::primitives::scrollbar::scroll_rows;
 
 /// Declarative description of a `TreeView` widget.
 ///
@@ -307,8 +306,10 @@ impl TreeView {
 
         // Clamp scroll_offset to a valid starting index; we still report
         // the clamped value so the app can write it back and self-correct.
-        let resolved_scroll_offset =
-            crate::primitives::scrollbar::clamp_scroll_offset(scroll_rows(self.scroll_offset), self.rows.len());
+        let resolved_scroll_offset = crate::primitives::scrollbar::clamp_scroll_offset(
+            scroll_rows(self.scroll_offset),
+            self.rows.len(),
+        );
 
         let mut y = 0.0_f32;
         for i in resolved_scroll_offset..self.rows.len() {
@@ -423,7 +424,7 @@ impl TreeView {
         Some(Scrollbar::vertical(
             self.id,
             track,
-            self.scroll_offset as f32,
+            self.scroll_offset,
             total,
             visible,
             row_height,

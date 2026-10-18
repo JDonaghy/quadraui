@@ -47,9 +47,9 @@
 //! backend.
 
 use crate::event::Rect;
+use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
-use crate::primitives::scrollbar::scroll_rows;
 
 /// Declarative description of a `Form` widget.
 ///

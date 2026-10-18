@@ -31,9 +31,9 @@
 //! affected rows.
 
 use crate::event::Rect;
+use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Decoration, Modifiers, StyledSpan, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
-use crate::primitives::scrollbar::scroll_rows;
 
 /// Declarative description of a `TextDisplay`.
 ///
@@ -518,7 +518,10 @@ impl TextDisplay {
             }
             offset
         } else {
-            crate::primitives::scrollbar::clamp_scroll_offset(scroll_rows(self.scroll_offset), self.lines.len())
+            crate::primitives::scrollbar::clamp_scroll_offset(
+                scroll_rows(self.scroll_offset),
+                self.lines.len(),
+            )
         };
 
         let mut y = 0.0_f32;

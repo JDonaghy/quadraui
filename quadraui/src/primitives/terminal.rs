@@ -32,9 +32,9 @@
 //! for typical workloads, optimise when profiling shows it's hot.
 
 use crate::event::Rect;
+use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
-use crate::primitives::scrollbar::scroll_rows;
 
 /// Declarative description of a terminal cell grid.
 ///

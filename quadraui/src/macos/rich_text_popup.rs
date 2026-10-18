@@ -79,7 +79,7 @@ mod tests {
                 ") -> Option<U>".into(),
             ],
             line_scales: vec![],
-            scroll_top: 0,
+            scroll_top: 0.0,
             max_visible_rows: 8,
             has_focus: false,
             selection: None,

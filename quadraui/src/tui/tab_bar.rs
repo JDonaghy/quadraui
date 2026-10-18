@@ -17,10 +17,10 @@ use super::{ratatui_color, set_cell, set_cell_styled, set_cell_wide, set_cell_wi
 // still building one per frame; see that struct's doc for the replacement
 // plan (`TabBarLayout`, which every function below already receives as
 // its `layout` parameter).
+use crate::primitives::scrollbar::scroll_rows;
 #[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarLayout, TabChrome, TabFrame};
 use crate::theme::Theme;
-use crate::primitives::scrollbar::scroll_rows;
 
 /// Close-button glyph rendered on each tab. `×` (U+00D7 MULTIPLICATION
 /// SIGN) — narrower than `✕` and present in every monospaced terminal
