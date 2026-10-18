@@ -616,6 +616,7 @@ mod tests {
                 rows: vec![],
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
+                selected_paths: Vec::new(),
                 scroll_offset: 0,
                 style: Default::default(),
                 has_focus: false,
