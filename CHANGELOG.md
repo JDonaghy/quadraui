@@ -58,7 +58,7 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
-### Added
+### Changed
 
 - `A11yInfo`'s role is now typed instead of a free string: a new
   `#[non_exhaustive]` `A11yRole` enum covers window, toolbar, button,
@@ -77,7 +77,14 @@ only a push to `main` runs this workflow.
   depending on which backend features a consumer enables. This is a
   breaking change to `A11yInfo::with_role`, which now takes `A11yRole`
   instead of `impl Into<String>`; no in-tree or downstream consumer used
-  it.
+  it. `A11yInfo` also drops its `Eq` derive (kept only `PartialEq`),
+  forced by `A11yValueRange`'s `f64` fields; its sole in-tree holder
+  (`OwnedNode.a11y` in `frame.rs`) never derived `Eq`/`Hash` either, so
+  this has no in-tree effect, but a downstream consumer that relied on
+  `A11yInfo: Eq` would need to drop that bound. `A11yRole`, `A11yChecked`
+  and `A11yLive` serialise as snake_case strings (e.g. `"text_input"`)
+  via `#[serde(rename_all = "snake_case")]` rather than serde's PascalCase
+  default.
 
 ### Fixed
 
