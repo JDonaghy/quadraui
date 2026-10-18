@@ -36,13 +36,36 @@
 //! so wiring a real AT backend later is a lookup table, not a
 //! redesign.
 //!
+//! [`A11yRole`], [`A11yChecked`] and [`A11yLive`] serialise with
+//! `#[serde(rename_all = "snake_case")]` (e.g. `A11yRole::TextInput` as
+//! `"text_input"`) rather than serde's PascalCase default — chosen now,
+//! before any serialized `A11yInfo` exists in the wild (`frame.rs`
+//! documents `OwnedNode.a11y` as always `None` from `from_layout`),
+//! since changing the wire format later would silently break any JSON
+//! already written under the default.
+//!
 //! The data model (`A11yRole`, `A11yChecked`, `A11yLive`,
 //! `A11yValueRange`, `A11yInfo`) is always compiled, regardless of
 //! feature flags, so a descriptor that embeds `A11yInfo` never changes
 //! shape depending on which backend features a consumer enables. Only
-//! the `accesskit`-facing `From`/`TryFrom` conversions are gated behind
-//! the optional `a11y` cargo feature, which pulls in the `accesskit`
+//! the `accesskit`-facing `From` conversions are gated behind the
+//! optional `a11y` cargo feature, which pulls in the `accesskit`
 //! dependency.
+//!
+//! # Field naming: `a11y_role`/`a11y_label` keep the prefix, state
+//! fields don't
+//!
+//! `A11yInfo`'s two oldest fields, `a11y_role` and `a11y_label`, keep the
+//! `a11y_` prefix to match `docs/UI_CRATE_DESIGN.md` decision #6 (see
+//! above). The eleven state/structure fields added alongside the typed
+//! role (`selected`, `expanded`, `checked`, `disabled`, `read_only`,
+//! `value`, `value_range`, `level`, `position_in_set`, `set_size`,
+//! `live`) deliberately drop it: they live only on this sidecar struct,
+//! so the field name alone (`info.selected`, not `info.a11y_selected`)
+//! is already unambiguous, and decision #6's own rationale was to
+//! disambiguate `a11y_role`/`a11y_label` from a primitive's own
+//! same-named fields — a concern that doesn't apply to fields that only
+//! ever exist here.
 
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +87,7 @@ use serde::{Deserialize, Serialize};
 /// escape hatch, deliberately — see the module doc.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum A11yRole {
     /// A top-level window or root application surface.
     Window,
@@ -121,6 +145,7 @@ pub enum A11yRole {
 /// tri-state toggles. Mirrors `accesskit::Toggled`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum A11yChecked {
     /// Unchecked.
     False,
@@ -134,6 +159,7 @@ pub enum A11yChecked {
 /// announce a change to this element's content. Mirrors `accesskit::Live`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum A11yLive {
     /// Not a live region — no announcement on change.
     #[default]
@@ -201,11 +227,18 @@ pub struct A11yInfo {
     #[serde(default)]
     pub checked: Option<A11yChecked>,
     /// Whether this element is disabled (present but not interactive).
+    /// `None` means "disabledness not asserted" rather than "enabled" —
+    /// the same "not applicable" vs. "explicitly false" distinction
+    /// [`Self::selected`] documents, so a backend can tell a decorative
+    /// or [`A11yRole::Presentation`] node (no assertion either way) apart
+    /// from an element explicitly marked enabled.
     #[serde(default)]
-    pub disabled: bool,
-    /// Whether this element's value can be read but not edited.
+    pub disabled: Option<bool>,
+    /// Whether this element's value can be read but not edited. `None`
+    /// means "read-only-ness not asserted", for the same reason as
+    /// [`Self::disabled`].
     #[serde(default)]
-    pub read_only: bool,
+    pub read_only: Option<bool>,
     /// The element's current value as text (e.g. a text input's
     /// content, or a combo box's selected option).
     #[serde(default)]
@@ -274,15 +307,15 @@ impl A11yInfo {
         self
     }
 
-    /// Marks this element as disabled.
+    /// Sets whether this element is disabled.
     pub fn with_disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
+        self.disabled = Some(disabled);
         self
     }
 
-    /// Marks this element as read-only.
+    /// Sets whether this element is read-only.
     pub fn with_read_only(mut self, read_only: bool) -> Self {
-        self.read_only = read_only;
+        self.read_only = Some(read_only);
         self
     }
 
@@ -332,6 +365,7 @@ impl A11yInfo {
 mod accesskit_convert {
     use super::{A11yChecked, A11yLive, A11yRole};
 
+    #[cfg_attr(docsrs, doc(cfg(feature = "a11y")))]
     impl From<A11yRole> for accesskit::Role {
         fn from(role: A11yRole) -> Self {
             match role {
@@ -363,6 +397,7 @@ mod accesskit_convert {
         }
     }
 
+    #[cfg_attr(docsrs, doc(cfg(feature = "a11y")))]
     impl From<A11yChecked> for accesskit::Toggled {
         fn from(checked: A11yChecked) -> Self {
             match checked {
@@ -373,6 +408,7 @@ mod accesskit_convert {
         }
     }
 
+    #[cfg_attr(docsrs, doc(cfg(feature = "a11y")))]
     impl From<A11yLive> for accesskit::Live {
         fn from(live: A11yLive) -> Self {
             match live {
@@ -437,8 +473,8 @@ mod tests {
         assert_eq!(info.selected, None);
         assert_eq!(info.expanded, None);
         assert_eq!(info.checked, None);
-        assert!(!info.disabled);
-        assert!(!info.read_only);
+        assert_eq!(info.disabled, None);
+        assert_eq!(info.read_only, None);
         assert_eq!(info.value, None);
         assert_eq!(info.value_range, None);
         assert_eq!(info.level, None);
@@ -469,8 +505,8 @@ mod tests {
         assert_eq!(info.selected, Some(true));
         assert_eq!(info.expanded, Some(false));
         assert_eq!(info.checked, Some(A11yChecked::Mixed));
-        assert!(info.disabled);
-        assert!(info.read_only);
+        assert_eq!(info.disabled, Some(true));
+        assert_eq!(info.read_only, Some(true));
         assert_eq!(info.value.as_deref(), Some("42"));
         assert_eq!(
             info.value_range,
@@ -505,12 +541,22 @@ mod tests {
 
     #[test]
     fn checked_default_is_distinct_from_false() {
-        // `None` ("no checkbox state at all") must stay distinguishable
-        // from `Some(A11yChecked::False)` ("unchecked") — collapsing them
-        // would make an unchecked checkbox indistinguishable from a
-        // button with no checked state at all.
+        // "No checkbox state at all" (`A11yInfo::new()`, `checked: None`)
+        // must stay distinguishable from "unchecked"
+        // (`with_checked(A11yChecked::False)`) through a JSON round trip,
+        // not just in memory — collapsing them on the wire would make an
+        // unchecked checkbox indistinguishable from a button with no
+        // checked state at all to anything that only sees the JSON.
         let unchecked = A11yInfo::new().with_checked(A11yChecked::False);
-        assert_eq!(unchecked.checked, Some(A11yChecked::False));
-        assert_ne!(unchecked.checked, A11yInfo::new().checked);
+        let absent = A11yInfo::new();
+
+        let unchecked_json = serde_json::to_string(&unchecked).unwrap();
+        let absent_json = serde_json::to_string(&absent).unwrap();
+        assert_ne!(unchecked_json, absent_json);
+
+        let unchecked_back: A11yInfo = serde_json::from_str(&unchecked_json).unwrap();
+        let absent_back: A11yInfo = serde_json::from_str(&absent_json).unwrap();
+        assert_eq!(unchecked_back.checked, Some(A11yChecked::False));
+        assert_eq!(absent_back.checked, None);
     }
 }

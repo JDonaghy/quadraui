@@ -199,6 +199,11 @@ Pick the backends you ship; `terminal` is independent of them.
 - `layout` — optional flex/grid layout module (`quadraui::flex`), via
   [Taffy](https://github.com/DioxusLabs/taffy). Unit-agnostic (plain
   `f32` in, plain `f32` out); pairs with any backend above, or none.
+- `a11y` — optional accessibility conversions (`From<A11yRole> for
+  accesskit::Role` and friends) in `quadraui::a11y`, via
+  [AccessKit](https://github.com/AccessKit/accesskit). The `A11yRole`/
+  `A11yInfo` data model itself is always compiled; pairs with any
+  backend above, or none.
 
 ## What's in the box
 
