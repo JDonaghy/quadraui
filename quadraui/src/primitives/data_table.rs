@@ -154,7 +154,7 @@ pub enum SortDirection {
 ///         decoration: Default::default(),
 ///     }],
 ///     selected_idx: None,
-///     scroll_offset: 0.0,
+///     scroll_offset: 0,
 ///     sort: None,
 ///     has_focus: true,
 ///     show_scrollbar: false,
@@ -175,7 +175,7 @@ pub struct DataTable {
     #[serde(default)]
     pub selected_idx: Option<usize>,
     #[serde(default)]
-    pub scroll_offset: f32,
+    pub scroll_offset: usize,
     /// Which column is sorted, and in which direction. `None` = no
     /// sort indicator shown.
     #[serde(default)]
@@ -786,7 +786,7 @@ pub(crate) mod native_surface_paint {
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::primitives::layout_metrics::{pixel_data_table_layout, TextMeasure};
-    use crate::primitives::scrollbar::{scroll_rows, Scrollbar};
+    use crate::primitives::scrollbar::Scrollbar;
     use crate::theme::Theme;
     use crate::types::Decoration;
 
@@ -901,15 +901,12 @@ pub(crate) mod native_surface_paint {
 
         // ── Body ─────────────────────────────────────────────────────────
         let body_y = rect.y + header_height;
-        // Rows are indexed from a whole row; the `f32` offset stays the
-        // stored source of truth and is rounded once, here.
-        let scroll_offset = scroll_rows(table.scroll_offset);
         let visible = layout
             .visible_rows
-            .min(table.rows.len().saturating_sub(scroll_offset));
+            .min(table.rows.len().saturating_sub(table.scroll_offset));
 
         for row_idx in 0..visible {
-            let abs_idx = scroll_offset + row_idx;
+            let abs_idx = table.scroll_offset + row_idx;
             let row = &table.rows[abs_idx];
             let row_y = body_y + row_idx as f32 * line_height;
             let is_selected = table.selected_idx == Some(abs_idx);
@@ -1001,7 +998,7 @@ pub(crate) mod native_surface_paint {
             let sb = Scrollbar::vertical(
                 table.id,
                 track,
-                table.scroll_offset,
+                table.scroll_offset as f32,
                 table.rows.len() as f32,
                 layout.visible_rows as f32,
                 line_height,
@@ -1202,7 +1199,7 @@ pub(crate) mod native_surface_paint {
                     },
                 ],
                 selected_idx: None,
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 sort: None,
                 has_focus: false,
                 show_scrollbar: false,
@@ -1445,7 +1442,7 @@ mod tests {
             columns,
             rows,
             selected_idx: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             sort: None,
             has_focus: false,
             show_scrollbar: false,

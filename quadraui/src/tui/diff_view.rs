@@ -359,7 +359,7 @@ mod tests {
             ],
             mode,
             editability: DiffEditability::ReadOnly,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             focused_pane: DiffPane::Left,
             has_focus: false,
         }
@@ -413,7 +413,7 @@ mod tests {
         let area = Rect::new(0, 0, 20, 5);
         let mut buf = Buffer::empty(area);
         let mut view = make_view(DiffMode::SideBySide);
-        view.scroll_offset = 1.0;
+        view.scroll_offset = 1;
         draw_diff_view(&mut buf, area, &view, &Theme::default());
 
         // Row 1 is "beta" — it should now be on screen row 0.
@@ -465,7 +465,7 @@ mod tests {
         let max_offset = layout.total_rows.saturating_sub(layout.visible_rows);
         let mut buf2 = Buffer::empty(area);
         let mut view2 = make_view(DiffMode::Unified);
-        view2.scroll_offset = max_offset as f32;
+        view2.scroll_offset = max_offset;
         draw_diff_view(&mut buf2, area, &view2, &Theme::default());
 
         // The last display line is the "delta" Added row (row index 5).
@@ -514,7 +514,7 @@ mod tests {
             }],
             mode: DiffMode::Unified,
             editability: DiffEditability::ReadOnly,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             focused_pane: DiffPane::Left,
             has_focus: false,
         };

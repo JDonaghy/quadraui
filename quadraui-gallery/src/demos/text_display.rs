@@ -101,7 +101,7 @@ impl TextDisplayDemo {
         };
         let mut display = TextDisplay::new(WidgetId::new("gallery:text-display"));
         display.lines = lines;
-        display.scroll_offset = self.scroll_offset as f32;
+        display.scroll_offset = self.scroll_offset;
         display.auto_scroll = self.auto_scroll;
         display.show_scrollbar = true;
         display

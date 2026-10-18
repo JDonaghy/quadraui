@@ -308,7 +308,7 @@ impl SidebarSearchApp {
                 .focused_field
                 .as_ref()
                 .map(|f| WidgetId::new(f.clone())),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: self.sidebar.active_section() == Some(0),
         };
         self.sidebar.set_form(0, form);

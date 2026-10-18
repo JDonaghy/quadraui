@@ -18,7 +18,6 @@
 //! Tab follow their typical IDE semantics.
 
 use crate::event::Rect;
-use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Icon, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -56,13 +55,13 @@ use serde::{Deserialize, Serialize};
 ///
 /// assert_eq!(layout.hit_test(10.0, 6.0), CompletionsHit::Item(0));
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Completions {
     pub id: WidgetId,
     pub items: Vec<CompletionItem>,
     pub selected_idx: usize,
     #[serde(default)]
-    pub scroll_offset: f32,
+    pub scroll_offset: usize,
     /// When true, the primitive is "live" and receiving focus for
     /// keyboard nav. When false it's suppressed (rendered but
     /// non-interactive) — apps set this based on their own state.
@@ -79,7 +78,7 @@ impl Default for Completions {
             id: WidgetId::new(""),
             items: Vec::new(),
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         }
     }
@@ -242,10 +241,8 @@ impl Completions {
         F: Fn(usize) -> CompletionItemMeasure,
     {
         // Clamp scroll offset.
-        let resolved_scroll_offset = crate::primitives::scrollbar::clamp_scroll_offset(
-            scroll_rows(self.scroll_offset),
-            self.items.len(),
-        );
+        let resolved_scroll_offset =
+            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.items.len());
 
         // Determine the popup's height (bounded by max and total content).
         let total_content: f32 = (resolved_scroll_offset..self.items.len())
@@ -349,7 +346,7 @@ mod tests {
                 make_completion("Vec", CompletionKind::Struct),
             ],
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
         };
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -377,7 +374,7 @@ mod tests {
                 .map(|i| make_completion(&format!("x{i}"), CompletionKind::Variable))
                 .collect(),
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
         };
         // Cursor near the bottom of a small viewport.
@@ -398,7 +395,7 @@ mod tests {
             id: WidgetId::new("c"),
             items: vec![make_completion("item", CompletionKind::Text)],
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
         };
         let viewport = Rect::new(0.0, 0.0, 400.0, 600.0);
@@ -417,7 +414,7 @@ mod tests {
                 .map(|i| make_completion(&format!("x{i}"), CompletionKind::Variable))
                 .collect(),
             selected_idx: 0,
-            scroll_offset: 5.0,
+            scroll_offset: 5,
             has_focus: true,
         };
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);

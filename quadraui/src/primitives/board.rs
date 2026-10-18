@@ -39,7 +39,6 @@
 //! backend's rasteriser as it lands.
 
 use crate::event::{Point, Rect};
-use crate::primitives::scrollbar::scroll_rows;
 use crate::theme::Theme;
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -156,7 +155,7 @@ pub struct BoardCard {
 }
 
 /// A single kanban column.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoardColumn {
     /// Unique identifier for this column (used in [`BoardHit::ColumnHeader`]).
     pub id: WidgetId,
@@ -168,7 +167,7 @@ pub struct BoardColumn {
     /// Vertical scroll offset: index of the first card to show.
     /// Host-owned; updated in response to [`BoardAction::MoveSelection`].
     #[serde(default)]
-    pub scroll_offset: f32,
+    pub scroll_offset: usize,
 }
 
 /// Top-level model for a [`Board`] widget.
@@ -193,10 +192,10 @@ pub struct BoardColumn {
 ///             badges: vec![],
 ///             hint: None,
 ///         }],
-///         scroll_offset: 0.0,
+///         scroll_offset: 0,
 ///     }],
 ///     selected_card_id: None,
-///     col_scroll_offset: 0.0,
+///     col_scroll_offset: 0,
 /// };
 ///
 /// let measure = BoardMeasure::new(20.0, 1.0, 1.0, 3.0, 1.0);
@@ -204,7 +203,7 @@ pub struct BoardColumn {
 ///
 /// assert_eq!(layout.hit_test(1.0, 2.0), BoardHit::Card(WidgetId::new("card:1")));
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoardModel {
     /// Unique identifier for this board widget.
     pub id: WidgetId,
@@ -217,7 +216,7 @@ pub struct BoardModel {
     /// Updated by the host in response to `h`/`l` navigation when
     /// the board overflows the viewport.
     #[serde(default)]
-    pub col_scroll_offset: f32,
+    pub col_scroll_offset: usize,
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
@@ -546,10 +545,7 @@ pub fn board_layout(
     let col_w = natural.max(measure.col_min_width).max(1.0);
 
     // Count how many columns fit in the viewport from col_scroll_offset.
-    let start = crate::primitives::scrollbar::clamp_scroll_offset(
-        scroll_rows(model.col_scroll_offset),
-        n_total,
-    );
+    let start = crate::primitives::scrollbar::clamp_scroll_offset(model.col_scroll_offset, n_total);
     let n_fit = count_fitting_columns(n_total - start, col_w, measure.col_gap, total_width);
     let end = (start + n_fit).min(n_total);
 
@@ -574,7 +570,7 @@ pub fn board_layout(
         let body_bounds = Rect::new(cx, origin_y + measure.header_height, col_w, body_h);
 
         let (scroll_off, card_end) = crate::primitives::scrollbar::visible_window(
-            scroll_rows(col.scroll_offset),
+            col.scroll_offset,
             col.cards.len(),
             visible_cards_per_col,
         );
@@ -930,10 +926,10 @@ pub(crate) mod native_surface_paint {
                     id: WidgetId::new("col:backlog"),
                     title: "Backlog".into(),
                     cards: vec![card("card:a", "First")],
-                    scroll_offset: 0.0,
+                    scroll_offset: 0,
                 }],
                 selected_card_id: None,
-                col_scroll_offset: 0.0,
+                col_scroll_offset: 0,
             }
         }
 
@@ -1217,23 +1213,23 @@ mod tests {
                         make_card("card:362", "#362 Board"),
                         make_card("card:300", "#300 Fixes"),
                     ],
-                    scroll_offset: 0.0,
+                    scroll_offset: 0,
                 },
                 BoardColumn {
                     id: WidgetId::new("col:ready"),
                     title: "Ready".to_string(),
                     cards: vec![make_card("card:521", "#521 Issues")],
-                    scroll_offset: 0.0,
+                    scroll_offset: 0,
                 },
                 BoardColumn {
                     id: WidgetId::new("col:done"),
                     title: "Done".to_string(),
                     cards: vec![],
-                    scroll_offset: 0.0,
+                    scroll_offset: 0,
                 },
             ],
             selected_card_id: Some(WidgetId::new("card:362")),
-            col_scroll_offset: 0.0,
+            col_scroll_offset: 0,
         }
     }
 
@@ -1320,7 +1316,7 @@ mod tests {
     #[test]
     fn layout_horizontal_scroll_hides_first_column() {
         let mut m = make_model();
-        m.col_scroll_offset = 1.0; // skip the first column
+        m.col_scroll_offset = 1; // skip the first column
         let layout = board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
         // Column 0 ("Backlog") must be absent; column 1 ("Ready") first.
         assert_eq!(layout.columns[0].col_id.as_str(), "col:ready");
@@ -1378,7 +1374,7 @@ mod tests {
     #[test]
     fn layout_scroll_offset_slices_cards() {
         let mut m = make_model();
-        m.columns[0].scroll_offset = 1.0; // skip card:362
+        m.columns[0].scroll_offset = 1; // skip card:362
         let layout = board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
         let col0 = &layout.columns[0];
         // Only 1 card visible (card:300)
@@ -1393,7 +1389,7 @@ mod tests {
             id: WidgetId::new("board"),
             columns: vec![],
             selected_card_id: None,
-            col_scroll_offset: 0.0,
+            col_scroll_offset: 0,
         };
         let layout = board_layout(&m, 0.0, 0.0, 100.0, 30.0, measure());
         assert_eq!(layout.columns.len(), 0);

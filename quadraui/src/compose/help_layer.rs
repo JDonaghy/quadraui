@@ -308,7 +308,7 @@ impl HelpOverlayController {
         let td = TextDisplay {
             id: WidgetId::new(format!("{}-content", self.id.as_str())),
             lines,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,

@@ -56,7 +56,7 @@ impl MessageListApp {
         MessageList {
             id: WidgetId::new("message-list-demo"),
             rows: self.rows.clone(),
-            scroll_top: self.scroll_top as f32,
+            scroll_top: self.scroll_top,
         }
     }
 

@@ -506,7 +506,7 @@ mod tests {
             selection: None,
             extra_selections: Vec::new(),
             yank_highlight: None,
-            scroll_top: 0.0,
+            scroll_top: 0,
             scroll_left: 0,
             total_lines: 3,
             max_col: 20,

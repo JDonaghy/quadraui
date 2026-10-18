@@ -107,7 +107,6 @@
 //! and `src/tui_main/mod.rs` (post-`terminal.draw` block) for TUI.
 
 use crate::event::Rect;
-use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -125,7 +124,7 @@ use serde::{Deserialize, Serialize};
 ///         is_active: true,
 ///         ..Default::default()
 ///     }],
-///     scroll_offset: 0.0,
+///     scroll_offset: 0,
 ///     right_segments: vec![],
 ///     active_accent: None,
 ///     show_tab_close: true,
@@ -141,14 +140,14 @@ use serde::{Deserialize, Serialize};
 /// );
 /// assert_eq!(layout.hit_test(1.0, 0.0), TabBarHit::Tab(0));
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabBar {
     pub id: WidgetId,
     pub tabs: Vec<TabItem>,
     /// Index of the first visible tab when tabs overflow. Tabs before this
     /// index are hidden; tabs after are clipped as needed.
     #[serde(default)]
-    pub scroll_offset: f32,
+    pub scroll_offset: usize,
     /// Right-aligned trailing segments, drawn in order from left to right
     /// starting at `bar_width - sum(widths)`. Use this slot for toolbar
     /// buttons and inline labels.
@@ -792,7 +791,7 @@ impl TabBar {
                 // active tab actually appears, instead of clipping
                 // from index 0 and dropping it. Clamp to a valid
                 // index so callers can't push out-of-range values.
-                let offset = scroll_rows(self.scroll_offset).min(self.tabs.len() - 1);
+                let offset = self.scroll_offset.min(self.tabs.len().saturating_sub(1));
                 (offset, 0.0, tab_area_no_scroll, false, false)
             } else {
                 // Need scroll arrows. Reserve space for two; even if only one
@@ -997,7 +996,7 @@ mod hit_test_diff_tests {
                 },
             ],
             active_accent: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             show_tab_close: true,
             compact: false,
         }
@@ -1085,7 +1084,7 @@ mod tests {
                     is_closable: true,
                 },
             ],
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: vec![
                 TabBarSegment {
                     text: "2 of 5 ".to_string(),
@@ -1175,7 +1174,7 @@ mod tests {
         TabBar {
             id: WidgetId::new("t"),
             tabs,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: vec![],
             active_accent: None,
             show_tab_close: true,
@@ -1363,7 +1362,7 @@ mod tests {
         let bar = TabBar {
             id: WidgetId::new("t"),
             tabs: vec![make_tab("a", true)],
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: vec![
                 TabBarSegment {
                     text: " ← ".to_string(),
@@ -1410,7 +1409,7 @@ mod tests {
         let bar = TabBar {
             id: WidgetId::new("t"),
             tabs: vec![make_tab("a", true)],
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: vec![TabBarSegment {
                 text: "many many pixels".to_string(),
                 width_cells: 60,
@@ -1457,7 +1456,7 @@ mod tests {
             .map(|i| make_tab(&format!("t{i}"), i == 9))
             .collect();
         let mut bar = make_bar(tabs);
-        bar.scroll_offset = 0.0; // stale
+        bar.scroll_offset = 0; // stale
         let layout = bar.layout(
             30.0,
             1.0,
@@ -1486,7 +1485,7 @@ mod tests {
             .collect();
         let mut bar = make_bar(tabs);
         // Caller has already computed: show tabs starting at 7 so 7,8,9 fit.
-        bar.scroll_offset = 7.0;
+        bar.scroll_offset = 7;
         let layout = bar.layout(
             30.0,
             1.0,
@@ -1506,7 +1505,7 @@ mod tests {
         // stale value (e.g. tab count just shrank) can't push out of range.
         let tabs: Vec<_> = (0..3).map(|i| make_tab(&format!("t{i}"), false)).collect();
         let mut bar = make_bar(tabs);
-        bar.scroll_offset = 99.0;
+        bar.scroll_offset = 99;
         let layout = bar.layout(
             30.0,
             1.0,

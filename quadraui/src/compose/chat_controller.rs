@@ -733,7 +733,7 @@ impl ChatController {
         let status_list = MessageList {
             id: WidgetId::new(format!("{}-status", self.id)),
             rows: status_rows,
-            scroll_top: 0.0,
+            scroll_top: 0,
         };
         backend.draw_message_list(layout.status, &status_list);
 
@@ -771,7 +771,7 @@ impl ChatController {
         let list = MessageList {
             id: WidgetId::new(format!("{}-transcript", self.id)),
             rows: wrapped_rows,
-            scroll_top: self.transcript_scroll_top.get() as f32,
+            scroll_top: self.transcript_scroll_top.get(),
         };
         backend.draw_message_list(layout.transcript, &list);
 
@@ -800,7 +800,7 @@ impl ChatController {
             let hint_list = MessageList {
                 id: WidgetId::new(format!("{}-hint", self.id)),
                 rows: vec![MessageRow::new(hint_text, Color::rgb(140, 140, 140), 0.0)],
-                scroll_top: 0.0,
+                scroll_top: 0,
             };
             backend.draw_message_list(hint_rect, &hint_list);
         }
@@ -1057,7 +1057,7 @@ impl ChatController {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         }
     }
@@ -1223,7 +1223,7 @@ impl ChatController {
             }
             .into(),
         );
-        ti.scroll_offset = self.input_scroll_offset as f32;
+        ti.scroll_offset = self.input_scroll_offset;
         // No horizontal scroll: `rows` is already wrapped to fit the box's
         // width, so every visual row fits within `col_budget` columns.
         ti.scroll_col = 0;
@@ -1532,7 +1532,7 @@ impl ChatController {
             let list = MessageList {
                 id: WidgetId::new(format!("{}-transcript", self.id)),
                 rows,
-                scroll_top: self.transcript_scroll_top.get() as f32,
+                scroll_top: self.transcript_scroll_top.get(),
             };
             let measure = MessageListMeasure::new(backend.line_height());
             return match list.hit_test(layout.transcript, measure, x, y) {

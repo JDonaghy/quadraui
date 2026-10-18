@@ -32,7 +32,6 @@
 //! for typical workloads, optimise when profiling shows it's hot.
 
 use crate::event::Rect;
-use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -76,7 +75,7 @@ use serde::{Deserialize, Serialize};
 /// let layout = terminal.layout(80.0, 24.0, 1.0, 1.0);
 /// assert_eq!(layout.hit_test(0.0, 0.0), TerminalHit::Cell { row: 0, col: 0 });
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Terminal {
     pub id: WidgetId,
     pub cells: Vec<Vec<TerminalCell>>,
@@ -101,11 +100,11 @@ impl Default for Terminal {
 /// [`crate::Scrollbar::vertical`] from these values and the terminal's
 /// rect, then delegates to `Backend::draw_scrollbar` for themed
 /// rendering.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalScrollbar {
     pub total_lines: usize,
     pub visible_lines: usize,
-    pub scroll_offset: f32,
+    pub scroll_offset: usize,
     /// When `true`, `scroll_offset = 0` means "at the bottom" (live
     /// view) and increasing offset scrolls up into history. The
     /// rasteriser flips the offset before constructing the visual
@@ -126,9 +125,9 @@ impl TerminalScrollbar {
         if self.inverted {
             self.total_lines
                 .saturating_sub(self.visible_lines)
-                .saturating_sub(scroll_rows(self.scroll_offset))
+                .saturating_sub(self.scroll_offset)
         } else {
-            scroll_rows(self.scroll_offset)
+            self.scroll_offset
         }
     }
 }
@@ -1333,7 +1332,7 @@ mod tests {
         let sb = TerminalScrollbar {
             total_lines: 500,
             visible_lines: 24,
-            scroll_offset: 100.0,
+            scroll_offset: 100,
             inverted: false,
             width: None,
         };
@@ -1345,7 +1344,7 @@ mod tests {
         let sb = TerminalScrollbar {
             total_lines: 500,
             visible_lines: 24,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             inverted: true,
             width: None,
         };
@@ -1358,7 +1357,7 @@ mod tests {
         let sb = TerminalScrollbar {
             total_lines: 500,
             visible_lines: 24,
-            scroll_offset: 476.0,
+            scroll_offset: 476,
             inverted: true,
             width: None,
         };
@@ -1371,7 +1370,7 @@ mod tests {
         let sb = TerminalScrollbar {
             total_lines: 500,
             visible_lines: 24,
-            scroll_offset: 200.0,
+            scroll_offset: 200,
             inverted: true,
             width: None,
         };
@@ -1383,7 +1382,7 @@ mod tests {
         let sb = TerminalScrollbar {
             total_lines: 24,
             visible_lines: 24,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             inverted: true,
             width: None,
         };
@@ -1583,7 +1582,7 @@ mod tests {
             scrollbar: Some(TerminalScrollbar {
                 total_lines: 500,
                 visible_lines: 24,
-                scroll_offset: 100.0,
+                scroll_offset: 100,
                 inverted: false,
                 width: None,
             }),
@@ -1594,7 +1593,7 @@ mod tests {
         let sb = back.scrollbar.unwrap();
         assert_eq!(sb.total_lines, 500);
         assert_eq!(sb.visible_lines, 24);
-        assert_eq!(sb.scroll_offset, 100.0);
+        assert_eq!(sb.scroll_offset, 100);
     }
 
     #[test]

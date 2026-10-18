@@ -31,7 +31,6 @@
 //! affected rows.
 
 use crate::event::Rect;
-use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Decoration, Modifiers, StyledSpan, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -61,13 +60,13 @@ use serde::{Deserialize, Serialize};
 /// // newest (only) line visible.
 /// assert_eq!(layout.resolved_scroll_offset, 0);
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextDisplay {
     pub id: WidgetId,
     pub lines: Vec<TextDisplayLine>,
     /// Index of the first visible line. `0` = top.
     #[serde(default)]
-    pub scroll_offset: f32,
+    pub scroll_offset: usize,
     /// When true, backends auto-scroll to keep the latest line visible.
     /// Toggled off when the user scrolls upward, re-enabled when they
     /// scroll back to the bottom.
@@ -518,10 +517,7 @@ impl TextDisplay {
             }
             offset
         } else {
-            crate::primitives::scrollbar::clamp_scroll_offset(
-                scroll_rows(self.scroll_offset),
-                self.lines.len(),
-            )
+            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.lines.len())
         };
 
         let mut y = 0.0_f32;
@@ -621,7 +617,7 @@ impl TextDisplay {
         Self {
             id,
             lines: Vec::new(),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             auto_scroll: true,
             max_lines: 0,
             has_focus: false,
@@ -639,14 +635,14 @@ impl TextDisplay {
             self.lines.drain(..drop);
             // Adjust scroll offset so the visible region stays put when
             // we evict older lines.
-            self.scroll_offset = (self.scroll_offset - drop as f32).max(0.0);
+            self.scroll_offset = self.scroll_offset.saturating_sub(drop);
         }
     }
 
     /// Drop all lines and reset scroll to top.
     pub fn clear(&mut self) {
         self.lines.clear();
-        self.scroll_offset = 0.0;
+        self.scroll_offset = 0;
     }
 
     /// Set the max retention; when set lower than the current line count,
@@ -656,7 +652,7 @@ impl TextDisplay {
         if max > 0 && self.lines.len() > max {
             let drop = self.lines.len() - max;
             self.lines.drain(..drop);
-            self.scroll_offset = (self.scroll_offset - drop as f32).max(0.0);
+            self.scroll_offset = self.scroll_offset.saturating_sub(drop);
         }
     }
 }
@@ -967,7 +963,7 @@ mod native_surface_paint {
             TextDisplay {
                 id: WidgetId::new("td"),
                 lines: (0..lines).map(|i| td_line(&format!("ln{i}"))).collect(),
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 auto_scroll: false,
                 max_lines: 0,
                 has_focus: false,
@@ -1171,7 +1167,7 @@ mod tests {
         TextDisplay {
             id: WidgetId::new("td"),
             lines: (0..lines).map(|i| line(&format!("line{i}"))).collect(),
-            scroll_offset: scroll as f32,
+            scroll_offset: scroll,
             auto_scroll: auto,
             max_lines: 0,
             has_focus: false,
@@ -1353,7 +1349,7 @@ mod tests {
 
         td.clear();
         assert_eq!(td.lines.len(), 0);
-        assert_eq!(td.scroll_offset, 0.0);
+        assert_eq!(td.scroll_offset, 0);
     }
 
     #[test]
@@ -1375,7 +1371,7 @@ mod tests {
                     timestamp: None,
                 },
             ],
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             auto_scroll: false,
             max_lines: 1000,
             has_focus: true,
@@ -1421,7 +1417,7 @@ mod tests {
         TextDisplay {
             id: WidgetId::new("td"),
             lines,
-            scroll_offset: scroll as f32,
+            scroll_offset: scroll,
             auto_scroll: auto,
             max_lines: 0,
             has_focus: true,

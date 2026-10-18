@@ -480,7 +480,7 @@ mod tests {
                     is_closable: true,
                 },
             ],
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: vec![TabBarSegment {
                 text: " ⇅ ".into(),
                 width_cells: 3,

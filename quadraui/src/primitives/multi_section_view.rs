@@ -37,7 +37,6 @@ use crate::primitives::chart::Chart;
 use crate::primitives::form::Form;
 use crate::primitives::list::ListView;
 use crate::primitives::message_list::MessageList;
-use crate::primitives::scrollbar::scroll_rows;
 use crate::primitives::terminal::Terminal;
 use crate::primitives::tree::TreeView;
 use crate::types::{Icon, StyledText, WidgetId};
@@ -1076,10 +1075,10 @@ fn body_overflows(s: &Section, content: f32, body_main: f32) -> bool {
 /// on the inner primitive — there's no second source of truth.
 fn body_scroll_state(body: &SectionBody) -> Option<(usize, usize)> {
     match body {
-        SectionBody::Tree(t) => Some((scroll_rows(t.scroll_offset), t.rows.len())),
+        SectionBody::Tree(t) => Some((t.scroll_offset, t.rows.len())),
         SectionBody::List(l) => {
             let title_row = if l.title.is_some() { 1 } else { 0 };
-            Some((scroll_rows(l.scroll_offset), l.items.len() + title_row))
+            Some((l.scroll_offset, l.items.len() + title_row))
         }
         _ => None,
     }

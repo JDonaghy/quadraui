@@ -1464,7 +1464,7 @@ mod tests {
                             is_closable: false,
                         },
                     ],
-                    scroll_offset: 0.0,
+                    scroll_offset: 0,
                     right_segments: vec![],
                     active_accent: None,
                     show_tab_close: false,
@@ -1621,7 +1621,7 @@ mod tests {
                         is_closable: false,
                     },
                 ],
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 right_segments: vec![],
                 active_accent: None,
                 show_tab_close: false,
@@ -1714,7 +1714,7 @@ mod tests {
                         is_closable: true,
                     })
                     .collect(),
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 right_segments: vec![],
                 active_accent: None,
                 show_tab_close: true,
@@ -1876,7 +1876,7 @@ mod tests {
                             is_preview: false,
                             is_closable: false,
                         }],
-                        scroll_offset: 0.0,
+                        scroll_offset: 0,
                         right_segments: vec![],
                         active_accent: None,
                         show_tab_close: true,
@@ -1945,7 +1945,7 @@ mod tests {
                         // (each ~3 cells with a close button); TUI honours
                         // this caller-supplied offset directly rather than
                         // computing its own (no scroll arrows in TUI).
-                        scroll_offset: 1.0,
+                        scroll_offset: 1,
                         right_segments: vec![],
                         active_accent: None,
                         show_tab_close: true,
@@ -2014,7 +2014,7 @@ mod tests {
                         decoration: Default::default(),
                         timestamp: None,
                     }],
-                    scroll_offset: 0.0,
+                    scroll_offset: 0,
                     auto_scroll: true,
                     max_lines: 0,
                     has_focus: false,

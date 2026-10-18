@@ -103,7 +103,7 @@ impl FocusDemo {
                 })
                 .collect(),
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             // Deliberately `false` on both lists. Keyboard focus is
             // the runner's `FocusManager`, not a per-primitive bool — the
             // ring is what shows which one has it.

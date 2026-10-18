@@ -53,7 +53,6 @@ use crate::desktop::WindowDragArm;
 use crate::dispatch::{DoubleClickDetector, TextRegion};
 use crate::event::{Point, Rect};
 use crate::paint_surface::PaintSurface;
-use crate::primitives::scrollbar::scroll_rows;
 use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
@@ -2428,14 +2427,11 @@ impl Backend for GtkBackend {
 
         let row_height = table_layout.row_height as f64;
         let body_y = rect.y as f64 + header_height;
-        // Rows are indexed from a whole row; the `f32` offset stays the
-        // stored source of truth and is rounded once, here.
-        let scroll_offset = scroll_rows(table.scroll_offset);
         let visible = table_layout
             .visible_rows
-            .min(table.rows.len().saturating_sub(scroll_offset));
+            .min(table.rows.len().saturating_sub(table.scroll_offset));
         for row_idx in 0..visible {
-            let abs_idx = scroll_offset + row_idx;
+            let abs_idx = table.scroll_offset + row_idx;
             let row = &table.rows[abs_idx];
             let row_y = body_y + row_idx as f64 * row_height;
             for (col_idx, rc) in table_layout.columns.iter().enumerate() {
@@ -5873,7 +5869,7 @@ mod tests {
                     decoration: crate::types::Decoration::default(),
                 }],
                 selected_idx: 0,
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 has_focus: true,
                 bordered,
                 h_scroll: 0,
@@ -6482,7 +6478,7 @@ mod tests {
                 },
             ],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
 
@@ -6565,7 +6561,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
 
@@ -7413,7 +7409,7 @@ mod tests {
             selection: None,
             extra_selections: Vec::new(),
             yank_highlight: None,
-            scroll_top: 0.0,
+            scroll_top: 0,
             scroll_left: 0,
             total_lines: 1,
             max_col: 26,
@@ -7808,7 +7804,7 @@ mod tests {
                 is_preview: false,
                 is_closable: false,
             }],
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: vec![],
             active_accent: None,
             show_tab_close: false,
@@ -7876,7 +7872,7 @@ mod tests {
                 }],
                 selection_mode: crate::types::SelectionMode::Single,
                 selected_path: None,
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 style: crate::types::TreeStyle::default(),
                 has_focus: false,
             };
@@ -7993,7 +7989,7 @@ mod tests {
                 decoration: crate::types::Decoration::Normal,
             }],
             selected_idx: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -8055,7 +8051,7 @@ mod tests {
                     decoration: crate::types::Decoration::Normal,
                 }],
                 selected_idx: None,
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 sort: None,
                 has_focus: false,
                 show_scrollbar: false,
@@ -8150,7 +8146,7 @@ mod tests {
                 .collect(),
             selection_mode: crate::types::SelectionMode::Single,
             selected_path: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             style: crate::types::TreeStyle::default(),
             has_focus: false,
         }
@@ -8231,7 +8227,7 @@ mod tests {
                     decoration: crate::types::Decoration::Normal,
                 }],
                 selected_idx: 0,
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 has_focus: false,
                 bordered: false,
                 h_scroll: 0,
@@ -8327,7 +8323,7 @@ mod tests {
                         decoration: crate::types::Decoration::Normal,
                     }],
                     selected_idx: 0,
-                    scroll_offset: 0.0,
+                    scroll_offset: 0,
                     has_focus: false,
                     bordered: false,
                     h_scroll: 0,
@@ -8719,7 +8715,7 @@ mod tests {
                 decoration: Default::default(),
             }],
             selected_idx: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -8778,7 +8774,7 @@ mod tests {
                 decoration: Default::default(),
             }],
             selected_idx: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -8855,7 +8851,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
 
@@ -8885,7 +8881,7 @@ mod tests {
                 decoration: crate::types::Decoration::Normal,
             }],
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -8941,7 +8937,7 @@ mod tests {
                 })
                 .collect(),
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -8996,10 +8992,10 @@ mod tests {
                     badges: vec![],
                     hint: None,
                 }],
-                scroll_offset: 0.0,
+                scroll_offset: 0,
             }],
             selected_card_id: None,
-            col_scroll_offset: 0.0,
+            col_scroll_offset: 0,
         };
         let backend = GtkBackend::new();
         let rect = QRect::new(5.0, 2.0, 400.0, 300.0);
@@ -9066,7 +9062,7 @@ mod tests {
             scrollbar: Some(crate::TerminalScrollbar {
                 total_lines: 100,
                 visible_lines: 1,
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 inverted: false,
                 // `None` — draw_terminal's `sb_width: … .unwrap_or(8.0)`
                 // fallback, which `terminal_scrollbar_default_width` must
@@ -9147,7 +9143,7 @@ mod tests {
             }],
             mode,
             editability: crate::DiffEditability::ReadOnly,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             focused_pane: crate::DiffPane::Left,
             has_focus: false,
         }
@@ -9240,7 +9236,7 @@ mod tests {
             selection: None,
             extra_selections: Vec::new(),
             yank_highlight: None,
-            scroll_top: 0.0,
+            scroll_top: 0,
             scroll_left: 0,
             total_lines: 3,
             max_col: 4,
@@ -9435,7 +9431,7 @@ mod tests {
             ],
             right_segments: vec![],
             active_accent: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             show_tab_close: true,
             compact: false,
         }
@@ -10639,7 +10635,7 @@ mod tests {
                 lines: vec![StyledText::plain("M")],
                 line_text: vec!["M".to_string()],
                 line_scales: vec![],
-                scroll_top: 0.0,
+                scroll_top: 0,
                 max_visible_rows: 4,
                 has_focus: false,
                 selection: None,
@@ -11095,7 +11091,7 @@ mod tests {
         TextDisplayModel {
             id: WidgetId::new("td"),
             lines: (0..lines).map(|i| td_line(&format!("ln{i}"))).collect(),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,

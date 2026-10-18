@@ -91,7 +91,7 @@ mod tests {
                 },
             ],
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
         }
     }

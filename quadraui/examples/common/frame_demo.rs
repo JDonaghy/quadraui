@@ -99,7 +99,7 @@ impl FrameDemo {
                     is_closable: true,
                 })
                 .collect(),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: vec![],
             active_accent: Some(Color::rgb(80, 160, 240)),
             show_tab_close: false,
@@ -125,7 +125,7 @@ impl FrameDemo {
             // Drive scroll_offset from the selection so j/k scrolls the
             // list and the vertical-scrollbar thumb visibly tracks position.
             // The primitive clamps this in `layout()`.
-            scroll_offset: self.selected as f32,
+            scroll_offset: self.selected,
             has_focus: true,
             bordered: false,
             h_scroll: self.h_scroll,

@@ -50,7 +50,6 @@ use super::text::{draw_text, measure_text};
 // `TabBarLayout` into one per paint/no-paint call, so the import needs
 // the same allow every use site below does.
 use crate::event::Rect;
-use crate::primitives::scrollbar::scroll_rows;
 use crate::primitives::tab_bar::{
     tab_icon_at, TabBarHit, TabBarLayout, TabIcon, VisibleSegment, VisibleTab,
 };
@@ -309,7 +308,7 @@ pub fn mac_tab_bar_native_layout_icons(
             tab_slot_widths[i] as usize
         })
     } else {
-        scroll_rows(bar.scroll_offset)
+        bar.scroll_offset
     };
 
     // ── Visible tabs ─────────────────────────────────────────────────
@@ -326,8 +325,7 @@ pub fn mac_tab_bar_native_layout_icons(
     let mut body_regions: Vec<(Rect, TabBarHit)> = Vec::new();
 
     let mut x = 0.0_f64;
-    let paint_from = scroll_rows(bar.scroll_offset);
-    for (tab_idx, tab) in bar.tabs.iter().enumerate().skip(paint_from) {
+    for (tab_idx, tab) in bar.tabs.iter().enumerate().skip(bar.scroll_offset) {
         let (tab_name_w, _) = measure_text(font, &tab.label);
         let icon_extra = icon_extras[tab_idx];
         let tab_content_w = tab_pad + icon_extra + tab_name_w + close_extra_for(tab_idx) + tab_pad;
@@ -523,13 +521,12 @@ pub unsafe fn draw_tab_bar_icons(
     // ── Tabs paint loop ──────────────────────────────────────────────
     // `slot_positions` is padded with `(0.0, 0.0)` for the scrolled-past
     // tabs, so start after them and stop where the layout stopped.
-    let paint_from = scroll_rows(bar.scroll_offset);
     for (tab_idx, tab) in bar
         .tabs
         .iter()
         .enumerate()
-        .skip(paint_from)
-        .take(hits.slot_positions.len().saturating_sub(paint_from))
+        .skip(bar.scroll_offset)
+        .take(hits.slot_positions.len().saturating_sub(bar.scroll_offset))
     {
         let (slot_x, slot_end) = hits.slot_positions[tab_idx];
         let tab_content_w = slot_end - slot_x - tab_outer_gap;
@@ -718,7 +715,7 @@ mod tests {
                     is_closable: true,
                 },
             ],
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: vec![],
             active_accent: Some(Color::rgb(80, 140, 255)),
             show_tab_close: true,
@@ -1011,7 +1008,7 @@ mod tests {
                     is_closable: false,
                 },
             ],
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: vec![],
             active_accent: None,
             show_tab_close: true,
@@ -1045,7 +1042,7 @@ mod tests {
         let bar = TabBar {
             id: WidgetId::new("empty"),
             tabs: vec![],
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: vec![],
             active_accent: None,
             show_tab_close: true,
@@ -1488,7 +1485,7 @@ mod tests {
                     is_closable: true,
                 })
                 .collect(),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: vec![],
             active_accent: None,
             show_tab_close: true,
@@ -1584,7 +1581,7 @@ mod tests {
         let bar = TabBar {
             id: WidgetId::new("empty"),
             tabs: vec![],
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: vec![],
             active_accent: None,
             show_tab_close: true,
@@ -1779,7 +1776,7 @@ mod tests {
                     ..Default::default()
                 })
                 .collect(),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: vec![],
             active_accent: None,
             show_tab_close: true,

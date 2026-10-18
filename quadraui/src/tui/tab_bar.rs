@@ -17,7 +17,6 @@ use super::{ratatui_color, set_cell, set_cell_styled, set_cell_wide, set_cell_wi
 // still building one per frame; see that struct's doc for the replacement
 // plan (`TabBarLayout`, which every function below already receives as
 // its `layout` parameter).
-use crate::primitives::scrollbar::scroll_rows;
 #[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarLayout, TabChrome, TabFrame};
 use crate::theme::Theme;
@@ -228,7 +227,7 @@ pub fn draw_tab_bar_icons_with_chrome(
 
     let mut slot_positions: Vec<(f64, f64)> = Vec::with_capacity(bar.tabs.len());
     let mut close_bounds: Vec<Option<(f64, f64)>> = Vec::with_capacity(bar.tabs.len());
-    for _ in 0..scroll_rows(bar.scroll_offset).min(bar.tabs.len()) {
+    for _ in 0..bar.scroll_offset.min(bar.tabs.len()) {
         slot_positions.push((0.0, 0.0));
         close_bounds.push(None);
     }
@@ -401,7 +400,7 @@ pub fn draw_tab_bar_icons_with_chrome(
         right_segment_bounds,
         available_cols: tab_content_width,
         // TUI's char-based fit is exact; no correction needed.
-        correct_scroll_offset: scroll_rows(bar.scroll_offset),
+        correct_scroll_offset: bar.scroll_offset,
     }
 }
 
@@ -432,7 +431,7 @@ mod tests {
             ],
             right_segments: vec![],
             active_accent: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             show_tab_close: true,
             compact: false,
         }
@@ -511,7 +510,7 @@ mod tests {
                 is_active: false,
             }],
             active_accent: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             show_tab_close: true,
             compact: false,
         };
@@ -560,7 +559,7 @@ mod tests {
             }],
             right_segments: vec![],
             active_accent: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             show_tab_close: false,
             compact: false,
         };
@@ -656,7 +655,7 @@ mod tests {
             }],
             right_segments: vec![],
             active_accent: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             show_tab_close: false,
             compact: false,
         };
@@ -757,7 +756,7 @@ mod tests {
             ],
             right_segments: vec![],
             active_accent: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             show_tab_close: true,
             compact: false,
         };
@@ -847,7 +846,7 @@ mod tests {
             ],
             right_segments: vec![],
             active_accent: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             show_tab_close: false,
             compact: true,
         };

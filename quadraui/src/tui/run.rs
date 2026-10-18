@@ -1248,7 +1248,7 @@ mod tests {
                 selection: None,
                 extra_selections: vec![],
                 yank_highlight: None,
-                scroll_top: 0.0,
+                scroll_top: 0,
                 scroll_left: 0,
                 total_lines: 1,
                 max_col: 11,

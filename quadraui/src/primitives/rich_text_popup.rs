@@ -55,7 +55,6 @@
 //! precedent.
 
 use crate::event::Rect;
-use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -71,7 +70,7 @@ use serde::{Deserialize, Serialize};
 ///     lines: vec![StyledText::plain("fn main() -> ()")],
 ///     line_text: vec!["fn main() -> ()".to_string()],
 ///     line_scales: vec![],
-///     scroll_top: 0.0,
+///     scroll_top: 0,
 ///     max_visible_rows: 10,
 ///     has_focus: true,
 ///     selection: None,
@@ -110,7 +109,7 @@ pub struct RichTextPopup {
     pub line_scales: Vec<f32>,
     /// Index of the topmost visible line (0 = no scroll).
     #[serde(default)]
-    pub scroll_top: f32,
+    pub scroll_top: usize,
     /// Maximum number of lines visible at once. Determines scrollbar
     /// presence + thumb sizing. Apps choose a value; typical
     /// vimcode hover popup uses 20.
@@ -384,10 +383,7 @@ impl RichTextPopup {
         // Clamp scroll FIRST so a stale `scroll_top` past `max_scroll`
         // still produces a valid visible window (last full screen).
         let max_scroll = total_lines.saturating_sub(max_rows);
-        let scroll_top = self.scroll_top.clamp(0.0, max_scroll as f32);
-        // Row indexing starts on a whole row; the `f32` offset stays the
-        // source of truth and still drives the scrollbar thumb.
-        let resolved_scroll_offset = scroll_rows(scroll_top);
+        let resolved_scroll_offset = self.scroll_top.min(max_scroll);
         let visible_count = total_lines
             .saturating_sub(resolved_scroll_offset)
             .min(max_rows);
@@ -477,7 +473,7 @@ impl RichTextPopup {
             // minimum thumb length (never smaller than one row).
             let row_main_unit = content_bounds.height / total_lines as f32;
             let (thumb_top_offset, thumb_h) = crate::primitives::scrollbar::fit_thumb(
-                scroll_top * row_main_unit,
+                resolved_scroll_offset as f32 * row_main_unit,
                 content_bounds.height,
                 max_rows as f32 * row_main_unit,
                 content_bounds.height,
@@ -764,7 +760,7 @@ mod tests {
                 .collect(),
             line_text: (0..n).map(|i| format!("line{i}")).collect(),
             line_scales: scales.to_vec(),
-            scroll_top: 0.0,
+            scroll_top: 0,
             max_visible_rows: 20,
             has_focus: false,
             selection: None,
@@ -899,7 +895,7 @@ mod tests {
             lines: lines_styled,
             line_text,
             line_scales: Vec::new(),
-            scroll_top: scroll as f32,
+            scroll_top: scroll,
             max_visible_rows: max_visible,
             has_focus: false,
             selection: None,

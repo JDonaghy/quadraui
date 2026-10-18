@@ -203,7 +203,7 @@ mod tests {
             id: WidgetId::new("form"),
             fields,
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
         }
     }

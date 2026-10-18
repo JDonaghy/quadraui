@@ -198,7 +198,7 @@ mod tests {
                 sample_item("delta", Color::rgb(10, 20, 30)),
             ],
             selected_idx: 1,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
             bordered: false,
             h_scroll: 0,

@@ -1093,7 +1093,7 @@ mod tests {
                 },
             ],
             focused_field: Some(WidgetId::new("wrap")),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
         }
     }
@@ -1166,7 +1166,7 @@ mod tests {
                 hint: label(""),
             }],
             focused_field: Some(WidgetId::new("note")),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
         };
         // `Theme::default()` sets `header_fg == foreground` (both the
@@ -1258,7 +1258,7 @@ mod tests {
                 hint: label(""),
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 3));
@@ -1307,7 +1307,7 @@ mod tests {
                 hint: label(""),
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         }
     }
@@ -1451,7 +1451,7 @@ mod tests {
                 hint: label(""),
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         }
     }
@@ -1628,7 +1628,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
@@ -1662,7 +1662,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
@@ -1692,7 +1692,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
@@ -1719,7 +1719,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 3));
@@ -1755,7 +1755,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 6), &form, &Theme::default());
@@ -1787,7 +1787,7 @@ mod tests {
                 validation: Some(ValidationState::Error("Required".into())),
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
@@ -1814,7 +1814,7 @@ mod tests {
                 validation: Some(ValidationState::Warning("Too short".into())),
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
@@ -1866,7 +1866,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         }
     }
@@ -2014,7 +2014,7 @@ mod tests {
                 hint: label(""),
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         let area = Rect::new(0, 0, 30, 3);
@@ -2080,7 +2080,7 @@ mod tests {
                 hint: label(""),
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         let area = Rect::new(0, 0, 30, 3);

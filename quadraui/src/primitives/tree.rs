@@ -29,7 +29,7 @@
 //! the viewport row count.
 
 use crate::event::Rect;
-use crate::primitives::scrollbar::{scroll_rows, Scrollbar};
+use crate::primitives::scrollbar::Scrollbar;
 use crate::types::{
     Badge, Decoration, Icon, Modifiers, SelectionMode, StyledText, TreePath, TreeStyle, WidgetId,
 };
@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 ///     }],
 ///     selection_mode: SelectionMode::Single,
 ///     selected_path: Some(vec![0]),
-///     scroll_offset: 0.0,
+///     scroll_offset: 0,
 ///     style: TreeStyle::default(),
 ///     has_focus: true,
 /// };
@@ -67,7 +67,7 @@ use serde::{Deserialize, Serialize};
 /// let layout = tree.layout(40.0, 10.0, |_| TreeRowMeasure::new(1.0));
 /// assert_eq!(layout.hit_test(0.0, 0.0), TreeViewHit::Row(0));
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreeView {
     pub id: WidgetId,
     /// Pre-flattened, pre-expanded rows in visual order.
@@ -78,7 +78,7 @@ pub struct TreeView {
     /// scroll state with `ScrollState::id(widget_id)` is a later stage per
     /// `docs/UI_CRATE_DESIGN.md` §3.1).
     #[serde(default)]
-    pub scroll_offset: f32,
+    pub scroll_offset: usize,
     pub style: TreeStyle,
     #[serde(default)]
     pub has_focus: bool,
@@ -306,10 +306,8 @@ impl TreeView {
 
         // Clamp scroll_offset to a valid starting index; we still report
         // the clamped value so the app can write it back and self-correct.
-        let resolved_scroll_offset = crate::primitives::scrollbar::clamp_scroll_offset(
-            scroll_rows(self.scroll_offset),
-            self.rows.len(),
-        );
+        let resolved_scroll_offset =
+            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.rows.len());
 
         let mut y = 0.0_f32;
         for i in resolved_scroll_offset..self.rows.len() {
@@ -424,7 +422,7 @@ impl TreeView {
         Some(Scrollbar::vertical(
             self.id,
             track,
-            self.scroll_offset,
+            self.scroll_offset as f32,
             total,
             visible,
             row_height,
@@ -835,7 +833,7 @@ pub(crate) mod native_surface_paint {
                 rows,
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 style: TreeStyle::default(),
                 has_focus: true,
             }
@@ -1315,7 +1313,7 @@ mod tests {
             }],
             selection_mode: SelectionMode::Single,
             selected_path: Some(vec![0]),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             style: TreeStyle::default(),
             has_focus: true,
         };
@@ -1384,7 +1382,7 @@ mod tests {
             rows,
             selection_mode: SelectionMode::Single,
             selected_path: None,
-            scroll_offset: scroll as f32,
+            scroll_offset: scroll,
             style: TreeStyle::default(),
             has_focus: true,
         }

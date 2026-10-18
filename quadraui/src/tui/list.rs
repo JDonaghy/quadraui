@@ -466,7 +466,7 @@ mod tests {
                 item("gamma", Decoration::Normal),
             ],
             selected_idx: selected,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -546,7 +546,7 @@ mod tests {
             title: None,
             items: vec![item("oops", Decoration::Error)],
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
             bordered: false,
             h_scroll: 0,
@@ -768,7 +768,7 @@ mod tests {
                 decoration: Decoration::Normal,
             }],
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
             bordered: false,
             h_scroll: 8,
@@ -830,7 +830,7 @@ mod tests {
             items: (0..n)
                 .map(|i| item(&format!("item {}", i), Decoration::Normal))
                 .collect(),
-            scroll_offset: scroll_offset as f32,
+            scroll_offset,
             show_v_scrollbar: true,
             ..make_list(0)
         }

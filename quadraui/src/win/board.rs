@@ -57,17 +57,17 @@ mod tests {
                     id: WidgetId::new("col:backlog"),
                     title: "Backlog".into(),
                     cards: vec![card("card:a", "First"), card("card:b", "Second")],
-                    scroll_offset: 0.0,
+                    scroll_offset: 0,
                 },
                 BoardColumn {
                     id: WidgetId::new("col:done"),
                     title: "Done".into(),
                     cards: vec![card("card:c", "Third")],
-                    scroll_offset: 0.0,
+                    scroll_offset: 0,
                 },
             ],
             selected_card_id: Some(WidgetId::new("card:a")),
-            col_scroll_offset: 0.0,
+            col_scroll_offset: 0,
         }
     }
 

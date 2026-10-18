@@ -643,7 +643,7 @@ fn tab_icons_initial_close_center(driver: &MacDriver<TabIconsDemo>, tab_idx: usi
                 ..Default::default()
             })
             .collect(),
-        scroll_offset: 0.0,
+        scroll_offset: 0,
         right_segments: vec![],
         active_accent: None,
         show_tab_close: true,

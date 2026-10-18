@@ -10,7 +10,6 @@ use gtk4::pango;
 use super::{cairo_rgb, set_source};
 use crate::primitives::data_table::{ColumnAlign, DataTable, DataTableLayout, SortDirection};
 use crate::primitives::layout_metrics::pixel_data_table_layout;
-use crate::primitives::scrollbar::scroll_rows;
 use crate::theme::Theme;
 
 /// Horizontal gap between a sorted column's title and its codicon
@@ -156,15 +155,12 @@ pub fn draw_data_table(
 
     // ── Body rows ─────────────────────────────────────────────────────
     let body_y = y + header_height;
-    // Rows are indexed from a whole row; the `f32` offset stays the stored
-    // source of truth and is rounded once, here.
-    let scroll_offset = scroll_rows(table.scroll_offset);
     let visible = layout
         .visible_rows
-        .min(table.rows.len().saturating_sub(scroll_offset));
+        .min(table.rows.len().saturating_sub(table.scroll_offset));
 
     for row_idx in 0..visible {
-        let abs_idx = scroll_offset + row_idx;
+        let abs_idx = table.scroll_offset + row_idx;
         let row = &table.rows[abs_idx];
         let row_y = body_y + row_idx as f64 * line_height;
         let is_selected = table.selected_idx == Some(abs_idx);
@@ -276,7 +272,7 @@ pub fn draw_data_table(
         let sb = crate::primitives::scrollbar::Scrollbar::vertical(
             table.id,
             sb_track,
-            table.scroll_offset,
+            table.scroll_offset as f32,
             table.rows.len() as f32,
             layout.visible_rows as f32,
             line_height as f32,
@@ -489,7 +485,7 @@ mod tests {
                 decoration: Decoration::Normal,
             }],
             selected_idx: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             sort: None,
             has_focus: false,
             show_scrollbar: false,

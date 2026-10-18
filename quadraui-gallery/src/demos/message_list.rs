@@ -66,7 +66,7 @@ impl MessageListDemo {
         MessageList {
             id: WidgetId::new("gallery:message-list"),
             rows: self.rows[variant].clone(),
-            scroll_top: self.scroll_top[variant] as f32,
+            scroll_top: self.scroll_top[variant],
         }
     }
 

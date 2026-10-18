@@ -176,7 +176,7 @@ mod tests {
             rows,
             selection_mode: SelectionMode::Single,
             selected_path: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             style: TreeStyle::default(),
             has_focus: true,
         }
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn scroll_offset_paint_and_click_agree() {
         let mut tree = make_tree((0..8).map(|i| leaf(i, &format!("file-{i}.rs"))).collect());
-        tree.scroll_offset = 2.0;
+        tree.scroll_offset = 2;
         let rect = Rect::new(0.0, 0.0, W, H);
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");

@@ -115,7 +115,7 @@ mod tests {
                     timestamp: None,
                 })
                 .collect(),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,

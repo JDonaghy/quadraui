@@ -408,7 +408,7 @@ impl BottomPanelController {
         TabBar {
             id: WidgetId::new("bottom-panel:tabs"),
             tabs,
-            scroll_offset: self.tab_scroll_offset as f32,
+            scroll_offset: self.tab_scroll_offset,
             right_segments,
             active_accent: None,
             // show_tab_close drives close-button rendering for ALL tabs;

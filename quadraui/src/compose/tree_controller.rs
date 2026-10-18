@@ -867,7 +867,7 @@ impl TreeController {
     fn viewport_rows(&self, backend: &dyn Backend, rect: Rect) -> usize {
         let tree = self.build_tree_view(rect);
         let mut shadow = tree;
-        shadow.scroll_offset = 0.0;
+        shadow.scroll_offset = 0;
         let layout = backend.tree_layout(rect, &shadow);
         layout.visible_rows.len()
     }
@@ -894,7 +894,7 @@ impl TreeController {
             rows,
             selection_mode: SelectionMode::Single,
             selected_path: self.selected_path.clone(),
-            scroll_offset: self.scroll_offset as f32,
+            scroll_offset: self.scroll_offset,
             style: Default::default(),
             has_focus: self.has_focus,
         }

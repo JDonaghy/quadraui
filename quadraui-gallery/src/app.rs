@@ -183,7 +183,7 @@ impl GalleryApp {
                     ..Default::default()
                 })
                 .collect(),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: vec![],
             active_accent: Some(Color::rgb(0, 140, 220)),
             show_tab_close: false,

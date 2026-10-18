@@ -112,7 +112,7 @@ fn sprint_board() -> BoardModel {
                 hint: None,
             },
         ],
-        scroll_offset: 0.0,
+        scroll_offset: 0,
     };
     let in_progress = BoardColumn {
         id: WidgetId::new("gallery:board:col:in-progress"),
@@ -128,7 +128,7 @@ fn sprint_board() -> BoardModel {
             ],
             hint: Some("blocked: upstream async-std 2.0 compat".into()),
         }],
-        scroll_offset: 0.0,
+        scroll_offset: 0,
     };
     let review = BoardColumn {
         id: WidgetId::new("gallery:board:col:review"),
@@ -144,13 +144,13 @@ fn sprint_board() -> BoardModel {
             ],
             hint: Some("reviewer: needs integration test".into()),
         }],
-        scroll_offset: 0.0,
+        scroll_offset: 0,
     };
     BoardModel {
         id: WidgetId::new("gallery:board:main"),
         columns: vec![backlog, in_progress, review],
         selected_card_id: Some(WidgetId::new("gallery:board:card:3")),
-        col_scroll_offset: 0.0,
+        col_scroll_offset: 0,
     }
 }
 
@@ -162,17 +162,17 @@ fn empty_board() -> BoardModel {
                 id: WidgetId::new("gallery:board:empty:todo"),
                 title: "To Do".into(),
                 cards: vec![],
-                scroll_offset: 0.0,
+                scroll_offset: 0,
             },
             BoardColumn {
                 id: WidgetId::new("gallery:board:empty:done"),
                 title: "Done".into(),
                 cards: vec![],
-                scroll_offset: 0.0,
+                scroll_offset: 0,
             },
         ],
         selected_card_id: None,
-        col_scroll_offset: 0.0,
+        col_scroll_offset: 0,
     }
 }
 

@@ -77,7 +77,6 @@ pub fn draw_data_table(
 mod tests {
     use super::*;
     use crate::primitives::data_table::{Column, ColumnAlign, ColumnWidth, DataRow, DataTableHit};
-    use crate::primitives::scrollbar::scroll_rows;
     use crate::types::{Decoration, StyledText, WidgetId};
     use crate::win::testing::HeadlessSurface;
     use crate::win::text::DWrite;
@@ -103,7 +102,7 @@ mod tests {
             ],
             rows,
             selected_idx: Some(0),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             sort: None,
             has_focus: true,
             show_scrollbar: false,
@@ -146,17 +145,12 @@ mod tests {
             .expect("paint data table");
 
         // Header click.
-        let hit = layout.hit_test(1.0, 1.0, scroll_rows(table.scroll_offset), table.rows.len());
+        let hit = layout.hit_test(1.0, 1.0, table.scroll_offset, table.rows.len());
         assert_eq!(hit, DataTableHit::Header { col: 0 });
 
         // Row click (row 1, below the header).
         let row_y = layout.header_height + line_height_mid(LINE_HEIGHT);
-        let hit = layout.hit_test(
-            1.0,
-            row_y,
-            scroll_rows(table.scroll_offset),
-            table.rows.len(),
-        );
+        let hit = layout.hit_test(1.0, row_y, table.scroll_offset, table.rows.len());
         assert_eq!(hit, DataTableHit::Row { idx: 0 });
 
         // Selected row (idx 0) painted a blended background distinct
@@ -181,11 +175,11 @@ mod tests {
     fn scroll_offset_hit_test_agrees() {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let mut t = table(vec![row("a", "1"), row("b", "2"), row("c", "3")]);
-        t.scroll_offset = 1.0;
+        t.scroll_offset = 1;
         let rect = Rect::new(0.0, 0.0, W, H);
         let layout = win_data_table_layout(&dwrite, rect, &t, LINE_HEIGHT);
         let row_y = layout.header_height + line_height_mid(LINE_HEIGHT);
-        let hit = layout.hit_test(1.0, row_y, scroll_rows(t.scroll_offset), t.rows.len());
+        let hit = layout.hit_test(1.0, row_y, t.scroll_offset, t.rows.len());
         assert_eq!(hit, DataTableHit::Row { idx: 1 });
     }
 

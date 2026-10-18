@@ -33,7 +33,6 @@
 //! [`SelectionCols`] to on-screen positions.
 
 use crate::event::Rect;
-use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -456,7 +455,7 @@ pub struct Editor {
     #[serde(default)]
     pub yank_highlight: Option<EditorSelection>,
     /// Index of the first visible buffer line.
-    pub scroll_top: f32,
+    pub scroll_top: usize,
     /// Number of character columns scrolled horizontally.
     #[serde(default)]
     pub scroll_left: usize,
@@ -585,7 +584,7 @@ pub struct EditorLayout {
     pub cell_width: f32,
     pub line_height: f32,
     /// Scroll offsets for buffer-position calculation.
-    pub scroll_top: f32,
+    pub scroll_top: usize,
     pub scroll_left: usize,
     /// Number of visible text rows.
     pub visible_lines: usize,
@@ -627,7 +626,7 @@ impl EditorLayout {
         if let Some(g) = self.gutter_bounds {
             if x >= g.x && x < g.x + g.width && y >= g.y && y < g.y + g.height {
                 let row = ((y - g.y) / self.line_height).floor() as usize;
-                let line_idx = scroll_rows(self.scroll_top) + row;
+                let line_idx = self.scroll_top + row;
                 let gutter_col = ((x - g.x) / self.cell_width).floor() as usize;
                 return EditorHit::Gutter {
                     line_idx,
@@ -643,7 +642,7 @@ impl EditorLayout {
         {
             let row = ((y - self.text_bounds.y) / self.line_height).floor() as usize;
             let col_offset = ((x - self.text_bounds.x) / self.cell_width).floor() as usize;
-            let line = scroll_rows(self.scroll_top) + row;
+            let line = self.scroll_top + row;
             let col = self.scroll_left + col_offset;
             return EditorHit::BufferPos { line, col };
         }
@@ -734,7 +733,7 @@ impl Editor {
             selection: None,
             extra_selections: Vec::new(),
             yank_highlight: None,
-            scroll_top: 0.0,
+            scroll_top: 0,
             scroll_left: 0,
             total_lines: 0,
             max_col: 0,
@@ -798,7 +797,7 @@ impl Editor {
     /// Set [`Self::scroll_top`].
     #[must_use]
     pub fn with_scroll_top(mut self, scroll_top: usize) -> Self {
-        self.scroll_top = scroll_top as f32;
+        self.scroll_top = scroll_top;
         self
     }
 
@@ -1130,7 +1129,7 @@ mod tests {
             selection: None,
             extra_selections: vec![],
             yank_highlight: None,
-            scroll_top: 0.0,
+            scroll_top: 0,
             scroll_left: 0,
             total_lines: 1,
             max_col: 10,
@@ -1177,7 +1176,7 @@ mod tests {
             selection: None,
             extra_selections: Vec::new(),
             yank_highlight: None,
-            scroll_top: 0.0,
+            scroll_top: 0,
             scroll_left: 0,
             total_lines,
             max_col,
@@ -1337,7 +1336,7 @@ mod tests {
     #[test]
     fn editor_hit_test_text_area() {
         let mut ed = make_editor(4, 100, 40);
-        ed.scroll_top = 10.0;
+        ed.scroll_top = 10;
         ed.scroll_left = 5;
         let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
         let l = ed.layout(vp, 1.0, 1.0);
@@ -1356,7 +1355,7 @@ mod tests {
     #[test]
     fn editor_hit_test_gutter() {
         let mut ed = make_editor(4, 100, 40);
-        ed.scroll_top = 5.0;
+        ed.scroll_top = 5;
         let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
         let l = ed.layout(vp, 1.0, 1.0);
         assert_eq!(
@@ -1445,7 +1444,7 @@ mod tests {
         // with hit_test's BufferPos.col exactly, since both use the same
         // uniform cell-division formula.
         let mut ed = make_editor(4, 100, 40);
-        ed.scroll_top = 10.0;
+        ed.scroll_top = 10;
         ed.scroll_left = 5;
         ed.lines = vec![line_with_segment_offset(0)];
         let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
@@ -1491,7 +1490,7 @@ mod tests {
     #[test]
     fn editor_x_at_col_round_trips_with_col_at_x_in_monospace_case() {
         let mut ed = make_editor(4, 100, 40);
-        ed.scroll_top = 10.0;
+        ed.scroll_top = 10;
         ed.scroll_left = 5;
         ed.lines = vec![line_with_segment_offset(0)];
         let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
@@ -1822,7 +1821,7 @@ mod tests {
                 selection: None,
                 extra_selections: Vec::new(),
                 yank_highlight: None,
-                scroll_top: 0.0,
+                scroll_top: 0,
                 scroll_left: 0,
                 total_lines: 0,
                 max_col: 0,

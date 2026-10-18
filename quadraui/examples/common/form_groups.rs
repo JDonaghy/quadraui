@@ -175,7 +175,7 @@ impl FormGroupsApp {
                 },
             ],
             focused_field: self.focus.current().cloned(),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
         }
     }

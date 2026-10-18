@@ -256,7 +256,7 @@ mod tests {
                 toggle("enabled", "Enabled", true),
             ],
             focused_field: Some(WidgetId::new("name")),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
         }
     }
@@ -424,7 +424,7 @@ mod tests {
                 ],
             )],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         }
     }
@@ -582,7 +582,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         let (surface, layout) = paint_via_backend(&form);
@@ -637,7 +637,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         let (_surface, layout) = paint_via_backend(&form);
@@ -690,7 +690,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: Some(WidgetId::new("pw")),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
         };
         let (surface, layout) = paint_via_backend(&form);
@@ -748,7 +748,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: Some(WidgetId::new("name")),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
         };
 
@@ -778,7 +778,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: Some(WidgetId::new("pw")),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
         };
 

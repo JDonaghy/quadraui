@@ -401,7 +401,7 @@ mod tests {
             scrollbar: Some(TerminalScrollbar {
                 total_lines: 100,
                 visible_lines: 16,
-                scroll_offset: 50.0,
+                scroll_offset: 50,
                 inverted: false,
                 width: None,
             }),

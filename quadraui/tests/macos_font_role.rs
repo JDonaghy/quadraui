@@ -236,7 +236,7 @@ fn draw_text_display_paints_in_editor_font() {
                 decoration: Decoration::Normal,
                 timestamp: None,
             }],
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             auto_scroll: true,
             max_lines: 0,
             has_focus: false,
@@ -299,7 +299,7 @@ fn draw_diff_view_paints_in_editor_font() {
             }],
             mode: DiffMode::SideBySide,
             editability: DiffEditability::ReadOnly,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             focused_pane: DiffPane::Left,
             has_focus: false,
         };
@@ -322,7 +322,7 @@ fn draw_data_table_paints_in_chrome_font() {
                 decoration: Decoration::Normal,
             }],
             selected_idx: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -351,7 +351,7 @@ fn draw_form_paints_in_chrome_font() {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         b.draw_form(area, &form);

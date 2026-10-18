@@ -191,7 +191,7 @@ mod tests {
             title: None,
             items: (0..n).map(|i| item(&format!("row {i}"))).collect(),
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
             bordered: false,
             h_scroll: 0,

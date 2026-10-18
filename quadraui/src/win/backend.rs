@@ -4004,7 +4004,7 @@ impl Backend for WinBackend {
                 let sb = Scrollbar::vertical(
                     "win:editor:v_scrollbar",
                     v_track,
-                    editor.scroll_top,
+                    editor.scroll_top as f32,
                     editor.total_lines as f32,
                     layout.visible_lines as f32,
                     self.current_line_height,
@@ -6356,7 +6356,7 @@ mod tests {
                 .collect(),
             selection_mode: crate::types::SelectionMode::Single,
             selected_path: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             style: crate::types::TreeStyle::default(),
             has_focus: false,
         }
@@ -6727,7 +6727,7 @@ mod tests {
                     decoration: crate::types::Decoration::default(),
                 }],
                 selected_idx: 0,
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 has_focus: true,
                 bordered,
                 h_scroll: 0,
@@ -8060,7 +8060,7 @@ mod tests {
             id: WidgetId::new("comp"),
             items: vec![item("alpha"), item("beta")],
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
         };
         let viewport = Rect::new(0.0, 0.0, W as f32, H as f32);
@@ -8400,7 +8400,7 @@ mod tests {
         let tab_bar = TabBar {
             id: WidgetId::new("tab-bar"),
             tabs: Vec::new(),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: Vec::new(),
             active_accent: None,
             show_tab_close: false,
@@ -9175,7 +9175,7 @@ mod tests {
                 lines: vec![StyledText::plain("M")],
                 line_text: vec!["M".to_string()],
                 line_scales: vec![],
-                scroll_top: 0.0,
+                scroll_top: 0,
                 max_visible_rows: 4,
                 has_focus: false,
                 selection: None,
@@ -9355,7 +9355,7 @@ mod tests {
                 },
             ],
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
             bordered: false,
             h_scroll: 0,
@@ -9581,7 +9581,7 @@ mod tests {
                 expanded: false,
             }],
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             total_count: 1,
             has_focus: true,
             show_query: true,
@@ -9680,7 +9680,7 @@ mod tests {
                 decoration: crate::types::Decoration::Normal,
                 timestamp: None,
             }],
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             auto_scroll: true,
             max_lines: 0,
             has_focus: false,
@@ -9770,7 +9770,7 @@ mod tests {
             }],
             mode: crate::primitives::diff_view::DiffMode::SideBySide,
             editability: crate::primitives::diff_view::DiffEditability::ReadOnly,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             focused_pane: crate::primitives::diff_view::DiffPane::Left,
             has_focus: false,
         };
@@ -9811,7 +9811,7 @@ mod tests {
                 decoration: crate::types::Decoration::Normal,
             }],
             selected_idx: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -9869,7 +9869,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         let diff = chrome_font_diff_pixel_count(
@@ -9996,7 +9996,7 @@ mod tests {
             id: WidgetId::new("comp"),
             items: vec![item("alpha"), item("beta")],
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
         };
         let viewport = Rect::new(0.0, 0.0, 200.0, 120.0);
@@ -10032,7 +10032,7 @@ mod tests {
                 crate::Color::rgb(255, 255, 255),
                 0.0,
             )],
-            scroll_top: 0.0,
+            scroll_top: 0,
         };
         let diff = chrome_font_diff_pixel_count(
             200,
@@ -10149,7 +10149,7 @@ mod tests {
             ],
             rows: vec![],
             selected_idx: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -10212,7 +10212,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: false,
         };
         let (small, big) = chrome_font_diff_layout(
@@ -10425,7 +10425,7 @@ mod tests {
                 is_preview: false,
                 is_closable: true,
             }],
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             right_segments: Vec::new(),
             active_accent: None,
             show_tab_close: true,
@@ -11112,7 +11112,7 @@ mod tests {
         crate::primitives::text_display::TextDisplay {
             id: WidgetId::new("td"),
             lines: (0..lines).map(|i| td_line(&format!("ln{i}"))).collect(),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -11347,7 +11347,7 @@ mod tests {
             let tab_bar = TabBar {
                 id: WidgetId::new("tab-bar"),
                 tabs: Vec::new(),
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 right_segments: Vec::new(),
                 active_accent: None,
                 show_tab_close: false,

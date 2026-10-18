@@ -82,7 +82,6 @@ mod tests {
     use crate::primitives::data_table::{
         Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableHit, SortDirection,
     };
-    use crate::primitives::scrollbar::scroll_rows;
     use crate::theme::Theme;
     use crate::types::{Decoration, StyledText, WidgetId};
     use crate::Backend;
@@ -124,7 +123,7 @@ mod tests {
                 },
             ],
             selected_idx: Some(1),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             sort: Some((0, SortDirection::Ascending)),
             has_focus: true,
             show_scrollbar: false,
@@ -275,7 +274,7 @@ mod tests {
         let hit = layout.hit_test(
             layout.columns[0].x + layout.columns[0].width * 0.5,
             layout.header_height * 0.5,
-            scroll_rows(table.scroll_offset),
+            table.scroll_offset,
             total,
         );
         assert!(matches!(hit, DataTableHit::Header { col: 0 }));
@@ -284,7 +283,7 @@ mod tests {
         let hit = layout.hit_test(
             10.0,
             layout.header_height + layout.row_height * 1.5,
-            scroll_rows(table.scroll_offset),
+            table.scroll_offset,
             total,
         );
         assert!(matches!(hit, DataTableHit::Row { idx: 1 }));
@@ -313,7 +312,7 @@ mod tests {
         let hit = layout_offset.hit_test(
             layout_offset.columns[0].x + layout_offset.columns[0].width * 0.5,
             layout_offset.header_height * 0.5,
-            scroll_rows(table.scroll_offset),
+            table.scroll_offset,
             total,
         );
         assert!(matches!(hit, DataTableHit::Header { col: 0 }));
@@ -322,7 +321,7 @@ mod tests {
         let hit = layout_offset.hit_test(
             10.0,
             layout_offset.header_height + layout_offset.row_height * 1.5,
-            scroll_rows(table.scroll_offset),
+            table.scroll_offset,
             total,
         );
         assert!(matches!(hit, DataTableHit::Row { idx: 1 }));

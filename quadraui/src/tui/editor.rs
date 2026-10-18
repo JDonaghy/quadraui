@@ -388,7 +388,7 @@ pub fn draw_editor(
             let scrollbar = Scrollbar::vertical(
                 "tui:editor:v_scrollbar",
                 track,
-                editor.scroll_top,
+                editor.scroll_top as f32,
                 editor.total_lines as f32,
                 viewport_lines as f32,
                 1.0,
@@ -725,7 +725,7 @@ mod tests {
             selection: None,
             extra_selections: vec![],
             yank_highlight: None,
-            scroll_top: 0.0,
+            scroll_top: 0,
             scroll_left: 0,
             total_lines: 2,
             max_col: 20,

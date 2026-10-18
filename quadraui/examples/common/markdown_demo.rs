@@ -87,7 +87,7 @@ impl AppLogic for MarkdownDemo {
             lines: rendered.lines,
             line_text: rendered.line_text,
             line_scales: rendered.line_scales,
-            scroll_top: self.scroll_top as f32,
+            scroll_top: self.scroll_top,
             max_visible_rows: 16,
             has_focus: true,
             selection: None,

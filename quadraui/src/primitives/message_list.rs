@@ -25,7 +25,6 @@
 //!   apply `scale` (GTK `AttrFloat::new_scale`, TUI ignores it).
 
 use crate::event::Rect;
-use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Color, StyledSpan, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -105,7 +104,7 @@ impl MessageRow {
 ///         MessageRow::new("You: hello", Color::rgb(200, 200, 200), 0.0),
 ///         MessageRow::new("AI: hi there", Color::rgb(100, 200, 255), 0.0),
 ///     ],
-///     scroll_top: 0.0,
+///     scroll_top: 0,
 /// };
 ///
 /// let rect = Rect::new(0.0, 0.0, 80.0, 10.0);
@@ -122,7 +121,7 @@ pub struct MessageList {
     /// Backends clamp this to `rows.len() - visible_rows` so overscroll
     /// at the end pins the last message instead of leaving blank space.
     #[serde(default)]
-    pub scroll_top: f32,
+    pub scroll_top: usize,
 }
 
 /// Backend-supplied row-height measurement for [`MessageList::hit_test`].
@@ -180,7 +179,7 @@ impl MessageList {
             return MessageListHit::Empty;
         }
         let row_offset = ((y - rect.y) / measure.line_height) as usize;
-        let idx = scroll_rows(self.scroll_top) + row_offset;
+        let idx = self.scroll_top + row_offset;
         if idx < self.rows.len() {
             MessageListHit::Row(idx)
         } else {
@@ -251,7 +250,6 @@ pub(crate) mod native_surface_paint {
     use super::MessageList;
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
-    use crate::primitives::scrollbar::scroll_rows;
 
     /// Paint a [`MessageList`] into `rect` on `surface` — see this
     /// module's doc for the full per-backend divergence survey this
@@ -272,12 +270,7 @@ pub(crate) mod native_surface_paint {
         }
         let max_y = rect.y + rect.height;
 
-        for (i, row) in list
-            .rows
-            .iter()
-            .skip(scroll_rows(list.scroll_top))
-            .enumerate()
-        {
+        for (i, row) in list.rows.iter().skip(list.scroll_top).enumerate() {
             let ry = rect.y + i as f32 * line_height;
             if ry + line_height > max_y {
                 break;
@@ -399,7 +392,7 @@ pub(crate) mod native_surface_paint {
                     MessageRow::new("You:", Color::rgb(255, 220, 0), 0.0),
                     MessageRow::new("hi there", Color::rgb(220, 220, 220), 8.0),
                 ],
-                scroll_top: 0.0,
+                scroll_top: 0,
             }
         }
 
@@ -452,7 +445,7 @@ pub(crate) mod native_surface_paint {
         #[test]
         fn scroll_top_skips_leading_rows() {
             let mut list = sample_list();
-            list.scroll_top = 1.0;
+            list.scroll_top = 1;
             let mut surface = RecordingSurface::default();
             paint(&list, &mut surface, Rect::new(0.0, 0.0, 200.0, 100.0), 16.0);
             assert_eq!(surface.text_runs.len(), 1);
@@ -602,7 +595,7 @@ mod tests {
             rows: (0..n)
                 .map(|i| MessageRow::new(format!("row{i}"), Color::rgb(0, 0, 0), 0.0))
                 .collect(),
-            scroll_top: scroll_top as f32,
+            scroll_top,
         }
     }
 

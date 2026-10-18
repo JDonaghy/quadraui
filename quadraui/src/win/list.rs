@@ -214,7 +214,7 @@ mod tests {
             title: None,
             items,
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -229,7 +229,7 @@ mod tests {
             title: None,
             items,
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
             bordered: true,
             h_scroll: 0,
@@ -363,7 +363,7 @@ mod tests {
         #[test]
         fn scroll_offset_paint_and_click_agree() {
             let mut list = make_list((0..6).map(|i| item(&format!("row-{i}"))).collect());
-            list.scroll_offset = 2.0;
+            list.scroll_offset = 2;
             let rect = Rect::new(0.0, 0.0, W, H);
             let layout = win_list_layout(&list, rect, LINE_HEIGHT, CHAR_WIDTH);
             let first = layout.visible_items.first().expect("has items");

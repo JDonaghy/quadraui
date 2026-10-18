@@ -85,23 +85,6 @@ only a push to `main` runs this workflow.
   and `A11yLive` serialise as snake_case strings (e.g. `"text_input"`)
   via `#[serde(rename_all = "snake_case")]` rather than serde's PascalCase
   default.
-- Scroll offsets are now continuous `f32` values in native units rather
-  than whole-row `usize` counts. The `scroll_offset` / `scroll_top` /
-  `col_scroll_offset` state fields on `Palette`, `PalettePreview`,
-  `ListView`, `TabBar`, `MessageList`, `TerminalScrollbar`, `Editor`,
-  `EditorLayout`, `DiffView`, `BoardColumn`, `BoardModel`, `TreeView`,
-  `RichTextPopup`, `TextInput`, `DataTable`, `TextDisplay`,
-  `Completions` and `Form` changed type from `usize` to `f32`; the
-  derived layout outputs named `resolved_scroll_offset` stay `usize`,
-  rounded once at the paint boundary. Every TUI, GTK, Win-GUI and macOS
-  rasteriser that indexes rows now rounds through
-  `primitives::scrollbar::scroll_rows` at that boundary, so a terminal
-  still scrolls by whole rows while the `f32` offset remains the source
-  of truth between frames. This is a breaking change for any consumer
-  assigning integers to those fields (`scroll_offset: 0` becomes
-  `scroll_offset: 0.0`). Because `f32` is not `Eq`, the primitives
-  listed above — and the containers holding them — drop their `Eq`
-  derives and keep only `PartialEq`.
 - Compose controllers consume the signed magnitude of `ScrollDelta`
   instead of reducing a wheel event to its sign:
   `TreeController`, `FormController` and `SidebarSystem` move

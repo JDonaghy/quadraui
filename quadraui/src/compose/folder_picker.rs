@@ -537,7 +537,7 @@ impl FolderPickerController {
             query_cursor: self.query.len(),
             items,
             selected_idx: self.selected,
-            scroll_offset: self.scroll_top as f32,
+            scroll_offset: self.scroll_top,
             total_count: self.all_entries.len(),
             has_focus: true,
             show_query: true,

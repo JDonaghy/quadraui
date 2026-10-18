@@ -124,7 +124,7 @@ pub fn build_tab_bar(state: &AppState) -> TabBar {
     TabBar {
         id: WidgetId::new("tabs:editor"),
         tabs,
-        scroll_offset: state.tab_scroll_offset.get() as f32,
+        scroll_offset: state.tab_scroll_offset.get(),
         right_segments: vec![TabBarSegment {
             text: " + ".into(),
             width_cells: 3,

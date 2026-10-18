@@ -30,7 +30,6 @@ use gtk4::pango;
 
 use super::cairo_rgb;
 use crate::primitives::message_list::MessageList;
-use crate::primitives::scrollbar::scroll_rows;
 
 /// Draw a [`MessageList`] into a rectangular region.
 ///
@@ -62,12 +61,7 @@ pub fn draw_message_list(
     let to_u16 = |c: u8| -> u16 { ((c as u16) << 8) | c as u16 };
 
     layout.set_attributes(None);
-    for (i, row) in list
-        .rows
-        .iter()
-        .skip(scroll_rows(list.scroll_top))
-        .enumerate()
-    {
+    for (i, row) in list.rows.iter().skip(list.scroll_top).enumerate() {
         let ry = y + i as f64 * line_height;
         if ry + line_height > max_y {
             break;

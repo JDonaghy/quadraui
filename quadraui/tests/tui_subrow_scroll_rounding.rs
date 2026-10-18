@@ -1,23 +1,26 @@
 #![cfg(feature = "tui")]
-//! Headless `TuiDriver` coverage for the f32 scroll seam at the TUI paint
-//! boundary.
+//! Headless `TuiDriver` coverage for the sub-row scroll seam at the TUI
+//! paint boundary.
 //!
-//! Scroll offsets are continuous (`f32`) in native units, but a terminal
-//! can only start painting at a whole row. These tests drive the real
-//! `event -> handle -> render` path and assert the two halves of that
-//! contract:
+//! Scroll offsets are continuous in native units, but a terminal can only
+//! start painting at a whole row. The continuous `f32` is the app/controller's
+//! own state — it is NOT a field on the declarative descriptor (descriptors
+//! carry no renderer-derived state). The controller accumulates the fraction
+//! and emits a rounded `usize` to `ListView::scroll_offset` via
+//! [`scroll_rows`] at the paint boundary. These tests drive the real
+//! `event -> handle -> render` path and assert both halves of that contract:
 //!
 //! * a sub-row offset is *rounded* when it reaches the rasteriser — the
 //!   painted top row is `scroll_rows(offset)`, never a truncated or
 //!   doubly-rounded index;
-//! * the `f32` offset remains the source of truth between frames — a
+//! * the `f32` accumulator remains the source of truth between frames — a
 //!   gesture smaller than one row accumulates instead of being discarded,
 //!   so repeated sub-row scrolling eventually crosses a row boundary.
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    scroll_by_clamped_f32, wheel_delta, AppLogic, Backend, Decoration, ListItem, ListView,
-    Reaction, Rect, StyledText, UiEvent, WidgetId,
+    scroll_by_clamped_f32, scroll_rows, wheel_delta, AppLogic, Backend, Decoration, ListItem,
+    ListView, Reaction, Rect, StyledText, UiEvent, WidgetId,
 };
 
 const VIEWPORT: Rect = Rect {
@@ -28,11 +31,16 @@ const VIEWPORT: Rect = Rect {
 };
 const ROW_COUNT: usize = 20;
 
-/// Minimal `AppLogic` holding one `ListView` whose `scroll_offset` is a
-/// continuous `f32`. Wheel events move it by a caller-chosen fraction of a
-/// row so the test can park the offset between two rows.
+/// Minimal `AppLogic` holding one `ListView`. The continuous scroll
+/// position lives in `scroll_accum` (the app's own state, as a real
+/// controller keeps it); the descriptor's `scroll_offset` is a `usize`
+/// row index derived from it via [`scroll_rows`]. Wheel events move the
+/// accumulator by a caller-chosen fraction of a row so the test can park
+/// the position between two rows.
 struct ListApp {
     list: ListView,
+    /// Continuous scroll position in rows — the source of truth.
+    scroll_accum: f32,
     /// Rows moved by one notch of `ScrollDelta::y`. Fractional values
     /// produce sub-row offsets.
     rows_per_notch: f32,
@@ -51,7 +59,7 @@ impl ListApp {
                 })
                 .collect(),
             selected_idx: 0,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             has_focus: true,
             title: None,
             bordered: false,
@@ -61,16 +69,19 @@ impl ListApp {
         };
         Self {
             list,
+            scroll_accum: 0.0,
             rows_per_notch,
         }
     }
 
+    /// The continuous source-of-truth position (what a controller keeps).
     fn scroll_offset(&self) -> f32 {
-        self.list.scroll_offset
+        self.scroll_accum
     }
 
     fn set_scroll_offset(&mut self, offset: f32) {
-        self.list.scroll_offset = offset;
+        self.scroll_accum = offset;
+        self.list.scroll_offset = scroll_rows(offset);
     }
 }
 
@@ -85,8 +96,9 @@ impl AppLogic for ListApp {
         match event {
             UiEvent::Scroll { delta, .. } => {
                 let dy = wheel_delta(delta.y, self.rows_per_notch);
-                self.list.scroll_offset =
-                    scroll_by_clamped_f32(self.list.scroll_offset, dy, (ROW_COUNT - 1) as f32);
+                self.scroll_accum =
+                    scroll_by_clamped_f32(self.scroll_accum, dy, (ROW_COUNT - 1) as f32);
+                self.list.scroll_offset = scroll_rows(self.scroll_accum);
                 Reaction::Redraw
             }
             _ => Reaction::Continue,
@@ -193,7 +205,7 @@ fn sub_row_wheel_gestures_accumulate_until_they_cross_a_row_boundary() {
 }
 
 #[test]
-fn the_f32_offset_not_the_painted_row_is_the_source_of_truth() {
+fn the_f32_accumulator_not_the_painted_row_is_the_source_of_truth() {
     // Two offsets that paint the same top row still differ in state, so a
     // later gesture resumes from where the user actually left off rather
     // than from the rounded row.

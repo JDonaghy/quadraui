@@ -63,7 +63,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::accelerator::KeyBinding;
 use crate::event::{Key, NamedKey, Rect};
-use crate::primitives::scrollbar::scroll_rows;
 use crate::types::{Modifiers, WidgetId};
 use crate::undo::UndoStack;
 
@@ -100,7 +99,7 @@ use crate::undo::UndoStack;
 /// assert!(layout.cursor_bounds.is_some());
 /// ```
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextInput {
     pub id: WidgetId,
     /// One entry per logical line. Newlines are implicit between
@@ -121,7 +120,7 @@ pub struct TextInput {
     /// First visible line index. The primitive clamps this so the
     /// cursor stays inside the viewport.
     #[serde(default)]
-    pub scroll_offset: f32,
+    pub scroll_offset: usize,
     /// Horizontal scroll, in char columns. Applied to *every* line.
     /// The primitive clamps this so the cursor stays in view.
     #[serde(default)]
@@ -140,7 +139,7 @@ impl TextInput {
             cursor_line: 0,
             cursor_col: 0,
             placeholder: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             scroll_col: 0,
             has_focus: false,
         }
@@ -177,7 +176,7 @@ impl TextInput {
     /// Set [`Self::scroll_offset`].
     #[must_use]
     pub fn with_scroll_offset(mut self, scroll_offset: usize) -> Self {
-        self.scroll_offset = scroll_offset as f32;
+        self.scroll_offset = scroll_offset;
         self
     }
 
@@ -947,9 +946,7 @@ impl TextInput {
 
         // Vertical scroll auto-clamp.
         let max_scroll = total_lines.saturating_sub(max_rows);
-        // Rows are indexed from a whole row; the `f32` offset remains the
-        // stored source of truth and is rounded once, here.
-        let mut scroll = scroll_rows(self.scroll_offset.min(max_scroll as f32));
+        let mut scroll = self.scroll_offset.min(max_scroll);
         if cursor_line < scroll {
             scroll = cursor_line;
         } else if cursor_line >= scroll + max_rows {
@@ -1433,7 +1430,7 @@ mod tests {
     fn scroll_auto_pulls_cursor_into_view_upward() {
         let mut ti = input(vec!["0", "1", "2", "3", "4", "5"]);
         ti.cursor_line = 1;
-        ti.scroll_offset = 4.0; // stale — cursor is above viewport
+        ti.scroll_offset = 4; // stale — cursor is above viewport
         let l = ti.layout(rect(20.0, 5.0), measure());
         assert_eq!(l.resolved_scroll_offset, 1);
     }
@@ -1442,7 +1439,7 @@ mod tests {
     fn scroll_clamped_when_cursor_in_view() {
         let mut ti = input(vec!["0", "1", "2", "3"]);
         ti.cursor_line = 0;
-        ti.scroll_offset = 99.0; // wildly stale
+        ti.scroll_offset = 99; // wildly stale
         let l = ti.layout(rect(20.0, 10.0), measure());
         // max_scroll = 4 - (10-2)/1 = 4 - 8 = 0, so clamp to 0
         assert_eq!(l.resolved_scroll_offset, 0);
@@ -1502,7 +1499,7 @@ mod tests {
         // scroll forced to 0, max_rows = 1.
         let mut ti = input(vec!["a", "b", "c"]);
         ti.cursor_line = 2;
-        ti.scroll_offset = 0.0;
+        ti.scroll_offset = 0;
         let l = ti.layout(rect(20.0, 3.0), measure()); // content_h = 1, max_rows = 1
                                                        // Auto-scroll keeps cursor in view, so it's still visible:
         assert!(l.cursor_bounds.is_some());
@@ -2011,7 +2008,7 @@ mod tests {
                 cursor_line: 2,
                 cursor_col: 4,
                 placeholder: Some("Message (press c)".to_string()),
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 scroll_col: 0,
                 has_focus: true,
             }

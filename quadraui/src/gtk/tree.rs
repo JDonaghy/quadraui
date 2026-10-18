@@ -211,7 +211,7 @@ mod tests {
             rows,
             selection_mode: SelectionMode::Single,
             selected_path: None,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             style: TreeStyle::default(),
             has_focus: true,
         }
@@ -359,7 +359,7 @@ mod tests {
                 .map(|(i, l)| leaf(i as u16, l))
                 .collect(),
         );
-        tree.scroll_offset = 3.0;
+        tree.scroll_offset = 3;
         let (mut surface, layout) = paint_then_layout(&tree);
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");

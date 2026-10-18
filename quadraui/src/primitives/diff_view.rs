@@ -42,7 +42,6 @@
 //! instead of carrying its own copy.
 
 use crate::event::Rect;
-use crate::primitives::scrollbar::scroll_rows;
 use crate::theme::Theme;
 use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -428,7 +427,7 @@ fn scroll_window(scroll_offset: usize, visible_rows: usize, total: usize) -> (us
 ///     }],
 ///     mode: DiffMode::SideBySide,
 ///     editability: Default::default(),
-///     scroll_offset: 0.0,
+///     scroll_offset: 0,
 ///     focused_pane: Default::default(),
 ///     has_focus: false,
 /// };
@@ -439,7 +438,7 @@ fn scroll_window(scroll_offset: usize, visible_rows: usize, total: usize) -> (us
 ///     other => panic!("expected a row hit, got {other:?}"),
 /// }
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffView {
     /// Stable identifier for this widget instance.
     pub id: WidgetId,
@@ -466,7 +465,7 @@ pub struct DiffView {
     /// Editability of the right pane. Currently all backends render as read-only.
     pub editability: DiffEditability,
     /// Row scroll offset (from the top of the first hunk).
-    pub scroll_offset: f32,
+    pub scroll_offset: usize,
     /// Which pane currently has keyboard focus.
     pub focused_pane: DiffPane,
     /// Whether the widget as a whole has keyboard focus.
@@ -539,7 +538,7 @@ impl DiffView {
         let visible_rows = (content_h / line_height).floor() as usize;
 
         let total_rows = self.total_rows();
-        let (start, end) = scroll_window(scroll_rows(self.scroll_offset), visible_rows, total_rows);
+        let (start, end) = scroll_window(self.scroll_offset, visible_rows, total_rows);
 
         let mut lines = Vec::with_capacity(end.saturating_sub(start));
         for (i, row_idx) in (start..end).enumerate() {
@@ -587,8 +586,7 @@ impl DiffView {
         let total_display = sequence.len();
 
         let visible_rows = (viewport.height / line_height).floor() as usize;
-        let (start, end) =
-            scroll_window(scroll_rows(self.scroll_offset), visible_rows, total_display);
+        let (start, end) = scroll_window(self.scroll_offset, visible_rows, total_display);
 
         let mut lines = Vec::with_capacity(end.saturating_sub(start));
         for (i, content) in sequence[start..end].iter().enumerate() {
@@ -906,7 +904,7 @@ pub(crate) mod native_surface_paint {
                 }],
                 mode,
                 editability: Default::default(),
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 focused_pane: Default::default(),
                 has_focus: false,
             }
@@ -1044,7 +1042,7 @@ pub(crate) mod native_surface_paint {
                 }],
                 mode: DiffMode::SideBySide,
                 editability: Default::default(),
-                scroll_offset: 0.0,
+                scroll_offset: 0,
                 focused_pane: Default::default(),
                 has_focus: false,
             };
@@ -1083,14 +1081,14 @@ mod tests {
             hunks: vec![],
             mode: DiffMode::default(),
             editability: DiffEditability::default(),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             focused_pane: DiffPane::default(),
             has_focus: false,
         };
         assert_eq!(view.mode, DiffMode::SideBySide);
         assert_eq!(view.editability, DiffEditability::ReadOnly);
         assert_eq!(view.focused_pane, DiffPane::Left);
-        assert_eq!(view.scroll_offset, 0.0);
+        assert_eq!(view.scroll_offset, 0);
         assert!(!view.has_focus);
         assert_eq!(view.total_rows(), 0);
     }
@@ -1118,7 +1116,7 @@ mod tests {
             hunks: vec![make_hunk(3), make_hunk(5)],
             mode: DiffMode::default(),
             editability: DiffEditability::default(),
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             focused_pane: DiffPane::default(),
             has_focus: false,
         };
@@ -1141,7 +1139,7 @@ mod tests {
             hunks: compute_hunks(left, right),
             mode: DiffMode::SideBySide,
             editability: DiffEditability::ReadOnly,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             focused_pane: DiffPane::Left,
             has_focus: false,
         };
@@ -1195,7 +1193,7 @@ mod tests {
             ],
             mode,
             editability: DiffEditability::ReadOnly,
-            scroll_offset: 0.0,
+            scroll_offset: 0,
             focused_pane: DiffPane::Left,
             has_focus: false,
         }
@@ -1267,7 +1265,7 @@ mod tests {
     #[test]
     fn side_by_side_lines_respect_scroll_offset() {
         let mut view = two_hunk_view(DiffMode::SideBySide);
-        view.scroll_offset = 1.0;
+        view.scroll_offset = 1;
         let geometry = view.layout(Rect::new(0.0, 0.0, 40.0, 2.0), 1.0);
         assert_eq!(geometry.lines.len(), 2);
         assert_eq!(
