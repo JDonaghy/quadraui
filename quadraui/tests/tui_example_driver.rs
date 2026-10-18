@@ -1278,13 +1278,13 @@ fn find_replace_click_chevron_reveals_replace_row() {
     );
 }
 
-/// `FindReplacePanel::hit_test` was rewritten from a floor-to-cell
-/// comparison to a direct px-rect comparison (TUI always calls it with
-/// `char_width = line_height = 1.0`, so px space and cell space are
-/// numerically identical here). The find row's "ab" (whole-word) and
-/// ".*" (regex) toggles are otherwise uncovered by any regression test
-/// — only "Aa" is pinned above — so both are exercised end to end here:
-/// located via `driver.find`, clicked, and confirmed via the status bar.
+/// `FindReplacePanel::hit_test` compares clicks against px rects; TUI
+/// always calls it with `char_width = line_height = 1.0`, so px space and
+/// cell space are numerically identical here. The find row's "ab"
+/// (whole-word) and ".*" (regex) toggles are otherwise uncovered by any
+/// regression test — only "Aa" is pinned above — so both are exercised end
+/// to end here: located via `driver.find`, clicked, and confirmed via the
+/// status bar.
 #[test]
 fn find_replace_click_on_toggle_whole_word_and_regex_report_them() {
     let mut driver = TuiDriver::new(FindReplaceApp::new(), 100, 20);
