@@ -6356,7 +6356,6 @@ mod tests {
                 .collect(),
             selection_mode: crate::types::SelectionMode::Single,
             selected_path: None,
-            selected_paths: Vec::new(),
             scroll_offset: 0,
             style: crate::types::TreeStyle::default(),
             has_focus: false,
@@ -6728,8 +6727,6 @@ mod tests {
                     decoration: crate::types::Decoration::default(),
                 }],
                 selected_idx: 0,
-                selection_mode: crate::types::SelectionMode::default(),
-                selected_indices: Vec::new(),
                 scroll_offset: 0,
                 has_focus: true,
                 bordered,
@@ -9822,8 +9819,6 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
-            selection_mode: crate::SelectionMode::default(),
-            selected_indices: Vec::new(),
         };
         let diff = chrome_font_diff_pixel_count(
             200,
@@ -10162,8 +10157,6 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
-            selection_mode: crate::SelectionMode::default(),
-            selected_indices: Vec::new(),
         };
         let (small, big) = chrome_font_diff_layout(
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),

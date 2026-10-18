@@ -198,8 +198,6 @@ mod tests {
                 sample_item("delta", Color::rgb(10, 20, 30)),
             ],
             selected_idx: 1,
-            selection_mode: Default::default(),
-            selected_indices: Vec::new(),
             scroll_offset: 0,
             has_focus: true,
             bordered: false,

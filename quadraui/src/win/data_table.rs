@@ -77,7 +77,7 @@ pub fn draw_data_table(
 mod tests {
     use super::*;
     use crate::primitives::data_table::{Column, ColumnAlign, ColumnWidth, DataRow, DataTableHit};
-    use crate::types::{Decoration, SelectionMode, StyledText, WidgetId};
+    use crate::types::{Decoration, StyledText, WidgetId};
     use crate::win::testing::HeadlessSurface;
     use crate::win::text::DWrite;
 
@@ -110,8 +110,6 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
-            selection_mode: SelectionMode::default(),
-            selected_indices: Vec::new(),
         }
     }
 

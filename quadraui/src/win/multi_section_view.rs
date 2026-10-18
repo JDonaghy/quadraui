@@ -519,7 +519,6 @@ mod tests {
                     .collect(),
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
-                selected_paths: Vec::new(),
                 scroll_offset: 0,
                 style: TreeStyle::default(),
                 has_focus: false,

@@ -192,7 +192,6 @@ impl AppLogic for SidebarPanelBodyDemo {
             rows,
             selection_mode: quadraui::SelectionMode::Single,
             selected_path: None,
-            selected_paths: Vec::new(),
             scroll_offset: self.scroll_offset,
             style: TreeStyle::default(),
             has_focus: true,

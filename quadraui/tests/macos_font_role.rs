@@ -67,10 +67,10 @@ use quadraui::macos::testing::MacDriver;
 use quadraui::{
     AppLogic, Backend, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, Decoration,
     DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, FieldKind, Form,
-    FormField, Palette, PaletteItem, Panel, ProgressBar, Reaction, Rect, SelectionMode, Spinner,
-    StyledSpan, StyledText, Terminal, TerminalCell, TerminalCursorShape, TextDisplay,
-    TextDisplayLine, Toast, ToastCorner, ToastOverlay, ToastSeverity, Tooltip, TooltipMeasure,
-    TooltipPlacement, UiEvent, WidgetId,
+    FormField, Palette, PaletteItem, Panel, ProgressBar, Reaction, Rect, Spinner, StyledSpan,
+    StyledText, Terminal, TerminalCell, TerminalCursorShape, TextDisplay, TextDisplayLine, Toast,
+    ToastCorner, ToastOverlay, ToastSeverity, Tooltip, TooltipMeasure, TooltipPlacement, UiEvent,
+    WidgetId,
 };
 
 const W: u32 = 640;
@@ -330,8 +330,6 @@ fn draw_data_table_paints_in_chrome_font() {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
-            selection_mode: SelectionMode::default(),
-            selected_indices: Vec::new(),
         };
         let _ = b.draw_data_table(area, &table, None);
     });

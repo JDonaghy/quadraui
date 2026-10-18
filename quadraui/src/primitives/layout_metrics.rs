@@ -1319,7 +1319,6 @@ mod tests {
             h_scroll: 0,
             max_content_width,
             show_v_scrollbar: false,
-            ..Default::default()
         }
     }
 
@@ -1400,7 +1399,6 @@ mod tests {
             rows: vec![],
             selection_mode: crate::types::SelectionMode::Single,
             selected_path: None,
-            selected_paths: Vec::new(),
             scroll_offset: 0,
             style: crate::types::TreeStyle::default(),
             has_focus: false,

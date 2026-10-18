@@ -5875,7 +5875,6 @@ mod tests {
                 h_scroll: 0,
                 max_content_width: Some(40),
                 show_v_scrollbar: false,
-                ..Default::default()
             }
         };
 
@@ -7873,7 +7872,6 @@ mod tests {
                 }],
                 selection_mode: crate::types::SelectionMode::Single,
                 selected_path: None,
-                selected_paths: Vec::new(),
                 scroll_offset: 0,
                 style: crate::types::TreeStyle::default(),
                 has_focus: false,
@@ -7999,8 +7997,6 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
-            selection_mode: crate::SelectionMode::default(),
-            selected_indices: Vec::new(),
         };
         let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
         let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
@@ -8063,8 +8059,6 @@ mod tests {
                 h_scroll: 0.0,
                 column_overrides: vec![],
                 footer: None,
-                selection_mode: crate::SelectionMode::default(),
-                selected_indices: Vec::new(),
             };
             let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
             {
@@ -8152,7 +8146,6 @@ mod tests {
                 .collect(),
             selection_mode: crate::types::SelectionMode::Single,
             selected_path: None,
-            selected_paths: Vec::new(),
             scroll_offset: 0,
             style: crate::types::TreeStyle::default(),
             has_focus: false,
@@ -8240,7 +8233,6 @@ mod tests {
                 h_scroll: 0,
                 max_content_width: None,
                 show_v_scrollbar: false,
-                ..Default::default()
             };
             let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
             {
@@ -8337,7 +8329,6 @@ mod tests {
                     h_scroll: 0,
                     max_content_width: None,
                     show_v_scrollbar: false,
-                    ..Default::default()
                 };
                 let rect = QRect::new(0.0, 0.0, vp.width, vp.height);
                 backend.draw_list(rect, &list);
@@ -8732,8 +8723,6 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
-            selection_mode: crate::SelectionMode::default(),
-            selected_indices: Vec::new(),
         };
 
         let backend = GtkBackend::new();
@@ -8793,8 +8782,6 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: vec![],
             footer: None,
-            selection_mode: crate::SelectionMode::default(),
-            selected_indices: Vec::new(),
         };
 
         // Fresh backend: no `pango_ctx` set, so `data_table_layout` falls
@@ -8900,7 +8887,6 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
-            ..Default::default()
         };
         let backend = GtkBackend::new();
 
@@ -8959,7 +8945,6 @@ mod tests {
             // char width, so this reliably forces the scrollbar.
             max_content_width: Some(1000),
             show_v_scrollbar: false,
-            ..Default::default()
         };
         let backend = GtkBackend::new();
         let rect = QRect::new(0.0, 0.0, 200.0, 100.0);

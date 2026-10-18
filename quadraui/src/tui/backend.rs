@@ -5295,7 +5295,6 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
-            ..Default::default()
         }
     }
 
@@ -5630,8 +5629,6 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
-            selection_mode: crate::SelectionMode::default(),
-            selected_indices: Vec::new(),
         }
     }
 
@@ -7423,7 +7420,6 @@ mod tests {
             rows: Vec::new(),
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            selected_paths: Vec::new(),
             scroll_offset: 0,
             style: crate::TreeStyle::default(),
             has_focus: false,

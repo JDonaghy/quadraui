@@ -390,7 +390,6 @@ pub const CASES: &[Case] = &[
                 h_scroll: 0,
                 max_content_width: None,
                 show_v_scrollbar: false,
-                ..Default::default()
             };
             b.draw_list(area, &list);
         },
@@ -413,7 +412,6 @@ pub const CASES: &[Case] = &[
                 }],
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
-                selected_paths: Vec::new(),
                 scroll_offset: 0,
                 style: TreeStyle::default(),
                 has_focus: false,
@@ -627,8 +625,6 @@ pub const CASES: &[Case] = &[
                 h_scroll: 0.0,
                 column_overrides: vec![],
                 footer: None,
-                selection_mode: SelectionMode::default(),
-                selected_indices: Vec::new(),
             };
             let _ = b.draw_data_table(area, &table, None);
         },

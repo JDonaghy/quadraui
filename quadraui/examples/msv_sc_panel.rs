@@ -143,7 +143,6 @@ impl SCSidebar {
                         rows: s.rows.clone(),
                         selection_mode: SelectionMode::Single,
                         selected_path: s.selected_path.clone(),
-                        selected_paths: Vec::new(),
                         scroll_offset: s.scroll_offset,
                         style: Default::default(),
                         has_focus: !self.commit_input_active && self.active_section == Some(idx),

@@ -231,7 +231,7 @@ pub fn draw_list(
             width: item_w,
             height: 1,
         };
-        let is_selected = list.is_row_selected(visible_item.item_idx);
+        let is_selected = visible_item.item_idx == list.selected_idx && list.has_focus;
         let bg = if is_selected { sel_bg } else { row_bg };
         let decoration_fg = match item.decoration {
             Decoration::Error => error_fg,
@@ -472,7 +472,6 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
-            ..Default::default()
         }
     }
 
@@ -553,7 +552,6 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
-            ..Default::default()
         };
         let theme = Theme {
             error_fg: Color::rgb(255, 0, 0),
@@ -776,7 +774,6 @@ mod tests {
             h_scroll: 8,
             max_content_width: None,
             show_v_scrollbar: false,
-            ..Default::default()
         };
         draw_list(
             &mut buf,

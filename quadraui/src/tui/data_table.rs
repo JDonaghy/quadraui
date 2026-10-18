@@ -142,7 +142,7 @@ pub fn draw_data_table(
         let abs_idx = table.scroll_offset + row_idx;
         let row = &table.rows[abs_idx];
         let y = body_y + row_idx as u16;
-        let is_selected = table.is_row_selected(abs_idx);
+        let is_selected = table.selected_idx == Some(abs_idx);
         let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
 
         let (row_fg, row_bg) = if is_selected {
@@ -374,7 +374,7 @@ fn align_offset(align: ColumnAlign, text_len: u16, col_w: u16) -> u16 {
 mod tests {
     use super::*;
     use crate::primitives::data_table::{Column, ColumnWidth, DataRow, DataTable, DataTableHit};
-    use crate::types::{Decoration, SelectionMode, StyledText, WidgetId};
+    use crate::types::{Decoration, StyledText, WidgetId};
 
     /// Char-cell index of `needle`'s first occurrence in `line` — unlike
     /// `str::find`, which returns a *byte* offset and desyncs from the
@@ -437,8 +437,6 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
-            selection_mode: SelectionMode::default(),
-            selected_indices: Vec::new(),
         }
     }
 
@@ -583,8 +581,6 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
-            selection_mode: SelectionMode::default(),
-            selected_indices: Vec::new(),
         };
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
@@ -889,8 +885,6 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
-            selection_mode: SelectionMode::default(),
-            selected_indices: Vec::new(),
         }
     }
 
@@ -1020,8 +1014,6 @@ mod tests {
             h_scroll: 0.0,
             column_overrides: Vec::new(),
             footer: None,
-            selection_mode: SelectionMode::default(),
-            selected_indices: Vec::new(),
         }
     }
 

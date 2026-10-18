@@ -75,7 +75,7 @@ pub fn draw_tree(
         }
 
         let is_header = matches!(row.decoration, Decoration::Header);
-        let path_selected = tree.is_path_selected(&row.path);
+        let path_selected = tree.selected_path.as_ref().is_some_and(|p| p == &row.path);
         let is_selected = tree.has_focus && path_selected;
         let is_inactive_selected = !tree.has_focus && path_selected;
 
@@ -354,7 +354,6 @@ mod tests {
             ],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: Some(vec![0, 0]),
-            selected_paths: Vec::new(),
             scroll_offset: 0,
             has_focus: true,
             style: TreeStyle::default(),
@@ -430,7 +429,6 @@ mod tests {
             }],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            selected_paths: Vec::new(),
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
@@ -625,7 +623,6 @@ mod tests {
             rows,
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            selected_paths: Vec::new(),
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
@@ -776,7 +773,6 @@ mod tests {
             ],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            selected_paths: Vec::new(),
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
@@ -823,7 +819,6 @@ mod tests {
             ],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            selected_paths: Vec::new(),
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
@@ -854,7 +849,6 @@ mod tests {
             rows: vec![row(&[0], 0, "src", Some(true))],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            selected_paths: Vec::new(),
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
@@ -878,7 +872,6 @@ mod tests {
             rows: vec![row(&[0], 0, "main.rs", None)],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            selected_paths: Vec::new(),
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
@@ -914,7 +907,6 @@ mod tests {
             }],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            selected_paths: Vec::new(),
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
@@ -989,7 +981,6 @@ mod tests {
             }],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            selected_paths: Vec::new(),
             scroll_offset: 0,
             has_focus: false,
             style: TreeStyle::default(),
