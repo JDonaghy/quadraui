@@ -58,6 +58,27 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Added
+
+- `A11yInfo`'s role is now typed instead of a free string: a new
+  `#[non_exhaustive]` `A11yRole` enum covers window, toolbar, button,
+  tab/tab list, menu/menu item, tree/tree item, list/list item,
+  table/row/cell, text input, document/editor, terminal, dialog, status,
+  progress, image, group, and presentation/none, each mapping 1:1 onto
+  `accesskit::Role`. `A11yInfo` also gained typed state builders:
+  `with_selected`, `with_expanded`, `with_checked` (new tri-state
+  `A11yChecked`), `with_disabled`, `with_read_only`, `with_value`,
+  `with_value_range` (new `A11yValueRange`), `with_level`,
+  `with_position_in_set`, `with_set_size`, and `with_live` (new
+  `A11yLive`, mapping onto `accesskit::Live`). The data model
+  (`A11yRole`, `A11yInfo`, and friends) is always compiled; a new
+  optional `a11y` feature only gates the `accesskit`-facing `From`
+  conversions, so a descriptor embedding `A11yInfo` never changes shape
+  depending on which backend features a consumer enables. This is a
+  breaking change to `A11yInfo::with_role`, which now takes `A11yRole`
+  instead of `impl Into<String>`; no in-tree or downstream consumer used
+  it.
+
 ### Fixed
 
 - `tree_layout_measured` (the shared pixel-layout math `gtk_tree_layout_measured` /

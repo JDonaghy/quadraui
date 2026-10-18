@@ -166,7 +166,9 @@
 // primitive count `readme_truth.rs`'s `lib_doc_states_the_real_primitive_count`
 // / `root_readme_states_the_real_primitive_count` derive from
 // `primitives/mod.rs`'s `pub mod` list, nor is it exposed as its own
-// public module path. Re-exported below as `crate::A11yInfo`.
+// public module path. Re-exported below as `crate::A11yInfo` and its
+// typed role/state types (`A11yRole`, `A11yChecked`, `A11yLive`,
+// `A11yValueRange`).
 mod a11y;
 // Not under `primitives/`, same reasoning as `font_role`/`generic_font`
 // below: a blink state machine is not a widget — no `Layout`, no
@@ -397,7 +399,7 @@ mod text_selection;
 ))]
 mod backend_core;
 
-pub use a11y::A11yInfo;
+pub use a11y::{A11yChecked, A11yInfo, A11yLive, A11yRole, A11yValueRange};
 pub use caret_blink::CaretBlinkState;
 pub use diff::compute_hunks;
 pub use focus::FocusManager;
