@@ -72,7 +72,9 @@ only a push to `main` runs this workflow.
 
   **Breaking, authorized for the v0.2 batch.** A lifetime removal admits
   no deprecation shim — `Surface<'a>` and `Surface` cannot coexist under
-  one name — so rule 8's two-PR protocol does not apply here. The caller
+  one name — so the two-PR deprecation protocol (`CLAUDE.md` *Downstream
+  consumers* rule 3, `docs/PRIMITIVE_RULES.md` rule 8) does not apply
+  here. The caller
   migration is mechanical: drop the `&` on each `Surface` field, cloning
   the primitive only where the caller still needs it after the push, and
   pass `Option<WidgetId>` instead of `Option<&WidgetId>` for `hovered` and
