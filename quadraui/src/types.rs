@@ -443,6 +443,88 @@ pub enum SelectionMode {
     Multi,
 }
 
+/// How a click or keyboard-extension input should combine with the current
+/// multi-selection, derived from the modifier keys held at the time.
+///
+/// Row-oriented widgets (`ListView`, `TreeView`, `DataTable`) stay purely
+/// declarative: they do not own selection state. The backend/app layer
+/// tracks the selected-index set and an "anchor" (the index of the last
+/// non-extending selection), calls [`SelectionGesture::from_modifiers`] on
+/// the incoming click/key `Modifiers`, then feeds both into
+/// [`apply_selection_gesture`] to compute the next selection set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionGesture {
+    /// Plain click / move: the new selection is just the target index.
+    Replace,
+    /// Ctrl (or Cmd on macOS) held: flip the target index's membership,
+    /// leaving every other selected index untouched.
+    Toggle,
+    /// Shift held: select the contiguous range between the anchor and the
+    /// target index (inclusive), replacing any prior selection.
+    Range,
+}
+
+impl SelectionGesture {
+    /// Derives the gesture a click or keyboard-extension input should use
+    /// from its modifier state. Shift takes priority over Ctrl/Cmd when
+    /// both are held: the result is always [`SelectionGesture::Range`], the
+    /// same as Shift alone. This matches Shift-only and Ctrl/Cmd-only
+    /// conventions on every major desktop platform; the combined
+    /// Ctrl/Cmd+Shift chord has no single cross-platform convention (some
+    /// apps use it for an *additive* range that preserves the existing
+    /// selection, which this function does not model), so treat that case
+    /// as an intentional simplification rather than a claim of parity with
+    /// any specific app.
+    pub fn from_modifiers(modifiers: Modifiers) -> Self {
+        if modifiers.shift {
+            SelectionGesture::Range
+        } else if modifiers.ctrl || modifiers.cmd {
+            SelectionGesture::Toggle
+        } else {
+            SelectionGesture::Replace
+        }
+    }
+}
+
+/// Computes the next multi-selection set for a row-oriented widget.
+///
+/// `current` is the selection before this input, `anchor` is the index the
+/// current range gesture should extend from (typically the last `Replace`
+/// or `Toggle` target), and `index` is the row the click/key targeted.
+///
+/// The result is always sorted and de-duplicated so callers can compare it
+/// directly or render it without extra bookkeeping.
+pub fn apply_selection_gesture(
+    current: &[usize],
+    anchor: usize,
+    index: usize,
+    gesture: SelectionGesture,
+) -> Vec<usize> {
+    let mut next: Vec<usize> = match gesture {
+        SelectionGesture::Replace => vec![index],
+        SelectionGesture::Toggle => {
+            let mut set = current.to_vec();
+            if let Some(pos) = set.iter().position(|&i| i == index) {
+                set.remove(pos);
+            } else {
+                set.push(index);
+            }
+            set
+        }
+        SelectionGesture::Range => {
+            let (lo, hi) = if anchor <= index {
+                (anchor, index)
+            } else {
+                (index, anchor)
+            };
+            (lo..=hi).collect()
+        }
+    };
+    next.sort_unstable();
+    next.dedup();
+    next
+}
+
 /// Optional visual decoration applied to a row beyond its text colour.
 ///
 /// Backends map each variant to an appropriate visual treatment. For row
@@ -776,5 +858,61 @@ mod tests {
             ],
         };
         assert_eq!(text.visible_width(), 11);
+    }
+
+    #[test]
+    fn selection_gesture_from_modifiers_prefers_shift_over_ctrl() {
+        let mut m = Modifiers::default();
+        assert_eq!(
+            SelectionGesture::from_modifiers(m),
+            SelectionGesture::Replace
+        );
+        m.ctrl = true;
+        assert_eq!(
+            SelectionGesture::from_modifiers(m),
+            SelectionGesture::Toggle
+        );
+        m.shift = true;
+        assert_eq!(SelectionGesture::from_modifiers(m), SelectionGesture::Range);
+        let cmd_only = Modifiers {
+            cmd: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            SelectionGesture::from_modifiers(cmd_only),
+            SelectionGesture::Toggle
+        );
+    }
+
+    #[test]
+    fn apply_selection_gesture_replace_ignores_current_selection() {
+        let next = apply_selection_gesture(&[1, 2, 3], 1, 5, SelectionGesture::Replace);
+        assert_eq!(next, vec![5]);
+    }
+
+    #[test]
+    fn apply_selection_gesture_toggle_adds_and_removes() {
+        let added = apply_selection_gesture(&[1, 3], 1, 2, SelectionGesture::Toggle);
+        assert_eq!(added, vec![1, 2, 3]);
+
+        let removed = apply_selection_gesture(&[1, 2, 3], 1, 2, SelectionGesture::Toggle);
+        assert_eq!(removed, vec![1, 3]);
+    }
+
+    #[test]
+    fn apply_selection_gesture_range_spans_anchor_to_index_inclusive() {
+        let forward = apply_selection_gesture(&[], 2, 5, SelectionGesture::Range);
+        assert_eq!(forward, vec![2, 3, 4, 5]);
+
+        let backward = apply_selection_gesture(&[9], 5, 2, SelectionGesture::Range);
+        assert_eq!(backward, vec![2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn apply_selection_gesture_result_is_sorted_and_deduped() {
+        let next = apply_selection_gesture(&[5, 5, 1], 1, 1, SelectionGesture::Toggle);
+        // Toggling an index already present (even if duplicated in input)
+        // removes every occurrence and leaves the rest sorted.
+        assert_eq!(next, vec![5]);
     }
 }

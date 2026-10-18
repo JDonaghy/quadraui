@@ -79,6 +79,7 @@ const PRIMITIVES: &[(&str, &str)] = &[
     ("completions", "Completions"),
     ("context_menu", "ContextMenu"),
     ("data_table", "DataTable"),
+    ("date_picker", "DatePicker"),
     ("dialog", "Dialog"),
     ("diff_view", "DiffView"),
     ("drop_zone", "DropZone"),

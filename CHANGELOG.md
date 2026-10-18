@@ -85,6 +85,22 @@ only a push to `main` runs this workflow.
   and `A11yLive` serialise as snake_case strings (e.g. `"text_input"`)
   via `#[serde(rename_all = "snake_case")]` rather than serde's PascalCase
   default.
+### Added
+
+- `DatePicker` primitive (`primitives/date_picker.rs`) — a declarative
+  month-grid calendar: `CalendarDate`/`Weekday`/`DateFormat`/`DateLocale`
+  for locale-aware first-weekday and ISO-8601/US/EU date formatting, an
+  optional `TimeOfDay` field, `navigate` for arrow/page/enter keyboard
+  handling, and `layout`/`hit_test` for pointer routing. Pure primitive
+  logic only — no `Backend::draw_date_picker` method yet; that is
+  follow-on, per-backend work.
+- `SelectionMode::Multi` support: `SelectionGesture`
+  (`Replace`/`Toggle`/`Range`) and `apply_selection_gesture` in
+  `types.rs` give `List`, `Tree` and `DataTable` a shared, pure
+  multi-selection helper driven by Ctrl/Cmd-click, Shift-range and
+  keyboard extension. Each of `ListViewEvent`, `TreeEvent` and
+  `DataTableEvent` gains a new `SelectionSet` variant carrying the
+  resulting selection; existing `Single`-mode call sites are unaffected.
 
 ### Fixed
 
