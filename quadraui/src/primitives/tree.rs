@@ -34,6 +34,7 @@ use crate::types::{
     Badge, Decoration, Icon, Modifiers, SelectionMode, StyledText, TreePath, TreeStyle, WidgetId,
 };
 use serde::{Deserialize, Serialize};
+use crate::primitives::scrollbar::scroll_rows;
 
 /// Declarative description of a `TreeView` widget.
 ///
@@ -67,7 +68,7 @@ use serde::{Deserialize, Serialize};
 /// let layout = tree.layout(40.0, 10.0, |_| TreeRowMeasure::new(1.0));
 /// assert_eq!(layout.hit_test(0.0, 0.0), TreeViewHit::Row(0));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TreeView {
     pub id: WidgetId,
     /// Pre-flattened, pre-expanded rows in visual order.
@@ -78,7 +79,7 @@ pub struct TreeView {
     /// scroll state with `ScrollState::id(widget_id)` is a later stage per
     /// `docs/UI_CRATE_DESIGN.md` §3.1).
     #[serde(default)]
-    pub scroll_offset: usize,
+    pub scroll_offset: f32,
     pub style: TreeStyle,
     #[serde(default)]
     pub has_focus: bool,
@@ -307,7 +308,7 @@ impl TreeView {
         // Clamp scroll_offset to a valid starting index; we still report
         // the clamped value so the app can write it back and self-correct.
         let resolved_scroll_offset =
-            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.rows.len());
+            crate::primitives::scrollbar::clamp_scroll_offset(scroll_rows(self.scroll_offset), self.rows.len());
 
         let mut y = 0.0_f32;
         for i in resolved_scroll_offset..self.rows.len() {
@@ -1313,7 +1314,7 @@ mod tests {
             }],
             selection_mode: SelectionMode::Single,
             selected_path: Some(vec![0]),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             style: TreeStyle::default(),
             has_focus: true,
         };
@@ -1382,7 +1383,7 @@ mod tests {
             rows,
             selection_mode: SelectionMode::Single,
             selected_path: None,
-            scroll_offset: scroll,
+            scroll_offset: scroll as f32,
             style: TreeStyle::default(),
             has_focus: true,
         }

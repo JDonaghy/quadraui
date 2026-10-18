@@ -272,7 +272,7 @@ mod tests {
         let sb = TerminalScrollbar {
             total_lines: 500,
             visible_lines: 20,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             inverted: true,
             width: None,
         };
@@ -299,7 +299,7 @@ mod tests {
         let sb = TerminalScrollbar {
             total_lines: 500,
             visible_lines: 20,
-            scroll_offset: 480,
+            scroll_offset: 480.0,
             inverted: true,
             width: None,
         };
@@ -319,7 +319,7 @@ mod tests {
         let sb = TerminalScrollbar {
             total_lines: 500,
             visible_lines: 20,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             inverted: false,
             width: None,
         };

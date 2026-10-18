@@ -14,6 +14,7 @@ use crate::primitives::data_table::{
     ColumnAlign, ColumnMeasure, DataTable, DataTableLayout, SortDirection,
 };
 use crate::theme::Theme;
+use crate::primitives::scrollbar::scroll_rows;
 
 /// Resolve the layout `draw_data_table` paints `table` at, without
 /// touching a buffer.
@@ -134,12 +135,13 @@ pub fn draw_data_table(
 
     // ── Body rows ─────────────────────────────────────────────────────
     let body_y = area.y + 1;
+    let scroll_offset = scroll_rows(table.scroll_offset);
     let visible = layout
         .visible_rows
-        .min(table.rows.len().saturating_sub(table.scroll_offset));
+        .min(table.rows.len().saturating_sub(scroll_offset));
 
     for row_idx in 0..visible {
-        let abs_idx = table.scroll_offset + row_idx;
+        let abs_idx = scroll_offset + row_idx;
         let row = &table.rows[abs_idx];
         let y = body_y + row_idx as u16;
         let is_selected = table.selected_idx == Some(abs_idx);
@@ -429,7 +431,7 @@ mod tests {
                 },
             ],
             selected_idx: Some(0),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             sort: Some((0, SortDirection::Ascending)),
             has_focus: true,
             show_scrollbar: false,
@@ -573,7 +575,7 @@ mod tests {
                 decoration: Decoration::Normal,
             }],
             selected_idx: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -748,7 +750,7 @@ mod tests {
         });
         let area = Rect::new(0, 0, 40, 10);
 
-        for scroll_offset in [0, 5, 30] {
+        for scroll_offset in [0.0, 5.0, 30.0] {
             table.scroll_offset = scroll_offset;
             let mut buf = Buffer::empty(area);
             let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
@@ -828,7 +830,7 @@ mod tests {
         let hit = layout.hit_test(
             2.0,
             (area.height - 1) as f32 + 0.5,
-            table.scroll_offset,
+            crate::primitives::scrollbar::scroll_rows(table.scroll_offset),
             table.rows.len(),
         );
         assert_eq!(hit, DataTableHit::Footer);
@@ -877,7 +879,7 @@ mod tests {
                 decoration: Decoration::Normal,
             }],
             selected_idx: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -1006,7 +1008,7 @@ mod tests {
                 decoration: Decoration::Normal,
             }],
             selected_idx: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             sort: None,
             has_focus: false,
             show_scrollbar: false,

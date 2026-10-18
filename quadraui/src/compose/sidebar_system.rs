@@ -939,7 +939,7 @@ impl SidebarSystem {
             return 0;
         };
         let mut shadow = t.clone();
-        shadow.scroll_offset = 0;
+        shadow.scroll_offset = 0.0;
         let inner = self.compute_tree_layout(body_b, &shadow, lh);
         inner.visible_rows.len()
     }
@@ -976,7 +976,7 @@ impl SidebarSystem {
                         rows,
                         selection_mode: SelectionMode::Single,
                         selected_path: tc.selected_path().cloned(),
-                        scroll_offset: tc.scroll_offset(),
+                        scroll_offset: tc.scroll_offset() as f32,
                         style: Default::default(),
                         has_focus: is_active && self.has_focus,
                     })
@@ -992,7 +992,7 @@ impl SidebarSystem {
                         id: fc.default_form_id(),
                         fields: Vec::new(),
                         focused_field: None,
-                        scroll_offset: 0,
+                        scroll_offset: 0.0,
                         has_focus: form_focus,
                     });
                     SectionBody::Form(Form {
@@ -1965,7 +1965,7 @@ mod tests {
                 },
             ],
             focused_field: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
         }
     }
@@ -2200,7 +2200,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
         };
         let ev = form_click_event(&form, &WidgetId::new("submit"));
@@ -2239,7 +2239,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
         };
         let ev = form_click_event(&form, &WidgetId::new("regex"));
@@ -2273,7 +2273,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
         };
         let ev = form_click_event(&form, &WidgetId::new("replace-all"));
@@ -2722,7 +2722,7 @@ mod tests {
             ],
             selection_mode: SelectionMode::Single,
             selected_path: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             style: Default::default(),
             has_focus: true,
         };
@@ -2850,7 +2850,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
         };
         let lh: f32 = 16.0;
@@ -2890,7 +2890,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
         };
         let ev = form_click_event(&form, &WidgetId::new("case"));

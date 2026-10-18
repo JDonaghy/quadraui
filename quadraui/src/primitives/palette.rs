@@ -34,6 +34,7 @@ use crate::event::Rect;
 use crate::primitives::scrollbar::fit_thumb;
 use crate::types::{Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
+use crate::primitives::scrollbar::scroll_rows;
 
 /// Which interaction mode the palette is operating in.
 ///
@@ -98,7 +99,7 @@ pub enum PaletteMode {
 /// });
 /// assert_eq!(layout.hit_test(0.0, 2.0), PaletteHit::Item(0));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Palette {
     pub id: WidgetId,
     /// Header text shown above the query input, e.g. `"Commands"` or
@@ -117,7 +118,7 @@ pub struct Palette {
     pub selected_idx: usize,
     /// How many rows have been scrolled past. App-owned for v1.
     #[serde(default)]
-    pub scroll_offset: usize,
+    pub scroll_offset: f32,
     /// Total number of items in the underlying source (before filtering).
     /// Displayed as `N/M` in the header. `0` means "don't show count".
     #[serde(default)]
@@ -159,7 +160,7 @@ impl Default for Palette {
             query_cursor: 0,
             items: Vec::new(),
             selected_idx: 0,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             total_count: 0,
             has_focus: false,
             show_query: true,
@@ -206,7 +207,7 @@ fn default_true() -> bool {
 
 /// Preview pane content shown alongside the item list when the palette
 /// operates in split-layout mode (file pickers, symbol pickers).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PalettePreview {
     /// Syntax-highlighted content lines.
     pub lines: Vec<StyledText>,
@@ -215,7 +216,7 @@ pub struct PalettePreview {
     pub title: Option<String>,
     /// Scroll offset into `lines`.
     #[serde(default)]
-    pub scroll_offset: usize,
+    pub scroll_offset: f32,
     /// Line to visually highlight (e.g. the matched line in a search).
     #[serde(default)]
     pub highlight_line: Option<usize>,
@@ -340,14 +341,15 @@ impl Palette {
     pub fn resolved_scroll_offset(&self, visible_rows: usize) -> usize {
         let total = self.items.len();
         let max_offset = total.saturating_sub(visible_rows);
+        let offset_rows = scroll_rows(self.scroll_offset);
         let effective = if visible_rows == 0 {
             0
-        } else if self.selected_idx < self.scroll_offset {
+        } else if self.selected_idx < offset_rows {
             self.selected_idx
-        } else if self.selected_idx >= self.scroll_offset + visible_rows {
+        } else if self.selected_idx >= offset_rows + visible_rows {
             self.selected_idx + 1 - visible_rows
         } else {
-            self.scroll_offset
+            offset_rows
         };
         effective.min(max_offset)
     }
@@ -1374,7 +1376,7 @@ mod tests {
                 },
             ],
             selected_idx: 0,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             total_count: 42,
             has_focus: true,
             show_query: true,
@@ -1439,7 +1441,7 @@ mod tests {
             query_cursor: 0,
             items,
             selected_idx: selected,
-            scroll_offset: scroll,
+            scroll_offset: scroll as f32,
             total_count: 0,
             has_focus: true,
             show_query: true,
@@ -1602,7 +1604,7 @@ mod tests {
         p.preview = Some(PalettePreview {
             lines: vec![StyledText::plain("fn main() {}")],
             title: Some("main.rs".into()),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             highlight_line: None,
         });
         let layout = p.layout(100.0, 50.0, 1.0, 1.0, 0.0, 1.0, |_| {
@@ -1634,7 +1636,7 @@ mod tests {
         p.preview = Some(PalettePreview {
             lines: vec![],
             title: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             highlight_line: None,
         });
         let layout = p.layout(100.0, 50.0, 1.0, 1.0, 0.0, 1.0, |_| {

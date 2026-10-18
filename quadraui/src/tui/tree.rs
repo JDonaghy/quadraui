@@ -354,7 +354,7 @@ mod tests {
             ],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: Some(vec![0, 0]),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
             style: TreeStyle::default(),
         }
@@ -429,7 +429,7 @@ mod tests {
             }],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
             style: TreeStyle::default(),
         };
@@ -623,7 +623,7 @@ mod tests {
             rows,
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
             style: TreeStyle::default(),
         }
@@ -723,7 +723,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 4);
         let mut buf = Buffer::empty(area);
         let mut tree = long_tree(10);
-        tree.scroll_offset = 3;
+        tree.scroll_offset = 3.0;
         let layout = paint_then_layout(&mut buf, area, &tree, &Theme::default(), false);
 
         // Painted row 0 should be `tree.rows[3]` ("item-03").
@@ -773,7 +773,7 @@ mod tests {
             ],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
             style: TreeStyle::default(),
         };
@@ -819,7 +819,7 @@ mod tests {
             ],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
             style: TreeStyle::default(),
         };
@@ -849,7 +849,7 @@ mod tests {
             rows: vec![row(&[0], 0, "src", Some(true))],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
             style: TreeStyle::default(),
         };
@@ -872,7 +872,7 @@ mod tests {
             rows: vec![row(&[0], 0, "main.rs", None)],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
             style: TreeStyle::default(),
         };
@@ -907,7 +907,7 @@ mod tests {
             }],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
             style: TreeStyle::default(),
         };
@@ -981,7 +981,7 @@ mod tests {
             }],
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
             style: TreeStyle::default(),
         };

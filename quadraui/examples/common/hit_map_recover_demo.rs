@@ -73,7 +73,7 @@ impl HitMapRecoverDemo {
                     is_closable: false,
                 })
                 .collect(),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             right_segments: vec![],
             active_accent: Some(Color::rgb(80, 160, 240)),
             show_tab_close: false,
@@ -96,7 +96,7 @@ impl HitMapRecoverDemo {
                 })
                 .collect(),
             selected_idx: self.selected,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
             bordered: false,
             h_scroll: 0,

@@ -70,6 +70,7 @@ use ratatui::Frame;
 
 use super::services::TuiPlatformServices;
 use super::text::display_width;
+use crate::primitives::scrollbar::scroll_rows;
 
 /// Minimum gap (in cells) between left and right status-bar halves
 /// before priority drop kicks in. Mirrors `crate::gtk::status_bar`'s
@@ -2946,7 +2947,7 @@ impl Backend for TuiBackend {
                 tab_widths[i]
             })
         } else {
-            bar.scroll_offset
+            scroll_rows(bar.scroll_offset)
         };
 
         hits
@@ -3077,7 +3078,7 @@ impl Backend for TuiBackend {
                 tab_widths[i]
             })
         } else {
-            bar.scroll_offset
+            scroll_rows(bar.scroll_offset)
         };
 
         hits
@@ -5266,7 +5267,7 @@ mod tests {
                 },
             ],
             selected_idx: 0,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             total_count: 2,
             has_focus: true,
             show_query: true,
@@ -5289,7 +5290,7 @@ mod tests {
                 decoration: crate::Decoration::Normal,
             }],
             selected_idx: 0,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -5621,7 +5622,7 @@ mod tests {
                 decoration: crate::Decoration::Normal,
             }],
             selected_idx: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -6472,7 +6473,7 @@ mod tests {
             ],
             right_segments: vec![],
             active_accent: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             show_tab_close: true,
             compact: false,
         }
@@ -6839,10 +6840,10 @@ mod tests {
                     badges: vec![],
                     hint: None,
                 }],
-                scroll_offset: 0,
+                scroll_offset: 0.0,
             }],
             selected_card_id: None,
-            col_scroll_offset: 0,
+            col_scroll_offset: 0.0,
         };
         let rect = QRect::new(5.0, 2.0, 40.0, 12.0);
         let area = q_rect_to_ratatui(rect);
@@ -6893,7 +6894,7 @@ mod tests {
             scrollbar: Some(crate::TerminalScrollbar {
                 total_lines: 100,
                 visible_lines: 5,
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 inverted: false,
                 // `None` — draw_terminal's `sb_cols: … .unwrap_or(1)` fallback,
                 // which `terminal_scrollbar_default_width` must reproduce.
@@ -6954,7 +6955,7 @@ mod tests {
             }],
             mode,
             editability: crate::DiffEditability::ReadOnly,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             focused_pane: crate::DiffPane::Left,
             has_focus: false,
         }
@@ -7063,7 +7064,7 @@ mod tests {
             selection: None,
             extra_selections: Vec::new(),
             yank_highlight: None,
-            scroll_top: 0,
+            scroll_top: 0.0,
             scroll_left: 0,
             // > viewport_lines (5) so a v-scrollbar is present.
             total_lines: 100,
@@ -7145,7 +7146,7 @@ mod tests {
             selection: None,
             extra_selections: Vec::new(),
             yank_highlight: None,
-            scroll_top: 0,
+            scroll_top: 0.0,
             scroll_left: 0,
             total_lines: 5,
             max_col: 4,
@@ -7420,7 +7421,7 @@ mod tests {
             rows: Vec::new(),
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             style: crate::TreeStyle::default(),
             has_focus: false,
         }
@@ -7539,7 +7540,7 @@ mod tests {
             }],
             right_segments: vec![],
             active_accent: Some(crate::Color::rgb(80, 160, 255)),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             show_tab_close: true,
             compact: false,
         }
@@ -7589,7 +7590,7 @@ mod tests {
             selection: None,
             extra_selections: Vec::new(),
             yank_highlight: None,
-            scroll_top: 0,
+            scroll_top: 0.0,
             scroll_left: 0,
             total_lines: 1,
             max_col: 20,

@@ -27,6 +27,7 @@
 use crate::event::Rect;
 use crate::types::{Color, StyledSpan, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
+use crate::primitives::scrollbar::scroll_rows;
 
 /// A single row in a [`MessageList`].
 ///
@@ -121,7 +122,7 @@ pub struct MessageList {
     /// Backends clamp this to `rows.len() - visible_rows` so overscroll
     /// at the end pins the last message instead of leaving blank space.
     #[serde(default)]
-    pub scroll_top: usize,
+    pub scroll_top: f32,
 }
 
 /// Backend-supplied row-height measurement for [`MessageList::hit_test`].
@@ -179,7 +180,7 @@ impl MessageList {
             return MessageListHit::Empty;
         }
         let row_offset = ((y - rect.y) / measure.line_height) as usize;
-        let idx = self.scroll_top + row_offset;
+        let idx = scroll_rows(self.scroll_top) + row_offset;
         if idx < self.rows.len() {
             MessageListHit::Row(idx)
         } else {
@@ -595,7 +596,7 @@ mod tests {
             rows: (0..n)
                 .map(|i| MessageRow::new(format!("row{i}"), Color::rgb(0, 0, 0), 0.0))
                 .collect(),
-            scroll_top,
+            scroll_top: scroll_top as f32,
         }
     }
 

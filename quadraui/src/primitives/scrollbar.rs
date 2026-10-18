@@ -282,6 +282,26 @@ impl ThumbDrag {
     }
 }
 
+/// Round a continuous `f32` scroll offset to the whole row a
+/// row-indexing surface starts painting from.
+///
+/// Scroll offsets are stored as `f32` in the primitives' native units so
+/// a trackpad or high-resolution wheel can move content by a fraction of
+/// a row. Surfaces that can only begin a frame on a whole row — the TUI
+/// rasterisers, and any list painter that slices `rows[start..]` — call
+/// this once, at the paint boundary, and keep the `f32` field as the
+/// source of truth.
+///
+/// Rounds half away from zero (`2.5 → 3`); negative, `NaN` and infinite
+/// offsets resolve to `0`.
+pub fn scroll_rows(scroll_offset: f32) -> usize {
+    if !scroll_offset.is_finite() || scroll_offset <= 0.0 {
+        0
+    } else {
+        scroll_offset.round() as usize
+    }
+}
+
 /// Clamp `current + delta` into `[0, max]`.
 ///
 /// The core arithmetic behind every `scroll_by` / `page_scroll` operation.
@@ -309,6 +329,37 @@ pub fn clamp_scroll_offset(scroll_offset: usize, content_len: usize) -> usize {
         0
     } else {
         scroll_offset.min(content_len - 1)
+    }
+}
+
+/// Continuous counterpart of [`scroll_by_clamped`]: clamp
+/// `current + delta` into `[0.0, max]` without quantising to whole rows.
+///
+/// Controllers that consume a [`ScrollDelta`](crate::ScrollDelta)
+/// magnitude use this so a sub-row trackpad gesture accumulates instead
+/// of being rounded away on every event. Non-finite inputs resolve to
+/// `0.0`.
+pub fn scroll_by_clamped_f32(current: f32, delta: f32, max: f32) -> f32 {
+    let max = if max.is_finite() { max.max(0.0) } else { 0.0 };
+    let next = current + delta;
+    if next.is_finite() {
+        next.clamp(0.0, max)
+    } else {
+        0.0
+    }
+}
+
+/// Continuous counterpart of [`clamp_scroll_offset`]: clamp a (possibly
+/// stale) `f32` `scroll_offset` into `[0.0, content_len - 1]`.
+///
+/// Returns `0.0` when there is nothing to scroll to (`content_len == 0`).
+/// Sub-row precision is preserved — use [`scroll_rows`] at the paint
+/// boundary to get the row index.
+pub fn clamp_scroll_offset_f32(scroll_offset: f32, content_len: usize) -> f32 {
+    if content_len == 0 {
+        0.0
+    } else {
+        scroll_by_clamped_f32(scroll_offset, 0.0, (content_len - 1) as f32)
     }
 }
 

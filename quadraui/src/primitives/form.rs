@@ -49,6 +49,7 @@
 use crate::event::Rect;
 use crate::types::{Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
+use crate::primitives::scrollbar::scroll_rows;
 
 /// Declarative description of a `Form` widget.
 ///
@@ -94,7 +95,7 @@ pub struct Form {
     /// later primitive stage may lift this into `ScrollState` keyed by
     /// `WidgetId` the same way `TreeView`'s scroll will.
     #[serde(default)]
-    pub scroll_offset: usize,
+    pub scroll_offset: f32,
     #[serde(default)]
     pub has_focus: bool,
 }
@@ -427,7 +428,7 @@ impl Form {
         let mut hit_regions: Vec<(Rect, FormHit)> = Vec::new();
 
         let resolved_scroll_offset = crate::primitives::scrollbar::clamp_scroll_offset(
-            self.scroll_offset,
+            scroll_rows(self.scroll_offset),
             self.fields.len(),
         );
 
@@ -1705,7 +1706,7 @@ mod tests {
                 },
             ],
             focused_field: Some(WidgetId::new("line-numbers")),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
         };
         let json = serde_json::to_string(&form).unwrap();
@@ -1897,7 +1898,7 @@ mod tests {
             id: WidgetId::new("f"),
             fields,
             focused_field: None,
-            scroll_offset: scroll,
+            scroll_offset: scroll as f32,
             has_focus: true,
         }
     }

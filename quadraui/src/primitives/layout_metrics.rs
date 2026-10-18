@@ -48,6 +48,7 @@ use crate::primitives::toast::{ToastMeasure, ToastOverlay, ToastStackLayout};
 use crate::primitives::tree::{TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::types::Decoration;
 use crate::WidgetId;
+use crate::primitives::scrollbar::scroll_rows;
 
 /// Backend-supplied text measurement. Implemented per-backend over
 /// whatever live font/context object it already carries (a
@@ -959,7 +960,7 @@ pub fn pixel_tab_bar_layout(
             effective_tab_area as usize,
             |i| tab_measures[i].total_width.ceil() as usize,
         ),
-        None => bar.scroll_offset,
+        None => scroll_rows(bar.scroll_offset),
     };
 
     let sample_w = measure.width_of(pixel::TAB_CELL_WIDTH_SAMPLE);
@@ -987,7 +988,7 @@ mod tests {
         let body = SectionBody::MessageList(MessageList {
             id: WidgetId::new("test-msg-list"),
             rows,
-            scroll_top: 0,
+            scroll_top: 0.0,
         });
         let measure = msv_body_measure(&body, &None, 20.0);
         assert!(
@@ -1313,7 +1314,7 @@ mod tests {
                 })
                 .collect(),
             selected_idx: 0,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -1399,7 +1400,7 @@ mod tests {
             rows: vec![],
             selection_mode: crate::types::SelectionMode::Single,
             selected_path: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             style: crate::types::TreeStyle::default(),
             has_focus: false,
         }
@@ -1505,7 +1506,7 @@ mod tests {
         TabBar {
             id: WidgetId::new("tabs"),
             tabs,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             right_segments: vec![],
             active_accent: None,
             show_tab_close: true,
@@ -1620,7 +1621,7 @@ mod tests {
             .map(|i| closable_tab(&format!("t{i}"), i == 9))
             .collect();
         let mut bar = tab_bar_with(tabs);
-        bar.scroll_offset = 0; // stale — active tab (9) is not visible at offset 0
+        bar.scroll_offset = 0.0; // stale — active tab (9) is not visible at offset 0
         let name_widths = vec![6.0_f32; bar.tabs.len()]; // "t0".."t9" — 2 chars * 6px
         let icon_extras = vec![0.0_f32; bar.tabs.len()];
         let (_, corrected_scroll_offset, _) = pixel_tab_bar_layout(

@@ -23,6 +23,7 @@ use ratatui::style::Modifier;
 use super::{ratatui_color, set_cell, set_cell_styled};
 use crate::primitives::message_list::MessageList;
 use crate::types::Color;
+use crate::primitives::scrollbar::scroll_rows;
 
 /// Draw a [`MessageList`] into `area`, filling each row with `panel_bg`
 /// then writing the row's text at `area.x + indent` in the row's `fg`.
@@ -39,7 +40,7 @@ pub fn draw_message_list(buf: &mut Buffer, area: Rect, list: &MessageList, panel
     }
     let bg = ratatui_color(panel_bg);
     let max_row = area.height as usize;
-    for (i, row) in list.rows.iter().skip(list.scroll_top).enumerate() {
+    for (i, row) in list.rows.iter().skip(scroll_rows(list.scroll_top)).enumerate() {
         if i >= max_row {
             break;
         }

@@ -178,7 +178,7 @@ impl ComboBox {
                     })
                     .collect(),
                 selected_idx: self.highlighted.unwrap_or(0),
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 has_focus: self.focused,
             };
             Some(completions.layout(

@@ -17,6 +17,8 @@
 
 use std::cell::RefCell;
 
+use quadraui::primitives::scrollbar::scroll_rows;
+
 use quadraui::{
     AppLogic, Backend, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardLayout, BoardModel,
     CardBadge, InteractionState, Key, MoveDir, NamedKey, Reaction, Rect, StatusBar,
@@ -213,10 +215,11 @@ impl BoardApp {
             }
         };
         let offset = &mut self.model.col_scroll_offset;
-        if col_idx < *offset {
-            *offset = col_idx;
-        } else if visible > 0 && col_idx >= *offset + visible {
-            *offset = col_idx + 1 - visible;
+        let offset_cols = scroll_rows(*offset);
+        if col_idx < offset_cols {
+            *offset = col_idx as f32;
+        } else if visible > 0 && col_idx >= offset_cols + visible {
+            *offset = (col_idx + 1 - visible) as f32;
         }
     }
 }
@@ -281,7 +284,7 @@ fn demo_board() -> BoardModel {
                 hint: None,
             },
         ],
-        scroll_offset: 0,
+        scroll_offset: 0.0,
     };
 
     let in_progress = BoardColumn {
@@ -311,7 +314,7 @@ fn demo_board() -> BoardModel {
                 hint: Some("blocked: upstream async-std 2.0 compat".into()),
             },
         ],
-        scroll_offset: 0,
+        scroll_offset: 0.0,
     };
 
     let review = BoardColumn {
@@ -343,13 +346,13 @@ fn demo_board() -> BoardModel {
                 hint: None,
             },
         ],
-        scroll_offset: 0,
+        scroll_offset: 0.0,
     };
 
     BoardModel {
         id: WidgetId::new("board:main"),
         columns: vec![backlog, in_progress, review],
         selected_card_id: Some(WidgetId::new("card:4")),
-        col_scroll_offset: 0,
+        col_scroll_offset: 0.0,
     }
 }

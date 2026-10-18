@@ -344,7 +344,7 @@ fn paint_body(
                 draw_tree(buf, area, t, theme, nerd_fonts_enabled);
             } else {
                 let mut t_clone = t.clone();
-                t_clone.scroll_offset = t.scroll_offset.saturating_add(clip_above);
+                t_clone.scroll_offset = t.scroll_offset + clip_above as f32;
                 draw_tree(buf, area, &t_clone, theme, nerd_fonts_enabled);
             }
         }
@@ -353,7 +353,7 @@ fn paint_body(
                 draw_list(buf, area, l, theme, nerd_fonts_enabled);
             } else {
                 let mut l_clone = l.clone();
-                l_clone.scroll_offset = l.scroll_offset.saturating_add(clip_above);
+                l_clone.scroll_offset = l.scroll_offset + clip_above as f32;
                 draw_list(buf, area, &l_clone, theme, nerd_fonts_enabled);
             }
         }
@@ -823,7 +823,7 @@ mod tests {
                 rows,
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 style: Default::default(),
                 has_focus: true,
             }),
@@ -1061,7 +1061,7 @@ mod tests {
         )]);
         // Scroll 2 rows down on the only section.
         if let SectionBody::Tree(t) = &mut v.sections[0].body {
-            t.scroll_offset = 2;
+            t.scroll_offset = 2.0;
         }
         let layout = paint_then_layout(&mut buf, area, &v, &Theme::default(), false);
         let thumb = layout.sections[0]
@@ -1223,7 +1223,7 @@ mod tests {
             SectionSize::EqualShare,
         )]);
         if let SectionBody::Tree(t) = &mut v.sections[0].body {
-            t.scroll_offset = 2; // thumb lands away from the top
+            t.scroll_offset = 2.0; // thumb lands away from the top
         }
         let layout = tui_msv_layout(&v, area);
         let sb = layout.sections[0].scrollbar_bounds.unwrap();
@@ -1261,7 +1261,7 @@ mod tests {
             SectionSize::EqualShare,
         )]);
         if let SectionBody::Tree(t) = &mut v.sections[0].body {
-            t.scroll_offset = 2;
+            t.scroll_offset = 2.0;
         }
         let layout = tui_msv_layout(&v, area);
         let sb = layout.sections[0].scrollbar_bounds.unwrap();
@@ -1420,7 +1420,7 @@ mod tests {
                         rows: s.rows.clone(),
                         selection_mode: crate::types::SelectionMode::Single,
                         selected_path: s.selected_path.clone(),
-                        scroll_offset: s.scroll_offset,
+                        scroll_offset: s.scroll_offset as f32,
                         style: Default::default(),
                         has_focus: self.active_section == Some(idx),
                     }),
@@ -1905,7 +1905,7 @@ mod tests {
                             rows: s.rows.clone(),
                             selection_mode: crate::types::SelectionMode::Single,
                             selected_path: s.selected_path.clone(),
-                            scroll_offset: s.scroll_offset,
+                            scroll_offset: s.scroll_offset as f32,
                             style: Default::default(),
                             has_focus: !self.commit_input_active
                                 && self.active_section == Some(idx),
@@ -2339,7 +2339,7 @@ mod tests {
                 id: WidgetId::new(format!("{}-form", id)),
                 fields,
                 focused_field: None,
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 has_focus: false,
             }),
             aux: None,

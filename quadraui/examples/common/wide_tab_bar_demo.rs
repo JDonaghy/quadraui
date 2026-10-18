@@ -57,7 +57,7 @@ impl AppLogic for WideTabBarDemo {
                         is_closable: true,
                     },
                 ],
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 right_segments: vec![],
                 active_accent: Some(Color::rgb(80, 160, 240)),
                 show_tab_close: true,

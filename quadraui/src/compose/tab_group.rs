@@ -474,7 +474,7 @@ impl Pane {
         TabBar {
             id: WidgetId::new(format!("tg:pane{}:tabs", pane_idx)),
             tabs: items,
-            scroll_offset: self.tab_scroll_offset,
+            scroll_offset: self.tab_scroll_offset as f32,
             right_segments: vec![TabBarSegment {
                 text: " + ".to_string(),
                 width_cells: 3,

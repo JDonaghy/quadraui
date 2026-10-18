@@ -661,7 +661,7 @@ impl WorkspaceController {
                     is_closable: d.closable,
                 })
                 .collect(),
-            scroll_offset: self.scroll_offset,
+            scroll_offset: self.scroll_offset as f32,
             right_segments: Vec::new(),
             active_accent: None,
             show_tab_close: true,

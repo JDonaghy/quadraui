@@ -255,7 +255,7 @@ mod tests {
         let display = TextDisplay {
             id: WidgetId::new("td"),
             lines: vec![line("alpha"), line("beta"), line("gamma")],
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -296,7 +296,7 @@ mod tests {
                 decoration: Decoration::Normal,
                 timestamp: None,
             }],
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -320,7 +320,7 @@ mod tests {
         let display = TextDisplay {
             id: WidgetId::new("td"),
             lines: (0..10).map(|i| line(&format!("line{i}"))).collect(),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             auto_scroll: true,
             max_lines: 0,
             has_focus: false,
@@ -348,7 +348,7 @@ mod tests {
         let display = TextDisplay {
             id: WidgetId::new("td"),
             lines: vec![line("x")],
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -371,7 +371,7 @@ mod tests {
         let display = TextDisplay {
             id: WidgetId::new("td"),
             lines: (0..20).map(|i| line(&format!("line{i}"))).collect(),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -418,7 +418,7 @@ mod tests {
         let display = TextDisplay {
             id: WidgetId::new("td"),
             lines: (0..20).map(|i| line(&format!("line{i}"))).collect(),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -440,7 +440,7 @@ mod tests {
         let display = TextDisplay {
             id: WidgetId::new("td"),
             lines: (0..20).map(|i| line(&format!("line{i}"))).collect(),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -462,7 +462,7 @@ mod tests {
         let display = TextDisplay {
             id: WidgetId::new("td"),
             lines: vec![line("abcdefghijklmnopqrstuvwxyz")],
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -506,7 +506,7 @@ mod tests {
             lines: (0..total_lines)
                 .map(|i| line(&format!("L{i:02}")))
                 .collect(),
-            scroll_offset: 10,
+            scroll_offset: 10.0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -547,7 +547,7 @@ mod tests {
             lines: (0..total_lines)
                 .map(|i| line(&format!("L{i:02}")))
                 .collect(),
-            scroll_offset: new_offset,
+            scroll_offset: new_offset as f32,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -584,7 +584,7 @@ mod tests {
         let display = TextDisplay {
             id: WidgetId::new("td"),
             lines: vec![line("the quick brown fox")],
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -621,7 +621,7 @@ mod tests {
                 line("the quick brown fox jumps over the lazy dog"),
                 line("short"),
             ],
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,

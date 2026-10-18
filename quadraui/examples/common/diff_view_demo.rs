@@ -81,7 +81,7 @@ impl DiffViewApp {
             hunks,
             mode: DiffMode::SideBySide,
             editability: DiffEditability::ReadOnly,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             focused_pane: DiffPane::Left,
             has_focus: true,
         };
@@ -200,7 +200,7 @@ impl AppLogic for DiffViewApp {
                 ..
             } => {
                 if total > visible {
-                    self.view.scroll_offset = (self.view.scroll_offset + 1).min(total - visible);
+                    self.view.scroll_offset = (self.view.scroll_offset + 1.0).min((total - visible) as f32);
                 }
                 Reaction::Redraw
             }
@@ -214,7 +214,7 @@ impl AppLogic for DiffViewApp {
                 key: Key::Named(NamedKey::Up),
                 ..
             } => {
-                self.view.scroll_offset = self.view.scroll_offset.saturating_sub(1);
+                self.view.scroll_offset = (self.view.scroll_offset - 1.0).max(0.0);
                 Reaction::Redraw
             }
 
@@ -225,7 +225,7 @@ impl AppLogic for DiffViewApp {
             } => {
                 if total > visible {
                     self.view.scroll_offset =
-                        (self.view.scroll_offset + visible).min(total - visible);
+                        (self.view.scroll_offset + visible as f32).min((total - visible) as f32);
                 }
                 Reaction::Redraw
             }
@@ -235,7 +235,7 @@ impl AppLogic for DiffViewApp {
                 key: Key::Named(NamedKey::PageUp),
                 ..
             } => {
-                self.view.scroll_offset = self.view.scroll_offset.saturating_sub(visible);
+                self.view.scroll_offset = (self.view.scroll_offset - visible as f32).max(0.0);
                 Reaction::Redraw
             }
 
@@ -249,7 +249,7 @@ impl AppLogic for DiffViewApp {
                     DiffMode::Unified => DiffMode::SideBySide,
                 };
                 // Reset scroll when switching modes so we start at the top.
-                self.view.scroll_offset = 0;
+                self.view.scroll_offset = 0.0;
                 Reaction::Redraw
             }
 

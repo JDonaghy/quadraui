@@ -324,7 +324,7 @@ impl FormController {
         match &self.form {
             Some(f) => {
                 let mut form = f.clone();
-                form.scroll_offset = self.scroll_offset;
+                form.scroll_offset = self.scroll_offset as f32;
                 form.has_focus = self.has_focus;
                 if let Some(e) = &self.text_edit {
                     if let Some(field) = form.fields.iter_mut().find(|fld| fld.id == e.field_id) {
@@ -337,7 +337,7 @@ impl FormController {
                 id: self.default_form_id(),
                 fields: Vec::new(),
                 focused_field: None,
-                scroll_offset: self.scroll_offset,
+                scroll_offset: self.scroll_offset as f32,
                 has_focus: self.has_focus,
             },
         }
@@ -998,7 +998,7 @@ mod tests {
             id: WidgetId::new("test-form"),
             fields: make_fields(n),
             focused_field: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
         }
     }
@@ -1119,7 +1119,7 @@ mod tests {
         fc.set_scroll_offset(3);
         fc.set_has_focus(true);
         let form = fc.build_form(Rect::new(0.0, 0.0, 40.0, 100.0));
-        assert_eq!(form.scroll_offset, 3);
+        assert_eq!(form.scroll_offset, 3.0);
         assert!(form.has_focus);
     }
 
@@ -1433,7 +1433,7 @@ mod tests {
             id: WidgetId::new("form"),
             fields,
             focused_field: focused.map(WidgetId::new),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
         });
         // The controller's own `has_focus` gates `KeyPressed`/`CharTyped`/
@@ -1575,7 +1575,7 @@ mod tests {
             id: WidgetId::new("form"),
             fields: vec![text_field("name", "abc", None)],
             focused_field: Some(WidgetId::new("name")),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
         });
 
@@ -1702,7 +1702,7 @@ mod tests {
             id: WidgetId::new("form"),
             fields: vec![text_field("name", "abc", None)],
             focused_field: Some(WidgetId::new("name")),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
         });
 

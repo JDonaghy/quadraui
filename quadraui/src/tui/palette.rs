@@ -33,6 +33,7 @@ use ratatui::layout::Rect;
 use super::{ratatui_color, set_cell};
 use crate::primitives::palette::{Palette, PaletteItemMeasure, PaletteLayout, PaletteMode};
 use crate::theme::Theme;
+use crate::primitives::scrollbar::scroll_rows;
 
 /// Compute the TUI [`Palette`] layout — the shared geometry this
 /// module's [`draw_palette`] paints from and `Backend::palette_layout`
@@ -463,7 +464,10 @@ pub fn draw_palette(
         // Preview content lines.
         let highlight_bg = ratatui_color(theme.selected_bg);
         let preview_visible = items_row_end.saturating_sub(preview_row0) as usize;
-        for (vi, line_idx) in (preview.scroll_offset..).take(preview_visible).enumerate() {
+        for (vi, line_idx) in (scroll_rows(preview.scroll_offset)..)
+            .take(preview_visible)
+            .enumerate()
+        {
             let row = preview_row0 + vi as u16;
             if row >= items_row_end {
                 break;
@@ -536,7 +540,7 @@ mod tests {
             query_cursor: 2,
             items: vec![item("foo"), item("food"), item("foggy")],
             selected_idx: 0,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
             show_query: true,
             create_label: None,
@@ -620,7 +624,7 @@ mod tests {
                 StyledText::plain("line three"),
             ],
             title: Some("preview.rs".into()),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             highlight_line: Some(1),
         });
         draw_palette(
@@ -663,7 +667,7 @@ mod tests {
                 StyledText::plain("visible"),
             ],
             title: None,
-            scroll_offset: 2,
+            scroll_offset: 2.0,
             highlight_line: None,
         });
         draw_palette(

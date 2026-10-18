@@ -175,7 +175,7 @@ pub struct DataTable {
     #[serde(default)]
     pub selected_idx: Option<usize>,
     #[serde(default)]
-    pub scroll_offset: usize,
+    pub scroll_offset: f32,
     /// Which column is sorted, and in which direction. `None` = no
     /// sort indicator shown.
     #[serde(default)]
@@ -1442,7 +1442,7 @@ mod tests {
             columns,
             rows,
             selected_idx: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             sort: None,
             has_focus: false,
             show_scrollbar: false,

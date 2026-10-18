@@ -20,6 +20,7 @@ use crate::event::Rect;
 use crate::primitives::scrollbar::Scrollbar;
 use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
+use crate::primitives::scrollbar::scroll_rows;
 
 /// Declarative description of a `ListView` widget.
 ///
@@ -49,7 +50,7 @@ use serde::{Deserialize, Serialize};
 /// let layout = list.layout(80.0, 10.0, 0.0, |_| ListItemMeasure::new(1.0));
 /// assert_eq!(layout.hit_test(0.0, 0.0), ListViewHit::Item(0));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ListView {
     pub id: WidgetId,
     /// Optional header row shown above the items. `None` = no header.
@@ -58,7 +59,7 @@ pub struct ListView {
     pub items: Vec<ListItem>,
     pub selected_idx: usize,
     #[serde(default)]
-    pub scroll_offset: usize,
+    pub scroll_offset: f32,
     #[serde(default)]
     pub has_focus: bool,
     /// When true, backends draw a `╭─╮ │ │ ╰─╯` frame around the list
@@ -296,7 +297,7 @@ impl ListView {
 
         // Clamp scroll_offset.
         let resolved_scroll_offset =
-            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.items.len());
+            crate::primitives::scrollbar::clamp_scroll_offset(scroll_rows(self.scroll_offset), self.items.len());
 
         let items_y_end = if self.bordered {
             inset_y + items_h_max
@@ -474,7 +475,7 @@ mod hscrollbar_tests {
                 decoration: Decoration::default(),
             }],
             selected_idx: 0,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
             bordered: false,
             h_scroll,
@@ -606,7 +607,7 @@ mod vscrollbar_tests {
                 })
                 .collect(),
             selected_idx: 0,
-            scroll_offset,
+            scroll_offset: scroll_offset as f32,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -1390,7 +1391,7 @@ mod tests {
                 },
             ],
             selected_idx: 1,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -1424,7 +1425,7 @@ mod tests {
             title: title.map(StyledText::plain),
             items,
             selected_idx: selected,
-            scroll_offset: scroll,
+            scroll_offset: scroll as f32,
             has_focus: true,
             bordered: false,
             h_scroll: 0,

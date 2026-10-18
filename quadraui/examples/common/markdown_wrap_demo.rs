@@ -116,7 +116,7 @@ impl AppLogic for MarkdownWrapDemo {
             )),
             items,
             selected_idx: self.selected_idx.min(n.saturating_sub(1)),
-            scroll_offset: self.scroll_offset,
+            scroll_offset: self.scroll_offset as f32,
             has_focus: true,
             bordered: false,
             h_scroll: 0,

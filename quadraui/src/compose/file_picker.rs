@@ -445,7 +445,7 @@ impl FilePickerController {
             query_cursor: self.query.len(),
             items,
             selected_idx: self.selected,
-            scroll_offset: self.scroll_top,
+            scroll_offset: self.scroll_top as f32,
             total_count: self.all_entries.len(),
             has_focus: true,
             show_query: true,

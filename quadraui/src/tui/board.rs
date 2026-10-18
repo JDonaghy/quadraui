@@ -103,7 +103,7 @@ pub fn draw_board(buf: &mut Buffer, area: Rect, model: &BoardModel, theme: &Them
         }
 
         // Column index indicator (helps when columns overflow viewport).
-        if li == 0 && model.col_scroll_offset > 0 {
+        if li == 0 && model.col_scroll_offset > 0.0 {
             // Show a "‹" to indicate there are columns to the left.
             if hw >= 1 {
                 set_cell(buf, hx + hw - 1, hy, '‹', muted, header_bg);
@@ -362,17 +362,17 @@ mod tests {
                     id: WidgetId::new("col:backlog"),
                     title: "Backlog".to_string(),
                     cards: vec![make_card("card:1", "Card One")],
-                    scroll_offset: 0,
+                    scroll_offset: 0.0,
                 },
                 BoardColumn {
                     id: WidgetId::new("col:done"),
                     title: "Done".to_string(),
                     cards: vec![],
-                    scroll_offset: 0,
+                    scroll_offset: 0.0,
                 },
             ],
             selected_card_id: None,
-            col_scroll_offset: 0,
+            col_scroll_offset: 0.0,
         }
     }
 

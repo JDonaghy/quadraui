@@ -515,7 +515,7 @@ impl DualModePaletteController {
                 self.items.clone()
             },
             selected_idx: self.selected,
-            scroll_offset: self.scroll_top,
+            scroll_offset: self.scroll_top as f32,
             total_count: if self.mode == PaletteMode::Input {
                 0
             } else {
