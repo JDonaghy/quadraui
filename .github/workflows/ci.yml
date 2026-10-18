@@ -5,6 +5,9 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  # On-demand only for the `downstream` consumer compile-truth job (see its
+  # `if:`). Run it when sizing a vimcode/coord-tui migration.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -1286,6 +1289,17 @@ jobs:
     # unconditional.
     name: downstream consumers (compile truth)
     runs-on: ubuntu-latest
+    # Pin-and-defer policy: quadraui's consumers (vimcode, coord-tui) pin a
+    # released version and adopt API changes on their own schedule, so this
+    # consumer compile-truth check no longer BLOCKS develop PRs — it would
+    # otherwise force a lockstep cross-repo migration on every breaking
+    # change and churn the headless loop (a work leg cannot edit the consumer
+    # repos). It now runs on demand (`workflow_dispatch`) when sizing a
+    # consumer migration. Publish-correctness is still enforced: the
+    # `cargo-semver-checks` job flags API breaks and blocks the
+    # develop -> main promotion so releases are versioned correctly, which is
+    # what the consumers' pins rely on.
+    if: github.event_name == 'workflow_dispatch'
     # #1292: clones + `cargo check --all-targets` on up to two consumers,
     # with a possible control-run retry on failure — normally 10-15 min
     # with a warm cache across both consumer target dirs.
