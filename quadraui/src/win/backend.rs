@@ -4004,7 +4004,7 @@ impl Backend for WinBackend {
                 let sb = Scrollbar::vertical(
                     "win:editor:v_scrollbar",
                     v_track,
-                    editor.scroll_top as f32,
+                    editor.scroll_top,
                     editor.total_lines as f32,
                     layout.visible_lines as f32,
                     self.current_line_height,
