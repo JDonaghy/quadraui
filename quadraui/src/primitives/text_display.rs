@@ -964,7 +964,7 @@ mod native_surface_paint {
             TextDisplay {
                 id: WidgetId::new("td"),
                 lines: (0..lines).map(|i| td_line(&format!("ln{i}"))).collect(),
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 auto_scroll: false,
                 max_lines: 0,
                 has_focus: false,

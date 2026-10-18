@@ -834,7 +834,7 @@ pub(crate) mod native_surface_paint {
                 rows,
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 style: TreeStyle::default(),
                 has_focus: true,
             }

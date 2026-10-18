@@ -231,7 +231,7 @@ fn draw_text_display_paints_in_editor_font() {
                 decoration: Decoration::Normal,
                 timestamp: None,
             }],
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             auto_scroll: true,
             max_lines: 0,
             has_focus: false,
@@ -294,7 +294,7 @@ fn draw_diff_view_paints_in_editor_font() {
             }],
             mode: DiffMode::SideBySide,
             editability: DiffEditability::ReadOnly,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             focused_pane: DiffPane::Left,
             has_focus: false,
         };
@@ -330,7 +330,7 @@ fn draw_form_paints_in_chrome_font() {
                 validation: None,
             }],
             focused_field: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: false,
         };
         b.draw_form(area, &form);
@@ -498,7 +498,7 @@ fn draw_message_list_paints_in_chrome_font() {
         let list = MessageList {
             id: id("message-list"),
             rows: vec![MessageRow::new(LABEL, Color::rgb(220, 220, 220), 0.0)],
-            scroll_top: 0,
+            scroll_top: 0.0,
         };
         b.draw_message_list(area, &list);
     });

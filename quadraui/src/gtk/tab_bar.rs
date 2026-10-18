@@ -701,7 +701,7 @@ mod tests {
                 is_preview: false,
                 is_closable: true,
             }],
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             right_segments: vec![TabBarSegment {
                 text: " ⇅ ".to_string(),
                 width_cells: 3,
@@ -810,7 +810,7 @@ mod tests {
                 is_active: true,
                 ..Default::default()
             }],
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             right_segments: vec![],
             active_accent: None,
             show_tab_close: true,
@@ -1006,7 +1006,7 @@ mod tests {
                 is_active: true,
                 ..Default::default()
             }],
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             right_segments: vec![],
             active_accent: None,
             show_tab_close: true,
@@ -1348,7 +1348,7 @@ mod tests {
                 is_active: false,
                 ..Default::default()
             }],
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             right_segments: vec![],
             active_accent: None,
             show_tab_close: false,

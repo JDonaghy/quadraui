@@ -609,6 +609,7 @@ impl Palette {
 pub(crate) mod native_surface_paint {
     use super::{Palette, PaletteItemMeasure, PaletteLayout, PaletteMode};
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::scrollbar::scroll_rows;
     use crate::style::Style;
     use crate::text_util::safe_prefix;
     use crate::theme::Theme;
@@ -1047,7 +1048,10 @@ pub(crate) mod native_surface_paint {
 
             let preview_visible =
                 ((preview_y + preview_h - cursor_y) / line_height).max(0.0) as usize;
-            for (vi, line_idx) in (preview.scroll_offset..).take(preview_visible).enumerate() {
+            for (vi, line_idx) in (scroll_rows(preview.scroll_offset)..)
+                .take(preview_visible)
+                .enumerate()
+            {
                 let row_y = cursor_y + vi as f32 * line_height;
                 if row_y + line_height > preview_y + preview_h + 0.5 {
                     break;
@@ -1188,7 +1192,7 @@ pub(crate) mod native_surface_paint {
                 query_cursor: 2,
                 items: vec![item("open file"), item("close"), item("quit")],
                 selected_idx: 0,
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 total_count: 0,
                 has_focus: true,
                 show_query: true,

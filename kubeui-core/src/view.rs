@@ -75,7 +75,7 @@ pub fn build_list(state: &AppState) -> ListView {
         }),
         items,
         selected_idx: state.selected,
-        scroll_offset: 0,
+        scroll_offset: 0.0,
         has_focus: state.focus == Focus::Resources,
         bordered: false,
         h_scroll: 0,
@@ -179,7 +179,7 @@ pub fn build_yaml_view(state: &AppState) -> TextDisplay {
     TextDisplay {
         id: WidgetId::new("yaml"),
         lines,
-        scroll_offset: state.yaml_scroll,
+        scroll_offset: state.yaml_scroll as f32,
         // App owns scroll explicitly; auto-scroll is for log tails.
         auto_scroll: false,
         max_lines: 0,

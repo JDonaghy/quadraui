@@ -383,7 +383,7 @@ impl Demo for SidebarDemo {
                     rows: self.body_rows.clone(),
                     selection_mode: quadraui::SelectionMode::Single,
                     selected_path: None,
-                    scroll_offset: self.body_scroll,
+                    scroll_offset: self.body_scroll as f32,
                     style: TreeStyle::default(),
                     has_focus: true,
                 };

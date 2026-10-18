@@ -66,7 +66,7 @@ impl DiffViewDemo {
             hunks: hunks.clone(),
             mode: DiffMode::SideBySide,
             editability: DiffEditability::ReadOnly,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             focused_pane: DiffPane::Left,
             has_focus: true,
         };
@@ -196,7 +196,7 @@ impl Demo for DiffViewDemo {
             } => {
                 if total > visible {
                     self.views[variant].scroll_offset =
-                        (self.views[variant].scroll_offset + 1).min(total - visible);
+                        (self.views[variant].scroll_offset + 1.0).min((total - visible) as f32);
                 }
                 Reaction::Redraw
             }
@@ -205,7 +205,7 @@ impl Demo for DiffViewDemo {
                 ..
             } => {
                 self.views[variant].scroll_offset =
-                    self.views[variant].scroll_offset.saturating_sub(1);
+                    (self.views[variant].scroll_offset - 1.0).max(0.0);
                 Reaction::Redraw
             }
             _ => Reaction::Continue,
@@ -260,6 +260,6 @@ mod tui_tests {
         };
         let reaction = demo.handle(0, &event, &mut backend, area);
         assert!(matches!(reaction, Reaction::Redraw));
-        assert_eq!(demo.views[0].scroll_offset, 1);
+        assert_eq!(demo.views[0].scroll_offset, 1.0);
     }
 }

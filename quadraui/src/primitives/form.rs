@@ -1316,7 +1316,7 @@ mod native_surface_paint {
                     validation: None,
                 }],
                 focused_field: None,
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 has_focus: false,
             }
         }

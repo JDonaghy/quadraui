@@ -251,6 +251,7 @@ pub(crate) mod native_surface_paint {
     use super::MessageList;
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::scrollbar::scroll_rows;
 
     /// Paint a [`MessageList`] into `rect` on `surface` — see this
     /// module's doc for the full per-backend divergence survey this
@@ -271,7 +272,7 @@ pub(crate) mod native_surface_paint {
         }
         let max_y = rect.y + rect.height;
 
-        for (i, row) in list.rows.iter().skip(list.scroll_top).enumerate() {
+        for (i, row) in list.rows.iter().skip(scroll_rows(list.scroll_top)).enumerate() {
             let ry = rect.y + i as f32 * line_height;
             if ry + line_height > max_y {
                 break;
@@ -393,7 +394,7 @@ pub(crate) mod native_surface_paint {
                     MessageRow::new("You:", Color::rgb(255, 220, 0), 0.0),
                     MessageRow::new("hi there", Color::rgb(220, 220, 220), 8.0),
                 ],
-                scroll_top: 0,
+                scroll_top: 0.0,
             }
         }
 
@@ -446,7 +447,7 @@ pub(crate) mod native_surface_paint {
         #[test]
         fn scroll_top_skips_leading_rows() {
             let mut list = sample_list();
-            list.scroll_top = 1;
+            list.scroll_top = 1.0;
             let mut surface = RecordingSurface::default();
             paint(&list, &mut surface, Rect::new(0.0, 0.0, 200.0, 100.0), 16.0);
             assert_eq!(surface.text_runs.len(), 1);

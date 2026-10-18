@@ -905,7 +905,7 @@ pub(crate) mod native_surface_paint {
                 }],
                 mode,
                 editability: Default::default(),
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 focused_pane: Default::default(),
                 has_focus: false,
             }
@@ -1043,7 +1043,7 @@ pub(crate) mod native_surface_paint {
                 }],
                 mode: DiffMode::SideBySide,
                 editability: Default::default(),
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 focused_pane: Default::default(),
                 has_focus: false,
             };

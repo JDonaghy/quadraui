@@ -1052,7 +1052,7 @@ mod tests {
                         is_closable: true,
                     })
                     .collect(),
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 right_segments: vec![],
                 active_accent: None,
                 show_tab_close: true,
@@ -1271,7 +1271,7 @@ mod tests {
                             is_preview: false,
                             is_closable: false,
                         }],
-                        scroll_offset: 0,
+                        scroll_offset: 0.0,
                         right_segments: vec![],
                         active_accent: None,
                         show_tab_close: true,
@@ -1347,7 +1347,7 @@ mod tests {
                         // GTK, like TUI, honours this caller-supplied
                         // offset directly when the full set doesn't fit
                         // (no scroll arrows computed internally here).
-                        scroll_offset: 1,
+                        scroll_offset: 1.0,
                         right_segments: vec![],
                         active_accent: None,
                         show_tab_close: true,

@@ -130,7 +130,7 @@ impl SearchReplaceState {
                 },
             ],
             focused_field: self.focus.current().cloned(),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
         }
     }
@@ -189,7 +189,7 @@ fn scroll_form_from_toggles(toggles: &[bool]) -> Form {
         id: WidgetId::new("gallery:form:settings-fields"),
         fields,
         focused_field: None,
-        scroll_offset: 0,
+        scroll_offset: 0.0,
         has_focus: true,
     }
 }
@@ -394,7 +394,7 @@ fn build_all_fields_form() -> Form {
             },
         ],
         focused_field: None,
-        scroll_offset: 0,
+        scroll_offset: 0.0,
         has_focus: true,
     }
 }

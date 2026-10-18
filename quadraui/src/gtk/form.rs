@@ -201,7 +201,7 @@ mod tests {
             // `header_bg`, so row 0's colour unambiguously identifies
             // which field (if any) painted there.
             focused_field: Some(WidgetId::new("enabled")),
-            scroll_offset: 50, // far past `fields.len()` == 2
+            scroll_offset: 50.0, // far past `fields.len()` == 2
             has_focus: true,
         };
 
@@ -280,7 +280,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: Some(WidgetId::new("name")),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
         };
 
@@ -310,7 +310,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: Some(WidgetId::new("pw")),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
         };
 
@@ -341,7 +341,7 @@ mod tests {
                 validation: None,
             }],
             focused_field: Some(WidgetId::new("notes")),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: true,
         };
 

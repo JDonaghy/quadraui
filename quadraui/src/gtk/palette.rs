@@ -111,7 +111,7 @@ mod tests {
             query_cursor,
             items: Vec::new(),
             selected_idx: 0,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             total_count: 0,
             has_focus: true,
             show_query: true,

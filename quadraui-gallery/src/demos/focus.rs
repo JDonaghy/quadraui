@@ -73,7 +73,7 @@ impl FocusDemo {
                 })
                 .collect(),
             selected_idx: 0,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             has_focus: focused,
             bordered: true,
             h_scroll: 0,

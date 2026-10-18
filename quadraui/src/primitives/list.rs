@@ -1052,7 +1052,7 @@ pub(crate) mod native_surface_paint {
                 title: None,
                 items: (0..n_items).map(|i| item(&format!("row {i}"))).collect(),
                 selected_idx: 0,
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 has_focus: true,
                 bordered: false,
                 h_scroll: 0,

@@ -6356,7 +6356,7 @@ mod tests {
                 .collect(),
             selection_mode: crate::types::SelectionMode::Single,
             selected_path: None,
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             style: crate::types::TreeStyle::default(),
             has_focus: false,
         }
@@ -6727,7 +6727,7 @@ mod tests {
                     decoration: crate::types::Decoration::default(),
                 }],
                 selected_idx: 0,
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 has_focus: true,
                 bordered,
                 h_scroll: 0,
@@ -11347,7 +11347,7 @@ mod tests {
             let tab_bar = TabBar {
                 id: WidgetId::new("tab-bar"),
                 tabs: Vec::new(),
-                scroll_offset: 0,
+                scroll_offset: 0.0,
                 right_segments: Vec::new(),
                 active_accent: None,
                 show_tab_close: false,

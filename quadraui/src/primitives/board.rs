@@ -927,10 +927,10 @@ pub(crate) mod native_surface_paint {
                     id: WidgetId::new("col:backlog"),
                     title: "Backlog".into(),
                     cards: vec![card("card:a", "First")],
-                    scroll_offset: 0,
+                    scroll_offset: 0.0,
                 }],
                 selected_card_id: None,
-                col_scroll_offset: 0,
+                col_scroll_offset: 0.0,
             }
         }
 
