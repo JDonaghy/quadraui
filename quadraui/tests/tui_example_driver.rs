@@ -1753,7 +1753,7 @@ fn appshell_demo_bottom_item_show_panel_retitles_sidebar_header() {
     // `handle_activity_click`'s top-panel arm never cleared
     // `sidebar_bottom_owner`, so the header stayed stuck on "Settings"
     // forever after this point.
-    let (x, y) = driver.find("G│").unwrap_or_else(|| {
+    let (x, y) = driver.find("G │").unwrap_or_else(|| {
         panic!(
             "Source Control's activity-bar row (icon + separator) should be painted:\n{}",
             driver.screen()
@@ -8694,7 +8694,7 @@ fn appshell_chrome_bands_carve_left_to_right() {
     // the main area.
     assert_eq!(
         row_containing(&screen, "(sidebar content").trim_end(),
-        " S│ (sidebar content he"
+        " S │ (sidebar content he"
     );
 }
 
