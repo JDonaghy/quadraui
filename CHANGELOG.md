@@ -223,6 +223,14 @@ only a push to `main` runs this workflow.
   convenience wrappers around `WinRunner` for the all-owning case.
   `WinRunner` is `#[cfg(target_os = "windows")]`; `StepOutcome`,
   `RunConfig`, `run` and `run_with` compile on every host.
+- `win::testing::HeadlessSurface::{stride, buffer}` and
+  `win::testing::WinDriver::{screen, stride}` — a whole-buffer readback
+  seam for the headless Direct2D DC render target, mirroring
+  `gtk::testing::GtkDriver::{screen, stride}`: `screen()` returns the
+  full rendered buffer as `[B, G, R, A]` bytes and `stride()` the row
+  byte width (`width * 4` for this DIB format), letting a consumer (e.g.
+  `quadraui-gallery`'s headless capture tool) PNG-encode a Windows
+  capture the same way it already does for GTK.
 
 ### Fixed
 

@@ -17,17 +17,17 @@ name: Deploy site
 #      this runner's TUI backend, plus `manifest.json` describing every
 #      other backend as `unsupported`/`capture-pending`
 #      (`quadraui-gallery/src/capture.rs`). This leg itself only captures
-#      the TUI column; the GTK and Windows columns come from (3).
-#   3. The GTK and macOS columns come from `ci.yml`'s
-#      `gallery-capture-gtk` job and `macos.yml`'s `gallery-capture-macos`
-#      job respectively (one PNG per demo/variant through each backend's
-#      own headless driver), each uploaded as its own `gallery-capture-*`
-#      artifact and downloaded here. GTK's artifact refreshes on every
-#      `ci.yml` run on `develop`; macOS's refreshes only on `macos.yml`'s
-#      weekly develop cron, so that column can lag the others by up to a
-#      week — for a widget gallery that is acceptable and far better than
-#      a "Pending" column (quadraui#1619). Windows has no headless
-#      capture leg yet, so that column stays "Pending" until one exists.
+#      the TUI column; the GTK, macOS and Windows columns come from (3).
+#   3. The GTK, macOS and Windows columns come from `ci.yml`'s
+#      `gallery-capture-gtk`/`gallery-capture-windows` jobs and
+#      `macos.yml`'s `gallery-capture-macos` job respectively (one PNG per
+#      demo/variant through each backend's own headless driver), each
+#      uploaded as its own `gallery-capture-*` artifact and downloaded
+#      here. GTK's and Windows's artifacts refresh on every `ci.yml` run
+#      on `develop`; macOS's refreshes only on `macos.yml`'s weekly
+#      develop cron, so that column can lag the others by up to a week —
+#      for a widget gallery that is acceptable and far better than a
+#      "Pending" column (quadraui#1619).
 #   4. `tools/site_gen.py` merges (1), (2) and (3) into `site/src/gallery/`
 #      and `site/src/SUMMARY.md` (its `--capture` is repeatable and keys
 #      rows by `(demo, group, variant, backend)`, preferring a real
@@ -126,6 +126,19 @@ jobs:
           path: target/site/capture-macos
           if_no_artifact_found: warn
 
+      # Windows's artifact comes from `ci.yml`'s `gallery-capture-windows`
+      # job on the same `develop` branch — same source workflow and
+      # refresh cadence as the GTK download above, just a different job
+      # name within it.
+      - name: Download Windows gallery captures
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: ci.yml
+          branch: develop
+          name: gallery-capture-windows
+          path: target/site/capture-windows
+          if_no_artifact_found: warn
+
       # Each extra `--capture` dir is added only when its manifest
       # actually arrived: `site_gen.py` hard-errors (FileNotFoundError)
       # on a `--capture` dir with no `manifest.json`, so an empty/absent
@@ -147,6 +160,11 @@ jobs:
             extra+=(--capture target/site/capture-macos)
           else
             echo "::warning::no gallery-capture-macos manifest; macOS column stays pending"
+          fi
+          if [ -f target/site/capture-windows/manifest.json ]; then
+            extra+=(--capture target/site/capture-windows)
+          else
+            echo "::warning::no gallery-capture-windows manifest; Windows column stays pending"
           fi
           python3 tools/site_gen.py \
             --registry target/site/registry.json \
