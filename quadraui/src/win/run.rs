@@ -15,7 +15,7 @@
 //!
 //! # Window chrome: standard frame, not CSD — `desktop::WindowDragArm` N/A
 //!
-//! `run_inner` creates its window with `WS_OVERLAPPEDWINDOW` (below) —
+//! `create_window` creates its window with `WS_OVERLAPPEDWINDOW` (below) —
 //! the standard Windows title bar, system menu, and non-client resize
 //! border, not a client-side-decorated one quadraui paints itself.
 //! Title-bar drag-to-move and edge-resize are therefore already handled
@@ -178,6 +178,17 @@ use crate::runner::AppLogic;
 // so `win::testing` reaches it through this path, mirroring
 // `tui::run`/`macos::run`.
 pub(crate) use crate::runtime::EventOutcome;
+// `StepOutcome` — what happened during one non-blocking `step`/`pump`
+// call — is defined once in `crate::runner` and shared by every
+// backend's embedding-friendly runner (`WinRunner` here, `TuiRunner` on
+// TUI, `crate::gtk::run::GtkRunner` on GTK), the same way `Reaction`
+// already is; re-exported (not just imported) so existing in-crate
+// callers that reach it through this module keep working. Deliberately
+// *not* `target_os`-gated: `StepOutcome` itself is a plain enum with no
+// WinAPI dependency, so this compiles identically on every host even
+// though `WinRunner` (the type that actually produces one) only exists
+// inside `mod win32` below.
+pub use crate::runner::StepOutcome;
 use crate::win::backend::WinBackend;
 use crate::{ButtonMask, Modifiers, MouseButton, UiEvent};
 
@@ -255,7 +266,7 @@ use crate::{ButtonMask, Modifiers, MouseButton, UiEvent};
 /// first, holding the `MultiSectionView` aux-row caret solid for the
 /// typing-pause window — mirrors `gtk::run::dispatch_event`'s identical
 /// bump. The recurring blink timer that ticks the caret while idle is
-/// `CARET_BLINK_TIMER_ID`, armed once by `win32::run_inner`.
+/// `CARET_BLINK_TIMER_ID`, armed once by `win32::create_window`.
 #[allow(dead_code)]
 pub(crate) fn dispatch_event<A: AppLogic>(
     event: UiEvent,
@@ -511,7 +522,7 @@ pub struct RunConfig {
     /// Window title shown by the title bar, taskbar, and Alt-Tab switcher.
     ///
     /// Encoded as a `\0`-terminated wide string before reaching Win32
-    /// (see `run_inner`'s `title_nul`) — an embedded `'\0'` character in
+    /// (see `create_window`'s `title_nul`) — an embedded `'\0'` character in
     /// this string silently truncates the displayed title at that point
     /// rather than erroring, since Win32 treats the first NUL as the
     /// terminator. Not a concern for any title a real app would set, but
@@ -677,7 +688,7 @@ fn instance_identity(title: &str) -> u64 {
 /// Windows below.
 ///
 /// `#[allow(dead_code)]`: same rationale as [`encode_copydata_argv`] —
-/// its only callers (`win32::run_inner`'s `RegisterClassExW` and
+/// its only callers (`win32::create_window`'s `RegisterClassExW` and
 /// `win32::forward_argv_to_existing_instance`'s `FindWindowW`) are
 /// Windows-only.
 #[allow(dead_code)]
@@ -734,7 +745,7 @@ mod win32 {
     use std::ffi::c_void;
     use std::mem::size_of;
     use std::rc::Rc;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use windows::core::{Error as WinError, PCWSTR};
     use windows::Win32::Foundation::{
@@ -758,16 +769,17 @@ mod win32 {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW,
-        GetClientRect, GetMessageW, GetWindowLongPtrW, KillTimer, LoadCursorW, PostQuitMessage,
-        RegisterClassExW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
-        SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
-        CW_USEDEFAULT, GWLP_USERDATA, HTCAPTION, HTCLIENT, ICON_BIG, ICON_SMALL, IDC_ARROW, MSG,
-        NCCALCSIZE_PARAMS, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE,
-        WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN,
-        WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-        WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCCREATE, WM_NCHITTEST, WM_PAINT,
-        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETICON, WM_SIZE, WM_SYSCHAR,
-        WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+        GetClientRect, GetWindowLongPtrW, KillTimer, LoadCursorW, MsgWaitForMultipleObjects,
+        PeekMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetForegroundWindow,
+        SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW,
+        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, HTCAPTION, HTCLIENT, ICON_BIG,
+        ICON_SMALL, IDC_ARROW, MSG, NCCALCSIZE_PARAMS, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE,
+        SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_COPYDATA,
+        WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
+        WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+        WM_NCCALCSIZE, WM_NCCREATE, WM_NCHITTEST, WM_PAINT, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+        WM_SETCURSOR, WM_SETFOCUS, WM_SETICON, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER,
+        WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
     };
     // `WM_DROPFILES` decode (`HDROP`, `DragAcceptFiles`/
     // `DragQueryFileW`/`DragQueryPoint`/`DragFinish`) — all real Shell32
@@ -784,7 +796,7 @@ mod win32 {
     };
     use crate::event::{classify_open_args, UiEvent};
     use crate::primitives::image::ImageSource;
-    use crate::runner::{AppLogic, Reaction};
+    use crate::runner::{AppLogic, Reaction, StepOutcome};
     use crate::win::backend::WinBackend;
     // Reuses the tray icon's WIC → `HICON` decode for the
     // titlebar/taskbar icon — see [`decode_hicon`]'s doc for why this is
@@ -807,6 +819,8 @@ mod win32 {
         wheel_delta_from_wparam,
     };
     use crate::{ButtonMask, Key, Modifiers};
+
+    use super::RunConfig;
 
     /// Window class name for `title`'s instance family, wide-encoded and
     /// `\0`-terminated, ready for `lpszClassName`/`FindWindowW`. The pure
@@ -906,12 +920,13 @@ mod win32 {
         /// the module doc's "Headless smoke mode" section. Read once by
         /// the `WM_TIMER` handler in [`wndproc`]; never mutated.
         smoke: Option<SmokeConfig>,
-        /// `Rc`, not a plain `Cell`, so [`run_inner`] can hold a clone
-        /// that survives past `WindowState` itself being freed (its
-        /// `Box::from_raw` happens right before the message loop's final
-        /// exit-code decision needs this value) — same reason
-        /// `gtk::run::run_with`'s `smoke_failed` is an `Rc<Cell<bool>>`
-        /// shared with the `Application`, not a plain local.
+        /// `Rc`, not a plain `Cell`, so [`create_window`]'s caller (a
+        /// [`WinRunner`], or `run_inner`'s loop) can hold a clone that
+        /// survives past `WindowState` itself being freed (`finish`'s
+        /// `Box::from_raw` happens before `run_inner`'s final exit-code
+        /// decision needs this value) — same reason `gtk::run::run_with`'s
+        /// `smoke_failed` is an `Rc<Cell<bool>>` shared with the
+        /// `Application`, not a plain local.
         smoke_failed: Rc<Cell<bool>>,
         /// Pending-viewport store for the resize-settle debounce
         /// — see `crate::runtime::ResizeDebouncer`'s doc.
@@ -1157,15 +1172,15 @@ mod win32 {
         }
 
         // SAFETY: `run_inner`'s contract (its `# Safety` doc above) is
-        // "must run on the thread that will pump the returned message
-        // loop to completion". `run` itself never spawns a thread — it is
-        // the public `run(app)`/`run_with(app, config)` entry point
-        // (bottom of this file) called directly on the caller's thread,
-        // and everything below this point (window creation, `wndproc`
-        // dispatch, the `GetMessageW` loop) happens inline within this
-        // same call, so the thread that reaches here is exactly the
-        // thread that pumps the loop.
-        match unsafe { run_inner(app, &config.title, config.app_icon.as_ref()) } {
+        // "must construct and step the resulting `WinRunner` from the
+        // same thread". `run` itself never spawns a thread — it is the
+        // public `run(app)`/`run_with(app, config)` entry point (bottom
+        // of this file) called directly on the caller's thread, and
+        // everything below this point (window creation, `wndproc`
+        // dispatch, `WinRunner::pump`'s drain loop) happens inline
+        // within this same call, so the thread that reaches here is
+        // exactly the thread that steps the runner.
+        match unsafe { run_inner(app, &config) } {
             // `Ok(smoke_ok)`: `smoke_ok` is `true` unless
             // `QUADRAUI_WIN_SMOKE_MS` was set *and* `run_smoke_check`
             // found a failure — see the module doc's "Headless
@@ -1189,21 +1204,31 @@ mod win32 {
 
     /// # Safety
     ///
-    /// Must run on the thread that will pump the returned message loop
-    /// to completion — Win32 windows are thread-affine, and `wndproc`
-    /// below assumes it's only ever invoked by `DispatchMessageW` on
-    /// this same thread (no synchronization guards `RunState`'s
-    /// `RefCell`).
+    /// Must run on the thread that will pump the resulting message loop
+    /// (via [`WinRunner::step`]/[`WinRunner::pump`]) to completion — Win32
+    /// windows are thread-affine, and `wndproc` below assumes it's only
+    /// ever invoked by `DispatchMessageW` on this same thread (no
+    /// synchronization guards `RunState`'s `RefCell`). The returned
+    /// [`WinRunner`] inherits this same-thread contract: it must be
+    /// constructed and stepped from one thread only (enforced for free —
+    /// `HWND` wraps a raw pointer, so `WinRunner` is `!Send`/`!Sync`).
+    /// [`WinBackend::waker`](crate::win::backend::WinBackend::waker) is
+    /// the one piece of this surface that is explicitly any-thread: it
+    /// may be called from a background thread to nudge the runner's
+    /// thread without busy-polling.
     ///
-    /// Returns `Ok(smoke_ok)` rather than plain `Ok(())`:
-    /// `smoke_ok` is always `true` unless `QUADRAUI_WIN_SMOKE_MS` armed
-    /// the headless smoke check and it found a failure — see the module
-    /// doc's "Headless smoke mode" section and [`run_smoke_check`].
-    unsafe fn run_inner<A: AppLogic + 'static>(
+    /// Returns the live [`HWND`], the heap-allocated `state_ptr` (owned —
+    /// the caller becomes responsible for eventually freeing it via
+    /// `Box::from_raw`, which [`WinRunner::finish`] does), and a clone of
+    /// `smoke_failed`: `smoke_failed.get()` is always `false` unless
+    /// `QUADRAUI_WIN_SMOKE_MS` armed the headless smoke check and it found
+    /// a failure — see the module doc's "Headless smoke mode" section and
+    /// [`run_smoke_check`].
+    unsafe fn create_window<A: AppLogic + 'static>(
         mut app: A,
         title: &str,
         app_icon: Option<&ImageSource>,
-    ) -> windows::core::Result<bool> {
+    ) -> windows::core::Result<(HWND, *mut WindowState<A>, Rc<Cell<bool>>)> {
         // SAFETY: `GetModuleHandleW(PCWSTR::null())` is the documented
         // idiom for "give me this process's own module handle" — the
         // null pointer is an explicit sentinel the API defines, not a
@@ -1569,48 +1594,203 @@ mod win32 {
                 let ws: &WindowState<A> = unsafe { &*state_ptr };
                 // `dispatch` (via `dispatch_with`) acts on `Reaction::Exit`
                 // itself — `DestroyWindow` posts `WM_QUIT` via
-                // `WM_DESTROY`, so the message loop below still runs,
-                // sees it immediately, and exits cleanly.
+                // `WM_DESTROY`, so the message loop (now driven by
+                // `WinRunner`) still sees it immediately and exits cleanly.
                 dispatch(ws, hwnd, classify_open_args(args));
             }
         }
 
-        let mut msg = MSG::default();
-        loop {
-            // `GetMessageW` returns `-1` on error, `0` on `WM_QUIT`,
-            // nonzero otherwise — `BOOL` isn't `bool` here, hence the
-            // explicit `.0` comparison instead of a truthiness check.
-            //
-            // SAFETY: `msg` is a stack-local `MSG::default()` above, live
-            // for the whole loop; `GetMessageW` writes it and this thread
-            // is the one pumping messages for `hwnd` (this function's own
-            // `# Safety` contract).
-            let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) }.0;
-            if ret <= 0 {
-                break;
+        Ok((hwnd, state_ptr, smoke_failed))
+    }
+
+    /// A non-blocking, steppable Win32 message-loop runner.
+    ///
+    /// Mirrors [`crate::tui::run::TuiRunner`] and
+    /// [`crate::gtk::run::GtkRunner`]'s shape: [`WinRunner::new`] /
+    /// [`WinRunner::new_with`] create the window (via [`create_window`])
+    /// but never block; [`WinRunner::step`] drains whatever Win32
+    /// messages are already queued and returns immediately;
+    /// [`WinRunner::pump`] blocks for up to a given timeout waiting for
+    /// the next message (via `MsgWaitForMultipleObjects`) before
+    /// draining. [`run_inner`]'s blocking `run()`/`run_with()` entry
+    /// points are now just `loop { pump(IDLE_POLL_CEILING)? }`.
+    ///
+    /// # Thread affinity
+    ///
+    /// Must be constructed and stepped from one thread only — see
+    /// [`create_window`]'s `# Safety` doc. This is enforced by the type
+    /// system with no explicit `unsafe impl` needed: `HWND` wraps a raw
+    /// pointer (`*mut c_void`) and `state_ptr` is itself a raw pointer,
+    /// so `WinRunner` is automatically `!Send`/`!Sync`.
+    /// [`WinBackend::waker`](crate::win::backend::WinBackend::waker),
+    /// by contrast, is explicitly safe to call from *any* thread — that
+    /// is how a background thread nudges this runner's thread without
+    /// busy-polling.
+    pub struct WinRunner<A: AppLogic + 'static> {
+        hwnd: HWND,
+        state_ptr: *mut WindowState<A>,
+        smoke_failed: Rc<Cell<bool>>,
+        /// Set once `WM_QUIT` has been observed and `state_ptr` freed.
+        /// Further `step`/`pump` calls become no-ops that report
+        /// [`StepOutcome::Exited`] instead of touching the dangling
+        /// pointer again.
+        finished: bool,
+    }
+
+    impl<A: AppLogic + 'static> WinRunner<A> {
+        /// # Safety
+        ///
+        /// See [`create_window`]'s `# Safety` doc — must be called on,
+        /// and the returned `WinRunner` must be stepped from, a single
+        /// thread.
+        pub unsafe fn new(app: A) -> windows::core::Result<Self> {
+            // SAFETY: delegates to `new_with`, which carries the exact
+            // same single-thread contract documented on this function's
+            // own `# Safety` doc above.
+            unsafe { Self::new_with(app, &RunConfig::default()) }
+        }
+
+        /// # Safety
+        ///
+        /// See [`create_window`]'s `# Safety` doc.
+        pub unsafe fn new_with(app: A, config: &RunConfig) -> windows::core::Result<Self> {
+            // SAFETY: forwards this function's own `# Safety` contract
+            // (documented above) unchanged to `create_window`.
+            let created = unsafe { create_window(app, &config.title, config.app_icon.as_ref())? };
+            let (hwnd, state_ptr, smoke_failed) = created;
+            Ok(Self {
+                hwnd,
+                state_ptr,
+                smoke_failed,
+                finished: false,
+            })
+        }
+
+        /// Drain any Win32 messages already queued and return
+        /// immediately — never blocks. The non-blocking half of the
+        /// `step()`/`pump()` seam (see `crate::runner`'s module doc).
+        pub fn step(&mut self) -> windows::core::Result<StepOutcome> {
+            self.run_one(None)
+        }
+
+        /// Block for up to `timeout` waiting for the next Win32 message
+        /// (via `MsgWaitForMultipleObjects`), then drain whatever is
+        /// queued. Returns early the moment a message arrives — `timeout`
+        /// is a ceiling, not a fixed sleep.
+        pub fn pump(&mut self, timeout: Duration) -> windows::core::Result<StepOutcome> {
+            self.run_one(Some(timeout))
+        }
+
+        fn run_one(&mut self, block_for: Option<Duration>) -> windows::core::Result<StepOutcome> {
+            if self.finished {
+                return Ok(StepOutcome::Exited);
             }
-            // SAFETY: `msg` was just populated by the successful
-            // `GetMessageW` above (`ret > 0`); both calls take it by
-            // reference and `DispatchMessageW` routes it back into
-            // `wndproc::<A>` on this same thread, which is exactly what
-            // `state_ptr` (stored in `GWLP_USERDATA`) is alive for.
-            unsafe {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+
+            if let Some(timeout) = block_for {
+                let timeout_ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+                // SAFETY: `phandles: None` with `fwaitall: false` just
+                // waits on the calling thread's own message queue (via
+                // `dwwakemask`); no handles are passed so there is
+                // nothing for the caller to keep alive. The return value
+                // is deliberately not matched on: `WAIT_TIMEOUT` just
+                // means the `PeekMessageW` drain below finds nothing to
+                // do, which is the correct, harmless outcome for a
+                // `pump()` whose ceiling elapsed with no message.
+                unsafe {
+                    let _ = MsgWaitForMultipleObjects(None, false, timeout_ms, QS_ALLINPUT);
+                }
+            }
+
+            let mut msg = MSG::default();
+            loop {
+                // SAFETY: `msg` is stack-local and live for the whole
+                // loop; `hwnd: None` means "any message belonging to a
+                // window owned by this thread", which is exactly the
+                // one window this runner created on this same thread
+                // (this type's thread-affinity contract, documented on
+                // `new`/`new_with`).
+                let peeked = unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) };
+                let has_message = peeked.as_bool();
+                if !has_message {
+                    return Ok(StepOutcome::Continue);
+                }
+                if msg.message == WM_QUIT {
+                    self.finish();
+                    return Ok(StepOutcome::Exited);
+                }
+                // SAFETY: `msg` was just populated by the successful
+                // `PeekMessageW` above; both calls route it back into
+                // `wndproc::<A>` on this same thread, which is exactly
+                // what `state_ptr` (stored in `GWLP_USERDATA`) is alive
+                // for.
+                unsafe {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
             }
         }
 
-        // SAFETY: `WM_DESTROY`'s handler (below) is the only other place
-        // that could still be running, and it doesn't touch `state_ptr`
-        // — by the time `GetMessageW` returns `WM_QUIT` the window is
-        // already gone, so there is no `wndproc` invocation left that
-        // could observe this free.
-        drop(unsafe { Box::from_raw(state_ptr) });
-        // Read *after* freeing `state_ptr` — `smoke_failed` is the
-        // `Rc<Cell<bool>>` clone taken before `Box::into_raw` above, so
-        // it's still valid (the `Rc`'s count just dropped by one, not to
-        // zero) even though `WindowState` itself is gone.
-        Ok(!smoke_failed.get())
+        /// Idempotent: frees `state_ptr` (if not already freed) and
+        /// marks `self` finished. Called both when `WM_QUIT` is observed
+        /// in `run_one` and from `Drop` for a runner dropped before the
+        /// app asked to exit.
+        fn finish(&mut self) {
+            if self.finished {
+                return;
+            }
+            self.finished = true;
+            // SAFETY: `WM_DESTROY`'s handler is the only other place
+            // that could still touch `state_ptr`, and it doesn't — by
+            // the time this runs (either `WM_QUIT` observed, or `Drop`
+            // tearing down a runner that never saw one) there is no
+            // `wndproc` invocation left that could observe this free.
+            drop(unsafe { Box::from_raw(self.state_ptr) });
+        }
+    }
+
+    impl<A: AppLogic + 'static> Drop for WinRunner<A> {
+        fn drop(&mut self) {
+            if !self.finished {
+                // Ask the window to close; `WM_DESTROY`'s `PostQuitMessage`
+                // then leaves a `WM_QUIT` in the queue that nothing will
+                // ever drain, which is fine — the queue itself is torn
+                // down with the thread/window.
+                //
+                // SAFETY: `self.hwnd` is live (`finished` is only set
+                // after this same `DestroyWindow` or an equivalent
+                // app-initiated one has already run).
+                unsafe {
+                    let _ = DestroyWindow(self.hwnd);
+                }
+            }
+            self.finish();
+        }
+    }
+
+    /// # Safety
+    ///
+    /// Must run on the thread that will pump the returned message loop
+    /// to completion — see [`create_window`]'s `# Safety` doc, which
+    /// this function inherits unchanged.
+    ///
+    /// Returns `Ok(smoke_ok)` rather than plain `Ok(())`:
+    /// `smoke_ok` is always `true` unless `QUADRAUI_WIN_SMOKE_MS` armed
+    /// the headless smoke check and it found a failure — see the module
+    /// doc's "Headless smoke mode" section and [`run_smoke_check`].
+    unsafe fn run_inner<A: AppLogic + 'static>(
+        app: A,
+        config: &super::RunConfig,
+    ) -> windows::core::Result<bool> {
+        // SAFETY: forwards this function's own `# Safety` contract
+        // (documented above) unchanged to `WinRunner::new_with`.
+        let mut runner = unsafe { WinRunner::new_with(app, config)? };
+        loop {
+            match runner.pump(crate::runtime::IDLE_POLL_CEILING)? {
+                StepOutcome::Continue => {}
+                StepOutcome::Exited => break,
+            }
+        }
+        Ok(!runner.smoke_failed.get())
     }
 
     /// Dispatch `event` through [`super::dispatch_event`] (the shared
@@ -1691,9 +1871,10 @@ mod win32 {
             // above); `DestroyWindow` re-enters `wndproc` synchronously
             // for `WM_DESTROY`/`WM_NCDESTROY` on this same thread, which
             // is fine — `ws`/`state_ptr` stay valid for the whole of
-            // `run_inner`'s message loop, and a second `DestroyWindow` on
-            // an already-destroyed handle (e.g. if a caller also checks
-            // the returned `Reaction` itself) just fails harmlessly.
+            // the owning `WinRunner`'s lifetime, and a second
+            // `DestroyWindow` on an already-destroyed handle (e.g. if a
+            // caller also checks the returned `Reaction` itself) just
+            // fails harmlessly.
             unsafe {
                 let _ = DestroyWindow(hwnd);
             }
@@ -1956,9 +2137,10 @@ mod win32 {
     /// contract. `GWLP_USERDATA` is trusted to hold either `0` (no state
     /// yet — every message before `WM_NCCREATE` sets it) or a valid
     /// `*const WindowState<A>` that outlives every message this function
-    /// will ever receive for this `hwnd` (guaranteed by `run_inner`
-    /// freeing it only after the message loop — driven by this same
-    /// `hwnd` — has already exited).
+    /// will ever receive for this `hwnd` (guaranteed by `WinRunner::finish`
+    /// freeing it only after `WM_QUIT` — for this same `hwnd` — has
+    /// already been observed, or `run_inner`'s/`WinRunner::drop`'s
+    /// teardown for an earlier exit).
     unsafe extern "system" fn wndproc<A: AppLogic + 'static>(
         hwnd: HWND,
         msg: u32,
@@ -2212,10 +2394,10 @@ mod win32 {
                 // translator, which only wires `key-press-event`) — a
                 // future release-tracking need should add that variant
                 // rather than inventing one here. `TranslateMessage` in
-                // `run_inner`'s message loop reads the raw `WM_KEYDOWN`
-                // from the queue regardless of what this arm returns, so
-                // intercepting it here doesn't suppress the `WM_CHAR` it
-                // generates for printable keys.
+                // `WinRunner::run_one`'s drain loop reads the raw
+                // `WM_KEYDOWN` from the queue regardless of what this arm
+                // returns, so intercepting it here doesn't suppress the
+                // `WM_CHAR` it generates for printable keys.
                 // Truncate rather than trust the upper `WPARAM` bits are
                 // zero — a virtual-key code is always a single byte, same
                 // masking discipline `super::msg`'s decoders use for
@@ -2460,18 +2642,18 @@ mod win32 {
             }
             WM_TIMER => {
                 // The one-shot headless-smoke timer armed by
-                // `run_inner`, if `QUADRAUI_WIN_SMOKE_MS` was set — see
-                // the module doc's "Headless smoke mode" section.
+                // `create_window`, if `QUADRAUI_WIN_SMOKE_MS` was set —
+                // see the module doc's "Headless smoke mode" section.
                 // The resize-settle debounce timer armed by the
                 // `WM_SIZE` arm above.
                 // `FRAME_TIMER_ID` — the scheduled-wake timer armed
                 // by `WinBackend::request_frame_in`, itself reached via
                 // `Reaction::RedrawAfter`/`EventOutcome::RedrawAfter`.
                 // `IDLE_POLL_TIMER_ID` — the coarse idle-poll safety net
-                // armed once by `run_inner`, mirroring the
+                // armed once by `create_window`, mirroring the
                 // `IDLE_POLL_CEILING` fallback TUI/GTK/macOS also keep.
                 // `CARET_BLINK_TIMER_ID` — the caret-blink tick armed once
-                // by `run_inner`, ticking `WinBackend::tick_caret_blink`
+                // by `create_window`, ticking `WinBackend::tick_caret_blink`
                 // directly rather than going through `tick`.
                 // Any other timer id is none of this runner's business
                 // and falls through to `DefWindowProcW` untouched.
@@ -2616,8 +2798,9 @@ mod win32 {
             }
             WM_DROPFILES => {
                 // `wparam` carries the `HDROP` handle — `DragAcceptFiles`
-                // (called once after the window is shown, in `run_inner`)
-                // is what makes this message arrive at all. Decode via
+                // (called once after the window is shown, in
+                // `create_window`) is what makes this message arrive at
+                // all. Decode via
                 // the real Shell32 calls (`paths_from_dropfiles`, below)
                 // then hand off to the pure `win_files_dropped`
                 // translator, same "decode raw params, then translate"
@@ -3604,7 +3787,493 @@ mod win32 {
             let _ = runner.join();
         }
     }
+
+    /// [`WinRunner::step`] / [`WinRunner::pump`] drive an app from a
+    /// thread that never calls [`run`] / [`run_with`] at all — the whole
+    /// point of exposing the runner separately. This constructs a
+    /// [`WinRunner`] directly, calls `step()` once (must return
+    /// immediately with nothing queued), then loops `pump()` until
+    /// `WM_CLOSE` surfaces as `StepOutcome::Exited`.
+    #[cfg(test)]
+    mod winrunner_step_pump_tests {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        struct StepPumpApp {
+            painted: Arc<AtomicBool>,
+            closed: Arc<AtomicBool>,
+        }
+
+        impl AppLogic for StepPumpApp {
+            type AreaId = ();
+
+            fn render(&self, _backend: &mut dyn Backend, _area: ()) {
+                self.painted.store(true, Ordering::SeqCst);
+            }
+
+            fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                if matches!(event, UiEvent::WindowClose) {
+                    self.closed.store(true, Ordering::SeqCst);
+                    return Reaction::Exit;
+                }
+                Reaction::Continue
+            }
+        }
+
+        /// Self-guarding (stderr diagnostic + early return) if the window
+        /// never becomes findable — same posture as the other live-window
+        /// tests in this file.
+        #[test]
+        #[allow(clippy::print_stderr)]
+        fn step_then_pump_drive_app_without_run() {
+            let painted = Arc::new(AtomicBool::new(false));
+            let closed = Arc::new(AtomicBool::new(false));
+            let first_step_elapsed_ms = Arc::new(AtomicU64::new(u64::MAX));
+
+            let title = format!(
+                "quadraui-step-pump-probe-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            );
+
+            let painted_for_thread = painted.clone();
+            let closed_for_thread = closed.clone();
+            let first_step_elapsed_for_thread = first_step_elapsed_ms.clone();
+            let title_for_thread = title.clone();
+
+            let runner_thread = std::thread::spawn(move || {
+                let config = RunConfig::new(title_for_thread);
+                let app = StepPumpApp {
+                    painted: painted_for_thread,
+                    closed: closed_for_thread,
+                };
+                // SAFETY: constructed and stepped entirely within this
+                // one thread, matching `WinRunner::new_with`'s `# Safety`
+                // contract.
+                let mut runner = unsafe { WinRunner::new_with(app, &config) }
+                    .expect("WinRunner::new_with failed");
+
+                let step_start = Instant::now();
+                let outcome = runner.step().expect("step() failed");
+                first_step_elapsed_for_thread
+                    .store(step_start.elapsed().as_millis() as u64, Ordering::SeqCst);
+                debug_assert!(matches!(
+                    outcome,
+                    StepOutcome::Continue | StepOutcome::Exited
+                ));
+
+                loop {
+                    match runner
+                        .pump(Duration::from_millis(50))
+                        .expect("pump() failed")
+                    {
+                        StepOutcome::Continue => {}
+                        StepOutcome::Exited => break,
+                    }
+                }
+            });
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let class_name = window_class_name(&title);
+            let hwnd = loop {
+                // SAFETY: `class_name` is a live `Vec<u16>` for this call.
+                let found = unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) };
+                if let Ok(hwnd) = found {
+                    break Some(hwnd);
+                }
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let Some(hwnd) = hwnd else {
+                eprintln!(
+                    "quadraui: skipping step_then_pump_drive_app_without_run — \
+                     the test window never became findable within 10s (no \
+                     interactive window station on this host?)"
+                );
+                return;
+            };
+
+            let paint_deadline = Instant::now() + Duration::from_secs(5);
+            let saw_paint = loop {
+                if painted.load(Ordering::SeqCst) {
+                    break true;
+                }
+                if Instant::now() >= paint_deadline {
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+
+            // SAFETY: `hwnd` is still the live test window; `WM_CLOSE` is
+            // its normal user-close path.
+            unsafe {
+                SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+            }
+            let _ = runner_thread.join();
+
+            assert!(
+                saw_paint,
+                "AppLogic::render never ran within 5s of a WinRunner stepped \
+                 directly (not via run()) becoming findable"
+            );
+            assert!(
+                closed.load(Ordering::SeqCst),
+                "WM_CLOSE never reached AppLogic::handle as a dispatched \
+                 UiEvent::WindowClose through a directly-stepped WinRunner"
+            );
+            let first_step_elapsed = first_step_elapsed_ms.load(Ordering::SeqCst);
+            assert!(
+                first_step_elapsed < 1000,
+                "WinRunner::step() took {first_step_elapsed}ms on its very \
+                 first call with nothing queued — it must never block"
+            );
+        }
+    }
+
+    /// [`Backend::waker`] must be callable from any thread and must wake
+    /// a [`WinRunner::pump`] that is currently blocked waiting on
+    /// `MsgWaitForMultipleObjects`, without the caller having to wait out
+    /// `pump`'s own timeout — that round trip is what lets a background
+    /// thread nudge processing of a [`UiEvent::User`] instead of the app
+    /// busy-polling for it.
+    #[cfg(test)]
+    mod winrunner_waker_tests {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        struct Ping(u32);
+
+        struct WakerApp {
+            waker_slot: Arc<Mutex<Option<Arc<dyn Fn(crate::UserPayload) + Send + Sync>>>>,
+            got_ping: Arc<AtomicBool>,
+        }
+
+        impl AppLogic for WakerApp {
+            type AreaId = ();
+
+            fn setup(&mut self, backend: &mut dyn Backend) {
+                *self.waker_slot.lock().unwrap() = Some(backend.waker());
+            }
+
+            fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+            fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                match event {
+                    UiEvent::User(payload) => {
+                        if let Some(ping) = payload.downcast_ref::<Ping>() {
+                            if ping.0 == 42 {
+                                self.got_ping.store(true, Ordering::SeqCst);
+                            }
+                        }
+                        Reaction::Continue
+                    }
+                    UiEvent::WindowClose => Reaction::Exit,
+                    _ => Reaction::Continue,
+                }
+            }
+        }
+
+        /// Uses a long (5s) `pump` timeout on the runner thread — if the
+        /// waker round trip is broken and the event only ever arrives via
+        /// the independent idle-poll fallback or sheer luck, this test's
+        /// own much shorter (3s) assertion deadline below fails reliably
+        /// instead of passing by accident.
+        #[test]
+        #[allow(clippy::print_stderr)]
+        fn waker_wakes_a_blocked_pump_without_waiting_out_the_timeout() {
+            let waker_slot: Arc<Mutex<Option<Arc<dyn Fn(crate::UserPayload) + Send + Sync>>>> =
+                Arc::new(Mutex::new(None));
+            let got_ping = Arc::new(AtomicBool::new(false));
+
+            let title = format!(
+                "quadraui-waker-probe-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            );
+
+            let waker_slot_for_thread = waker_slot.clone();
+            let got_ping_for_thread = got_ping.clone();
+            let title_for_thread = title.clone();
+
+            let runner_thread = std::thread::spawn(move || {
+                let config = RunConfig::new(title_for_thread);
+                let app = WakerApp {
+                    waker_slot: waker_slot_for_thread,
+                    got_ping: got_ping_for_thread,
+                };
+                // SAFETY: constructed and pumped entirely within this one
+                // thread.
+                let mut runner = unsafe { WinRunner::new_with(app, &config) }
+                    .expect("WinRunner::new_with failed");
+
+                loop {
+                    match runner.pump(Duration::from_secs(5)).expect("pump() failed") {
+                        StepOutcome::Continue => {}
+                        StepOutcome::Exited => break,
+                    }
+                }
+            });
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let class_name = window_class_name(&title);
+            let hwnd = loop {
+                // SAFETY: `class_name` is a live `Vec<u16>` for this call.
+                let found = unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) };
+                if let Ok(hwnd) = found {
+                    break Some(hwnd);
+                }
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let Some(hwnd) = hwnd else {
+                eprintln!(
+                    "quadraui: skipping \
+                     waker_wakes_a_blocked_pump_without_waiting_out_the_timeout — \
+                     the test window never became findable within 10s (no \
+                     interactive window station on this host?)"
+                );
+                return;
+            };
+
+            let waker_deadline = Instant::now() + Duration::from_secs(5);
+            let waker = loop {
+                if let Some(w) = waker_slot.lock().unwrap().clone() {
+                    break Some(w);
+                }
+                if Instant::now() >= waker_deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            let Some(waker) = waker else {
+                // SAFETY: `hwnd` is still the live test window.
+                unsafe {
+                    SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+                }
+                let _ = runner_thread.join();
+                panic!(
+                    "AppLogic::setup never captured backend.waker() within 5s \
+                     of the window becoming findable"
+                );
+            };
+
+            (waker)(crate::UserPayload::new(Ping(42)));
+
+            let ping_deadline = Instant::now() + Duration::from_secs(3);
+            let saw_ping = loop {
+                if got_ping.load(Ordering::SeqCst) {
+                    break true;
+                }
+                if Instant::now() >= ping_deadline {
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+
+            // SAFETY: `hwnd` is still the live test window; `WM_CLOSE` is
+            // its normal user-close path.
+            unsafe {
+                SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+            }
+            let _ = runner_thread.join();
+
+            assert!(
+                saw_ping,
+                "UiEvent::User(Ping(42)) from Backend::waker() never reached \
+                 AppLogic::handle within 3s of the waker being called from \
+                 another thread — the waker's wake round trip isn't waking a \
+                 blocked WinRunner::pump()"
+            );
+        }
+    }
+
+    /// `Reaction::RedrawAfter(delay)` returned from `AppLogic::handle`
+    /// must schedule exactly one wake at `delay`, not zero (dropped) and
+    /// not more than one (double-fired or confused with the independent
+    /// `IDLE_POLL_TIMER_ID` safety-net timer). The arm is triggered by a
+    /// real `WM_MOUSEMOVE` dispatch rather than relying on the idle-poll
+    /// timer's own uncontrolled phase, so the test has a precisely known
+    /// instant to measure the wake against.
+    #[cfg(test)]
+    mod winrunner_redraw_after_tests {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        struct RedrawAfterApp {
+            delay: Duration,
+            armed: Arc<AtomicBool>,
+            arm_instant: Arc<Mutex<Option<Instant>>>,
+            tick_instants: Arc<Mutex<Vec<Instant>>>,
+        }
+
+        impl AppLogic for RedrawAfterApp {
+            type AreaId = ();
+
+            fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+            fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                match event {
+                    UiEvent::WindowClose => Reaction::Exit,
+                    UiEvent::MouseMoved { .. } => {
+                        if self.armed.swap(true, Ordering::SeqCst) {
+                            Reaction::Continue
+                        } else {
+                            *self.arm_instant.lock().unwrap() = Some(Instant::now());
+                            Reaction::RedrawAfter(self.delay)
+                        }
+                    }
+                    _ => Reaction::Continue,
+                }
+            }
+
+            fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+                self.tick_instants.lock().unwrap().push(Instant::now());
+                Reaction::Continue
+            }
+        }
+
+        /// The 230ms window below is comfortably under the independent
+        /// `IDLE_POLL_TIMER_ID`'s 250ms period, so a tick from that
+        /// unrelated safety-net timer firing at its own uncontrolled
+        /// phase is unlikely to land inside this specific post-arm
+        /// window and be miscounted as a second `RedrawAfter`-caused
+        /// tick.
+        #[test]
+        #[allow(clippy::print_stderr)]
+        fn redraw_after_wakes_exactly_once_near_its_deadline() {
+            let delay = Duration::from_millis(60);
+            let armed = Arc::new(AtomicBool::new(false));
+            let arm_instant: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+            let tick_instants: Arc<Mutex<Vec<Instant>>> = Arc::new(Mutex::new(Vec::new()));
+
+            let title = format!(
+                "quadraui-redraw-after-probe-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            );
+
+            let armed_for_thread = armed.clone();
+            let arm_instant_for_thread = arm_instant.clone();
+            let tick_instants_for_thread = tick_instants.clone();
+            let title_for_thread = title.clone();
+
+            let runner_thread = std::thread::spawn(move || {
+                let config = RunConfig::new(title_for_thread);
+                let app = RedrawAfterApp {
+                    delay,
+                    armed: armed_for_thread,
+                    arm_instant: arm_instant_for_thread,
+                    tick_instants: tick_instants_for_thread,
+                };
+                // SAFETY: constructed and pumped entirely within this one
+                // thread.
+                let mut runner = unsafe { WinRunner::new_with(app, &config) }
+                    .expect("WinRunner::new_with failed");
+                loop {
+                    match runner
+                        .pump(Duration::from_millis(50))
+                        .expect("pump() failed")
+                    {
+                        StepOutcome::Continue => {}
+                        StepOutcome::Exited => break,
+                    }
+                }
+            });
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let class_name = window_class_name(&title);
+            let hwnd = loop {
+                // SAFETY: `class_name` is a live `Vec<u16>` for this call.
+                let found = unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) };
+                if let Ok(hwnd) = found {
+                    break Some(hwnd);
+                }
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let Some(hwnd) = hwnd else {
+                eprintln!(
+                    "quadraui: skipping \
+                     redraw_after_wakes_exactly_once_near_its_deadline — the \
+                     test window never became findable within 10s (no \
+                     interactive window station on this host?)"
+                );
+                return;
+            };
+
+            // `WM_MOUSEMOVE`'s `lParam` packs the client-area point as
+            // (y << 16 | x), the same idiom `mouse_and_key_exit_tests`
+            // uses above.
+            let lparam = LPARAM((30i32 << 16 | 30i32) as isize);
+            // SAFETY: `hwnd` is still the live test window.
+            unsafe {
+                SendMessageW(hwnd, WM_MOUSEMOVE, Some(WPARAM(0)), Some(lparam));
+            }
+
+            std::thread::sleep(Duration::from_millis(180));
+
+            // SAFETY: `hwnd` is still the live test window; `WM_CLOSE` is
+            // its normal user-close path.
+            unsafe {
+                SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+            }
+            let _ = runner_thread.join();
+
+            let armed_at = arm_instant
+                .lock()
+                .unwrap()
+                .expect("RedrawAfterApp::handle never saw the WM_MOUSEMOVE as MouseMoved");
+            let ticks = tick_instants.lock().unwrap();
+            let near_deadline: Vec<Duration> = ticks
+                .iter()
+                .filter(|t| **t >= armed_at)
+                .map(|t| t.duration_since(armed_at))
+                .filter(|elapsed| *elapsed < Duration::from_millis(230))
+                .collect();
+
+            assert_eq!(
+                near_deadline.len(),
+                1,
+                "expected exactly one AppLogic::tick within 230ms of arming \
+                 Reaction::RedrawAfter({delay:?}), saw {near_deadline:?} — \
+                 RedrawAfter is either dropping the wake entirely or firing \
+                 it more than once"
+            );
+            assert!(
+                near_deadline[0] >= delay.saturating_sub(Duration::from_millis(20)),
+                "RedrawAfter's wake fired after only {:?}, well before its \
+                 {delay:?} deadline",
+                near_deadline[0]
+            );
+        }
+    }
 }
+
+// `WinRunner` exists only when `mod win32` compiles — it needs a real
+// `HWND`/`WindowState<A>`, unlike `RunConfig`/`run`/`run_with`, which have
+// off-Windows fallback stubs below — so, unlike `StepOutcome`'s
+// unconditional re-export above, this one is necessarily
+// `target_os = "windows"`-gated. `pub` (not `pub(super)`) because this
+// re-export chain is what lets anything outside the crate reach
+// `crate::win::WinRunner` directly, mirroring
+// `crate::tui::run::TuiRunner` and `crate::gtk::run::GtkRunner`'s
+// embedding-friendly, non-blocking shape
+// (`new`/`new_with`/`step`/`pump`/`StepOutcome`) rather than only the
+// blocking `run`/`run_with` convenience loop.
+#[cfg(target_os = "windows")]
+pub use win32::WinRunner;
 
 #[cfg(target_os = "windows")]
 pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
@@ -3758,7 +4427,7 @@ mod tests {
     }
 
     /// `with_app_icon` stores the source verbatim for
-    /// `run_inner`'s `WM_SETICON` call site to decode via
+    /// `create_window`'s `WM_SETICON` call site to decode via
     /// `win::tray::decode_hicon`.
     #[test]
     fn with_app_icon_sets_the_source() {
@@ -3829,7 +4498,7 @@ mod tests {
     }
 
     /// [`window_class_name_string`] must embed [`instance_identity`]
-    /// verbatim (as lowercase hex) so `win32::run_inner`'s
+    /// verbatim (as lowercase hex) so `win32::create_window`'s
     /// `RegisterClassExW` and `win32::forward_argv_to_existing_instance`'s
     /// `FindWindowW` — which both build their class name from this same
     /// function — always agree for the same `title`.
@@ -3917,7 +4586,7 @@ mod tests {
             Some(*v)
         };
 
-        // Mirrors `run_inner`'s
+        // Mirrors `create_window`'s
         // `let _guard = ModalPumpGuard::new(&ws.pump_depth); ws.state.borrow_mut().backend.attach_surface(hwnd)` —
         // a direct borrow, not routed through `guarded_call`, wrapped in
         // its own `ModalPumpGuard`.
