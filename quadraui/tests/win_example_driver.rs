@@ -1906,6 +1906,12 @@ fn scroll_view_drag_scenario(width: u32, height: u32) {
 // runs on Win-GUI — `impl PaintSurface for WinBackend` actually painting
 // each new op (`Polygon` / `Ellipse` / `Arc` / `Bezier` / `DashedLine` /
 // `StrokeRect` / `StyledTextRun`), not just a backend-agnostic degrade path.
+//
+// `StyledTextRun`'s per-op font *role* is exercised below (`screen_contains`
+// against glyphs rendered with `CanvasFontRole::Chrome`); its per-op `size`
+// is a documented no-op in the shared `native_surface_paint` lowering (no
+// `PaintSurface` verb accepts a per-call font size), so that half of the op
+// is not — and cannot be — covered here without a seam change.
 
 const CANVAS_SHAPES_W: u32 = 800;
 const CANVAS_SHAPES_H: u32 = 480;
@@ -2031,12 +2037,12 @@ fn canvas_shapes_demo_polygon_bar_fill_paints_the_bar_color() {
     let x = geo.bar_x(3) + geo.bar_w / 2.0;
     let y = geo.plot_h - 6.0;
     let (sx, sy) = geo.to_screen(Point::new(x, y));
+    let px = driver.pixel(sx, sy);
 
     assert!(
-        colors_close(driver.pixel(sx, sy), bar_color, 10),
+        colors_close(px, bar_color, 10),
         "a point inside bar 3's Polygon fill at ({sx}, {sy}) should be the bar colour \
-         {bar_color:?}, got {:?}",
-        driver.pixel(sx, sy)
+         {bar_color:?}, got {px:?}"
     );
 }
 
@@ -2070,10 +2076,12 @@ fn canvas_shapes_demo_ellipse_marker_paints_the_marker_color() {
     );
 }
 
-/// Scans the bottom edge of the plot's `StrokeRect` border across the first
-/// inter-bar gap (never under a bar's own fill) and a small y band either
-/// side of the mathematically-exact edge. The scanned area outside the
-/// plotted shapes is otherwise plain canvas backing (`background`), so a
+/// Scans the bottom edge of the plot's `StrokeRect` border across the left
+/// half of the first inter-bar gap only — `gap_x + dx` stays strictly below
+/// `geo.bar_gap`, the x where bar 0's own `Polygon` fill begins, so no
+/// scanned column ever sits on the bar colour — and a small y band above the
+/// mathematically-exact edge that stops short of the label row below it. The
+/// scanned area is otherwise plain canvas backing (`background`), so a
 /// sample that leans toward the border colour rather than that backing is
 /// unambiguously the border, even where Direct2D's antialiasing splits a
 /// thin stroke's coverage across more than one row and never lets any single
@@ -2087,8 +2095,8 @@ fn canvas_shapes_demo_stroke_rect_paints_a_border() {
 
     let gap_x = geo.bar_gap / 2.0;
     let mut samples = Vec::new();
-    for dx in 0..(geo.bar_gap as i32).max(1) {
-        for dy in -2..=1 {
+    for dx in 0..((geo.bar_gap / 2.0) as i32).max(1) {
+        for dy in -2..=0 {
             let (sx, sy) = geo.to_screen(Point::new(gap_x + dx as f32, geo.plot_h + dy as f32));
             samples.push(driver.pixel(sx, sy));
         }
@@ -2103,11 +2111,13 @@ fn canvas_shapes_demo_stroke_rect_paints_a_border() {
     );
 }
 
-/// The middle (50%) `DashedLine` gridline, scanned across its first ~30px —
-/// long enough to span several `dash_len=4.0, gap_len=3.0` periods. A real
-/// dash shows both the grid colour (dash) and a clearly different colour
-/// (gap, plain canvas background) along the same scanline; a solid line
-/// would only ever show the grid colour.
+/// The middle (50%) `DashedLine` gridline, scanned from a few pixels right
+/// of the plot's left edge (clearing the vertical `StrokeRect` border, so
+/// every sample is attributable to the gridline itself) across ~30px beyond
+/// that — long enough to span several `dash_len=4.0, gap_len=3.0` periods. A
+/// real dash shows both the grid colour (dash) and a clearly different
+/// colour (gap, plain canvas background) along the same scanline; a solid
+/// line would only ever show the grid colour.
 ///
 /// `plot_h * 0.5` is not pixel-aligned, so the gridline's 1-DIP stroke
 /// straddles the two device-pixel rows either side of it, and Direct2D's
@@ -2126,7 +2136,8 @@ fn canvas_shapes_demo_dashed_line_gridline_has_gaps() {
     let y = geo.plot_h * 0.5;
     let mut hit = false;
     let mut miss = false;
-    for dx in 0..30 {
+    const SCAN_START: i32 = 3;
+    for dx in SCAN_START..(SCAN_START + 30) {
         for dy in [-1i32, 0] {
             let (sx, sy) = geo.to_screen(Point::new(dx as f32, y + dy as f32));
             let px = driver.pixel(sx, sy);
@@ -2302,7 +2313,10 @@ impl quadraui::AppLogic for CanvasAlphaProbe {
 /// with it, not simply overwrite it (ignoring alpha) or leave it untouched
 /// (ignoring the top op). Base, top's own RGB, and the true blend are far
 /// enough apart in each channel that a 10-tolerance match against either
-/// source colour alone is conclusive.
+/// source colour alone is conclusive, and the positive assertion against the
+/// analytic source-over blend (`top*a + base*(1-a)`) rules out the probe
+/// passing vacuously if the canvas painted nothing at all and `center`
+/// happened to just be the cleared theme background.
 #[test]
 fn canvas_v2_rect_op_honours_per_op_alpha_on_win() {
     let driver = WinDriver::new(CanvasAlphaProbe, 80, 80);
@@ -2325,5 +2339,21 @@ fn canvas_v2_rect_op_honours_per_op_alpha_on_win() {
         ),
         "the translucent top rect should blend with the base, not paint its own RGB \
          opaquely (ignoring `a`): got {center:?}"
+    );
+
+    let a = ALPHA_PROBE_TOP.a as f32 / 255.0;
+    let blend =
+        |top: u8, base: u8| -> u8 { (top as f32 * a + base as f32 * (1.0 - a)).round() as u8 };
+    let expected = (
+        blend(ALPHA_PROBE_TOP.r, ALPHA_PROBE_BASE.r),
+        blend(ALPHA_PROBE_TOP.g, ALPHA_PROBE_BASE.g),
+        blend(ALPHA_PROBE_TOP.b, ALPHA_PROBE_BASE.b),
+    );
+    assert!(
+        colors_close(center, expected, 15),
+        "the overlap should be the analytic source-over blend {expected:?} of base \
+         {:?} and translucent top {:?}: got {center:?}",
+        (ALPHA_PROBE_BASE.r, ALPHA_PROBE_BASE.g, ALPHA_PROBE_BASE.b),
+        (ALPHA_PROBE_TOP.r, ALPHA_PROBE_TOP.g, ALPHA_PROBE_TOP.b)
     );
 }
