@@ -734,7 +734,7 @@ mod win32 {
     use std::ffi::c_void;
     use std::mem::size_of;
     use std::rc::Rc;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use windows::core::{Error as WinError, PCWSTR};
     use windows::Win32::Foundation::{
@@ -758,14 +758,15 @@ mod win32 {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW,
-        GetClientRect, GetMessageW, GetWindowLongPtrW, KillTimer, LoadCursorW, PostQuitMessage,
-        RegisterClassExW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
-        SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
-        CW_USEDEFAULT, GWLP_USERDATA, HTCAPTION, HTCLIENT, ICON_BIG, ICON_SMALL, IDC_ARROW, MSG,
-        NCCALCSIZE_PARAMS, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE,
-        WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN,
-        WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-        WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCCREATE, WM_NCHITTEST, WM_PAINT,
+        GetClientRect, GetWindowLongPtrW, KillTimer, LoadCursorW,
+        MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage, RegisterClassExW, SendMessageW,
+        SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+        TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA,
+        HTCAPTION, HTCLIENT, ICON_BIG, ICON_SMALL, IDC_ARROW, MSG, NCCALCSIZE_PARAMS, PM_REMOVE,
+        QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR,
+        WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN, WM_KILLFOCUS,
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+        WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCCREATE, WM_NCHITTEST, WM_PAINT, WM_QUIT,
         WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETICON, WM_SIZE, WM_SYSCHAR,
         WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
     };
@@ -784,7 +785,7 @@ mod win32 {
     };
     use crate::event::{classify_open_args, UiEvent};
     use crate::primitives::image::ImageSource;
-    use crate::runner::{AppLogic, Reaction};
+    use crate::runner::{AppLogic, Reaction, StepOutcome};
     use crate::win::backend::WinBackend;
     // Reuses the tray icon's WIC → `HICON` decode for the
     // titlebar/taskbar icon — see [`decode_hicon`]'s doc for why this is
@@ -906,12 +907,13 @@ mod win32 {
         /// the module doc's "Headless smoke mode" section. Read once by
         /// the `WM_TIMER` handler in [`wndproc`]; never mutated.
         smoke: Option<SmokeConfig>,
-        /// `Rc`, not a plain `Cell`, so [`run_inner`] can hold a clone
-        /// that survives past `WindowState` itself being freed (its
-        /// `Box::from_raw` happens right before the message loop's final
-        /// exit-code decision needs this value) — same reason
-        /// `gtk::run::run_with`'s `smoke_failed` is an `Rc<Cell<bool>>`
-        /// shared with the `Application`, not a plain local.
+        /// `Rc`, not a plain `Cell`, so `WinRunner` can hold a clone
+        /// that survives past `WindowState` itself being freed (the
+        /// `Box::from_raw` that frees it happens inside `WinRunner`'s
+        /// step loop, before `win32::run`'s final exit-code decision
+        /// needs this value) — same reason `gtk::run::run_with`'s
+        /// `smoke_failed` is an `Rc<Cell<bool>>` shared with the
+        /// `Application`, not a plain local.
         smoke_failed: Rc<Cell<bool>>,
         /// Pending-viewport store for the resize-settle debounce
         /// — see `crate::runtime::ResizeDebouncer`'s doc.
@@ -943,6 +945,139 @@ mod win32 {
         /// ordering a posted `WM_APP` message would give for free, without
         /// needing one.
         pending_resize_resync: Cell<bool>,
+    }
+
+    /// Non-blocking `step()`/bounded `pump()` handle for a live window,
+    /// returned by [`run_inner`] once setup (window class, `WinBackend`,
+    /// `WindowState`, the priming frame, every `SetTimer` arm) has
+    /// already happened. Mirrors `tui::run::TuiRunner`/`gtk::run::GtkRunner`'s
+    /// shape: `step`/`pump` are plain safe `fn`s (every `unsafe` Win32
+    /// call inside them is individually justified, same discipline as
+    /// the rest of `mod win32`), `finish` is idempotent, and `Drop` calls
+    /// `finish` so a `WinRunner` dropped early (a test ending without
+    /// observing `WM_QUIT`, say) still tears its window down instead of
+    /// leaking it. `run`'s convenience wrapper is just
+    /// `loop { if let StepOutcome::Exited = runner.pump(ceiling) { break; } }`.
+    ///
+    /// Thread-affine exactly like Win32 windows themselves: `step`/`pump`
+    /// must only ever be called from the thread [`run_inner`] was called
+    /// on (the same contract `run_inner`'s own `# Safety` doc states) —
+    /// `wndproc` assumes `DispatchMessageW` only ever reaches it from that
+    /// one thread, and nothing here adds cross-thread synchronization.
+    /// `WinRunner` is automatically neither `Send` nor `Sync` (its
+    /// `state_ptr` is a raw pointer), so a caller cannot move it to
+    /// another thread and violate that contract without `unsafe` of their
+    /// own.
+    struct WinRunner<A: AppLogic + 'static> {
+        hwnd: HWND,
+        state_ptr: *mut WindowState<A>,
+        smoke_failed: Rc<Cell<bool>>,
+        /// `true` once `state_ptr` has been freed — by `step` observing
+        /// `WM_QUIT`, or by `finish` tearing the window down early.
+        /// Checked first in every method so a `WinRunner` kept around
+        /// (or dropped) after that point never touches the freed
+        /// pointer again.
+        finished: bool,
+    }
+
+    impl<A: AppLogic + 'static> WinRunner<A> {
+        /// Drain every message currently queued for this window without
+        /// blocking, dispatching each through `wndproc` via
+        /// `DispatchMessageW` exactly as the old inline `GetMessageW`
+        /// loop did. Returns as soon as the queue is empty (`Continue`)
+        /// or `WM_QUIT` is seen (`Exited`, after freeing `state_ptr`) —
+        /// never waits for a message that hasn't arrived yet.
+        fn step(&mut self) -> StepOutcome {
+            if self.finished {
+                return StepOutcome::Exited;
+            }
+            let mut msg = MSG::default();
+            loop {
+                // SAFETY: `msg` is a stack-local live for this call.
+                // `PeekMessageW` with `PM_REMOVE` both checks for and, if
+                // present, dequeues the next message for this thread's
+                // queue — unlike `GetMessageW`, it returns immediately
+                // (`FALSE`) rather than blocking when the queue is empty.
+                let has_message =
+                    unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool();
+                if !has_message {
+                    return StepOutcome::Continue;
+                }
+                if msg.message == WM_QUIT {
+                    // SAFETY: `WM_QUIT` only ever reaches this queue via
+                    // `WM_DESTROY`'s `PostQuitMessage` (see `wndproc`'s
+                    // `WM_DESTROY` arm below), which never itself touches
+                    // `state_ptr` — by this point no live `wndproc`
+                    // invocation can still observe it, same reasoning the
+                    // old inline loop relied on.
+                    drop(unsafe { Box::from_raw(self.state_ptr) });
+                    self.finished = true;
+                    return StepOutcome::Exited;
+                }
+                // SAFETY: `msg` was just populated by the successful
+                // `PeekMessageW` above; both calls take it by reference
+                // and `DispatchMessageW` routes it back into
+                // `wndproc::<A>` on this same thread, which is exactly
+                // what `state_ptr` (stored in `GWLP_USERDATA`) is alive
+                // for.
+                unsafe {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+        }
+
+        /// Block for up to `timeout` waiting for *any* queued input,
+        /// timer, or posted message (`QS_ALLINPUT` — the same mask
+        /// `waker()`'s `WM_APP` post and `request_frame_in`'s `SetTimer`
+        /// both satisfy), then drain the queue exactly as `step` does.
+        /// Returning early the instant something arrives — rather than
+        /// always sleeping the full `timeout` — is what lets `waker()`
+        /// nudge a blocked `pump` without busy-polling.
+        fn pump(&mut self, timeout: Duration) -> StepOutcome {
+            if self.finished {
+                return StepOutcome::Exited;
+            }
+            let timeout_ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+            // SAFETY: no handles are passed (`phandles: None`), so there
+            // is nothing here for the OS to dereference; `MsgWaitForMultipleObjects`
+            // with no handles just waits on the calling thread's own
+            // message queue, exactly as documented.
+            unsafe {
+                let _ = MsgWaitForMultipleObjects(None, false, timeout_ms, QS_ALLINPUT);
+            }
+            self.step()
+        }
+
+        /// Idempotent early teardown: destroy the window (if it hasn't
+        /// already destroyed itself) and free `state_ptr`. Safe to call
+        /// more than once (including via `Drop`) — the `finished` guard
+        /// makes every call after the first a no-op.
+        fn finish(&mut self) -> StepOutcome {
+            if !self.finished {
+                // SAFETY: `hwnd` is this `WinRunner`'s own window, live
+                // (not yet destroyed, or this branch wouldn't run) up to
+                // this call. A second `DestroyWindow` on an
+                // already-destroyed handle just fails harmlessly, which
+                // is why `step`'s `WM_QUIT` arm doesn't need to call
+                // this too.
+                let _ = unsafe { DestroyWindow(self.hwnd) };
+                // SAFETY: `DestroyWindow` above synchronously ran
+                // `WM_DESTROY`/`WM_NCDESTROY` through `wndproc` on this
+                // same thread before returning, so no live `wndproc`
+                // invocation can still observe `state_ptr` once this
+                // drop runs.
+                drop(unsafe { Box::from_raw(self.state_ptr) });
+                self.finished = true;
+            }
+            StepOutcome::Exited
+        }
+    }
+
+    impl<A: AppLogic + 'static> Drop for WinRunner<A> {
+        fn drop(&mut self) {
+            self.finish();
+        }
     }
 
     /// Encode a Rust `&str` (already `\0`-terminated by its caller) as
@@ -1157,53 +1292,60 @@ mod win32 {
         }
 
         // SAFETY: `run_inner`'s contract (its `# Safety` doc above) is
-        // "must run on the thread that will pump the returned message
-        // loop to completion". `run` itself never spawns a thread — it is
-        // the public `run(app)`/`run_with(app, config)` entry point
-        // (bottom of this file) called directly on the caller's thread,
-        // and everything below this point (window creation, `wndproc`
-        // dispatch, the `GetMessageW` loop) happens inline within this
-        // same call, so the thread that reaches here is exactly the
-        // thread that pumps the loop.
-        match unsafe { run_inner(app, &config.title, config.app_icon.as_ref()) } {
-            // `Ok(smoke_ok)`: `smoke_ok` is `true` unless
-            // `QUADRAUI_WIN_SMOKE_MS` was set *and* `run_smoke_check`
-            // found a failure — see the module doc's "Headless
-            // smoke mode" section. Always `true` when smoke mode is off.
-            Ok(smoke_ok) => {
-                if smoke_ok {
-                    std::process::ExitCode::SUCCESS
-                } else {
-                    std::process::ExitCode::FAILURE
-                }
-            }
+        // "must run on the thread that will drive the returned
+        // `WinRunner` to completion". `run` itself never spawns a
+        // thread — it is the public `run(app)`/`run_with(app, config)`
+        // entry point (bottom of this file) called directly on the
+        // caller's thread, and everything below this point (window
+        // creation, the `pump` loop that drives `wndproc` dispatch)
+        // happens inline within this same call, so the thread that
+        // reaches here is exactly the thread that drives the runner.
+        let mut runner = match unsafe { run_inner(app, &config.title, config.app_icon.as_ref()) }
+        {
+            Ok(runner) => runner,
             Err(_) => {
                 // `Backend`'s frame/window lifecycle has no error
                 // channel and this crate denies `clippy::print_stderr`
                 // crate-wide, so the `windows::core::Error`'s message
                 // has nowhere to go beyond the process exit code.
-                std::process::ExitCode::FAILURE
+                return std::process::ExitCode::FAILURE;
             }
+        };
+        // `pump` blocks for up to `IDLE_POLL_CEILING` per iteration —
+        // the same coarse safety-net period `IDLE_POLL_TIMER_ID` already
+        // uses — rather than busy-spinning `step()`; `waker()`'s posted
+        // message and `request_frame_in`'s `SetTimer` both wake it
+        // early, same as every other backend's `run` loop.
+        loop {
+            if let StepOutcome::Exited = runner.pump(crate::runtime::IDLE_POLL_CEILING) {
+                break;
+            }
+        }
+        // `smoke_failed` is `true` only if `QUADRAUI_WIN_SMOKE_MS` was
+        // set *and* `run_smoke_check` found a failure — see the module
+        // doc's "Headless smoke mode" section. Always `false` when
+        // smoke mode is off.
+        if runner.smoke_failed.get() {
+            std::process::ExitCode::FAILURE
+        } else {
+            std::process::ExitCode::SUCCESS
         }
     }
 
     /// # Safety
     ///
-    /// Must run on the thread that will pump the returned message loop
+    /// Must run on the thread that will drive the returned [`WinRunner`]
     /// to completion — Win32 windows are thread-affine, and `wndproc`
     /// below assumes it's only ever invoked by `DispatchMessageW` on
     /// this same thread (no synchronization guards `RunState`'s
-    /// `RefCell`).
-    ///
-    /// Returns `Ok(smoke_ok)` rather than plain `Ok(())`:
-    /// `smoke_ok` is always `true` unless `QUADRAUI_WIN_SMOKE_MS` armed
-    /// the headless smoke check and it found a failure — see the module
-    /// doc's "Headless smoke mode" section and [`run_smoke_check`].
+    /// `RefCell`). That contract extends to the returned `WinRunner`
+    /// itself: its `step`/`pump`/`finish` must only ever be called from
+    /// this same thread.
     unsafe fn run_inner<A: AppLogic + 'static>(
         mut app: A,
         title: &str,
         app_icon: Option<&ImageSource>,
-    ) -> windows::core::Result<bool> {
+    ) -> windows::core::Result<WinRunner<A>> {
         // SAFETY: `GetModuleHandleW(PCWSTR::null())` is the documented
         // idiom for "give me this process's own module handle" — the
         // null pointer is an explicit sentinel the API defines, not a
@@ -1575,42 +1717,17 @@ mod win32 {
             }
         }
 
-        let mut msg = MSG::default();
-        loop {
-            // `GetMessageW` returns `-1` on error, `0` on `WM_QUIT`,
-            // nonzero otherwise — `BOOL` isn't `bool` here, hence the
-            // explicit `.0` comparison instead of a truthiness check.
-            //
-            // SAFETY: `msg` is a stack-local `MSG::default()` above, live
-            // for the whole loop; `GetMessageW` writes it and this thread
-            // is the one pumping messages for `hwnd` (this function's own
-            // `# Safety` contract).
-            let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) }.0;
-            if ret <= 0 {
-                break;
-            }
-            // SAFETY: `msg` was just populated by the successful
-            // `GetMessageW` above (`ret > 0`); both calls take it by
-            // reference and `DispatchMessageW` routes it back into
-            // `wndproc::<A>` on this same thread, which is exactly what
-            // `state_ptr` (stored in `GWLP_USERDATA`) is alive for.
-            unsafe {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-        }
-
-        // SAFETY: `WM_DESTROY`'s handler (below) is the only other place
-        // that could still be running, and it doesn't touch `state_ptr`
-        // — by the time `GetMessageW` returns `WM_QUIT` the window is
-        // already gone, so there is no `wndproc` invocation left that
-        // could observe this free.
-        drop(unsafe { Box::from_raw(state_ptr) });
-        // Read *after* freeing `state_ptr` — `smoke_failed` is the
-        // `Rc<Cell<bool>>` clone taken before `Box::into_raw` above, so
-        // it's still valid (the `Rc`'s count just dropped by one, not to
-        // zero) even though `WindowState` itself is gone.
-        Ok(!smoke_failed.get())
+        // Setup is done — hand off the live window to a `WinRunner`
+        // rather than pumping `GetMessageW` inline here. `state_ptr`'s
+        // freeing (on `WM_QUIT`, or on early `finish`) and the
+        // `smoke_failed` read both move into `WinRunner` with it; see
+        // its doc for why that's safe.
+        Ok(WinRunner {
+            hwnd,
+            state_ptr,
+            smoke_failed,
+            finished: false,
+        })
     }
 
     /// Dispatch `event` through [`super::dispatch_event`] (the shared
@@ -1691,7 +1808,7 @@ mod win32 {
             // above); `DestroyWindow` re-enters `wndproc` synchronously
             // for `WM_DESTROY`/`WM_NCDESTROY` on this same thread, which
             // is fine — `ws`/`state_ptr` stay valid for the whole of
-            // `run_inner`'s message loop, and a second `DestroyWindow` on
+            // `WinRunner`'s step loop, and a second `DestroyWindow` on
             // an already-destroyed handle (e.g. if a caller also checks
             // the returned `Reaction` itself) just fails harmlessly.
             unsafe {
@@ -1956,9 +2073,9 @@ mod win32 {
     /// contract. `GWLP_USERDATA` is trusted to hold either `0` (no state
     /// yet — every message before `WM_NCCREATE` sets it) or a valid
     /// `*const WindowState<A>` that outlives every message this function
-    /// will ever receive for this `hwnd` (guaranteed by `run_inner`
-    /// freeing it only after the message loop — driven by this same
-    /// `hwnd` — has already exited).
+    /// will ever receive for this `hwnd` (guaranteed by `WinRunner`
+    /// freeing it only once its step loop — driven by this same `hwnd`
+    /// — observes `WM_QUIT`, or `finish` tears the window down early).
     unsafe extern "system" fn wndproc<A: AppLogic + 'static>(
         hwnd: HWND,
         msg: u32,
@@ -2212,7 +2329,7 @@ mod win32 {
                 // translator, which only wires `key-press-event`) — a
                 // future release-tracking need should add that variant
                 // rather than inventing one here. `TranslateMessage` in
-                // `run_inner`'s message loop reads the raw `WM_KEYDOWN`
+                // `WinRunner::step`'s message loop reads the raw `WM_KEYDOWN`
                 // from the queue regardless of what this arm returns, so
                 // intercepting it here doesn't suppress the `WM_CHAR` it
                 // generates for printable keys.
@@ -3427,7 +3544,7 @@ mod win32 {
 
             if destroyed {
                 // `WM_DESTROY`'s `PostQuitMessage` already ended
-                // `run_inner`'s loop by this point, so this returns
+                // `WinRunner`'s step loop by this point, so this returns
                 // promptly rather than hanging the test process.
                 let _ = runner.join();
             } else {
