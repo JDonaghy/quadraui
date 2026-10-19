@@ -8,7 +8,7 @@ name: Deploy site
 # other branch, so an in-progress feature branch never clobbers the
 # live site, and a fork's PR never needs Pages permissions at all.
 #
-# Three generated inputs feed the site, none of them hand-maintained
+# Four generated inputs feed the site, none of them hand-maintained
 # per-widget (CLAUDE.md's "Demos are mandatory" rule, one level up):
 #   1. `quadraui-gallery --dump-registry` — every demo's name, group,
 #      variants and `// gallery:begin`/`// gallery:end` code region
@@ -16,13 +16,22 @@ name: Deploy site
 #   2. `quadraui-gallery --capture` — one SVG per (demo, variant) on
 #      this runner's TUI backend, plus `manifest.json` describing every
 #      other backend as `unsupported`/`capture-pending`
-#      (`quadraui-gallery/src/capture.rs`). Ubuntu has no GTK/macOS/
-#      Windows headless driver yet (see that module's own doc), so this
-#      leg's grid only ever has a real TUI column — that is an honest
-#      reflection of where the capture pipeline is today, not a bug in
-#      this workflow.
-#   3. `tools/site_gen.py` joins (1) and (2) into `site/src/gallery/`
-#      and `site/src/SUMMARY.md`, which `mdbook build` then turns into
+#      (`quadraui-gallery/src/capture.rs`). Ubuntu has no GTK/Windows
+#      headless driver yet (see that module's own doc), so this leg
+#      itself only captures the TUI column.
+#   3. The macOS column comes from `macos.yml`'s `gallery-capture-macos`
+#      job (one PNG per demo/variant through the real Core Graphics
+#      backend), uploaded there as the `gallery-capture-macos` artifact
+#      and downloaded here — Ubuntu cannot run the macOS backend, so the
+#      only way macOS screenshots reach the site is from that macos-latest
+#      job's artifact. It refreshes on `macos.yml`'s weekly develop cron,
+#      so the macOS column can lag the TUI column by up to a week; for a
+#      widget gallery that is acceptable and far better than a "Pending"
+#      column (quadraui#1619).
+#   4. `tools/site_gen.py` merges (1), (2) and (3) into `site/src/gallery/`
+#      and `site/src/SUMMARY.md` (its `--capture` is repeatable and keys
+#      rows by `(demo, group, variant, backend)`, preferring a real
+#      capture over a pending row), which `mdbook build` then turns into
 #      the deployed HTML alongside the hand-maintained
 #      `site/src/introduction.md` / `site/src/getting-started.md`.
 on:
@@ -85,11 +94,45 @@ jobs:
           cargo run -p quadraui-gallery --bin quadraui-gallery --features tui -- \
             --capture target/site/capture-tui
 
+      # macOS captures can't be produced on this Ubuntu runner (the macOS
+      # backend only compiles/runs under `target_os = "macos"`), so pull
+      # the PNGs from `macos.yml`'s `gallery-capture-macos` job — the one
+      # macos-latest leg that renders every demo through the real Core
+      # Graphics backend. We take its newest *develop* artifact (refreshed
+      # by that workflow's weekly cron; its PR runs are head-ref-scoped and
+      # not wanted here). `if_no_artifact_found: warn` is deliberate: if no
+      # macOS artifact exists yet, the site still builds TUI-only rather
+      # than failing the whole deploy — the macOS column simply falls back
+      # to the "pending" rows site_gen.py already emits (quadraui#1619).
+      - name: Download macOS gallery captures
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: macos.yml
+          branch: develop
+          name: gallery-capture-macos
+          path: target/site/capture-macos
+          if_no_artifact_found: warn
+
+      # The macOS `--capture` dir is added only when its manifest actually
+      # arrived: `site_gen.py` hard-errors (FileNotFoundError) on a
+      # `--capture` dir with no `manifest.json`, so an empty/absent macOS
+      # download must drop the argument rather than pass a path that isn't
+      # there. Dropping it is the correct fallback, not a degraded one —
+      # the TUI capture's own manifest already describes macOS as
+      # `capture-pending`, so the macOS column renders exactly as it does
+      # today (pending), never a broken build (quadraui#1619).
       - name: Generate gallery pages
         run: |
+          extra=()
+          if [ -f target/site/capture-macos/manifest.json ]; then
+            extra+=(--capture target/site/capture-macos)
+          else
+            echo "::warning::no gallery-capture-macos manifest; macOS column stays pending"
+          fi
           python3 tools/site_gen.py \
             --registry target/site/registry.json \
             --capture target/site/capture-tui \
+            "${extra[@]}" \
             --out site/src
 
       - name: Build mdBook
