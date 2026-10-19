@@ -31,8 +31,8 @@
 use quadraui::testing::ConformanceDriver;
 use quadraui::win::testing::{driver_with_shell, WinDriver};
 use quadraui::{
-    Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Reaction, Rect, Split,
-    SplitDirection, UiEvent, WidgetId,
+    Backend, ButtonMask, Color, Key, Modifiers, MouseButton, NamedKey, Point, Reaction, Rect,
+    Split, SplitDirection, UiEvent, WidgetId,
 };
 
 #[path = "../examples/common/appshell_demo.rs"]
@@ -119,6 +119,10 @@ use hscroll_editor::HScrollEditor;
 #[path = "../examples/common/indicators_app.rs"]
 mod indicators_app;
 use indicators_app::IndicatorsApp;
+
+#[path = "../examples/common/canvas_shapes_app.rs"]
+mod canvas_shapes_app;
+use canvas_shapes_app::CanvasShapesApp;
 
 // `win_platform_services`'s `AppLogic` lives in the example file itself,
 // not `examples/common/` (see that file's module doc for why) — the
@@ -1889,5 +1893,437 @@ fn scroll_view_drag_scenario(width: u32, height: u32) {
         0,
         "dragging the thumb back to the top of the track should scroll \
          back to row 0"
+    );
+}
+
+// ─── CanvasShapesApp: the Canvas v2 op set — real Win-GUI rendering ───────
+//
+// `tests/tui_example_driver.rs`'s `canvas_shapes_demo_*` tests already prove
+// the whole `Backend::draw_canvas` round trip reaches the screen for the new
+// op set generically (every op degrades to TUI's braille grid), and
+// `tests/gtk_example_driver.rs`/`tests/macos_example_driver.rs` prove it on
+// their own real rasterisers. These check *real* pixel colour and glyph
+// runs on Win-GUI — `impl PaintSurface for WinBackend` actually painting
+// each new op (`Polygon` / `Ellipse` / `Arc` / `Bezier` / `DashedLine` /
+// `StrokeRect` / `StyledTextRun`), not just a backend-agnostic degrade path.
+
+const CANVAS_SHAPES_W: u32 = 800;
+const CANVAS_SHAPES_H: u32 = 480;
+
+/// The demo's initial, deterministic bar values — `CanvasShapesApp::new()`.
+const SHAPES_VALUES: [f32; 5] = [35.0, 60.0, 45.0, 80.0, 55.0];
+
+/// Fuzzy pixel-colour comparison, tolerant of antialiasing. `WinDriver::pixel`
+/// returns a [`Color`] (not a tuple like `MacDriver`/`GtkDriver`'s `pixel`),
+/// and `HeadlessSurface::pixel_at` always reports `a: 255` — the DC render
+/// target it reads back from requires `D2D1_ALPHA_MODE_IGNORE` — so unlike
+/// `tests/macos_example_driver.rs`'s equivalent helper, no unpremultiply
+/// step is needed before comparing.
+fn colors_close(a: Color, b: (u8, u8, u8), tol: i32) -> bool {
+    (a.r as i32 - b.0 as i32).abs() <= tol
+        && (a.g as i32 - b.1 as i32).abs() <= tol
+        && (a.b as i32 - b.2 as i32).abs() <= tol
+}
+
+/// True when `px` is nearer `target` than `other` in RGB space. A thin
+/// (1-DIP) Direct2D stroke whose centre doesn't land on a device-pixel row
+/// boundary spreads its coverage over the two straddling rows, and
+/// Direct2D's analytic antialiasing can leave even the better-covered row
+/// well short of the stroke's own colour — a plain `colors_close` tolerance
+/// tight enough to reject the background can also reject every such sample.
+/// Comparing distances sidesteps that: whichever reference colour the blend
+/// leans toward wins, regardless of how far short of full coverage it falls.
+fn closer_to(px: Color, target: (u8, u8, u8), other: (u8, u8, u8)) -> bool {
+    let dist2 = |c: (u8, u8, u8)| {
+        let dr = px.r as i32 - c.0 as i32;
+        let dg = px.g as i32 - c.1 as i32;
+        let db = px.b as i32 - c.2 as i32;
+        dr * dr + dg * dg + db * db
+    };
+    dist2(target) < dist2(other)
+}
+
+/// Mirrors the private geometry `examples/common/canvas_shapes_app.rs`'s
+/// `CanvasShapesApp::chart_rect` / `chart_canvas` build, from the backend's
+/// own metrics — never a hardcoded pixel.
+struct ChartGeometry {
+    rect: Rect,
+    plot_h: f32,
+    slot_w: f32,
+    bar_w: f32,
+    bar_gap: f32,
+}
+
+impl ChartGeometry {
+    fn new(driver: &WinDriver<CanvasShapesApp>) -> Self {
+        let viewport = Backend::viewport(driver.backend());
+        let lh = Backend::line_height(driver.backend());
+        let rect = Rect::new(
+            lh,
+            lh * 2.0,
+            (viewport.width - lh * 2.0).max(1.0),
+            (viewport.height - lh * 5.0).max(1.0),
+        );
+        let label_h = (rect.height * 0.15).max(1.0);
+        let plot_h = (rect.height - label_h).max(1.0);
+        let n = SHAPES_VALUES.len() as f32;
+        let slot_w = rect.width / n;
+        let bar_w = slot_w * 0.6;
+        let bar_gap = (slot_w - bar_w) / 2.0;
+        Self {
+            rect,
+            plot_h,
+            slot_w,
+            bar_w,
+            bar_gap,
+        }
+    }
+
+    /// Bar `i`'s top-y, in LOCAL (chart-rect-relative) coordinates, for a
+    /// given value out of 100.
+    fn bar_top_y(&self, value: f32) -> f32 {
+        self.plot_h * (1.0 - value.clamp(0.0, 100.0) / 100.0)
+    }
+
+    /// Bar `i`'s left edge, in LOCAL coordinates.
+    fn bar_x(&self, i: usize) -> f32 {
+        self.slot_w * i as f32 + self.bar_gap
+    }
+
+    /// LOCAL chart coordinates to absolute screen pixel coordinates.
+    /// `WinDriver::pixel` takes unsigned coordinates; a cast from a
+    /// negative `f32` saturates to `0` rather than panicking or wrapping.
+    fn to_screen(&self, local: Point) -> (u32, u32) {
+        (
+            (self.rect.x + local.x).round() as u32,
+            (self.rect.y + local.y).round() as u32,
+        )
+    }
+}
+
+#[test]
+fn canvas_shapes_demo_paints_the_status_bar_and_initial_labels() {
+    let driver = WinDriver::new(CanvasShapesApp::new(), CANVAS_SHAPES_W, CANVAS_SHAPES_H);
+    assert!(
+        driver.screen_contains("Canvas v2 shapes demo"),
+        "the status bar should name the demo: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.screen_contains("Mon 35") && driver.screen_contains("Fri 55"),
+        "the initial bar values should reach the screen through the \
+         StyledTextRun labels: {:?}",
+        driver.painted_texts()
+    );
+}
+
+/// A point inside bar 3's `Polygon` trapezoid fill, a few pixels above the
+/// plot's bottom edge — inside the trapezoid for any bar height, and far
+/// from the StrokeRect border or any of the three DashedLine gridlines
+/// (fixed at 25/50/75% of `plot_h`, never within a few pixels of `plot_h`
+/// itself).
+#[test]
+fn canvas_shapes_demo_polygon_bar_fill_paints_the_bar_color() {
+    let driver = WinDriver::new(CanvasShapesApp::new(), CANVAS_SHAPES_W, CANVAS_SHAPES_H);
+    let geo = ChartGeometry::new(&driver);
+    let bar_color = (80u8, 160u8, 255u8);
+
+    let x = geo.bar_x(3) + geo.bar_w / 2.0;
+    let y = geo.plot_h - 6.0;
+    let (sx, sy) = geo.to_screen(Point::new(x, y));
+
+    assert!(
+        colors_close(driver.pixel(sx, sy), bar_color, 10),
+        "a point inside bar 3's Polygon fill at ({sx}, {sy}) should be the bar colour \
+         {bar_color:?}, got {:?}",
+        driver.pixel(sx, sy)
+    );
+}
+
+/// The `Ellipse` peak marker should be the marker colour a few pixels above
+/// or below its mathematical centre. The centre itself is also the Bezier
+/// trend curve's exact endpoint at that bar (the curve's control points
+/// share the endpoint's y, giving it a horizontal tangent there), and the
+/// curve paints after the marker — so the dead centre pixel is legitimately
+/// the trend colour, not the marker colour. Sampling just off-centre stays
+/// inside the marker's radius (`bar_w*0.18`) while clearing the curve.
+#[test]
+fn canvas_shapes_demo_ellipse_marker_paints_the_marker_color() {
+    let driver = WinDriver::new(CanvasShapesApp::new(), CANVAS_SHAPES_W, CANVAS_SHAPES_H);
+    let geo = ChartGeometry::new(&driver);
+    let marker_color = (255u8, 210u8, 90u8);
+
+    let x = geo.bar_x(3) + geo.bar_w / 2.0;
+    let center_y = geo.bar_top_y(SHAPES_VALUES[3]);
+    let mut samples = Vec::new();
+    for dy in [-5.0f32, 5.0] {
+        let (sx, sy) = geo.to_screen(Point::new(x, center_y + dy));
+        samples.push(((sx, sy), driver.pixel(sx, sy)));
+    }
+
+    assert!(
+        samples
+            .iter()
+            .any(|&(_, px)| colors_close(px, marker_color, 10)),
+        "the Ellipse peak marker near its centre should be the marker colour \
+         {marker_color:?}, got {samples:?}"
+    );
+}
+
+/// Scans the bottom edge of the plot's `StrokeRect` border across the first
+/// inter-bar gap (never under a bar's own fill) and a small y band either
+/// side of the mathematically-exact edge. The scanned area outside the
+/// plotted shapes is otherwise plain canvas backing (`background`), so a
+/// sample that leans toward the border colour rather than that backing is
+/// unambiguously the border, even where Direct2D's antialiasing splits a
+/// thin stroke's coverage across more than one row and never lets any single
+/// sample reach the border colour outright — see `closer_to`.
+#[test]
+fn canvas_shapes_demo_stroke_rect_paints_a_border() {
+    let driver = WinDriver::new(CanvasShapesApp::new(), CANVAS_SHAPES_W, CANVAS_SHAPES_H);
+    let geo = ChartGeometry::new(&driver);
+    let border_color = (90u8, 90u8, 90u8);
+    let background = (20u8, 22u8, 30u8);
+
+    let gap_x = geo.bar_gap / 2.0;
+    let mut samples = Vec::new();
+    for dx in 0..(geo.bar_gap as i32).max(1) {
+        for dy in -2..=1 {
+            let (sx, sy) = geo.to_screen(Point::new(gap_x + dx as f32, geo.plot_h + dy as f32));
+            samples.push(driver.pixel(sx, sy));
+        }
+    }
+
+    assert!(
+        samples
+            .iter()
+            .any(|&px| closer_to(px, border_color, background)),
+        "the chart's StrokeRect bottom border should be painted somewhere along the \
+         scanned band: {samples:?}"
+    );
+}
+
+/// The middle (50%) `DashedLine` gridline, scanned across its first ~30px —
+/// long enough to span several `dash_len=4.0, gap_len=3.0` periods. A real
+/// dash shows both the grid colour (dash) and a clearly different colour
+/// (gap, plain canvas background) along the same scanline; a solid line
+/// would only ever show the grid colour.
+///
+/// `plot_h * 0.5` is not pixel-aligned, so the gridline's 1-DIP stroke
+/// straddles the two device-pixel rows either side of it, and Direct2D's
+/// antialiasing splits its coverage between them rather than concentrating
+/// it in whichever row happens to be nearer. Scanning both rows and judging
+/// each sample by which reference colour it leans toward (`closer_to`) finds
+/// the dash regardless of the split, while a true gap position stays at the
+/// plain background on both rows.
+#[test]
+fn canvas_shapes_demo_dashed_line_gridline_has_gaps() {
+    let driver = WinDriver::new(CanvasShapesApp::new(), CANVAS_SHAPES_W, CANVAS_SHAPES_H);
+    let geo = ChartGeometry::new(&driver);
+    let grid_color = (60u8, 60u8, 60u8);
+    let background = (20u8, 22u8, 30u8);
+
+    let y = geo.plot_h * 0.5;
+    let mut hit = false;
+    let mut miss = false;
+    for dx in 0..30 {
+        for dy in [-1i32, 0] {
+            let (sx, sy) = geo.to_screen(Point::new(dx as f32, y + dy as f32));
+            let px = driver.pixel(sx, sy);
+            if closer_to(px, grid_color, background) {
+                hit = true;
+            } else if colors_close(px, background, 5) {
+                miss = true;
+            }
+        }
+    }
+
+    assert!(
+        hit,
+        "the gridline should paint the grid colour somewhere along its dashes"
+    );
+    assert!(
+        miss,
+        "the gridline should leave visible gaps (DashedLine, not a solid Line) \
+         somewhere along the scanned span"
+    );
+}
+
+/// The first `Bezier` trend-curve segment (bar 0's top to bar 1's top) with
+/// control points a third of the way along the horizontal span, same as
+/// `CanvasShapesApp::chart_canvas` builds them. Its exact midpoint
+/// (`t = 0.5`) is the standard cubic Bézier basis at `t = 0.5`:
+/// `0.125*from + 0.375*c1 + 0.375*c2 + 0.125*to`.
+#[test]
+fn canvas_shapes_demo_bezier_trend_curve_paints_the_trend_color() {
+    let driver = WinDriver::new(CanvasShapesApp::new(), CANVAS_SHAPES_W, CANVAS_SHAPES_H);
+    let geo = ChartGeometry::new(&driver);
+    let trend_color = (255u8, 120u8, 80u8);
+
+    let from = Point::new(
+        geo.bar_x(0) + geo.bar_w / 2.0,
+        geo.bar_top_y(SHAPES_VALUES[0]),
+    );
+    let to = Point::new(
+        geo.bar_x(1) + geo.bar_w / 2.0,
+        geo.bar_top_y(SHAPES_VALUES[1]),
+    );
+    let dx = (to.x - from.x) / 3.0;
+    let c1 = Point::new(from.x + dx, from.y);
+    let c2 = Point::new(to.x - dx, to.y);
+    let mid = Point::new(
+        0.125 * from.x + 0.375 * c1.x + 0.375 * c2.x + 0.125 * to.x,
+        0.125 * from.y + 0.375 * c1.y + 0.375 * c2.y + 0.125 * to.y,
+    );
+
+    // Scan a small neighbourhood around the exact midpoint: the curve's 2px
+    // stroke centred exactly on the analytic path can land the pixel grid's
+    // sample a row or column off depending on rounding.
+    let mut samples = Vec::new();
+    for ddx in -2..=2 {
+        for ddy in -2..=2 {
+            let (sx, sy) = geo.to_screen(Point::new(mid.x + ddx as f32, mid.y + ddy as f32));
+            samples.push(driver.pixel(sx, sy));
+        }
+    }
+
+    assert!(
+        samples.iter().any(|&px| colors_close(px, trend_color, 20)),
+        "the Bezier trend curve should pass near its analytic midpoint \
+         ({:.1}, {:.1}): {samples:?}",
+        mid.x,
+        mid.y
+    );
+}
+
+/// The `Arc` dial's point at the midpoint of its sweep angle, same
+/// `start_angle`/`end_angle`/`radius` formula as
+/// `CanvasShapesApp::chart_canvas`.
+#[test]
+fn canvas_shapes_demo_arc_dial_paints_the_dial_color() {
+    let driver = WinDriver::new(CanvasShapesApp::new(), CANVAS_SHAPES_W, CANVAS_SHAPES_H);
+    let geo = ChartGeometry::new(&driver);
+    let dial_color = (80u8, 220u8, 120u8);
+
+    let avg = SHAPES_VALUES.iter().sum::<f32>() / SHAPES_VALUES.len() as f32;
+    let center = Point::new(geo.rect.width - geo.bar_w, geo.bar_w);
+    let radius = geo.bar_w * 0.7;
+    let start_angle = -std::f32::consts::FRAC_PI_2;
+    let end_angle = start_angle + std::f32::consts::PI * (avg.clamp(0.0, 100.0) / 100.0);
+    let mid_angle = (start_angle + end_angle) / 2.0;
+    let mid = Point::new(
+        center.x + radius * mid_angle.cos(),
+        center.y + radius * mid_angle.sin(),
+    );
+
+    let mut samples = Vec::new();
+    for ddx in -2..=2 {
+        for ddy in -2..=2 {
+            let (sx, sy) = geo.to_screen(Point::new(mid.x + ddx as f32, mid.y + ddy as f32));
+            samples.push(driver.pixel(sx, sy));
+        }
+    }
+
+    assert!(
+        samples.iter().any(|&px| colors_close(px, dial_color, 20)),
+        "the Arc dial should pass near its analytic midpoint-angle point \
+         ({:.1}, {:.1}): {samples:?}",
+        mid.x,
+        mid.y
+    );
+}
+
+#[test]
+fn canvas_shapes_demo_r_key_randomizes_the_bar_values() {
+    let mut driver = WinDriver::new(CanvasShapesApp::new(), CANVAS_SHAPES_W, CANVAS_SHAPES_H);
+    assert!(driver.screen_contains("Mon 35") && driver.screen_contains("Fri 55"));
+    driver.type_char('r');
+    assert!(
+        !driver.screen_contains("Mon 35") || !driver.screen_contains("Fri 55"),
+        "'r' should redraw with new randomized bar values: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn canvas_shapes_demo_q_exits() {
+    let mut driver = WinDriver::new(CanvasShapesApp::new(), CANVAS_SHAPES_W, CANVAS_SHAPES_H);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the canvas shapes demo");
+}
+
+#[test]
+fn canvas_shapes_demo_escape_exits() {
+    let mut driver = WinDriver::new(CanvasShapesApp::new(), CANVAS_SHAPES_W, CANVAS_SHAPES_H);
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Escape should exit the canvas shapes demo");
+}
+
+// ─── Canvas v2 per-op alpha ────────────────────────────────────────────────
+//
+// Neither shipped Canvas example uses a translucent `Color` (every op uses
+// `Color::rgb`, always `a: 255`), so asserting against them alone would
+// never exercise alpha blending. This probe draws two overlapping
+// opaque/translucent `DrawOp::Rect`s through one `Backend::draw_canvas` call
+// and checks the overlap is a genuine blend of the two.
+
+const ALPHA_PROBE_BASE: Color = Color::rgb(20, 20, 200);
+const ALPHA_PROBE_TOP: Color = Color::rgba(200, 20, 20, 128);
+
+struct CanvasAlphaProbe;
+
+impl quadraui::AppLogic for CanvasAlphaProbe {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let rect = Rect::new(0.0, 0.0, 60.0, 60.0);
+        let canvas = quadraui::Canvas {
+            id: WidgetId::new("probe:canvas-alpha"),
+            ops: vec![
+                quadraui::DrawOp::Rect {
+                    rect: Rect::new(0.0, 0.0, 60.0, 60.0),
+                    color: ALPHA_PROBE_BASE,
+                },
+                quadraui::DrawOp::Rect {
+                    rect: Rect::new(0.0, 0.0, 60.0, 60.0),
+                    color: ALPHA_PROBE_TOP,
+                },
+            ],
+        };
+        let _ = backend.draw_canvas(rect, &canvas);
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
+}
+
+/// A second `DrawOp::Rect` with `a < 255` layered over the first must blend
+/// with it, not simply overwrite it (ignoring alpha) or leave it untouched
+/// (ignoring the top op). Base, top's own RGB, and the true blend are far
+/// enough apart in each channel that a 10-tolerance match against either
+/// source colour alone is conclusive.
+#[test]
+fn canvas_v2_rect_op_honours_per_op_alpha_on_win() {
+    let driver = WinDriver::new(CanvasAlphaProbe, 80, 80);
+    let center = driver.pixel(30, 30);
+
+    assert!(
+        !colors_close(
+            center,
+            (ALPHA_PROBE_BASE.r, ALPHA_PROBE_BASE.g, ALPHA_PROBE_BASE.b),
+            10
+        ),
+        "the translucent top rect should visibly change the base colour, not leave it \
+         untouched: got {center:?}"
+    );
+    assert!(
+        !colors_close(
+            center,
+            (ALPHA_PROBE_TOP.r, ALPHA_PROBE_TOP.g, ALPHA_PROBE_TOP.b),
+            10
+        ),
+        "the translucent top rect should blend with the base, not paint its own RGB \
+         opaquely (ignoring `a`): got {center:?}"
     );
 }
