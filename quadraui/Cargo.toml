@@ -596,10 +596,12 @@ objc2-foundation = { version = "0.3", optional = true, features = [
     "NSNotification",
     "NSObject",
     # `NSDefaultRunLoopMode` (macOS non-blocking `step()`/`pump()` runner,
-    # `macos::run::MacRunner`): the extern static lives behind this feature
-    # plus the already-enabled "NSString".
+    # `macos::run::MacRunner`): the extern static needs this feature plus
+    # "NSRunLoop" and the already-enabled "NSString" (see
+    # `objc2-foundation`'s generated module for where the three meet).
     "NSObjCRuntime",
     "NSProcessInfo",
+    "NSRunLoop",
     "NSString",
     "NSThread",
     "NSTimer",
@@ -1175,6 +1177,11 @@ required-features = ["tui"]
 name = "gtk_embedded"
 path = "examples/gtk_embedded.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "macos_embedded"
+path = "examples/macos_embedded.rs"
+required-features = ["macos"]
 
 [[example]]
 name = "tui_split_tree"
