@@ -165,3 +165,29 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  # A failed build/deploy leaves the PREVIOUS build live at the Pages URL
+  # with no in-band signal — the site silently freezes on a stale build
+  # (exactly how the pre-enablement 404 failures went unnoticed,
+  # quadraui#1622). This job turns that into a visible signal: a workflow
+  # `::error::` annotation on the run plus a prominent run-summary entry,
+  # on top of GitHub's own default-branch failed-run email. It needs no
+  # secret, matching this repo's secret-free workflow posture; a push
+  # alert (ntfy/webhook) would need one and is deliberately left as a
+  # follow-up rather than folded in here.
+  notify-failure:
+    name: flag stale site on failure
+    needs: [build, deploy]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Record that the live site is now stale
+        run: |
+          echo "::error title=Site deploy failed::The live site is frozen on the previous build until a green 'Deploy site' run — https://jdonaghy.github.io/quadraui/"
+          {
+            echo "## ⚠️ Site deploy failed — live site is STALE"
+            echo
+            echo "The previous build remains live at <https://jdonaghy.github.io/quadraui/>."
+            echo "It will not reflect this commit until a later \`Deploy site\` run succeeds."
+          } >> "$GITHUB_STEP_SUMMARY"
