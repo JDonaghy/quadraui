@@ -573,6 +573,20 @@ impl ScreenLayout {
         self.surfaces.push(surface);
     }
 
+    /// The pushed surfaces, in z-order.
+    pub fn surfaces(&self) -> &[Surface] {
+        &self.surfaces
+    }
+
+    /// The pushed surfaces, mutably — for a caller that keeps a layout
+    /// across frames and edits a surface in place instead of rebuilding
+    /// the whole screen. Surfaces can be replaced, not added or
+    /// removed, so each surface's index (and therefore the `idx` its
+    /// [`FrameZone`] carries) is stable.
+    pub fn surfaces_mut(&mut self) -> &mut [Surface] {
+        &mut self.surfaces
+    }
+
     /// Render all surfaces via `backend` in z-order and return a
     /// [`FrameHitMap`] for unified click dispatch. Each surface's
     /// bounding rect is registered as a hit zone; apps then use
@@ -1214,6 +1228,16 @@ impl OwnedFrame {
     /// pushed into the source [`ScreenLayout`].
     pub fn nodes(&self) -> &[OwnedNode] {
         &self.nodes
+    }
+
+    /// The captured nodes, mutably — the seam a consumer uses to attach
+    /// per-surface [`OwnedNode::a11y`] overrides to a frame it has
+    /// already captured. The node set itself is fixed by the capture:
+    /// nodes can be edited in place, not added or removed, so `idx`
+    /// stays in step with the source [`ScreenLayout`] and the
+    /// [`FrameZone`]s [`Self::draw`] registers.
+    pub fn nodes_mut(&mut self) -> &mut [OwnedNode] {
+        &mut self.nodes
     }
 
     /// Repaint every node through `backend` and return the resulting
