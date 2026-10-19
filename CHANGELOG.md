@@ -208,6 +208,21 @@ only a push to `main` runs this workflow.
   and the native last-window-close path route to `[NSApp terminate:]`,
   which calls `exit()` and ends the host process; see `MacRunner`'s doc
   comment for the caveat.
+- `win::WinRunner` and re-exported `win::StepOutcome` — a non-blocking
+  `step()`/`pump(timeout)` entry point for the Win32 backend, mirroring
+  the existing TUI/GTK/AppKit runners: `step()` dispatches at most one
+  already-queued Win32 message without blocking, `pump(timeout)` blocks
+  up to `timeout` waiting for the next one, and both return
+  `StepOutcome::Continue` or `StepOutcome::Exited` so a host loop (not the
+  built-in `run`/`run_with` message pump) can drive the app a slice at a
+  time. `WinRunner` is `!Send`/`!Sync` and must be constructed and
+  stepped on one thread, since Win32 windows are thread-affine; a
+  background thread still reaches a stepped loop through
+  `WinBackend::waker`, which nudges the runner's thread without
+  busy-polling. `win::run`/`run_with`/`RunConfig` are unchanged
+  convenience wrappers around `WinRunner` for the all-owning case.
+  `WinRunner` is `#[cfg(target_os = "windows")]`; `StepOutcome`,
+  `RunConfig`, `run` and `run_with` compile on every host.
 
 ### Fixed
 
