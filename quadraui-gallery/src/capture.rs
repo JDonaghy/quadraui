@@ -832,7 +832,26 @@ fn composite_bgra_over_white(data: &[u8], width: i32, height: i32, stride: i32) 
 
 #[cfg(all(feature = "win", target_os = "windows"))]
 fn capture_win(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()> {
-    capture_win_over(registry, dir, manifest)
+    // Run the capture loop on a thread with an explicit, generous stack.
+    // `cargo run --capture` builds the dev profile (unoptimized, large
+    // per-call frames), and a Windows process's default main-thread stack
+    // is 1 MiB — a quarter of what the GTK/TUI legs get from their Linux
+    // host's 8 MiB default. The deepest demo render recursions overflow
+    // that 1 MiB, and a stack overflow is a native fault, not an unwinding
+    // panic, so `capture_win_over`'s per-demo `catch_unwind` can't contain
+    // it: one deep demo would abort the whole process. A dedicated thread
+    // with a matching stack renders every demo on the same footing the
+    // other backends already have.
+    std::thread::scope(|scope| {
+        let handle = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn_scoped(scope, || capture_win_over(registry, dir, manifest))
+            .expect("spawn win capture thread");
+        match handle.join() {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    })
 }
 
 /// [`capture_win`]'s body, generic over the demo-list constructor — see
