@@ -184,6 +184,15 @@ only a push to `main` runs this workflow.
 - `Surface::Canvas` — a pushed `Canvas` primitive now flows through
   `ScreenLayout`/`OwnedFrame` like every other primitive, instead of
   only being paintable via a direct `Backend::draw_canvas` call.
+- `macos::MacRunner` and re-exported `macos::StepOutcome` — a non-blocking
+  `step()`/`pump(timeout)` entry point for the AppKit backend, mirroring
+  the existing TUI/GTK runners: `step()` drains at most one already-queued
+  AppKit event without blocking, `pump(timeout)` blocks up to `timeout`
+  waiting for the next one, and both return `StepOutcome::Continue` or
+  `StepOutcome::Exited` so a host loop (not `NSApplication::run()`) can
+  drive the app a slice at a time. `macos::run`/`run_with` are unchanged
+  convenience wrappers around `MacRunner` for the all-owning case. New
+  example: `examples/macos_embedded.rs`.
 
 ### Fixed
 
