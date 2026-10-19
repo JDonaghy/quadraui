@@ -416,8 +416,8 @@ impl HeadlessSurface {
     /// Whole-buffer readback of the last paint — the `screen()`-equivalent
     /// raw-buffer accessor [`crate::gtk::testing::GtkDriver::screen`] /
     /// [`Self::stride`] mirror. Four bytes per pixel, `[B, G, R, A]` (same
-    /// decode as [`Self::pixel_at`]); row stride is [`Self::stride`], not
-    /// necessarily `width * 4` (see that method's doc). Copies out of the
+    /// decode as [`Self::pixel_at`]); row stride is [`Self::stride`]
+    /// (currently always `width * 4`, see that method's doc). Copies out of the
     /// `CreateDIBSection` buffer so the returned `Vec` outlives `self`;
     /// prefer [`Self::pixel_at`] for single-pixel assertions — this is the
     /// escape hatch for callers that need the whole frame (e.g. encoding a
@@ -440,7 +440,14 @@ impl HeadlessSurface {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            vec![0u8; len]
+            // `[0, 0, 0, 255]` repeating, not `vec![0u8; len]`: the latter's
+            // alpha byte is `0` (transparent black), which contradicts this
+            // method's own doc and `Self::pixel_at`'s opaque-black fallback.
+            let mut buf = vec![0u8; len];
+            for px in buf.chunks_exact_mut(4) {
+                px[3] = 255;
+            }
+            buf
         }
     }
 }

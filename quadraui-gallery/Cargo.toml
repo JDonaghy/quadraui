@@ -54,16 +54,20 @@ terminal = ["quadraui/terminal"]
 macos = ["quadraui/macos", "dep:image"]
 # Unlike `macos`, `quadraui::win` compiles on every host (only the real
 # WinAPI calls inside it are `cfg(target_os = "windows")`), so this
-# feature needs no extra target gate.
-win = ["quadraui/win"]
+# feature needs no extra target gate on `quadraui/win` itself. `dep:image`
+# is still needed here: `src/capture.rs`'s win leg (PNG encoding of the
+# Win32 DIB's raw BGRA bytes) only ever compiles under
+# `all(feature = "win", target_os = "windows")`, mirroring the `gtk`/
+# `macos` features above.
+win = ["quadraui/win", "dep:image"]
 
 [dependencies]
 quadraui = { path = "../quadraui" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-# PNG encoder for capture mode's GTK and macOS legs (`src/capture.rs`)
-# — see the `gtk`/`macos` features' comments above for why it's wired
-# per-backend instead of always-on. `default-features = false` +
+# PNG encoder for capture mode's GTK, macOS and win legs (`src/capture.rs`)
+# — see the `gtk`/`macos`/`win` features' comments above for why it's
+# wired per-backend instead of always-on. `default-features = false` +
 # `features = ["png"]` keeps it to just the one codec capture mode
 # needs, not every image format `image` supports.
 image = { version = "0.25", optional = true, default-features = false, features = [

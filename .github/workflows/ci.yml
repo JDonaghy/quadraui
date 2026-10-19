@@ -838,6 +838,24 @@ jobs:
           name: conformance-matrix-win
           path: target/conformance-matrix.txt
           if-no-files-found: warn
+      # `quadraui-gallery`'s win leg (`src/capture.rs`'s `capture_win`/
+      # `capture_win_over`/`write_win_png` and the test module they live
+      # in) only ever compiles under `all(feature = "win", target_os =
+      # "windows")`, so the ubuntu-only `Compile check (gallery, win
+      # feature)` step above (a plain `cargo check`, no `target_os =
+      # "windows"`) never reaches a single line of it. This is the one
+      # real Windows host in the fleet, so it's the only place a type
+      # error or a logic bug in the capture leg (e.g.
+      # `capture_win_selects_the_clicked_variant_and_names_it_in_the_filename`,
+      # which decodes both captured PNGs and asserts their pixel buffers
+      # differ) would ever be caught — mirrors macos.yml's "Test
+      # (gallery, macos feature)" step for the macOS leg.
+      - name: Test (gallery, win feature)
+        if: matrix.os == 'windows-latest'
+        run: cargo test -p quadraui-gallery --features win
+      - name: Clippy (gallery, win feature)
+        if: matrix.os == 'windows-latest'
+        run: cargo clippy -p quadraui-gallery --features win --all-targets -- -D warnings
       # Tier-3 pty smoke (quadraui#302, tests/tui_pty_smoke.rs): spawns real
       # `cargo run --example` processes in a real PTY (portable-pty) and
       # drives them with real ANSI escape sequences (vt100). No display
@@ -1934,7 +1952,7 @@ jobs:
           if-no-files-found: warn
 
   gallery-capture-windows:
-    # Headless gallery capture mode (#1348), Windows leg — the twin of
+    # Headless gallery capture mode, Windows leg — the twin of
     # `gallery-capture-tui`/`gallery-capture-gtk` above and `macos.yml`'s
     # `gallery-capture-macos`; see `gallery-capture-tui`'s comment and
     # `quadraui-gallery/src/capture.rs`'s module doc for the full picture.
@@ -1951,10 +1969,10 @@ jobs:
     # `#[cfg(test)]` module (in particular
     # `capture_win_selects_the_clicked_variant_and_names_it_in_the_filename`,
     # which decodes both captured PNGs and asserts their pixel buffers
-    # differ, not just their dimensions), run by the `tui` job's "Test
-    # (win feature, real Windows)" step — this job runs no tests, only
-    # `cargo run --capture`, and exists purely to produce the artifact
-    # `pages.yml` later downloads.
+    # differ, not just their dimensions), run by the `tui` job's windows-
+    # latest leg's own "Test (gallery, win feature)" step — this job runs
+    # no tests, only `cargo run --capture`, and exists purely to produce
+    # the artifact `pages.yml` later downloads.
     name: gallery capture (windows)
     runs-on: windows-latest
     continue-on-error: true

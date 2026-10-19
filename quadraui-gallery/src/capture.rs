@@ -902,6 +902,16 @@ fn capture_win_over(
 /// [`write_mac_png`] and [`write_gtk_png`] composite onto white: an
 /// unpainted margin should read as the window's own background, not
 /// transparent.
+///
+/// [`composite_bgra_over_white`] is a *premultiplied-alpha* compositor, but
+/// the DIB's alpha byte carries no real coverage data — the render target
+/// is created with `D2D1_ALPHA_MODE_IGNORE`, so every pixel's `a` is
+/// whatever Direct2D happens to leave there (see
+/// [`WinDriver::pixel_at`](quadraui::win::testing::WinDriver::pixel_at)'s
+/// doc). Forcing `a = 255` here — rather than trusting the DIB's value —
+/// keeps that compositor correct regardless of what Direct2D writes,
+/// instead of depending on an assumption a future Direct2D change could
+/// quietly invalidate.
 #[cfg(all(feature = "win", target_os = "windows"))]
 fn write_win_png<A: quadraui::AppLogic>(
     driver: &mut quadraui::win::testing::WinDriver<A>,
@@ -910,7 +920,10 @@ fn write_win_png<A: quadraui::AppLogic>(
     path: &Path,
 ) -> io::Result<()> {
     let stride = driver.stride() as i32;
-    let data = driver.screen();
+    let mut data = driver.screen();
+    for px in data.chunks_exact_mut(4) {
+        px[3] = 255;
+    }
     let flattened = composite_bgra_over_white(&data, width as i32, height as i32, stride);
     let img = image::RgbaImage::from_raw(width, height, flattened)
         .expect("composited buffer length must be exactly width * height * 4");

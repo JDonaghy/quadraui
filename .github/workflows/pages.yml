@@ -145,9 +145,9 @@ jobs:
       # download must drop the argument rather than pass a path that
       # isn't there. Dropping it is the correct fallback, not a degraded
       # one — the TUI capture's own manifest already describes every
-      # other backend as `unsupported`, so a missing
-      # column renders exactly as it does today (pending), never a
-      # broken build (quadraui#1619).
+      # other backend as `unsupported`, so a missing column still
+      # renders via `site_gen.py`'s `STATUS_LABELS` ("Not captured in
+      # this build"), never a broken build.
       - name: Generate gallery pages
         run: |
           extra=()
