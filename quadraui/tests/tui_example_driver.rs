@@ -40,6 +40,8 @@ mod appshell_demo;
 mod bottom_panel_demo;
 #[path = "../examples/common/canvas_app.rs"]
 mod canvas_app;
+#[path = "../examples/common/canvas_shapes_app.rs"]
+mod canvas_shapes_app;
 #[path = "../examples/common/caret_shape_demo.rs"]
 mod caret_shape_demo;
 // `ChartApp::last_chart_rect` is write-only in the shared example source
@@ -182,6 +184,7 @@ use ai_transcript::AiTranscript;
 use appshell_demo::AppShellDemo;
 use bottom_panel_demo::BottomPanelDemo;
 use canvas_app::CanvasApp;
+use canvas_shapes_app::CanvasShapesApp;
 use caret_shape_demo::CaretShapeDemo;
 use chart_app::ChartApp;
 use chat_demo::ChatDemo;
@@ -7607,6 +7610,60 @@ fn canvas_demo_q_exits() {
     let mut driver = TuiDriver::new(CanvasApp::new(), 100, 10);
     driver.type_char('q');
     assert!(driver.exited(), "'q' should exit the canvas demo");
+}
+
+// ─── CanvasShapesApp: the Canvas v2 op set (Polygon/Ellipse/Arc/Bezier/
+// DashedLine/StrokeRect/StyledTextRun) on a chart-style demo ───────────────
+//
+// Every new op degrades to the sub-cell braille grid on TUI; this just
+// proves the whole `Backend::draw_canvas` round trip reaches the screen
+// end to end for the new descriptor shape, same as `CanvasApp` above does
+// for the original op set.
+
+#[test]
+fn canvas_shapes_demo_paints_the_status_bar_and_initial_labels() {
+    let driver = TuiDriver::new(CanvasShapesApp::new(), 100, 10);
+    assert!(
+        driver.screen_contains("Canvas v2 shapes demo"),
+        "the status bar should name the demo:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Mon 35") && driver.screen_contains("Fri 55"),
+        "the initial bar values should reach the screen through the \
+         StyledTextRun labels:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn canvas_shapes_demo_r_key_randomizes_the_bar_values() {
+    let mut driver = TuiDriver::new(CanvasShapesApp::new(), 100, 10);
+    let before = driver.screen();
+    driver.type_char('r');
+    let after = driver.screen();
+    assert_ne!(
+        before, after,
+        "'r' should redraw with new randomized bar values:\n{after}"
+    );
+    assert!(
+        !after.contains("Mon 35") || !after.contains("Fri 55"),
+        "randomizing should move at least one label off its initial value:\n{after}"
+    );
+}
+
+#[test]
+fn canvas_shapes_demo_q_exits() {
+    let mut driver = TuiDriver::new(CanvasShapesApp::new(), 100, 10);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the canvas shapes demo");
+}
+
+#[test]
+fn canvas_shapes_demo_escape_exits() {
+    let mut driver = TuiDriver::new(CanvasShapesApp::new(), 100, 10);
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Escape should exit the canvas shapes demo");
 }
 
 // ─── FloatApp: placement, edge clamping, z-order, focus ───────────────────

@@ -717,6 +717,7 @@ fn content_kind(content: &OwnedContent) -> &'static str {
         OwnedContent::Toast(_) => "Notifications",
         OwnedContent::DataTable(_) => "Table",
         OwnedContent::Chart(_) => "Chart",
+        OwnedContent::Canvas(_) => "Canvas",
         OwnedContent::Board(_) => "Board",
         OwnedContent::CommandCenter(_) => "Command center",
         OwnedContent::DiffView(_) => "Diff view",

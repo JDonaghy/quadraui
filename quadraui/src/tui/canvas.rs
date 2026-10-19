@@ -48,9 +48,25 @@ use ratatui::layout::Rect as RRect;
 use super::braille::{interpolate_dots, pack_braille_cell};
 use super::{draw_styled_text, qc, set_cell};
 use crate::event::{Point, Rect};
-use crate::primitives::canvas::{Canvas, CanvasLayout, DrawOp};
+use crate::primitives::canvas::{
+    arc_polyline, bezier_polyline, dash_segments, ellipse_polygon, polygon_fill_spans, Canvas,
+    CanvasLayout, DrawOp,
+};
 use crate::theme::Theme;
 use crate::types::{Color, Decoration, StyledText};
+
+/// Scanline band height (in canvas-local, cell-fractional units) used to
+/// lower [`DrawOp::Polygon`]/[`DrawOp::Ellipse`] onto the dot grid — one
+/// dot row (a quarter of a cell's height), the finest granularity this
+/// backend can actually light up (module doc's degrade table).
+const TUI_POLYGON_ROW_HEIGHT: f32 = 0.25;
+/// Sample counts for [`DrawOp::Ellipse`]/[`DrawOp::Arc`]/[`DrawOp::Bezier`]
+/// on the dot grid — coarser than the pixel backends'
+/// (`native_surface_paint::{ELLIPSE,ARC,BEZIER}_SEGMENTS`) because a dot
+/// is a much larger unit than a pixel; same degrade bar either way (D-014).
+const TUI_ELLIPSE_SEGMENTS: usize = 32;
+const TUI_ARC_SEGMENTS: usize = 24;
+const TUI_BEZIER_SEGMENTS: usize = 12;
 
 /// Compute the TUI cell-unit layout for a [`Canvas`] without painting.
 pub fn tui_canvas_layout(canvas: &Canvas, area: RRect) -> CanvasLayout {
@@ -345,10 +361,112 @@ pub fn draw_canvas(buf: &mut Buffer, area: RRect, canvas: &Canvas, theme: &Theme
                     );
                 }
             }
+            DrawOp::Polygon { points, color } => {
+                for span in polygon_fill_spans(points, TUI_POLYGON_ROW_HEIGHT) {
+                    accumulate_rect(&mut dots, &mut cell_color, clip, span, *color, dot_w, dot_h);
+                }
+            }
+            DrawOp::Ellipse {
+                center,
+                radius_x,
+                radius_y,
+                color,
+            } => {
+                let polygon = ellipse_polygon(*center, *radius_x, *radius_y, TUI_ELLIPSE_SEGMENTS);
+                for span in polygon_fill_spans(&polygon, TUI_POLYGON_ROW_HEIGHT) {
+                    accumulate_rect(&mut dots, &mut cell_color, clip, span, *color, dot_w, dot_h);
+                }
+            }
+            DrawOp::Arc {
+                center,
+                radius,
+                start_angle,
+                end_angle,
+                color,
+                ..
+            } => {
+                let polyline =
+                    arc_polyline(*center, *radius, *start_angle, *end_angle, TUI_ARC_SEGMENTS);
+                for pair in polyline.windows(2) {
+                    accumulate_segment(
+                        &mut dots,
+                        &mut cell_color,
+                        clip,
+                        pair[0],
+                        pair[1],
+                        *color,
+                        dot_w,
+                        dot_h,
+                    );
+                }
+            }
+            DrawOp::Bezier {
+                from,
+                control1,
+                control2,
+                to,
+                color,
+                ..
+            } => {
+                let polyline =
+                    bezier_polyline(*from, *control1, *control2, *to, TUI_BEZIER_SEGMENTS);
+                for pair in polyline.windows(2) {
+                    accumulate_segment(
+                        &mut dots,
+                        &mut cell_color,
+                        clip,
+                        pair[0],
+                        pair[1],
+                        *color,
+                        dot_w,
+                        dot_h,
+                    );
+                }
+            }
+            DrawOp::DashedLine {
+                from,
+                to,
+                color,
+                dash_len,
+                gap_len,
+                ..
+            } => {
+                for (seg_from, seg_to) in dash_segments(*from, *to, *dash_len, *gap_len) {
+                    accumulate_segment(
+                        &mut dots,
+                        &mut cell_color,
+                        clip,
+                        seg_from,
+                        seg_to,
+                        *color,
+                        dot_w,
+                        dot_h,
+                    );
+                }
+            }
+            DrawOp::StrokeRect { rect, color, .. } => {
+                let tl = Point::new(rect.x, rect.y);
+                let tr = Point::new(rect.x + rect.width, rect.y);
+                let br = Point::new(rect.x + rect.width, rect.y + rect.height);
+                let bl = Point::new(rect.x, rect.y + rect.height);
+                for (a, b) in [(tl, tr), (tr, br), (br, bl), (bl, tl)] {
+                    accumulate_segment(
+                        &mut dots,
+                        &mut cell_color,
+                        clip,
+                        a,
+                        b,
+                        *color,
+                        dot_w,
+                        dot_h,
+                    );
+                }
+            }
             DrawOp::TextRun { .. }
             | DrawOp::Image { .. }
             | DrawOp::PushClip { .. }
-            | DrawOp::PopClip => {}
+            | DrawOp::PopClip
+            | DrawOp::StyledTextRun { .. } => {}
         }
     }
 
@@ -382,6 +500,13 @@ pub fn draw_canvas(buf: &mut Buffer, area: RRect, canvas: &Canvas, theme: &Theme
                     theme.foreground,
                     theme.background,
                 );
+            }
+            DrawOp::StyledTextRun {
+                rect, text, color, ..
+            } => {
+                // `role`/`italic`/`size` drop entirely — a terminal cell
+                // grid has exactly one font (module doc's degrade table).
+                paint_cell_quantised_text(buf, area, clip, *rect, text, *color, theme.background);
             }
             _ => {}
         }
@@ -601,5 +726,136 @@ mod tests {
                 assert_eq!(cell_char(&buf, x, y), ' ');
             }
         }
+    }
+
+    #[test]
+    fn polygon_op_degrades_to_braille_fill() {
+        let area = RRect::new(0, 0, 10, 10);
+        let mut buf = Buffer::empty(area);
+        let c = canvas(vec![DrawOp::Polygon {
+            points: vec![
+                Point::new(0.0, 0.0),
+                Point::new(6.0, 0.0),
+                Point::new(6.0, 6.0),
+                Point::new(0.0, 6.0),
+            ],
+            color: Color::rgb(10, 20, 30),
+        }]);
+        draw_canvas(&mut buf, area, &c, &Theme::default());
+        assert_ne!(cell_char(&buf, 2, 2), ' ');
+        assert_eq!(cell_char(&buf, 8, 8), ' ');
+    }
+
+    #[test]
+    fn ellipse_op_degrades_to_an_n_gon_braille_fill() {
+        let area = RRect::new(0, 0, 10, 10);
+        let mut buf = Buffer::empty(area);
+        let c = canvas(vec![DrawOp::Ellipse {
+            center: Point::new(5.0, 5.0),
+            radius_x: 3.0,
+            radius_y: 3.0,
+            color: Color::rgb(1, 2, 3),
+        }]);
+        draw_canvas(&mut buf, area, &c, &Theme::default());
+        assert_ne!(cell_char(&buf, 5, 5), ' ');
+        assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    #[test]
+    fn arc_op_degrades_to_a_sampled_braille_polyline() {
+        let area = RRect::new(0, 0, 10, 10);
+        let mut buf = Buffer::empty(area);
+        let c = canvas(vec![DrawOp::Arc {
+            center: Point::new(5.0, 5.0),
+            radius: 4.0,
+            start_angle: 0.0,
+            end_angle: std::f32::consts::PI,
+            color: Color::rgb(1, 2, 3),
+            stroke_width: 1.0,
+        }]);
+        draw_canvas(&mut buf, area, &c, &Theme::default());
+        assert_ne!(cell_char(&buf, 9, 5), ' ');
+        assert_ne!(cell_char(&buf, 1, 5), ' ');
+    }
+
+    #[test]
+    fn bezier_op_degrades_to_a_sampled_braille_polyline() {
+        let area = RRect::new(0, 0, 10, 10);
+        let mut buf = Buffer::empty(area);
+        let c = canvas(vec![DrawOp::Bezier {
+            from: Point::new(0.0, 0.0),
+            control1: Point::new(0.0, 8.0),
+            control2: Point::new(8.0, 8.0),
+            to: Point::new(8.0, 0.0),
+            color: Color::rgb(1, 2, 3),
+            stroke_width: 1.0,
+        }]);
+        draw_canvas(&mut buf, area, &c, &Theme::default());
+        assert_ne!(cell_char(&buf, 0, 0), ' ');
+        assert_ne!(cell_char(&buf, 8, 0), ' ');
+    }
+
+    #[test]
+    fn dashed_line_op_leaves_gaps_unlit() {
+        let area = RRect::new(0, 0, 10, 2);
+        let mut buf = Buffer::empty(area);
+        let c = canvas(vec![DrawOp::DashedLine {
+            from: Point::new(0.0, 0.0),
+            to: Point::new(10.0, 0.0),
+            color: Color::rgb(1, 2, 3),
+            stroke_width: 1.0,
+            dash_len: 2.0,
+            gap_len: 2.0,
+        }]);
+        draw_canvas(&mut buf, area, &c, &Theme::default());
+        // dash_len == gap_len == 2.0 over a 10-unit line: dash 0-2, gap
+        // 2-4, dash 4-6, gap 6-8, dash 8-10 — cell 0 falls in the first
+        // dash, cell 3 falls in the first gap.
+        assert_ne!(cell_char(&buf, 0, 0), ' ');
+        assert_eq!(
+            cell_char(&buf, 3, 0),
+            ' ',
+            "a gap between dashes must stay unlit, proving the dash pattern survived the degrade"
+        );
+    }
+
+    #[test]
+    fn stroke_rect_op_degrades_to_four_perimeter_segments() {
+        let area = RRect::new(0, 0, 10, 10);
+        let mut buf = Buffer::empty(area);
+        let c = canvas(vec![DrawOp::StrokeRect {
+            rect: Rect::new(1.0, 1.0, 6.0, 6.0),
+            color: Color::rgb(1, 2, 3),
+            stroke_width: 2.0,
+        }]);
+        draw_canvas(&mut buf, area, &c, &Theme::default());
+        assert_ne!(cell_char(&buf, 1, 1), ' ');
+        assert_ne!(cell_char(&buf, 7, 1), ' ');
+        assert_ne!(cell_char(&buf, 1, 7), ' ');
+        assert_ne!(cell_char(&buf, 7, 7), ' ');
+        assert_eq!(
+            cell_char(&buf, 4, 4),
+            ' ',
+            "the rect's interior must stay unlit — only the perimeter strokes"
+        );
+    }
+
+    #[test]
+    fn styled_text_run_op_degrades_identically_to_text_run() {
+        let area = RRect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        let c = canvas(vec![DrawOp::StyledTextRun {
+            rect: Rect::new(2.3, 1.0, 10.0, 1.0),
+            text: "hi".into(),
+            color: Color::rgb(255, 255, 255),
+            role: crate::primitives::canvas::CanvasFontRole::Editor,
+            italic: true,
+            size: Some(24.0),
+        }]);
+        draw_canvas(&mut buf, area, &c, &Theme::default());
+        // `role`/`italic`/`size` are dropped — identical to the plain
+        // `TextRun` degrade above.
+        assert_eq!(cell_char(&buf, 2, 1), 'h');
+        assert_eq!(cell_char(&buf, 3, 1), 'i');
     }
 }

@@ -162,6 +162,7 @@
 use crate::event::Rect;
 use crate::primitives::activity_bar::ActivityBar;
 use crate::primitives::board::BoardModel;
+use crate::primitives::canvas::Canvas;
 use crate::primitives::chart::Chart;
 use crate::primitives::command_center::CommandCenter;
 use crate::primitives::command_line::CommandLine;
@@ -332,6 +333,14 @@ pub enum Surface {
         hovered_point: Option<(usize, usize)>,
         crosshair_x: Option<f64>,
     },
+    /// App-defined escape-hatch drawing: a declarative list of
+    /// [`crate::primitives::canvas::DrawOp`]s painted in order. See
+    /// [`Canvas`]'s module doc for the coordinate frame and the
+    /// per-backend degrade table.
+    Canvas {
+        rect: Rect,
+        canvas: Canvas,
+    },
     Board {
         rect: Rect,
         model: BoardModel,
@@ -461,6 +470,7 @@ pub enum FrameZone {
     Toast { idx: usize },
     DataTable { idx: usize },
     Chart { idx: usize },
+    Canvas { idx: usize },
     Board { idx: usize },
     CommandCenter { idx: usize },
     DiffView { idx: usize },
@@ -706,6 +716,9 @@ impl ScreenLayout {
                 } => {
                     backend.draw_chart(*rect, chart, *hovered_point, *crosshair_x);
                 }
+                Surface::Canvas { rect, canvas } => {
+                    backend.draw_canvas(*rect, canvas);
+                }
                 Surface::Board { rect, model } => {
                     backend.draw_board(*rect, model);
                 }
@@ -809,10 +822,13 @@ impl ScreenLayout {
     /// - Structural chrome (`Split`, `Scrollbar`, `SplitTree`) —
     ///   containers/controls with no independent focusable identity of
     ///   their own.
-    /// - `Image` and `Spinner` — purely decorative, never focusable,
-    ///   regardless of the "carries a `rect` plus an owning `WidgetId`"
-    ///   rule: a consumer that adopts them would otherwise get dead
-    ///   stops in its Tab order.
+    /// - `Image`, `Spinner` and `Canvas` — purely decorative, never
+    ///   focusable, regardless of the "carries a `rect` plus an owning
+    ///   `WidgetId`" rule: a consumer that adopts them would otherwise
+    ///   get dead stops in its Tab order. `Canvas`'s own hit-test
+    ///   ([`crate::primitives::canvas::CanvasHit`]) only ever answers
+    ///   "inside"/"outside" of its bounds — it has no activation
+    ///   affordance to reach by keyboard.
     /// - `Progress` **unless** `ProgressBar::cancellable` is set — a
     ///   bare progress readout has nothing to activate, but a
     ///   cancellable one has a real affordance ([`ProgressBarHit::Cancel`])
@@ -852,6 +868,7 @@ impl ScreenLayout {
                 Surface::Toolbar { rect, bar, .. } => Some((bar.id, *rect)),
                 Surface::Image { .. }
                 | Surface::Spinner { .. }
+                | Surface::Canvas { .. }
                 | Surface::Progress { .. }
                 | Surface::Split { .. }
                 | Surface::Scrollbar { .. }
@@ -908,6 +925,7 @@ impl ScreenLayout {
             Surface::Toast { rect, .. } => (*rect, FrameZone::Toast { idx }),
             Surface::DataTable { rect, .. } => (*rect, FrameZone::DataTable { idx }),
             Surface::Chart { rect, .. } => (*rect, FrameZone::Chart { idx }),
+            Surface::Canvas { rect, .. } => (*rect, FrameZone::Canvas { idx }),
             Surface::Board { rect, .. } => (*rect, FrameZone::Board { idx }),
             Surface::CommandCenter { rect, .. } => (*rect, FrameZone::CommandCenter { idx }),
             Surface::DiffView { rect, .. } => (*rect, FrameZone::DiffView { idx }),
@@ -974,6 +992,7 @@ pub enum OwnedContent {
     Toast(ToastOverlay),
     DataTable(DataTable),
     Chart(Chart),
+    Canvas(Canvas),
     Board(BoardModel),
     CommandCenter(CommandCenter),
     DiffView(DiffView),
@@ -1052,6 +1071,9 @@ impl OwnedContent {
             }
             OwnedContent::Chart(chart) => {
                 backend.draw_chart(rect, chart, None, None);
+            }
+            OwnedContent::Canvas(canvas) => {
+                backend.draw_canvas(rect, canvas);
             }
             OwnedContent::Board(model) => {
                 backend.draw_board(rect, model);
@@ -1135,6 +1157,7 @@ impl OwnedContent {
             OwnedContent::Toast(_) => FrameZone::Toast { idx },
             OwnedContent::DataTable(_) => FrameZone::DataTable { idx },
             OwnedContent::Chart(_) => FrameZone::Chart { idx },
+            OwnedContent::Canvas(_) => FrameZone::Canvas { idx },
             OwnedContent::Board(_) => FrameZone::Board { idx },
             OwnedContent::CommandCenter(_) => FrameZone::CommandCenter { idx },
             OwnedContent::DiffView(_) => FrameZone::DiffView { idx },
@@ -1350,6 +1373,7 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         Surface::Chart { rect, chart, .. } => {
             (*rect, Some(chart.id), OwnedContent::Chart(chart.clone()))
         }
+        Surface::Canvas { rect, canvas } => (*rect, None, OwnedContent::Canvas(canvas.clone())),
         Surface::Board { rect, model } => {
             (*rect, Some(model.id), OwnedContent::Board(model.clone()))
         }
