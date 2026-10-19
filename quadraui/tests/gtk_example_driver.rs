@@ -67,10 +67,31 @@ use scroll_view_demo::ScrollViewDemo;
 mod form_scroll;
 use form_scroll::FormScrollApp;
 
+#[path = "../examples/common/canvas_app.rs"]
+mod canvas_app;
+use canvas_app::CanvasApp;
+
+#[path = "../examples/common/canvas_shapes_app.rs"]
+mod canvas_shapes_app;
+use canvas_shapes_app::CanvasShapesApp;
+
 // Pixel canvas — big enough for five stage boxes + arrow connectors + the
 // bottom status bar at GTK's native (pixel, not cell) scale.
 const W: i32 = 800;
 const H: i32 = 480;
+
+/// Antialiasing at a shape's edge (or a shared boundary between two
+/// independently-rasterized fills) can land a blend fraction a shade of a
+/// channel apart from the mathematically-exact expectation — the same
+/// tolerance-based comparison `data_table_wide_middle_column_...`'s local
+/// `close` helper already established for this file. Promoted to a
+/// module-level helper here since the Canvas v2 op tests below need it
+/// across several functions, not just one.
+fn colors_close(a: (u8, u8, u8), b: (u8, u8, u8), tol: i32) -> bool {
+    (a.0 as i32 - b.0 as i32).abs() <= tol
+        && (a.1 as i32 - b.1 as i32).abs() <= tol
+        && (a.2 as i32 - b.2 as i32).abs() <= tol
+}
 
 // ─── PipelineApp: mouse + keyboard + reset ──────────────────────────────────
 
@@ -1530,5 +1551,540 @@ fn scroll_view_drag_scenario(width: i32, height: i32) {
         0,
         "dragging the thumb back to the top should restore row 0 (window {width}x{height}): {:?}",
         driver.painted_texts()
+    );
+}
+
+// ─── CanvasApp (gauge): parity with the TUI suite (#1627) ──────────────────
+//
+// `tests/tui_example_driver.rs`'s `canvas_demo_*` tests already cover this
+// behaviourally on TUI; these mirror them on GTK so the gauge has the same
+// coverage on both backends before the Canvas v2 op tests below exercise
+// the ops GTK's rasteriser gained for #1627.
+
+/// Mirrors `examples/common/canvas_app.rs::CanvasApp::gauge_rect` (private
+/// to the example) from the backend's own metrics, never a hardcoded
+/// pixel — the same contract the example's own click handler relies on.
+fn canvas_app_gauge_rect(driver: &GtkDriver<CanvasApp>) -> quadraui::Rect {
+    let viewport = quadraui::Backend::viewport(driver.backend());
+    let lh = quadraui::Backend::line_height(driver.backend());
+    quadraui::Rect::new(lh, lh * 2.0, (viewport.width - lh * 2.0).max(0.0), lh)
+}
+
+#[test]
+fn canvas_demo_gtk_paints_the_initial_gauge_label() {
+    let driver = GtkDriver::new(CanvasApp::new(), W, H);
+    assert!(
+        driver.screen_contains("30%"),
+        "the gauge should start at 30%: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn canvas_demo_gtk_plus_key_raises_the_value() {
+    let mut driver = GtkDriver::new(CanvasApp::new(), W, H);
+    driver.type_char('+');
+    assert!(
+        driver.screen_contains("40%"),
+        "'+' should raise the gauge from 30% to 40%: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn canvas_demo_gtk_up_arrow_raises_the_value() {
+    let mut driver = GtkDriver::new(CanvasApp::new(), W, H);
+    driver.press_named(NamedKey::Up);
+    assert!(
+        driver.screen_contains("40%"),
+        "Up should raise the gauge from 30% to 40%, same as '+': {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn canvas_demo_gtk_minus_key_lowers_the_value() {
+    let mut driver = GtkDriver::new(CanvasApp::new(), W, H);
+    driver.type_char('-');
+    assert!(
+        driver.screen_contains("20%"),
+        "'-' should lower the gauge from 30% to 20%: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn canvas_demo_gtk_value_never_exceeds_100_or_drops_below_0() {
+    let mut driver = GtkDriver::new(CanvasApp::new(), W, H);
+    for _ in 0..20 {
+        driver.type_char('+');
+    }
+    assert!(
+        driver.screen_contains("100%"),
+        "repeated '+' should clamp at 100%, not wrap or overflow: {:?}",
+        driver.painted_texts()
+    );
+    for _ in 0..20 {
+        driver.type_char('-');
+    }
+    assert!(
+        driver.screen_contains("0%") && !driver.screen_contains("100%"),
+        "repeated '-' should clamp at 0%, not underflow: {:?}",
+        driver.painted_texts()
+    );
+}
+
+/// Clicking inside the gauge jumps straight to that position's value. Unlike
+/// the TUI twin (a fixed 100-wide cell grid), GTK's gauge rect comes from
+/// real backend metrics, so the click positions are derived from
+/// `canvas_app_gauge_rect` instead of a hardcoded coordinate.
+#[test]
+fn canvas_demo_gtk_clicking_the_gauge_jumps_to_that_positions_value() {
+    let driver = GtkDriver::new(CanvasApp::new(), W, H);
+    let rect = canvas_app_gauge_rect(&driver);
+    let mut driver = driver;
+
+    let near_right = rect.x + rect.width - 1.0;
+    driver.click(near_right, rect.y + rect.height / 2.0);
+    let frac = ((near_right - rect.x) / rect.width).clamp(0.0, 1.0);
+    let expected = format!("{}%", (frac * 100.0).round() as u8);
+    assert!(
+        driver.screen_contains(&expected),
+        "clicking near the gauge's right edge should jump close to 100% \
+         (expected {expected:?}): {:?}",
+        driver.painted_texts()
+    );
+
+    let driver = GtkDriver::new(CanvasApp::new(), W, H);
+    let rect = canvas_app_gauge_rect(&driver);
+    let mut driver = driver;
+    let near_left = rect.x + 1.0;
+    driver.click(near_left, rect.y + rect.height / 2.0);
+    let frac = ((near_left - rect.x) / rect.width).clamp(0.0, 1.0);
+    let expected = format!("{}%", (frac * 100.0).round() as u8);
+    assert!(
+        driver.screen_contains(&expected),
+        "clicking near the gauge's left edge should jump close to 0% \
+         (expected {expected:?}): {:?}",
+        driver.painted_texts()
+    );
+}
+
+/// A click outside the gauge's own row must not change the value —
+/// `CanvasHit::Outside` is a no-op, not a clamped-in-range guess.
+#[test]
+fn canvas_demo_gtk_clicking_outside_the_gauge_does_not_change_the_value() {
+    let driver = GtkDriver::new(CanvasApp::new(), W, H);
+    let rect = canvas_app_gauge_rect(&driver);
+    let mut driver = driver;
+    driver.click(rect.x + rect.width / 2.0, rect.y + rect.height + 40.0);
+    assert!(
+        driver.screen_contains("30%"),
+        "a click outside the gauge's row should leave the value at 30%: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn canvas_demo_gtk_q_exits() {
+    let mut driver = GtkDriver::new(CanvasApp::new(), W, H);
+    assert!(!driver.exited());
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the canvas demo");
+}
+
+#[test]
+fn canvas_demo_gtk_escape_exits() {
+    let mut driver = GtkDriver::new(CanvasApp::new(), W, H);
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Escape should exit the canvas demo");
+}
+
+// ─── CanvasShapesApp: the Canvas v2 op set — real GTK rendering (#1627) ────
+//
+// `tests/tui_example_driver.rs`'s `canvas_shapes_demo_*` tests already prove
+// the whole `Backend::draw_canvas` round trip reaches the screen for the new
+// op set generically (every op degrades to TUI's braille grid). These check
+// *real* pixel colour and glyph runs — the GTK rasteriser actually painting
+// each new op (`Polygon` / `Ellipse` / `Arc` / `Bezier` / `DashedLine` /
+// `StrokeRect` / `StyledTextRun`), not just a backend-agnostic degrade path.
+
+/// The demo's initial, deterministic bar values — `CanvasShapesApp::new()`.
+const SHAPES_VALUES: [f32; 5] = [35.0, 60.0, 45.0, 80.0, 55.0];
+
+/// Mirrors the private geometry `examples/common/canvas_shapes_app.rs`'s
+/// `CanvasShapesApp::chart_rect` / `chart_canvas` build, from the backend's
+/// own metrics — never a hardcoded pixel.
+struct ChartGeometry {
+    rect: quadraui::Rect,
+    plot_h: f32,
+    slot_w: f32,
+    bar_w: f32,
+    bar_gap: f32,
+}
+
+impl ChartGeometry {
+    fn new(driver: &GtkDriver<CanvasShapesApp>) -> Self {
+        let viewport = quadraui::Backend::viewport(driver.backend());
+        let lh = quadraui::Backend::line_height(driver.backend());
+        let rect = quadraui::Rect::new(
+            lh,
+            lh * 2.0,
+            (viewport.width - lh * 2.0).max(1.0),
+            (viewport.height - lh * 5.0).max(1.0),
+        );
+        let label_h = (rect.height * 0.15).max(1.0);
+        let plot_h = (rect.height - label_h).max(1.0);
+        let n = SHAPES_VALUES.len() as f32;
+        let slot_w = rect.width / n;
+        let bar_w = slot_w * 0.6;
+        let bar_gap = (slot_w - bar_w) / 2.0;
+        Self {
+            rect,
+            plot_h,
+            slot_w,
+            bar_w,
+            bar_gap,
+        }
+    }
+
+    /// Bar `i`'s top-y, in LOCAL (chart-rect-relative) coordinates, for a
+    /// given value out of 100.
+    fn bar_top_y(&self, value: f32) -> f32 {
+        self.plot_h * (1.0 - value.clamp(0.0, 100.0) / 100.0)
+    }
+
+    /// Bar `i`'s left edge, in LOCAL coordinates.
+    fn bar_x(&self, i: usize) -> f32 {
+        self.slot_w * i as f32 + self.bar_gap
+    }
+
+    /// LOCAL chart coordinates to absolute screen pixel coordinates.
+    fn to_screen(&self, local: Point) -> (i32, i32) {
+        (
+            (self.rect.x + local.x).round() as i32,
+            (self.rect.y + local.y).round() as i32,
+        )
+    }
+}
+
+#[test]
+fn canvas_shapes_demo_gtk_paints_the_status_bar_and_initial_labels() {
+    let driver = GtkDriver::new(CanvasShapesApp::new(), W, H);
+    assert!(
+        driver.screen_contains("Canvas v2 shapes demo"),
+        "the status bar should name the demo: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.screen_contains("Mon 35") && driver.screen_contains("Fri 55"),
+        "the initial bar values should reach the screen through the \
+         StyledTextRun labels: {:?}",
+        driver.painted_texts()
+    );
+}
+
+/// A point inside bar 3's `Polygon` trapezoid fill, a few pixels above the
+/// plot's bottom edge — inside the trapezoid for any bar height, and far
+/// from the StrokeRect border or any of the three DashedLine gridlines
+/// (fixed at 25/50/75% of `plot_h`, never within a few pixels of `plot_h`
+/// itself).
+#[test]
+fn canvas_shapes_demo_gtk_polygon_bar_fill_paints_the_bar_color() {
+    let mut driver = GtkDriver::new(CanvasShapesApp::new(), W, H);
+    let geo = ChartGeometry::new(&driver);
+    let bar_color = (80u8, 160u8, 255u8);
+
+    let x = geo.bar_x(3) + geo.bar_w / 2.0;
+    let y = geo.plot_h - 6.0;
+    let (sx, sy) = geo.to_screen(Point::new(x, y));
+
+    assert!(
+        colors_close(driver.pixel(sx, sy), bar_color, 10),
+        "a point inside bar 3's Polygon fill at ({sx}, {sy}) should be the bar colour \
+         {bar_color:?}, got {:?}",
+        driver.pixel(sx, sy)
+    );
+}
+
+/// The `Ellipse` peak marker should be the marker colour a few pixels above
+/// or below its mathematical centre. The centre itself is also the Bezier
+/// trend curve's exact endpoint at that bar (the curve's control points
+/// share the endpoint's y, giving it a horizontal tangent there), and the
+/// curve paints after the marker — so the dead centre pixel is legitimately
+/// the trend colour, not the marker colour. Sampling just off-centre stays
+/// inside the marker's radius (`bar_w*0.18`) while clearing the curve.
+#[test]
+fn canvas_shapes_demo_gtk_ellipse_marker_paints_the_marker_color() {
+    let mut driver = GtkDriver::new(CanvasShapesApp::new(), W, H);
+    let geo = ChartGeometry::new(&driver);
+    let marker_color = (255u8, 210u8, 90u8);
+
+    let x = geo.bar_x(3) + geo.bar_w / 2.0;
+    let center_y = geo.bar_top_y(SHAPES_VALUES[3]);
+    let mut samples = Vec::new();
+    for dy in [-5.0f32, 5.0] {
+        let (sx, sy) = geo.to_screen(Point::new(x, center_y + dy));
+        samples.push(((sx, sy), driver.pixel(sx, sy)));
+    }
+
+    assert!(
+        samples
+            .iter()
+            .any(|&(_, px)| colors_close(px, marker_color, 10)),
+        "the Ellipse peak marker near its centre should be the marker colour \
+         {marker_color:?}, got {samples:?}"
+    );
+}
+
+/// Scans the bottom edge of the plot's `StrokeRect` border across the first
+/// inter-bar gap (never under a bar's own fill) and a small y band either
+/// side of the mathematically-exact edge. The bottom edge sits at
+/// `plot_h` (a half-integer local y), which lands a 1px stroke on a single
+/// fully-covered pixel row with no antialiasing blend — unlike the top edge
+/// at local y=0, which (after adding the chart's integer `rect.y`) always
+/// splits 50/50 across two rows and never reaches the pure border colour.
+#[test]
+fn canvas_shapes_demo_gtk_stroke_rect_paints_a_border() {
+    let mut driver = GtkDriver::new(CanvasShapesApp::new(), W, H);
+    let geo = ChartGeometry::new(&driver);
+    let border_color = (90u8, 90u8, 90u8);
+
+    let gap_x = geo.bar_gap / 2.0;
+    let mut samples = Vec::new();
+    for dx in 0..(geo.bar_gap as i32).max(1) {
+        for dy in -2..=1 {
+            let (sx, sy) = geo.to_screen(Point::new(gap_x + dx as f32, geo.plot_h + dy as f32));
+            samples.push(driver.pixel(sx, sy));
+        }
+    }
+
+    assert!(
+        samples.iter().any(|&px| colors_close(px, border_color, 10)),
+        "the chart's StrokeRect bottom border should be painted somewhere along the \
+         scanned band: {samples:?}"
+    );
+}
+
+/// The middle (50%) `DashedLine` gridline, scanned across its first ~30px —
+/// long enough to span several `dash_len=4.0, gap_len=3.0` periods. A real
+/// dash shows both the grid colour (dash) and a clearly different colour
+/// (gap, plain canvas background) along the same scanline; a solid line
+/// would only ever show the grid colour.
+///
+/// `plot_h * 0.5` is not pixel-aligned, so the nominal row only ever shows a
+/// partial antialiased blend of grid colour and background on both "dash"
+/// and "gap" pixels. Shifting onto the nearest pixel-aligned row gives dash
+/// pixels near-full coverage (differing from `grid_color` by ~10) while gap
+/// pixels stay at the plain background (differing by ~40) — cleanly
+/// separable at a tolerance in between.
+#[test]
+fn canvas_shapes_demo_gtk_dashed_line_gridline_has_gaps() {
+    let mut driver = GtkDriver::new(CanvasShapesApp::new(), W, H);
+    let geo = ChartGeometry::new(&driver);
+    let grid_color = (60u8, 60u8, 60u8);
+
+    let y = (geo.plot_h * 0.5).round() - 0.5;
+    let mut hit = false;
+    let mut miss = false;
+    for dx in 0..30 {
+        let (sx, sy) = geo.to_screen(Point::new(dx as f32, y));
+        let px = driver.pixel(sx, sy);
+        if colors_close(px, grid_color, 15) {
+            hit = true;
+        } else if !colors_close(px, grid_color, 25) {
+            miss = true;
+        }
+    }
+
+    assert!(
+        hit,
+        "the gridline should paint the grid colour somewhere along its dashes"
+    );
+    assert!(
+        miss,
+        "the gridline should leave visible gaps (DashedLine, not a solid Line) \
+         somewhere along the scanned span"
+    );
+}
+
+/// The first `Bezier` trend-curve segment (bar 0's top to bar 1's top) with
+/// control points a third of the way along the horizontal span, same as
+/// `CanvasShapesApp::chart_canvas` builds them. Its exact midpoint
+/// (`t = 0.5`) is the standard cubic Bézier basis at `t = 0.5`:
+/// `0.125*from + 0.375*c1 + 0.375*c2 + 0.125*to`.
+#[test]
+fn canvas_shapes_demo_gtk_bezier_trend_curve_paints_the_trend_color() {
+    let mut driver = GtkDriver::new(CanvasShapesApp::new(), W, H);
+    let geo = ChartGeometry::new(&driver);
+    let trend_color = (255u8, 120u8, 80u8);
+
+    let from = Point::new(
+        geo.bar_x(0) + geo.bar_w / 2.0,
+        geo.bar_top_y(SHAPES_VALUES[0]),
+    );
+    let to = Point::new(
+        geo.bar_x(1) + geo.bar_w / 2.0,
+        geo.bar_top_y(SHAPES_VALUES[1]),
+    );
+    let dx = (to.x - from.x) / 3.0;
+    let c1 = Point::new(from.x + dx, from.y);
+    let c2 = Point::new(to.x - dx, to.y);
+    let mid = Point::new(
+        0.125 * from.x + 0.375 * c1.x + 0.375 * c2.x + 0.125 * to.x,
+        0.125 * from.y + 0.375 * c1.y + 0.375 * c2.y + 0.125 * to.y,
+    );
+
+    // Scan a small neighbourhood around the exact midpoint: the curve's 2px
+    // stroke centred exactly on the analytic path can land the pixel grid's
+    // sample a row or column off depending on rounding.
+    let mut samples = Vec::new();
+    for ddx in -2..=2 {
+        for ddy in -2..=2 {
+            let (sx, sy) = geo.to_screen(Point::new(mid.x + ddx as f32, mid.y + ddy as f32));
+            samples.push(driver.pixel(sx, sy));
+        }
+    }
+
+    assert!(
+        samples.iter().any(|&px| colors_close(px, trend_color, 20)),
+        "the Bezier trend curve should pass near its analytic midpoint \
+         ({:.1}, {:.1}): {samples:?}",
+        mid.x,
+        mid.y
+    );
+}
+
+/// The `Arc` dial's point at the midpoint of its sweep angle, same
+/// `start_angle`/`end_angle`/`radius` formula as
+/// `CanvasShapesApp::chart_canvas`.
+#[test]
+fn canvas_shapes_demo_gtk_arc_dial_paints_the_dial_color() {
+    let mut driver = GtkDriver::new(CanvasShapesApp::new(), W, H);
+    let geo = ChartGeometry::new(&driver);
+    let dial_color = (80u8, 220u8, 120u8);
+
+    let avg = SHAPES_VALUES.iter().sum::<f32>() / SHAPES_VALUES.len() as f32;
+    let center = Point::new(geo.rect.width - geo.bar_w, geo.bar_w);
+    let radius = geo.bar_w * 0.7;
+    let start_angle = -std::f32::consts::FRAC_PI_2;
+    let end_angle = start_angle + std::f32::consts::PI * (avg.clamp(0.0, 100.0) / 100.0);
+    let mid_angle = (start_angle + end_angle) / 2.0;
+    let mid = Point::new(
+        center.x + radius * mid_angle.cos(),
+        center.y + radius * mid_angle.sin(),
+    );
+
+    let mut samples = Vec::new();
+    for ddx in -2..=2 {
+        for ddy in -2..=2 {
+            let (sx, sy) = geo.to_screen(Point::new(mid.x + ddx as f32, mid.y + ddy as f32));
+            samples.push(driver.pixel(sx, sy));
+        }
+    }
+
+    assert!(
+        samples.iter().any(|&px| colors_close(px, dial_color, 20)),
+        "the Arc dial should pass near its analytic midpoint-angle point \
+         ({:.1}, {:.1}): {samples:?}",
+        mid.x,
+        mid.y
+    );
+}
+
+#[test]
+fn canvas_shapes_demo_gtk_r_key_randomizes_the_bar_values() {
+    let mut driver = GtkDriver::new(CanvasShapesApp::new(), W, H);
+    assert!(driver.screen_contains("Mon 35") && driver.screen_contains("Fri 55"));
+    driver.type_char('r');
+    assert!(
+        !driver.screen_contains("Mon 35") || !driver.screen_contains("Fri 55"),
+        "'r' should redraw with new randomized bar values: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn canvas_shapes_demo_gtk_q_exits() {
+    let mut driver = GtkDriver::new(CanvasShapesApp::new(), W, H);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the canvas shapes demo");
+}
+
+#[test]
+fn canvas_shapes_demo_gtk_escape_exits() {
+    let mut driver = GtkDriver::new(CanvasShapesApp::new(), W, H);
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Escape should exit the canvas shapes demo");
+}
+
+// ─── Canvas v2 per-op alpha (#1627 done-when (b)) ───────────────────────────
+//
+// Neither shipped Canvas example uses a translucent `Color` (every op uses
+// `Color::rgb`, always `a: 255`), so asserting against them alone would
+// never exercise alpha blending. This probe draws two overlapping
+// opaque/translucent `DrawOp::Rect`s through one `Backend::draw_canvas`
+// call and checks the overlap is a genuine blend of the two — the same
+// inline-probe pattern `SolidFillVsStatusBarProbe` above established for a
+// narrow mechanism check no shipped demo exercises.
+
+const ALPHA_PROBE_BASE: quadraui::Color = quadraui::Color::rgb(20, 20, 200);
+const ALPHA_PROBE_TOP: quadraui::Color = quadraui::Color::rgba(200, 20, 20, 128);
+
+struct CanvasAlphaProbe;
+
+impl quadraui::AppLogic for CanvasAlphaProbe {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn quadraui::Backend, _area: ()) {
+        let rect = quadraui::Rect::new(0.0, 0.0, 60.0, 60.0);
+        let canvas = quadraui::Canvas {
+            id: WidgetId::new("probe:canvas-alpha"),
+            ops: vec![
+                quadraui::DrawOp::Rect {
+                    rect: quadraui::Rect::new(0.0, 0.0, 60.0, 60.0),
+                    color: ALPHA_PROBE_BASE,
+                },
+                quadraui::DrawOp::Rect {
+                    rect: quadraui::Rect::new(0.0, 0.0, 60.0, 60.0),
+                    color: ALPHA_PROBE_TOP,
+                },
+            ],
+        };
+        let _ = backend.draw_canvas(rect, &canvas);
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn quadraui::Backend) -> Reaction {
+        Reaction::Continue
+    }
+}
+
+/// A second `DrawOp::Rect` with `a < 255` layered over the first must blend
+/// with it, not simply overwrite it (ignoring alpha) or leave it untouched
+/// (ignoring the top op). Base, top's own RGB, and the true blend are far
+/// enough apart in each channel that a 10-tolerance match against either
+/// source colour alone is conclusive.
+#[test]
+fn canvas_v2_rect_op_honours_per_op_alpha_on_gtk() {
+    let mut driver = GtkDriver::new(CanvasAlphaProbe, 80, 80);
+    let center = driver.pixel(30, 30);
+
+    assert!(
+        !colors_close(
+            center,
+            (ALPHA_PROBE_BASE.r, ALPHA_PROBE_BASE.g, ALPHA_PROBE_BASE.b),
+            10
+        ),
+        "the translucent top rect should visibly change the base colour, not leave it \
+         untouched: got {center:?}"
+    );
+    assert!(
+        !colors_close(
+            center,
+            (ALPHA_PROBE_TOP.r, ALPHA_PROBE_TOP.g, ALPHA_PROBE_TOP.b),
+            10
+        ),
+        "the translucent top rect should blend with the base, not paint its own RGB \
+         opaquely (ignoring `a`): got {center:?}"
     );
 }

@@ -310,7 +310,19 @@ pub(crate) fn polygon_fill_spans(points: &[Point], row_height: f32) -> Vec<Rect>
     }
 
     let mut spans = Vec::new();
-    let mut y = min_y;
+    // Anchor the first row to a multiple of `row_height` from 0 rather than
+    // starting exactly at `min_y`. `points` already has the canvas layout's
+    // translation baked in (`native_surface_paint::paint` translates before
+    // calling this), so for the common case of an integer-pixel layout
+    // offset this lines every row up with a device pixel row boundary.
+    // Without this, consecutive rows straddle pixel rows at the same
+    // fractional offset every time, and two independently-antialiased
+    // `surface_fill_rect` calls `OVER`-composite onto the same straddled
+    // pixel — e.g. 0.3 coverage then 0.7 coverage composites to
+    // `0.7*C + 0.3*(0.3*C + 0.7*B) = 0.79*C + 0.21*B`, which is exactly the
+    // ~79%-opacity fill this anchoring was added to fix, not a legitimate
+    // translucency.
+    let mut y = (min_y / row_height).floor() * row_height;
     while y < max_y {
         let scan_y = y + row_height / 2.0;
         let mut xs: Vec<f32> = Vec::new();
