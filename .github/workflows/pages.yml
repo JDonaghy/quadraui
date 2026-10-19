@@ -15,7 +15,7 @@ name: Deploy site
 #      (`quadraui-gallery/src/site_export.rs`).
 #   2. `quadraui-gallery --capture` — one SVG per (demo, variant) on
 #      this runner's TUI backend, plus `manifest.json` describing every
-#      other backend as `unsupported`/`capture-pending`
+#      other backend as `unsupported`
 #      (`quadraui-gallery/src/capture.rs`). This leg itself only captures
 #      the TUI column; the GTK, macOS and Windows columns come from (3).
 #   3. The GTK, macOS and Windows columns come from `ci.yml`'s
@@ -145,7 +145,7 @@ jobs:
       # download must drop the argument rather than pass a path that
       # isn't there. Dropping it is the correct fallback, not a degraded
       # one — the TUI capture's own manifest already describes every
-      # other backend as `unsupported`/`capture-pending`, so a missing
+      # other backend as `unsupported`, so a missing
       # column renders exactly as it does today (pending), never a
       # broken build (quadraui#1619).
       - name: Generate gallery pages

@@ -12,8 +12,8 @@
 //! manifest for exactly this reason. A publishing step that wants one
 //! gallery covering every backend needs to merge manifests keyed by
 //! `(demo, group, variant, backend)`, preferring any row with a `path`
-//! over the same key's `unsupported`/`capture-pending` row from another
-//! run — this module does not do that merge itself.
+//! over the same key's `unsupported` row from another run — this module
+//! does not do that merge itself.
 //!
 //! [`run_capture`] is the entry point `src/main.rs`'s `--capture <dir>`
 //! flag calls, and the same function a test calls directly (see
@@ -56,9 +56,10 @@
 //!
 //! When a backend's own feature isn't compiled into this binary at all
 //! (e.g. a `tui`-only build has no `quadraui::macos` module to drive),
-//! its entries get `"status": "unsupported"` instead — distinct from
-//! `"capture-pending"` because it isn't a permanent gap in this crate,
-//! just this particular build/host.
+//! or the feature is on but the host isn't the one that backend needs,
+//! its entries get `"status": "unsupported"` instead of a faked image.
+//! That is a property of this particular build/host, not of the
+//! backend — another CI leg's run covers it.
 //!
 //! ## Per-(demo, variant) failure isolation
 //!
@@ -102,10 +103,10 @@ pub struct ManifestEntry {
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    /// Human-readable reason for `status`: the tracking issue a
-    /// `capture-pending` gap is blocked on, or the error/panic message
-    /// for an `"error"` row. `None` whenever `status` is `None` (a real
-    /// `path` entry needs no explanation).
+    /// Human-readable reason for `status`: which feature/host an
+    /// `"unsupported"` row needs, or the error/panic message for an
+    /// `"error"` row. `None` whenever `status` is `None` (a real `path`
+    /// entry needs no explanation).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
@@ -202,8 +203,8 @@ pub fn run_capture(dir: &Path) -> io::Result<Vec<ManifestEntry>> {
 /// Append one `status`-only entry (no `path`) per registered (demo,
 /// variant) for `backend` — the shared body behind every "this backend
 /// has no image to show" branch in [`run_capture`], so `unsupported`
-/// and `capture-pending` entries always carry the same demo/group/
-/// variant shape the real captures do.
+/// entries always carry the same demo/group/variant shape the real
+/// captures do.
 fn push_status(manifest: &mut Vec<ManifestEntry>, backend: &str, status: &str, why: &str) {
     for demo in registry() {
         let group = demo.group().to_string();
