@@ -150,7 +150,8 @@ impl Reaction {
 /// What happened during one non-blocking `step`/`pump` call — the
 /// single-iteration, host-owns-the-loop entry points. Defined once
 /// here, shared by every backend, the same way [`Reaction`] already is —
-/// see either runner type's doc for the full step/pump contract.
+/// see any of the three runner types' docs (`TuiRunner`, `GtkRunner`,
+/// `MacRunner`) for the full step/pump contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StepOutcome {

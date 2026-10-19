@@ -1799,7 +1799,11 @@ struct MacBootstrap {
     _blink_timer: Retained<NSTimer>,
 }
 
-fn bootstrap<A: AppLogic + 'static>(app: A, config: RunConfig, mtm: MainThreadMarker) -> MacBootstrap {
+fn bootstrap<A: AppLogic + 'static>(
+    app: A,
+    config: RunConfig,
+    mtm: MainThreadMarker,
+) -> MacBootstrap {
     let app = Rc::new(RefCell::new(app));
     let backend = Rc::new(RefCell::new(MacBackend::new()));
 
@@ -2124,10 +2128,14 @@ pub use crate::runner::StepOutcome;
 ///   instead of `distantPast()`, so the call blocks until either a real event
 ///   arrives or `timeout` elapses, whichever is first.
 ///
-/// Both return a [`StepOutcome`]: `Continue` while the window is still open,
-/// `Exited` once it's gone — checked via `NSApplication::windows().is_empty()`,
-/// mirroring `GtkRunner::outcome`'s rationale for reading the live window list
-/// rather than keeping a separate flag in sync with it.
+/// Both return a [`StepOutcome`]: `Continue` while this runner's own window
+/// is still open, `Exited` once *it* closes — checked via
+/// `_boot._window.isVisible()`, scoped to the single window [`bootstrap`]
+/// created rather than `NSApplication::windows()` (the whole process's
+/// window list), mirroring `GtkRunner::outcome`'s per-`Application` scoping.
+/// A host embedding quadraui alongside its own AppKit windows therefore sees
+/// `Exited` exactly when quadraui's window goes away, independent of what
+/// else the host has open.
 ///
 /// A background thread's [`crate::backend::Backend::waker`] call reaches a
 /// `MacRunner`-driven loop with no extra wiring: `MacBackend::waker()` posts
@@ -2135,8 +2143,19 @@ pub use crate::runner::StepOutcome;
 /// other GCD main-queue block — becomes a source AppKit's run loop wakes for,
 /// so a blocking `pump(timeout)` call returns as soon as the waker's posted
 /// block runs, not only once `timeout` elapses.
+///
+/// **Caveat for `StepOutcome::Exited`:** `Reaction::Exit` and the
+/// last-window-close path both route to `[NSApp terminate:]` (see this
+/// module's top-level doc), and `terminate:` ends the process rather than
+/// returning control to Rust. In practice this means a host driving a
+/// `MacRunner` loop never actually observes `StepOutcome::Exited` from a
+/// quadraui-initiated quit (Cmd-Q, the native Quit menu item, or
+/// `Reaction::Exit`) — the process exits first. `Exited` is reachable today
+/// only via the window's own close button/`Cmd-W`/`windowShouldClose:`
+/// returning true without going through `terminate:`. A host that needs a
+/// reliable non-terminating shutdown signal should treat this as a known
+/// gap rather than relying on `pump`/`step` to report it.
 pub struct MacRunner {
-    ns_app: Retained<NSApplication>,
     _boot: MacBootstrap,
 }
 
@@ -2156,18 +2175,25 @@ impl MacRunner {
         let mtm = MainThreadMarker::new()
             .expect("quadraui::macos::run::MacRunner must be built on the main thread");
         let boot = bootstrap(app, config, mtm);
-        let ns_app = boot.ns_app.clone();
-        Self {
-            ns_app,
-            _boot: boot,
-        }
+        // `NSApp.isRunning`/`[NSApp run]`'s finishLaunching dance is skipped
+        // entirely by the step()/pump() path below — `bootstrap` never calls
+        // `ns_app.run()`, so nothing else sends `finishLaunching` either.
+        // Without it `NSApp.isRunning` stays `NO` and
+        // `NSApplicationWillFinishLaunching`/`DidFinishLaunching` never post;
+        // the usual symptom is a dead app menu, since
+        // `Backend::install_menu_bar`'s `setMainMenu` call expects a fully
+        // launched application. Send it explicitly here so a step()/pump()-driven
+        // app reaches the same AppKit launch state `ns_app.run()` would have
+        // produced for free.
+        boot.ns_app.finishLaunching();
+        Self { _boot: boot }
     }
 
-    /// Whether the app's window is still open — see the type-level doc's
-    /// third paragraph for why this list, not a dedicated flag, is the
-    /// source of truth.
+    /// Whether the app's own window is still open — see the type-level
+    /// doc's third paragraph for why this checks the single window
+    /// [`bootstrap`] created, not the process-wide window list.
     fn window_open(&self) -> bool {
-        !self.ns_app.windows().is_empty()
+        self._boot._window.isVisible()
     }
 
     fn outcome(&self) -> StepOutcome {
@@ -2179,9 +2205,9 @@ impl MacRunner {
     }
 
     /// Pulls at most one event with the given expiration date, dispatches it
-    /// if present, then flushes any queued redraw — the shared body of
-    /// [`Self::step`] (`NSDate::distantPast()`) and [`Self::pump`] (a bounded
-    /// future date).
+    /// if present, then flushes a queued redraw of this runner's own window
+    /// only — the shared body of [`Self::step`] (`NSDate::distantPast()`)
+    /// and [`Self::pump`] (a bounded future date).
     ///
     /// `updateWindows` alone only refreshes window-level chrome (titles,
     /// menu validation); a `setNeedsDisplay` queued by this pass's dispatch
@@ -2191,6 +2217,9 @@ impl MacRunner {
     /// the loop one pass at a time never reaches on its own. `displayIfNeeded`
     /// forces that pass to happen synchronously, inside this call, so the
     /// caller observes the resulting frame before `step`/`pump` returns.
+    /// Scoped to `_boot._window` rather than `NSApplication::windows()` so a
+    /// host embedding its own AppKit windows alongside this one never has
+    /// them repainted on quadraui's behalf.
     fn run_one(&mut self, expiration: &NSDate) -> StepOutcome {
         if !self.window_open() {
             return StepOutcome::Exited;
@@ -2202,20 +2231,20 @@ impl MacRunner {
         // frame-tick path in this module) relies on being already set up by
         // the time any app code runs.
         let event = unsafe {
-            self.ns_app.nextEventMatchingMask_untilDate_inMode_dequeue(
-                NSEventMask::Any,
-                Some(expiration),
-                NSDefaultRunLoopMode,
-                true,
-            )
+            self._boot
+                .ns_app
+                .nextEventMatchingMask_untilDate_inMode_dequeue(
+                    NSEventMask::Any,
+                    Some(expiration),
+                    NSDefaultRunLoopMode,
+                    true,
+                )
         };
         if let Some(event) = event {
-            self.ns_app.sendEvent(&event);
+            self._boot.ns_app.sendEvent(&event);
         }
-        self.ns_app.updateWindows();
-        for window in self.ns_app.windows().iter() {
-            window.displayIfNeeded();
-        }
+        self._boot.ns_app.updateWindows();
+        self._boot._window.displayIfNeeded();
 
         self.outcome()
     }
@@ -2239,9 +2268,24 @@ impl MacRunner {
 /// drives AppKit's run loop from a test rather than only exercising the
 /// plain-Rust routing around it (see `window_close_tests`'s doc for why
 /// most coverage here avoids a live app). Each test is gated behind
-/// `MainThreadMarker::new()`, matching every other live-AppKit test in
-/// this file — `cargo test` on a non-main-thread host silently skips
-/// rather than panicking on `MacRunner::new`'s own thread check.
+/// `MainThreadMarker::new()`, the same skip-rather-than-panic guard
+/// `macos::menu_bar_install`'s and `macos::backend`'s live-AppKit tests use
+/// (there are no other `MainThreadMarker`-gated tests in this file).
+///
+/// That gate is a *skip*, not a pass, under the standard test harness:
+/// `MainThreadMarker::new()` checks the OS-level main thread, and
+/// `cargo test`'s default harness always runs a test body on a thread it
+/// spawns — never the process's actual main thread — regardless of
+/// `--test-threads`. So under any plain `cargo test --features macos`
+/// invocation, including a serial one, all three tests below return
+/// early and report as passed without executing a single assertion.
+/// There is currently no `cargo test` invocation that runs them for
+/// real; doing so needs a custom `harness = false` binary whose `main`
+/// calls these functions directly from the process's own main thread,
+/// which this module does not provide. Treat a green `cargo test` run
+/// here as "did not regress the skip path", not as evidence the
+/// step/pump behaviour itself still works — that needs an operator
+/// manually invoking them from a main-thread harness.
 #[cfg(test)]
 mod step_pump_tests {
     use super::*;
@@ -2282,7 +2326,9 @@ mod step_pump_tests {
         }
 
         fn render(&self, _backend: &mut dyn Backend, _area: ()) {
-            self.recorder.render_calls.set(self.recorder.render_calls.get() + 1);
+            self.recorder
+                .render_calls
+                .set(self.recorder.render_calls.get() + 1);
         }
 
         fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
@@ -2291,7 +2337,9 @@ mod step_pump_tests {
         }
 
         fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
-            self.recorder.tick_calls.set(self.recorder.tick_calls.get() + 1);
+            self.recorder
+                .tick_calls
+                .set(self.recorder.tick_calls.get() + 1);
             Reaction::Continue
         }
     }
@@ -2356,7 +2404,11 @@ mod step_pump_tests {
 
         assert_eq!(outcome, StepOutcome::Continue);
         let events = recorder.events.borrow();
-        assert_eq!(events.len(), 1, "expected exactly the one waker-delivered event");
+        assert_eq!(
+            events.len(),
+            1,
+            "expected exactly the one waker-delivered event"
+        );
         match &events[0] {
             UiEvent::User(payload) => {
                 assert_eq!(payload.downcast_ref::<i32>(), Some(&7));

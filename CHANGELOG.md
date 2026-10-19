@@ -190,9 +190,15 @@ only a push to `main` runs this workflow.
   AppKit event without blocking, `pump(timeout)` blocks up to `timeout`
   waiting for the next one, and both return `StepOutcome::Continue` or
   `StepOutcome::Exited` so a host loop (not `NSApplication::run()`) can
-  drive the app a slice at a time. `macos::run`/`run_with` are unchanged
-  convenience wrappers around `MacRunner` for the all-owning case. New
-  example: `examples/macos_embedded.rs`.
+  drive the app a slice at a time. Window visibility and the redraw sweep
+  are scoped to the single window `MacRunner` created, never a host's own
+  AppKit windows. `macos::run`/`run_with` are unchanged convenience
+  wrappers around `MacRunner` for the all-owning case. New example:
+  `examples/macos_embedded.rs`. Note: `StepOutcome::Exited` is not
+  reachable from a quadraui-initiated quit today — both `Reaction::Exit`
+  and the native last-window-close path route to `[NSApp terminate:]`,
+  which calls `exit()` and ends the host process; see `MacRunner`'s doc
+  comment for the caveat.
 
 ### Fixed
 
