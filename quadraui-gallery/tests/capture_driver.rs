@@ -11,8 +11,8 @@ use std::fs;
 use quadraui_gallery::registry::registry;
 
 /// `run_capture` writes real images for the TUI backend and
-/// `status`-only entries (`unsupported`/`capture-pending`) for every
-/// other backend — both kinds must show up in the manifest, and the
+/// `status`-only `unsupported` entries for every backend this build or
+/// host cannot drive — both kinds must show up in the manifest, and the
 /// real ones must point at a file that actually exists on disk.
 #[test]
 fn capture_writes_tui_svg_and_lists_it_in_the_manifest() {
@@ -97,7 +97,10 @@ fn capture_writes_tui_svg_and_lists_it_in_the_manifest() {
          not just its sidebar label:\n{svg}"
     );
 
-    // ── win has no headless capture path yet, never a faked image ─────
+    // ── win: a real path only on a Windows host built with the `win`
+    // feature (that leg's own coverage lives in `src/capture.rs`'s
+    // `#[cfg(target_os = "windows")]` tests), otherwise a status-only
+    // `unsupported` row — never a faked image.
     let win_entry = manifest
         .iter()
         .find(|e| e.backend == "win" && e.demo == demo.name() && e.variant == variant)
@@ -107,12 +110,21 @@ fn capture_writes_tui_svg_and_lists_it_in_the_manifest() {
                 demo.name()
             )
         });
-    assert_eq!(
-        win_entry.status.as_deref(),
-        Some("capture-pending"),
-        "win has no headless capture path yet, so its entry must be capture-pending, not a path"
-    );
-    assert!(win_entry.path.is_none(), "win entry must not carry a path");
+    if cfg!(all(feature = "win", target_os = "windows")) {
+        assert!(
+            win_entry.status.is_none(),
+            "win entry should have a real path when built with --features win on \
+             a Windows host: {win_entry:#?}"
+        );
+    } else {
+        assert_eq!(
+            win_entry.status.as_deref(),
+            Some("unsupported"),
+            "win capture needs --features win on a Windows host, so elsewhere its \
+             entry must be unsupported, not a path"
+        );
+        assert!(win_entry.path.is_none(), "win entry must not carry a path");
+    }
 
     // ── gtk: a real path when this binary was built with the `gtk`
     // feature too (see `tests/capture_gtk_driver.rs` for that leg's own
