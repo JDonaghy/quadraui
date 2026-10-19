@@ -16,18 +16,18 @@ name: Deploy site
 #   2. `quadraui-gallery --capture` — one SVG per (demo, variant) on
 #      this runner's TUI backend, plus `manifest.json` describing every
 #      other backend as `unsupported`/`capture-pending`
-#      (`quadraui-gallery/src/capture.rs`). Ubuntu has no GTK/Windows
-#      headless driver yet (see that module's own doc), so this leg
-#      itself only captures the TUI column.
-#   3. The macOS column comes from `macos.yml`'s `gallery-capture-macos`
-#      job (one PNG per demo/variant through the real Core Graphics
-#      backend), uploaded there as the `gallery-capture-macos` artifact
-#      and downloaded here — Ubuntu cannot run the macOS backend, so the
-#      only way macOS screenshots reach the site is from that macos-latest
-#      job's artifact. It refreshes on `macos.yml`'s weekly develop cron,
-#      so the macOS column can lag the TUI column by up to a week; for a
-#      widget gallery that is acceptable and far better than a "Pending"
-#      column (quadraui#1619).
+#      (`quadraui-gallery/src/capture.rs`). This leg itself only captures
+#      the TUI column; the GTK and Windows columns come from (3).
+#   3. The GTK and macOS columns come from `ci.yml`'s
+#      `gallery-capture-gtk` job and `macos.yml`'s `gallery-capture-macos`
+#      job respectively (one PNG per demo/variant through each backend's
+#      own headless driver), each uploaded as its own `gallery-capture-*`
+#      artifact and downloaded here. GTK's artifact refreshes on every
+#      `ci.yml` run on `develop`; macOS's refreshes only on `macos.yml`'s
+#      weekly develop cron, so that column can lag the others by up to a
+#      week — for a widget gallery that is acceptable and far better than
+#      a "Pending" column (quadraui#1619). Windows has no headless
+#      capture leg yet, so that column stays "Pending" until one exists.
 #   4. `tools/site_gen.py` merges (1), (2) and (3) into `site/src/gallery/`
 #      and `site/src/SUMMARY.md` (its `--capture` is repeatable and keys
 #      rows by `(demo, group, variant, backend)`, preferring a real
@@ -104,6 +104,19 @@ jobs:
       # macOS artifact exists yet, the site still builds TUI-only rather
       # than failing the whole deploy — the macOS column simply falls back
       # to the "pending" rows site_gen.py already emits (quadraui#1619).
+      # GTK's artifact comes from `ci.yml`'s `gallery-capture-gtk` job on
+      # the same `develop` branch — see this workflow's header comment
+      # for why that's a different artifact source than the macOS one
+      # just below.
+      - name: Download GTK gallery captures
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: ci.yml
+          branch: develop
+          name: gallery-capture-gtk
+          path: target/site/capture-gtk
+          if_no_artifact_found: warn
+
       - name: Download macOS gallery captures
         uses: dawidd6/action-download-artifact@v6
         with:
@@ -113,17 +126,23 @@ jobs:
           path: target/site/capture-macos
           if_no_artifact_found: warn
 
-      # The macOS `--capture` dir is added only when its manifest actually
-      # arrived: `site_gen.py` hard-errors (FileNotFoundError) on a
-      # `--capture` dir with no `manifest.json`, so an empty/absent macOS
-      # download must drop the argument rather than pass a path that isn't
-      # there. Dropping it is the correct fallback, not a degraded one —
-      # the TUI capture's own manifest already describes macOS as
-      # `capture-pending`, so the macOS column renders exactly as it does
-      # today (pending), never a broken build (quadraui#1619).
+      # Each extra `--capture` dir is added only when its manifest
+      # actually arrived: `site_gen.py` hard-errors (FileNotFoundError)
+      # on a `--capture` dir with no `manifest.json`, so an empty/absent
+      # download must drop the argument rather than pass a path that
+      # isn't there. Dropping it is the correct fallback, not a degraded
+      # one — the TUI capture's own manifest already describes every
+      # other backend as `unsupported`/`capture-pending`, so a missing
+      # column renders exactly as it does today (pending), never a
+      # broken build (quadraui#1619).
       - name: Generate gallery pages
         run: |
           extra=()
+          if [ -f target/site/capture-gtk/manifest.json ]; then
+            extra+=(--capture target/site/capture-gtk)
+          else
+            echo "::warning::no gallery-capture-gtk manifest; GTK column stays pending"
+          fi
           if [ -f target/site/capture-macos/manifest.json ]; then
             extra+=(--capture target/site/capture-macos)
           else

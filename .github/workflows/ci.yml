@@ -1890,3 +1890,45 @@ jobs:
           name: gallery-capture-tui
           path: target/gallery-capture
           if-no-files-found: warn
+
+  gallery-capture-gtk:
+    # Headless gallery capture mode (#1348), GTK leg — the Linux-runner
+    # twin of `gallery-capture-tui` above and `macos.yml`'s
+    # `gallery-capture-macos`; see that job's comment and
+    # `quadraui-gallery/src/capture.rs`'s module doc for the full picture.
+    # Drives the same `GalleryApp` through the headless `GtkDriver` (an
+    # in-memory Cairo `ImageSurface`, no display server) and PNG-encodes
+    # it — needs the same GTK4 system libraries as the `gtk` job above,
+    # which is why this installs them the same way rather than assuming
+    # they're on the runner image.
+    #
+    # `continue-on-error: true` and no dependency on the blocking `gtk`
+    # job above: a capture-mode bug must never hold up a PR. Correctness
+    # is `tests/capture_gtk_driver.rs`'s job, run by the blocking `gtk`
+    # job's own `cargo test --features gtk,tui` step — this job itself
+    # runs no tests, only `cargo run --capture`, and exists purely to
+    # produce the uploaded artifact `pages.yml` later downloads.
+    name: gallery capture (gtk)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install GTK4 system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Capture every registered demo (gtk backend)
+        run: |
+          mkdir -p target/gallery-capture
+          cargo run -p quadraui-gallery --features gtk --bin quadraui-gallery -- \
+            --capture target/gallery-capture
+      - name: Upload gallery capture (gtk)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gallery-capture-gtk
+          path: target/gallery-capture
+          if-no-files-found: warn

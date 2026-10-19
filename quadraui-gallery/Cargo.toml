@@ -25,7 +25,12 @@ publish = false
 # doesn't violate the portability commitment the comment above
 # describes.
 tui = ["quadraui/tui"]
-gtk = ["quadraui/gtk"]
+# `dep:image` is wired here too: `src/capture.rs`'s GTK leg PNG-encodes
+# a headless Cairo `ImageSurface`'s bytes the same way the macOS leg
+# encodes a `BitmapSurface`'s, so a GTK build needs the same codec a
+# macOS build does. See the `macos` feature's comment below for the
+# version-pinning rationale, which applies equally here.
+gtk = ["quadraui/gtk", "dep:image"]
 # PTY + vt100 engine, no rasteriser of its own — pairs with either `tui`
 # or `gtk`. `demos::terminal` (the `Terminal` demo) is only compiled and
 # only registered (see `registry::registry`) when this is enabled, so a
@@ -38,14 +43,14 @@ terminal = ["quadraui/terminal"]
 # non-macOS host. `src/main.rs` mirrors that with
 # `#[cfg(all(feature = "macos", target_os = "macos"))]`.
 #
-# `dep:image` is tied to this feature (rather than always-on) for the
-# same reason: `src/capture.rs`'s macOS leg (PNG encoding of
-# `BitmapSurface`'s raw RGBA bytes) only ever compiles under
+# `dep:image` is tied to this feature (rather than always-on) for a
+# similar reason to `gtk` above: `src/capture.rs`'s macOS leg (PNG
+# encoding of `BitmapSurface`'s raw RGBA bytes) only ever compiles under
 # `all(feature = "macos", target_os = "macos")`, so a `tui`-only build
-# (the Linux CI capture leg) never pulls in an image codec it can't
-# reach. Pinned to the same `0.25` series `quadraui` itself already
-# resolves transitively (via `arboard/image-data`), so this adds no new
-# major version to the workspace's dependency graph.
+# (which has no capture leg that needs an image codec at all) never
+# pulls one in. Pinned to the same `0.25` series `quadraui` itself
+# already resolves transitively (via `arboard/image-data`), so this
+# adds no new major version to the workspace's dependency graph.
 macos = ["quadraui/macos", "dep:image"]
 # Unlike `macos`, `quadraui::win` compiles on every host (only the real
 # WinAPI calls inside it are `cfg(target_os = "windows")`), so this
@@ -56,11 +61,11 @@ win = ["quadraui/win"]
 quadraui = { path = "../quadraui" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-# PNG encoder for capture mode's macOS leg only (`src/capture.rs`) — see
-# the `macos` feature's comment above for why it's wired there instead
-# of always-on. `default-features = false` + `features = ["png"]` keeps
-# it to just the one codec capture mode needs, not every image format
-# `image` supports.
+# PNG encoder for capture mode's GTK and macOS legs (`src/capture.rs`)
+# — see the `gtk`/`macos` features' comments above for why it's wired
+# per-backend instead of always-on. `default-features = false` +
+# `features = ["png"]` keeps it to just the one codec capture mode
+# needs, not every image format `image` supports.
 image = { version = "0.25", optional = true, default-features = false, features = [
     "png",
 ] }
