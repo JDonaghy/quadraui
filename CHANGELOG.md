@@ -146,6 +146,29 @@ only a push to `main` runs this workflow.
   and keeps painting the plain-text pairs. Additive — no public shape
   changed.
 
+- Accessibility tree builder (`a11y::tree`, re-exported at the crate
+  root): `frame_to_tree` turns a captured `OwnedFrame` plus a
+  `FocusManager` into an `A11yTree` of `A11yTreeNode`s, with
+  `A11yNodeId`s derived from `WidgetId` so a node keeps its id across
+  frames and position changes, bounds in logical pixels, and focus
+  descending into the focused primitive's own sub-node. `A11yTreeBuilder`
+  makes that incremental — the first `update` is the full tree, later
+  ones carry only changed nodes as an `A11yUpdate`. Per-primitive
+  role/state/children come from the `A11yPrimitive` trait (`A11yChild`);
+  `List` and `Toolbar` are mapped fully and every other primitive falls
+  back to a labelled group. Behind the optional `a11y` cargo feature the
+  same types emit `accesskit` values (`A11yUpdate::to_tree_update`,
+  `A11yTreeBuilder::tree_update`). The TUI backend deliberately emits no
+  tree — a terminal screen reader reads the terminal itself.
+- `testing::a11y::{A11yScenario, A11ySnapshot}` — a headless seam that
+  builds a frame from pushed surfaces, applies focus, and returns the
+  accessibility tree as a stable assertable snapshot (one
+  `role "label" [state]` line per node, bounds deliberately omitted). No
+  backend, no window and no `a11y` feature required.
+- `OwnedFrame::nodes_mut` and `ScreenLayout::{surfaces, surfaces_mut}` —
+  in-place accessors for a captured frame's nodes and a layout's pushed
+  surfaces, since `Surface` is neither `Clone` nor `Debug`.
+
 ### Fixed
 
 - `tree_layout_measured` (the shared pixel-layout math `gtk_tree_layout_measured` /
