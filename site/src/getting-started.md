@@ -2,15 +2,22 @@
 
 ## Add the dependency
 
-quadraui is `publish = false` today (version `0.0.1`), so it isn't on
-crates.io yet — add it as a git or path dependency:
+quadraui is published on [crates.io](https://crates.io/crates/quadraui)
+(latest `0.2.2`) — add it with the backend feature(s) your app needs:
 
 ```toml
 [dependencies]
-quadraui = { git = "https://github.com/JDonaghy/quadraui", features = ["tui"] }
+quadraui = { version = "0.2", features = ["tui"] }
 ```
 
-Pick the backend feature(s) your app needs:
+To track unreleased work instead, depend on the `develop` branch:
+
+```toml
+[dependencies]
+quadraui = { git = "https://github.com/JDonaghy/quadraui", branch = "develop", features = ["tui"] }
+```
+
+The backend features:
 
 | Feature | Backend |
 |---|---|
@@ -46,10 +53,9 @@ JSON it renders.
 
 - [Gallery](gallery/index.md) — every primitive, with its code sample and
   a backend-support grid.
-- [docs.rs](https://docs.rs/quadraui) — API reference (once published;
-  until then, `cargo doc -p quadraui --features tui,gtk --open` from a
-  checkout).
-- [crates.io](https://crates.io/crates/quadraui) — the published crate
-  (once released).
+- [docs.rs](https://docs.rs/quadraui) — API reference for the published
+  release (or `cargo doc -p quadraui --features tui,gtk --open` from a
+  checkout for unreleased work).
+- [crates.io](https://crates.io/crates/quadraui) — the published crate.
 - [GitHub repository](https://github.com/JDonaghy/quadraui) — source,
   issues, and `CLAUDE.md`/`CONTRIBUTING.md` for contributing.
