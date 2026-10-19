@@ -54,6 +54,13 @@
 ))]
 pub(crate) mod driver_core;
 
+/// Headless accessibility-tree scenarios — see [`a11y::A11yScenario`].
+///
+/// Ungated, like this module itself: the tree builder it drives is a pure
+/// function of an owned [`crate::OwnedFrame`], so a scenario needs no
+/// backend and no `a11y` feature to produce an assertable snapshot.
+pub mod a11y;
+
 // Only pulled in by the paint-time text-run recording sink below, which
 // is itself gated to the pixel backends that need it (`gtk`/`win`/`macos`
 // — see that section's doc) — TUI has no analogous need (its `find` scans

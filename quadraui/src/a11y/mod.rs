@@ -1,9 +1,12 @@
-//! Accessibility data-field groundwork.
+//! Accessibility data fields and the tree they feed.
 //!
 //! This module provides the data-field half of the accessibility plan:
 //! a typed [`A11yRole`] plus a typed state bag, carried on [`A11yInfo`].
-//! AT backend integration (UI Automation / NSAccessibility / AT-SPI) is
-//! deferred and separate.
+//! [`tree`] turns a captured [`crate::frame::OwnedFrame`] plus a
+//! [`crate::FocusManager`] into a backend-independent accessibility tree
+//! (and, behind the `a11y` cargo feature, an `accesskit::TreeUpdate`).
+//! Per-platform AT backend wiring (UI Automation / NSAccessibility /
+//! AT-SPI) consumes that update and is separate.
 //!
 //! # Why this is a standalone type, not a field on every primitive
 //!
@@ -68,6 +71,13 @@
 //! ever exist here.
 
 use serde::{Deserialize, Serialize};
+
+pub mod tree;
+
+pub use tree::{
+    frame_to_tree, A11yChild, A11yNodeId, A11yPrimitive, A11yTree, A11yTreeBuilder, A11yTreeNode,
+    A11yUpdate,
+};
 
 /// A typed accessibility role, replacing a free-form role string.
 ///
