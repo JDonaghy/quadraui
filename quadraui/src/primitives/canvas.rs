@@ -291,6 +291,14 @@ impl CanvasFontRole {
 /// non-finite/non-positive `row_height`, or a polygon with no vertical
 /// extent) rather than panicking — `points` is reachable from
 /// `Deserialize`d app data, so it can never be assumed well-formed.
+// `#[allow(dead_code)]`: this and the four sibling helpers below are the
+// shared geometry the Canvas v2 ops degrade through — called from the
+// `tui` braille renderer and from `native_surface_paint` (gtk/win/macos),
+// and exercised by the tests at the bottom of this file. A build with no
+// backend feature at all compiles none of those call sites, so the
+// `-D warnings` default-feature `cargo package` leg would otherwise reject
+// them as unused.
+#[allow(dead_code)]
 pub(crate) fn polygon_fill_spans(points: &[Point], row_height: f32) -> Vec<Rect> {
     if points.len() < 3 || !row_height.is_finite() || row_height <= 0.0 {
         return Vec::new();
@@ -329,6 +337,7 @@ pub(crate) fn polygon_fill_spans(points: &[Point], row_height: f32) -> Vec<Rect>
 
 /// Approximate an ellipse as a `segments`-sided polygon (`segments`
 /// clamped to at least `3`), suitable for [`polygon_fill_spans`].
+#[allow(dead_code)]
 pub(crate) fn ellipse_polygon(
     center: Point,
     radius_x: f32,
@@ -350,6 +359,7 @@ pub(crate) fn ellipse_polygon(
 /// Sample a circular arc into a polyline of `segments.max(1) + 1` points
 /// (inclusive of both endpoints), suitable for stroking as a sequence of
 /// line segments — see [`DrawOp::Arc`]'s own doc for the angle convention.
+#[allow(dead_code)]
 pub(crate) fn arc_polyline(
     center: Point,
     radius: f32,
@@ -373,6 +383,7 @@ pub(crate) fn arc_polyline(
 /// Sample a cubic Bézier curve into a polyline of `segments.max(1) + 1`
 /// points (inclusive of both endpoints) via the standard cubic Bézier
 /// formula, suitable for stroking as a sequence of line segments.
+#[allow(dead_code)]
 pub(crate) fn bezier_polyline(
     from: Point,
     control1: Point,
@@ -404,6 +415,7 @@ pub(crate) fn bezier_polyline(
 /// `from..to` segment (never an infinite loop, never empty) when
 /// `dash_len`/`gap_len` is non-finite or non-positive, or when `from` and
 /// `to` are the same point.
+#[allow(dead_code)]
 pub(crate) fn dash_segments(
     from: Point,
     to: Point,
