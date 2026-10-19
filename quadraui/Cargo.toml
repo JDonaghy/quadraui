@@ -1702,6 +1702,19 @@ name = "gtk_canvas"
 path = "examples/gtk_canvas.rs"
 required-features = ["gtk"]
 
+# `Canvas` v2 ops (Polygon/Ellipse/Arc/Bezier/DashedLine/StrokeRect/
+# StyledTextRun) chart-style demo. Both entries are mandatory for the
+# same reason as the plain `tui_canvas`/`gtk_canvas` pair above.
+[[example]]
+name = "tui_canvas_shapes"
+path = "examples/tui_canvas_shapes.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_canvas_shapes"
+path = "examples/gtk_canvas_shapes.rs"
+required-features = ["gtk"]
+
 # #596 — `WorkspaceController` (open-N-view-one document tabs) mounted
 # inside an `AppShell` panel. Both entries are mandatory (see #595's note
 # above): without an explicit `[[example]]`, `gtk_workspace.rs` gets

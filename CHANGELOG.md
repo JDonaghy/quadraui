@@ -168,6 +168,22 @@ only a push to `main` runs this workflow.
 - `OwnedFrame::nodes_mut` and `ScreenLayout::{surfaces, surfaces_mut}` —
   in-place accessors for a captured frame's nodes and a layout's pushed
   surfaces, since `Surface` is neither `Clone` nor `Debug`.
+- `Canvas` v2: six new `DrawOp` variants — `Polygon` (even-odd fill),
+  `Ellipse`, `Arc`, `Bezier` (cubic, SVG `C`-command contract),
+  `DashedLine` and `StrokeRect` — plus `DrawOp::StyledTextRun`, a
+  `TextRun` with a per-op `role: CanvasFontRole` (a serde-capable
+  mirror of `FontRole`), `italic` flag and `#[serde(default)] size:
+  Option<f32>`. `Color::with_alpha` already covers per-op translucency
+  for every op that carries a `Color`, so there is no separate alpha
+  field. Every new op degrades to the existing sub-cell braille grid on
+  TUI (`crate::tui::canvas`), never panics or reports `Unsupported`; the
+  new `tui_canvas_shapes` / `gtk_canvas_shapes` example (backed by one
+  shared `CanvasShapesApp`, with a `TuiDriver` test in
+  `tests/tui_example_driver.rs`) renders a chart-style gauge from the
+  full new op set on every backend. `DrawOp` stays `#[non_exhaustive]`.
+- `Surface::Canvas` — a pushed `Canvas` primitive now flows through
+  `ScreenLayout`/`OwnedFrame` like every other primitive, instead of
+  only being paintable via a direct `Backend::draw_canvas` call.
 
 ### Fixed
 
