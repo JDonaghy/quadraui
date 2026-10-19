@@ -595,6 +595,10 @@ objc2-foundation = { version = "0.3", optional = true, features = [
     "NSGeometry",
     "NSNotification",
     "NSObject",
+    # `NSDefaultRunLoopMode` (macOS non-blocking `step()`/`pump()` runner,
+    # `macos::run::MacRunner`): the extern static lives behind this feature
+    # plus the already-enabled "NSString".
+    "NSObjCRuntime",
     "NSProcessInfo",
     "NSString",
     "NSThread",

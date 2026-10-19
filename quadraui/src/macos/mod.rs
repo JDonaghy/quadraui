@@ -101,7 +101,7 @@ pub use pipeline_view::mac_pipeline_view_layout;
 pub use progress::mac_progress_layout;
 pub use radio_group::mac_radio_group_layout;
 pub use rich_text_popup::draw_rich_text_popup;
-pub use run::{run, run_with, RunConfig};
+pub use run::{run, run_with, MacRunner, RunConfig, StepOutcome};
 pub use services::MacPlatformServices;
 pub use sidebar_panel::mac_sidebar_panel_layout;
 pub use spinner::{draw_spinner, mac_spinner_layout};

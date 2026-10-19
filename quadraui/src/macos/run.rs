@@ -63,6 +63,7 @@ use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::sys::CGContextRef;
@@ -78,13 +79,13 @@ use objc2::{define_class, msg_send, sel, ClassType, DefinedClass, MainThreadOnly
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationTerminateReply, NSBackingStoreType, NSDragOperation, NSDraggingInfo, NSEvent,
-    NSGraphicsContext, NSPasteboardTypeFileURL, NSView, NSViewFrameDidChangeNotification, NSWindow,
-    NSWindowDelegate, NSWindowDidChangeBackingPropertiesNotification, NSWindowStyleMask,
-    NSWindowTitleVisibility,
+    NSEventMask, NSGraphicsContext, NSPasteboardTypeFileURL, NSView,
+    NSViewFrameDidChangeNotification, NSWindow, NSWindowDelegate,
+    NSWindowDidChangeBackingPropertiesNotification, NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol,
-    NSPoint, NSRect, NSSize, NSString, NSTimer, NSURL,
+    MainThreadMarker, NSArray, NSDate, NSDefaultRunLoopMode, NSNotification, NSNotificationCenter,
+    NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSTimer, NSURL,
 };
 
 use super::backend::MacBackend;
@@ -1764,7 +1765,41 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
 pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::process::ExitCode {
     let mtm =
         MainThreadMarker::new().expect("quadraui::macos::run must be called from the main thread");
+    let boot = bootstrap(app, config, mtm);
 
+    // SAFETY: blocks on AppKit run loop; returns when the last
+    // window closes or `[NSApp terminate:]` is invoked.
+    boot.ns_app.run();
+
+    std::process::ExitCode::SUCCESS
+}
+
+/// Everything [`run_with`] builds before it hands control to AppKit's own
+/// run loop: the window, the view, the app delegate, and every timer/
+/// observer wired against them. Shared verbatim with [`MacRunner::new_with`]
+/// — the only difference between the two entry points is what drives the
+/// run loop afterwards (`ns_app.run()` blocking the whole process here vs.
+/// `MacRunner::step`/[`MacRunner::pump`] servicing it non-blockingly, one
+/// pass at a time, from inside a host that owns its own loop).
+///
+/// Every field but `ns_app` is held only to stay alive for as long as the
+/// app runs — AppKit's object graph keeps working references to the
+/// window/view/delegate/timers via the responder chain, the notification
+/// center, and the run loop's own timer list, but nothing *here* reaches
+/// back into them after bootstrap finishes, so a leading `_` on most fields
+/// (matching the local-variable convention `run_with` already used for the
+/// same values) says so.
+struct MacBootstrap {
+    ns_app: Retained<NSApplication>,
+    _window: Retained<NSWindow>,
+    _view: Retained<QuadraView>,
+    _delegate: Retained<QuadraAppDelegate>,
+    _idle_poll_timer: Retained<NSTimer>,
+    _blink_target: Retained<super::caret_blink::QuadraBlinkTarget>,
+    _blink_timer: Retained<NSTimer>,
+}
+
+fn bootstrap<A: AppLogic + 'static>(app: A, config: RunConfig, mtm: MainThreadMarker) -> MacBootstrap {
     let app = Rc::new(RefCell::new(app));
     let backend = Rc::new(RefCell::new(MacBackend::new()));
 
@@ -2048,17 +2083,326 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
         ns_app.activateIgnoringOtherApps(true);
     }
 
-    // SAFETY: blocks on AppKit run loop; returns when the last
-    // window closes or `[NSApp terminate:]` is invoked.
-    ns_app.run();
-
-    std::process::ExitCode::SUCCESS
+    MacBootstrap {
+        ns_app,
+        _window: window,
+        _view: view,
+        _delegate: delegate,
+        _idle_poll_timer,
+        _blink_target,
+        _blink_timer,
+    }
 }
 
 // Suppress unused warning for the c_void import — kept available for
 // future opaque-pointer dancing in this file as it grows.
 #[allow(dead_code)]
 fn _unused_imports(_p: *mut c_void) {}
+
+pub use crate::runner::StepOutcome;
+
+/// Non-blocking / bounded-wait entry points for a host that owns its own
+/// event loop — the macOS counterpart of [`crate::tui::run::TuiRunner`] and
+/// [`crate::gtk::run::GtkRunner`].
+///
+/// [`run`]/[`run_with`] each own the whole process: `NSApplication::run()`
+/// blocks the calling thread inside AppKit's run loop until the app quits.
+/// [`MacRunner::new`]/[`MacRunner::new_with`] call the exact same
+/// [`bootstrap`] function `run_with` does — the window, view, delegate, and
+/// every timer/observer are wired identically either way. What differs is
+/// only how the run loop gets serviced afterwards:
+///
+/// - [`MacRunner::step`] — one non-blocking pass: pulls at most one pending
+///   event via `nextEventMatchingMask_untilDate_inMode_dequeue` with an
+///   expiration of `NSDate::distantPast()` (AppKit's idiom for "don't wait —
+///   return immediately if nothing's queued"), dispatches it if present via
+///   `sendEvent`, then calls `updateWindows` so any `setNeedsDisplay` queued
+///   by that dispatch (or by a prior `Backend::waker`/tick callback) actually
+///   paints before this call returns.
+/// - [`MacRunner::pump`] — the same single pass, but with the expiration
+///   date bounded to `timeout` from now (`NSDate::dateWithTimeIntervalSinceNow`)
+///   instead of `distantPast()`, so the call blocks until either a real event
+///   arrives or `timeout` elapses, whichever is first.
+///
+/// Both return a [`StepOutcome`]: `Continue` while the window is still open,
+/// `Exited` once it's gone — checked via `NSApplication::windows().is_empty()`,
+/// mirroring `GtkRunner::outcome`'s rationale for reading the live window list
+/// rather than keeping a separate flag in sync with it.
+///
+/// A background thread's [`crate::backend::Backend::waker`] call reaches a
+/// `MacRunner`-driven loop with no extra wiring: `MacBackend::waker()` posts
+/// through `dispatch2::DispatchQueue::main().exec_async`, which — like any
+/// other GCD main-queue block — becomes a source AppKit's run loop wakes for,
+/// so a blocking `pump(timeout)` call returns as soon as the waker's posted
+/// block runs, not only once `timeout` elapses.
+pub struct MacRunner {
+    ns_app: Retained<NSApplication>,
+    _boot: MacBootstrap,
+}
+
+impl MacRunner {
+    /// Build a runner with the default [`RunConfig`]. Builds the window,
+    /// view, and delegate, and calls `app.setup()` — exactly what [`run`]
+    /// does before handing control to `NSApplication::run()`.
+    ///
+    /// **Must be called from the main thread** — enforced by the
+    /// [`MainThreadMarker::new`] check at entry, matching [`run_with`].
+    pub fn new<A: AppLogic + 'static>(app: A) -> Self {
+        Self::new_with(app, RunConfig::default())
+    }
+
+    /// Like [`Self::new`], but with an explicit [`RunConfig`].
+    pub fn new_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> Self {
+        let mtm = MainThreadMarker::new()
+            .expect("quadraui::macos::run::MacRunner must be built on the main thread");
+        let boot = bootstrap(app, config, mtm);
+        let ns_app = boot.ns_app.clone();
+        Self {
+            ns_app,
+            _boot: boot,
+        }
+    }
+
+    /// Whether the app's window is still open — see the type-level doc's
+    /// third paragraph for why this list, not a dedicated flag, is the
+    /// source of truth.
+    fn window_open(&self) -> bool {
+        !self.ns_app.windows().is_empty()
+    }
+
+    fn outcome(&self) -> StepOutcome {
+        if self.window_open() {
+            StepOutcome::Continue
+        } else {
+            StepOutcome::Exited
+        }
+    }
+
+    /// Pulls at most one event with the given expiration date, dispatches it
+    /// if present, then flushes any queued redraw — the shared body of
+    /// [`Self::step`] (`NSDate::distantPast()`) and [`Self::pump`] (a bounded
+    /// future date).
+    ///
+    /// `updateWindows` alone only refreshes window-level chrome (titles,
+    /// menu validation); a `setNeedsDisplay` queued by this pass's dispatch
+    /// (or by a prior [`MacBackend::waker`]/tick callback reaching the main
+    /// queue while nothing is pumping events) otherwise waits for AppKit's
+    /// own idle-time display pass — which a `step()`/`pump()` caller driving
+    /// the loop one pass at a time never reaches on its own. `displayIfNeeded`
+    /// forces that pass to happen synchronously, inside this call, so the
+    /// caller observes the resulting frame before `step`/`pump` returns.
+    fn run_one(&mut self, expiration: &NSDate) -> StepOutcome {
+        if !self.window_open() {
+            return StepOutcome::Exited;
+        }
+
+        // SAFETY: `expiration` is a live `NSDate`; `NSDefaultRunLoopMode` is
+        // an extern global AppKit initialises before this ever runs — the
+        // same global `run_with`'s own bootstrap (and every other AppKit
+        // frame-tick path in this module) relies on being already set up by
+        // the time any app code runs.
+        let event = unsafe {
+            self.ns_app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                NSEventMask::Any,
+                Some(expiration),
+                NSDefaultRunLoopMode,
+                true,
+            )
+        };
+        if let Some(event) = event {
+            self.ns_app.sendEvent(&event);
+        }
+        self.ns_app.updateWindows();
+        for window in self.ns_app.windows().iter() {
+            window.displayIfNeeded();
+        }
+
+        self.outcome()
+    }
+
+    /// One non-blocking pass — returns immediately whether or not an event
+    /// was waiting.
+    pub fn step(&mut self) -> StepOutcome {
+        let expiration = NSDate::distantPast();
+        self.run_one(&expiration)
+    }
+
+    /// One pass, blocking for up to `timeout` if nothing is ready yet.
+    pub fn pump(&mut self, timeout: Duration) -> StepOutcome {
+        let expiration = NSDate::dateWithTimeIntervalSinceNow(timeout.as_secs_f64());
+        self.run_one(&expiration)
+    }
+}
+
+/// Coverage for [`MacRunner::step`]/[`MacRunner::pump`] against a real,
+/// live `NSApplication` — the one place in this module that actually
+/// drives AppKit's run loop from a test rather than only exercising the
+/// plain-Rust routing around it (see `window_close_tests`'s doc for why
+/// most coverage here avoids a live app). Each test is gated behind
+/// `MainThreadMarker::new()`, matching every other live-AppKit test in
+/// this file — `cargo test` on a non-main-thread host silently skips
+/// rather than panicking on `MacRunner::new`'s own thread check.
+#[cfg(test)]
+mod step_pump_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// Shared instrumentation an [`AppLogic`] fixture records into —
+    /// cloned into the fixture before it's moved into [`MacRunner::new_with`]
+    /// so the test keeps its own handle after the runner owns the app.
+    #[derive(Default, Clone)]
+    struct Recorder {
+        render_calls: Rc<Cell<usize>>,
+        tick_calls: Rc<Cell<usize>>,
+        events: Rc<RefCell<Vec<UiEvent>>>,
+        waker: Rc<RefCell<Option<Arc<dyn Fn(crate::UserPayload) + Send + Sync>>>>,
+    }
+
+    /// An [`AppLogic`] that does nothing but feed a [`Recorder`] — no
+    /// test below needs any particular `Reaction` other than `Continue`,
+    /// since driving a real `Reaction::Exit` through `MacRunner` would
+    /// reach `[NSApp terminate:]` and end the test process (see
+    /// `window_close_tests::app_driven_exit_does_not_resurface_as_a_synthetic_window_close`'s
+    /// doc for the same constraint).
+    struct StepTestApp {
+        recorder: Recorder,
+        /// When set, `setup` asks the backend to schedule exactly one
+        /// wake at this delay — the vehicle for the `RedrawAfter` test.
+        redraw_after: Option<Duration>,
+    }
+
+    impl AppLogic for StepTestApp {
+        type AreaId = ();
+
+        fn setup(&mut self, backend: &mut dyn Backend) {
+            *self.recorder.waker.borrow_mut() = Some(backend.waker());
+            if let Some(delay) = self.redraw_after {
+                backend.request_frame_in(delay);
+            }
+        }
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {
+            self.recorder.render_calls.set(self.recorder.render_calls.get() + 1);
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.recorder.events.borrow_mut().push(event);
+            Reaction::Continue
+        }
+
+        fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+            self.recorder.tick_calls.set(self.recorder.tick_calls.get() + 1);
+            Reaction::Continue
+        }
+    }
+
+    /// [`MacRunner::step`] must both keep the window alive
+    /// (`StepOutcome::Continue`) and force at least one real paint —
+    /// a freshly ordered-front window starts out needing display, and
+    /// `run_one`'s `displayIfNeeded` sweep is what turns that into an
+    /// observed `app.render` call before `step` returns.
+    #[test]
+    fn step_observes_a_rendered_frame() {
+        let Some(_mtm) = MainThreadMarker::new() else {
+            return;
+        };
+
+        let recorder = Recorder::default();
+        let app = StepTestApp {
+            recorder: recorder.clone(),
+            redraw_after: None,
+        };
+        let mut runner = MacRunner::new(app);
+
+        let outcome = runner.step();
+
+        assert_eq!(outcome, StepOutcome::Continue);
+        assert!(
+            recorder.render_calls.get() >= 1,
+            "step() must force a synchronous repaint of the freshly opened window"
+        );
+    }
+
+    /// A background thread's [`Backend::waker`] call must reach
+    /// `app.handle` as a `UiEvent::User` through a single bounded
+    /// `pump()` — the "without busy-polling" half of the acceptance
+    /// criteria: one blocking call, not a `step()` retry loop, is enough
+    /// because GCD's main-queue dispatch is itself a run-loop source
+    /// `nextEventMatchingMask_untilDate_inMode_dequeue` wakes for.
+    #[test]
+    fn waker_delivers_a_user_event_without_busy_polling() {
+        let Some(_mtm) = MainThreadMarker::new() else {
+            return;
+        };
+
+        let recorder = Recorder::default();
+        let app = StepTestApp {
+            recorder: recorder.clone(),
+            redraw_after: None,
+        };
+        let mut runner = MacRunner::new(app);
+
+        let waker = recorder
+            .waker
+            .borrow_mut()
+            .take()
+            .expect("setup() must capture a waker before MacRunner::new returns");
+        let handle = std::thread::spawn(move || {
+            waker(crate::UserPayload::new(7_i32));
+        });
+        handle.join().expect("background thread must not panic");
+
+        let outcome = runner.pump(Duration::from_secs(2));
+
+        assert_eq!(outcome, StepOutcome::Continue);
+        let events = recorder.events.borrow();
+        assert_eq!(events.len(), 1, "expected exactly the one waker-delivered event");
+        match &events[0] {
+            UiEvent::User(payload) => {
+                assert_eq!(payload.downcast_ref::<i32>(), Some(&7));
+            }
+            other => panic!("expected UiEvent::User, got {other:?}"),
+        }
+    }
+
+    /// `Reaction::RedrawAfter`'s underlying mechanism —
+    /// `Backend::request_frame_in` — schedules exactly one wake at the
+    /// deadline, not a repeating timer: once it fires, `tick` runs once
+    /// and never again on its own. Both `pump` windows here stay well
+    /// under `crate::runtime::IDLE_POLL_CEILING` (250ms) so the
+    /// always-on idle-poll fallback — a separate, already-covered
+    /// mechanism — can't fire in between and confound the count.
+    #[test]
+    fn redraw_after_schedules_exactly_one_wake_at_the_deadline() {
+        let Some(_mtm) = MainThreadMarker::new() else {
+            return;
+        };
+
+        let recorder = Recorder::default();
+        let app = StepTestApp {
+            recorder: recorder.clone(),
+            redraw_after: Some(Duration::from_millis(30)),
+        };
+        let mut runner = MacRunner::new(app);
+
+        // First pump: long enough for the 30ms deadline to fire.
+        runner.pump(Duration::from_millis(80));
+        assert_eq!(
+            recorder.tick_calls.get(),
+            1,
+            "the scheduled wake must fire exactly once by the deadline"
+        );
+
+        // Second pump, same short bound: the one-shot wake must not
+        // repeat on its own.
+        runner.pump(Duration::from_millis(80));
+        assert_eq!(
+            recorder.tick_calls.get(),
+            1,
+            "a RedrawAfter wake must not re-fire without a fresh request_frame_in call"
+        );
+    }
+}
 
 /// Coverage for [`RunConfig`] / [`window_title`] / [`window_style_mask`]
 /// — display-free, since all three are plain Rust (or, for `window_style_mask`,
