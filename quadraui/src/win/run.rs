@@ -1202,6 +1202,12 @@ mod win32 {
         }
     }
 
+    /// The live [`HWND`], its heap-owned `WindowState<A>` (freed by the
+    /// caller via `Box::from_raw`, as [`WinRunner::finish`] does), and a
+    /// clone of the headless-smoke `smoke_failed` flag — the return of
+    /// [`create_window`], named to keep the tuple out of its signature.
+    type CreatedWindow<A> = (HWND, *mut WindowState<A>, Rc<Cell<bool>>);
+
     /// # Safety
     ///
     /// Must run on the thread that will pump the resulting message loop
@@ -1228,7 +1234,7 @@ mod win32 {
         mut app: A,
         title: &str,
         app_icon: Option<&ImageSource>,
-    ) -> windows::core::Result<(HWND, *mut WindowState<A>, Rc<Cell<bool>>)> {
+    ) -> windows::core::Result<CreatedWindow<A>> {
         // SAFETY: `GetModuleHandleW(PCWSTR::null())` is the documented
         // idiom for "give me this process's own module handle" — the
         // null pointer is an explicit sentinel the API defines, not a
@@ -1784,12 +1790,7 @@ mod win32 {
         // SAFETY: forwards this function's own `# Safety` contract
         // (documented above) unchanged to `WinRunner::new_with`.
         let mut runner = unsafe { WinRunner::new_with(app, config)? };
-        loop {
-            match runner.pump(crate::runtime::IDLE_POLL_CEILING)? {
-                StepOutcome::Continue => {}
-                StepOutcome::Exited => break,
-            }
-        }
+        while let StepOutcome::Continue = runner.pump(crate::runtime::IDLE_POLL_CEILING)? {}
         Ok(!runner.smoke_failed.get())
     }
 
