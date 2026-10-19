@@ -35,12 +35,21 @@
 //!   raw RGBA bytes via the `image` crate. Only compiles/runs under
 //!   `all(feature = "macos", target_os = "macos")` — see that feature's
 //!   `Cargo.toml` comment.
-//! - **GTK / Windows**: neither backend has a headless capture path in
-//!   this repo yet (GTK waits on `GtkDriver`, quadraui#301; Windows has
-//!   no gallery-level driver at all). Every (demo, variant) combination
-//!   gets a `"status": "capture-pending"` manifest entry instead of a
-//!   faked image, regardless of which Cargo features this binary was
-//!   built with — the gap is in the harness, not the build.
+//! - **GTK**: drives the same `GalleryApp` through
+//!   [`quadraui::gtk::testing::driver_with_shell`] into a headless Cairo
+//!   `ImageSurface`, then PNG-encodes its `ARgb32` bytes (premultiplied
+//!   BGRA, row stride possibly wider than `width * 4`) via the `image`
+//!   crate — the same "composite over opaque white, then encode" shape
+//!   as the macOS leg, adapted for Cairo's byte order and stride. Needs
+//!   no display server, so this runs on any Linux CI runner with the
+//!   GTK4 system libraries installed.
+//! - **Windows**: [`quadraui::win::testing::WinDriver`] exists and
+//!   exposes per-pixel reads, but no whole-buffer readback, so this
+//!   module has no PNG-encoding path for it yet. Every (demo, variant)
+//!   combination gets a `"status": "capture-pending"` manifest entry
+//!   instead of a faked image, regardless of which Cargo features this
+//!   binary was built with — the gap is in this harness, not in the
+//!   Win-GUI backend itself.
 //!
 //! When a backend's own feature isn't compiled into this binary at all
 //! (e.g. a `tui`-only build has no `quadraui::macos` module to drive),
@@ -65,7 +74,11 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::registry::registry;
-#[cfg(any(feature = "tui", all(feature = "macos", target_os = "macos")))]
+#[cfg(any(
+    feature = "tui",
+    all(feature = "macos", target_os = "macos"),
+    feature = "gtk"
+))]
 use crate::{
     app::{group_panel_id, GROUPS},
     GalleryApp,
@@ -110,6 +123,14 @@ const MAC_CAPTURE_WIDTH: u32 = 960;
 #[cfg(all(feature = "macos", target_os = "macos"))]
 const MAC_CAPTURE_HEIGHT: u32 = 600;
 
+/// Pixel surface size every GTK capture renders at — the Cairo analogue
+/// of [`MAC_CAPTURE_WIDTH`]/[`MAC_CAPTURE_HEIGHT`], `i32` because that's
+/// [`quadraui::gtk::testing::driver_with_shell`]'s own parameter type.
+#[cfg(feature = "gtk")]
+const GTK_CAPTURE_WIDTH: i32 = 960;
+#[cfg(feature = "gtk")]
+const GTK_CAPTURE_HEIGHT: i32 = 600;
+
 /// Capture every registered demo × variant × backend into `dir`,
 /// writing one image per combination plus `dir/manifest.json`, and
 /// return the manifest entries written.
@@ -139,17 +160,21 @@ pub fn run_capture(dir: &Path) -> io::Result<Vec<ManifestEntry>> {
         "macOS headless capture needs --features macos on a target_os = \"macos\" host",
     );
 
+    #[cfg(feature = "gtk")]
+    capture_gtk(dir, &mut manifest)?;
+    #[cfg(not(feature = "gtk"))]
     push_status(
         &mut manifest,
         "gtk",
-        "capture-pending",
-        "no headless GTK capture path exists yet — blocked on GtkDriver (quadraui#301)",
+        "unsupported",
+        "quadraui-gallery was built without the `gtk` feature",
     );
+
     push_status(
         &mut manifest,
         "win",
         "capture-pending",
-        "no headless Windows gallery driver exists yet",
+        "no headless Windows gallery capture path exists in this crate yet",
     );
 
     let manifest_json = serde_json::to_string_pretty(&manifest)
@@ -183,7 +208,11 @@ fn push_status(manifest: &mut Vec<ManifestEntry>, backend: &str, status: &str, w
 /// Slugify `s` into a filesystem- and URL-safe fragment: lowercase,
 /// non-alphanumeric runs collapsed to a single `-`. Used to build each
 /// capture's filename from its demo/variant name.
-#[cfg(any(feature = "tui", all(feature = "macos", target_os = "macos")))]
+#[cfg(any(
+    feature = "tui",
+    all(feature = "macos", target_os = "macos"),
+    feature = "gtk"
+))]
 fn slug(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut last_was_dash = false;
@@ -210,7 +239,11 @@ fn slug(s: &str) -> String {
 /// mismatch — the same invariant `tests/gallery_driver.rs`'s
 /// registry-driven test already asserts, so a typo'd group name fails
 /// loudly here too instead of silently capturing nothing for that demo.
-#[cfg(any(feature = "tui", all(feature = "macos", target_os = "macos")))]
+#[cfg(any(
+    feature = "tui",
+    all(feature = "macos", target_os = "macos"),
+    feature = "gtk"
+))]
 fn group_index_of(demo: &dyn crate::Demo) -> usize {
     GROUPS
         .iter()
@@ -298,7 +331,11 @@ fn capture_tui_over(
 /// carrying the failure's own message instead — so one broken demo
 /// can't take down every other row in the same capture run, including
 /// `manifest.json` itself.
-#[cfg(any(feature = "tui", all(feature = "macos", target_os = "macos")))]
+#[cfg(any(
+    feature = "tui",
+    all(feature = "macos", target_os = "macos"),
+    feature = "gtk"
+))]
 fn capture_outcome_entry(
     demo: &str,
     group: &str,
@@ -333,7 +370,11 @@ fn capture_outcome_entry(
 /// site reachable from this module's own capture path; anything else
 /// falls back to a generic description rather than losing the manifest
 /// row entirely.
-#[cfg(any(feature = "tui", all(feature = "macos", target_os = "macos")))]
+#[cfg(any(
+    feature = "tui",
+    all(feature = "macos", target_os = "macos"),
+    feature = "gtk"
+))]
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         s.to_string()
@@ -351,7 +392,11 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// any driver that implements both `ConformanceDriver` (for
 /// `inventory()`) and `DriverInput` (for `click`), so this one body
 /// drives TUI and macOS navigation alike.
-#[cfg(any(feature = "tui", all(feature = "macos", target_os = "macos")))]
+#[cfg(any(
+    feature = "tui",
+    all(feature = "macos", target_os = "macos"),
+    feature = "gtk"
+))]
 fn click_group_zone<D>(driver: &mut D, index: usize)
 where
     D: quadraui::testing::ConformanceDriver + quadraui::testing::DriverInput,
@@ -646,15 +691,133 @@ fn composite_over_white(premultiplied_rgba: &[u8]) -> Vec<u8> {
     out
 }
 
-// Every test below exercises either the TUI-only SVG-encoding helpers or
-// `slug`, which is itself only compiled under the same `any(tui, macos)`
-// gate as the capture functions that call it — see those items' own `#[cfg]`
-// above. Gating the whole module keeps a `gtk`/`win`-only or no-feature
-// build (which compiles none of those helpers) from failing on an unused
-// `use super::*` instead of just having nothing to test here.
+// ── GTK capture ──────────────────────────────────────────────────────
+
+#[cfg(feature = "gtk")]
+fn capture_gtk(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()> {
+    capture_gtk_over(registry, dir, manifest)
+}
+
+/// [`capture_gtk`]'s body, generic over the demo-list constructor — see
+/// [`capture_tui_over`]'s doc for why: it lets a test exercise the
+/// `variants.len() > 1` click branch with a demo double instead of the
+/// production [`registry`].
+#[cfg(feature = "gtk")]
+fn capture_gtk_over(
+    demos_fn: fn() -> Vec<Box<dyn crate::Demo>>,
+    dir: &Path,
+    manifest: &mut Vec<ManifestEntry>,
+) -> io::Result<()> {
+    use quadraui::gtk::testing::driver_with_shell;
+    use quadraui::testing::{Anchor, ConformanceDriver};
+
+    for demo in demos_fn() {
+        let group = demo.group().to_string();
+        let group_idx = group_index_of(demo.as_ref());
+        let variants = demo.variants();
+        for &variant in variants {
+            let filename = format!(
+                "gtk__{}__{}__{}.png",
+                slug(&group),
+                slug(demo.name()),
+                slug(variant)
+            );
+            let dest = dir.join(&filename);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut driver = driver_with_shell(
+                    GalleryApp::from_demos(demos_fn()),
+                    GalleryApp::config(),
+                    GTK_CAPTURE_WIDTH,
+                    GTK_CAPTURE_HEIGHT,
+                );
+                click_group_zone(&mut driver, group_idx);
+                driver.click_text_at(demo.name(), Anchor::Center);
+                if variants.len() > 1 {
+                    driver.click_text_at(variant, Anchor::Center);
+                }
+                write_gtk_png(&mut driver, GTK_CAPTURE_WIDTH, GTK_CAPTURE_HEIGHT, &dest)
+            }));
+
+            manifest.push(capture_outcome_entry(
+                demo.name(),
+                &group,
+                variant,
+                "gtk",
+                filename,
+                outcome,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// PNG-encode a [`GtkDriver`](quadraui::gtk::testing::GtkDriver)'s whole
+/// headless Cairo `ImageSurface` buffer — `ARgb32` format, i.e.
+/// premultiplied BGRA bytes in memory, with each row possibly padded to
+/// a `stride` wider than `width * 4` (Cairo's own row alignment).
+/// [`composite_bgra_over_white`] flattens that premultiplied buffer onto
+/// an opaque white backdrop and reorders BGRA to RGBA, for the same
+/// reason [`write_mac_png`] composites onto white: an unpainted margin
+/// should read as the window's own background, not transparent.
+#[cfg(feature = "gtk")]
+fn write_gtk_png<A: quadraui::AppLogic>(
+    driver: &mut quadraui::gtk::testing::GtkDriver<A>,
+    width: i32,
+    height: i32,
+    path: &Path,
+) -> io::Result<()> {
+    let stride = driver.stride();
+    let data = driver.screen();
+    let flattened = composite_bgra_over_white(&data, width, height, stride);
+    let img = image::RgbaImage::from_raw(width as u32, height as u32, flattened)
+        .expect("composited buffer length must be exactly width * height * 4");
+    img.save(path)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+}
+
+/// Composite premultiplied-alpha BGRA bytes (Cairo `ARgb32`'s own
+/// layout — see [`write_gtk_png`]) onto an opaque white backdrop,
+/// returning straight (`alpha = 255`) RGBA bytes ready for
+/// [`image::RgbaImage::from_raw`]. `stride` may exceed `width * 4`
+/// (Cairo pads each row to its own alignment), so each row is sliced to
+/// its own `stride` length first and only the leading `width * 4` bytes
+/// are read — otherwise the padding bytes would shift every row after
+/// the first. Reads `(b, g, r, a)` per pixel instead of `(r, g, b, a)`;
+/// the "over white" math itself is the same as [`composite_over_white`].
+#[cfg(feature = "gtk")]
+fn composite_bgra_over_white(data: &[u8], width: i32, height: i32, stride: i32) -> Vec<u8> {
+    let width = width as usize;
+    let height = height as usize;
+    let stride = stride as usize;
+    let mut out = Vec::with_capacity(width * height * 4);
+    for y in 0..height {
+        let row = &data[y * stride..y * stride + width * 4];
+        for px in row.chunks_exact(4) {
+            let (b, g, r, a) = (px[0], px[1], px[2], px[3]);
+            let inv = 255 - a;
+            out.push(r.saturating_add(inv));
+            out.push(g.saturating_add(inv));
+            out.push(b.saturating_add(inv));
+            out.push(255);
+        }
+    }
+    out
+}
+
+// Every test below exercises either a backend-specific encoding helper
+// (TUI's SVG writer, macOS's or GTK's PNG compositor) or `slug`, which is
+// itself only compiled under the same `any(tui, macos, gtk)` gate as the
+// capture functions that call it — see those items' own `#[cfg]` above.
+// Gating the whole module keeps a `win`-only or no-feature build (which
+// compiles none of those helpers) from failing on an unused `use super::*`
+// instead of just having nothing to test here.
 #[cfg(all(
     test,
-    any(feature = "tui", all(feature = "macos", target_os = "macos"))
+    any(
+        feature = "tui",
+        all(feature = "macos", target_os = "macos"),
+        feature = "gtk"
+    )
 ))]
 mod tests {
     use super::*;
@@ -758,15 +921,45 @@ mod tests {
         assert_eq!(out, vec![255, 0, 0, 255]);
     }
 
+    #[cfg(feature = "gtk")]
+    #[test]
+    fn composite_bgra_over_white_fills_fully_transparent_pixels_with_opaque_white() {
+        let transparent_black_bgra = [0u8, 0, 0, 0];
+        let out = composite_bgra_over_white(&transparent_black_bgra, 1, 1, 4);
+        assert_eq!(out, vec![255, 255, 255, 255]);
+    }
+
+    #[cfg(feature = "gtk")]
+    #[test]
+    fn composite_bgra_over_white_passes_fully_opaque_pixels_through_and_reorders_channels() {
+        // BGRA: blue=0, green=0, red=255, alpha=255 — fully opaque red.
+        let opaque_red_premultiplied_bgra = [0u8, 0, 255, 255];
+        let out = composite_bgra_over_white(&opaque_red_premultiplied_bgra, 1, 1, 4);
+        assert_eq!(out, vec![255, 0, 0, 255]);
+    }
+
+    #[cfg(feature = "gtk")]
+    #[test]
+    fn composite_bgra_over_white_skips_row_padding_beyond_width_times_four() {
+        // Two 1x1-wide-but-padded-to-8-bytes rows: real pixel in the first
+        // 4 bytes of each row, 4 bytes of stride padding that must never
+        // leak into the output (e.g. by shifting the second row's pixel).
+        let opaque_red_row = [0u8, 0, 255, 255, 0xAA, 0xAA, 0xAA, 0xAA];
+        let opaque_blue_row = [255u8, 0, 0, 255, 0xAA, 0xAA, 0xAA, 0xAA];
+        let data = [opaque_red_row, opaque_blue_row].concat();
+        let out = composite_bgra_over_white(&data, 1, 2, 8);
+        assert_eq!(out, vec![255, 0, 0, 255, 0, 0, 255, 255]);
+    }
+
     /// A two-variant [`crate::Demo`] test double — the production
     /// [`registry`] never exercises `variants.len() > 1`, since its one
     /// entry (`ToastDemo`) has a single variant. Pins the variant-click
-    /// branch in [`capture_tui_over`] (and the variant slug landing in
-    /// the filename) against regressing silently.
-    #[cfg(feature = "tui")]
+    /// branch in [`capture_tui_over`]/[`capture_gtk_over`] (and the
+    /// variant slug landing in the filename) against regressing silently.
+    #[cfg(any(feature = "tui", feature = "gtk"))]
     struct TwoVariantDemo;
 
-    #[cfg(feature = "tui")]
+    #[cfg(any(feature = "tui", feature = "gtk"))]
     impl crate::Demo for TwoVariantDemo {
         fn name(&self) -> &'static str {
             "TwoVariant"
@@ -820,7 +1013,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "tui")]
+    #[cfg(any(feature = "tui", feature = "gtk"))]
     fn two_variant_registry() -> Vec<Box<dyn crate::Demo>> {
         vec![Box::new(TwoVariantDemo)]
     }
@@ -859,6 +1052,45 @@ mod tests {
             assert!(
                 svg.contains(&format!("variant={variant}")),
                 "SVG for {variant} should show that variant's own rendered content:\n{svg}"
+            );
+        }
+    }
+
+    #[cfg(feature = "gtk")]
+    #[test]
+    fn capture_gtk_selects_the_clicked_variant_and_names_it_in_the_filename() {
+        let dir = tempfile::tempdir().expect("create temp capture dir");
+        let mut manifest = Vec::new();
+
+        capture_gtk_over(two_variant_registry, dir.path(), &mut manifest)
+            .expect("capture_gtk_over");
+
+        assert_eq!(manifest.len(), 2, "one row per variant: {manifest:#?}");
+        for variant in ["Alpha", "Beta"] {
+            let entry = manifest
+                .iter()
+                .find(|e| e.variant == variant)
+                .unwrap_or_else(|| {
+                    panic!("missing manifest row for variant {variant}: {manifest:#?}")
+                });
+            assert!(
+                entry.status.is_none(),
+                "variant {variant} should have captured cleanly: {entry:#?}"
+            );
+            let path = entry
+                .path
+                .as_deref()
+                .unwrap_or_else(|| panic!("variant {variant} should have a path: {entry:#?}"));
+            assert!(
+                path.contains(&slug(variant)),
+                "filename {path} should name its own variant ({variant})"
+            );
+
+            let img = image::open(dir.path().join(path)).expect("open captured PNG");
+            assert_eq!(
+                (img.width(), img.height()),
+                (GTK_CAPTURE_WIDTH as u32, GTK_CAPTURE_HEIGHT as u32),
+                "captured PNG for {variant} should match the capture surface size"
             );
         }
     }

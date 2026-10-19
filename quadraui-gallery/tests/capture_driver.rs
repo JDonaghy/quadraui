@@ -97,26 +97,47 @@ fn capture_writes_tui_svg_and_lists_it_in_the_manifest() {
          not just its sidebar label:\n{svg}"
     );
 
-    // ── every other backend gets a status-only entry, never a faked image ─
-    for backend in ["gtk", "win"] {
-        let entry = manifest
-            .iter()
-            .find(|e| e.backend == backend && e.demo == demo.name() && e.variant == variant)
-            .unwrap_or_else(|| {
-                panic!(
-                    "manifest should list a {backend} entry for {}/{variant}",
-                    demo.name()
-                )
-            });
-        assert_eq!(
-            entry.status.as_deref(),
-            Some("capture-pending"),
-            "{backend} has no headless capture path yet, so its entry must be capture-pending, not a path"
-        );
+    // ── win has no headless capture path yet, never a faked image ─────
+    let win_entry = manifest
+        .iter()
+        .find(|e| e.backend == "win" && e.demo == demo.name() && e.variant == variant)
+        .unwrap_or_else(|| {
+            panic!(
+                "manifest should list a win entry for {}/{variant}",
+                demo.name()
+            )
+        });
+    assert_eq!(
+        win_entry.status.as_deref(),
+        Some("capture-pending"),
+        "win has no headless capture path yet, so its entry must be capture-pending, not a path"
+    );
+    assert!(win_entry.path.is_none(), "win entry must not carry a path");
+
+    // ── gtk: a real path when this binary was built with the `gtk`
+    // feature too (see `tests/capture_gtk_driver.rs` for that leg's own
+    // dedicated coverage), otherwise a status-only `unsupported` row.
+    let gtk_entry = manifest
+        .iter()
+        .find(|e| e.backend == "gtk" && e.demo == demo.name() && e.variant == variant)
+        .unwrap_or_else(|| {
+            panic!(
+                "manifest should list a gtk entry for {}/{variant}",
+                demo.name()
+            )
+        });
+    if cfg!(feature = "gtk") {
         assert!(
-            entry.path.is_none(),
-            "{backend} entry must not carry a path"
+            gtk_entry.status.is_none(),
+            "gtk entry should have a real path when built with --features gtk: {gtk_entry:#?}"
         );
+    } else {
+        assert_eq!(
+            gtk_entry.status.as_deref(),
+            Some("unsupported"),
+            "gtk entry without the `gtk` feature must be unsupported, not a path"
+        );
+        assert!(gtk_entry.path.is_none(), "gtk entry must not carry a path");
     }
 }
 
