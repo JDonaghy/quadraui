@@ -832,20 +832,35 @@ fn composite_bgra_over_white(data: &[u8], width: i32, height: i32, stride: i32) 
 
 #[cfg(all(feature = "win", target_os = "windows"))]
 fn capture_win(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()> {
-    // Run the capture loop on a thread with an explicit, generous stack.
-    // `cargo run --capture` builds the dev profile (unoptimized, large
-    // per-call frames), and a Windows process's default main-thread stack
-    // is 1 MiB — a quarter of what the GTK/TUI legs get from their Linux
-    // host's 8 MiB default. The deepest demo render recursions overflow
-    // that 1 MiB, and a stack overflow is a native fault, not an unwinding
-    // panic, so `capture_win_over`'s per-demo `catch_unwind` can't contain
-    // it: one deep demo would abort the whole process. A dedicated thread
-    // with a matching stack renders every demo on the same footing the
-    // other backends already have.
+    capture_win_on_large_stack(registry, dir, manifest)
+}
+
+/// Run [`capture_win_over`] on a dedicated thread with an explicit,
+/// generous 16 MiB stack, generic over the demo-list constructor so the
+/// production [`capture_win`] (driving [`registry`]) and the
+/// `#[cfg(test)]` variant-click test (driving a two-variant demo double)
+/// share the identical headroom.
+///
+/// A Windows process's default main-thread stack is 1 MiB and a libtest
+/// worker thread's is only 2 MiB — both a fraction of the 8 MiB the
+/// GTK/TUI capture legs get from their Linux host's default. The deepest
+/// `GalleryApp` shell + demo render recursions overflow those small
+/// stacks, and a stack overflow is a native fault, not an unwinding
+/// panic, so `capture_win_over`'s per-demo `catch_unwind` can't contain
+/// it: one deep render would abort the whole process with no Rust
+/// diagnostic. Rendering on a 16 MiB thread puts every caller on the same
+/// footing the other backends already have. A panic escaping the per-demo
+/// isolation is re-raised unchanged via `resume_unwind`.
+#[cfg(all(feature = "win", target_os = "windows"))]
+fn capture_win_on_large_stack(
+    demos_fn: fn() -> Vec<Box<dyn crate::Demo>>,
+    dir: &Path,
+    manifest: &mut Vec<ManifestEntry>,
+) -> io::Result<()> {
     std::thread::scope(|scope| {
         let handle = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
-            .spawn_scoped(scope, || capture_win_over(registry, dir, manifest))
+            .spawn_scoped(scope, || capture_win_over(demos_fn, dir, manifest))
             .expect("spawn win capture thread");
         match handle.join() {
             Ok(result) => result,
@@ -1268,8 +1283,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp capture dir");
         let mut manifest = Vec::new();
 
-        capture_win_over(two_variant_registry, dir.path(), &mut manifest)
-            .expect("capture_win_over");
+        capture_win_on_large_stack(two_variant_registry, dir.path(), &mut manifest)
+            .expect("capture_win_on_large_stack");
 
         assert_eq!(manifest.len(), 2, "one row per variant: {manifest:#?}");
         let mut rendered_pixels = Vec::new();
