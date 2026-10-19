@@ -201,6 +201,16 @@ only a push to `main` runs this workflow.
   region's pixel rect directly instead of flooring the click to a cell
   first. Behaviour-preserving for every `char_width`/`line_height` pair a
   backend actually passes.
+- `Canvas` `DrawOp::Polygon` and `DrawOp::Ellipse` fills now render at the
+  requested opacity on every pixel backend (GTK, win, macOS — all of which
+  paint `Canvas` through the shared scanline fill). The fill's scanline rows
+  are anchored to multiples of the row height from `0` rather than starting
+  at the shape's un-aligned minimum `y`, so each row lands on a device pixel
+  row boundary for the common integer-pixel canvas offset. Rows that
+  straddled the same pixel row at a shared fractional offset previously had
+  two independently-antialiased row fills `OVER`-composite onto that pixel,
+  blending in ~21% of the background and making an opaque fill's interior
+  look translucent.
 
 ## [0.2.2] - 2026-10-17
 ### Fixed
