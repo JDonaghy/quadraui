@@ -35,6 +35,9 @@ fn main() -> std::process::ExitCode {
         // example just hands quadraui a bounded slice on every iteration,
         // the same shape a libuv idle handle or an `asyncio` task would
         // drive it from.
+        // `Exited` means the window was *closed*, not merely taken
+        // offscreen: minimizing (Cmd-M) or hiding the app (Cmd-H) keeps
+        // this loop pumping, which is what lets the window come back.
         if runner.pump(Duration::from_millis(50)) == StepOutcome::Exited {
             return std::process::ExitCode::SUCCESS;
         }

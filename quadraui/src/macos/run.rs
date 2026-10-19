@@ -101,6 +101,9 @@ use crate::backend::Backend;
 use crate::event::Viewport;
 use crate::primitives::image::ImageSource;
 use crate::runner::{AppLogic, Reaction};
+// Re-exported so `quadraui::macos::run::StepOutcome` names the same type
+// `tui::run` and `gtk::run` expose beside their own runners.
+pub use crate::runner::StepOutcome;
 use crate::runtime::{self, ReactionSink, ResizeDebouncer, RESIZE_SETTLE};
 // Re-exported (not just imported) so `macos::testing` — and any other
 // in-crate caller that historically reached `EventOutcome` through this
@@ -434,6 +437,55 @@ pub(crate) fn render_frame<A: AppLogic>(
     backend.end_frame();
 }
 
+/// One-way "this runner's window is gone for good" latch, shared by the
+/// same `Rc` between [`QuadraViewIvars::window_closed`] and
+/// [`MacBootstrap::window_closed`].
+///
+/// It exists because AppKit has no predicate that answers "does this
+/// window still exist". The obvious candidates all answer a *different*
+/// question:
+///
+/// - `NSWindow::isVisible` answers "is this window onscreen", which is
+///   `NO` for an `orderOut:`-ed window ([`crate::backend::WindowControl::hide`]),
+///   for a miniaturized one ([`crate::backend::WindowControl::minimize`],
+///   the yellow traffic light, or Cmd-M), and for every window of an app
+///   the user hid with Cmd-H. All of those are states a window
+///   legitimately comes back from, via
+///   [`crate::backend::WindowControl::show`]/[`crate::backend::WindowControl::restore`].
+/// - `NSApplication::windows()` is process-global: it answers "does the
+///   *process* still have any window", which stays `true` for a host's
+///   own AppKit windows long after quadraui's is gone.
+///
+/// `windowWillClose:` is the exact signal: AppKit posts it once, when
+/// the window really is closing, and never for a hide or a miniaturize.
+/// [`MacRunner::window_open`] reads this latch so a host driving
+/// `step`/`pump` keeps getting [`StepOutcome::Continue`] — and therefore
+/// keeps pumping the very events that drive `deminiaturize:`/`show` —
+/// while the window is merely offscreen.
+#[derive(Default)]
+pub(crate) struct WindowCloseFlag {
+    closed: Cell<bool>,
+}
+
+impl WindowCloseFlag {
+    /// Latch the window as closed. Idempotent: AppKit may post
+    /// `windowWillClose:` only once, but a second call must not
+    /// un-close anything.
+    fn note_closed(&self) {
+        self.closed.set(true);
+    }
+
+    /// [`StepOutcome::Continue`] until [`Self::note_closed`] has run,
+    /// [`StepOutcome::Exited`] forever after.
+    fn outcome(&self) -> StepOutcome {
+        if self.closed.get() {
+            StepOutcome::Exited
+        } else {
+            StepOutcome::Continue
+        }
+    }
+}
+
 /// `QuadraView`'s per-instance state. `last_viewport` is retained for
 /// diagnostics + future paint↔click harness work; `paint` / `handle`
 /// are the AppLogic bridge.
@@ -472,6 +524,10 @@ pub(crate) struct QuadraViewIvars {
     /// neither route re-dispatches `UiEvent::WindowClose` for an exit the
     /// app already granted. See [`ExitGate`]'s doc for both sequences.
     exit_gate: Rc<ExitGate>,
+    /// Latched by this view's `windowWillClose:` and read by
+    /// [`MacRunner::window_open`] through the same `Rc`, held as
+    /// [`MacBootstrap::window_closed`]. See [`WindowCloseFlag`]'s doc.
+    window_closed: Rc<WindowCloseFlag>,
 }
 
 define_class!(
@@ -921,10 +977,22 @@ define_class!(
     // `applicationShouldTerminate:` next (see this file's module doc and
     // `QuadraAppDelegate::evaluate_should_terminate`'s doc for the
     // one-shot guard that stops that from re-dispatching `WindowClose`).
+    //
+    // `windowWillClose:` is the other half: it fires once the close is
+    // settled and the window really is going away, which is precisely
+    // the signal `MacRunner`'s `StepOutcome` needs. AppKit never posts
+    // it for `orderOut:` or `miniaturize:`, so latching it — rather
+    // than polling `isVisible` — keeps a hidden or minimized window
+    // reporting `StepOutcome::Continue`. See `WindowCloseFlag`'s doc.
     unsafe impl NSWindowDelegate for QuadraView {
         #[unsafe(method(windowShouldClose:))]
         fn window_should_close(&self, _sender: &NSWindow) -> bool {
             self.evaluate_window_should_close()
+        }
+
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _note: &NSNotification) {
+            self.ivars().window_closed.note_closed();
         }
     }
 );
@@ -937,6 +1005,7 @@ impl QuadraView {
         handle: HandleFn,
         tick: TickFn,
         exit_gate: Rc<ExitGate>,
+        window_closed: Rc<WindowCloseFlag>,
     ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(QuadraViewIvars {
@@ -948,6 +1017,7 @@ impl QuadraView {
             resize_debouncer: RefCell::new(ResizeDebouncer::new()),
             resize_timer: RefCell::new(None),
             exit_gate,
+            window_closed,
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -1797,6 +1867,11 @@ struct MacBootstrap {
     _idle_poll_timer: Retained<NSTimer>,
     _blink_target: Retained<super::caret_blink::QuadraBlinkTarget>,
     _blink_timer: Retained<NSTimer>,
+    /// The `_window`-is-gone latch [`MacRunner::window_open`] reads —
+    /// the same `Rc` the view sets from `windowWillClose:`. See
+    /// [`WindowCloseFlag`]'s doc for why this is a latch rather than a
+    /// query on `_window` itself.
+    window_closed: Rc<WindowCloseFlag>,
 }
 
 fn bootstrap<A: AppLogic + 'static>(
@@ -1966,7 +2041,16 @@ fn bootstrap<A: AppLogic + 'static>(
     // opt into a CSD titlebar).
     backend.borrow_mut().set_window(window.clone());
 
-    let view = QuadraView::new(mtm, backend.clone(), paint, handle, tick, exit_gate);
+    let window_closed = Rc::new(WindowCloseFlag::default());
+    let view = QuadraView::new(
+        mtm,
+        backend.clone(),
+        paint,
+        handle,
+        tick,
+        exit_gate,
+        window_closed.clone(),
+    );
     window.setContentView(Some(&view));
     window.setAcceptsMouseMovedEvents(true);
     window.makeFirstResponder(Some(view.as_super()));
@@ -2095,6 +2179,7 @@ fn bootstrap<A: AppLogic + 'static>(
         _idle_poll_timer,
         _blink_target,
         _blink_timer,
+        window_closed,
     }
 }
 
@@ -2102,8 +2187,6 @@ fn bootstrap<A: AppLogic + 'static>(
 // future opaque-pointer dancing in this file as it grows.
 #[allow(dead_code)]
 fn _unused_imports(_p: *mut c_void) {}
-
-pub use crate::runner::StepOutcome;
 
 /// Non-blocking / bounded-wait entry points for a host that owns its own
 /// event loop — the macOS counterpart of [`crate::tui::run::TuiRunner`] and
@@ -2129,13 +2212,25 @@ pub use crate::runner::StepOutcome;
 ///   arrives or `timeout` elapses, whichever is first.
 ///
 /// Both return a [`StepOutcome`]: `Continue` while this runner's own window
-/// is still open, `Exited` once *it* closes — checked via
-/// `_boot._window.isVisible()`, scoped to the single window [`bootstrap`]
-/// created rather than `NSApplication::windows()` (the whole process's
-/// window list), mirroring `GtkRunner::outcome`'s per-`Application` scoping.
-/// A host embedding quadraui alongside its own AppKit windows therefore sees
+/// is still open, `Exited` once *it* closes — read from the
+/// [`WindowCloseFlag`] this runner's own view latches from
+/// `windowWillClose:`, scoped to the single window [`bootstrap`] created
+/// rather than `NSApplication::windows()` (the whole process's window list),
+/// mirroring `GtkRunner::outcome`'s per-`Application` scoping. A host
+/// embedding quadraui alongside its own AppKit windows therefore sees
 /// `Exited` exactly when quadraui's window goes away, independent of what
 /// else the host has open.
+///
+/// That latch tracks *closing*, not onscreen-ness, so hiding
+/// ([`crate::backend::WindowControl::hide`], Cmd-H, "Hide Others") or
+/// minimizing ([`crate::backend::WindowControl::minimize`], the yellow
+/// traffic light, Cmd-M) keeps returning `Continue`. That matters beyond
+/// the return value: [`Self::step`]/[`Self::pump`] stop pumping AppKit
+/// events once the outcome is `Exited`, so a predicate that treated an
+/// offscreen window as gone would strand the app — the unhide /
+/// deminiaturize event could never be dispatched, and
+/// [`crate::backend::WindowControl::show`]/[`crate::backend::WindowControl::restore`]
+/// could never bring it back. See [`WindowCloseFlag`]'s doc.
 ///
 /// A background thread's [`crate::backend::Backend::waker`] call reaches a
 /// `MacRunner`-driven loop with no extra wiring: `MacBackend::waker()` posts
@@ -2171,37 +2266,45 @@ impl MacRunner {
     }
 
     /// Like [`Self::new`], but with an explicit [`RunConfig`].
+    ///
+    /// Sends `[NSApp finishLaunching]` unless the process's
+    /// `NSApplication` reports it is already running. `bootstrap` never
+    /// calls `ns_app.run()`, so on the step()/pump() path nothing else
+    /// sends `finishLaunching`: without it `NSApp.isRunning` stays `NO`
+    /// and `NSApplicationWillFinishLaunching`/`DidFinishLaunching` never
+    /// post, whose usual symptom is a dead app menu (
+    /// `Backend::install_menu_bar`'s `setMainMenu` call expects a fully
+    /// launched application). Sending it here puts a step()/pump()-driven
+    /// app in the same AppKit launch state `ns_app.run()` would have
+    /// produced for free.
+    ///
+    /// The `isRunning` guard is what keeps that safe for the embedding
+    /// case this type exists to serve: a host that already launched
+    /// AppKit itself would otherwise get a *second*
+    /// `NSApplicationWillFinishLaunching`/`DidFinishLaunching` pair
+    /// posted to every observer in the process, re-triggering its own
+    /// launch handlers.
     pub fn new_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> Self {
         let mtm = MainThreadMarker::new()
             .expect("quadraui::macos::run::MacRunner must be built on the main thread");
         let boot = bootstrap(app, config, mtm);
-        // `NSApp.isRunning`/`[NSApp run]`'s finishLaunching dance is skipped
-        // entirely by the step()/pump() path below — `bootstrap` never calls
-        // `ns_app.run()`, so nothing else sends `finishLaunching` either.
-        // Without it `NSApp.isRunning` stays `NO` and
-        // `NSApplicationWillFinishLaunching`/`DidFinishLaunching` never post;
-        // the usual symptom is a dead app menu, since
-        // `Backend::install_menu_bar`'s `setMainMenu` call expects a fully
-        // launched application. Send it explicitly here so a step()/pump()-driven
-        // app reaches the same AppKit launch state `ns_app.run()` would have
-        // produced for free.
-        boot.ns_app.finishLaunching();
+        if !boot.ns_app.isRunning() {
+            boot.ns_app.finishLaunching();
+        }
         Self { _boot: boot }
     }
 
     /// Whether the app's own window is still open — see the type-level
-    /// doc's third paragraph for why this checks the single window
-    /// [`bootstrap`] created, not the process-wide window list.
+    /// doc's third and fourth paragraphs for why this reads a
+    /// `windowWillClose:` latch scoped to the single window
+    /// [`bootstrap`] created, rather than the process-wide window list
+    /// or the window's own onscreen-ness.
     fn window_open(&self) -> bool {
-        self._boot._window.isVisible()
+        self.outcome() == StepOutcome::Continue
     }
 
     fn outcome(&self) -> StepOutcome {
-        if self.window_open() {
-            StepOutcome::Continue
-        } else {
-            StepOutcome::Exited
-        }
+        self._boot.window_closed.outcome()
     }
 
     /// Pulls at most one event with the given expiration date, dispatches it
@@ -2263,6 +2366,66 @@ impl MacRunner {
     }
 }
 
+/// Coverage for [`WindowCloseFlag`] — the predicate behind
+/// [`MacRunner::step`]/[`MacRunner::pump`]'s [`StepOutcome`]. Plain Rust
+/// and display-free: the latch itself has no AppKit dependency, so
+/// unlike `step_pump_tests` below these actually execute under a normal
+/// `cargo test --features macos` run.
+#[cfg(test)]
+mod window_close_flag_tests {
+    use super::*;
+
+    #[test]
+    fn a_fresh_flag_reports_continue() {
+        assert_eq!(WindowCloseFlag::default().outcome(), StepOutcome::Continue);
+    }
+
+    /// Only a real close latches the flag. AppKit posts `windowWillClose:`
+    /// — the sole caller of `note_closed` — for a close and nothing else,
+    /// so every offscreen-but-alive state (`orderOut:` from
+    /// [`crate::backend::WindowControl::hide`], `miniaturize:` from
+    /// [`crate::backend::WindowControl::minimize`] or the yellow traffic
+    /// light, an app-level Cmd-H) leaves the flag untouched and the
+    /// outcome `Continue` — which is what keeps `step`/`pump` dispatching
+    /// the events that bring such a window back.
+    #[test]
+    fn an_untouched_flag_keeps_reporting_continue() {
+        let flag = WindowCloseFlag::default();
+        for _ in 0..5 {
+            assert_eq!(flag.outcome(), StepOutcome::Continue);
+        }
+    }
+
+    #[test]
+    fn note_closed_latches_exited() {
+        let flag = WindowCloseFlag::default();
+        flag.note_closed();
+        assert_eq!(flag.outcome(), StepOutcome::Exited);
+    }
+
+    /// Idempotent in both directions: repeated `note_closed` calls stay
+    /// `Exited`, and nothing resets the latch.
+    #[test]
+    fn the_latch_is_one_way() {
+        let flag = WindowCloseFlag::default();
+        flag.note_closed();
+        flag.note_closed();
+        assert_eq!(flag.outcome(), StepOutcome::Exited);
+    }
+
+    /// The view and the runner hold the *same* latch through an `Rc`
+    /// clone, so a `windowWillClose:` reaching the view's copy is what
+    /// the runner's `outcome()` reads.
+    #[test]
+    fn clones_share_one_latch() {
+        let view_side = Rc::new(WindowCloseFlag::default());
+        let runner_side = view_side.clone();
+        assert_eq!(runner_side.outcome(), StepOutcome::Continue);
+        view_side.note_closed();
+        assert_eq!(runner_side.outcome(), StepOutcome::Exited);
+    }
+}
+
 /// Coverage for [`MacRunner::step`]/[`MacRunner::pump`] against a real,
 /// live `NSApplication` — the one place in this module that actually
 /// drives AppKit's run loop from a test rather than only exercising the
@@ -2277,7 +2440,7 @@ impl MacRunner {
 /// `cargo test`'s default harness always runs a test body on a thread it
 /// spawns — never the process's actual main thread — regardless of
 /// `--test-threads`. So under any plain `cargo test --features macos`
-/// invocation, including a serial one, all three tests below return
+/// invocation, including a serial one, all four tests below return
 /// early and report as passed without executing a single assertion.
 /// There is currently no `cargo test` invocation that runs them for
 /// real; doing so needs a custom `harness = false` binary whose `main`
@@ -2291,6 +2454,10 @@ mod step_pump_tests {
     use super::*;
     use std::sync::Arc;
 
+    /// The waker handed to [`AppLogic::setup`], parked where the test can
+    /// pick it up and hand it to a background thread.
+    type WakerSlot = Rc<RefCell<Option<Arc<dyn Fn(crate::UserPayload) + Send + Sync>>>>;
+
     /// Shared instrumentation an [`AppLogic`] fixture records into —
     /// cloned into the fixture before it's moved into [`MacRunner::new_with`]
     /// so the test keeps its own handle after the runner owns the app.
@@ -2299,7 +2466,7 @@ mod step_pump_tests {
         render_calls: Rc<Cell<usize>>,
         tick_calls: Rc<Cell<usize>>,
         events: Rc<RefCell<Vec<UiEvent>>>,
-        waker: Rc<RefCell<Option<Arc<dyn Fn(crate::UserPayload) + Send + Sync>>>>,
+        waker: WakerSlot,
     }
 
     /// An [`AppLogic`] that does nothing but feed a [`Recorder`] — no
@@ -2437,22 +2604,87 @@ mod step_pump_tests {
         };
         let mut runner = MacRunner::new(app);
 
-        // First pump: long enough for the 30ms deadline to fire.
-        runner.pump(Duration::from_millis(80));
+        // `pump` returns after the *first* event of any kind, so a single
+        // 80ms call can come back at t≈0 on an activation or mouse-moved
+        // event with the 30ms deadline still in the future. Keep pumping
+        // until the wall clock proves the deadline has passed.
+        pump_until(&mut runner, Duration::from_millis(80));
         assert_eq!(
             recorder.tick_calls.get(),
             1,
             "the scheduled wake must fire exactly once by the deadline"
         );
 
-        // Second pump, same short bound: the one-shot wake must not
-        // repeat on its own.
-        runner.pump(Duration::from_millis(80));
+        // Same bound again: the one-shot wake must not repeat on its own.
+        pump_until(&mut runner, Duration::from_millis(80));
         assert_eq!(
             recorder.tick_calls.get(),
             1,
             "a RedrawAfter wake must not re-fire without a fresh request_frame_in call"
         );
+    }
+
+    /// An offscreen-but-alive window is still an open window: after
+    /// `orderOut:` (what [`crate::backend::WindowControl::hide`] does)
+    /// and after `miniaturize:` (what
+    /// [`crate::backend::WindowControl::minimize`], the yellow traffic
+    /// light and Cmd-M do), `step` must keep returning
+    /// [`StepOutcome::Continue`] and keep pumping — otherwise the
+    /// unhide/deminiaturize event could never be dispatched and the
+    /// window could never come back.
+    #[test]
+    fn a_hidden_or_minimized_window_still_reports_continue() {
+        let Some(_mtm) = MainThreadMarker::new() else {
+            return;
+        };
+
+        let recorder = Recorder::default();
+        let app = StepTestApp {
+            recorder: recorder.clone(),
+            redraw_after: None,
+        };
+        let mut runner = MacRunner::new(app);
+        let window = runner._boot._window.clone();
+
+        window.orderOut(None);
+        assert!(
+            !window.isVisible(),
+            "orderOut: must take the window offscreen"
+        );
+        assert_eq!(
+            runner.step(),
+            StepOutcome::Continue,
+            "a hidden window has not been closed"
+        );
+
+        window.makeKeyAndOrderFront(None);
+        window.miniaturize(None);
+        assert_eq!(
+            runner.step(),
+            StepOutcome::Continue,
+            "a minimized window has not been closed"
+        );
+
+        window.deminiaturize(None);
+        assert_eq!(runner.step(), StepOutcome::Continue);
+    }
+
+    /// Pump for at least `window` of wall-clock time, however many
+    /// early-returning passes that takes. Each `pump` is bounded by the
+    /// time still left so the whole helper stays under `window` plus one
+    /// event's latency — and well under
+    /// [`crate::runtime::IDLE_POLL_CEILING`] for the 80ms windows above,
+    /// so the always-on idle poll can't confound the tick count.
+    fn pump_until(runner: &mut MacRunner, window: Duration) {
+        let deadline = std::time::Instant::now() + window;
+        loop {
+            let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                return;
+            };
+            if left.is_zero() || runner.pump(left) == StepOutcome::Exited {
+                return;
+            }
+        }
     }
 }
 
