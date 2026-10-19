@@ -1355,8 +1355,10 @@ fn canvas_shapes_demo_stroke_rect_paints_a_border() {
     let mut samples = Vec::new();
     for dx in 0..(geo.bar_gap as i32).max(1) {
         for dy in -2..=1 {
-            let (sx, sy) =
-                geo.to_screen(quadraui::Point::new(gap_x + dx as f32, geo.plot_h + dy as f32));
+            let (sx, sy) = geo.to_screen(quadraui::Point::new(
+                gap_x + dx as f32,
+                geo.plot_h + dy as f32,
+            ));
             samples.push(unpremultiply(driver.pixel(sx, sy)));
         }
     }
