@@ -58,6 +58,16 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Added
+
+- `ScreenLayout::tree_frame` returns each pushed `Surface::Tree`'s geometry
+  as `(Handle<TreeView>, Rect)` pairs, backed internally by
+  `DescriptorStore<TreeView>`. A tree whose `WidgetId` was already seen
+  (e.g. replaced in place via `surfaces_mut` on a retained `ScreenLayout`)
+  reuses its existing handle and store slot instead of being re-inserted,
+  so repeated per-frame calls do not rebuild the store. Internal and
+  additive — `Surface`'s shape and `ScreenLayout::push`'s signature are
+  unchanged.
 
 ## [0.3.0] - 2026-10-20
 ### Changed
