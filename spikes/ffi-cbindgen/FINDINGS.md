@@ -2,10 +2,9 @@
 
 Evidence for the #1096/#1123 "C ABI production method" decision. This
 document is the cbindgen-side half; see `spikes/ffi-diplomat/NOTE.md` for
-the Diplomat-side status. The actual written recommendation is tracked
-separately (see the PR/issue discussion) since it weighs both sides
-together — this file only records what building and hardening *this*
-skeleton actually surfaced.
+the Diplomat-side status. `spikes/ffi-cbindgen/RECOMMENDATION.md` weighs
+both sides together and is the actual #1640 deliverable — this file only
+records what building and hardening *this* skeleton actually surfaced.
 
 ## What this skeleton covers
 

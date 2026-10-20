@@ -12,14 +12,15 @@ publish = false
 description = "Spike: Diplomat-generated C ABI over the same descriptor store + callback vtable + run/step/wake shape as spikes/ffi-cbindgen, for a side-by-side #1640 comparison"
 
 [lib]
+# Mirrors ffi-cbindgen's naming rationale: a crate name distinct from the
+# package name so the generated artifacts can't be mistaken for a real
+# `quadraui-ffi` deliverable.
 name = "quadraui_ffi_diplomat_spike"
-crate-type = ["staticlib", "lib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
+# Default features off, matching ffi-cbindgen: this spike only exercises
+# `descriptor_store` and `runner`, both feature-neutral modules.
 quadraui = { path = "../../quadraui", default-features = false }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 diplomat = "0.16"
 diplomat-runtime = "0.16"
-
-[build-dependencies]
