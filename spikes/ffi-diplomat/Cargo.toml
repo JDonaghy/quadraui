@@ -1,0 +1,25 @@
+# Throwaway evidence crate for #1640 (C-ABI production spike). Mirrors
+# spikes/ffi-cbindgen's isolation pattern: an empty `[workspace]` table
+# plus the root `Cargo.toml` exclude entry, so this never joins the main
+# workspace or its quality gate.
+[workspace]
+
+[package]
+name = "ffi-diplomat"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Spike: Diplomat-generated C ABI over the same descriptor store + callback vtable + run/step/wake shape as spikes/ffi-cbindgen, for a side-by-side #1640 comparison"
+
+[lib]
+name = "quadraui_ffi_diplomat_spike"
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+quadraui = { path = "../../quadraui", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+diplomat = "0.16"
+diplomat-runtime = "0.16"
+
+[build-dependencies]

@@ -1,4 +1,4 @@
-Spike evidence header for #1640. Not a shippable quadraui-ffi artifact.
+/* Spike evidence header for #1640. Not a shippable quadraui-ffi artifact. */
 
 #ifndef QUADRAUI_FFI_CBINDGEN_SPIKE_H
 #define QUADRAUI_FFI_CBINDGEN_SPIKE_H
@@ -42,24 +42,48 @@ typedef struct QuadraRunner QuadraRunner;
 typedef struct QuadraStore QuadraStore;
 
 /**
+ * A detachable, cross-thread-safe handle that can wake a [`QuadraRunner`]'s
+ * next [`quadra_runner_step`]/[`quadra_runner_run`] call. Mirrors
+ * [`quadraui::backend::Backend::waker`]'s `Arc<dyn Fn + Send + Sync>`
+ * shape: cloning the underlying flag out of the runner (rather than
+ * exposing `*const QuadraRunner` to waking code directly) means a
+ * concurrent wake never has to materialize a `&QuadraRunner` reference
+ * while [`quadra_runner_step`] may hold `&mut QuadraRunner` over the same
+ * allocation — the two pointers share no memory.
+ */
+typedef struct QuadraWaker QuadraWaker;
+
+/**
  * One callback in the vtable: foreign code receives an event as JSON,
- * returns a reaction as JSON. The returned pointer is owned by the
- * caller of `handle` (the Rust side here) and must be freed with
- * [`quadra_free_string`].
+ * returns a reaction as JSON. The returned pointer is **never freed by
+ * Rust** — `quadraui_ffi_cbindgen_spike` only reads it (via `CStr::from_ptr`,
+ * borrowing) and then calls `free_reaction` with the same pointer and
+ * `user_data`, so the side that allocated the buffer is also the side that
+ * frees it, however it chooses to (its own `malloc`/`free`, a language
+ * runtime's GC, a reused static buffer, ...). This sidesteps the
+ * cross-allocator trap a single `handle`-owns-the-return shape falls into
+ * (see `FINDINGS.md`).
  */
 typedef struct QuadraCallbacks {
   /**
-   * Opaque context pointer passed back on every `handle` call — the
-   * standard C-ABI pattern for closures without a Rust closure type.
+   * Opaque context pointer passed back on every `handle`/`free_reaction`
+   * call — the standard C-ABI pattern for closures without a Rust
+   * closure type.
    */
   void *user_data;
   char *(*handle)(void *user_data, const char *event_json);
+  /**
+   * Called once per `handle` call whose return was non-null, immediately
+   * after Rust is done reading it. Must accept exactly the pointer
+   * `handle` returned.
+   */
+  void (*free_reaction)(void *user_data, char *reaction_json);
 } QuadraCallbacks;
 
 /**
  * Create a new, empty store. Free with [`quadra_store_free`].
  */
-/* extern "C" */ struct QuadraStore *quadra_store_new(void);
+struct QuadraStore *quadra_store_new(void);
 
 /**
  * Destroy a store created by [`quadra_store_new`]. `store` may be null (no-op).
@@ -68,7 +92,7 @@ typedef struct QuadraCallbacks {
  * `store` must be a pointer returned by [`quadra_store_new`] that hasn't
  * already been freed, or null.
  */
-/* extern "C" */ void quadra_store_free(struct QuadraStore *store);
+void quadra_store_free(struct QuadraStore *store);
 
 /**
  * Insert a descriptor (JSON-encoded `{"label": "...", "value": ...}`).
@@ -79,9 +103,7 @@ typedef struct QuadraCallbacks {
  * `store` must be a live pointer from [`quadra_store_new`], and
  * `descriptor_json` must be a null-terminated C string (or null).
  */
-/* extern "C" */
-uint64_t quadra_store_insert(struct QuadraStore *store,
-                             const char *descriptor_json);
+uint64_t quadra_store_insert(struct QuadraStore *store, const char *descriptor_json);
 
 /**
  * Overwrite the descriptor at `handle` in place. Returns `true` iff
@@ -91,10 +113,7 @@ uint64_t quadra_store_insert(struct QuadraStore *store,
  * `store` must be a live pointer from [`quadra_store_new`], and
  * `descriptor_json` must be a null-terminated C string (or null).
  */
-/* extern "C" */
-bool quadra_store_update(struct QuadraStore *store,
-                         uint64_t handle,
-                         const char *descriptor_json);
+bool quadra_store_update(struct QuadraStore *store, uint64_t handle, const char *descriptor_json);
 
 /**
  * Remove the descriptor at `handle`. Returns `true` iff `handle` was live.
@@ -102,7 +121,7 @@ bool quadra_store_update(struct QuadraStore *store,
  * # Safety
  * `store` must be a live pointer from [`quadra_store_new`], or null.
  */
-/* extern "C" */ bool quadra_store_remove(struct QuadraStore *store, uint64_t handle);
+bool quadra_store_remove(struct QuadraStore *store, uint64_t handle);
 
 /**
  * Number of live descriptors in `store`. Returns `0` for a null `store`.
@@ -110,21 +129,12 @@ bool quadra_store_update(struct QuadraStore *store,
  * # Safety
  * `store` must be a live pointer from [`quadra_store_new`], or null.
  */
-/* extern "C" */ uintptr_t quadra_store_len(const struct QuadraStore *store);
-
-/**
- * Free a string previously returned by this library (e.g. from the
- * callback's return value, once the runner is done with it).
- *
- * # Safety
- * `s` must be a pointer this library returned, or null.
- */
-/* extern "C" */ void quadra_free_string(char *s);
+uintptr_t quadra_store_len(const struct QuadraStore *store);
 
 /**
  * Create a runner around `callbacks`. Free with [`quadra_runner_free`].
  */
-/* extern "C" */ struct QuadraRunner *quadra_runner_new(struct QuadraCallbacks callbacks);
+struct QuadraRunner *quadra_runner_new(struct QuadraCallbacks callbacks);
 
 /**
  * Destroy a runner created by [`quadra_runner_new`]. `runner` may be null.
@@ -133,7 +143,7 @@ bool quadra_store_update(struct QuadraStore *store,
  * `runner` must be a pointer returned by [`quadra_runner_new`] that hasn't
  * already been freed, or null.
  */
-/* extern "C" */ void quadra_runner_free(struct QuadraRunner *runner);
+void quadra_runner_free(struct QuadraRunner *runner);
 
 /**
  * Non-blocking single pass: synthesizes one event, invokes the callback,
@@ -144,17 +154,54 @@ bool quadra_store_update(struct QuadraStore *store,
  * # Safety
  * `runner` must be a live pointer from [`quadra_runner_new`], or null.
  */
-/* extern "C" */ QuadraStepOutcome quadra_runner_step(struct QuadraRunner *runner);
+QuadraStepOutcome quadra_runner_step(struct QuadraRunner *runner);
 
 /**
- * Wake the runner from any thread (e.g. a background job finishing).
- * Mirrors [`quadraui::backend::Backend::waker`]'s contract: the next
- * `quadra_runner_step` call observes the wake unconditionally, regardless
- * of which thread set it. Safe to call after the runner has exited (no-op).
+ * Blocking `run`: calls [`quadra_runner_step`] until it reports
+ * [`QuadraStepOutcome::Exited`]. This is the third name the issue asks for
+ * alongside `step`/`wake`; it's a thin loop here, not a real event-sourced
+ * scheduler, because the interesting FFI question it raises — a blocking
+ * `run` whose every iteration calls back into foreign code, so a foreign
+ * callback that re-enters `quadra_runner_step`/`quadra_runner_run` on the
+ * *same* runner would alias `&mut QuadraRunner` — is a correctness
+ * question for the real #1123 implementation, not one this throwaway loop
+ * answers. See `FINDINGS.md`.
  *
  * # Safety
- * `runner` must be a live pointer from `quadra_runner_new`, or null.
+ * `runner` must be a live pointer from [`quadra_runner_new`], or null (in
+ * which case this returns immediately).
  */
-/* extern "C" */ void quadra_runner_wake(const struct QuadraRunner *runner);
+void quadra_runner_run(struct QuadraRunner *runner);
+
+/**
+ * Clone a waker out of `runner`. Safe to call from any thread; the
+ * returned `QuadraWaker` outlives `runner` and must be freed with
+ * [`quadra_waker_free`].
+ *
+ * # Safety
+ * `runner` must be a live pointer from [`quadra_runner_new`].
+ */
+struct QuadraWaker *quadra_runner_waker(const struct QuadraRunner *runner);
+
+/**
+ * Wake the runner this waker was cloned from, from any thread. Mirrors
+ * `Backend::waker`'s contract: the next `step`/`run` call observes the
+ * wake unconditionally, regardless of which thread set it. Safe to call
+ * after the runner has exited or been freed (the `Arc<AtomicBool>` keeps
+ * the flag itself alive independently of the runner).
+ *
+ * # Safety
+ * `waker` must be a live pointer from [`quadra_runner_waker`], or null.
+ */
+void quadra_waker_wake(const struct QuadraWaker *waker);
+
+/**
+ * Destroy a waker created by [`quadra_runner_waker`]. `waker` may be null.
+ *
+ * # Safety
+ * `waker` must be a pointer returned by [`quadra_runner_waker`] that
+ * hasn't already been freed, or null.
+ */
+void quadra_waker_free(struct QuadraWaker *waker);
 
 #endif  /* QUADRAUI_FFI_CBINDGEN_SPIKE_H */

@@ -15,12 +15,24 @@
 //!    `Handle<RowDescriptor>`.
 //! 2. **Callback vtable** — `QuadraCallbacks` carries one `extern "C"` function
 //!    pointer, `handle`, taking an event JSON string and returning a reaction
-//!    JSON string. The runner (#3 below) parses that JSON into a real
-//!    [`quadraui::runner::Reaction`].
+//!    JSON string, plus a matching `free_reaction` pointer. The runner (#3
+//!    below) parses the reaction JSON into a real
+//!    [`quadraui::runner::Reaction`] *without* taking ownership of the
+//!    pointer — `free_reaction` is called afterwards so whichever side
+//!    allocated the buffer is also the side that frees it. (An earlier
+//!    version of this spike had Rust call `CString::from_raw` directly on a
+//!    pointer the foreign side had to produce via `malloc`, which only
+//!    works when the foreign allocator and Rust's happen to agree; see
+//!    `FINDINGS.md` for why that shape is a trap, not a shortcut.)
 //! 3. **run/step/wake** — `quadra_runner_step` maps its outcome onto the real
-//!    [`quadraui::runner::StepOutcome`]; `quadra_runner_wake` sets an atomic
-//!    flag from any thread, mirroring [`quadraui::backend::Backend::waker`]'s
-//!    cross-thread wake contract.
+//!    [`quadraui::runner::StepOutcome`]; `quadra_runner_run` loops `step`
+//!    until exit. Waking is a *separate* opaque `QuadraWaker` handle
+//!    (`quadra_runner_waker` clones it out of a runner), not a raw pointer
+//!    to the runner itself — mirroring
+//!    [`quadraui::backend::Backend::waker`]'s detachable,
+//!    `Arc<dyn Fn + Send + Sync>`-shaped, cross-thread wake contract, and
+//!    avoiding materializing a `&QuadraRunner` while `quadra_runner_step`
+//!    may hold `&mut QuadraRunner` over the same memory.
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, CString};
@@ -181,29 +193,26 @@ pub unsafe extern "C" fn quadra_store_len(store: *const QuadraStore) -> usize {
     unsafe { &*store }.descriptors.len()
 }
 
-/// Free a string previously returned by this library (e.g. from the
-/// callback's return value, once the runner is done with it).
-///
-/// # Safety
-/// `s` must be a pointer this library returned, or null.
-#[no_mangle]
-pub unsafe extern "C" fn quadra_free_string(s: *mut c_char) {
-    if s.is_null() {
-        return;
-    }
-    drop(CString::from_raw(s));
-}
-
 /// One callback in the vtable: foreign code receives an event as JSON,
-/// returns a reaction as JSON. The returned pointer is owned by the
-/// caller of `handle` (the Rust side here) and must be freed with
-/// [`quadra_free_string`].
+/// returns a reaction as JSON. The returned pointer is **never freed by
+/// Rust** — `quadraui_ffi_cbindgen_spike` only reads it (via `CStr::from_ptr`,
+/// borrowing) and then calls `free_reaction` with the same pointer and
+/// `user_data`, so the side that allocated the buffer is also the side that
+/// frees it, however it chooses to (its own `malloc`/`free`, a language
+/// runtime's GC, a reused static buffer, ...). This sidesteps the
+/// cross-allocator trap a single `handle`-owns-the-return shape falls into
+/// (see `FINDINGS.md`).
 #[repr(C)]
 pub struct QuadraCallbacks {
-    /// Opaque context pointer passed back on every `handle` call — the
-    /// standard C-ABI pattern for closures without a Rust closure type.
+    /// Opaque context pointer passed back on every `handle`/`free_reaction`
+    /// call — the standard C-ABI pattern for closures without a Rust
+    /// closure type.
     pub user_data: *mut c_void,
     pub handle: extern "C" fn(user_data: *mut c_void, event_json: *const c_char) -> *mut c_char,
+    /// Called once per `handle` call whose return was non-null, immediately
+    /// after Rust is done reading it. Must accept exactly the pointer
+    /// `handle` returned.
+    pub free_reaction: extern "C" fn(user_data: *mut c_void, reaction_json: *mut c_char),
 }
 
 /// Wire-format mirror of [`Reaction`]'s variants the foreign callback can
@@ -324,15 +333,18 @@ pub unsafe extern "C" fn quadra_runner_step(runner: *mut QuadraRunner) -> Quadra
     let reaction = if reaction_ptr.is_null() {
         Reaction::Continue
     } else {
-        // SAFETY: the callback contract (documented on `QuadraCallbacks`)
-        // requires a pointer this library can own and free.
-        let owned = unsafe { CString::from_raw(reaction_ptr) };
-        owned
+        // SAFETY: `reaction_ptr` is a non-null pointer the callback just
+        // returned per the `QuadraCallbacks` contract; it stays valid at
+        // least until `free_reaction` is called below, so borrowing it
+        // here (not taking ownership) is sound.
+        let reaction = unsafe { CStr::from_ptr(reaction_ptr) }
             .to_str()
             .ok()
             .and_then(|s| serde_json::from_str::<WireReaction>(s).ok())
             .map(Reaction::from)
-            .unwrap_or(Reaction::Continue)
+            .unwrap_or(Reaction::Continue);
+        (runner.callbacks.free_reaction)(runner.callbacks.user_data, reaction_ptr);
+        reaction
     };
 
     let outcome = match reaction {
@@ -348,25 +360,97 @@ pub unsafe extern "C" fn quadra_runner_step(runner: *mut QuadraRunner) -> Quadra
     step_outcome_to_ffi(outcome)
 }
 
-/// Wake the runner from any thread (e.g. a background job finishing).
-/// Mirrors [`quadraui::backend::Backend::waker`]'s contract: the next
-/// `quadra_runner_step` call observes the wake unconditionally, regardless
-/// of which thread set it. Safe to call after the runner has exited (no-op).
+/// Blocking `run`: calls [`quadra_runner_step`] until it reports
+/// [`QuadraStepOutcome::Exited`]. This is the third name the issue asks for
+/// alongside `step`/`wake`; it's a thin loop here, not a real event-sourced
+/// scheduler, because the interesting FFI question it raises — a blocking
+/// `run` whose every iteration calls back into foreign code, so a foreign
+/// callback that re-enters `quadra_runner_step`/`quadra_runner_run` on the
+/// *same* runner would alias `&mut QuadraRunner` — is a correctness
+/// question for the real #1123 implementation, not one this throwaway loop
+/// answers. See `FINDINGS.md`.
 ///
 /// # Safety
-/// `runner` must be a live pointer from `quadra_runner_new`, or null.
+/// `runner` must be a live pointer from [`quadra_runner_new`], or null (in
+/// which case this returns immediately).
 #[no_mangle]
-pub unsafe extern "C" fn quadra_runner_wake(runner: *const QuadraRunner) {
-    if runner.is_null() {
+pub unsafe extern "C" fn quadra_runner_run(runner: *mut QuadraRunner) {
+    loop {
+        // SAFETY: forwarded from this function's own contract on each
+        // iteration; `runner` is not reassigned.
+        match unsafe { quadra_runner_step(runner) } {
+            QuadraStepOutcome::Exited => return,
+            QuadraStepOutcome::Continue => {}
+        }
+    }
+}
+
+/// A detachable, cross-thread-safe handle that can wake a [`QuadraRunner`]'s
+/// next [`quadra_runner_step`]/[`quadra_runner_run`] call. Mirrors
+/// [`quadraui::backend::Backend::waker`]'s `Arc<dyn Fn + Send + Sync>`
+/// shape: cloning the underlying flag out of the runner (rather than
+/// exposing `*const QuadraRunner` to waking code directly) means a
+/// concurrent wake never has to materialize a `&QuadraRunner` reference
+/// while [`quadra_runner_step`] may hold `&mut QuadraRunner` over the same
+/// allocation — the two pointers share no memory.
+pub struct QuadraWaker {
+    flag: Arc<AtomicBool>,
+}
+
+/// Clone a waker out of `runner`. Safe to call from any thread; the
+/// returned `QuadraWaker` outlives `runner` and must be freed with
+/// [`quadra_waker_free`].
+///
+/// # Safety
+/// `runner` must be a live pointer from [`quadra_runner_new`].
+#[no_mangle]
+pub unsafe extern "C" fn quadra_runner_waker(runner: *const QuadraRunner) -> *mut QuadraWaker {
+    // SAFETY: caller promises `runner` is live; this only reads the `Arc`
+    // pointer field to clone it, never materializing `&QuadraRunner` for
+    // longer than this statement.
+    let flag = unsafe { &*runner }.woken.clone();
+    Box::into_raw(Box::new(QuadraWaker { flag }))
+}
+
+/// Wake the runner this waker was cloned from, from any thread. Mirrors
+/// `Backend::waker`'s contract: the next `step`/`run` call observes the
+/// wake unconditionally, regardless of which thread set it. Safe to call
+/// after the runner has exited or been freed (the `Arc<AtomicBool>` keeps
+/// the flag itself alive independently of the runner).
+///
+/// # Safety
+/// `waker` must be a live pointer from [`quadra_runner_waker`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn quadra_waker_wake(waker: *const QuadraWaker) {
+    if waker.is_null() {
         return;
     }
-    (*runner).woken.store(true, Ordering::SeqCst);
+    // SAFETY: `waker` is a live pointer per the caller's contract; this
+    // only touches the atomic flag, never the `QuadraRunner` itself.
+    unsafe { &*waker }.flag.store(true, Ordering::SeqCst);
+}
+
+/// Destroy a waker created by [`quadra_runner_waker`]. `waker` may be null.
+///
+/// # Safety
+/// `waker` must be a pointer returned by [`quadra_runner_waker`] that
+/// hasn't already been freed, or null.
+#[no_mangle]
+pub unsafe extern "C" fn quadra_waker_free(waker: *mut QuadraWaker) {
+    if waker.is_null() {
+        return;
+    }
+    // SAFETY: see `quadra_store_free`.
+    unsafe {
+        drop(Box::from_raw(waker));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CString;
+    use std::sync::Mutex;
 
     #[test]
     fn store_insert_update_remove_round_trips_through_json() {
@@ -404,6 +488,22 @@ mod tests {
         }
     }
 
+    // All of these test callbacks allocate their reaction string with
+    // `CString::into_raw` and free it the same way in `free_reaction` —
+    // both sides are this same Rust crate here, so that's a consistent
+    // allocator pairing. The point of the `handle`/`free_reaction` split
+    // (see `QuadraCallbacks`'s doc comment) is that a *real* foreign
+    // caller is free to pick any pairing of its own; `python/client.py`
+    // demonstrates a non-Rust-allocator pairing end-to-end.
+    extern "C" fn free_via_cstring_from_raw(_user_data: *mut c_void, s: *mut c_char) {
+        // SAFETY: every callback below hands back a pointer from
+        // `CString::into_raw`, and `quadra_runner_step` calls this exactly
+        // once per non-null `handle` return, per the documented contract.
+        unsafe {
+            drop(CString::from_raw(s));
+        }
+    }
+
     extern "C" fn echo_continue(
         _user_data: *mut c_void,
         _event_json: *const c_char,
@@ -415,6 +515,27 @@ mod tests {
         CString::new(r#"{"type":"exit"}"#).unwrap().into_raw()
     }
 
+    /// Records the `type` field of every event it receives into the
+    /// `Mutex<Vec<String>>` pointed to by `user_data`, then always reacts
+    /// `continue`. Used to make the wake tests falsifiable: a no-op `wake`
+    /// would leave every recorded type as `"tick"`.
+    extern "C" fn record_event_type(
+        user_data: *mut c_void,
+        event_json: *const c_char,
+    ) -> *mut c_char {
+        // SAFETY: callers below pass a live `*const Mutex<Vec<String>>`
+        // (leaked for the test's duration) as `user_data`, and a valid
+        // null-terminated `event_json` per the `handle` contract.
+        let events = unsafe { &*(user_data as *const Mutex<Vec<String>>) };
+        let json = unsafe { CStr::from_ptr(event_json) }.to_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+        events
+            .lock()
+            .unwrap()
+            .push(parsed["type"].as_str().unwrap().to_string());
+        CString::new(r#"{"type":"continue"}"#).unwrap().into_raw()
+    }
+
     #[test]
     fn runner_step_continues_until_callback_returns_exit() {
         // SAFETY: `runner` is a live pointer from `quadra_runner_new` for the
@@ -423,6 +544,7 @@ mod tests {
             let runner = quadra_runner_new(QuadraCallbacks {
                 user_data: std::ptr::null_mut(),
                 handle: echo_continue,
+                free_reaction: free_via_cstring_from_raw,
             });
 
             for _ in 0..3 {
@@ -444,6 +566,7 @@ mod tests {
             let runner = quadra_runner_new(QuadraCallbacks {
                 user_data: std::ptr::null_mut(),
                 handle: echo_exit,
+                free_reaction: free_via_cstring_from_raw,
             });
 
             assert!(matches!(
@@ -461,25 +584,105 @@ mod tests {
     }
 
     #[test]
-    fn wake_is_observed_on_the_next_step() {
-        // SAFETY: `runner` is a live pointer from `quadra_runner_new` for the
-        // whole block.
+    fn runner_run_loops_until_exit() {
+        // SAFETY: `runner` is a live pointer from `quadra_runner_new` for
+        // the whole block; `quadra_runner_run` returns once `echo_exit`
+        // reports exit, so this doesn't hang.
         unsafe {
             let runner = quadra_runner_new(QuadraCallbacks {
                 user_data: std::ptr::null_mut(),
-                handle: echo_continue,
+                handle: echo_exit,
+                free_reaction: free_via_cstring_from_raw,
             });
 
-            quadra_runner_wake(runner);
-            // No direct observable from outside this module without a callback
-            // that inspects the event JSON; the woke-vs-tick event tag is
-            // exercised end-to-end by the Python client (`python/client.py`).
+            quadra_runner_run(runner);
+            // `run` only returns after exit; a further manual `step` stays
+            // exited, same as the non-blocking path.
+            assert!(matches!(
+                quadra_runner_step(runner),
+                QuadraStepOutcome::Exited
+            ));
+
+            quadra_runner_free(runner);
+        }
+    }
+
+    #[test]
+    fn wake_is_observed_as_the_woke_event_tag_on_the_next_step() {
+        // SAFETY: `runner` is a live pointer from `quadra_runner_new` for the
+        // whole block; `events` is a live `Mutex<Vec<String>>` for at least
+        // as long, leaked deliberately so its address is stable `user_data`.
+        unsafe {
+            let events: *const Mutex<Vec<String>> =
+                Box::into_raw(Box::new(Mutex::new(Vec::new())));
+            let runner = quadra_runner_new(QuadraCallbacks {
+                user_data: events as *mut c_void,
+                handle: record_event_type,
+                free_reaction: free_via_cstring_from_raw,
+            });
+
+            assert!(matches!(
+                quadra_runner_step(runner),
+                QuadraStepOutcome::Continue
+            ));
+            let waker = quadra_runner_waker(runner);
+            quadra_waker_wake(waker);
             assert!(matches!(
                 quadra_runner_step(runner),
                 QuadraStepOutcome::Continue
             ));
 
+            assert_eq!(&*(*events).lock().unwrap(), &["tick", "woke"]);
+
+            quadra_waker_free(waker);
             quadra_runner_free(runner);
+            drop(Box::from_raw(events as *mut Mutex<Vec<String>>));
+        }
+    }
+
+    #[test]
+    fn waker_wakes_from_a_different_thread_than_step() {
+        // SAFETY: `runner` and `events` are live for the whole block, and
+        // `waker` is only ever touched through the atomic it wraps, so
+        // sharing it with the spawned thread (via the raw pointer's
+        // address, reconstructed as the same `QuadraWaker`) is sound: it
+        // never aliases `&mut QuadraRunner`.
+        unsafe {
+            let events: *const Mutex<Vec<String>> =
+                Box::into_raw(Box::new(Mutex::new(Vec::new())));
+            let runner = quadra_runner_new(QuadraCallbacks {
+                user_data: events as *mut c_void,
+                handle: record_event_type,
+                free_reaction: free_via_cstring_from_raw,
+            });
+            let waker = quadra_runner_waker(runner);
+
+            // Prove this is a genuine cross-thread wake, not a same-thread
+            // call that happens to work: spawn a thread, let it wake the
+            // runner, and join it *before* stepping on the main thread —
+            // so the wake provably came from a thread other than the one
+            // that observes it.
+            let waker_addr = waker as usize;
+            // SAFETY (for the whole closure below): `waker` outlives this
+            // thread (freed only after `join` below), and only its atomic
+            // flag is touched. The closure body is still lexically inside
+            // this function's outer `unsafe` block, so no inner `unsafe` is
+            // needed here.
+            let worker = std::thread::spawn(move || {
+                let waker = waker_addr as *const QuadraWaker;
+                quadra_waker_wake(waker);
+            });
+            worker.join().unwrap();
+
+            assert!(matches!(
+                quadra_runner_step(runner),
+                QuadraStepOutcome::Continue
+            ));
+            assert_eq!(&*(*events).lock().unwrap(), &["woke"]);
+
+            quadra_waker_free(waker);
+            quadra_runner_free(runner);
+            drop(Box::from_raw(events as *mut Mutex<Vec<String>>));
         }
     }
 }

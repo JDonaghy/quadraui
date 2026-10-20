@@ -22,7 +22,21 @@ import sys
 from pathlib import Path
 
 CRATE_DIR = Path(__file__).resolve().parent.parent
-LIB_NAME = "libquadraui_ffi_cbindgen_spike.so"
+
+
+def _lib_name() -> str:
+    """cdylib filename for the current platform. The crate's own `Cargo.toml`
+    produces `lib<name>.so`/`.dylib`/`<name>.dll` depending on the host, not
+    just the Linux `.so` this client originally hardcoded."""
+    base = "quadraui_ffi_cbindgen_spike"
+    if sys.platform == "darwin":
+        return f"lib{base}.dylib"
+    if sys.platform == "win32":
+        return f"{base}.dll"
+    return f"lib{base}.so"
+
+
+LIB_NAME = _lib_name()
 
 
 def _find_library() -> Path:
@@ -48,13 +62,6 @@ def _find_library() -> Path:
 
 
 lib = ctypes.CDLL(str(_find_library()))
-# The callback trampoline below hands Rust a heap pointer it will later
-# free via `CString::from_raw` (Rust's default System allocator wraps
-# libc's malloc/free on this platform), so the buffer has to come from
-# libc's malloc, not from Python/ctypes-managed memory.
-libc = ctypes.CDLL(None)
-libc.malloc.restype = ctypes.c_void_p
-libc.malloc.argtypes = [ctypes.c_size_t]
 
 # --- Opaque handle store ----------------------------------------------------
 lib.quadra_store_new.restype = ctypes.c_void_p
@@ -72,12 +79,20 @@ lib.quadra_store_len.restype = ctypes.c_size_t
 HANDLE_CALLBACK = ctypes.CFUNCTYPE(
     ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p
 )
+# `free_reaction`: called once per non-null `handle` return, with the same
+# pointer, so whichever side allocated the reaction buffer also frees it.
+# Rust only ever borrows it (`CStr::from_ptr`) in between — it never calls
+# `free`/`CString::from_raw` on a pointer this client produced, so the
+# buffer can be ordinary ctypes-managed Python memory instead of needing to
+# come from libc's `malloc` to match Rust's allocator.
+FREE_CALLBACK = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
 
 
 class QuadraCallbacks(ctypes.Structure):
     _fields_ = [
         ("user_data", ctypes.c_void_p),
         ("handle", HANDLE_CALLBACK),
+        ("free_reaction", FREE_CALLBACK),
     ]
 
 
@@ -86,8 +101,11 @@ lib.quadra_runner_new.restype = ctypes.c_void_p
 lib.quadra_runner_free.argtypes = [ctypes.c_void_p]
 lib.quadra_runner_step.argtypes = [ctypes.c_void_p]
 lib.quadra_runner_step.restype = ctypes.c_uint32
-lib.quadra_runner_wake.argtypes = [ctypes.c_void_p]
-lib.quadra_free_string.argtypes = [ctypes.c_void_p]
+lib.quadra_runner_run.argtypes = [ctypes.c_void_p]
+lib.quadra_runner_waker.argtypes = [ctypes.c_void_p]
+lib.quadra_runner_waker.restype = ctypes.c_void_p
+lib.quadra_waker_wake.argtypes = [ctypes.c_void_p]
+lib.quadra_waker_free.argtypes = [ctypes.c_void_p]
 
 STEP_CONTINUE, STEP_EXITED = 0, 1
 
@@ -138,34 +156,64 @@ class Runner:
 
     def __init__(self, on_event) -> None:
         self._on_event = on_event
+        # Keyed by the buffer's ctypes address: `handle` hands Rust a
+        # pointer it only *borrows* (it calls `free_reaction` with the same
+        # pointer once it's done reading), so this dict is what actually
+        # keeps the Python-owned buffer alive in between those two calls.
+        self._pending_reactions: dict[int, ctypes.Array] = {}
 
         def _trampoline(_user_data: int, event_json: bytes) -> int:
             event = json.loads(event_json.decode("utf-8"))
             reaction = self._on_event(event)
             encoded = json.dumps(reaction).encode("utf-8")
-            # Ownership: the Rust side takes this pointer via
-            # `CString::from_raw` inside `quadra_runner_step` and frees it —
-            # must hand out a raw malloc'd buffer, not a ctypes-owned one.
             buf = ctypes.create_string_buffer(encoded)
-            size = len(encoded) + 1
-            raw = libc.malloc(size)
-            ctypes.memmove(raw, buf, size)
-            return raw
+            addr = ctypes.addressof(buf)
+            self._pending_reactions[addr] = buf
+            return addr
+
+        def _free_reaction(_user_data: int, reaction_json: int) -> None:
+            self._pending_reactions.pop(reaction_json, None)
 
         self._callback = HANDLE_CALLBACK(_trampoline)
+        self._free_callback = FREE_CALLBACK(_free_reaction)
         self._ptr = lib.quadra_runner_new(
-            QuadraCallbacks(user_data=None, handle=self._callback)
+            QuadraCallbacks(
+                user_data=None,
+                handle=self._callback,
+                free_reaction=self._free_callback,
+            )
         )
 
     def step(self) -> int:
         return lib.quadra_runner_step(self._ptr)
 
-    def wake(self) -> None:
-        lib.quadra_runner_wake(self._ptr)
+    def run(self) -> None:
+        lib.quadra_runner_run(self._ptr)
+
+    def waker(self) -> "Waker":
+        return Waker(lib.quadra_runner_waker(self._ptr))
 
     def close(self) -> None:
         if self._ptr:
             lib.quadra_runner_free(self._ptr)
+            self._ptr = None
+
+
+class Waker:
+    """Detachable wake handle cloned out of a `Runner`. Safe to hand to
+    another thread and call `wake()` from there — see
+    `quadra_runner_waker`'s doc comment in the generated header for why
+    this is a separate handle rather than a raw `Runner` pointer."""
+
+    def __init__(self, ptr: int) -> None:
+        self._ptr = ptr
+
+    def wake(self) -> None:
+        lib.quadra_waker_wake(self._ptr)
+
+    def close(self) -> None:
+        if self._ptr:
+            lib.quadra_waker_free(self._ptr)
             self._ptr = None
 
 
@@ -187,13 +235,15 @@ def main() -> None:
         return {"type": "continue"}
 
     runner = Runner(on_event)
+    waker = runner.waker()
     try:
         assert runner.step() == STEP_CONTINUE
-        runner.wake()
+        waker.wake()
         assert runner.step() == STEP_EXITED
         # Idempotent after exit.
         assert runner.step() == STEP_EXITED
     finally:
+        waker.close()
         runner.close()
 
     assert [e["type"] for e in events_seen] == ["tick", "woke"]
@@ -202,4 +252,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    sys.exit(0)
