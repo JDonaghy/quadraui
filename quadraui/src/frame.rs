@@ -159,6 +159,9 @@
 //! assert!(check_frame_order(&[Rung::Palette, Rung::Editor]).is_err());
 //! ```
 
+use std::collections::HashMap;
+
+use crate::descriptor_store::{DescriptorStore, Handle};
 use crate::event::Rect;
 use crate::primitives::activity_bar::ActivityBar;
 use crate::primitives::board::BoardModel;
@@ -570,12 +573,16 @@ impl FrameHitMap {
 /// z-order, then call [`Self::draw`] to render and get a hit map.
 pub struct ScreenLayout {
     surfaces: Vec<Surface>,
+    tree_store: DescriptorStore<TreeView>,
+    tree_handles: HashMap<WidgetId, Handle<TreeView>>,
 }
 
 impl ScreenLayout {
     pub fn new() -> Self {
         Self {
             surfaces: Vec::new(),
+            tree_store: DescriptorStore::new(),
+            tree_handles: HashMap::new(),
         }
     }
 
@@ -595,6 +602,44 @@ impl ScreenLayout {
     /// [`FrameZone`] carries) is stable.
     pub fn surfaces_mut(&mut self) -> &mut [Surface] {
         &mut self.surfaces
+    }
+
+    /// Geometry for every pushed [`Surface::Tree`] as `(Handle, Rect)`
+    /// pairs instead of cloning each tree's rows into the returned
+    /// `Vec`.
+    ///
+    /// Each tree is kept in an internal [`DescriptorStore`] keyed by its
+    /// [`WidgetId`]. A tree whose id was already seen — e.g. the same
+    /// logical tree replaced in place via [`Self::surfaces_mut`] on a
+    /// retained `ScreenLayout` — reuses its existing [`Handle`] and
+    /// store slot rather than being removed and re-inserted, so calling
+    /// this once per frame does not rebuild the store from scratch: the
+    /// store only grows when a genuinely new tree id is pushed, and an
+    /// unchanged tree is not even cloned into its slot again. This
+    /// leaves [`Self::draw`], [`Self::hit_map`] and [`Self::tab_stops`]
+    /// untouched; they still paint and hit-test directly off
+    /// [`Self::surfaces`].
+    pub fn tree_frame(&mut self) -> Vec<(Handle<TreeView>, Rect)> {
+        let mut frame = Vec::new();
+        for surface in &self.surfaces {
+            if let Surface::Tree { rect, tree } = surface {
+                let handle = match self.tree_handles.get(&tree.id) {
+                    Some(&handle) => {
+                        if self.tree_store.get(handle) != Some(tree) {
+                            self.tree_store.update(handle, |slot| *slot = tree.clone());
+                        }
+                        handle
+                    }
+                    None => {
+                        let handle = self.tree_store.insert(tree.clone());
+                        self.tree_handles.insert(tree.id, handle);
+                        handle
+                    }
+                };
+                frame.push((handle, *rect));
+            }
+        }
+        frame
     }
 
     /// Render all surfaces via `backend` in z-order and return a
@@ -1539,6 +1584,8 @@ pub fn check_frame_order<R: FrameRung>(visited: &[R]) -> Result<(), FrameOrderVi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::tree::TreeRow;
+    use crate::types::{SelectionMode, StyledText, TreeStyle};
 
     #[test]
     fn hit_test_returns_highest_z_surface() {
@@ -1591,6 +1638,90 @@ mod tests {
     fn screen_layout_default_is_empty() {
         let layout = ScreenLayout::default();
         assert_eq!(layout.surfaces.len(), 0);
+    }
+
+    fn sample_tree(id: &str, scroll_offset: usize) -> TreeView {
+        TreeView {
+            id: WidgetId::new(id),
+            rows: vec![TreeRow {
+                path: vec![0],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain("src/"),
+                badge: None,
+                is_expanded: Some(true),
+                decoration: Default::default(),
+                edit: None,
+            }],
+            selection_mode: SelectionMode::Single,
+            selected_path: Some(vec![0]),
+            scroll_offset,
+            style: TreeStyle::default(),
+            has_focus: false,
+        }
+    }
+
+    #[test]
+    fn tree_frame_carries_handles_with_matching_rects() {
+        let mut layout = ScreenLayout::new();
+        layout.push(Surface::Tree {
+            rect: Rect::new(0.0, 0.0, 40.0, 10.0),
+            tree: sample_tree("tree:explorer", 0),
+        });
+
+        let frame = layout.tree_frame();
+
+        assert_eq!(frame.len(), 1);
+        let (handle, rect) = frame[0];
+        assert_eq!(rect, Rect::new(0.0, 0.0, 40.0, 10.0));
+        assert_eq!(
+            layout.tree_store.get(handle).map(|t| &t.id),
+            Some(&WidgetId::new("tree:explorer"))
+        );
+    }
+
+    #[test]
+    fn tree_frame_reuses_the_same_handle_across_frames_without_rebuilding() {
+        let mut layout = ScreenLayout::new();
+        layout.push(Surface::Tree {
+            rect: Rect::new(0.0, 0.0, 40.0, 10.0),
+            tree: sample_tree("tree:explorer", 0),
+        });
+
+        let first = layout.tree_frame();
+        let first_handle = first[0].0;
+        assert_eq!(layout.tree_store.len(), 1);
+
+        // Simulate a retained layout's next frame: the same logical tree,
+        // unchanged, is still at the same surface index.
+        let second = layout.tree_frame();
+        assert_eq!(second[0].0, first_handle);
+        assert_eq!(layout.tree_store.len(), 1);
+
+        // Replace the surface in place (same `WidgetId`, different scroll
+        // state) the way a retained `ScreenLayout` caller would via
+        // `surfaces_mut`, and confirm the identity-keyed slot is updated
+        // rather than inserted as a new entry.
+        layout.surfaces_mut()[0] = Surface::Tree {
+            rect: Rect::new(0.0, 0.0, 40.0, 10.0),
+            tree: sample_tree("tree:explorer", 5),
+        };
+        let third = layout.tree_frame();
+        assert_eq!(third[0].0, first_handle);
+        assert_eq!(layout.tree_store.len(), 1);
+        assert_eq!(
+            layout.tree_store.get(third[0].0).map(|t| t.scroll_offset),
+            Some(5)
+        );
+
+        // A genuinely new tree id grows the store by exactly one slot.
+        layout.push(Surface::Tree {
+            rect: Rect::new(0.0, 10.0, 40.0, 10.0),
+            tree: sample_tree("tree:outline", 0),
+        });
+        let fourth = layout.tree_frame();
+        assert_eq!(fourth.len(), 2);
+        assert_eq!(layout.tree_store.len(), 2);
     }
 
     #[test]
