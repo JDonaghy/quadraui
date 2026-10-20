@@ -62,12 +62,14 @@ only a push to `main` runs this workflow.
 
 - `ScreenLayout::tree_frame` returns each pushed `Surface::Tree`'s geometry
   as `(Handle<TreeView>, Rect)` pairs, backed internally by
-  `DescriptorStore<TreeView>`. A tree whose `WidgetId` was already seen
-  (e.g. replaced in place via `surfaces_mut` on a retained `ScreenLayout`)
-  reuses its existing handle and store slot instead of being re-inserted,
-  so repeated per-frame calls do not rebuild the store. Internal and
-  additive — `Surface`'s shape and `ScreenLayout::push`'s signature are
-  unchanged.
+  `DescriptorStore<TreeView>`. On a retained `ScreenLayout` kept across
+  frames, a tree whose `WidgetId` was already seen (e.g. replaced in place
+  via `surfaces_mut`) reuses its existing handle and store slot instead of
+  being re-inserted, and an id dropped from one call to the next has its
+  handle and slot evicted rather than leaked. A fresh `ScreenLayout::new()`
+  built every frame still inserts every tree from an empty store each call.
+  Internal and additive — `Surface`'s shape and `ScreenLayout::push`'s
+  signature are unchanged, and no in-crate caller consumes this yet.
 
 ## [0.3.0] - 2026-10-20
 ### Changed
