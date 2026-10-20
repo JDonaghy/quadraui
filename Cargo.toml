@@ -14,7 +14,17 @@ members = [
 # a member of this workspace. `.github/workflows/ci.yml`'s `template` job
 # is what actually exercises it: generating a real copy into a temp dir
 # and testing that.
-exclude = ["templates/app"]
+#
+# `spikes/ffi-cbindgen` and `spikes/ffi-diplomat` (#1640) are throwaway
+# evidence crates for the C-ABI-production spike, not production code —
+# each declares its own empty `[workspace]` table so it resolves as its
+# own standalone crate rather than joining this one. Keeping them out of
+# this workspace's member list means the main quality gate's
+# `--workspace --exclude ...` invocations never build them, never run
+# their clippy under `-D warnings`, and never pull cbindgen/diplomat into
+# the lockfile this workspace ships. Build/test each spike from inside
+# its own directory instead.
+exclude = ["templates/app", "spikes/ffi-cbindgen", "spikes/ffi-diplomat"]
 resolver = "2"
 
 [workspace.package]

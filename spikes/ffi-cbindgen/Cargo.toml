@@ -1,0 +1,30 @@
+# Throwaway evidence crate for #1640 (C-ABI production spike). Not part of
+# the quadraui workspace — see the root `Cargo.toml` exclude comment for why
+# `[workspace]` is declared empty here rather than inherited.
+[workspace]
+
+[package]
+name = "ffi-cbindgen"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Spike: hand-rolled extern \"C\" + cbindgen-generated header over quadraui's descriptor store + callback vtable + run/step/wake runner shape (#1640)"
+
+[lib]
+# Separate crate name from the package name so the generated header/
+# library filename (`quadraui_ffi_cbindgen_spike.h`) can't be mistaken for
+# a real `quadraui-ffi` artifact if it ever leaks out of `spikes/`.
+name = "quadraui_ffi_cbindgen_spike"
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+# Default features off: `descriptor_store` and `runner` are both
+# feature-neutral modules (see their own doc comments), so this spike pulls
+# in exactly the two seams it's evaluating and none of the four rendering
+# backends.
+quadraui = { path = "../../quadraui", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[build-dependencies]
+cbindgen = "0.29"
