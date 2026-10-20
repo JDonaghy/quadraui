@@ -94,7 +94,25 @@ class ReleaseFixtureRepo:
         (self.root / "quadraui" / "Cargo.toml").write_text(
             '[package]\nname = "quadraui"\nversion = "0.1.0"\nedition = "2021"\n'
         )
-        (self.root / "quadraui" / "src" / "lib.rs").write_text("pub fn hello() {}\n")
+        (self.root / "quadraui" / "src" / "lib.rs").write_text(
+            "//! ## Status\n"
+            "//!\n"
+            "//! `0.1.x` — pre-1.0, published on crates.io.\n"
+            "pub fn hello() {}\n"
+        )
+        (self.root / "README.md").write_text(
+            "# quadraui\n"
+            "\n"
+            "## Status\n"
+            "\n"
+            "`0.1.x` — pre-1.0, published on crates.io.\n"
+            "\n"
+            "## Getting started\n"
+            "\n"
+            "```toml\n"
+            'quadraui = { version = "0.1", features = ["tui", "gtk"] }\n'
+            "```\n"
+        )
         (self.root / "CHANGELOG.md").write_text(
             CHANGELOG_TEMPLATE.format(unreleased_body=unreleased_body)
         )
@@ -126,6 +144,12 @@ class ReleaseFixtureRepo:
 
     def lock_text(self) -> str:
         return (self.root / "Cargo.lock").read_text(encoding="utf-8")
+
+    def readme_text(self) -> str:
+        return (self.root / "README.md").read_text(encoding="utf-8")
+
+    def lib_rs_text(self) -> str:
+        return (self.root / "quadraui" / "src" / "lib.rs").read_text(encoding="utf-8")
 
     def current_branch(self) -> str:
         return run_git(["branch", "--show-current"], self.root).stdout.strip()
@@ -190,6 +214,32 @@ class PureFunctionTests(unittest.TestCase):
         self.assertIn("the first thing", body)
         self.assertNotIn("a new thing", body)
 
+    def test_pre_1_0_status_string(self):
+        self.assertEqual(release.pre_1_0_status_string("0.3.1"), "0.3.x")
+
+    def test_published_dependency_version(self):
+        self.assertEqual(release.published_dependency_version("0.3.1"), "0.3")
+
+    def test_set_pre_1_0_status_string_replaces_marker(self):
+        text = "`0.1.x` — pre-1.0, published on crates.io.\n"
+        new_text = release.set_pre_1_0_status_string(text, "0.2.0", label="test")
+        self.assertIn("`0.2.x`", new_text)
+        self.assertNotIn("`0.1.x`", new_text)
+
+    def test_set_pre_1_0_status_string_raises_when_marker_missing(self):
+        with self.assertRaises(release.ReleaseError):
+            release.set_pre_1_0_status_string("no marker here", "0.2.0", label="test")
+
+    def test_set_dependency_snippet_version_replaces_version(self):
+        text = 'quadraui = { version = "0.1", features = ["tui"] }\n'
+        new_text = release.set_dependency_snippet_version(text, "0.2.0", label="test")
+        self.assertIn('quadraui = { version = "0.2"', new_text)
+        self.assertNotIn('"0.1"', new_text)
+
+    def test_set_dependency_snippet_version_raises_when_snippet_missing(self):
+        with self.assertRaises(release.ReleaseError):
+            release.set_dependency_snippet_version("no snippet here", "0.2.0", label="test")
+
 
 class PrepareCommandTests(unittest.TestCase):
     def test_prepare_happy_path(self):
@@ -210,6 +260,16 @@ class PrepareCommandTests(unittest.TestCase):
             changelog = repo.changelog_text()
             self.assertIn("## [Unreleased]\n\n## [0.2.0] - 2026-10-11", changelog)
             self.assertIn("a new thing", changelog)
+
+            readme = repo.readme_text()
+            self.assertIn("`0.2.x`", readme)
+            self.assertNotIn("`0.1.x`", readme)
+            self.assertIn('quadraui = { version = "0.2"', readme)
+            self.assertNotIn('version = "0.1"', readme)
+
+            lib_rs = repo.lib_rs_text()
+            self.assertIn("`0.2.x`", lib_rs)
+            self.assertNotIn("`0.1.x`", lib_rs)
 
             # A commit was made on the release branch.
             log = run_git(["log", "-1", "--format=%s"], repo.root).stdout
