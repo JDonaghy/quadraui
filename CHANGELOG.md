@@ -58,6 +58,8 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+
+## [0.3.0] - 2026-10-20
 ### Changed
 
 - `Surface` no longer has a lifetime parameter: every variant carries its
