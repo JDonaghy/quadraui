@@ -225,6 +225,12 @@ pub enum DataTableEvent {
     /// the left of the divider. `width` is the new width in surface
     /// units. App should update `column_overrides[col]`.
     ColumnResized { col: usize, width: f32 },
+    /// The full multi-selection changed (`SelectionMode::Multi`): Ctrl/Cmd
+    /// click toggled a row, Shift click/extend selected a range, or a
+    /// keyboard extension grew the set. `indices` is the complete,
+    /// sorted, de-duplicated selection, not just the row that changed —
+    /// see [`crate::types::apply_selection_gesture`].
+    SelectionSet { indices: Vec<usize> },
 }
 
 // ── Layout ──────────────────────────────────────────────────────────────

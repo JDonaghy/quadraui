@@ -8,21 +8,30 @@ name: Deploy site
 # other branch, so an in-progress feature branch never clobbers the
 # live site, and a fork's PR never needs Pages permissions at all.
 #
-# Three generated inputs feed the site, none of them hand-maintained
+# Four generated inputs feed the site, none of them hand-maintained
 # per-widget (CLAUDE.md's "Demos are mandatory" rule, one level up):
 #   1. `quadraui-gallery --dump-registry` — every demo's name, group,
 #      variants and `// gallery:begin`/`// gallery:end` code region
 #      (`quadraui-gallery/src/site_export.rs`).
 #   2. `quadraui-gallery --capture` — one SVG per (demo, variant) on
 #      this runner's TUI backend, plus `manifest.json` describing every
-#      other backend as `unsupported`/`capture-pending`
-#      (`quadraui-gallery/src/capture.rs`). Ubuntu has no GTK/macOS/
-#      Windows headless driver yet (see that module's own doc), so this
-#      leg's grid only ever has a real TUI column — that is an honest
-#      reflection of where the capture pipeline is today, not a bug in
-#      this workflow.
-#   3. `tools/site_gen.py` joins (1) and (2) into `site/src/gallery/`
-#      and `site/src/SUMMARY.md`, which `mdbook build` then turns into
+#      other backend as `unsupported`
+#      (`quadraui-gallery/src/capture.rs`). This leg itself only captures
+#      the TUI column; the GTK, macOS and Windows columns come from (3).
+#   3. The GTK, macOS and Windows columns come from `ci.yml`'s
+#      `gallery-capture-gtk`/`gallery-capture-windows` jobs and
+#      `macos.yml`'s `gallery-capture-macos` job respectively (one PNG per
+#      demo/variant through each backend's own headless driver), each
+#      uploaded as its own `gallery-capture-*` artifact and downloaded
+#      here. GTK's and Windows's artifacts refresh on every `ci.yml` run
+#      on `develop`; macOS's refreshes only on `macos.yml`'s weekly
+#      develop cron, so that column can lag the others by up to a week —
+#      for a widget gallery that is acceptable and far better than a
+#      "Pending" column (quadraui#1619).
+#   4. `tools/site_gen.py` merges (1), (2) and (3) into `site/src/gallery/`
+#      and `site/src/SUMMARY.md` (its `--capture` is repeatable and keys
+#      rows by `(demo, group, variant, backend)`, preferring a real
+#      capture over a pending row), which `mdbook build` then turns into
 #      the deployed HTML alongside the hand-maintained
 #      `site/src/introduction.md` / `site/src/getting-started.md`.
 on:
@@ -85,11 +94,82 @@ jobs:
           cargo run -p quadraui-gallery --bin quadraui-gallery --features tui -- \
             --capture target/site/capture-tui
 
+      # macOS captures can't be produced on this Ubuntu runner (the macOS
+      # backend only compiles/runs under `target_os = "macos"`), so pull
+      # the PNGs from `macos.yml`'s `gallery-capture-macos` job — the one
+      # macos-latest leg that renders every demo through the real Core
+      # Graphics backend. We take its newest *develop* artifact (refreshed
+      # by that workflow's weekly cron; its PR runs are head-ref-scoped and
+      # not wanted here). `if_no_artifact_found: warn` is deliberate: if no
+      # macOS artifact exists yet, the site still builds TUI-only rather
+      # than failing the whole deploy — the macOS column simply falls back
+      # to the "pending" rows site_gen.py already emits (quadraui#1619).
+      # GTK's artifact comes from `ci.yml`'s `gallery-capture-gtk` job on
+      # the same `develop` branch — see this workflow's header comment
+      # for why that's a different artifact source than the macOS one
+      # just below.
+      - name: Download GTK gallery captures
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: ci.yml
+          branch: develop
+          name: gallery-capture-gtk
+          path: target/site/capture-gtk
+          if_no_artifact_found: warn
+
+      - name: Download macOS gallery captures
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: macos.yml
+          branch: develop
+          name: gallery-capture-macos
+          path: target/site/capture-macos
+          if_no_artifact_found: warn
+
+      # Windows's artifact comes from `ci.yml`'s `gallery-capture-windows`
+      # job on the same `develop` branch — same source workflow and
+      # refresh cadence as the GTK download above, just a different job
+      # name within it.
+      - name: Download Windows gallery captures
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: ci.yml
+          branch: develop
+          name: gallery-capture-windows
+          path: target/site/capture-windows
+          if_no_artifact_found: warn
+
+      # Each extra `--capture` dir is added only when its manifest
+      # actually arrived: `site_gen.py` hard-errors (FileNotFoundError)
+      # on a `--capture` dir with no `manifest.json`, so an empty/absent
+      # download must drop the argument rather than pass a path that
+      # isn't there. Dropping it is the correct fallback, not a degraded
+      # one — the TUI capture's own manifest already describes every
+      # other backend as `unsupported`, so a missing column still
+      # renders via `site_gen.py`'s `STATUS_LABELS` ("Not captured in
+      # this build"), never a broken build.
       - name: Generate gallery pages
         run: |
+          extra=()
+          if [ -f target/site/capture-gtk/manifest.json ]; then
+            extra+=(--capture target/site/capture-gtk)
+          else
+            echo "::warning::no gallery-capture-gtk manifest; GTK column stays pending"
+          fi
+          if [ -f target/site/capture-macos/manifest.json ]; then
+            extra+=(--capture target/site/capture-macos)
+          else
+            echo "::warning::no gallery-capture-macos manifest; macOS column stays pending"
+          fi
+          if [ -f target/site/capture-windows/manifest.json ]; then
+            extra+=(--capture target/site/capture-windows)
+          else
+            echo "::warning::no gallery-capture-windows manifest; Windows column stays pending"
+          fi
           python3 tools/site_gen.py \
             --registry target/site/registry.json \
             --capture target/site/capture-tui \
+            "${extra[@]}" \
             --out site/src
 
       - name: Build mdBook
@@ -122,3 +202,29 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  # A failed build/deploy leaves the PREVIOUS build live at the Pages URL
+  # with no in-band signal — the site silently freezes on a stale build
+  # (exactly how the pre-enablement 404 failures went unnoticed,
+  # quadraui#1622). This job turns that into a visible signal: a workflow
+  # `::error::` annotation on the run plus a prominent run-summary entry,
+  # on top of GitHub's own default-branch failed-run email. It needs no
+  # secret, matching this repo's secret-free workflow posture; a push
+  # alert (ntfy/webhook) would need one and is deliberately left as a
+  # follow-up rather than folded in here.
+  notify-failure:
+    name: flag stale site on failure
+    needs: [build, deploy]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Record that the live site is now stale
+        run: |
+          echo "::error title=Site deploy failed::The live site is frozen on the previous build until a green 'Deploy site' run — https://jdonaghy.github.io/quadraui/"
+          {
+            echo "## ⚠️ Site deploy failed — live site is STALE"
+            echo
+            echo "The previous build remains live at <https://jdonaghy.github.io/quadraui/>."
+            echo "It will not reflect this commit until a later \`Deploy site\` run succeeds."
+          } >> "$GITHUB_STEP_SUMMARY"

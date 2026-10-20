@@ -23,7 +23,7 @@
 //! sign convention: positive `delta.y` = scroll content up (decrease
 //! offset). Backends normalise their native direction before emitting.
 
-use crate::primitives::scrollbar::{scroll_by_clamped, PressZone, ThumbDrag};
+use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
 use crate::text_util::{next_char_boundary, prev_char_boundary, snap_to_char_boundary};
 use crate::{
     Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar,
@@ -349,7 +349,7 @@ impl TreeController {
 
             UiEvent::Scroll { delta, .. } => {
                 let vr = self.viewport_rows(backend, rect);
-                let rows = if delta.y > 0.0 { -1 } else { 1 };
+                let rows = wheel_row_delta(delta.y, 1.0);
                 self.scroll_by(rows, vr);
                 TreeControllerEvent::Consumed
             }
@@ -1147,6 +1147,45 @@ mod tests {
         }
         assert_eq!(tc.selected_path(), Some(&vec![0]));
         assert_eq!(tc.scroll_offset(), 0);
+    }
+
+    // ── Wheel magnitude ──────────────────────────────────────────────
+
+    #[test]
+    fn wheel_scroll_consumes_the_delta_magnitude_not_just_its_sign() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("row", 40));
+        let rect = Rect::new(0.0, 0.0, 40.0, 5.0);
+
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -4.0),
+            position: crate::Point::new(5.0, 5.0),
+        };
+        assert_eq!(
+            tc.handle(&ev, &mut RecordingBackend::new(), rect),
+            TreeControllerEvent::Consumed
+        );
+        assert_eq!(
+            tc.scroll_offset(),
+            4,
+            "a four-notch gesture moves four rows"
+        );
+    }
+
+    #[test]
+    fn wheel_scroll_still_moves_one_row_for_a_sub_row_gesture() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("row", 40));
+        let rect = Rect::new(0.0, 0.0, 40.0, 5.0);
+
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -0.2),
+            position: crate::Point::new(5.0, 5.0),
+        };
+        tc.handle(&ev, &mut RecordingBackend::new(), rect);
+        assert_eq!(tc.scroll_offset(), 1);
     }
 
     // ── GTK wheel-direction round-trip ───────────────────────────────

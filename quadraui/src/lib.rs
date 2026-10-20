@@ -16,7 +16,7 @@
 //!
 //! ## What's in the box
 //!
-//! 48 primitives (one module each under `src/primitives/`), each
+//! 49 primitives (one module each under `src/primitives/`), each
 //! declarative + serde-friendly so apps and Lua plugins can describe UI
 //! as data. A representative sample:
 //!
@@ -103,7 +103,7 @@
 //! `0.2.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
-//! `quadraui/docs/decisions/DECISIONS.md`. 48 primitives shipped. The TUI
+//! `quadraui/docs/decisions/DECISIONS.md`. 49 primitives shipped. The TUI
 //! and GTK backends have full feature parity and are battle-tested by
 //! vimcode (5000+ tests). The macOS backend implements the whole
 //! `Backend` trait and is built/tested for real on `macos-latest` CI. The
@@ -166,7 +166,10 @@
 // primitive count `readme_truth.rs`'s `lib_doc_states_the_real_primitive_count`
 // / `root_readme_states_the_real_primitive_count` derive from
 // `primitives/mod.rs`'s `pub mod` list, nor is it exposed as its own
-// public module path. Re-exported below as `crate::A11yInfo`.
+// public module path. Re-exported below as `crate::A11yInfo`, its typed
+// role/state types (`A11yRole`, `A11yChecked`, `A11yLive`,
+// `A11yValueRange`), and the tree builder (`A11yTreeBuilder` and
+// friends).
 mod a11y;
 // Not under `primitives/`, same reasoning as `font_role`/`generic_font`
 // below: a blink state machine is not a widget — no `Layout`, no
@@ -397,7 +400,10 @@ mod text_selection;
 ))]
 mod backend_core;
 
-pub use a11y::A11yInfo;
+pub use a11y::{
+    frame_to_tree, A11yChecked, A11yChild, A11yInfo, A11yLive, A11yNodeId, A11yPrimitive, A11yRole,
+    A11yTree, A11yTreeBuilder, A11yTreeNode, A11yUpdate, A11yValueRange,
+};
 pub use caret_blink::CaretBlinkState;
 pub use diff::compute_hunks;
 pub use focus::FocusManager;
@@ -433,6 +439,10 @@ pub use primitives::context_menu::{
 pub use primitives::data_table::{
     Column, ColumnAlign, ColumnMeasure, ColumnWidth, DataRow, DataTable, DataTableEvent,
     DataTableHit, DataTableLayout, ResolvedColumn, SortDirection,
+};
+pub use primitives::date_picker::{
+    CalendarDate, DateFormat, DateLocale, DatePicker, DatePickerEvent, DatePickerHit,
+    DatePickerLayout, DayCell, TimeOfDay, Weekday,
 };
 pub use primitives::dialog::{
     native_dialog_options, Dialog, DialogButton, DialogHit, DialogInput, DialogLayout,
@@ -508,7 +518,10 @@ pub use primitives::rich_text_popup::{
     RichTextPopupLayout, RichTextPopupMeasure, TextSelection, VisibleRichTextLine,
 };
 pub use primitives::scroll_view::{ScrollView, ScrollViewEvent};
-pub use primitives::scrollbar::{fit_thumb, PressZone, ScrollAxis, Scrollbar};
+pub use primitives::scrollbar::{
+    clamp_scroll_offset_f32, fit_thumb, scroll_by_clamped_f32, scroll_rows, wheel_delta,
+    wheel_row_delta, PressZone, ScrollAxis, Scrollbar,
+};
 pub use primitives::sidebar_panel::{
     SidebarPanel, SidebarPanelHit, SidebarPanelLayout, SidebarPanelMeasure,
 };
@@ -558,8 +571,8 @@ pub use primitives::tooltip::{
     TooltipMeasure, TooltipPlacement,
 };
 pub use primitives::tree::{
-    TreeEvent, TreeRow, TreeRowEditState, TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout,
-    VisibleTreeRow,
+    selected_paths_for_indices, TreeEvent, TreeRow, TreeRowEditState, TreeRowMeasure, TreeView,
+    TreeViewHit, TreeViewLayout, VisibleTreeRow,
 };
 pub use style::Style;
 pub use text_util::{
@@ -569,8 +582,8 @@ pub use text_util::{
 pub use theme::Theme;
 pub use transition::{lerp, lerp_rect, Transition};
 pub use types::{
-    Badge, Color, Decoration, Icon, Modifiers, SelectionMode, StyledSpan, StyledText, TreePath,
-    TreeStyle, WidgetId,
+    apply_selection_gesture, Badge, Color, Decoration, Icon, Modifiers, SelectionGesture,
+    SelectionMode, StyledSpan, StyledText, TreePath, TreeStyle, WidgetId,
 };
 pub use undo::UndoStack;
 

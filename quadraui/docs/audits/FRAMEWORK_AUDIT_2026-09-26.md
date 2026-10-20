@@ -142,7 +142,7 @@ The velocity since the prior audit is startling: **eleven of its sixteen gap blo
 | §3.4 Rule 9 PlatformServices honesty | **Fixed** | `PRIMITIVE_RULES.md` "Rule 9 — `PlatformServices` honesty (issue #949)" |
 | G2 frameless / CSD | **Partially** | `ShellConfig::with_client_side_titlebar` `shell.rs:204` exists; per-backend undecorated-window behaviour **unverified** |
 | Tagged release / crates.io (#797) | **Open** | 0 tags, `0.0.1`, unpublished |
-| Owned `Frame`/`Surface` for bindings | **Open** | `Surface<'a>`/`ScreenLayout<'a>` still borrow (`frame.rs:144,326`) |
+| Owned `Frame`/`Surface` for bindings | **Fixed** | `Surface`/`ScreenLayout` carry no lifetime and own their descriptors; `OwnedFrame` is the serde-serialisable snapshot (`frame.rs`) |
 | 11 primitives lack a `Surface` variant | **Open and worse: now 14 of 39** | `Surface` has 25 variants; missing: Board, CommandCenter, DiffView, DropZone, Image, MessageList, Minimap, PipelineView, Progress, SidebarPanel, Spinner, SplitTree, TextInput, Toolbar |
 | Multi-window | **Open** | no `BackendManager`; runners create exactly one window |
 | G11–G15 (badge, global shortcuts, power, drag-out, print) | **Open** (**unverified** — not grepped exhaustively) | — |

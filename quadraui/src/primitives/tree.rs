@@ -216,6 +216,45 @@ pub struct TreeViewLayout {
     pub resolved_scroll_offset: usize,
 }
 
+/// The chevron glyph a pixel backend's shared paint path
+/// (`native_surface_paint::paint`, below) actually draws for a row at
+/// the given expand state, given `style`.
+///
+/// An app-supplied `chevron_expanded`/`chevron_collapsed` override is
+/// honoured verbatim; only the *default* `▾`/`▸` strings are swapped
+/// for the sharper codicon glyph (`crate::codicon::CHEVRON_DOWN` /
+/// `CHEVRON_RIGHT`) — a codicon-patched font can't be assumed on a
+/// terminal cell grid, so TUI's own paint path
+/// (`tui::tree::draw_tree`) always reads the two fields directly and
+/// never calls this.
+///
+/// [`crate::primitives::layout_metrics::tree_layout_measured`] calls
+/// this too, so the glyph it measures is the one pixel paint actually
+/// substitutes — keeping layout and paint in lockstep for the default
+/// style, not just for app overrides.
+///
+/// Gated to the same feature set as `crate::codicon`: GTK/win/macos are
+/// the only backends that ever substitute a codicon in the first place.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn tree_chevron_glyph(style: &TreeStyle, expanded: bool) -> std::borrow::Cow<'_, str> {
+    let default_style = TreeStyle::default();
+    if expanded {
+        if style.chevron_expanded == default_style.chevron_expanded {
+            std::borrow::Cow::Owned(crate::codicon::CHEVRON_DOWN.to_string())
+        } else {
+            std::borrow::Cow::Borrowed(style.chevron_expanded.as_str())
+        }
+    } else if style.chevron_collapsed == default_style.chevron_collapsed {
+        std::borrow::Cow::Owned(crate::codicon::CHEVRON_RIGHT.to_string())
+    } else {
+        std::borrow::Cow::Borrowed(style.chevron_collapsed.as_str())
+    }
+}
+
 impl TreeViewLayout {
     /// Test which row (if any) contains point `(x, y)`. Returns
     /// `TreeViewHit::Empty` when the point is below the last visible row.
@@ -492,26 +531,7 @@ pub(crate) mod native_surface_paint {
 
             if let Some(expanded) = row.is_expanded {
                 if tree.style.show_chevrons {
-                    // On GUI, an app-supplied `chevron_expanded`/
-                    // `chevron_collapsed` override is still honoured —
-                    // only the *default* `▾`/`▸` strings are swapped
-                    // for the sharper codicon glyph. TUI's own paint
-                    // path (`tui::tree::draw_tree`) always reads the
-                    // two fields directly and never substitutes a
-                    // codicon, since a terminal cell can't assume a
-                    // codicon-patched font is installed.
-                    let default_style = crate::types::TreeStyle::default();
-                    let chevron = if expanded {
-                        if tree.style.chevron_expanded == default_style.chevron_expanded {
-                            crate::codicon::CHEVRON_DOWN.to_string()
-                        } else {
-                            tree.style.chevron_expanded.clone()
-                        }
-                    } else if tree.style.chevron_collapsed == default_style.chevron_collapsed {
-                        crate::codicon::CHEVRON_RIGHT.to_string()
-                    } else {
-                        tree.style.chevron_collapsed.clone()
-                    };
+                    let chevron = super::tree_chevron_glyph(&tree.style, expanded);
                     let (cw, ch) = surface.surface_measure_text(&chevron);
                     let cy = row_y + (row_h - ch) / 2.0;
                     surface.surface_draw_icon_glyph(
@@ -1201,6 +1221,76 @@ pub enum TreeEvent {
     /// A key was pressed while the tree had focus and the primitive did not
     /// consume it. App may interpret it (e.g. `s` stages a file).
     KeyPressed { key: String, modifiers: Modifiers },
+    /// The full multi-selection changed (`SelectionMode::Multi`): Ctrl/Cmd
+    /// click toggled a row, Shift click/extend selected a range, or a
+    /// keyboard extension grew the set. `paths` is the complete, de-duplicated
+    /// selection, not just the row that changed, in the same visual order as
+    /// `rows`. [`crate::types::apply_selection_gesture`] computes the
+    /// selection as flattened-row indices; use [`selected_paths_for_indices`]
+    /// to map those indices back to `TreePath`s before emitting this event.
+    SelectionSet { paths: Vec<TreePath> },
+}
+
+/// Maps flattened-row indices (as produced by
+/// [`crate::types::apply_selection_gesture`]) back to the `TreePath`s of
+/// those rows, in `rows`' visual order.
+///
+/// `rows` must be the same pre-flattened, visual-order slice the indices
+/// were computed against; out-of-range indices are skipped.
+pub fn selected_paths_for_indices(rows: &[TreeRow], indices: &[usize]) -> Vec<TreePath> {
+    indices
+        .iter()
+        .filter_map(|&idx| rows.get(idx).map(|row| row.path.clone()))
+        .collect()
+}
+
+#[cfg(test)]
+mod multi_select_tests {
+    use super::{selected_paths_for_indices, Decoration, TreeEvent, TreeRow};
+    use crate::types::{apply_selection_gesture, Modifiers, SelectionGesture, StyledText};
+
+    fn leaf(idx: u16, label: &str) -> TreeRow {
+        TreeRow {
+            path: vec![idx],
+            indent: 0,
+            icon: None,
+            text: StyledText::plain(label.to_string()),
+            badge: None,
+            is_expanded: None,
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
+    #[test]
+    fn shift_range_maps_flattened_indices_back_to_paths() {
+        let rows = vec![leaf(0, "a"), leaf(1, "b"), leaf(2, "c"), leaf(3, "d")];
+        let gesture = SelectionGesture::from_modifiers(Modifiers {
+            shift: true,
+            ..Default::default()
+        });
+        let indices = apply_selection_gesture(&[], 0, 2, gesture);
+        let paths = selected_paths_for_indices(&rows, &indices);
+        assert_eq!(paths, vec![vec![0], vec![1], vec![2]]);
+        assert_eq!(
+            TreeEvent::SelectionSet {
+                paths: paths.clone()
+            },
+            TreeEvent::SelectionSet { paths }
+        );
+    }
+
+    #[test]
+    fn ctrl_toggle_removes_a_previously_selected_row() {
+        let rows = vec![leaf(0, "a"), leaf(1, "b"), leaf(2, "c")];
+        let gesture = SelectionGesture::from_modifiers(Modifiers {
+            ctrl: true,
+            ..Default::default()
+        });
+        let indices = apply_selection_gesture(&[0, 1, 2], 1, 1, gesture);
+        let paths = selected_paths_for_indices(&rows, &indices);
+        assert_eq!(paths, vec![vec![0], vec![2]]);
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 [package]
 name = "quadraui"
-version = "0.2.2"
+version = "0.3.0"
 edition.workspace = true
 description = "Cross-platform Rust UI toolkit: write one AppLogic and run it unmodified on TUI, GTK4 (Linux), macOS, and Windows backends"
 license.workspace = true
@@ -195,7 +195,7 @@ exclude = [
 # step, which runs `cargo doc --features macos` for real on a `macos-latest`
 # runner.
 [package.metadata.docs.rs]
-features = ["tui", "gtk", "win", "terminal", "macos", "layout"]
+features = ["tui", "gtk", "win", "terminal", "macos", "layout", "a11y"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lib]
@@ -357,6 +357,14 @@ macos = [
 # comment for why no feature here pulls in another opt-in feature.
 layout = ["dep:taffy"]
 
+# Optional accessibility conversions: `From<A11yRole> for accesskit::Role`
+# and friends, in `src/a11y.rs`'s `accesskit_convert` submodule. Pulls in
+# `accesskit`. The `A11yRole`/`A11yInfo` data model itself is always
+# compiled (see that module's doc), so this feature's only effect is
+# whether the `accesskit`-facing conversions exist — pairs with any
+# backend feature or none at all, same as `layout` above.
+a11y = ["dep:accesskit"]
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 # Unconditional (not feature-gated): `Theme::from_vscode_json` (#775)
@@ -440,6 +448,18 @@ keyring = { version = "4", optional = true }
 # though `FlexLayout::compute` doesn't surface it), and `std` is this
 # crate's existing baseline (no `no_std` target in this workspace).
 taffy = { version = "0.14.0", default-features = false, features = ["taffy_tree", "flexbox", "grid", "std", "content_size"], optional = true }
+# Optional — pulled in by the `a11y` feature: typed
+# `From<A11yRole> for accesskit::Role` and friends in `src/a11y.rs`'s
+# `accesskit_convert` submodule. The data model itself (`A11yRole`,
+# `A11yInfo`, …) is always compiled, feature or not — see that module's
+# doc for why — so a descriptor embedding `A11yInfo` never changes shape
+# depending on which backend features a consumer enables. `accesskit`
+# has no `default` feature set of its own (its `[features]` table has no
+# `default` key) and this crate needs none of its optional
+# `enumn`/`pyo3`/`schemars`/`serde` extras, just the base `Role`/
+# `Toggled`/`Live` enums, so plain `optional = true` with no feature list
+# pulls in exactly that.
+accesskit = { version = "0.25", optional = true }
 
 [build-dependencies]
 # `build.rs`'s `pangoft2` probe (`gtk` feature only): the hand-declared
@@ -575,7 +595,13 @@ objc2-foundation = { version = "0.3", optional = true, features = [
     "NSGeometry",
     "NSNotification",
     "NSObject",
+    # `NSDefaultRunLoopMode` (macOS non-blocking `step()`/`pump()` runner,
+    # `macos::run::MacRunner`): the extern static needs this feature plus
+    # "NSRunLoop" and the already-enabled "NSString" (see
+    # `objc2-foundation`'s generated module for where the three meet).
+    "NSObjCRuntime",
     "NSProcessInfo",
+    "NSRunLoop",
     "NSString",
     "NSThread",
     "NSTimer",
@@ -1153,6 +1179,11 @@ path = "examples/gtk_embedded.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "macos_embedded"
+path = "examples/macos_embedded.rs"
+required-features = ["macos"]
+
+[[example]]
 name = "tui_split_tree"
 path = "examples/tui_split_tree.rs"
 required-features = ["tui"]
@@ -1680,6 +1711,19 @@ required-features = ["tui"]
 [[example]]
 name = "gtk_canvas"
 path = "examples/gtk_canvas.rs"
+required-features = ["gtk"]
+
+# `Canvas` v2 ops (Polygon/Ellipse/Arc/Bezier/DashedLine/StrokeRect/
+# StyledTextRun) chart-style demo. Both entries are mandatory for the
+# same reason as the plain `tui_canvas`/`gtk_canvas` pair above.
+[[example]]
+name = "tui_canvas_shapes"
+path = "examples/tui_canvas_shapes.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_canvas_shapes"
+path = "examples/gtk_canvas_shapes.rs"
 required-features = ["gtk"]
 
 # #596 — `WorkspaceController` (open-N-view-one document tabs) mounted

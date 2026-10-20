@@ -35,12 +35,15 @@
 //!
 //! ## `FrameHitMap` is serializable; [`OwnedFrame`] is the owned `Frame`
 //!
-//! [`Surface<'a>`] borrows every primitive it paints — correct for a
-//! same-frame paint/hit-test pass, useless for anything that needs to
-//! outlive the frame: an accessibility tree snapshot (AccessKit), a
-//! web backend serializing a frame description across a WASM/JS
-//! boundary, or a record/replay harness persisting what was on screen
-//! at a given tick. [`FrameHitMap`] — already returned by
+//! [`Surface`] owns every primitive it paints, so it carries no
+//! lifetime and a [`ScreenLayout`] can be built in one place and drawn
+//! in another. What a `Surface` is not is *serializable*: it
+//! implements no `serde` traits, so it cannot by itself serve the
+//! cases that need a frame description to leave the process — an
+//! accessibility tree snapshot (AccessKit), a web backend serializing
+//! a frame description across a WASM/JS boundary, or a record/replay
+//! harness persisting what was on screen at a given tick.
+//! [`FrameHitMap`] — already returned by
 //! [`ScreenLayout::draw`]/[`ScreenLayout::hit_map`] — is that shape's
 //! owned, lifetime-free counterpart for hit-testing purposes: it stores
 //! `(Rect, FrameZone)` pairs by value. Both halves of that pair —
@@ -54,19 +57,30 @@
 //! }`) plus a frame-local surface index: it carries no primitive
 //! content, no accessibility role, no label, no value, and cannot by
 //! itself feed an AccessKit `TreeUpdate` node, be re-painted by a web
-//! backend, or replay a frame. [`OwnedFrame`] is the owned, lifetime-free
+//! backend, or replay a frame. [`OwnedFrame`] is the `serde`-capable
 //! counterpart that closes that gap: [`OwnedFrame::from_layout`] clones
-//! every primitive a [`ScreenLayout`] was about to borrow into an
+//! every primitive a [`ScreenLayout`] holds into an
 //! [`OwnedNode`] (rect, optional [`crate::types::WidgetId`], optional
 //! [`crate::a11y::A11yInfo`], and the primitive itself as [`OwnedContent`]),
 //! so the resulting [`OwnedFrame`] can be serialized, sent across a
-//! process/wire boundary, or inspected long after the `ScreenLayout` that
-//! produced it has gone out of scope. [`OwnedFrame::draw`] repaints it
+//! process/wire boundary, or inspected entirely independently of the
+//! `ScreenLayout` that produced it. [`OwnedFrame::draw`] repaints it
 //! through the same `Backend` calls [`ScreenLayout::draw`] would have
 //! made, and [`OwnedFrame::hit_map`] derives a [`FrameHitMap`] without a
 //! backend at all — both are lock-step with the original push order
 //! because the index each [`OwnedNode`] carries is captured once, at
 //! `from_layout` time.
+//!
+//! That `serde` capability is the whole reason both types exist:
+//! [`Surface`] is owned-but-not-serde and takes any primitive quadraui
+//! can paint, while [`OwnedFrame`] is the serializable snapshot and is
+//! therefore limited to primitives that are themselves `serde`-capable.
+//! [`DropOverlay`] and [`FindReplacePanel`] are not, which is why
+//! [`OwnedContent`] has the contentless
+//! [`OwnedContent::DropOverlay`]/[`OwnedContent::FindReplace`]
+//! fallbacks (and [`OwnedContent::Opaque`] as the generic one). Reach
+//! for `Surface`/`ScreenLayout` to describe and paint a frame; reach
+//! for `OwnedFrame` when that description has to be serialized.
 
 //! ## Presence gating + the paint/hit-test order invariant
 //!
@@ -148,6 +162,7 @@
 use crate::event::Rect;
 use crate::primitives::activity_bar::ActivityBar;
 use crate::primitives::board::BoardModel;
+use crate::primitives::canvas::Canvas;
 use crate::primitives::chart::Chart;
 use crate::primitives::command_center::CommandCenter;
 use crate::primitives::command_line::CommandLine;
@@ -202,133 +217,141 @@ use crate::Backend;
 /// PR body).
 #[allow(clippy::large_enum_variant)]
 #[non_exhaustive]
-pub enum Surface<'a> {
+pub enum Surface {
     Editor {
         rect: Rect,
-        editor: &'a Editor,
+        editor: Editor,
     },
     TabBar {
         rect: Rect,
-        bar: &'a TabBar,
+        bar: TabBar,
         hovered_close: Option<usize>,
     },
     StatusBar {
         rect: Rect,
-        bar: &'a StatusBar,
-        hovered: Option<&'a WidgetId>,
-        pressed: Option<&'a WidgetId>,
+        bar: StatusBar,
+        hovered: Option<WidgetId>,
+        pressed: Option<WidgetId>,
     },
     ActivityBar {
         rect: Rect,
-        bar: &'a ActivityBar,
+        bar: ActivityBar,
         hovered: Option<usize>,
     },
     CommandLine {
         rect: Rect,
-        cmd: &'a CommandLine,
+        cmd: CommandLine,
     },
     Terminal {
         rect: Rect,
-        term: &'a Terminal,
+        term: Terminal,
     },
     TextDisplay {
         rect: Rect,
-        td: &'a TextDisplay,
+        td: TextDisplay,
     },
     MultiSectionView {
         rect: Rect,
-        view: &'a MultiSectionView,
+        view: MultiSectionView,
     },
     Tree {
         rect: Rect,
-        tree: &'a TreeView,
+        tree: TreeView,
     },
     List {
         rect: Rect,
-        list: &'a ListView,
+        list: ListView,
     },
     Form {
         rect: Rect,
-        form: &'a Form,
+        form: Form,
     },
     MenuBar {
         rect: Rect,
-        bar: &'a MenuBar,
+        bar: MenuBar,
     },
     Split {
         rect: Rect,
-        split: &'a Split,
+        split: Split,
     },
     Panel {
         rect: Rect,
-        panel: &'a Panel,
+        panel: Panel,
     },
     Scrollbar {
         rect: Rect,
-        sb: &'a Scrollbar,
+        sb: Scrollbar,
     },
     Palette {
         rect: Rect,
-        palette: &'a Palette,
+        palette: Palette,
     },
     Tooltip {
-        tooltip: &'a Tooltip,
-        layout: &'a TooltipLayout,
+        tooltip: Tooltip,
+        layout: TooltipLayout,
     },
     ContextMenu {
-        menu: &'a ContextMenu,
-        layout: &'a ContextMenuLayout,
+        menu: ContextMenu,
+        layout: ContextMenuLayout,
     },
     Dialog {
-        dialog: &'a Dialog,
-        layout: &'a DialogLayout,
+        dialog: Dialog,
+        layout: DialogLayout,
     },
     /// Like `Tooltip`/`ContextMenu`/`Dialog` above, carries its own
     /// resolved `layout` rather than a plain `rect` — `Float`
     /// is an overlay-with-caller-anchor primitive, so there's no bare
     /// `rect` the host would otherwise have on hand.
     Float {
-        float: &'a Float,
-        layout: &'a FloatLayout,
+        float: Float,
+        layout: FloatLayout,
     },
     Completions {
-        completions: &'a Completions,
-        layout: &'a CompletionsLayout,
+        completions: Completions,
+        layout: CompletionsLayout,
     },
     FindReplace {
         rect: Rect,
-        panel: &'a FindReplacePanel,
+        panel: FindReplacePanel,
     },
     RichTextPopup {
-        popup: &'a RichTextPopup,
-        layout: &'a RichTextPopupLayout,
+        popup: RichTextPopup,
+        layout: RichTextPopupLayout,
     },
     Toast {
         rect: Rect,
-        stack: &'a ToastOverlay,
+        stack: ToastOverlay,
     },
     DataTable {
         rect: Rect,
-        table: &'a DataTable,
+        table: DataTable,
         hovered: Option<usize>,
     },
     Chart {
         rect: Rect,
-        chart: &'a Chart,
+        chart: Chart,
         hovered_point: Option<(usize, usize)>,
         crosshair_x: Option<f64>,
     },
+    /// App-defined escape-hatch drawing: a declarative list of
+    /// [`crate::primitives::canvas::DrawOp`]s painted in order. See
+    /// [`Canvas`]'s module doc for the coordinate frame and the
+    /// per-backend degrade table.
+    Canvas {
+        rect: Rect,
+        canvas: Canvas,
+    },
     Board {
         rect: Rect,
-        model: &'a BoardModel,
+        model: BoardModel,
     },
     CommandCenter {
         rect: Rect,
-        cc: &'a CommandCenter,
+        cc: CommandCenter,
     },
     DiffView {
         rect: Rect,
-        view: &'a DiffView,
+        view: DiffView,
     },
     /// Tab-drag highlight overlay. Unlike every other
     /// transient-overlay variant above (`Tooltip`, `ContextMenu`,
@@ -336,60 +359,61 @@ pub enum Surface<'a> {
     /// or `*Layout.bounds` to carry — [`DropOverlay::bounds`] derives
     /// the zone rect from `overlay` itself.
     DropOverlay {
-        overlay: &'a DropOverlay,
+        overlay: DropOverlay,
     },
     Image {
         rect: Rect,
-        image: &'a Image,
+        image: Image,
     },
     MessageList {
         rect: Rect,
-        list: &'a MessageList,
+        list: MessageList,
     },
     Minimap {
         rect: Rect,
-        minimap: &'a Minimap,
+        minimap: Minimap,
     },
     PipelineView {
         rect: Rect,
-        view: &'a PipelineView,
+        view: PipelineView,
     },
     Progress {
         rect: Rect,
-        bar: &'a ProgressBar,
+        bar: ProgressBar,
     },
     /// Mirrors [`Surface::StatusBar`]'s `hovered`/`pressed` shape: a
-    /// `Surface` is a per-frame description, not owned
-    /// [`crate::interaction::InteractionState`], so [`ScreenLayout::draw`]
-    /// rebuilds one from these two borrowed ids at the call boundary.
+    /// `Surface` carries the two optional ids rather than a whole
+    /// [`crate::interaction::InteractionState`], and
+    /// [`ScreenLayout::draw`] builds the `WidgetId`-keyed store from
+    /// them at the call boundary.
     SidebarPanel {
         rect: Rect,
-        panel: &'a SidebarPanel,
-        hovered: Option<&'a WidgetId>,
-        pressed: Option<&'a WidgetId>,
+        panel: SidebarPanel,
+        hovered: Option<WidgetId>,
+        pressed: Option<WidgetId>,
     },
     Spinner {
         rect: Rect,
-        spinner: &'a Spinner,
+        spinner: Spinner,
     },
     /// Structural chrome, like [`Surface::Split`] — a divider set with
     /// no independent focusable identity, so excluded from
     /// [`ScreenLayout::tab_stops`].
     SplitTree {
         rect: Rect,
-        tree: &'a SplitTree,
+        tree: SplitTree,
     },
     TextInput {
         rect: Rect,
-        ti: &'a TextInput,
+        ti: TextInput,
     },
     /// See [`Surface::SidebarPanel`]'s doc for why `hovered`/`pressed`
-    /// are borrowed ids rather than an owned `InteractionState`.
+    /// are a pair of optional ids rather than an `InteractionState`.
     Toolbar {
         rect: Rect,
-        bar: &'a Toolbar,
-        hovered: Option<&'a WidgetId>,
-        pressed: Option<&'a WidgetId>,
+        bar: Toolbar,
+        hovered: Option<WidgetId>,
+        pressed: Option<WidgetId>,
     },
 }
 
@@ -446,6 +470,7 @@ pub enum FrameZone {
     Toast { idx: usize },
     DataTable { idx: usize },
     Chart { idx: usize },
+    Canvas { idx: usize },
     Board { idx: usize },
     CommandCenter { idx: usize },
     DiffView { idx: usize },
@@ -466,9 +491,9 @@ pub enum FrameZone {
 /// Hit regions collected during [`ScreenLayout::draw`]. Resolves
 /// absolute coordinates to the highest-z surface that contains them.
 ///
-/// Every `(Rect, FrameZone)` pair is stored by value, so unlike
-/// [`Surface<'a>`] a `FrameHitMap` carries no lifetime and can outlive
-/// the frame it was built from. `Rect` and `FrameZone` both implement
+/// Every `(Rect, FrameZone)` pair is stored by value, so a
+/// `FrameHitMap` carries no lifetime and can outlive the frame it was
+/// built from. `Rect` and `FrameZone` both implement
 /// `serde::{Serialize, Deserialize}`, so this struct derives them too
 /// — it can be persisted or sent across a process/wire boundary.
 /// **This is a step toward an owned `Frame`, not the owned frame
@@ -543,19 +568,33 @@ impl FrameHitMap {
 
 /// Declarative frame description. Push surfaces in back-to-front
 /// z-order, then call [`Self::draw`] to render and get a hit map.
-pub struct ScreenLayout<'a> {
-    surfaces: Vec<Surface<'a>>,
+pub struct ScreenLayout {
+    surfaces: Vec<Surface>,
 }
 
-impl<'a> ScreenLayout<'a> {
+impl ScreenLayout {
     pub fn new() -> Self {
         Self {
             surfaces: Vec::new(),
         }
     }
 
-    pub fn push(&mut self, surface: Surface<'a>) {
+    pub fn push(&mut self, surface: Surface) {
         self.surfaces.push(surface);
+    }
+
+    /// The pushed surfaces, in z-order.
+    pub fn surfaces(&self) -> &[Surface] {
+        &self.surfaces
+    }
+
+    /// The pushed surfaces, mutably — for a caller that keeps a layout
+    /// across frames and edits a surface in place instead of rebuilding
+    /// the whole screen. Surfaces can be replaced, not added or
+    /// removed, so each surface's index (and therefore the `idx` its
+    /// [`FrameZone`] carries) is stable.
+    pub fn surfaces_mut(&mut self) -> &mut [Surface] {
+        &mut self.surfaces
     }
 
     /// Render all surfaces via `backend` in z-order and return a
@@ -588,15 +627,12 @@ impl<'a> ScreenLayout<'a> {
                     hovered,
                     pressed,
                 } => {
-                    // The trait's `WidgetId`-keyed hover/pressed
-                    // store. `Surface::StatusBar` still carries the two
-                    // borrowed ids because a `Surface` is a per-frame
-                    // *description*, not owned state — rebuild the
-                    // store at the call boundary.
-                    let interaction = crate::interaction::InteractionState::from_parts(
-                        hovered.cloned(),
-                        pressed.cloned(),
-                    );
+                    // `Surface::StatusBar` carries the two optional
+                    // ids; the trait wants the `WidgetId`-keyed
+                    // hover/pressed store, so build one from them here
+                    // at the call boundary.
+                    let interaction =
+                        crate::interaction::InteractionState::from_parts(*hovered, *pressed);
                     backend.draw_status_bar_interactive(*rect, bar, &interaction);
                 }
                 Surface::ActivityBar { rect, bar, hovered } => {
@@ -680,6 +716,9 @@ impl<'a> ScreenLayout<'a> {
                 } => {
                     backend.draw_chart(*rect, chart, *hovered_point, *crosshair_x);
                 }
+                Surface::Canvas { rect, canvas } => {
+                    backend.draw_canvas(*rect, canvas);
+                }
                 Surface::Board { rect, model } => {
                     backend.draw_board(*rect, model);
                 }
@@ -713,10 +752,8 @@ impl<'a> ScreenLayout<'a> {
                     hovered,
                     pressed,
                 } => {
-                    let interaction = crate::interaction::InteractionState::from_parts(
-                        hovered.cloned(),
-                        pressed.cloned(),
-                    );
+                    let interaction =
+                        crate::interaction::InteractionState::from_parts(*hovered, *pressed);
                     backend.draw_sidebar_panel_interactive(*rect, panel, &interaction);
                 }
                 Surface::Spinner { rect, spinner } => {
@@ -734,10 +771,8 @@ impl<'a> ScreenLayout<'a> {
                     hovered,
                     pressed,
                 } => {
-                    let interaction = crate::interaction::InteractionState::from_parts(
-                        hovered.cloned(),
-                        pressed.cloned(),
-                    );
+                    let interaction =
+                        crate::interaction::InteractionState::from_parts(*hovered, *pressed);
                     backend.draw_toolbar_interactive(*rect, bar, &interaction);
                 }
             }
@@ -787,10 +822,13 @@ impl<'a> ScreenLayout<'a> {
     /// - Structural chrome (`Split`, `Scrollbar`, `SplitTree`) —
     ///   containers/controls with no independent focusable identity of
     ///   their own.
-    /// - `Image` and `Spinner` — purely decorative, never focusable,
-    ///   regardless of the "carries a `rect` plus an owning `WidgetId`"
-    ///   rule: a consumer that adopts them would otherwise get dead
-    ///   stops in its Tab order.
+    /// - `Image`, `Spinner` and `Canvas` — purely decorative, never
+    ///   focusable, regardless of the "carries a `rect` plus an owning
+    ///   `WidgetId`" rule: a consumer that adopts them would otherwise
+    ///   get dead stops in its Tab order. `Canvas`'s own hit-test
+    ///   ([`crate::primitives::canvas::CanvasHit`]) only ever answers
+    ///   "inside"/"outside" of its bounds — it has no activation
+    ///   affordance to reach by keyboard.
     /// - `Progress` **unless** `ProgressBar::cancellable` is set — a
     ///   bare progress readout has nothing to activate, but a
     ///   cancellable one has a real affordance ([`ProgressBarHit::Cancel`])
@@ -830,6 +868,7 @@ impl<'a> ScreenLayout<'a> {
                 Surface::Toolbar { rect, bar, .. } => Some((bar.id, *rect)),
                 Surface::Image { .. }
                 | Surface::Spinner { .. }
+                | Surface::Canvas { .. }
                 | Surface::Progress { .. }
                 | Surface::Split { .. }
                 | Surface::Scrollbar { .. }
@@ -856,7 +895,7 @@ impl<'a> ScreenLayout<'a> {
     /// Compute the hit-test rect/zone for a single surface at index `idx`.
     /// Shared by [`Self::draw`] and [`Self::hit_map`] so the two stay in
     /// lock-step by construction.
-    fn zone_for(idx: usize, surface: &Surface<'a>) -> (Rect, FrameZone) {
+    fn zone_for(idx: usize, surface: &Surface) -> (Rect, FrameZone) {
         match surface {
             Surface::Editor { rect, .. } => (*rect, FrameZone::Editor { idx }),
             Surface::TabBar { rect, .. } => (*rect, FrameZone::TabBar { idx }),
@@ -886,6 +925,7 @@ impl<'a> ScreenLayout<'a> {
             Surface::Toast { rect, .. } => (*rect, FrameZone::Toast { idx }),
             Surface::DataTable { rect, .. } => (*rect, FrameZone::DataTable { idx }),
             Surface::Chart { rect, .. } => (*rect, FrameZone::Chart { idx }),
+            Surface::Canvas { rect, .. } => (*rect, FrameZone::Canvas { idx }),
             Surface::Board { rect, .. } => (*rect, FrameZone::Board { idx }),
             Surface::CommandCenter { rect, .. } => (*rect, FrameZone::CommandCenter { idx }),
             Surface::DiffView { rect, .. } => (*rect, FrameZone::DiffView { idx }),
@@ -904,7 +944,7 @@ impl<'a> ScreenLayout<'a> {
     }
 }
 
-impl<'a> Default for ScreenLayout<'a> {
+impl Default for ScreenLayout {
     fn default() -> Self {
         Self::new()
     }
@@ -952,6 +992,7 @@ pub enum OwnedContent {
     Toast(ToastOverlay),
     DataTable(DataTable),
     Chart(Chart),
+    Canvas(Canvas),
     Board(BoardModel),
     CommandCenter(CommandCenter),
     DiffView(DiffView),
@@ -1030,6 +1071,9 @@ impl OwnedContent {
             }
             OwnedContent::Chart(chart) => {
                 backend.draw_chart(rect, chart, None, None);
+            }
+            OwnedContent::Canvas(canvas) => {
+                backend.draw_canvas(rect, canvas);
             }
             OwnedContent::Board(model) => {
                 backend.draw_board(rect, model);
@@ -1113,6 +1157,7 @@ impl OwnedContent {
             OwnedContent::Toast(_) => FrameZone::Toast { idx },
             OwnedContent::DataTable(_) => FrameZone::DataTable { idx },
             OwnedContent::Chart(_) => FrameZone::Chart { idx },
+            OwnedContent::Canvas(_) => FrameZone::Canvas { idx },
             OwnedContent::Board(_) => FrameZone::Board { idx },
             OwnedContent::CommandCenter(_) => FrameZone::CommandCenter { idx },
             OwnedContent::DiffView(_) => FrameZone::DiffView { idx },
@@ -1179,10 +1224,11 @@ impl OwnedFrame {
         Self::default()
     }
 
-    /// Capture every surface in `layout` into an owned, serializable
-    /// [`OwnedFrame`]. Clones each primitive rather than borrowing it,
-    /// so the result outlives `layout` and the frame it described.
-    pub fn from_layout(layout: &ScreenLayout<'_>) -> Self {
+    /// Capture every surface in `layout` into a serializable
+    /// [`OwnedFrame`]. Clones each primitive out of `layout`, so the
+    /// result is independent of it and can be serialized, persisted, or
+    /// sent across a process/wire boundary.
+    pub fn from_layout(layout: &ScreenLayout) -> Self {
         let nodes = layout
             .surfaces
             .iter()
@@ -1205,6 +1251,16 @@ impl OwnedFrame {
     /// pushed into the source [`ScreenLayout`].
     pub fn nodes(&self) -> &[OwnedNode] {
         &self.nodes
+    }
+
+    /// The captured nodes, mutably — the seam a consumer uses to attach
+    /// per-surface [`OwnedNode::a11y`] overrides to a frame it has
+    /// already captured. The node set itself is fixed by the capture:
+    /// nodes can be edited in place, not added or removed, so `idx`
+    /// stays in step with the source [`ScreenLayout`] and the
+    /// [`FrameZone`]s [`Self::draw`] registers.
+    pub fn nodes_mut(&mut self) -> &mut [OwnedNode] {
+        &mut self.nodes
     }
 
     /// Repaint every node through `backend` and return the resulting
@@ -1232,81 +1288,67 @@ impl OwnedFrame {
     }
 }
 
-/// Capture one borrowed [`Surface`] into its owned `(rect, widget_id,
-/// content)` parts. The widget-id rule mirrors
+/// Clone one [`Surface`]'s primitive into the `(rect, widget_id,
+/// content)` parts an [`OwnedNode`] holds. The widget-id rule mirrors
 /// [`ScreenLayout::tab_stops`]'s inclusion list exactly; the rect rule
 /// mirrors [`ScreenLayout::zone_for`]'s exactly. [`Surface::DropOverlay`]
 /// falls back to [`OwnedContent::DropOverlay`] and [`Surface::FindReplace`]
 /// falls back to [`OwnedContent::FindReplace`], because [`DropOverlay`]
 /// and [`FindReplacePanel`] do not implement `serde::{Serialize,
 /// Deserialize}` — both still keep their own distinct [`FrameZone`] tag.
-fn capture_surface(surface: &Surface<'_>) -> (Rect, Option<WidgetId>, OwnedContent) {
+fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) {
     match surface {
-        Surface::Editor { rect, editor } => (
-            *rect,
-            Some(editor.id),
-            OwnedContent::Editor((*editor).clone()),
-        ),
+        Surface::Editor { rect, editor } => {
+            (*rect, Some(editor.id), OwnedContent::Editor(editor.clone()))
+        }
         Surface::TabBar { rect, bar, .. } => {
-            (*rect, Some(bar.id), OwnedContent::TabBar((*bar).clone()))
+            (*rect, Some(bar.id), OwnedContent::TabBar(bar.clone()))
         }
         Surface::StatusBar { rect, bar, .. } => {
-            (*rect, Some(bar.id), OwnedContent::StatusBar((*bar).clone()))
+            (*rect, Some(bar.id), OwnedContent::StatusBar(bar.clone()))
         }
-        Surface::ActivityBar { rect, bar, .. } => (
-            *rect,
-            Some(bar.id),
-            OwnedContent::ActivityBar((*bar).clone()),
-        ),
-        Surface::CommandLine { rect, cmd } => (
-            *rect,
-            Some(cmd.id),
-            OwnedContent::CommandLine((*cmd).clone()),
-        ),
-        Surface::Terminal { rect, term } => (
-            *rect,
-            Some(term.id),
-            OwnedContent::Terminal((*term).clone()),
-        ),
+        Surface::ActivityBar { rect, bar, .. } => {
+            (*rect, Some(bar.id), OwnedContent::ActivityBar(bar.clone()))
+        }
+        Surface::CommandLine { rect, cmd } => {
+            (*rect, Some(cmd.id), OwnedContent::CommandLine(cmd.clone()))
+        }
+        Surface::Terminal { rect, term } => {
+            (*rect, Some(term.id), OwnedContent::Terminal(term.clone()))
+        }
         Surface::TextDisplay { rect, td } => {
-            (*rect, Some(td.id), OwnedContent::TextDisplay((*td).clone()))
+            (*rect, Some(td.id), OwnedContent::TextDisplay(td.clone()))
         }
         Surface::MultiSectionView { rect, view } => (
             *rect,
             Some(view.id),
-            OwnedContent::MultiSectionView((*view).clone()),
+            OwnedContent::MultiSectionView(view.clone()),
         ),
-        Surface::Tree { rect, tree } => (*rect, Some(tree.id), OwnedContent::Tree((*tree).clone())),
-        Surface::List { rect, list } => (*rect, Some(list.id), OwnedContent::List((*list).clone())),
-        Surface::Form { rect, form } => (*rect, Some(form.id), OwnedContent::Form((*form).clone())),
-        Surface::MenuBar { rect, bar } => {
-            (*rect, Some(bar.id), OwnedContent::MenuBar((*bar).clone()))
-        }
-        Surface::Split { rect, split } => (*rect, None, OwnedContent::Split((*split).clone())),
+        Surface::Tree { rect, tree } => (*rect, Some(tree.id), OwnedContent::Tree(tree.clone())),
+        Surface::List { rect, list } => (*rect, Some(list.id), OwnedContent::List(list.clone())),
+        Surface::Form { rect, form } => (*rect, Some(form.id), OwnedContent::Form(form.clone())),
+        Surface::MenuBar { rect, bar } => (*rect, Some(bar.id), OwnedContent::MenuBar(bar.clone())),
+        Surface::Split { rect, split } => (*rect, None, OwnedContent::Split(split.clone())),
         Surface::Panel { rect, panel } => {
-            (*rect, Some(panel.id), OwnedContent::Panel((*panel).clone()))
+            (*rect, Some(panel.id), OwnedContent::Panel(panel.clone()))
         }
-        Surface::Scrollbar { rect, sb } => (*rect, None, OwnedContent::Scrollbar((*sb).clone())),
+        Surface::Scrollbar { rect, sb } => (*rect, None, OwnedContent::Scrollbar(sb.clone())),
         Surface::Palette { rect, palette } => (
             *rect,
             Some(palette.id),
-            OwnedContent::Palette((*palette).clone()),
+            OwnedContent::Palette(palette.clone()),
         ),
-        Surface::Tooltip { tooltip, layout } => (
-            layout.bounds,
-            None,
-            OwnedContent::Tooltip((*tooltip).clone()),
-        ),
-        Surface::ContextMenu { menu, layout } => (
-            layout.bounds,
-            None,
-            OwnedContent::ContextMenu((*menu).clone()),
-        ),
+        Surface::Tooltip { tooltip, layout } => {
+            (layout.bounds, None, OwnedContent::Tooltip(tooltip.clone()))
+        }
+        Surface::ContextMenu { menu, layout } => {
+            (layout.bounds, None, OwnedContent::ContextMenu(menu.clone()))
+        }
         Surface::Dialog { dialog, layout } => {
-            (layout.bounds, None, OwnedContent::Dialog((*dialog).clone()))
+            (layout.bounds, None, OwnedContent::Dialog(dialog.clone()))
         }
         Surface::Float { float, layout } => {
-            (layout.bounds, None, OwnedContent::Float((*float).clone()))
+            (layout.bounds, None, OwnedContent::Float(float.clone()))
         }
         Surface::Completions {
             completions,
@@ -1314,74 +1356,67 @@ fn capture_surface(surface: &Surface<'_>) -> (Rect, Option<WidgetId>, OwnedConte
         } => (
             layout.bounds,
             None,
-            OwnedContent::Completions((*completions).clone()),
+            OwnedContent::Completions(completions.clone()),
         ),
         Surface::FindReplace { rect, .. } => (*rect, None, OwnedContent::FindReplace),
         Surface::RichTextPopup { popup, layout } => (
             layout.bounds,
             None,
-            OwnedContent::RichTextPopup((*popup).clone()),
+            OwnedContent::RichTextPopup(popup.clone()),
         ),
-        Surface::Toast { rect, stack } => (*rect, None, OwnedContent::Toast((*stack).clone())),
+        Surface::Toast { rect, stack } => (*rect, None, OwnedContent::Toast(stack.clone())),
         Surface::DataTable { rect, table, .. } => (
             *rect,
             Some(table.id),
-            OwnedContent::DataTable((*table).clone()),
+            OwnedContent::DataTable(table.clone()),
         ),
         Surface::Chart { rect, chart, .. } => {
-            (*rect, Some(chart.id), OwnedContent::Chart((*chart).clone()))
+            (*rect, Some(chart.id), OwnedContent::Chart(chart.clone()))
         }
+        Surface::Canvas { rect, canvas } => (*rect, None, OwnedContent::Canvas(canvas.clone())),
         Surface::Board { rect, model } => {
-            (*rect, Some(model.id), OwnedContent::Board((*model).clone()))
+            (*rect, Some(model.id), OwnedContent::Board(model.clone()))
         }
-        Surface::CommandCenter { rect, cc } => (
-            *rect,
-            Some(cc.id),
-            OwnedContent::CommandCenter((*cc).clone()),
-        ),
-        Surface::DiffView { rect, view } => (
-            *rect,
-            Some(view.id),
-            OwnedContent::DiffView((*view).clone()),
-        ),
+        Surface::CommandCenter { rect, cc } => {
+            (*rect, Some(cc.id), OwnedContent::CommandCenter(cc.clone()))
+        }
+        Surface::DiffView { rect, view } => {
+            (*rect, Some(view.id), OwnedContent::DiffView(view.clone()))
+        }
         Surface::DropOverlay { overlay } => (overlay.bounds(), None, OwnedContent::DropOverlay),
-        Surface::Image { rect, image } => (*rect, None, OwnedContent::Image((*image).clone())),
+        Surface::Image { rect, image } => (*rect, None, OwnedContent::Image(image.clone())),
         Surface::MessageList { rect, list } => (
             *rect,
             Some(list.id),
-            OwnedContent::MessageList((*list).clone()),
+            OwnedContent::MessageList(list.clone()),
         ),
         Surface::Minimap { rect, minimap } => (
             *rect,
             Some(minimap.id),
-            OwnedContent::Minimap((*minimap).clone()),
+            OwnedContent::Minimap(minimap.clone()),
         ),
         Surface::PipelineView { rect, view } => (
             *rect,
             Some(view.id),
-            OwnedContent::PipelineView((*view).clone()),
+            OwnedContent::PipelineView(view.clone()),
         ),
         Surface::Progress { rect, bar } => (
             *rect,
             if bar.cancellable { Some(bar.id) } else { None },
-            OwnedContent::Progress((*bar).clone()),
+            OwnedContent::Progress(bar.clone()),
         ),
         Surface::SidebarPanel { rect, panel, .. } => (
             *rect,
             Some(panel.id),
-            OwnedContent::SidebarPanel((*panel).clone()),
+            OwnedContent::SidebarPanel(panel.clone()),
         ),
-        Surface::Spinner { rect, spinner } => {
-            (*rect, None, OwnedContent::Spinner((*spinner).clone()))
-        }
-        Surface::SplitTree { rect, tree } => {
-            (*rect, None, OwnedContent::SplitTree((*tree).clone()))
-        }
+        Surface::Spinner { rect, spinner } => (*rect, None, OwnedContent::Spinner(spinner.clone())),
+        Surface::SplitTree { rect, tree } => (*rect, None, OwnedContent::SplitTree(tree.clone())),
         Surface::TextInput { rect, ti } => {
-            (*rect, Some(ti.id), OwnedContent::TextInput((*ti).clone()))
+            (*rect, Some(ti.id), OwnedContent::TextInput(ti.clone()))
         }
         Surface::Toolbar { rect, bar, .. } => {
-            (*rect, Some(bar.id), OwnedContent::Toolbar((*bar).clone()))
+            (*rect, Some(bar.id), OwnedContent::Toolbar(bar.clone()))
         }
     }
 }
@@ -1554,7 +1589,7 @@ mod tests {
 
     #[test]
     fn screen_layout_default_is_empty() {
-        let layout: ScreenLayout<'_> = ScreenLayout::default();
+        let layout = ScreenLayout::default();
         assert_eq!(layout.surfaces.len(), 0);
     }
 
@@ -1605,11 +1640,11 @@ mod tests {
         let mut layout = ScreenLayout::new();
         layout.push(Surface::Editor {
             rect: Rect::new(0.0, 0.0, 100.0, 100.0),
-            editor: &editor,
+            editor,
         });
         layout.push(Surface::Palette {
             rect: Rect::new(0.0, 0.0, 50.0, 50.0),
-            palette: &palette,
+            palette,
         });
 
         // No `&mut dyn Backend` in scope anywhere in this test — proves
@@ -1624,6 +1659,67 @@ mod tests {
         assert_eq!(hit_map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
         // Point outside everything.
         assert_eq!(hit_map.hit_test(150.0, 150.0), FrameZone::Empty);
+    }
+
+    /// A [`Surface`] owns the primitive it paints, so the primitive's
+    /// original binding can go out of scope while the `Surface` lives
+    /// on and still describes a complete frame.
+    #[test]
+    fn surface_owns_its_primitive_and_outlives_the_source() {
+        let rect = Rect::new(2.0, 3.0, 20.0, 8.0);
+
+        let surface = {
+            let list = MessageList {
+                id: "ml".into(),
+                rows: Vec::new(),
+                scroll_top: 0,
+            };
+            Surface::MessageList { rect, list }
+            // `list`'s binding dies here; the `Surface` keeps the value.
+        };
+
+        let mut layout = ScreenLayout::new();
+        layout.push(surface);
+
+        let hit_map = layout.hit_map();
+        assert_eq!(hit_map.len(), 1);
+        assert_eq!(hit_map.zones()[0].0, rect);
+        assert_eq!(
+            hit_map.hit_test(3.0, 4.0),
+            FrameZone::MessageList { idx: 0 }
+        );
+        assert_eq!(hit_map.hit_test(100.0, 100.0), FrameZone::Empty);
+    }
+
+    /// A [`ScreenLayout`] carries no lifetime, so it is a plain return
+    /// value: a helper can build a whole frame description and hand it
+    /// back, and the caller can both draw it and hit-map it.
+    #[test]
+    fn screen_layout_returned_from_a_function_draws_and_hit_maps() {
+        use crate::testing::RecordingBackend;
+
+        fn build() -> ScreenLayout {
+            let list = MessageList {
+                id: "ml".into(),
+                rows: Vec::new(),
+                scroll_top: 0,
+            };
+            let mut layout = ScreenLayout::new();
+            layout.push(Surface::MessageList {
+                rect: Rect::new(0.0, 0.0, 40.0, 10.0),
+                list,
+            });
+            layout
+        }
+
+        let layout = build();
+
+        let mut backend = RecordingBackend::new();
+        let drawn = layout.draw(&mut backend);
+        assert!(backend.calls.contains(&"draw_message_list"));
+
+        assert_eq!(drawn, layout.hit_map());
+        assert_eq!(drawn.hit_test(1.0, 1.0), FrameZone::MessageList { idx: 0 });
     }
 
     /// `tab_stops` derives Tab order from geometry (reading order),
@@ -1685,16 +1781,16 @@ mod tests {
         // still resolve reading order (top-to-bottom) from the rects.
         layout.push(Surface::Editor {
             rect: editor.rect,
-            editor: &editor,
+            editor,
         });
         layout.push(Surface::Palette {
             rect: Rect::new(0.0, 0.0, 50.0, 5.0),
-            palette: &palette,
+            palette,
         });
         // Structural chrome: must not appear in tab order at all.
         layout.push(Surface::Split {
             rect: Rect::new(0.0, 30.0, 100.0, 1.0),
-            split: &split,
+            split,
         });
 
         let stops = layout.tab_stops();
@@ -1810,54 +1906,44 @@ mod tests {
 
         let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::Board {
-            rect,
-            model: &board,
+        layout.push(Surface::Board { rect, model: board });
+        layout.push(Surface::CommandCenter { rect, cc });
+        layout.push(Surface::DiffView { rect, view: diff });
+        layout.push(Surface::DropOverlay {
+            overlay: overlay.clone(),
         });
-        layout.push(Surface::CommandCenter { rect, cc: &cc });
-        layout.push(Surface::DiffView { rect, view: &diff });
-        layout.push(Surface::DropOverlay { overlay: &overlay });
-        layout.push(Surface::Image {
-            rect,
-            image: &image,
-        });
+        layout.push(Surface::Image { rect, image });
         layout.push(Surface::MessageList {
             rect,
-            list: &message_list,
+            list: message_list,
         });
-        layout.push(Surface::Minimap {
-            rect,
-            minimap: &minimap,
-        });
+        layout.push(Surface::Minimap { rect, minimap });
         layout.push(Surface::PipelineView {
             rect,
-            view: &pipeline,
+            view: pipeline,
         });
         layout.push(Surface::Progress {
             rect,
-            bar: &progress,
+            bar: progress,
         });
         layout.push(Surface::SidebarPanel {
             rect,
-            panel: &sidebar,
+            panel: sidebar,
             hovered: None,
             pressed: None,
         });
-        layout.push(Surface::Spinner {
-            rect,
-            spinner: &spinner,
-        });
+        layout.push(Surface::Spinner { rect, spinner });
         layout.push(Surface::SplitTree {
             rect,
-            tree: &split_tree,
+            tree: split_tree,
         });
         layout.push(Surface::TextInput {
             rect,
-            ti: &text_input,
+            ti: text_input,
         });
         layout.push(Surface::Toolbar {
             rect,
-            bar: &toolbar,
+            bar: toolbar,
             hovered: None,
             pressed: None,
         });
@@ -1917,7 +2003,7 @@ mod tests {
         let mut layout = ScreenLayout::new();
         layout.push(Surface::Progress {
             rect,
-            bar: &progress,
+            bar: progress,
         });
         let stops = layout.tab_stops();
         assert_eq!(stops.len(), 1);
@@ -1972,11 +2058,11 @@ mod tests {
         let mut layout = ScreenLayout::new();
         layout.push(Surface::Editor {
             rect: Rect::new(0.0, 0.0, 100.0, 100.0),
-            editor: &editor,
+            editor,
         });
         layout.push(Surface::Float {
-            float: &float,
-            layout: &float_layout,
+            float,
+            layout: float_layout,
         });
 
         let mut backend = RecordingBackend::new();
@@ -2063,11 +2149,11 @@ mod tests {
         let mut layout = ScreenLayout::new();
         layout.push(Surface::Editor {
             rect: Rect::new(0.0, 0.0, 100.0, 100.0),
-            editor: &editor,
+            editor,
         });
         layout.push(Surface::Palette {
             rect: Rect::new(0.0, 0.0, 50.0, 50.0),
-            palette: &palette,
+            palette,
         });
 
         let captured = OwnedFrame::from_layout(&layout);
@@ -2130,7 +2216,7 @@ mod tests {
         let mut layout = ScreenLayout::new();
         layout.push(Surface::Editor {
             rect: Rect::new(0.0, 0.0, 20.0, 5.0),
-            editor: &editor,
+            editor,
         });
 
         let captured = OwnedFrame::from_layout(&layout);

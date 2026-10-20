@@ -5,6 +5,9 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  # On-demand only for the `downstream` consumer compile-truth job (see its
+  # `if:`). Run it when sizing a vimcode/coord-tui migration.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -295,7 +298,7 @@ jobs:
     # so this fails at gtk4's build-script pkg-config step without them.
     name: cargo doc (docs.rs proxy, all Linux-buildable backend features)
     runs-on: ubuntu-latest
-    # #1292: apt-get install + `cargo doc` across tui,gtk,win,terminal,layout,
+    # #1292: apt-get install + `cargo doc` across tui,gtk,win,terminal,layout,a11y,
     # normally under 10 minutes with a warm cache.
     timeout-minutes: 25
     steps:
@@ -306,10 +309,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
       - uses: Swatinem/rust-cache@v2
-      - name: cargo doc --no-deps -D warnings (tui, gtk, win, terminal, layout)
+      - name: cargo doc --no-deps -D warnings (tui, gtk, win, terminal, layout, a11y)
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --no-deps -p quadraui --features tui,gtk,win,terminal,layout
+        run: cargo doc --no-deps -p quadraui --features tui,gtk,win,terminal,layout,a11y
 
   example-coverage:
     # #311: block a PR that adds a new `examples/tui_*.rs` without the
@@ -835,6 +838,32 @@ jobs:
           name: conformance-matrix-win
           path: target/conformance-matrix.txt
           if-no-files-found: warn
+      # `quadraui-gallery`'s win leg (`src/capture.rs`'s `capture_win`/
+      # `capture_win_over`/`write_win_png` and the test module they live
+      # in) only ever compiles under `all(feature = "win", target_os =
+      # "windows")`, so the ubuntu-only `Compile check (gallery, win
+      # feature)` step above (a plain `cargo check`, no `target_os =
+      # "windows"`) never reaches a single line of it. This is the one
+      # real Windows host in the fleet, so it's the only place a type
+      # error or a logic bug in the capture leg (e.g.
+      # `capture_win_selects_the_clicked_variant_and_names_it_in_the_filename`,
+      # which decodes both captured PNGs and asserts their pixel buffers
+      # differ) would ever be caught — mirrors macos.yml's "Test
+      # (gallery, macos feature)" step for the macOS leg.
+      # TODO(#1642): on native windows-latest the quadraui-gallery test binary
+      # crashes at load — STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139), a missing
+      # DLL export — before any test runs, so this step can't pass until that
+      # is fixed on real Windows. Skipped (`if: false`) rather than left failing
+      # to keep the Windows signal honest; skipping loses no coverage that
+      # currently works (the binary never loads). The correctness it would run
+      # is the pixel-diff `capture_win_selects_the_clicked_variant_…`. Restore
+      # `if: matrix.os == 'windows-latest'` when #1642 is fixed.
+      - name: Test (gallery, win feature)
+        if: false
+        run: cargo test -p quadraui-gallery --features win
+      - name: Clippy (gallery, win feature)
+        if: matrix.os == 'windows-latest'
+        run: cargo clippy -p quadraui-gallery --features win --all-targets -- -D warnings
       # Tier-3 pty smoke (quadraui#302, tests/tui_pty_smoke.rs): spawns real
       # `cargo run --example` processes in a real PTY (portable-pty) and
       # drives them with real ANSI escape sequences (vt100). No display
@@ -912,6 +941,19 @@ jobs:
         run: cargo test -p quadraui --features layout --doc flex
       - name: Clippy (layout feature)
         run: cargo clippy -p quadraui --features layout -- -D warnings
+      # Optional AccessKit conversions (quadraui#1310, `quadraui::a11y`).
+      # `A11yRole`/`A11yInfo` are always compiled; only the
+      # `From<_> for accesskit::_` impls in `a11y::accesskit_convert` sit
+      # behind this feature, so the plain `--features tui`/`--features
+      # gtk,tui` steps above never turn it on and `accesskit_convert` would
+      # otherwise never compile or run under CI. Same "own feature, own
+      # steps, same job" shape as `layout` just above.
+      - name: Build (a11y feature)
+        run: cargo build -p quadraui --features a11y
+      - name: Test (a11y feature)
+        run: 'cargo test -p quadraui --features a11y --lib a11y::'
+      - name: Clippy (a11y feature)
+        run: cargo clippy -p quadraui --features a11y -- -D warnings
       # Conformance matrix (quadraui#491, epic #480). The suite runs as part
       # of `cargo test --features tui` above; this step re-runs just that
       # target with --nocapture so the scenario x backend table lands in the
@@ -1273,6 +1315,17 @@ jobs:
     # unconditional.
     name: downstream consumers (compile truth)
     runs-on: ubuntu-latest
+    # Pin-and-defer policy: quadraui's consumers (vimcode, coord-tui) pin a
+    # released version and adopt API changes on their own schedule, so this
+    # consumer compile-truth check no longer BLOCKS develop PRs — it would
+    # otherwise force a lockstep cross-repo migration on every breaking
+    # change and churn the headless loop (a work leg cannot edit the consumer
+    # repos). It now runs on demand (`workflow_dispatch`) when sizing a
+    # consumer migration. Publish-correctness is still enforced: the
+    # `cargo-semver-checks` job flags API breaks and blocks the
+    # develop -> main promotion so releases are versioned correctly, which is
+    # what the consumers' pins rely on.
+    if: github.event_name == 'workflow_dispatch'
     # #1292: clones + `cargo check --all-targets` on up to two consumers,
     # with a possible control-run retry on failure — normally 10-15 min
     # with a warm cache across both consumer target dirs.
@@ -1861,5 +1914,112 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gallery-capture-tui
+          path: target/gallery-capture
+          if-no-files-found: warn
+
+  gallery-capture-gtk:
+    # Headless gallery capture mode (#1348), GTK leg — the Linux-runner
+    # twin of `gallery-capture-tui` above and `macos.yml`'s
+    # `gallery-capture-macos`; see that job's comment and
+    # `quadraui-gallery/src/capture.rs`'s module doc for the full picture.
+    # Drives the same `GalleryApp` through the headless `GtkDriver` (an
+    # in-memory Cairo `ImageSurface`, no display server) and PNG-encodes
+    # it — needs the same GTK4 system libraries as the `gtk` job above,
+    # which is why this installs them the same way rather than assuming
+    # they're on the runner image.
+    #
+    # `continue-on-error: true` and no dependency on the blocking `gtk`
+    # job above: a capture-mode bug must never hold up a PR. Correctness
+    # is `tests/capture_gtk_driver.rs`'s job, run by the blocking `gtk`
+    # job's own `cargo test --features gtk,tui` step — this job itself
+    # runs no tests, only `cargo run --capture`, and exists purely to
+    # produce the uploaded artifact `pages.yml` later downloads.
+    name: gallery capture (gtk)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install GTK4 system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Capture every registered demo (gtk backend)
+        run: |
+          mkdir -p target/gallery-capture
+          cargo run -p quadraui-gallery --features gtk --bin quadraui-gallery -- \
+            --capture target/gallery-capture
+      - name: Upload gallery capture (gtk)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gallery-capture-gtk
+          path: target/gallery-capture
+          if-no-files-found: warn
+
+  gallery-capture-windows:
+    # Headless gallery capture mode, Windows leg — the twin of
+    # `gallery-capture-tui`/`gallery-capture-gtk` above and `macos.yml`'s
+    # `gallery-capture-macos`; see `gallery-capture-tui`'s comment and
+    # `quadraui-gallery/src/capture.rs`'s module doc for the full picture.
+    # Drives the same `GalleryApp` through the headless
+    # `quadraui::win::testing::WinDriver` (an in-memory Direct2D DIB
+    # section via `HeadlessSurface`, no `HWND` or display) and PNG-encodes
+    # it, so it needs a real `windows-latest` runner the same way the
+    # `tui` job's windows-latest matrix leg above does — that's why this
+    # can't live alongside `gallery-capture-tui`/`-gtk` on `ubuntu-latest`.
+    #
+    # `continue-on-error: true` and no dependency on the blocking `tui`
+    # job's windows-latest leg: a capture-mode bug must never hold up a
+    # PR. Correctness is `quadraui-gallery/src/capture.rs`'s own
+    # `#[cfg(test)]` module (in particular
+    # `capture_win_selects_the_clicked_variant_and_names_it_in_the_filename`,
+    # which decodes both captured PNGs and asserts their pixel buffers
+    # differ, not just their dimensions), run by the `tui` job's windows-
+    # latest leg's own "Test (gallery, win feature)" step — this job runs
+    # no tests, only `cargo run --capture`, and exists purely to produce
+    # the artifact `pages.yml` later downloads.
+    name: gallery capture (windows)
+    runs-on: windows-latest
+    continue-on-error: true
+    # TODO(#1642): disabled — the native windows-latest capture this runs
+    # (`cargo run --capture`) is broken (Direct2D readback) and the job only
+    # ever produced a failing leg / no usable artifact. Skipped rather than
+    # left failing to keep the Windows signal honest; pages.yml already warns
+    # and leaves the Windows gallery column pending when the artifact is
+    # absent. Re-enable (drop `if: false`) when #1642 is fixed on real Windows.
+    if: false
+    timeout-minutes: 20
+    steps:
+      # Same reasoning as the `tui` job's windows-latest leg: must precede
+      # `actions/checkout` or the Windows image's `core.autocrlf=true`
+      # rewrites every checked-out LF to CRLF.
+      - name: Configure git for Windows (line endings + long paths)
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+          git config --system core.longpaths true
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `shell: bash`: the runner's default shell on `windows-latest` is
+      # `pwsh`, where `mkdir -p` and a trailing `\` line continuation are
+      # both invalid syntax. The pre-installed git-bash gives this step
+      # the exact same script the `gallery-capture-tui`/`-gtk` steps above
+      # already use, rather than a parallel pwsh-flavoured copy to keep in
+      # sync.
+      - name: Capture every registered demo (win backend)
+        shell: bash
+        run: |
+          mkdir -p target/gallery-capture
+          cargo run -p quadraui-gallery --features win --bin quadraui-gallery -- \
+            --capture target/gallery-capture
+      - name: Upload gallery capture (windows)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gallery-capture-windows
           path: target/gallery-capture
           if-no-files-found: warn

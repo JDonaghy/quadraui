@@ -59,6 +59,208 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-20
+### Changed
+
+- `Surface` no longer has a lifetime parameter: every variant carries its
+  primitive descriptor by value (`Surface::StatusBar { bar: StatusBar, .. }`
+  rather than `bar: &'a StatusBar`), including the six overlay variants'
+  companion `*Layout` values, and `hovered`/`pressed` take
+  `Option<WidgetId>` instead of `Option<&WidgetId>`. `ScreenLayout` loses
+  its lifetime parameter accordingly, so a `ScreenLayout` can be stored in
+  a struct, returned from a function, or built well ahead of the frame that
+  draws it, rather than being pinned to the scope holding the borrowed
+  descriptors.
+
+  **Breaking, authorized for the v0.2 batch.** A lifetime removal admits
+  no deprecation shim — `Surface<'a>` and `Surface` cannot coexist under
+  one name — so the two-PR deprecation protocol (`CLAUDE.md` *Downstream
+  consumers* rule 3, `docs/PRIMITIVE_RULES.md` rule 8) does not apply
+  here. The caller
+  migration is mechanical: drop the `&` on each `Surface` field, cloning
+  the primitive only where the caller still needs it after the push, and
+  pass `Option<WidgetId>` instead of `Option<&WidgetId>` for `hovered` and
+  `pressed`. Every in-tree call site (`examples/hello.rs`, the shared
+  `examples/common/` demos, `templates/app`) was a move, not a clone.
+- `A11yInfo`'s role is now typed instead of a free string: a new
+  `#[non_exhaustive]` `A11yRole` enum covers window, toolbar, button,
+  tab/tab list, menu/menu item, tree/tree item, list/list item,
+  table/row/cell, text input, document/editor, terminal, dialog, status,
+  progress, image, group, and presentation/none, each mapping 1:1 onto
+  `accesskit::Role`. `A11yInfo` also gained typed state builders:
+  `with_selected`, `with_expanded`, `with_checked` (new tri-state
+  `A11yChecked`), `with_disabled`, `with_read_only`, `with_value`,
+  `with_value_range` (new `A11yValueRange`), `with_level`,
+  `with_position_in_set`, `with_set_size`, and `with_live` (new
+  `A11yLive`, mapping onto `accesskit::Live`). The data model
+  (`A11yRole`, `A11yInfo`, and friends) is always compiled; a new
+  optional `a11y` feature only gates the `accesskit`-facing `From`
+  conversions, so a descriptor embedding `A11yInfo` never changes shape
+  depending on which backend features a consumer enables. This is a
+  breaking change to `A11yInfo::with_role`, which now takes `A11yRole`
+  instead of `impl Into<String>`; no in-tree or downstream consumer used
+  it. `A11yInfo` also drops its `Eq` derive (kept only `PartialEq`),
+  forced by `A11yValueRange`'s `f64` fields; its sole in-tree holder
+  (`OwnedNode.a11y` in `frame.rs`) never derived `Eq`/`Hash` either, so
+  this has no in-tree effect, but a downstream consumer that relied on
+  `A11yInfo: Eq` would need to drop that bound. `A11yRole`, `A11yChecked`
+  and `A11yLive` serialise as snake_case strings (e.g. `"text_input"`)
+  via `#[serde(rename_all = "snake_case")]` rather than serde's PascalCase
+  default.
+- Compose controllers consume the signed magnitude of `ScrollDelta`
+  instead of reducing a wheel event to its sign:
+  `TreeController`, `FormController` and `SidebarSystem` move
+  `wheel_row_delta(delta.y, …)` rows per event, and `ChatController`
+  moves three rows per notch scaled by the delta. A sub-row trackpad
+  gesture still moves at least one row rather than being rounded away.
+  `SidebarSystem`'s `ScrollMode::WholePanel` path scrolls by
+  `delta.y * line_height` pixels, so sub-line trackpad deltas produce
+  sub-line panel offsets.
+### Added
+
+- Continuous-scroll helpers in `primitives::scrollbar`, re-exported at
+  the crate root: `scroll_rows` (round an `f32` offset to the whole row
+  a row-indexing backend must paint from, clamping negatives and
+  non-finite values to `0`), `scroll_by_clamped_f32` and
+  `clamp_scroll_offset_f32` (the `f32` counterparts of the existing
+  `usize` clamps), `wheel_delta` (a signed `ScrollDelta::y` scaled into
+  native units) and `wheel_row_delta` (the same scaled into whole rows,
+  never swallowing a sub-row gesture).
+
+- `DatePicker` primitive (`primitives/date_picker.rs`) — a declarative
+  month-grid calendar: `CalendarDate`/`Weekday`/`DateFormat`/`DateLocale`
+  for locale-aware first-weekday and ISO-8601/US/EU date formatting, an
+  optional `TimeOfDay` field, `navigate` for arrow/page/enter keyboard
+  handling, and `layout`/`hit_test` for pointer routing. Pure primitive
+  logic only — no `Backend::draw_date_picker` method yet; that is
+  follow-on, per-backend work.
+- `SelectionMode::Multi` support: `SelectionGesture`
+  (`Replace`/`Toggle`/`Range`) and `apply_selection_gesture` in
+  `types.rs` give `List`, `Tree` and `DataTable` a shared, pure
+  multi-selection helper driven by Ctrl/Cmd-click, Shift-range and
+  keyboard extension. Each of `ListViewEvent`, `TreeEvent` and
+  `DataTableEvent` gains a new `SelectionSet` variant carrying the
+  resulting selection; existing `Single`-mode call sites are unaffected.
+- `FindReplacePanel`'s GUI toggle buttons (match case, whole word, regex,
+  preserve case) now paint codicon glyphs instead of literal `Aa`/`ab`/
+  `.*`/`AB` text on every pixel backend (GTK, macOS, Win-GUI) that goes
+  through `native_surface_paint`. TUI (`tui::find_replace`) is unaffected
+  and keeps painting the plain-text pairs. Additive — no public shape
+  changed.
+
+- Accessibility tree builder (`a11y::tree`, re-exported at the crate
+  root): `frame_to_tree` turns a captured `OwnedFrame` plus a
+  `FocusManager` into an `A11yTree` of `A11yTreeNode`s, with
+  `A11yNodeId`s derived from `WidgetId` so a node keeps its id across
+  frames and position changes, bounds in logical pixels, and focus
+  descending into the focused primitive's own sub-node. `A11yTreeBuilder`
+  makes that incremental — the first `update` is the full tree, later
+  ones carry only changed nodes as an `A11yUpdate`. Per-primitive
+  role/state/children come from the `A11yPrimitive` trait (`A11yChild`);
+  `List` and `Toolbar` are mapped fully and every other primitive falls
+  back to a labelled group. Behind the optional `a11y` cargo feature the
+  same types emit `accesskit` values (`A11yUpdate::to_tree_update`,
+  `A11yTreeBuilder::tree_update`). The TUI backend deliberately emits no
+  tree — a terminal screen reader reads the terminal itself.
+- `testing::a11y::{A11yScenario, A11ySnapshot}` — a headless seam that
+  builds a frame from pushed surfaces, applies focus, and returns the
+  accessibility tree as a stable assertable snapshot (one
+  `role "label" [state]` line per node, bounds deliberately omitted). No
+  backend, no window and no `a11y` feature required.
+- `OwnedFrame::nodes_mut` and `ScreenLayout::{surfaces, surfaces_mut}` —
+  in-place accessors for a captured frame's nodes and a layout's pushed
+  surfaces, since `Surface` is neither `Clone` nor `Debug`.
+- `Canvas` v2: six new `DrawOp` variants — `Polygon` (even-odd fill),
+  `Ellipse`, `Arc`, `Bezier` (cubic, SVG `C`-command contract),
+  `DashedLine` and `StrokeRect` — plus `DrawOp::StyledTextRun`, a
+  `TextRun` with a per-op `role: CanvasFontRole` (a serde-capable
+  mirror of `FontRole`), `italic` flag and `#[serde(default)] size:
+  Option<f32>`. `Color::with_alpha` already covers per-op translucency
+  for every op that carries a `Color`, so there is no separate alpha
+  field. Every new op degrades to the existing sub-cell braille grid on
+  TUI (`crate::tui::canvas`), never panics or reports `Unsupported`; the
+  new `tui_canvas_shapes` / `gtk_canvas_shapes` example (backed by one
+  shared `CanvasShapesApp`, with a `TuiDriver` test in
+  `tests/tui_example_driver.rs`) renders a chart-style gauge from the
+  full new op set on every backend. `DrawOp` stays `#[non_exhaustive]`.
+- `Surface::Canvas` — a pushed `Canvas` primitive now flows through
+  `ScreenLayout`/`OwnedFrame` like every other primitive, instead of
+  only being paintable via a direct `Backend::draw_canvas` call.
+- `macos::MacRunner` and re-exported `macos::StepOutcome` — a non-blocking
+  `step()`/`pump(timeout)` entry point for the AppKit backend, mirroring
+  the existing TUI/GTK runners: `step()` drains at most one already-queued
+  AppKit event without blocking, `pump(timeout)` blocks up to `timeout`
+  waiting for the next one, and both return `StepOutcome::Continue` or
+  `StepOutcome::Exited` so a host loop (not `NSApplication::run()`) can
+  drive the app a slice at a time. The outcome and the redraw sweep are
+  scoped to the single window `MacRunner` created, never a host's own
+  AppKit windows, and the outcome tracks that window *closing* — latched
+  from `windowWillClose:` — rather than its onscreen-ness, so hiding it
+  (`WindowControl::hide`, Cmd-H) or minimizing it
+  (`WindowControl::minimize`, the yellow traffic light, Cmd-M) keeps
+  returning `Continue` and keeps the host's loop pumping the events that
+  bring the window back. `MacRunner::new`/`new_with` send
+  `[NSApp finishLaunching]` only when the process's `NSApplication` is not
+  already running, so an embedding host does not get a second
+  `NSApplicationWillFinishLaunching`/`DidFinishLaunching` pair.
+  `macos::run`/`run_with` are unchanged convenience
+  wrappers around `MacRunner` for the all-owning case. New example:
+  `examples/macos_embedded.rs`. Note: `StepOutcome::Exited` is not
+  reachable from a quadraui-initiated quit today — both `Reaction::Exit`
+  and the native last-window-close path route to `[NSApp terminate:]`,
+  which calls `exit()` and ends the host process; see `MacRunner`'s doc
+  comment for the caveat.
+- `win::WinRunner` and re-exported `win::StepOutcome` — a non-blocking
+  `step()`/`pump(timeout)` entry point for the Win32 backend, mirroring
+  the existing TUI/GTK/AppKit runners: `step()` dispatches at most one
+  already-queued Win32 message without blocking, `pump(timeout)` blocks
+  up to `timeout` waiting for the next one, and both return
+  `StepOutcome::Continue` or `StepOutcome::Exited` so a host loop (not the
+  built-in `run`/`run_with` message pump) can drive the app a slice at a
+  time. `WinRunner` is `!Send`/`!Sync` and must be constructed and
+  stepped on one thread, since Win32 windows are thread-affine; a
+  background thread still reaches a stepped loop through
+  `WinBackend::waker`, which nudges the runner's thread without
+  busy-polling. `win::run`/`run_with`/`RunConfig` are unchanged
+  convenience wrappers around `WinRunner` for the all-owning case.
+  `WinRunner` is `#[cfg(target_os = "windows")]`; `StepOutcome`,
+  `RunConfig`, `run` and `run_with` compile on every host.
+- `win::testing::HeadlessSurface::{stride, buffer}` and
+  `win::testing::WinDriver::{screen, stride}` — a whole-buffer readback
+  seam for the headless Direct2D DC render target, mirroring
+  `gtk::testing::GtkDriver::{screen, stride}`: `screen()` returns the
+  full rendered buffer as `[B, G, R, A]` bytes and `stride()` the row
+  byte width (`width * 4` for this DIB format), letting a consumer (e.g.
+  `quadraui-gallery`'s headless capture tool) PNG-encode a Windows
+  capture the same way it already does for GTK.
+
+### Fixed
+
+- `tree_layout_measured` (the shared pixel-layout math `gtk_tree_layout_measured` /
+  `win_tree_layout_measured` / `mac_tree_layout` all call) now measures the same
+  chevron glyph the GUI paint path actually draws. Both now go through a new
+  shared `primitives::tree::tree_chevron_glyph` helper, which substitutes the
+  codicon `CHEVRON_DOWN`/`CHEVRON_RIGHT` glyph only when `TreeStyle`'s
+  `chevron_expanded`/`chevron_collapsed` still hold their defaults (`▾`/`▸`),
+  honouring an app-supplied override verbatim otherwise. Previously layout
+  measured the configured string literally even when paint substituted the
+  codicon glyph for the default style, so the chevron hit-region's end-x could
+  disagree with where the glyph paint drew.
+- `FindReplacePanel::hit_test` now compares the click point against each
+  region's pixel rect directly instead of flooring the click to a cell
+  first. Behaviour-preserving for every `char_width`/`line_height` pair a
+  backend actually passes.
+- `Canvas` `DrawOp::Polygon` and `DrawOp::Ellipse` fills now render at the
+  requested opacity on every pixel backend (GTK, win, macOS — all of which
+  paint `Canvas` through the shared scanline fill). The fill's scanline rows
+  are anchored to multiples of the row height from `0` rather than starting
+  at the shape's un-aligned minimum `y`, so each row lands on a device pixel
+  row boundary for the common integer-pixel canvas offset. Rows that
+  straddled the same pixel row at a shared fractional offset previously had
+  two independently-antialiased row fills `OVER`-composite onto that pixel,
+  blending in ~21% of the background and making an opaque fill's interior
+  look translucent.
+
 ## [0.2.2] - 2026-10-17
 ### Fixed
 

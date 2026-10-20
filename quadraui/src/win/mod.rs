@@ -321,7 +321,13 @@ pub use progress::win_progress_layout;
 pub use radio_group::win_radio_group_layout;
 #[cfg(target_os = "windows")]
 pub use rich_text_popup::draw_rich_text_popup;
-pub use run::{run, run_with, RunConfig};
+pub use run::{run, run_with, RunConfig, StepOutcome};
+// `WinRunner` needs a real `HWND`/`WindowState<A>` (built inside
+// `run::win32`), unlike `RunConfig`/`run`/`run_with`/`StepOutcome` above,
+// which all compile on every host — so, mirroring every other
+// Windows-only rasteriser re-export in this file, this one is gated too.
+#[cfg(target_os = "windows")]
+pub use run::WinRunner;
 pub use services::WinPlatformServices;
 #[cfg(target_os = "windows")]
 pub use sidebar_panel::win_sidebar_panel_layout;

@@ -40,7 +40,7 @@ impl ShellApp for Hello {
             right_segments: vec![],
         };
         let mut frame = ScreenLayout::new();
-        frame.push(Surface::StatusBar { rect, bar: &bar, hovered: None, pressed: None });
+        frame.push(Surface::StatusBar { rect, bar, hovered: None, pressed: None });
         frame.draw(backend);
     }
 
@@ -84,7 +84,7 @@ The full version is `quadraui/examples/hello.rs`:
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
   silently doing nothing.
-- **Heavily tested.** Around 5,600 tests, including headless
+- **Heavily tested.** Around 5,800 tests, including headless
   paint-then-click round trips on all four backends, an end-to-end
   `TuiDriver` that drives real example apps through the event loop, and
   benchmarks for 100k-row tables and trees and a 4k-line editor.
@@ -199,16 +199,24 @@ Pick the backends you ship; `terminal` is independent of them.
 - `layout` — optional flex/grid layout module (`quadraui::flex`), via
   [Taffy](https://github.com/DioxusLabs/taffy). Unit-agnostic (plain
   `f32` in, plain `f32` out); pairs with any backend above, or none.
+- `a11y` — optional accessibility conversions (`From<A11yRole> for
+  accesskit::Role` and friends) in `quadraui::a11y`, via
+  [AccessKit](https://github.com/AccessKit/accesskit). The `A11yRole`/
+  `A11yInfo` data model itself is always compiled; pairs with any
+  backend above, or none.
 
 ## What's in the box
 
-**48 primitives**, one module each under `quadraui/src/primitives/`: a
-declarative description, a shared layout, and a rasteriser per backend.
-Among them:
+**49 primitives**, one module each under `quadraui/src/primitives/`: a
+declarative description and a shared layout, each with a rasteriser per
+backend — except `DatePicker`, which currently ships layout/hit-test
+logic only and has no backend rasteriser yet (it is a seam, exercised
+headlessly via `quadraui/tests/date_picker_driver.rs`). Among them:
 
 - Content: `TreeView`, `ListView`, `DataTable`, `Form`, `Editor`,
   `TextDisplay`, `MessageList`, `DiffView`, `Chart`, `Board`, `Terminal`,
-  `Minimap`, `Canvas` (app-defined drawing, painted through the public
+  `Minimap`, `DatePicker` (layout/hit-test only — no rasteriser yet),
+  `Canvas` (app-defined drawing, painted through the public
   `PaintSurface` seam).
 - Chrome: `TabBar`, `StatusBar`, `MenuBar`, `ActivityBar`, `Toolbar`,
   `CommandCenter`, `Scrollbar`.

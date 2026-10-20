@@ -402,6 +402,54 @@ impl HeadlessSurface {
             Color::rgb(0, 0, 0)
         }
     }
+
+    /// Row stride (bytes per row) of the buffer [`Self::buffer`] reads
+    /// back from. `CreateDIBSection`'s 32bpp rows are already a multiple
+    /// of 4 bytes wide, so this always equals `width * 4` in practice —
+    /// exposed as its own method (rather than assuming callers compute
+    /// it themselves) to match [`crate::gtk::testing::GtkDriver::stride`]'s
+    /// shape, since a future DIB format change could reintroduce padding.
+    pub fn stride(&self) -> u32 {
+        self.width * 4
+    }
+
+    /// Whole-buffer readback of the last paint — the `screen()`-equivalent
+    /// raw-buffer accessor [`crate::gtk::testing::GtkDriver::screen`] /
+    /// [`Self::stride`] mirror. Four bytes per pixel, `[B, G, R, A]` (same
+    /// decode as [`Self::pixel_at`]); row stride is [`Self::stride`]
+    /// (currently always `width * 4`, see that method's doc). Copies out of the
+    /// `CreateDIBSection` buffer so the returned `Vec` outlives `self`;
+    /// prefer [`Self::pixel_at`] for single-pixel assertions — this is the
+    /// escape hatch for callers that need the whole frame (e.g. encoding a
+    /// PNG, or diffing two frames).
+    ///
+    /// Off Windows there is no real DIB to read (see the module doc), so
+    /// this returns a buffer of the right size filled with opaque black,
+    /// matching [`Self::pixel_at`]'s off-Windows fallback.
+    pub fn buffer(&self) -> Vec<u8> {
+        let len = self.stride() as usize * self.height as usize;
+        #[cfg(target_os = "windows")]
+        {
+            // SAFETY: `self.bits` points at the `CreateDIBSection` pixel
+            // buffer from `Self::new`, which is exactly
+            // `stride() * height` bytes (32bpp, top-down, no row padding
+            // beyond what `Self::stride` already accounts for) and lives
+            // as long as `self.bitmap` does — i.e. for the lifetime of
+            // `self`.
+            unsafe { std::slice::from_raw_parts(self.bits, len).to_vec() }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // `[0, 0, 0, 255]` repeating, not `vec![0u8; len]`: the latter's
+            // alpha byte is `0` (transparent black), which contradicts this
+            // method's own doc and `Self::pixel_at`'s opaque-black fallback.
+            let mut buf = vec![0u8; len];
+            for px in buf.chunks_exact_mut(4) {
+                px[3] = 255;
+            }
+            buf
+        }
+    }
 }
 
 impl Drop for HeadlessSurface {
@@ -792,6 +840,20 @@ impl<A: AppLogic> WinDriver<A> {
         self.surface.pixel_at(x, y)
     }
 
+    /// Whole-buffer readback of the last [`Self::render`] — see
+    /// [`HeadlessSurface::buffer`]. The Win-GUI analogue of
+    /// [`crate::gtk::testing::GtkDriver::screen`].
+    pub fn screen(&self) -> Vec<u8> {
+        self.surface.buffer()
+    }
+
+    /// Row stride (bytes per row) of the buffer [`Self::screen`] reads
+    /// back from — see [`HeadlessSurface::stride`]. The Win-GUI analogue
+    /// of [`crate::gtk::testing::GtkDriver::stride`].
+    pub fn stride(&self) -> u32 {
+        self.surface.stride()
+    }
+
     /// All text painted during the last [`Self::render`], as recorded at
     /// the [`super::text::DWrite::draw_text`]/`draw_text_styled` choke
     /// point — shared body: [`DriverCore::painted_texts`]
@@ -981,6 +1043,28 @@ mod tests {
 
         let center = surface.pixel_at(32, 32);
         assert_eq!((center.r, center.g, center.b), (200, 40, 40));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn buffer_matches_pixel_at_and_stride_is_width_times_four() {
+        let surface = HeadlessSurface::new(16, 8).expect("create headless surface");
+        surface
+            .fill_rect(Rect::new(0.0, 0.0, 16.0, 8.0), Color::rgb(10, 20, 30))
+            .expect("fill rect");
+
+        assert_eq!(surface.stride(), 16 * 4);
+        let buf = surface.buffer();
+        assert_eq!(buf.len(), surface.stride() as usize * 8);
+
+        // Sample pixel (3, 2) out of the raw buffer by hand and compare
+        // against `pixel_at`'s decode — proves `buffer()`/`stride()`
+        // agree with the per-pixel reader on both byte order and layout.
+        let off = 2 * surface.stride() as usize + 3 * 4;
+        let (b, g, r, a) = (buf[off], buf[off + 1], buf[off + 2], buf[off + 3]);
+        let expected = surface.pixel_at(3, 2);
+        assert_eq!((r, g, b), (expected.r, expected.g, expected.b));
+        assert_eq!(a, 255);
     }
 
     #[cfg(target_os = "windows")]

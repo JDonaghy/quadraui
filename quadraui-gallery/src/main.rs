@@ -162,7 +162,7 @@ compile_error!(
 #[cfg(not(any(feature = "tui", feature = "gtk", feature = "macos", feature = "win")))]
 fn main() {
     // Still honour `--capture` with zero backend features enabled: every
-    // entry comes back `"status": "unsupported"`/`"capture-pending"`
+    // entry comes back `"status": "unsupported"`
     // (see `capture::run_capture`'s doc), which is a degenerate but
     // honest manifest rather than a silent no-op. `--dump-registry` needs
     // no backend feature either, so it runs for real here rather than

@@ -40,6 +40,8 @@ mod appshell_demo;
 mod bottom_panel_demo;
 #[path = "../examples/common/canvas_app.rs"]
 mod canvas_app;
+#[path = "../examples/common/canvas_shapes_app.rs"]
+mod canvas_shapes_app;
 #[path = "../examples/common/caret_shape_demo.rs"]
 mod caret_shape_demo;
 // `ChartApp::last_chart_rect` is write-only in the shared example source
@@ -182,6 +184,7 @@ use ai_transcript::AiTranscript;
 use appshell_demo::AppShellDemo;
 use bottom_panel_demo::BottomPanelDemo;
 use canvas_app::CanvasApp;
+use canvas_shapes_app::CanvasShapesApp;
 use caret_shape_demo::CaretShapeDemo;
 use chart_app::ChartApp;
 use chat_demo::ChatDemo;
@@ -1278,6 +1281,73 @@ fn find_replace_click_chevron_reveals_replace_row() {
     );
 }
 
+/// `FindReplacePanel::hit_test` compares clicks against px rects; TUI
+/// always calls it with `char_width = line_height = 1.0`, so px space and
+/// cell space are numerically identical here. The find row's "ab"
+/// (whole-word) and ".*" (regex) toggles are otherwise uncovered by any
+/// regression test — only "Aa" is pinned above — so both are exercised end
+/// to end here: located via `driver.find`, clicked, and confirmed via the
+/// status bar.
+#[test]
+fn find_replace_click_on_toggle_whole_word_and_regex_report_them() {
+    let mut driver = TuiDriver::new(FindReplaceApp::new(), 100, 20);
+
+    let (x, y) = driver.find("ab").unwrap_or_else(|| {
+        panic!(
+            "the 'ab' whole-word glyph must be visible:\n{}",
+            driver.screen()
+        )
+    });
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("clicked ToggleWholeWord"),
+        "clicking the 'ab' glyph should report ToggleWholeWord in the status bar:\n{}",
+        driver.screen()
+    );
+
+    let (x, y) = driver
+        .find(".*")
+        .unwrap_or_else(|| panic!("the '.*' regex glyph must be visible:\n{}", driver.screen()));
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("clicked ToggleRegex"),
+        "clicking the '.*' glyph should report ToggleRegex in the status bar:\n{}",
+        driver.screen()
+    );
+}
+
+/// The replace row's toggle ("AB", preserve-case) lives at `row = 1` in
+/// `hit_regions` — unlike the find-row toggles above, which all sit at
+/// `row = 0`. Revealing it via `r` (rather than clicking the chevron,
+/// already covered above) and clicking it end to end exercises
+/// `hit_test`'s px projection of a non-zero `region.row` — the other
+/// half of the px rewrite the find-row cases above can't reach.
+#[test]
+fn find_replace_click_on_replace_row_toggle_preserve_case_reports_it() {
+    let mut driver = TuiDriver::new(FindReplaceApp::new(), 100, 20);
+    driver.type_char('r');
+    assert!(
+        driver.screen_contains("AB"),
+        "the replace row's 'AB' preserve-case glyph should be visible after 'r':\n{}",
+        driver.screen()
+    );
+
+    let (x, y) = driver.find("AB").unwrap_or_else(|| {
+        panic!(
+            "the 'AB' preserve-case glyph must be visible:\n{}",
+            driver.screen()
+        )
+    });
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("clicked TogglePreserveCase"),
+        "clicking the 'AB' glyph on the replace row should report TogglePreserveCase \
+         in the status bar:\n{}",
+        driver.screen()
+    );
+}
+
 #[test]
 fn find_replace_demo_q_exits() {
     let mut driver = TuiDriver::new(FindReplaceApp::new(), 100, 20);
@@ -1753,7 +1823,7 @@ fn appshell_demo_bottom_item_show_panel_retitles_sidebar_header() {
     // `handle_activity_click`'s top-panel arm never cleared
     // `sidebar_bottom_owner`, so the header stayed stuck on "Settings"
     // forever after this point.
-    let (x, y) = driver.find("G│").unwrap_or_else(|| {
+    let (x, y) = driver.find("G │").unwrap_or_else(|| {
         panic!(
             "Source Control's activity-bar row (icon + separator) should be painted:\n{}",
             driver.screen()
@@ -7542,6 +7612,60 @@ fn canvas_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the canvas demo");
 }
 
+// ─── CanvasShapesApp: the Canvas v2 op set (Polygon/Ellipse/Arc/Bezier/
+// DashedLine/StrokeRect/StyledTextRun) on a chart-style demo ───────────────
+//
+// Every new op degrades to the sub-cell braille grid on TUI; this just
+// proves the whole `Backend::draw_canvas` round trip reaches the screen
+// end to end for the new descriptor shape, same as `CanvasApp` above does
+// for the original op set.
+
+#[test]
+fn canvas_shapes_demo_paints_the_status_bar_and_initial_labels() {
+    let driver = TuiDriver::new(CanvasShapesApp::new(), 100, 10);
+    assert!(
+        driver.screen_contains("Canvas v2 shapes demo"),
+        "the status bar should name the demo:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Mon 35") && driver.screen_contains("Fri 55"),
+        "the initial bar values should reach the screen through the \
+         StyledTextRun labels:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn canvas_shapes_demo_r_key_randomizes_the_bar_values() {
+    let mut driver = TuiDriver::new(CanvasShapesApp::new(), 100, 10);
+    let before = driver.screen();
+    driver.type_char('r');
+    let after = driver.screen();
+    assert_ne!(
+        before, after,
+        "'r' should redraw with new randomized bar values:\n{after}"
+    );
+    assert!(
+        !after.contains("Mon 35") || !after.contains("Fri 55"),
+        "randomizing should move at least one label off its initial value:\n{after}"
+    );
+}
+
+#[test]
+fn canvas_shapes_demo_q_exits() {
+    let mut driver = TuiDriver::new(CanvasShapesApp::new(), 100, 10);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the canvas shapes demo");
+}
+
+#[test]
+fn canvas_shapes_demo_escape_exits() {
+    let mut driver = TuiDriver::new(CanvasShapesApp::new(), 100, 10);
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Escape should exit the canvas shapes demo");
+}
+
 // ─── FloatApp: placement, edge clamping, z-order, focus ───────────────────
 //
 // `examples/common/float_app.rs`'s module doc names exactly what each
@@ -8694,7 +8818,7 @@ fn appshell_chrome_bands_carve_left_to_right() {
     // the main area.
     assert_eq!(
         row_containing(&screen, "(sidebar content").trim_end(),
-        " S│ (sidebar content he"
+        " S │ (sidebar content he"
     );
 }
 
