@@ -2,14 +2,16 @@
 """One-command release prep + promotion helper for `quadraui` (#1501).
 
 A release today is several hand steps: bump `quadraui/Cargo.toml`'s
-version, refresh `Cargo.lock`, retitle `CHANGELOG.md`'s `[Unreleased]`
-section with a date and add a fresh empty one, commit, open a bump PR
-against `develop` — then, separately, hand-open a `develop` -> `main`
-promotion PR that must land as a **merge commit** (never squash/rebase, or
-`main` and `develop` diverge). This script automates the mechanical parts
-of both steps and prints (but never runs) the `git`/`gh` commands a human
-still has to execute, since `gh` may not be installed or authenticated
-wherever this runs.
+version, refresh `Cargo.lock`, rewrite the hard-coded version strings in
+`README.md` and `quadraui/src/lib.rs` that `quadraui/tests/readme_truth.rs`
+cross-checks against `CARGO_PKG_VERSION`, retitle `CHANGELOG.md`'s
+`[Unreleased]` section with a date and add a fresh empty one, commit, open
+a bump PR against `develop` — then, separately, hand-open a `develop` ->
+`main` promotion PR that must land as a **merge commit** (never
+squash/rebase, or `main` and `develop` diverge). This script automates the
+mechanical parts of both steps and prints (but never runs) the `git`/`gh`
+commands a human still has to execute, since `gh` may not be installed or
+authenticated wherever this runs.
 
 `prepare` is the only supported way to bump `quadraui/Cargo.toml`'s
 version. A hand-edit of the version field that skips `prepare` leaves
@@ -35,11 +37,16 @@ Two subcommands:
   6. refreshes `Cargo.lock` via `cargo update -p quadraui --offline` and
      verifies the resulting diff touches only quadraui's own `version =`
      line in the lockfile;
-  7. retitles `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and inserts a
+  7. rewrites README.md's Status section (`` `X.Y.x` ``) and
+     getting-started dependency snippet (`quadraui = { version = "X.Y"`),
+     and `quadraui/src/lib.rs`'s crate-doc `## Status` section
+     (`` `X.Y.x` ``), to match the new version — the exact strings
+     `tests/readme_truth.rs` cross-checks against `CARGO_PKG_VERSION`;
+  8. retitles `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and inserts a
      fresh empty `## [Unreleased]` above it;
-  8. commits the three files;
-  9. prints the `git push` and `gh pr create --base develop` commands for a
-     human to run.
+  9. commits the five files;
+  10. prints the `git push` and `gh pr create --base develop` commands for
+      a human to run.
 
 All refusals exit 1 before touching the working tree (step 4 is the first
 mutation).
@@ -65,6 +72,16 @@ VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 UNRELEASED_HEADER_RE = re.compile(r"(?m)^## \[Unreleased\]\s*$")
 RELEASE_HEADER_RE = re.compile(r"(?m)^## \[(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\][^\n]*$")
 LOCK_VERSION_LINE_RE = re.compile(r'^[+-]version = "\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?"$')
+
+# The pre-1.0 status marker README.md's Status section and
+# quadraui/src/lib.rs's crate-doc `## Status` section both carry, e.g.
+# `` `0.3.x` ``. Matches `tests/readme_truth.rs`'s `major_minor_x()`.
+PRE_1_0_STATUS_RE = re.compile(r"`\d+\.\d+\.x`")
+
+# The resolvable dependency snippet README.md's Getting started section
+# leads with, e.g. `quadraui = { version = "0.3"`. Matches
+# `tests/readme_truth.rs`'s `major_minor()`.
+DEPENDENCY_SNIPPET_RE = re.compile(r'(quadraui = \{ version = )"\d+\.\d+"')
 
 
 class ReleaseError(RuntimeError):
@@ -101,6 +118,48 @@ def set_package_version(cargo_toml_text: str, new_version: str) -> str:
     new_text, count = pattern.subn(rf'\1"{new_version}"', cargo_toml_text, count=1)
     if count != 1:
         raise ReleaseError("could not find a `version = \"...\"` line in quadraui/Cargo.toml")
+    return new_text
+
+
+def pre_1_0_status_string(version: str) -> str:
+    """The `` `X.Y.x` `` pre-1.0 status marker for `version`, e.g. "0.3.1"
+    -> "0.3.x". Mirrors `tests/readme_truth.rs`'s `major_minor_x()`."""
+    major, minor, _ = parse_version(version)
+    return f"{major}.{minor}.x"
+
+
+def published_dependency_version(version: str) -> str:
+    """The crates.io dependency requirement for `version`, e.g. "0.3.1" ->
+    "0.3". Mirrors `tests/readme_truth.rs`'s `major_minor()`."""
+    major, minor, _ = parse_version(version)
+    return f"{major}.{minor}"
+
+
+def set_pre_1_0_status_string(text: str, version: str, *, label: str) -> str:
+    """Rewrite every `` `X.Y.x` `` pre-1.0 status marker in `text` to match
+    `version`. Used on README.md's Status section and lib.rs's crate-doc
+    `## Status` section."""
+    new_text, count = PRE_1_0_STATUS_RE.subn(
+        f"`{pre_1_0_status_string(version)}`", text
+    )
+    if count == 0:
+        raise ReleaseError(
+            f"{label} has no `` `X.Y.x` `` pre-1.0 status marker to update"
+        )
+    return new_text
+
+
+def set_dependency_snippet_version(text: str, version: str, *, label: str) -> str:
+    """Rewrite README.md's `quadraui = { version = "X.Y"` getting-started
+    snippet to match `version`."""
+    new_text, count = DEPENDENCY_SNIPPET_RE.subn(
+        rf'\1"{published_dependency_version(version)}"', text
+    )
+    if count == 0:
+        raise ReleaseError(
+            f'{label} has no `quadraui = {{ version = "..." }}` dependency '
+            "snippet to update"
+        )
     return new_text
 
 
@@ -192,6 +251,8 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     repo_dir = Path(args.repo_dir)
     cargo_toml_path = repo_dir / "quadraui" / "Cargo.toml"
     changelog_path = repo_dir / "CHANGELOG.md"
+    readme_path = repo_dir / "README.md"
+    lib_rs_path = repo_dir / "quadraui" / "src" / "lib.rs"
 
     try:
         if not git_is_clean(repo_dir):
@@ -225,13 +286,36 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         refresh_lock(repo_dir)
         verify_lock_diff_is_quadraui_version_only(repo_dir)
 
+        readme_text = readme_path.read_text(encoding="utf-8")
+        readme_text = set_pre_1_0_status_string(
+            readme_text, args.version, label="README.md's Status section"
+        )
+        readme_text = set_dependency_snippet_version(
+            readme_text, args.version, label="README.md's Getting started section"
+        )
+        readme_path.write_text(readme_text, encoding="utf-8")
+
+        lib_rs_text = lib_rs_path.read_text(encoding="utf-8")
+        lib_rs_text = set_pre_1_0_status_string(
+            lib_rs_text, args.version, label="quadraui/src/lib.rs's crate doc"
+        )
+        lib_rs_path.write_text(lib_rs_text, encoding="utf-8")
+
         date = args.date or datetime.date.today().isoformat()
         changelog_path.write_text(
             retitle_changelog(changelog_text, args.version, date), encoding="utf-8"
         )
 
         run_git(
-            ["add", "quadraui/Cargo.toml", "Cargo.lock", "CHANGELOG.md"], repo_dir
+            [
+                "add",
+                "quadraui/Cargo.toml",
+                "Cargo.lock",
+                "README.md",
+                "quadraui/src/lib.rs",
+                "CHANGELOG.md",
+            ],
+            repo_dir,
         )
         run_git(
             [
@@ -248,7 +332,10 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         print(f"::error::`{' '.join(exc.cmd)}` failed:\n{exc.stderr}", file=sys.stderr)
         return 1
 
-    print(f"Prepared release-{args.version} with the version bump + CHANGELOG commit.")
+    print(
+        f"Prepared release-{args.version} with the version bump + README/lib.rs "
+        "version strings + CHANGELOG commit."
+    )
     print("\nRun these commands to open the bump PR:\n")
     print(f"  git push -u origin release-{args.version}")
     print(
