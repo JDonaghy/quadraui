@@ -166,6 +166,29 @@ pub fn draw_tab_bar_icons_with_chrome(
     layout: &TabBarLayout,
     theme: &Theme,
 ) -> TabBarHits {
+    draw_tab_bar_icons_with_chrome_and_glyphs(buf, area, bar, icons, chrome, layout, theme, None)
+}
+
+/// [`draw_tab_bar_icons_with_chrome`] with an optional app-supplied
+/// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the close
+/// and dirty marks.
+///
+/// `glyphs: None` reproduces [`draw_tab_bar_icons_with_chrome`] cell for
+/// cell — the default `×`/`●` glyphs are unchanged. Passing `Some` only
+/// overrides the glyphs it sets; any field left `None` keeps the
+/// default for that mark.
+#[allow(deprecated)] // returns the deprecated `TabBarHits`
+#[allow(clippy::too_many_arguments)]
+pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
+    buf: &mut Buffer,
+    area: Rect,
+    bar: &TabBar,
+    icons: &[Option<crate::primitives::tab_bar::TabIcon>],
+    chrome: &TabChrome,
+    layout: &TabBarLayout,
+    theme: &Theme,
+    glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
+) -> TabBarHits {
     if area.width == 0 || area.height == 0 {
         return TabBarHits::default();
     }
@@ -358,14 +381,27 @@ pub fn draw_tab_bar_icons_with_chrome(
             }
         }
 
-        // Close glyph: ● for dirty, × otherwise.
+        // Close glyph: ● for dirty, × otherwise (or the app-supplied
+        // override from `glyphs`).
         if vt.close_bounds.is_some() && x < tab_end {
             let (close_ch, close_fg) = if tab.is_dirty {
-                ('●', foreground)
+                let ch = glyphs
+                    .and_then(crate::primitives::tab_bar::TabBarGlyphs::dirty_glyph)
+                    .and_then(|s| s.chars().next())
+                    .unwrap_or('●');
+                (ch, foreground)
             } else if tab.is_active {
-                (TAB_CLOSE_CHAR, active_fg)
+                let ch = glyphs
+                    .and_then(crate::primitives::tab_bar::TabBarGlyphs::close_glyph)
+                    .and_then(|s| s.chars().next())
+                    .unwrap_or(TAB_CLOSE_CHAR);
+                (ch, active_fg)
             } else {
-                (TAB_CLOSE_CHAR, separator)
+                let ch = glyphs
+                    .and_then(crate::primitives::tab_bar::TabBarGlyphs::close_glyph)
+                    .and_then(|s| s.chars().next())
+                    .unwrap_or(TAB_CLOSE_CHAR);
+                (ch, separator)
             };
             set_cell(buf, x, area.y, close_ch, close_fg, bg);
             x += 1;
@@ -472,6 +508,77 @@ mod tests {
         }
         assert!(found_x_close, "expected '×' close glyph somewhere");
         assert!(found_dirty_dot, "expected '●' dirty glyph somewhere");
+    }
+
+    /// An app-supplied [`crate::primitives::tab_bar::TabBarGlyphs`]
+    /// override swaps the close and dirty marks for the app's own
+    /// glyphs; with no override,
+    /// [`draw_tab_bar_icons_with_chrome_and_glyphs`] (what
+    /// [`draw_tab_bar`] always calls) paints the same `×`/`●` glyphs as
+    /// today's default.
+    #[test]
+    fn tab_bar_glyphs_override_swaps_close_and_dirty_default_keeps_defaults() {
+        use crate::primitives::tab_bar::TabBarGlyphs;
+
+        let bar = make_bar(0);
+        let layout = bar.layout(40.0, 1.0, 0.0, measure_tab, |_| SegmentMeasure::new(0.0));
+
+        // Override: the app's own glyphs replace the defaults.
+        let glyphs = TabBarGlyphs::new()
+            .with_close_glyph("x")
+            .with_dirty_glyph("*");
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
+        draw_tab_bar_icons_with_chrome_and_glyphs(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &bar,
+            &[],
+            &TabChrome::default(),
+            &layout,
+            &Theme::default(),
+            Some(&glyphs),
+        );
+        let mut found_override_close = false;
+        let mut found_override_dirty = false;
+        let mut found_default_close = false;
+        let mut found_default_dirty = false;
+        for x in 0..40 {
+            match cell_char(&buf, x, 0) {
+                'x' => found_override_close = true,
+                '*' => found_override_dirty = true,
+                '×' => found_default_close = true,
+                '●' => found_default_dirty = true,
+                _ => {}
+            }
+        }
+        assert!(found_override_close, "expected overridden close glyph 'x'");
+        assert!(found_override_dirty, "expected overridden dirty glyph '*'");
+        assert!(!found_default_close, "default '×' should not appear");
+        assert!(!found_default_dirty, "default '●' should not appear");
+
+        // No override — byte-for-byte the same as `draw_tab_bar`'s default.
+        let mut default_buf = Buffer::empty(Rect::new(0, 0, 40, 1));
+        draw_tab_bar_icons_with_chrome_and_glyphs(
+            &mut default_buf,
+            Rect::new(0, 0, 40, 1),
+            &bar,
+            &[],
+            &TabChrome::default(),
+            &layout,
+            &Theme::default(),
+            None,
+        );
+        let mut default_found_close = false;
+        let mut default_found_dirty = false;
+        for x in 0..40 {
+            match cell_char(&default_buf, x, 0) {
+                '×' => default_found_close = true,
+                '●' => default_found_dirty = true,
+                _ => {}
+            }
+        }
+        assert!(default_found_close, "expected default '×' close glyph");
+        assert!(default_found_dirty, "expected default '●' dirty glyph");
     }
 
     #[test]

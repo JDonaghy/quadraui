@@ -135,6 +135,57 @@ pub enum SortDirection {
     Descending,
 }
 
+/// Optional app-supplied override for the sort-direction glyphs
+/// `native_surface_paint` appends to a sorted column's header title.
+///
+/// A separate, `#[non_exhaustive]` type rather than fields on
+/// [`DataTable`] — that descriptor stays exhaustive for downstream
+/// struct literals, so a glyph slot can only ever be added here.
+/// Passed as an extra argument to the GUI paint module's
+/// `paint_with_glyphs`; the plain `paint` every existing backend call
+/// site already uses keeps calling it with `None`, so today's codicon
+/// sort arrows render byte-for-byte unchanged until an app opts in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DataTableGlyphs {
+    sort_ascending: Option<String>,
+    sort_descending: Option<String>,
+}
+
+impl DataTableGlyphs {
+    /// An empty override set — painting with `Some(&Self::new())` is
+    /// byte-identical to painting with `None`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Override the ascending-sort glyph (default: the codicon
+    /// sort-ascending glyph on GUI).
+    #[must_use]
+    pub fn with_sort_ascending_glyph(mut self, glyph: impl Into<String>) -> Self {
+        self.sort_ascending = Some(glyph.into());
+        self
+    }
+
+    /// Override the descending-sort glyph (default: the codicon
+    /// sort-descending glyph on GUI).
+    #[must_use]
+    pub fn with_sort_descending_glyph(mut self, glyph: impl Into<String>) -> Self {
+        self.sort_descending = Some(glyph.into());
+        self
+    }
+
+    /// The overridden ascending-sort glyph, if set.
+    pub fn sort_ascending_glyph(&self) -> Option<&str> {
+        self.sort_ascending.as_deref()
+    }
+
+    /// The overridden descending-sort glyph, if set.
+    pub fn sort_descending_glyph(&self) -> Option<&str> {
+        self.sort_descending.as_deref()
+    }
+}
+
 /// Declarative description of a `DataTable` widget.
 ///
 /// # Examples
@@ -782,7 +833,7 @@ where
 #[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{ColumnAlign, DataTable, DataTableLayout, SortDirection};
+    use super::{ColumnAlign, DataTable, DataTableGlyphs, DataTableLayout, SortDirection};
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::primitives::layout_metrics::{pixel_data_table_layout, TextMeasure};
@@ -831,6 +882,23 @@ pub(crate) mod native_surface_paint {
         line_height: f32,
         hovered_idx: Option<usize>,
     ) -> DataTableLayout {
+        paint_with_glyphs(table, surface, theme, rect, line_height, hovered_idx, None)
+    }
+
+    /// Identical to [`paint`], plus an optional [`DataTableGlyphs`]
+    /// override for the sort-direction glyphs. `glyphs: None` (what
+    /// [`paint`] passes) renders byte-for-byte the same as today's
+    /// codicon defaults.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_glyphs(
+        table: &DataTable,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        line_height: f32,
+        hovered_idx: Option<usize>,
+        glyphs: Option<&DataTableGlyphs>,
+    ) -> DataTableLayout {
         let layout = {
             let measure = SurfaceTextMeasure(&*surface);
             pixel_data_table_layout(table, rect.width, rect.height, line_height, &measure)
@@ -859,14 +927,24 @@ pub(crate) mod native_surface_paint {
             if rc.width <= 0.0 {
                 continue;
             }
-            let sort_suffix = match &table.sort {
+            let sort_suffix: Option<String> = match &table.sort {
                 Some((si, dir)) if *si == col_idx => match dir {
-                    SortDirection::Ascending => Some(crate::codicon::SORT_ASCENDING),
-                    SortDirection::Descending => Some(crate::codicon::SORT_DESCENDING),
+                    SortDirection::Ascending => Some(
+                        glyphs
+                            .and_then(DataTableGlyphs::sort_ascending_glyph)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| crate::codicon::SORT_ASCENDING.to_string()),
+                    ),
+                    SortDirection::Descending => Some(
+                        glyphs
+                            .and_then(DataTableGlyphs::sort_descending_glyph)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| crate::codicon::SORT_DESCENDING.to_string()),
+                    ),
                 },
                 _ => None,
             };
-            let title = match sort_suffix {
+            let title = match &sort_suffix {
                 Some(glyph) => format!("{} {glyph}", col.title),
                 None => col.title.clone(),
             };
@@ -1258,6 +1336,58 @@ pub(crate) mod native_surface_paint {
             let expected_desc = format!("Name {}", crate::codicon::SORT_DESCENDING);
             assert!(surface.styled_runs.iter().any(|r| r.1 == expected_desc));
             assert!(!surface.styled_runs.iter().any(|r| r.1.contains('\u{25BC}')));
+        }
+
+        /// An app-supplied [`DataTableGlyphs`] override swaps the
+        /// sort-direction glyphs for the app's own icons; with no
+        /// override, [`paint_with_glyphs`] (what [`paint`] always calls)
+        /// renders the same codicon glyphs as today's default.
+        #[test]
+        fn data_table_glyphs_override_swaps_sort_glyphs_default_keeps_codicon() {
+            let theme = Theme::default();
+            let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+
+            let mut ascending = two_col_table();
+            ascending.sort = Some((0, SortDirection::Ascending));
+
+            // Override: the app's own glyph replaces the codicon default.
+            let glyphs = DataTableGlyphs::new().with_sort_ascending_glyph("^");
+            let mut surface = RecordingSurface::default();
+            paint_with_glyphs(
+                &ascending,
+                &mut surface,
+                &theme,
+                rect,
+                16.0,
+                None,
+                Some(&glyphs),
+            );
+            assert!(
+                surface.styled_runs.iter().any(|r| r.1 == "Name ^"),
+                "expected the overridden glyph among header runs, got {:?}",
+                surface.styled_runs
+            );
+            assert!(!surface
+                .styled_runs
+                .iter()
+                .any(|r| r.1.contains(crate::codicon::SORT_ASCENDING)));
+
+            // No override — byte-for-byte the same as `paint`'s default.
+            let mut default_surface = RecordingSurface::default();
+            paint_with_glyphs(
+                &ascending,
+                &mut default_surface,
+                &theme,
+                rect,
+                16.0,
+                None,
+                None,
+            );
+            let expected_default = format!("Name {}", crate::codicon::SORT_ASCENDING);
+            assert!(default_surface
+                .styled_runs
+                .iter()
+                .any(|r| r.1 == expected_default));
         }
 
         /// The selected row's background is now alpha-blended rather than

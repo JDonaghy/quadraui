@@ -82,6 +82,61 @@ pub struct ContextMenu {
     pub placement: ContextMenuPlacement,
 }
 
+/// Optional app-supplied override for the glyphs [`native_surface_paint`]
+/// paints in place of the default codicon check mark and submenu
+/// pull-right arrow.
+///
+/// A separate, `#[non_exhaustive]` type rather than fields on
+/// [`ContextMenu`]/[`ContextMenuItem`] — those two stay exhaustive for
+/// downstream struct literals, so a glyph slot can only ever be added
+/// here, where a new field can never break an existing construction
+/// site. Passed as an extra argument to
+/// [`native_surface_paint::paint_with_glyphs`]; the plain
+/// [`native_surface_paint::paint`] every existing backend call site
+/// already uses keeps calling it with `None`, so today's codicon
+/// glyphs render byte-for-byte unchanged until an app opts in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ContextMenuGlyphs {
+    checked: Option<String>,
+    submenu_arrow: Option<String>,
+}
+
+impl ContextMenuGlyphs {
+    /// An empty override set — [`native_surface_paint::paint_with_glyphs`]
+    /// painted with `Some(&Self::new())` is byte-identical to
+    /// [`native_surface_paint::paint`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Override the checked-item check-mark glyph (default: the codicon
+    /// check glyph on GUI).
+    #[must_use]
+    pub fn with_checked_glyph(mut self, glyph: impl Into<String>) -> Self {
+        self.checked = Some(glyph.into());
+        self
+    }
+
+    /// Override the submenu-parent pull-right arrow glyph (default: the
+    /// codicon chevron-right glyph on GUI).
+    #[must_use]
+    pub fn with_submenu_arrow_glyph(mut self, glyph: impl Into<String>) -> Self {
+        self.submenu_arrow = Some(glyph.into());
+        self
+    }
+
+    /// The overridden check-mark glyph, if set.
+    pub fn checked_glyph(&self) -> Option<&str> {
+        self.checked.as_deref()
+    }
+
+    /// The overridden submenu-arrow glyph, if set.
+    pub fn submenu_arrow_glyph(&self) -> Option<&str> {
+        self.submenu_arrow.as_deref()
+    }
+}
+
 /// Preferred placement of a `ContextMenu` relative to its anchor.
 ///
 /// `AnchorPoint` is the right-click default: the anchor IS the cursor
@@ -527,7 +582,7 @@ impl ContextMenu {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{ContextMenu, ContextMenuItem, ContextMenuLayout};
+    use super::{ContextMenu, ContextMenuGlyphs, ContextMenuItem, ContextMenuLayout};
     use crate::accelerator::{render_accelerator, Platform};
     use crate::paint_surface::PaintSurface;
     use crate::style::Style;
@@ -565,6 +620,22 @@ pub(crate) mod native_surface_paint {
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         style: &Style,
+    ) -> Vec<(Rect, WidgetId)> {
+        paint_with_glyphs(menu, menu_layout, platform, surface, theme, style, None)
+    }
+
+    /// Identical to [`paint`], plus an optional [`ContextMenuGlyphs`]
+    /// override for the check-mark / submenu-arrow glyphs. `glyphs: None`
+    /// (what [`paint`] passes) renders byte-for-byte the same as today's
+    /// codicon defaults.
+    pub(crate) fn paint_with_glyphs(
+        menu: &ContextMenu,
+        menu_layout: &ContextMenuLayout,
+        platform: Platform,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        glyphs: Option<&ContextMenuGlyphs>,
     ) -> Vec<(Rect, WidgetId)> {
         let bounds = menu_layout.bounds;
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
@@ -664,7 +735,10 @@ pub(crate) mod native_surface_paint {
             );
 
             if item.checked == Some(true) {
-                let check = crate::codicon::CHECK.to_string();
+                let check = glyphs
+                    .and_then(ContextMenuGlyphs::checked_glyph)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| crate::codicon::CHECK.to_string());
                 let (cw, ch) = surface.surface_measure_text(&check);
                 surface.surface_draw_icon_glyph(
                     Rect::new(row.x + 8.0, text_y, cw.max(1.0), ch.max(1.0)),
@@ -681,7 +755,10 @@ pub(crate) mod native_surface_paint {
                 // plain `▶` glyph instead. Submenu parents open a child
                 // menu rather than dispatching an action, so a shortcut
                 // hint would never fire anyway.
-                let submenu_arrow = crate::codicon::CHEVRON_RIGHT.to_string();
+                let submenu_arrow = glyphs
+                    .and_then(ContextMenuGlyphs::submenu_arrow_glyph)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| crate::codicon::CHEVRON_RIGHT.to_string());
                 let (aw, ah) = surface.surface_measure_text(&submenu_arrow);
                 surface.surface_draw_icon_glyph(
                     Rect::new(row.x + row.width - aw - 8.0, text_y, aw.max(1.0), ah),
@@ -1158,5 +1235,156 @@ mod tests {
         let m = menu(vec![]);
         // Only the 2-char interior margin, no item content.
         assert_eq!(m.measure_generic_width(1.0, 0.0), 2.0);
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    mod glyph_override {
+        use super::*;
+        use crate::accelerator::Platform;
+        use crate::paint_surface::PaintSurface;
+        use crate::style::Style;
+        use crate::theme::Theme;
+        use crate::types::Color;
+        use crate::{Point, Rect, Viewport};
+
+        /// Records every painted glyph/text run so a test can assert on
+        /// what the rasteriser actually drew, not an internal helper.
+        #[derive(Default)]
+        struct RecordingSurface {
+            runs: Vec<String>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(0.0, 0.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_draw_text_run(&mut self, _rect: Rect, text: &str, _color: Color) {
+                self.runs.push(text.to_string());
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: Point,
+                _to: Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(
+                &mut self,
+                _rect: Rect,
+                _image: &crate::Image,
+            ) -> crate::backend::ImagePaintResult {
+                crate::backend::ImagePaintResult::Unsupported
+            }
+        }
+
+        fn popup_layout(item: ContextMenuItem) -> (ContextMenu, ContextMenuLayout) {
+            let m = menu(vec![item]);
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let layout = m.layout(10.0, 10.0, viewport, 100.0, |_| {
+                ContextMenuItemMeasure::new(20.0)
+            });
+            (m, layout)
+        }
+
+        /// With no [`ContextMenuGlyphs`] override, `paint_with_glyphs`
+        /// (what `paint` always calls) paints the default codicon
+        /// check mark — byte-for-byte today's behaviour.
+        #[test]
+        fn no_override_paints_default_codicon_check() {
+            let mut item = cm_action("a", "Save");
+            item.checked = Some(true);
+            let (m, layout) = popup_layout(item);
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_with_glyphs(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+            );
+            let expected = crate::codicon::CHECK.to_string();
+            assert!(
+                surface.runs.iter().any(|r| r == &expected),
+                "expected default codicon check among {:?}",
+                surface.runs
+            );
+        }
+
+        /// An app-supplied [`ContextMenuGlyphs`] override replaces the
+        /// check mark with the app's own glyph; the codicon default no
+        /// longer appears.
+        #[test]
+        fn override_replaces_check_glyph() {
+            let mut item = cm_action("a", "Save");
+            item.checked = Some(true);
+            let (m, layout) = popup_layout(item);
+            let glyphs = ContextMenuGlyphs::new().with_checked_glyph("V");
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_with_glyphs(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                Some(&glyphs),
+            );
+            assert!(surface.runs.iter().any(|r| r == "V"));
+            let default_codicon = crate::codicon::CHECK.to_string();
+            assert!(!surface.runs.iter().any(|r| r == &default_codicon));
+        }
+
+        /// Same override/default contract for the submenu pull-right arrow.
+        #[test]
+        fn override_replaces_submenu_arrow_glyph() {
+            let mut item = cm_action("a", "More");
+            item.submenu = Some(vec![cm_action("b", "Nested")]);
+            let (m, layout) = popup_layout(item);
+            let glyphs = ContextMenuGlyphs::new().with_submenu_arrow_glyph(">");
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_with_glyphs(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                Some(&glyphs),
+            );
+            assert!(surface.runs.iter().any(|r| r == ">"));
+            let default_codicon = crate::codicon::CHEVRON_RIGHT.to_string();
+            assert!(!surface.runs.iter().any(|r| r == &default_codicon));
+        }
     }
 }

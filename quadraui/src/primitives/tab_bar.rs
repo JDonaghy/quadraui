@@ -628,6 +628,58 @@ impl TabChrome {
     }
 }
 
+/// Optional app-supplied override for the close and dirty (unsaved)
+/// marks a tab bar paints.
+///
+/// A standalone, `#[non_exhaustive]` registry — not fields on
+/// [`TabBar`]/[`TabItem`], which stay exhaustive — so a consumer that
+/// wants its own iconography (e.g. a Nerd Font glyph) passes a
+/// `TabBarGlyphs` to the rasteriser without the crate taking on a
+/// breaking field addition. Leaving a field `None`, or passing no
+/// `TabBarGlyphs` at all, keeps today's default (`×` for close, `●` for
+/// dirty) byte-for-byte unchanged.
+///
+/// Each glyph is a `String` so a consumer can hand it a multi-byte
+/// Unicode glyph, but the TUI rasteriser paints a single terminal cell
+/// and only consumes the first `char`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TabBarGlyphs {
+    close: Option<String>,
+    dirty: Option<String>,
+}
+
+impl TabBarGlyphs {
+    /// No overrides — every tab paints today's default glyphs.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Override the close-button glyph (default `×`).
+    #[must_use]
+    pub fn with_close_glyph(mut self, glyph: impl Into<String>) -> Self {
+        self.close = Some(glyph.into());
+        self
+    }
+
+    /// Override the dirty (unsaved) mark (default `●`).
+    #[must_use]
+    pub fn with_dirty_glyph(mut self, glyph: impl Into<String>) -> Self {
+        self.dirty = Some(glyph.into());
+        self
+    }
+
+    /// The overridden close-button glyph, or `None` to keep the default.
+    pub fn close_glyph(&self) -> Option<&str> {
+        self.close.as_deref()
+    }
+
+    /// The overridden dirty-mark glyph, or `None` to keep the default.
+    pub fn dirty_glyph(&self) -> Option<&str> {
+        self.dirty.as_deref()
+    }
+}
+
 /// Per-frame interaction-state output from a tab-bar rasteriser. All
 /// positions are in target-surface coordinates.
 ///

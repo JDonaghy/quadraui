@@ -60,6 +60,21 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `TabBarGlyphs`, `ContextMenuGlyphs`, and `DataTableGlyphs`: optional,
+  `#[non_exhaustive]` app-facing overrides for internally-painted chrome
+  glyphs — the tab bar's close/dirty marks, the context menu's checked-item
+  check mark and submenu pull-right arrow, and the data table's
+  sort-ascending/sort-descending arrows. Each is a standalone registry type
+  (never a field on the primitive's own descriptor) built with
+  `with_*_glyph()` and passed to a new sibling paint function
+  (`draw_tab_bar_icons_with_chrome_and_glyphs`,
+  `context_menu::native_surface_paint::paint_with_glyphs`,
+  `data_table::native_surface_paint::paint_with_glyphs`); the existing
+  `paint`/`draw_*` entry points are unchanged and keep calling the new
+  function with `None`, so rendering with no override is byte-for-byte
+  identical to today's default. TUI-side wiring only in this change; GTK,
+  macOS and Win `Backend` callers keep resolving the default codicon glyph
+  until a follow-up issue threads the override through each backend.
 - `ScreenLayout::tree_frame` returns each pushed `Surface::Tree`'s geometry
   as `(Handle<TreeView>, Rect)` pairs, backed internally by
   `DescriptorStore<TreeView>`. On a retained `ScreenLayout` kept across
