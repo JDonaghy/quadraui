@@ -666,11 +666,13 @@ pub(crate) mod native_surface_paint {
         let check_glyph: std::borrow::Cow<'_, str> = glyphs
             .and_then(ContextMenuGlyphs::checked_glyph)
             .map(|icon| std::borrow::Cow::Borrowed(icon.resolve(nerd_fonts_enabled)))
-            .unwrap_or(std::borrow::Cow::Borrowed(crate::codicon::CHECK));
+            .unwrap_or(std::borrow::Cow::Owned(crate::codicon::CHECK.to_string()));
         let submenu_arrow_glyph: std::borrow::Cow<'_, str> = glyphs
             .and_then(ContextMenuGlyphs::submenu_arrow_glyph)
             .map(|icon| std::borrow::Cow::Borrowed(icon.resolve(nerd_fonts_enabled)))
-            .unwrap_or(std::borrow::Cow::Borrowed(crate::codicon::CHEVRON_RIGHT));
+            .unwrap_or(std::borrow::Cow::Owned(
+                crate::codicon::CHEVRON_RIGHT.to_string(),
+            ));
 
         let bg = menu.bg.unwrap_or(theme.hover_bg);
         // VS-Code-style elevated card — a shadow behind, a

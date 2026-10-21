@@ -943,11 +943,15 @@ pub(crate) mod native_surface_paint {
         let sort_ascending_glyph: std::borrow::Cow<'_, str> = glyphs
             .and_then(DataTableGlyphs::sort_ascending_glyph)
             .map(|icon| std::borrow::Cow::Borrowed(icon.resolve(nerd_fonts_enabled)))
-            .unwrap_or(std::borrow::Cow::Borrowed(crate::codicon::SORT_ASCENDING));
+            .unwrap_or(std::borrow::Cow::Owned(
+                crate::codicon::SORT_ASCENDING.to_string(),
+            ));
         let sort_descending_glyph: std::borrow::Cow<'_, str> = glyphs
             .and_then(DataTableGlyphs::sort_descending_glyph)
             .map(|icon| std::borrow::Cow::Borrowed(icon.resolve(nerd_fonts_enabled)))
-            .unwrap_or(std::borrow::Cow::Borrowed(crate::codicon::SORT_DESCENDING));
+            .unwrap_or(std::borrow::Cow::Owned(
+                crate::codicon::SORT_DESCENDING.to_string(),
+            ));
 
         for (col_idx, rc) in layout.columns.iter().enumerate() {
             let Some(col) = table.columns.get(col_idx) else {

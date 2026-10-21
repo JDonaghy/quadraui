@@ -107,7 +107,7 @@
 //! and `src/tui_main/mod.rs` (post-`terminal.draw` block) for TUI.
 
 use crate::event::Rect;
-use crate::types::{Color, Modifiers, WidgetId};
+use crate::types::{Color, Icon, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a tab bar.
@@ -639,14 +639,16 @@ impl TabChrome {
 /// `TabBarGlyphs` at all, keeps today's default (`×` for close, `●` for
 /// dirty) byte-for-byte unchanged.
 ///
-/// Each glyph is a `String` so a consumer can hand it a multi-byte
-/// Unicode glyph, but the TUI rasteriser paints a single terminal cell
-/// and only consumes the first `char`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Each glyph is an [`Icon`][crate::Icon], so a consumer can hand it a
+/// Nerd Font form and a plain-Unicode fallback; the TUI rasteriser
+/// paints a single terminal cell, resolves the glyph via
+/// [`crate::Backend::nerd_fonts_enabled`], and only consumes the first
+/// `char`.
+#[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
 pub struct TabBarGlyphs {
-    close: Option<String>,
-    dirty: Option<String>,
+    close: Option<Icon>,
+    dirty: Option<Icon>,
 }
 
 impl TabBarGlyphs {
@@ -658,26 +660,26 @@ impl TabBarGlyphs {
 
     /// Override the close-button glyph (default `×`).
     #[must_use]
-    pub fn with_close_glyph(mut self, glyph: impl Into<String>) -> Self {
+    pub fn with_close_glyph(mut self, glyph: impl Into<Icon>) -> Self {
         self.close = Some(glyph.into());
         self
     }
 
     /// Override the dirty (unsaved) mark (default `●`).
     #[must_use]
-    pub fn with_dirty_glyph(mut self, glyph: impl Into<String>) -> Self {
+    pub fn with_dirty_glyph(mut self, glyph: impl Into<Icon>) -> Self {
         self.dirty = Some(glyph.into());
         self
     }
 
     /// The overridden close-button glyph, or `None` to keep the default.
-    pub fn close_glyph(&self) -> Option<&str> {
-        self.close.as_deref()
+    pub fn close_glyph(&self) -> Option<&Icon> {
+        self.close.as_ref()
     }
 
     /// The overridden dirty-mark glyph, or `None` to keep the default.
-    pub fn dirty_glyph(&self) -> Option<&str> {
-        self.dirty.as_deref()
+    pub fn dirty_glyph(&self) -> Option<&Icon> {
+        self.dirty.as_ref()
     }
 }
 

@@ -20,6 +20,18 @@ use super::{ratatui_color, set_cell, set_cell_styled, set_cell_wide, set_cell_wi
 #[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarLayout, TabChrome, TabFrame};
 use crate::theme::Theme;
+use crate::types::Icon;
+
+/// Resolve a [`crate::primitives::tab_bar::TabBarGlyphs`] slot (the close
+/// or dirty override) to the single `char` this rasteriser paints,
+/// falling back to `default` when the slot is unset. Shared so the
+/// close-glyph and dirty-glyph branches below don't repeat the same
+/// `Option` chain.
+fn tab_glyph_char(icon: Option<&Icon>, nerd_fonts_enabled: bool, default: char) -> char {
+    icon.map(|icon| icon.resolve(nerd_fonts_enabled))
+        .and_then(|s| s.chars().next())
+        .unwrap_or(default)
+}
 
 /// Close-button glyph rendered on each tab. `×` (U+00D7 MULTIPLICATION
 /// SIGN) — narrower than `✕` and present in every monospaced terminal
@@ -166,7 +178,9 @@ pub fn draw_tab_bar_icons_with_chrome(
     layout: &TabBarLayout,
     theme: &Theme,
 ) -> TabBarHits {
-    draw_tab_bar_icons_with_chrome_and_glyphs(buf, area, bar, icons, chrome, layout, theme, None)
+    draw_tab_bar_icons_with_chrome_and_glyphs(
+        buf, area, bar, icons, chrome, layout, theme, None, false,
+    )
 }
 
 /// [`draw_tab_bar_icons_with_chrome`] with an optional app-supplied
@@ -176,7 +190,10 @@ pub fn draw_tab_bar_icons_with_chrome(
 /// `glyphs: None` reproduces [`draw_tab_bar_icons_with_chrome`] cell for
 /// cell — the default `×`/`●` glyphs are unchanged. Passing `Some` only
 /// overrides the glyphs it sets; any field left `None` keeps the
-/// default for that mark.
+/// default for that mark. `nerd_fonts_enabled` selects which half of
+/// each override [`Icon`] — `glyph` or `fallback` — is resolved (see
+/// [`crate::Backend::nerd_fonts_enabled`]); it is ignored when `glyphs`
+/// does not set the mark being drawn.
 #[allow(deprecated)] // returns the deprecated `TabBarHits`
 #[allow(clippy::too_many_arguments)]
 pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
@@ -188,6 +205,7 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
     layout: &TabBarLayout,
     theme: &Theme,
     glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
+    nerd_fonts_enabled: bool,
 ) -> TabBarHits {
     if area.width == 0 || area.height == 0 {
         return TabBarHits::default();
@@ -385,16 +403,18 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         // override from `glyphs`).
         if vt.close_bounds.is_some() && x < tab_end {
             let (close_ch, close_fg) = if tab.is_dirty {
-                let ch = glyphs
-                    .and_then(crate::primitives::tab_bar::TabBarGlyphs::dirty_glyph)
-                    .and_then(|s| s.chars().next())
-                    .unwrap_or('●');
+                let ch = tab_glyph_char(
+                    glyphs.and_then(crate::primitives::tab_bar::TabBarGlyphs::dirty_glyph),
+                    nerd_fonts_enabled,
+                    '●',
+                );
                 (ch, foreground)
             } else {
-                let ch = glyphs
-                    .and_then(crate::primitives::tab_bar::TabBarGlyphs::close_glyph)
-                    .and_then(|s| s.chars().next())
-                    .unwrap_or(TAB_CLOSE_CHAR);
+                let ch = tab_glyph_char(
+                    glyphs.and_then(crate::primitives::tab_bar::TabBarGlyphs::close_glyph),
+                    nerd_fonts_enabled,
+                    TAB_CLOSE_CHAR,
+                );
                 let fg = if tab.is_active { active_fg } else { separator };
                 (ch, fg)
             };
@@ -532,6 +552,7 @@ mod tests {
             &layout,
             &Theme::default(),
             Some(&glyphs),
+            false,
         );
         let mut found_override_close = false;
         let mut found_override_dirty = false;
@@ -562,6 +583,7 @@ mod tests {
             &layout,
             &Theme::default(),
             None,
+            false,
         );
         let mut default_found_close = false;
         let mut default_found_dirty = false;

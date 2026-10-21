@@ -66,21 +66,24 @@ only a push to `main` runs this workflow.
   check mark and submenu pull-right arrow, and the data table's
   sort-ascending/sort-descending arrows. Each is a standalone registry type
   (never a field on the primitive's own descriptor) built with
-  `with_*_glyph()` and passed to a new sibling paint function
-  (`draw_tab_bar_icons_with_chrome_and_glyphs`,
+  `with_*_glyph(impl Into<Icon>)`, so an override carries both a Nerd Font
+  glyph and a plain-Unicode fallback resolved via
+  `Backend::nerd_fonts_enabled`, and is passed to a new sibling paint
+  function (`draw_tab_bar_icons_with_chrome_and_glyphs`,
   `context_menu::native_surface_paint::paint_with_glyphs`,
   `data_table::native_surface_paint::paint_with_glyphs`); the existing
   `paint`/`draw_*` entry points are unchanged and keep calling the new
   function with `None`, so rendering with no override is byte-for-byte
   identical to today's default. `Backend` gains matching
-  `draw_tab_bar_with_glyphs` / `draw_context_menu_with_glyphs` /
+  `draw_tab_bar_with_chrome_and_glyphs` / `draw_context_menu_with_glyphs` /
   `draw_data_table_with_glyphs` methods (default bodies delegate to the
   existing non-glyph method, so this is additive for every implementor);
-  `TuiBackend` overrides all three and the TUI rasterisers for the context
-  menu and data table now honour the override end-to-end alongside the tab
-  bar's existing chrome path. GTK, macOS and Win `Backend` implementations
-  still resolve the default codicon glyph until a follow-up per-backend
-  issue threads the override through each one's painter.
+  `TuiBackend` overrides all three and the TUI rasterisers for the tab bar,
+  context menu, and data table all honour the override end-to-end,
+  including which half of the `Icon` is resolved. GTK, macOS and Win
+  `Backend` implementations still resolve the default codicon glyph until
+  a follow-up per-backend issue threads the override through each one's
+  painter.
 - `ScreenLayout::tree_frame` returns each pushed `Surface::Tree`'s geometry
   as `(Handle<TreeView>, Rect)` pairs, backed internally by
   `DescriptorStore<TreeView>`. On a retained `ScreenLayout` kept across

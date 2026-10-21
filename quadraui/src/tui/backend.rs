@@ -2757,6 +2757,7 @@ impl Backend for TuiBackend {
     ) -> crate::TabBarHits {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
         let close_cols = if bar.show_tab_close {
             crate::tui::TAB_CLOSE_COLS as usize
         } else {
@@ -2815,6 +2816,7 @@ impl Backend for TuiBackend {
             &layout,
             &theme,
             glyphs,
+            nerd_fonts,
         )
     }
 
