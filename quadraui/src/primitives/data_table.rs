@@ -74,7 +74,7 @@
 //! whose resolved boundaries aren't integers (`Flex`/`Content` widths that
 //! don't divide evenly) the two can disagree by up to one cell.
 
-use crate::types::{Decoration, Modifiers, StyledText, WidgetId};
+use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Column definition for a `DataTable`.
@@ -145,16 +145,22 @@ pub enum SortDirection {
 /// `paint_with_glyphs`; the plain `paint` every existing backend call
 /// site already uses keeps calling it with `None`, so today's codicon
 /// sort arrows render byte-for-byte unchanged until an app opts in.
+///
+/// Each slot is an [`Icon`] — `glyph` for when
+/// [`crate::Backend::nerd_fonts_enabled`] is set, `fallback` otherwise
+/// — rather than a bare string. A bare `&str`/`String` still works via
+/// `Icon`'s blanket `From` impls.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DataTableGlyphs {
-    sort_ascending: Option<String>,
-    sort_descending: Option<String>,
+    sort_ascending: Option<Icon>,
+    sort_descending: Option<Icon>,
 }
 
 impl DataTableGlyphs {
     /// An empty override set — painting with `Some(&Self::new())` is
     /// byte-identical to painting with `None`.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -162,7 +168,7 @@ impl DataTableGlyphs {
     /// Override the ascending-sort glyph (default: the codicon
     /// sort-ascending glyph on GUI).
     #[must_use]
-    pub fn with_sort_ascending_glyph(mut self, glyph: impl Into<String>) -> Self {
+    pub fn with_sort_ascending_glyph(mut self, glyph: impl Into<Icon>) -> Self {
         self.sort_ascending = Some(glyph.into());
         self
     }
@@ -170,19 +176,19 @@ impl DataTableGlyphs {
     /// Override the descending-sort glyph (default: the codicon
     /// sort-descending glyph on GUI).
     #[must_use]
-    pub fn with_sort_descending_glyph(mut self, glyph: impl Into<String>) -> Self {
+    pub fn with_sort_descending_glyph(mut self, glyph: impl Into<Icon>) -> Self {
         self.sort_descending = Some(glyph.into());
         self
     }
 
     /// The overridden ascending-sort glyph, if set.
-    pub fn sort_ascending_glyph(&self) -> Option<&str> {
-        self.sort_ascending.as_deref()
+    pub fn sort_ascending_glyph(&self) -> Option<&Icon> {
+        self.sort_ascending.as_ref()
     }
 
     /// The overridden descending-sort glyph, if set.
-    pub fn sort_descending_glyph(&self) -> Option<&str> {
-        self.sort_descending.as_deref()
+    pub fn sort_descending_glyph(&self) -> Option<&Icon> {
+        self.sort_descending.as_ref()
     }
 }
 
@@ -882,12 +888,23 @@ pub(crate) mod native_surface_paint {
         line_height: f32,
         hovered_idx: Option<usize>,
     ) -> DataTableLayout {
-        paint_with_glyphs(table, surface, theme, rect, line_height, hovered_idx, None)
+        paint_with_glyphs(
+            table,
+            surface,
+            theme,
+            rect,
+            line_height,
+            hovered_idx,
+            None,
+            false,
+        )
     }
 
     /// Identical to [`paint`], plus an optional [`DataTableGlyphs`]
-    /// override for the sort-direction glyphs. `glyphs: None` (what
-    /// [`paint`] passes) renders byte-for-byte the same as today's
+    /// override for the sort-direction glyphs and the `nerd_fonts_enabled`
+    /// flag (see [`crate::Backend::nerd_fonts_enabled`]) that selects each
+    /// override [`Icon`]'s `glyph` vs. `fallback` form. `glyphs: None`
+    /// (what [`paint`] passes) renders byte-for-byte the same as today's
     /// codicon defaults.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint_with_glyphs(
@@ -898,6 +915,7 @@ pub(crate) mod native_surface_paint {
         line_height: f32,
         hovered_idx: Option<usize>,
         glyphs: Option<&DataTableGlyphs>,
+        nerd_fonts_enabled: bool,
     ) -> DataTableLayout {
         let layout = {
             let measure = SurfaceTextMeasure(&*surface);
@@ -920,6 +938,17 @@ pub(crate) mod native_surface_paint {
             theme.tab_bar_bg,
         );
 
+        // Resolved once, outside the per-column loop below — these two
+        // values are constant across the whole header row.
+        let sort_ascending_glyph: std::borrow::Cow<'_, str> = glyphs
+            .and_then(DataTableGlyphs::sort_ascending_glyph)
+            .map(|icon| std::borrow::Cow::Borrowed(icon.resolve(nerd_fonts_enabled)))
+            .unwrap_or(std::borrow::Cow::Borrowed(crate::codicon::SORT_ASCENDING));
+        let sort_descending_glyph: std::borrow::Cow<'_, str> = glyphs
+            .and_then(DataTableGlyphs::sort_descending_glyph)
+            .map(|icon| std::borrow::Cow::Borrowed(icon.resolve(nerd_fonts_enabled)))
+            .unwrap_or(std::borrow::Cow::Borrowed(crate::codicon::SORT_DESCENDING));
+
         for (col_idx, rc) in layout.columns.iter().enumerate() {
             let Some(col) = table.columns.get(col_idx) else {
                 break;
@@ -927,24 +956,14 @@ pub(crate) mod native_surface_paint {
             if rc.width <= 0.0 {
                 continue;
             }
-            let sort_suffix: Option<String> = match &table.sort {
-                Some((si, dir)) if *si == col_idx => match dir {
-                    SortDirection::Ascending => Some(
-                        glyphs
-                            .and_then(DataTableGlyphs::sort_ascending_glyph)
-                            .map(str::to_string)
-                            .unwrap_or_else(|| crate::codicon::SORT_ASCENDING.to_string()),
-                    ),
-                    SortDirection::Descending => Some(
-                        glyphs
-                            .and_then(DataTableGlyphs::sort_descending_glyph)
-                            .map(str::to_string)
-                            .unwrap_or_else(|| crate::codicon::SORT_DESCENDING.to_string()),
-                    ),
-                },
+            let sort_suffix: Option<&str> = match &table.sort {
+                Some((si, dir)) if *si == col_idx => Some(match dir {
+                    SortDirection::Ascending => sort_ascending_glyph.as_ref(),
+                    SortDirection::Descending => sort_descending_glyph.as_ref(),
+                }),
                 _ => None,
             };
-            let title = match &sort_suffix {
+            let title = match sort_suffix {
                 Some(glyph) => format!("{} {glyph}", col.title),
                 None => col.title.clone(),
             };
@@ -1361,6 +1380,7 @@ pub(crate) mod native_surface_paint {
                 16.0,
                 None,
                 Some(&glyphs),
+                true,
             );
             assert!(
                 surface.styled_runs.iter().any(|r| r.1 == "Name ^"),
@@ -1382,6 +1402,7 @@ pub(crate) mod native_surface_paint {
                 16.0,
                 None,
                 None,
+                false,
             );
             let expected_default = format!("Name {}", crate::codicon::SORT_ASCENDING);
             assert!(default_surface

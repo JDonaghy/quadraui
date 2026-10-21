@@ -23,7 +23,7 @@
 
 use crate::accelerator::Accelerator;
 use crate::event::Rect;
-use crate::types::{Color, StyledText, WidgetId};
+use crate::types::{Color, Icon, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Shared menu-row type, used by both [`ContextMenu`] and (via
@@ -95,17 +95,23 @@ pub struct ContextMenu {
 /// [`native_surface_paint::paint`] every existing backend call site
 /// already uses keeps calling it with `None`, so today's codicon
 /// glyphs render byte-for-byte unchanged until an app opts in.
+///
+/// Each slot is an [`Icon`] — `glyph` for when
+/// [`crate::Backend::nerd_fonts_enabled`] is set, `fallback` otherwise
+/// — rather than a bare string. A bare `&str`/`String` still works via
+/// `Icon`'s blanket `From` impls.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ContextMenuGlyphs {
-    checked: Option<String>,
-    submenu_arrow: Option<String>,
+    checked: Option<Icon>,
+    submenu_arrow: Option<Icon>,
 }
 
 impl ContextMenuGlyphs {
     /// An empty override set — [`native_surface_paint::paint_with_glyphs`]
     /// painted with `Some(&Self::new())` is byte-identical to
     /// [`native_surface_paint::paint`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -113,7 +119,7 @@ impl ContextMenuGlyphs {
     /// Override the checked-item check-mark glyph (default: the codicon
     /// check glyph on GUI).
     #[must_use]
-    pub fn with_checked_glyph(mut self, glyph: impl Into<String>) -> Self {
+    pub fn with_checked_glyph(mut self, glyph: impl Into<Icon>) -> Self {
         self.checked = Some(glyph.into());
         self
     }
@@ -121,19 +127,19 @@ impl ContextMenuGlyphs {
     /// Override the submenu-parent pull-right arrow glyph (default: the
     /// codicon chevron-right glyph on GUI).
     #[must_use]
-    pub fn with_submenu_arrow_glyph(mut self, glyph: impl Into<String>) -> Self {
+    pub fn with_submenu_arrow_glyph(mut self, glyph: impl Into<Icon>) -> Self {
         self.submenu_arrow = Some(glyph.into());
         self
     }
 
     /// The overridden check-mark glyph, if set.
-    pub fn checked_glyph(&self) -> Option<&str> {
-        self.checked.as_deref()
+    pub fn checked_glyph(&self) -> Option<&Icon> {
+        self.checked.as_ref()
     }
 
     /// The overridden submenu-arrow glyph, if set.
-    pub fn submenu_arrow_glyph(&self) -> Option<&str> {
-        self.submenu_arrow.as_deref()
+    pub fn submenu_arrow_glyph(&self) -> Option<&Icon> {
+        self.submenu_arrow.as_ref()
     }
 }
 
@@ -621,13 +627,25 @@ pub(crate) mod native_surface_paint {
         theme: &Theme,
         style: &Style,
     ) -> Vec<(Rect, WidgetId)> {
-        paint_with_glyphs(menu, menu_layout, platform, surface, theme, style, None)
+        paint_with_glyphs(
+            menu,
+            menu_layout,
+            platform,
+            surface,
+            theme,
+            style,
+            None,
+            false,
+        )
     }
 
     /// Identical to [`paint`], plus an optional [`ContextMenuGlyphs`]
-    /// override for the check-mark / submenu-arrow glyphs. `glyphs: None`
-    /// (what [`paint`] passes) renders byte-for-byte the same as today's
-    /// codicon defaults.
+    /// override for the check-mark / submenu-arrow glyphs and the
+    /// `nerd_fonts_enabled` flag (see [`crate::Backend::nerd_fonts_enabled`])
+    /// that selects each override [`Icon`]'s `glyph` vs. `fallback` form.
+    /// `glyphs: None` (what [`paint`] passes) renders byte-for-byte the
+    /// same as today's codicon defaults.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint_with_glyphs(
         menu: &ContextMenu,
         menu_layout: &ContextMenuLayout,
@@ -636,11 +654,23 @@ pub(crate) mod native_surface_paint {
         theme: &Theme,
         style: &Style,
         glyphs: Option<&ContextMenuGlyphs>,
+        nerd_fonts_enabled: bool,
     ) -> Vec<(Rect, WidgetId)> {
         let bounds = menu_layout.bounds;
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return Vec::new();
         }
+
+        // Resolved once, outside the per-item loop below — these two
+        // values are constant across the whole popup, not per-item.
+        let check_glyph: std::borrow::Cow<'_, str> = glyphs
+            .and_then(ContextMenuGlyphs::checked_glyph)
+            .map(|icon| std::borrow::Cow::Borrowed(icon.resolve(nerd_fonts_enabled)))
+            .unwrap_or(std::borrow::Cow::Borrowed(crate::codicon::CHECK));
+        let submenu_arrow_glyph: std::borrow::Cow<'_, str> = glyphs
+            .and_then(ContextMenuGlyphs::submenu_arrow_glyph)
+            .map(|icon| std::borrow::Cow::Borrowed(icon.resolve(nerd_fonts_enabled)))
+            .unwrap_or(std::borrow::Cow::Borrowed(crate::codicon::CHEVRON_RIGHT));
 
         let bg = menu.bg.unwrap_or(theme.hover_bg);
         // VS-Code-style elevated card — a shadow behind, a
@@ -735,14 +765,10 @@ pub(crate) mod native_surface_paint {
             );
 
             if item.checked == Some(true) {
-                let check = glyphs
-                    .and_then(ContextMenuGlyphs::checked_glyph)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| crate::codicon::CHECK.to_string());
-                let (cw, ch) = surface.surface_measure_text(&check);
+                let (cw, ch) = surface.surface_measure_text(&check_glyph);
                 surface.surface_draw_icon_glyph(
                     Rect::new(row.x + 8.0, text_y, cw.max(1.0), ch.max(1.0)),
-                    &check,
+                    &check_glyph,
                     label_fg,
                 );
             }
@@ -755,14 +781,10 @@ pub(crate) mod native_surface_paint {
                 // plain `▶` glyph instead. Submenu parents open a child
                 // menu rather than dispatching an action, so a shortcut
                 // hint would never fire anyway.
-                let submenu_arrow = glyphs
-                    .and_then(ContextMenuGlyphs::submenu_arrow_glyph)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| crate::codicon::CHEVRON_RIGHT.to_string());
-                let (aw, ah) = surface.surface_measure_text(&submenu_arrow);
+                let (aw, ah) = surface.surface_measure_text(&submenu_arrow_glyph);
                 surface.surface_draw_icon_glyph(
                     Rect::new(row.x + row.width - aw - 8.0, text_y, aw.max(1.0), ah),
-                    &submenu_arrow,
+                    &submenu_arrow_glyph,
                     label_fg,
                 );
             } else if let Some(shortcut) = shortcut_text(item, platform) {
@@ -1332,6 +1354,7 @@ mod tests {
                 &Theme::default(),
                 &Style::default(),
                 None,
+                false,
             );
             let expected = crate::codicon::CHECK.to_string();
             assert!(
@@ -1359,6 +1382,7 @@ mod tests {
                 &Theme::default(),
                 &Style::default(),
                 Some(&glyphs),
+                true,
             );
             assert!(surface.runs.iter().any(|r| r == "V"));
             let default_codicon = crate::codicon::CHECK.to_string();
@@ -1381,6 +1405,7 @@ mod tests {
                 &Theme::default(),
                 &Style::default(),
                 Some(&glyphs),
+                true,
             );
             assert!(surface.runs.iter().any(|r| r == ">"));
             let default_codicon = crate::codicon::CHEVRON_RIGHT.to_string();

@@ -90,9 +90,10 @@ pub use combo_box::draw_combo_box;
 pub use command_center::{draw_command_center, tui_command_center_layout};
 pub use completions::draw_completions;
 pub use context_menu::{
-    draw_context_menu, draw_context_menu_with_submenus, BORDER_INSET as CONTEXT_MENU_BORDER_INSET,
+    draw_context_menu, draw_context_menu_with_glyphs, draw_context_menu_with_submenus,
+    BORDER_INSET as CONTEXT_MENU_BORDER_INSET,
 };
-pub use data_table::{data_table_layout, draw_data_table};
+pub use data_table::{data_table_layout, draw_data_table, draw_data_table_with_glyphs};
 pub use dialog::{draw_dialog, tui_dialog_layout};
 pub use diff_view::draw_diff_view;
 pub use drop_overlay::draw_drop_overlay;

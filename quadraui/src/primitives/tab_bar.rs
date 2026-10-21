@@ -651,6 +651,7 @@ pub struct TabBarGlyphs {
 
 impl TabBarGlyphs {
     /// No overrides — every tab paints today's default glyphs.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

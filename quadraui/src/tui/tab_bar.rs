@@ -390,18 +390,13 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
                     .and_then(|s| s.chars().next())
                     .unwrap_or('●');
                 (ch, foreground)
-            } else if tab.is_active {
-                let ch = glyphs
-                    .and_then(crate::primitives::tab_bar::TabBarGlyphs::close_glyph)
-                    .and_then(|s| s.chars().next())
-                    .unwrap_or(TAB_CLOSE_CHAR);
-                (ch, active_fg)
             } else {
                 let ch = glyphs
                     .and_then(crate::primitives::tab_bar::TabBarGlyphs::close_glyph)
                     .and_then(|s| s.chars().next())
                     .unwrap_or(TAB_CLOSE_CHAR);
-                (ch, separator)
+                let fg = if tab.is_active { active_fg } else { separator };
+                (ch, fg)
             };
             set_cell(buf, x, area.y, close_ch, close_fg, bg);
             x += 1;

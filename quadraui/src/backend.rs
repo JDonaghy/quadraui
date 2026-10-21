@@ -50,8 +50,8 @@ use crate::primitives::combo_box::{ComboBox, ComboBoxLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::command_line::{CommandLine, CommandLineLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
-use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
-use crate::primitives::data_table::{DataTable, DataTableLayout};
+use crate::primitives::context_menu::{ContextMenu, ContextMenuGlyphs, ContextMenuLayout};
+use crate::primitives::data_table::{DataTable, DataTableGlyphs, DataTableLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout, DialogSeverity};
 use crate::primitives::diff_view::{DiffMode, DiffView, DiffViewLayout};
 use crate::primitives::drop_zone::DropOverlay;
@@ -84,7 +84,7 @@ use crate::primitives::switch::{Switch, SwitchLayout};
 // methods below, so the import itself needs the same allow every use site
 // does.
 #[allow(deprecated)]
-use crate::primitives::tab_bar::{TabBarHits, TabBarLayout, TabChrome, TabIcon};
+use crate::primitives::tab_bar::{TabBarGlyphs, TabBarHits, TabBarLayout, TabChrome, TabIcon};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_input::{TextInput, TextInputLayout};
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
@@ -2189,6 +2189,29 @@ pub trait Backend: sealed::Sealed {
         table: &DataTable,
         hovered_idx: Option<usize>,
     ) -> DataTableLayout;
+    /// Draw `table` into `rect` with an optional [`DataTableGlyphs`]
+    /// override for the sort-ascending/sort-descending arrows. Returns
+    /// its layout for hit-testing, same contract as [`Self::draw_data_table`].
+    ///
+    /// Added rather than folded into [`Self::draw_data_table`]'s
+    /// signature, and given a default body, so it breaks no existing
+    /// `Backend` implementor and no existing call site.
+    ///
+    /// The default body **ignores `glyphs`** and delegates to
+    /// [`Self::draw_data_table`], i.e. renders the default sort arrows.
+    /// That is the correct fallback for a backend that hasn't opted in
+    /// to overrides yet. The TUI backend overrides it and honours
+    /// `glyphs` in full.
+    fn draw_data_table_with_glyphs(
+        &mut self,
+        rect: Rect,
+        table: &DataTable,
+        hovered_idx: Option<usize>,
+        glyphs: Option<&DataTableGlyphs>,
+    ) -> DataTableLayout {
+        let _ = glyphs;
+        self.draw_data_table(rect, table, hovered_idx)
+    }
     /// Compute the data-table layout without painting. Coordinate frame:
     /// **LOCAL** — relative to `rect`'s origin, `(0, 0)` at `rect`'s
     /// top-left; callers subtract `rect.x` / `rect.y` from absolute
@@ -2505,6 +2528,32 @@ pub trait Backend: sealed::Sealed {
     ) -> TabBarLayout {
         let _ = chrome;
         self.draw_tab_bar_layout(rect, bar, hovered_close_tab)
+    }
+    /// Draw a tab bar with an explicit [`TabChrome`] request, plus an
+    /// optional [`TabBarGlyphs`] override for the close/dirty glyphs.
+    ///
+    /// Added rather than folded into [`Self::draw_tab_bar_with_chrome`]'s
+    /// signature, and given a default body, so it breaks no existing
+    /// `Backend` implementor and no existing call site.
+    ///
+    /// The default body **ignores `glyphs`** and delegates to
+    /// [`Self::draw_tab_bar_with_chrome`], i.e. renders the default
+    /// close/dirty glyphs. That is the correct fallback for a backend
+    /// that hasn't opted in to overrides yet. The TUI backend overrides
+    /// it and honours `glyphs` in full.
+    ///
+    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
+    #[allow(deprecated)]
+    fn draw_tab_bar_with_chrome_and_glyphs(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        chrome: &TabChrome,
+        glyphs: Option<&TabBarGlyphs>,
+    ) -> TabBarHits {
+        let _ = glyphs;
+        self.draw_tab_bar_with_chrome(rect, bar, hovered_close_tab, chrome)
     }
     /// Draw an activity bar. `hovered_idx` carries per-frame hover
     /// state so the rasteriser can paint a tint on the hovered row.
@@ -2947,6 +2996,29 @@ pub trait Backend: sealed::Sealed {
         menu: &ContextMenu,
         layout: &ContextMenuLayout,
     ) -> Vec<(Rect, WidgetId)>;
+
+    /// Draw a [`ContextMenu`] popup with an optional [`ContextMenuGlyphs`]
+    /// override for the checked-item check mark and submenu pull-right
+    /// arrow.
+    ///
+    /// Added rather than folded into [`Self::draw_context_menu`]'s
+    /// signature, and given a default body, so it breaks no existing
+    /// `Backend` implementor and no existing call site.
+    ///
+    /// The default body **ignores `glyphs`** and delegates to
+    /// [`Self::draw_context_menu`], i.e. renders the default check mark
+    /// and submenu arrow. That is the correct fallback for a backend
+    /// that hasn't opted in to overrides yet. The TUI backend overrides
+    /// it and honours `glyphs` in full.
+    fn draw_context_menu_with_glyphs(
+        &mut self,
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
+        glyphs: Option<&ContextMenuGlyphs>,
+    ) -> Vec<(Rect, WidgetId)> {
+        let _ = glyphs;
+        self.draw_context_menu(menu, layout)
+    }
 
     /// Draw a [`Dialog`] popup at its caller-resolved layout. Returns
     /// the per-button hit rectangles in the same order as

@@ -17,7 +17,8 @@ use ratatui::buffer::Buffer;
 use super::{ratatui_color, set_cell};
 use crate::accelerator::{render_accelerator, Platform};
 use crate::primitives::context_menu::{
-    ContextMenu, ContextMenuItem, ContextMenuItemMeasure, ContextMenuLayout, ContextMenuPlacement,
+    ContextMenu, ContextMenuGlyphs, ContextMenuItem, ContextMenuItemMeasure, ContextMenuLayout,
+    ContextMenuPlacement,
 };
 use crate::theme::Theme;
 
@@ -71,6 +72,29 @@ pub fn draw_context_menu(
     menu: &ContextMenu,
     layout: &ContextMenuLayout,
     theme: &Theme,
+) {
+    draw_context_menu_with_glyphs(buf, menu, layout, theme, None, false);
+}
+
+/// [`draw_context_menu`] with an optional app-supplied [`ContextMenuGlyphs`]
+/// override for the checked-item check-mark and the submenu pull-right
+/// arrow.
+///
+/// `glyphs: None` reproduces [`draw_context_menu`] cell for cell — the
+/// default `✓`/`▶` glyphs are unchanged. Passing `Some` only overrides the
+/// glyphs it sets; any field left `None` keeps the default for that mark.
+/// Each slot is a single cell, so only the override glyph's first
+/// character is used, mirroring [`crate::tui::tab_bar`]'s close/dirty
+/// glyph overrides. `nerd_fonts_enabled` selects which half of each
+/// override [`crate::types::Icon`] is used, matching
+/// [`crate::Backend::nerd_fonts_enabled`].
+pub fn draw_context_menu_with_glyphs(
+    buf: &mut Buffer,
+    menu: &ContextMenu,
+    layout: &ContextMenuLayout,
+    theme: &Theme,
+    glyphs: Option<&ContextMenuGlyphs>,
+    nerd_fonts_enabled: bool,
 ) {
     let bg = ratatui_color(theme.tab_bar_bg);
     let fg = ratatui_color(theme.foreground);
@@ -157,7 +181,12 @@ pub fn draw_context_menu(
         // `Some(false)` reserves the slot without filling it (so a
         // column of mixed checked/unchecked items aligns visually).
         if matches!(item.checked, Some(true)) {
-            set_cell(buf, inner_x, row_y, '✓', item_fg, item_bg);
+            let ch = glyphs
+                .and_then(ContextMenuGlyphs::checked_glyph)
+                .map(|icon| icon.resolve(nerd_fonts_enabled))
+                .and_then(|s| s.chars().next())
+                .unwrap_or('✓');
+            set_cell(buf, inner_x, row_y, ch, item_fg, item_bg);
         }
         let label = item
             .label
@@ -181,7 +210,19 @@ pub fn draw_context_menu(
             } else {
                 dim_fg
             };
-            set_cell(buf, right.saturating_sub(1), row_y, '▶', arrow_fg, item_bg);
+            let arrow_ch = glyphs
+                .and_then(ContextMenuGlyphs::submenu_arrow_glyph)
+                .map(|icon| icon.resolve(nerd_fonts_enabled))
+                .and_then(|s| s.chars().next())
+                .unwrap_or('▶');
+            set_cell(
+                buf,
+                right.saturating_sub(1),
+                row_y,
+                arrow_ch,
+                arrow_fg,
+                item_bg,
+            );
         } else if let Some(shortcut) = shortcut_text(item, Platform::Tui) {
             let sc_w = shortcut.chars().count().min(u16::MAX as usize) as u16;
             let sc_start = inner_x.saturating_add(inner_w.saturating_sub(sc_w.saturating_add(1)));
@@ -391,6 +432,81 @@ mod tests {
         assert_eq!(cell_char(&buf, bx + bw - 1, by), '┐');
         assert_eq!(cell_char(&buf, bx, by + bh - 1), '└');
         assert_eq!(cell_char(&buf, bx + bw - 1, by + bh - 1), '┘');
+    }
+
+    /// An app-supplied [`ContextMenuGlyphs`] override swaps the
+    /// checked-item check-mark and submenu pull-right arrow; with no
+    /// override, [`draw_context_menu_with_glyphs`] (what
+    /// [`draw_context_menu`] always calls) paints the same `✓`/`▶`
+    /// glyphs as today's default.
+    #[test]
+    fn context_menu_glyphs_override_swaps_checked_and_arrow_default_keeps_defaults() {
+        let mut checked_item = item("Word Wrap", true);
+        checked_item.checked = Some(true);
+        let mut submenu_item = item("Share", true);
+        submenu_item.submenu = Some(vec![item("Email", true)]);
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![checked_item, submenu_item],
+            selected_idx: 2, // neither row selected
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+
+        // Default (no override): '✓' and '▶'.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        draw_context_menu_with_glyphs(&mut buf, &menu, &layout, &Theme::default(), None, false);
+        let mut found_check = false;
+        let mut found_arrow = false;
+        for y in 0..10 {
+            for x in 0..30 {
+                match cell_char(&buf, x, y) {
+                    '✓' => found_check = true,
+                    '▶' => found_arrow = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(found_check, "expected default '✓' check glyph");
+        assert!(found_arrow, "expected default '▶' submenu arrow");
+
+        // Override: the app's own glyphs replace the defaults, and the
+        // defaults no longer appear anywhere in the buffer.
+        let glyphs = ContextMenuGlyphs::new()
+            .with_checked_glyph("+")
+            .with_submenu_arrow_glyph(">");
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        draw_context_menu_with_glyphs(
+            &mut buf,
+            &menu,
+            &layout,
+            &Theme::default(),
+            Some(&glyphs),
+            true,
+        );
+        let mut found_plus = false;
+        let mut found_gt = false;
+        for y in 0..10 {
+            for x in 0..30 {
+                let ch = cell_char(&buf, x, y);
+                assert_ne!(ch, '✓', "default check glyph leaked through override");
+                assert_ne!(ch, '▶', "default submenu arrow leaked through override");
+                match ch {
+                    '+' => found_plus = true,
+                    '>' => found_gt = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(found_plus, "expected overridden '+' check glyph");
+        assert!(found_gt, "expected overridden '>' submenu arrow");
     }
 
     #[test]

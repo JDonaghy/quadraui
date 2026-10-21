@@ -72,9 +72,15 @@ only a push to `main` runs this workflow.
   `data_table::native_surface_paint::paint_with_glyphs`); the existing
   `paint`/`draw_*` entry points are unchanged and keep calling the new
   function with `None`, so rendering with no override is byte-for-byte
-  identical to today's default. TUI-side wiring only in this change; GTK,
-  macOS and Win `Backend` callers keep resolving the default codicon glyph
-  until a follow-up issue threads the override through each backend.
+  identical to today's default. `Backend` gains matching
+  `draw_tab_bar_with_glyphs` / `draw_context_menu_with_glyphs` /
+  `draw_data_table_with_glyphs` methods (default bodies delegate to the
+  existing non-glyph method, so this is additive for every implementor);
+  `TuiBackend` overrides all three and the TUI rasterisers for the context
+  menu and data table now honour the override end-to-end alongside the tab
+  bar's existing chrome path. GTK, macOS and Win `Backend` implementations
+  still resolve the default codicon glyph until a follow-up per-backend
+  issue threads the override through each one's painter.
 - `ScreenLayout::tree_frame` returns each pushed `Surface::Tree`'s geometry
   as `(Handle<TreeView>, Rect)` pairs, backed internally by
   `DescriptorStore<TreeView>`. On a retained `ScreenLayout` kept across
