@@ -91,8 +91,8 @@ use objc2_foundation::{
 use super::backend::MacBackend;
 use super::events::{
     ease_out_cubic, fold_wheel_momentum_remaining, ns_files_dropped, ns_key_to_uievent,
-    ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_scroll, wheel_momentum_tick_delta,
-    WHEEL_MOMENTUM_DURATION, WHEEL_MOMENTUM_TICK,
+    ns_mouse_down, ns_mouse_moved, ns_mouse_up, route_wheel_event, wheel_momentum_quantized_target,
+    WheelRouting, WHEEL_MOMENTUM_DURATION, WHEEL_MOMENTUM_TICK,
 };
 use super::text::make_font;
 // Reuses the tray icon's AppKit-decoder for the Dock/app-switcher
@@ -493,15 +493,18 @@ impl WindowCloseFlag {
 /// wheel notch, animated via [`Transition`] rather than dispatched as a
 /// single lump — see `events.rs`'s "Precise vs. discrete deltas" doc.
 ///
-/// `remaining_dx`/`remaining_dy` is the total delta this glide must
-/// still deliver; `last_eased` is the [`ease_out_cubic`] value already
-/// consumed out of it, read back by [`fold_wheel_momentum_remaining`]
-/// if another notch arrives before this glide finishes.
+/// `total_dx`/`total_dy` is the total delta this glide must deliver;
+/// `delivered_dx`/`delivered_dy` is the whole-unit amount already
+/// dispatched out of it (the previous tick's
+/// [`wheel_momentum_quantized_target`] result), read back by
+/// [`fold_wheel_momentum_remaining`] if another notch arrives before
+/// this glide finishes.
 struct WheelMomentum {
     transition: Transition,
-    remaining_dx: f32,
-    remaining_dy: f32,
-    last_eased: f32,
+    total_dx: f32,
+    total_dy: f32,
+    delivered_dx: f32,
+    delivered_dy: f32,
     x: f32,
     y: f32,
 }
@@ -786,7 +789,8 @@ define_class!(
         /// (`hasPreciseScrollingDeltas() == false`) has no such native
         /// follow-up, so it's wired through `start_or_extend_wheel_momentum`
         /// to glide via `Transition` instead of landing as a single lump.
-        /// See `events.rs`'s "Precise vs. discrete deltas" doc for the full
+        /// `route_wheel_event` makes that decision as a pure function; see
+        /// `events.rs`'s "Precise vs. discrete deltas" doc for the full
         /// rationale and the pure math behind the glide.
         #[unsafe(method(scrollWheel:))]
         fn objc_scroll_wheel(&self, event: &NSEvent) {
@@ -796,13 +800,14 @@ define_class!(
             let dx = event.scrollingDeltaX();
             let dy = event.scrollingDeltaY();
             let precise = event.hasPreciseScrollingDeltas();
-            if precise {
-                self.cancel_wheel_momentum();
-                self.dispatch(ns_scroll(dx, dy, x, y));
-                return;
-            }
-            if let UiEvent::Scroll { delta, position, .. } = ns_scroll(dx, dy, x, y) {
-                self.start_or_extend_wheel_momentum(delta.x, delta.y, position.x, position.y);
+            match route_wheel_event(precise, dx, dy, x, y) {
+                WheelRouting::Immediate(ev) => {
+                    self.cancel_wheel_momentum();
+                    self.dispatch(ev);
+                }
+                WheelRouting::Glide { dx, dy, x, y } => {
+                    self.start_or_extend_wheel_momentum(dx, dy, x, y);
+                }
             }
         }
 
@@ -893,28 +898,30 @@ define_class!(
         /// Fires every [`WHEEL_MOMENTUM_TICK`] while a discrete-wheel
         /// momentum glide is in flight — see `start_or_extend_wheel_momentum`
         /// for how it's armed and `WheelMomentum`'s doc for the state it
-        /// reads. Samples the glide's eased progress, dispatches the
-        /// incremental delta since the last tick, and tears the glide
-        /// down once it finishes.
+        /// reads. Samples the glide's eased progress, computes the
+        /// whole-unit cumulative target via
+        /// [`wheel_momentum_quantized_target`], dispatches only the
+        /// incremental (always whole-unit) delta since the last tick, and
+        /// tears the glide down once it finishes.
         #[unsafe(method(wheelMomentumTick:))]
         fn wheel_momentum_tick(&self, _timer: &NSTimer) {
             let now = Instant::now();
-            let sample = {
+            let (tick_dx, tick_dy, x, y, finished) = {
                 let mut momentum = self.ivars().wheel_momentum.borrow_mut();
                 let Some(state) = momentum.as_mut() else {
                     return;
                 };
-                let now_eased = ease_out_cubic(state.transition.progress_at(now));
-                let tick_dx =
-                    wheel_momentum_tick_delta(state.remaining_dx, state.last_eased, now_eased);
-                let tick_dy =
-                    wheel_momentum_tick_delta(state.remaining_dy, state.last_eased, now_eased);
+                let eased = ease_out_cubic(state.transition.progress_at(now));
+                let target_dx = wheel_momentum_quantized_target(state.total_dx, eased);
+                let target_dy = wheel_momentum_quantized_target(state.total_dy, eased);
+                let tick_dx = target_dx - state.delivered_dx;
+                let tick_dy = target_dy - state.delivered_dy;
                 let (x, y) = (state.x, state.y);
                 let finished = state.transition.is_finished_at(now);
-                state.last_eased = now_eased;
+                state.delivered_dx = target_dx;
+                state.delivered_dy = target_dy;
                 (tick_dx, tick_dy, x, y, finished)
             };
-            let (tick_dx, tick_dy, x, y, finished) = sample;
             if tick_dx != 0.0 || tick_dy != 0.0 {
                 self.dispatch(UiEvent::Scroll {
                     widget: None,
@@ -1266,24 +1273,28 @@ impl QuadraView {
     /// only a from-scratch glide (no timer yet armed) needs a new one.
     fn start_or_extend_wheel_momentum(&self, dx: f32, dy: f32, x: f32, y: f32) {
         let now = Instant::now();
-        let (remaining_dx, remaining_dy) = {
+        let (total_dx, total_dy) = {
             let momentum = self.ivars().wheel_momentum.borrow();
             match momentum.as_ref() {
                 Some(state) => (
-                    fold_wheel_momentum_remaining(state.remaining_dx, state.last_eased, dx),
-                    fold_wheel_momentum_remaining(state.remaining_dy, state.last_eased, dy),
+                    fold_wheel_momentum_remaining(state.total_dx, state.delivered_dx, dx),
+                    fold_wheel_momentum_remaining(state.total_dy, state.delivered_dy, dy),
                 ),
                 None => (dx, dy),
             }
         };
-        self.ivars().wheel_momentum.borrow_mut().replace(WheelMomentum {
-            transition: Transition::starting_at(now, WHEEL_MOMENTUM_DURATION),
-            remaining_dx,
-            remaining_dy,
-            last_eased: 0.0,
-            x,
-            y,
-        });
+        self.ivars()
+            .wheel_momentum
+            .borrow_mut()
+            .replace(WheelMomentum {
+                transition: Transition::starting_at(now, WHEEL_MOMENTUM_DURATION),
+                total_dx,
+                total_dy,
+                delivered_dx: 0.0,
+                delivered_dy: 0.0,
+                x,
+                y,
+            });
         if self.ivars().momentum_timer.borrow().is_some() {
             return;
         }

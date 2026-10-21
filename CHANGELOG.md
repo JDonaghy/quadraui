@@ -80,15 +80,26 @@ only a push to `main` runs this workflow.
   what the GTK event path did; it is now stated in the public docs and
   covered by tests for both the discrete and smooth paths rather than
   holding only by absence of a bug.
-- macOS `scrollWheel:` handling now distinguishes trackpad ("precise")
-  deltas from discrete mouse-wheel notches via
-  `NSEvent::hasPreciseScrollingDeltas`. A trackpad gesture still dispatches
-  AppKit's own decaying `scrollWheel:` stream straight through (already
-  proportional and sub-row). A discrete wheel notch, which AppKit delivers
-  as a single call with no native momentum, is now glided out over ~220ms
-  via `Transition` and a cubic ease-out instead of landing as one lump, so
-  external-mouse scrolling animates smoothly; a fast run of notches folds
-  each new one into the in-flight glide rather than stuttering or queuing.
+
+### Changed
+
+- macOS `scrollWheel:` handling distinguishes trackpad ("precise") deltas
+  from discrete mouse-wheel notches via
+  `NSEvent::hasPreciseScrollingDeltas` (the routing decision is a pure,
+  unit-tested `route_wheel_event` in `macos::events`). A trackpad gesture
+  still dispatches AppKit's own decaying `scrollWheel:` stream straight
+  through (already proportional and sub-row). A discrete wheel notch,
+  which AppKit delivers as a single call with no native momentum, glides
+  out over ~220ms via `Transition` and a cubic ease-out instead of
+  landing as one lump, so external-mouse scrolling animates smoothly; a
+  fast run of notches folds each new one into the in-flight glide rather
+  than stuttering or queuing. Each tick dispatches only the whole-unit
+  increment since the previous tick (the cumulative eased target is
+  rounded before diffing), so the glide's total delivered delta always
+  sums to exactly one un-split notch — a row-index consumer like
+  `primitives::scrollbar::wheel_row_delta`, which rounds any nonzero
+  fractional delta up to at least one row, no longer sees ~14 small
+  dispatches inflate a single notch into ~14 rows of over-scroll.
 
 ## [0.3.0] - 2026-10-20
 ### Changed

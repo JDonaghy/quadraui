@@ -29,20 +29,30 @@
 //! full `f32` precision regardless of source device, so trackpad
 //! scrolling is already proportional and sub-row. The two device
 //! classes still need different *delivery* treatment, decided by
-//! `NSEvent.hasPreciseScrollingDeltas()` in [`super::run`]:
+//! [`route_wheel_event`] (called from [`super::run`] with
+//! `NSEvent.hasPreciseScrollingDeltas()`):
 //!
 //! - **Trackpad** (precise): AppKit itself delivers a decaying stream
 //!   of real `scrollWheel:` calls during a momentum-phase flick, so
 //!   [`super::run::QuadraView::objc_scroll_wheel`] dispatches each one
-//!   straight through — no synthetic animation needed.
+//!   straight through ([`WheelRouting::Immediate`]) — no synthetic
+//!   animation needed.
 //! - **Discrete wheel** (imprecise): a plain wheel notch arrives as one
-//!   `scrollWheel:` call with no native momentum, so `objc_scroll_wheel`
-//!   wires it through [`crate::transition::Transition`] to glide the
-//!   notch's delta out over [`WHEEL_MOMENTUM_DURATION`] instead of
-//!   dispatching it as a single lump. [`ease_out_cubic`],
-//!   [`wheel_momentum_tick_delta`] and [`fold_wheel_momentum_remaining`]
-//!   are the pure pieces of that math, kept here (rather than in
-//!   `super::run`) so they're unit-testable without AppKit.
+//!   `scrollWheel:` call with no native momentum, so `route_wheel_event`
+//!   returns [`WheelRouting::Glide`] and `objc_scroll_wheel` wires it
+//!   through [`crate::transition::Transition`] to glide the notch's
+//!   delta out over [`WHEEL_MOMENTUM_DURATION`] instead of dispatching
+//!   it as a single lump. Because each tick's dispatched delta must
+//!   stay a whole multiple of the underlying row/line unit (row-index
+//!   consumers like [`crate::primitives::scrollbar::wheel_row_delta`]
+//!   round any nonzero fractional delta up to at least one row), the
+//!   glide is quantised: [`wheel_momentum_quantized_target`] computes
+//!   the cumulative whole-unit amount that should have been delivered
+//!   by a given eased progress, and the caller dispatches only the
+//!   incremental difference from the previous tick. [`ease_out_cubic`]
+//!   and [`fold_wheel_momentum_remaining`] are the other pure pieces of
+//!   that math, kept here (rather than in `super::run`) so they're
+//!   unit-testable without AppKit.
 
 use std::time::Duration;
 
@@ -137,45 +147,91 @@ pub(crate) const WHEEL_MOMENTUM_TICK: Duration = Duration::from_millis(16);
 /// Cubic ease-out: fast start, gentle settle. `t` is clamped to
 /// `0.0..=1.0` first, so `ease_out_cubic(0.0) == 0.0` and
 /// `ease_out_cubic(1.0) == 1.0` exactly — this is what makes
-/// [`wheel_momentum_tick_delta`] conserve the total notch distance
+/// [`wheel_momentum_quantized_target`] conserve the total notch distance
 /// (see that function's doc).
 pub(crate) fn ease_out_cubic(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
 }
 
-/// Combine a still-undelivered momentum remainder with a freshly
-/// arrived wheel notch, for when a new `scrollWheel:` call lands while
-/// a previous notch's glide is still animating.
+/// Combine a still-undelivered momentum total with a freshly arrived
+/// wheel notch, for when a new `scrollWheel:` call lands while a
+/// previous notch's glide is still animating.
 ///
-/// `old_remaining` is the total delta the in-flight
-/// [`crate::transition::Transition`] was asked to deliver;
-/// `old_last_eased` is the eased progress (`0.0..=1.0`) already
-/// delivered out of it. `old_remaining * (1.0 - old_last_eased)` is
-/// therefore the portion *not yet* dispatched, which gets folded into
-/// `new_notch` so the next glide starts from a correct cumulative
-/// baseline — no already-delivered distance is replayed, and no
-/// in-flight distance is silently dropped.
+/// `old_total` is the total delta the in-flight
+/// [`crate::transition::Transition`] was asked to deliver; `old_delivered`
+/// is the whole-unit amount already dispatched out of it (the previous
+/// tick's [`wheel_momentum_quantized_target`] result).
+/// `old_total - old_delivered` is therefore the portion *not yet*
+/// dispatched, which gets folded into `new_notch` so the next glide
+/// starts from a correct cumulative baseline — no already-delivered
+/// distance is replayed, and no in-flight distance is silently dropped.
 pub(crate) fn fold_wheel_momentum_remaining(
-    old_remaining: f32,
-    old_last_eased: f32,
+    old_total: f32,
+    old_delivered: f32,
     new_notch: f32,
 ) -> f32 {
-    old_remaining * (1.0 - old_last_eased.clamp(0.0, 1.0)) + new_notch
+    (old_total - old_delivered) + new_notch
 }
 
-/// The incremental delta to dispatch on one momentum tick.
+/// The cumulative whole-unit amount a momentum glide should have
+/// delivered by a given eased progress.
 ///
-/// `remaining` is the total distance this glide must deliver;
-/// `last_eased`/`now_eased` are the eased progress values
-/// ([`ease_out_cubic`] applied to [`crate::transition::Transition::progress_at`])
-/// at the previous and current tick. Because `ease_out_cubic(0.0) ==
-/// 0.0` and `ease_out_cubic(1.0) == 1.0`, summing this function's
-/// result across every tick of a full `0.0..=1.0` progress sweep
-/// recovers exactly `remaining` — the glide only changes *when* the
-/// notch's distance is delivered, never *how much*.
-pub(crate) fn wheel_momentum_tick_delta(remaining: f32, last_eased: f32, now_eased: f32) -> f32 {
-    remaining * (now_eased - last_eased)
+/// `total` is the total distance this glide must deliver; `eased` is
+/// the eased progress ([`ease_out_cubic`] applied to
+/// [`crate::transition::Transition::progress_at`]) at the current tick.
+/// The result is always `(total * eased).round()` — a whole multiple of
+/// the caller's underlying unit, never a fraction. Callers dispatch
+/// only the *difference* from the previous tick's target, so the
+/// dispatched stream never contains a tiny nonzero fractional delta
+/// that a row-index consumer (e.g.
+/// [`crate::primitives::scrollbar::wheel_row_delta`], which floors any
+/// nonzero delta up to at least one row) would inflate past the
+/// notch's true magnitude. Because `ease_out_cubic(0.0) == 0.0` and
+/// `ease_out_cubic(1.0) == 1.0`, the final tick's target is always
+/// `total.round()`, so the sum of dispatched increments across a full
+/// glide equals exactly one un-split notch.
+pub(crate) fn wheel_momentum_quantized_target(total: f32, eased: f32) -> f32 {
+    (total * eased).round()
+}
+
+/// How a translated `scrollWheel:` event should be delivered, decided
+/// by [`route_wheel_event`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum WheelRouting {
+    /// Dispatch this event immediately; cancel any in-flight discrete
+    /// wheel momentum glide first.
+    Immediate(UiEvent),
+    /// Fold this delta into (or start) a synthetic discrete-wheel
+    /// momentum glide instead of dispatching it directly.
+    Glide { dx: f32, dy: f32, x: f32, y: f32 },
+}
+
+/// Decide how a `scrollWheel:` event should be delivered.
+///
+/// `precise` is `NSEvent.hasPreciseScrollingDeltas()`; `dx`/`dy` are
+/// `scrollingDeltaX`/`scrollingDeltaY`; `x`/`y` are the view-local
+/// point. Precise (trackpad) deltas are delivered immediately, since
+/// AppKit already provides native momentum-phase events for those.
+/// Imprecise (discrete wheel) deltas are routed into a synthetic
+/// momentum glide instead. This is a pure function so the routing
+/// decision is unit-testable without AppKit.
+pub(crate) fn route_wheel_event(precise: bool, dx: f64, dy: f64, x: f64, y: f64) -> WheelRouting {
+    let event = ns_scroll(dx, dy, x, y);
+    if precise {
+        return WheelRouting::Immediate(event);
+    }
+    match event {
+        UiEvent::Scroll {
+            delta, position, ..
+        } => WheelRouting::Glide {
+            dx: delta.x,
+            dy: delta.y,
+            x: position.x,
+            y: position.y,
+        },
+        other => WheelRouting::Immediate(other),
+    }
 }
 
 /// Translate `keyDown:` into a [`UiEvent::KeyPressed`].
@@ -533,48 +589,129 @@ mod tests {
     }
 
     #[test]
-    fn tick_deltas_sum_to_remaining_over_a_full_sweep() {
-        for remaining in [1.0_f32, -3.5, 42.0] {
-            let mut last_eased = 0.0_f32;
-            let mut total = 0.0_f32;
+    fn quantized_targets_sum_to_the_rounded_total_over_a_full_sweep() {
+        for total in [1.0_f32, -3.5, 42.0] {
+            let mut delivered = 0.0_f32;
             for i in 1..=10 {
                 let t = i as f32 / 10.0;
-                let now_eased = ease_out_cubic(t);
-                total += wheel_momentum_tick_delta(remaining, last_eased, now_eased);
-                last_eased = now_eased;
+                let eased = ease_out_cubic(t);
+                let target = wheel_momentum_quantized_target(total, eased);
+                let tick_delta = target - delivered;
+                delivered += tick_delta;
             }
-            assert!(
-                (total - remaining).abs() < 1e-4,
-                "expected {remaining}, got {total}"
+            assert_eq!(
+                delivered,
+                total.round(),
+                "expected {}, got {delivered}",
+                total.round()
             );
         }
     }
 
     #[test]
-    fn tick_delta_is_zero_once_fully_eased() {
-        assert_eq!(wheel_momentum_tick_delta(10.0, 1.0, 1.0), 0.0);
+    fn quantized_target_every_tick_is_a_whole_unit() {
+        // A fractional tick delta would get floor-inflated by a
+        // row-index consumer like `wheel_row_delta`; the quantized
+        // target must never produce one.
+        for i in 0..=10 {
+            let t = i as f32 / 10.0;
+            let eased = ease_out_cubic(t);
+            let target = wheel_momentum_quantized_target(1.0, eased);
+            assert_eq!(target, target.round());
+        }
+    }
+
+    #[test]
+    fn quantized_target_is_stable_once_fully_eased() {
+        let first = wheel_momentum_quantized_target(10.0, 1.0);
+        let second = wheel_momentum_quantized_target(10.0, 1.0);
+        assert_eq!(first, second);
+        assert_eq!(first - second, 0.0);
     }
 
     #[test]
     fn fold_remaining_adds_undelivered_portion_to_new_notch() {
-        // Half of a 10.0 remainder (5.0) is still undelivered at
-        // last_eased=0.5; a fresh notch of 2.0 should fold to 7.0.
-        let folded = fold_wheel_momentum_remaining(10.0, 0.5, 2.0);
-        assert!((folded - 7.0).abs() < 1e-6);
+        // 5.0 of a 10.0 total is still undelivered; a fresh notch of
+        // 2.0 should fold to 7.0.
+        let folded = fold_wheel_momentum_remaining(10.0, 5.0, 2.0);
+        assert_eq!(folded, 7.0);
     }
 
     #[test]
     fn fold_remaining_with_finished_transition_is_just_the_new_notch() {
-        // A fully-delivered prior transition (last_eased=1.0)
+        // A fully-delivered prior transition (delivered == total)
         // contributes nothing — folding degrades to the new notch.
-        let folded = fold_wheel_momentum_remaining(10.0, 1.0, 3.0);
+        let folded = fold_wheel_momentum_remaining(10.0, 10.0, 3.0);
         assert_eq!(folded, 3.0);
     }
 
     #[test]
     fn fold_remaining_handles_negative_deltas() {
-        let folded = fold_wheel_momentum_remaining(-10.0, 0.5, -2.0);
-        assert!((folded - (-7.0)).abs() < 1e-6);
+        let folded = fold_wheel_momentum_remaining(-10.0, -5.0, -2.0);
+        assert_eq!(folded, -7.0);
+    }
+
+    // ── Wheel routing decision ────────────────────────────────────
+
+    #[test]
+    fn precise_delta_routes_immediate() {
+        match route_wheel_event(true, 1.5, -2.25, 10.0, 20.0) {
+            WheelRouting::Immediate(UiEvent::Scroll {
+                delta, position, ..
+            }) => {
+                assert_eq!(delta.x, 1.5);
+                assert_eq!(delta.y, 2.25);
+                assert_eq!(position.x, 10.0);
+                assert_eq!(position.y, 20.0);
+            }
+            other => panic!("expected Immediate(Scroll), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn discrete_delta_routes_glide() {
+        match route_wheel_event(false, 0.0, 1.0, 3.0, 4.0) {
+            WheelRouting::Glide { dx, dy, x, y } => {
+                assert_eq!(dx, 0.0);
+                assert_eq!(dy, -1.0); // negated per quadraui convention
+                assert_eq!(x, 3.0);
+                assert_eq!(y, 4.0);
+            }
+            other => panic!("expected Glide, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_full_discrete_glide_applies_exactly_one_row_per_axis() {
+        // This is the regression test for the over-scroll bug: a
+        // single discrete wheel notch, split across the momentum
+        // glide's ticks and quantized, must sum to the same row delta
+        // a consumer would get from one un-split dispatch of the same
+        // notch — never more.
+        use crate::primitives::scrollbar::wheel_row_delta;
+
+        for rows_per_notch in [1.0_f32, 3.0] {
+            let dy = -1.0_f32; // one notch, already sign-adjusted
+            let expected_rows = wheel_row_delta(dy, rows_per_notch);
+
+            let mut delivered = 0.0_f32;
+            let mut applied_rows = 0_isize;
+            for i in 1..=14 {
+                let t = i as f32 / 14.0;
+                let eased = ease_out_cubic(t);
+                let target = wheel_momentum_quantized_target(dy, eased);
+                let tick_delta = target - delivered;
+                delivered = target;
+                if tick_delta != 0.0 {
+                    applied_rows += wheel_row_delta(tick_delta, rows_per_notch);
+                }
+            }
+
+            assert_eq!(
+                applied_rows, expected_rows,
+                "rows_per_notch={rows_per_notch}: expected {expected_rows}, got {applied_rows}"
+            );
+        }
     }
 
     // ── Key translation ───────────────────────────────────────────
