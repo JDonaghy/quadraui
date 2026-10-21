@@ -125,38 +125,6 @@ pub(crate) fn wheel_delta_from_wparam(wparam: usize) -> i16 {
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) const WHEEL_DELTA: f32 = 120.0;
 
-/// Fold a new `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` delta into a running
-/// sub-notch remainder, returning `(emit_delta, new_leftover)`.
-///
-/// A standard wheel always reports whole multiples of `WHEEL_DELTA` (120),
-/// so `leftover` stays `0` forever and `emit_delta` equals `raw_delta` on
-/// every call — this function is a no-op for that hardware. A
-/// high-resolution wheel or trackpad can split one physical notch across
-/// many messages, each carrying a delta smaller than 120; dispatching each
-/// of those immediately would report many tiny fractional-notch scrolls
-/// instead of one real notch, and row-based consumers that round a
-/// nonzero fractional delta up to a full row would then over-scroll by as
-/// many messages as the notch was split into. Accumulating the remainder
-/// here and only emitting once the running total reaches a full notch
-/// reproduces a standard wheel's one-notch-per-detent behaviour regardless
-/// of how finely the hardware fragments it, while still forwarding the
-/// exact accumulated magnitude (so a burst that crosses several notches at
-/// once still emits all of them in a single call).
-///
-/// `leftover` and the returned values are in raw wheel units (multiples of
-/// `WHEEL_DELTA` make a full notch), matching [`wheel_delta_from_wparam`]'s
-/// units. Relies on `i32`'s `%` keeping the sign of its dividend so the
-/// remainder and the emitted amount always agree on direction.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-pub(crate) fn accumulate_wheel_delta(leftover: i32, raw_delta: i16) -> (i32, i32) {
-    let total = leftover + raw_delta as i32;
-    if total.abs() < WHEEL_DELTA as i32 {
-        return (0, total);
-    }
-    let new_leftover = total % WHEEL_DELTA as i32;
-    (total - new_leftover, new_leftover)
-}
-
 /// Decode `WM_KEYDOWN`/`WM_KEYUP`'s `lparam` bit 30 (the "previous key
 /// state" flag) into whether this is an OS-generated auto-repeat rather
 /// than the key's first press. Per `WM_KEYDOWN`'s documented layout, bit
@@ -292,73 +260,6 @@ mod tests {
     fn wheel_delta_from_wparam_ignores_the_low_word_key_state_flags() {
         let wparam = (120usize << 16) | 0x0009; // MK_CONTROL | MK_SHIFT
         assert_eq!(wheel_delta_from_wparam(wparam), 120);
-    }
-
-    /// A standard wheel reports whole notches, so accumulation must be a
-    /// pure pass-through: every call emits exactly its own `raw_delta` and
-    /// the leftover never leaves zero.
-    #[test]
-    fn accumulate_wheel_delta_standard_wheel_emits_every_call() {
-        let (emit, leftover) = accumulate_wheel_delta(0, 120);
-        assert_eq!((emit, leftover), (120, 0));
-
-        let (emit, leftover) = accumulate_wheel_delta(leftover, -120);
-        assert_eq!((emit, leftover), (-120, 0));
-
-        // A shift-scrolled or multi-notch message still passes through
-        // unchanged.
-        let (emit, leftover) = accumulate_wheel_delta(0, 240);
-        assert_eq!((emit, leftover), (240, 0));
-    }
-
-    /// A single high-resolution message carrying less than one notch's
-    /// worth must not emit anything yet — it only accumulates.
-    #[test]
-    fn accumulate_wheel_delta_sub_notch_message_accumulates_without_emitting() {
-        let (emit, leftover) = accumulate_wheel_delta(0, 8);
-        assert_eq!(emit, 0);
-        assert_eq!(leftover, 8);
-    }
-
-    /// Several sub-notch messages that sum to exactly one notch must emit
-    /// precisely once, on the message that crosses the threshold, and
-    /// reset the leftover to zero afterwards.
-    #[test]
-    fn accumulate_wheel_delta_accumulates_sub_notch_messages_to_a_full_notch() {
-        let mut leftover = 0;
-        let mut emitted = Vec::new();
-        for _ in 0..15 {
-            let (emit, new_leftover) = accumulate_wheel_delta(leftover, 8);
-            leftover = new_leftover;
-            if emit != 0 {
-                emitted.push(emit);
-            }
-        }
-        // 15 messages of 8 sum to 120 (one notch): exactly one emission of
-        // the full notch, with nothing left over afterwards.
-        assert_eq!(emitted, vec![120]);
-        assert_eq!(leftover, 0);
-    }
-
-    /// A burst that crosses more than one notch at once must emit the
-    /// whole accumulated multiple, not just one notch, and keep the true
-    /// remainder for the next message.
-    #[test]
-    fn accumulate_wheel_delta_emits_multiple_notches_from_one_burst() {
-        let (emit, leftover) = accumulate_wheel_delta(100, 150);
-        assert_eq!(emit, 240);
-        assert_eq!(leftover, 10);
-    }
-
-    /// Reversing direction mid-accumulation must still track algebraically
-    /// — the leftover is signed, not a magnitude.
-    #[test]
-    fn accumulate_wheel_delta_tracks_sign_across_direction_reversal() {
-        let (emit, leftover) = accumulate_wheel_delta(0, 50);
-        assert_eq!((emit, leftover), (0, 50));
-
-        let (emit, leftover) = accumulate_wheel_delta(leftover, -70);
-        assert_eq!((emit, leftover), (0, -20));
     }
 
     #[test]
