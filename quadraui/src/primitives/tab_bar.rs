@@ -639,7 +639,7 @@ impl TabChrome {
 /// `TabBarGlyphs` at all, keeps today's default (`×` for close, `●` for
 /// dirty) byte-for-byte unchanged.
 ///
-/// Each glyph is an [`Icon`][crate::Icon], so a consumer can hand it a
+/// Each glyph is an [`Icon`], so a consumer can hand it a
 /// Nerd Font form and a plain-Unicode fallback; the TUI rasteriser
 /// paints a single terminal cell, resolves the glyph via
 /// [`crate::Backend::nerd_fonts_enabled`], and only consumes the first
