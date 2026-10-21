@@ -108,6 +108,17 @@ pub fn gdk_scroll_to_uievent(dx: f64, dy: f64, x: f64, y: f64) -> UiEvent {
 /// Translate a GDK scroll event into [`UiEvent::Scroll`], with an
 /// explicit natural-scroll override.
 ///
+/// `dx`/`dy` carry their real magnitude straight through to
+/// `delta.x`/`delta.y` (only sign and the `f64` → `f32` cast change) —
+/// they are never reduced to ±1. `gtk4::EventControllerScroll`'s
+/// `scroll` signal already unifies discrete wheel notches and smooth
+/// trackpad deltas into one continuous `(dx, dy)` pair before this
+/// function ever sees it (see `src/gtk/run.rs`'s `setup_scroll_controller`,
+/// which doesn't set `EventControllerScrollFlags::DISCRETE`), so a
+/// wheel step scaled by an OS "lines per notch" setting and a sub-row
+/// trackpad nudge both arrive here as, and leave here as, their real
+/// `f32` magnitude.
+///
 /// `natural_scroll = false` reproduces [`gdk_scroll_to_uievent`]'s
 /// traditional-direction behavior exactly: wheel-down (positive raw
 /// `dy`) becomes negative `delta.y`, i.e. "not up", so compose
@@ -581,6 +592,36 @@ mod tests {
         let ev = gdk_scroll_to_uievent_with_direction(0.0, 1.0, 10.0, 20.0, true);
         match ev {
             UiEvent::Scroll { delta, .. } => assert_eq!(delta.y, 1.0),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn scroll_preserves_fractional_smooth_scroll_magnitude() {
+        // `GDK_SCROLL_SMOOTH` (trackpad) deltas are sub-unit, e.g. a
+        // light two-finger nudge might report dy = 0.35. The
+        // translator must carry that magnitude through unreduced
+        // (not rounded/clamped to a whole row), or sub-row trackpad
+        // scrolling degrades back to the old wheel-only ±1 behavior.
+        let ev = gdk_scroll_to_uievent(0.2, 0.35, 10.0, 20.0);
+        match ev {
+            UiEvent::Scroll { delta, .. } => {
+                assert_eq!(delta.x, 0.2);
+                assert_eq!(delta.y, -0.35);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn scroll_preserves_multi_line_discrete_scroll_magnitude() {
+        // An OS-configured "scroll N lines per wheel notch" setting
+        // (or a fast flick) reaches this translator as a single
+        // `dy` larger than 1.0. That full magnitude must survive,
+        // not collapse to a sign-only ±1.
+        let ev = gdk_scroll_to_uievent(0.0, 4.5, 10.0, 20.0);
+        match ev {
+            UiEvent::Scroll { delta, .. } => assert_eq!(delta.y, -4.5),
             _ => panic!(),
         }
     }
