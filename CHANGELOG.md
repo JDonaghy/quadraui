@@ -100,6 +100,22 @@ only a push to `main` runs this workflow.
   `primitives::scrollbar::wheel_row_delta`, which rounds any nonzero
   fractional delta up to at least one row, no longer sees ~14 small
   dispatches inflate a single notch into ~14 rows of over-scroll.
+### Fixed
+
+- Win-GUI `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` handling forwards every
+  message's delta immediately and in full, with no per-axis accumulation
+  or gating on a full `WHEEL_DELTA` notch: a high-resolution wheel or
+  trackpad message smaller than one notch now dispatches its own
+  proportional sub-row `UiEvent::Scroll` rather than being withheld until
+  several messages sum to a full notch. This matches the GTK
+  (`gdk_scroll_to_uievent`/`gdk_scroll_to_uievent_with_direction`, the
+  entry above) and macOS (`macos::events::ns_scroll`) translators, which
+  likewise forward the native delta with only a sign/precision cast, so a
+  sub-unit smooth-trackpad delta stays sub-row on every backend rather
+  than being notch-quantised on Windows alone. Rounding a nonzero delta up
+  to a full row for row-based consumers (`primitives::scrollbar`'s
+  `wheel_row_delta`) is a decision the shared layer makes once for every
+  backend; this translator no longer pre-empts it by withholding events.
 
 ## [0.3.0] - 2026-10-20
 ### Changed
