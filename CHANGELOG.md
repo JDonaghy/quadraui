@@ -81,6 +81,21 @@ only a push to `main` runs this workflow.
   covered by tests for both the discrete and smooth paths rather than
   holding only by absence of a bug.
 
+### Fixed
+
+- Win-GUI `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` handling accumulates sub-notch
+  deltas per axis instead of dispatching every message as soon as it
+  arrives: a high-resolution wheel or trackpad that splits one physical
+  notch across several messages now produces exactly one `UiEvent::Scroll`
+  per full notch (carrying the true accumulated magnitude, including any
+  extra whole notches from a fast burst), rather than one fractional event
+  per sub-notch message. Without this, each of those fractional events
+  rounded up to a full row in row-based consumers (`primitives::scrollbar`'s
+  `wheel_row_delta`), over-scrolling by as many rows as the hardware split
+  the notch into. A standard wheel, which always reports whole notches, is
+  unaffected — its leftover stays zero and every message still dispatches
+  immediately.
+
 ## [0.3.0] - 2026-10-20
 ### Changed
 

@@ -815,8 +815,8 @@ mod win32 {
     // here.
     use crate::runtime::{ResizeDebouncer, RESIZE_SETTLE};
     use crate::win::msg::{
-        dpi_scale_from_wparam, is_repeat_from_lparam, point_from_lparam, size_from_lparam,
-        wheel_delta_from_wparam,
+        accumulate_wheel_delta, dpi_scale_from_wparam, is_repeat_from_lparam, point_from_lparam,
+        size_from_lparam, wheel_delta_from_wparam,
     };
     use crate::{ButtonMask, Key, Modifiers};
 
@@ -958,6 +958,22 @@ mod win32 {
         /// ordering a posted `WM_APP` message would give for free, without
         /// needing one.
         pending_resize_resync: Cell<bool>,
+        /// Running sub-notch remainder for `WM_MOUSEWHEEL`
+        /// (vertical) deltas, in the same signed units as
+        /// `GET_WHEEL_DELTA_WPARAM` (multiples of `WHEEL_DELTA` make a
+        /// full notch). A standard wheel always reports whole notches, so
+        /// this stays `0` and every message dispatches unchanged; a
+        /// high-resolution wheel can split one physical notch across many
+        /// messages, so the remainder from each message's
+        /// `win::msg::accumulate_wheel_delta` call is carried here to the
+        /// next one. Lives outside `state`'s `RefCell` for the same reason
+        /// as `pending_resize_resync`: it is read and written from inside
+        /// the `WM_MOUSEWHEEL` arm without needing the app/backend borrow.
+        wheel_leftover_v: Cell<i32>,
+        /// `wheel_leftover_v`'s horizontal counterpart, fed by
+        /// `WM_MOUSEHWHEEL` deltas. Tracked separately because the two
+        /// axes arrive as distinct messages with independent remainders.
+        wheel_leftover_h: Cell<i32>,
     }
 
     /// Encode a Rust `&str` (already `\0`-terminated by its caller) as
@@ -1307,6 +1323,8 @@ mod win32 {
             smoke_failed: smoke_failed.clone(),
             resize_debouncer: RefCell::new(ResizeDebouncer::new()),
             pending_resize_resync: Cell::new(false),
+            wheel_leftover_v: Cell::new(0),
+            wheel_leftover_h: Cell::new(0),
         }));
 
         // SAFETY: `class_name`/`window_title` are `Vec<u16>`s that outlive
@@ -2367,6 +2385,26 @@ mod win32 {
                 // which (like every other translator here) expects
                 // client-area pixels. See `super::events`' module docs.
                 let raw_delta = wheel_delta_from_wparam(wparam.0);
+                let horizontal = msg == WM_MOUSEHWHEEL;
+                // High-resolution wheels/trackpads can split one physical
+                // notch across several messages, each below `WHEEL_DELTA`
+                // — accumulate those sub-notch deltas per axis and only
+                // dispatch once the running total reaches a full notch
+                // (see `accumulate_wheel_delta`'s doc). A standard wheel
+                // always reports whole notches, so this is a no-op for it:
+                // `leftover` stays zero and `emit_delta` always equals
+                // `raw_delta`.
+                let leftover_cell = if horizontal {
+                    &ws.wheel_leftover_h
+                } else {
+                    &ws.wheel_leftover_v
+                };
+                let (emit_delta, new_leftover) =
+                    accumulate_wheel_delta(leftover_cell.get(), raw_delta);
+                leftover_cell.set(new_leftover);
+                if emit_delta == 0 {
+                    return LRESULT(0);
+                }
                 let (screen_x, screen_y) = point_from_lparam(lparam.0);
                 let mut pt = POINT {
                     x: screen_x as i32,
@@ -2380,11 +2418,11 @@ mod win32 {
                 }
                 let scale = ws.state.borrow().backend.viewport().scale;
                 let event = win_wheel_to_uievent(
-                    raw_delta,
+                    emit_delta.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
                     pt.x as i16,
                     pt.y as i16,
                     scale,
-                    msg == WM_MOUSEHWHEEL,
+                    horizontal,
                 );
                 dispatch(ws, hwnd, event);
                 LRESULT(0)
