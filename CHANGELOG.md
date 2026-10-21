@@ -80,6 +80,15 @@ only a push to `main` runs this workflow.
   what the GTK event path did; it is now stated in the public docs and
   covered by tests for both the discrete and smooth paths rather than
   holding only by absence of a bug.
+- macOS `scrollWheel:` handling now distinguishes trackpad ("precise")
+  deltas from discrete mouse-wheel notches via
+  `NSEvent::hasPreciseScrollingDeltas`. A trackpad gesture still dispatches
+  AppKit's own decaying `scrollWheel:` stream straight through (already
+  proportional and sub-row). A discrete wheel notch, which AppKit delivers
+  as a single call with no native momentum, is now glided out over ~220ms
+  via `Transition` and a cubic ease-out instead of landing as one lump, so
+  external-mouse scrolling animates smoothly; a fast run of notches folds
+  each new one into the in-flight glide rather than stuttering or queuing.
 
 ## [0.3.0] - 2026-10-20
 ### Changed

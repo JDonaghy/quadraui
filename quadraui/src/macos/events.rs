@@ -22,6 +22,29 @@
 //! (positive y = up toward the top of content), so we negate. This
 //! matches the GTK translator's behaviour — see
 //! [`crate::gtk::events::gdk_scroll_to_uievent`].
+//!
+//! ## Precise (trackpad) vs. discrete (wheel) deltas
+//!
+//! [`ns_scroll`] passes `scrollingDeltaX`/`scrollingDeltaY` through at
+//! full `f32` precision regardless of source device, so trackpad
+//! scrolling is already proportional and sub-row. The two device
+//! classes still need different *delivery* treatment, decided by
+//! `NSEvent.hasPreciseScrollingDeltas()` in [`super::run`]:
+//!
+//! - **Trackpad** (precise): AppKit itself delivers a decaying stream
+//!   of real `scrollWheel:` calls during a momentum-phase flick, so
+//!   [`super::run::QuadraView::objc_scroll_wheel`] dispatches each one
+//!   straight through — no synthetic animation needed.
+//! - **Discrete wheel** (imprecise): a plain wheel notch arrives as one
+//!   `scrollWheel:` call with no native momentum, so `objc_scroll_wheel`
+//!   wires it through [`crate::transition::Transition`] to glide the
+//!   notch's delta out over [`WHEEL_MOMENTUM_DURATION`] instead of
+//!   dispatching it as a single lump. [`ease_out_cubic`],
+//!   [`wheel_momentum_tick_delta`] and [`fold_wheel_momentum_remaining`]
+//!   are the pure pieces of that math, kept here (rather than in
+//!   `super::run`) so they're unit-testable without AppKit.
+
+use std::time::Duration;
 
 use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, UiEvent};
 
@@ -97,6 +120,62 @@ pub fn ns_mouse_moved(x: f64, y: f64, buttons: ButtonMask) -> UiEvent {
 /// `dy` so the result follows quadraui's "positive y = up" convention.
 pub fn ns_scroll(dx: f64, dy: f64, x: f64, y: f64) -> UiEvent {
     crate::event::scroll(dx as f32, dy as f32, x as f32, y as f32)
+}
+
+/// Total duration of one synthetic discrete-wheel momentum glide.
+///
+/// Short enough that a quick run of repeated notches still feels
+/// responsive (each notch folds into the in-flight ramp rather than
+/// queuing behind it — see [`fold_wheel_momentum_remaining`]), long
+/// enough to read as a glide rather than an instant jump.
+pub(crate) const WHEEL_MOMENTUM_DURATION: Duration = Duration::from_millis(220);
+
+/// Tick interval for the repeating timer that drives a discrete-wheel
+/// momentum glide (~60 Hz).
+pub(crate) const WHEEL_MOMENTUM_TICK: Duration = Duration::from_millis(16);
+
+/// Cubic ease-out: fast start, gentle settle. `t` is clamped to
+/// `0.0..=1.0` first, so `ease_out_cubic(0.0) == 0.0` and
+/// `ease_out_cubic(1.0) == 1.0` exactly — this is what makes
+/// [`wheel_momentum_tick_delta`] conserve the total notch distance
+/// (see that function's doc).
+pub(crate) fn ease_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Combine a still-undelivered momentum remainder with a freshly
+/// arrived wheel notch, for when a new `scrollWheel:` call lands while
+/// a previous notch's glide is still animating.
+///
+/// `old_remaining` is the total delta the in-flight
+/// [`crate::transition::Transition`] was asked to deliver;
+/// `old_last_eased` is the eased progress (`0.0..=1.0`) already
+/// delivered out of it. `old_remaining * (1.0 - old_last_eased)` is
+/// therefore the portion *not yet* dispatched, which gets folded into
+/// `new_notch` so the next glide starts from a correct cumulative
+/// baseline — no already-delivered distance is replayed, and no
+/// in-flight distance is silently dropped.
+pub(crate) fn fold_wheel_momentum_remaining(
+    old_remaining: f32,
+    old_last_eased: f32,
+    new_notch: f32,
+) -> f32 {
+    old_remaining * (1.0 - old_last_eased.clamp(0.0, 1.0)) + new_notch
+}
+
+/// The incremental delta to dispatch on one momentum tick.
+///
+/// `remaining` is the total distance this glide must deliver;
+/// `last_eased`/`now_eased` are the eased progress values
+/// ([`ease_out_cubic`] applied to [`crate::transition::Transition::progress_at`])
+/// at the previous and current tick. Because `ease_out_cubic(0.0) ==
+/// 0.0` and `ease_out_cubic(1.0) == 1.0`, summing this function's
+/// result across every tick of a full `0.0..=1.0` progress sweep
+/// recovers exactly `remaining` — the glide only changes *when* the
+/// notch's distance is delivered, never *how much*.
+pub(crate) fn wheel_momentum_tick_delta(remaining: f32, last_eased: f32, now_eased: f32) -> f32 {
+    remaining * (now_eased - last_eased)
 }
 
 /// Translate `keyDown:` into a [`UiEvent::KeyPressed`].
@@ -420,6 +499,82 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    // ── Discrete-wheel momentum math ──────────────────────────────
+
+    #[test]
+    fn ease_out_cubic_endpoints_are_exact() {
+        assert_eq!(ease_out_cubic(0.0), 0.0);
+        assert_eq!(ease_out_cubic(1.0), 1.0);
+    }
+
+    #[test]
+    fn ease_out_cubic_clamps_out_of_range_input() {
+        assert_eq!(ease_out_cubic(-1.0), 0.0);
+        assert_eq!(ease_out_cubic(2.0), 1.0);
+    }
+
+    #[test]
+    fn ease_out_cubic_is_monotonically_non_decreasing() {
+        let mut prev = ease_out_cubic(0.0);
+        for i in 1..=20 {
+            let t = i as f32 / 20.0;
+            let next = ease_out_cubic(t);
+            assert!(next >= prev, "eased value decreased at t={t}");
+            prev = next;
+        }
+    }
+
+    #[test]
+    fn ease_out_cubic_front_loads_progress() {
+        // "Ease out" means most of the distance is covered early.
+        assert!(ease_out_cubic(0.25) > 0.25);
+    }
+
+    #[test]
+    fn tick_deltas_sum_to_remaining_over_a_full_sweep() {
+        for remaining in [1.0_f32, -3.5, 42.0] {
+            let mut last_eased = 0.0_f32;
+            let mut total = 0.0_f32;
+            for i in 1..=10 {
+                let t = i as f32 / 10.0;
+                let now_eased = ease_out_cubic(t);
+                total += wheel_momentum_tick_delta(remaining, last_eased, now_eased);
+                last_eased = now_eased;
+            }
+            assert!(
+                (total - remaining).abs() < 1e-4,
+                "expected {remaining}, got {total}"
+            );
+        }
+    }
+
+    #[test]
+    fn tick_delta_is_zero_once_fully_eased() {
+        assert_eq!(wheel_momentum_tick_delta(10.0, 1.0, 1.0), 0.0);
+    }
+
+    #[test]
+    fn fold_remaining_adds_undelivered_portion_to_new_notch() {
+        // Half of a 10.0 remainder (5.0) is still undelivered at
+        // last_eased=0.5; a fresh notch of 2.0 should fold to 7.0.
+        let folded = fold_wheel_momentum_remaining(10.0, 0.5, 2.0);
+        assert!((folded - 7.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fold_remaining_with_finished_transition_is_just_the_new_notch() {
+        // A fully-delivered prior transition (last_eased=1.0)
+        // contributes nothing — folding degrades to the new notch.
+        let folded = fold_wheel_momentum_remaining(10.0, 1.0, 3.0);
+        assert_eq!(folded, 3.0);
+    }
+
+    #[test]
+    fn fold_remaining_handles_negative_deltas() {
+        let folded = fold_wheel_momentum_remaining(-10.0, 0.5, -2.0);
+        assert!((folded - (-7.0)).abs() < 1e-6);
     }
 
     // ── Key translation ───────────────────────────────────────────
