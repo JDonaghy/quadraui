@@ -70,6 +70,16 @@ only a push to `main` runs this workflow.
   built every frame still inserts every tree from an empty store each call.
   Internal and additive — `Surface`'s shape and `ScreenLayout::push`'s
   signature are unchanged, and no in-crate caller consumes this yet.
+- GTK scroll translation (`gtk::events::gdk_scroll_to_uievent` and
+  `gdk_scroll_to_uievent_with_direction`) documents and regression-pins
+  real wheel/trackpad delta magnitude as a guarantee: GDK's `dx`/`dy`
+  reach `ScrollDelta` with only the natural-scroll sign convention and
+  an `f64` → `f32` cast applied, never reduced to ±1, so a sub-unit
+  smooth trackpad delta stays sub-row and a multi-line wheel notch keeps
+  its full magnitude. No behavior change — the pass-through was already
+  what the GTK event path did; it is now stated in the public docs and
+  covered by tests for both the discrete and smooth paths rather than
+  holding only by absence of a bug.
 
 ## [0.3.0] - 2026-10-20
 ### Changed
