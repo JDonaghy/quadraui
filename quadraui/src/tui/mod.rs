@@ -29,6 +29,7 @@ mod command_line;
 mod completions;
 mod context_menu;
 mod data_table;
+mod date_picker;
 mod dialog;
 mod diff_view;
 mod drop_overlay;
@@ -93,6 +94,7 @@ pub use context_menu::{
     draw_context_menu, draw_context_menu_with_submenus, BORDER_INSET as CONTEXT_MENU_BORDER_INSET,
 };
 pub use data_table::{data_table_layout, draw_data_table};
+pub use date_picker::{draw_date_picker, tui_date_picker_layout};
 pub use dialog::{draw_dialog, tui_dialog_layout};
 pub use diff_view::draw_diff_view;
 pub use drop_overlay::draw_drop_overlay;

@@ -379,11 +379,14 @@ impl DatePicker {
         let grid = self.month_grid();
         let grid_top = origin_y + header_height;
 
+        // Spans only the middle 5 columns so the month/year label never
+        // shares pixels with `prev_bounds`/`next_bounds`, which occupy the
+        // leftmost and rightmost columns.
         let header_bounds = if header_height > 0.0 {
             Some(Rect::new(
-                origin_x,
+                origin_x + cell_width,
                 origin_y,
-                cell_width * 7.0,
+                cell_width * 5.0,
                 header_height,
             ))
         } else {
@@ -520,6 +523,94 @@ pub enum DatePickerEvent {
     FocusMoved(CalendarDate),
     /// `Enter` or a click on a day confirmed that date as `selected`.
     DateSelected(CalendarDate),
+}
+
+/// Shared backend-neutral implementation of `DatePicker` painting (month
+/// grid, weekday header, prev/next controls, time field), used by backends
+/// that have no dedicated native rasteriser — the same minimal-chrome
+/// fallback [`crate::primitives::button`] already uses for `Button`.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{DatePicker, DatePickerLayout};
+    use crate::event::Rect;
+    use crate::paint_surface::PaintSurface;
+    use crate::theme::Theme;
+
+    /// Paint a [`DatePicker`] into `rect` on `surface`, returning
+    /// [`DatePickerLayout`] for host click dispatch. `cell_height` sizes
+    /// each day row; `header_height` reserves the month/year + prev/next
+    /// row; `time_height` reserves the time-field row (`0.0` when
+    /// `picker.time.is_none()`, matching [`DatePicker::layout`]'s
+    /// "pass `0.0` to omit" convention).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint(
+        picker: &DatePicker,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        cell_height: f32,
+        header_height: f32,
+        time_height: f32,
+    ) -> DatePickerLayout {
+        let cell_width = rect.width / 7.0;
+        let layout = picker.layout(
+            rect.x,
+            rect.y,
+            cell_width,
+            cell_height,
+            header_height,
+            time_height,
+        );
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return layout;
+        }
+
+        if let Some(header) = layout.header_bounds {
+            let label = format!(
+                "{:04}-{:02}",
+                picker.visible_month.year, picker.visible_month.month
+            );
+            surface.surface_draw_text_run(header, &label, theme.foreground);
+        }
+        if let Some(prev) = layout.prev_bounds {
+            surface.surface_draw_text_run(prev, "<", theme.muted_fg);
+        }
+        if let Some(next) = layout.next_bounds {
+            surface.surface_draw_text_run(next, ">", theme.muted_fg);
+        }
+
+        for cell in &layout.day_cells {
+            if cell.bounds.width <= 0.0 || cell.bounds.height <= 0.0 {
+                continue;
+            }
+            if cell.is_selected {
+                surface.surface_fill_rounded_rect(cell.bounds, 2.0, theme.accent_bg);
+            } else if cell.is_focused && picker.has_focus {
+                surface.surface_stroke_rounded_rect(cell.bounds, 2.0, theme.accent_fg, 1.0);
+            }
+            let fg = if cell.is_selected {
+                theme.accent_fg
+            } else if !cell.in_visible_month {
+                theme.muted_fg
+            } else {
+                theme.foreground
+            };
+            surface.surface_draw_text_run(cell.bounds, &format!("{}", cell.date.day), fg);
+        }
+
+        if let Some(time_bounds) = layout.time_bounds {
+            if let Some(time) = picker.time {
+                surface.surface_draw_text_run(time_bounds, &time.format(), theme.foreground);
+            }
+        }
+
+        layout
+    }
 }
 
 #[cfg(test)]

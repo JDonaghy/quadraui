@@ -2319,6 +2319,32 @@ impl Backend for TuiBackend {
         crate::tui::data_table_layout(area, table)
     }
 
+    fn draw_date_picker(
+        &mut self,
+        rect: QRect,
+        picker: &crate::DatePicker,
+    ) -> crate::DatePickerLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_date_picker called outside enter_frame_scope"
+            );
+            return self.date_picker_layout(rect, picker);
+        };
+        crate::tui::draw_date_picker(frame.buffer_mut(), area, picker, &theme)
+    }
+
+    fn date_picker_layout(
+        &self,
+        rect: QRect,
+        picker: &crate::DatePicker,
+    ) -> crate::DatePickerLayout {
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::tui_date_picker_layout(area, picker)
+    }
+
     fn list_hscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
         // Snap through the same u16 cell truncation `draw_list` uses so
         // the consumer's thumb hit-region matches the painted thumb.
@@ -4487,6 +4513,20 @@ mod tests {
         }
         fn list_layout(&self, rect: QRect, list: &ListView) -> crate::ListViewLayout {
             crate::tui::tui_list_layout(q_rect_to_ratatui(rect), list)
+        }
+        fn draw_date_picker(
+            &mut self,
+            rect: QRect,
+            picker: &crate::DatePicker,
+        ) -> crate::DatePickerLayout {
+            self.date_picker_layout(rect, picker)
+        }
+        fn date_picker_layout(
+            &self,
+            rect: QRect,
+            picker: &crate::DatePicker,
+        ) -> crate::DatePickerLayout {
+            crate::tui::tui_date_picker_layout(q_rect_to_ratatui(rect), picker)
         }
         fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
             self.calls.push(DrawCall::Palette {

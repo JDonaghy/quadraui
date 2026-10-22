@@ -23,6 +23,7 @@ use crate::primitives::button::{Button, ButtonLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterHit, CommandCenterLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
+use crate::primitives::date_picker::{DatePicker, DatePickerLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
@@ -4842,6 +4843,52 @@ impl Backend for WinBackend {
     }
     fn switch_layout(&self, rect: Rect, switch: &Switch) -> SwitchLayout {
         switch.layout(rect)
+    }
+    /// See [`Self::draw_button`]'s doc for the "surface not attached yet"
+    /// fallback posture. Sizes rows from `current_line_height`, the same
+    /// metric [`Self::draw_radio_group`] uses for its own rows.
+    fn draw_date_picker(&mut self, rect: Rect, picker: &DatePicker) -> DatePickerLayout {
+        #[cfg(target_os = "windows")]
+        if self.surface.is_some() && self.dwrite.is_some() {
+            let theme = self.current_theme;
+            let row_height = self.current_line_height;
+            let header_height = row_height;
+            let time_height = if picker.time.is_some() {
+                row_height
+            } else {
+                0.0
+            };
+            return crate::primitives::date_picker::native_surface_paint::paint(
+                picker,
+                self,
+                &theme,
+                rect,
+                row_height,
+                header_height,
+                time_height,
+            );
+        }
+        // No surface/DWrite yet — return the real (pure-geometry) layout
+        // via `date_picker_layout` and paint nothing.
+        self.date_picker_layout(rect, picker)
+    }
+    fn date_picker_layout(&self, rect: Rect, picker: &DatePicker) -> DatePickerLayout {
+        let row_height = self.current_line_height;
+        let header_height = row_height;
+        let time_height = if picker.time.is_some() {
+            row_height
+        } else {
+            0.0
+        };
+        let cell_width = rect.width / 7.0;
+        picker.layout(
+            rect.x,
+            rect.y,
+            cell_width,
+            row_height,
+            header_height,
+            time_height,
+        )
     }
 
     /// See [`Self::draw_status_bar`]'s doc for the "surface not

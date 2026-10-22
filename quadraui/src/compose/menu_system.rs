@@ -1452,6 +1452,22 @@ mod tests {
         ) -> crate::backend::ImagePaintResult {
             crate::backend::ImagePaintResult::Unsupported
         }
+
+        fn draw_date_picker(
+            &mut self,
+            _r: Rect,
+            _p: &crate::primitives::date_picker::DatePicker,
+        ) -> crate::primitives::date_picker::DatePickerLayout {
+            unimplemented!()
+        }
+
+        fn date_picker_layout(
+            &self,
+            _r: Rect,
+            _p: &crate::primitives::date_picker::DatePicker,
+        ) -> crate::primitives::date_picker::DatePickerLayout {
+            unimplemented!()
+        }
     }
 
     // Helper: construct a `KeyPressed` event with no modifiers.

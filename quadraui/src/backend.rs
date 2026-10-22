@@ -52,6 +52,7 @@ use crate::primitives::command_line::{CommandLine, CommandLineLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::data_table::{DataTable, DataTableLayout};
+use crate::primitives::date_picker::{DatePicker, DatePickerLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout, DialogSeverity};
 use crate::primitives::diff_view::{DiffMode, DiffView, DiffViewLayout};
 use crate::primitives::drop_zone::DropOverlay;
@@ -3463,6 +3464,17 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn button_layout(&self, rect: Rect, button: &Button) -> ButtonLayout;
+
+    /// Draw a [`DatePicker`] (month grid + optional time field). Returns
+    /// the [`DatePickerLayout`] so hosts can route clicks and apply the
+    /// resulting [`crate::DatePickerEvent`]. Same coordinate frame as
+    /// [`Self::date_picker_layout`] (ABSOLUTE).
+    fn draw_date_picker(&mut self, rect: Rect, picker: &DatePicker) -> DatePickerLayout;
+
+    /// Compute date-picker layout without painting.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
+    fn date_picker_layout(&self, rect: Rect, picker: &DatePicker) -> DatePickerLayout;
 
     /// Draw a [`RadioGroup`] (a vertical list of mutually-exclusive
     /// options). Returns the [`RadioGroupLayout`] so hosts can route

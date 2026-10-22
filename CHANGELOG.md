@@ -58,8 +58,25 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Fixed
+
+- `DatePicker::layout()`'s `header_bounds` now spans only the middle 5 of 7
+  columns instead of the full header row, so the month/year label no longer
+  shares pixels with `prev_bounds`/`next_bounds`. The overlap previously
+  corrupted the label's leading character wherever a rasteriser painted the
+  header and the prev/next controls in sequence (`tui::date_picker` and the
+  shared `primitives::date_picker::native_surface_paint::paint` fallback used
+  by GTK/Win/macOS).
+
 ### Added
 
+- `Backend::draw_date_picker`/`date_picker_layout` (no default body, per
+  `PRIMITIVE_RULES.md` rule 7) paint and measure `DatePicker`'s month grid
+  and time field. Implemented on every backend (`TuiBackend`, `GtkBackend`,
+  `WinBackend`, plus the crate's test-only `MockBackend`/`RecordingBackend`
+  mocks) via the shared `primitives::date_picker::native_surface_paint::paint`
+  helper or a dedicated `tui::date_picker` rasteriser; `MacBackend` is tracked
+  separately under #1453.
 - `ScreenLayout::tree_frame` returns each pushed `Surface::Tree`'s geometry
   as `(Handle<TreeView>, Rect)` pairs, backed internally by
   `DescriptorStore<TreeView>`. On a retained `ScreenLayout` kept across

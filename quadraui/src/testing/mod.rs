@@ -874,6 +874,16 @@ impl crate::Backend for RecordingBackend {
     fn data_table_layout(&self, _r: Rect, _t: &crate::DataTable) -> crate::DataTableLayout {
         unimplemented!("RecordingBackend has no DataTable layout algorithm")
     }
+    fn draw_date_picker(&mut self, r: Rect, p: &crate::DatePicker) -> crate::DatePickerLayout {
+        self.record("draw_date_picker");
+        self.date_picker_layout(r, p)
+    }
+    fn date_picker_layout(&self, r: Rect, p: &crate::DatePicker) -> crate::DatePickerLayout {
+        let cell_width = r.width / 7.0;
+        let row_height = 1.0;
+        let time_height = if p.time.is_some() { row_height } else { 0.0 };
+        p.layout(r.x, r.y, cell_width, row_height, row_height, time_height)
+    }
     fn list_hscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
         None
     }
