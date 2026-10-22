@@ -105,6 +105,23 @@ only a push to `main` runs this workflow.
   built every frame still inserts every tree from an empty store each call.
   Internal and additive — `Surface`'s shape and `ScreenLayout::push`'s
   signature are unchanged, and no in-crate caller consumes this yet.
+- App-facing chrome-glyph override hook for context menus, tab bars and
+  data tables: three `#[non_exhaustive]` + `Default` registries
+  (`primitives::context_menu::ContextMenuGlyphs`,
+  `primitives::tab_bar::TabBarGlyphs`,
+  `primitives::data_table::DataTableGlyphs`) each hold optional `Icon`
+  overrides, and three new default-delegating `Backend` trait methods
+  (`draw_context_menu_with_glyphs`, `draw_tab_bar_with_chrome_and_glyphs`,
+  `draw_data_table_with_glyphs`) accept them, falling back to the
+  existing codicon-based method when an app passes the registry's
+  `Default`. TUI rasterisers resolve each override via `Icon::resolve`
+  and paint its first `char`, except `DataTableGlyphs`'s sort-direction
+  glyphs, which splice the whole resolved string into the column-header
+  title; `Icon::color` is resolved but never painted by any of the three
+  TUI paths. Covered by a black-box paint/screen-text test per site plus
+  a `c0` conformance entry per new trait method. Additive — no hits for
+  any of the six new symbol names in either downstream consumer's source
+  tree.
 - GTK scroll translation (`gtk::events::gdk_scroll_to_uievent` and
   `gdk_scroll_to_uievent_with_direction`) documents and regression-pins
   real wheel/trackpad delta magnitude as a guarantee: GDK's `dx`/`dy`

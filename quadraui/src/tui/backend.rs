@@ -1173,6 +1173,63 @@ fn q_rect_to_ratatui(r: QRect) -> Rect {
     Rect::new(x, y, w, h)
 }
 
+/// Shared tab-width measurement for [`TuiBackend::draw_tab_bar_with_chrome`]
+/// and its glyph-override sibling. A bracket-framed active tab reserves
+/// one extra column on each side of its ordinary close-column
+/// reservation — see `tui::tab_bar`'s module doc for the cell-by-cell
+/// breakdown — and a glyph override only ever substitutes a single-cell
+/// glyph, never the reserved width, so both callers measure through this
+/// one helper rather than two copies that could drift apart.
+fn tab_bar_chrome_layout(bar: &TabBar, area: Rect, chrome: &TabChrome) -> TabBarLayout {
+    let close_cols = if bar.show_tab_close {
+        crate::tui::TAB_CLOSE_COLS as usize
+    } else {
+        0
+    };
+    let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
+    let tab_widths: Vec<usize> = bar
+        .tabs
+        .iter()
+        .map(|t| {
+            let has_close = bar.show_tab_close && t.is_closable;
+            let is_bracket = brackets && t.is_active;
+            let base = display_width(&t.label);
+            if is_bracket && has_close {
+                // '[' + glyph(1) + ']' , replacing the plain
+                // glyph+separator reservation.
+                base + 1 + 1 + 1
+            } else if is_bracket {
+                // '[' + ']' around a label with no close button.
+                base + 2
+            } else if has_close {
+                base + close_cols
+            } else {
+                // No close button and no bracket framing to supply a
+                // visual boundary — reserve a column for the separator
+                // glyph so adjacent labels don't run together.
+                base + crate::tui::TAB_SEPARATOR_COLS as usize
+            }
+        })
+        .collect();
+    bar.layout(
+        area.width as f32,
+        area.height as f32,
+        0.0,
+        |i| {
+            let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
+            let is_bracket = brackets && bar.tabs[i].is_active;
+            if is_bracket && has_close {
+                crate::TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0)
+            } else if has_close {
+                crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32)
+            } else {
+                crate::TabMeasure::new(tab_widths[i] as f32, 0.0)
+            }
+        },
+        |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
+    )
+}
+
 /// Reassemble one leaked SGR mouse escape sequence out of a run of
 /// individual `KeyPressed(Char(_))` events, if `events[0]` opens one.
 ///
@@ -2674,56 +2731,7 @@ impl Backend for TuiBackend {
     ) -> crate::TabBarHits {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let close_cols = if bar.show_tab_close {
-            crate::tui::TAB_CLOSE_COLS as usize
-        } else {
-            0
-        };
-        let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
-        // A bracket-framed active tab reserves one extra column on
-        // each side of its ordinary close-column reservation — see
-        // `tui::tab_bar`'s module doc for the cell-by-cell breakdown.
-        let tab_widths: Vec<usize> = bar
-            .tabs
-            .iter()
-            .map(|t| {
-                let has_close = bar.show_tab_close && t.is_closable;
-                let is_bracket = brackets && t.is_active;
-                let base = display_width(&t.label);
-                if is_bracket && has_close {
-                    // '[' + glyph(1) + ']' , replacing the plain
-                    // glyph+separator reservation.
-                    base + 1 + 1 + 1
-                } else if is_bracket {
-                    // '[' + ']' around a label with no close button.
-                    base + 2
-                } else if has_close {
-                    base + close_cols
-                } else {
-                    // No close button and no bracket framing to supply a
-                    // visual boundary — reserve a column for the separator
-                    // glyph so adjacent labels don't run together.
-                    base + crate::tui::TAB_SEPARATOR_COLS as usize
-                }
-            })
-            .collect();
-        let layout = bar.layout(
-            area.width as f32,
-            area.height as f32,
-            0.0,
-            |i| {
-                let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-                let is_bracket = brackets && bar.tabs[i].is_active;
-                if is_bracket && has_close {
-                    crate::TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0)
-                } else if has_close {
-                    crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32)
-                } else {
-                    crate::TabMeasure::new(tab_widths[i] as f32, 0.0)
-                }
-            },
-            |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
-        );
+        let layout = tab_bar_chrome_layout(bar, area, chrome);
         self.tab_bar_layouts.insert(bar.id, (rect, layout.clone()));
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
@@ -2742,10 +2750,10 @@ impl Backend for TuiBackend {
     /// close/dirty marks, honoured in full here (unlike the trait
     /// default, which ignores `glyphs`).
     ///
-    /// Width measurement is identical to [`Self::draw_tab_bar_with_chrome`]
+    /// Shares [`tab_bar_chrome_layout`] with [`Self::draw_tab_bar_with_chrome`]
     /// — an override only ever substitutes a single-cell glyph, it never
-    /// changes a tab's reserved width — so the two methods must stay in
-    /// lockstep if that measurement logic ever changes.
+    /// changes a tab's reserved width — so the two methods measure through
+    /// the same helper rather than risking the arithmetic drifting apart.
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar_with_chrome_and_glyphs(
         &mut self,
@@ -2758,47 +2766,7 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let nerd_fonts = self.nerd_fonts_enabled;
-        let close_cols = if bar.show_tab_close {
-            crate::tui::TAB_CLOSE_COLS as usize
-        } else {
-            0
-        };
-        let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
-        let tab_widths: Vec<usize> = bar
-            .tabs
-            .iter()
-            .map(|t| {
-                let has_close = bar.show_tab_close && t.is_closable;
-                let is_bracket = brackets && t.is_active;
-                let base = display_width(&t.label);
-                if is_bracket && has_close {
-                    base + 1 + 1 + 1
-                } else if is_bracket {
-                    base + 2
-                } else if has_close {
-                    base + close_cols
-                } else {
-                    base + crate::tui::TAB_SEPARATOR_COLS as usize
-                }
-            })
-            .collect();
-        let layout = bar.layout(
-            area.width as f32,
-            area.height as f32,
-            0.0,
-            |i| {
-                let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-                let is_bracket = brackets && bar.tabs[i].is_active;
-                if is_bracket && has_close {
-                    crate::TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0)
-                } else if has_close {
-                    crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32)
-                } else {
-                    crate::TabMeasure::new(tab_widths[i] as f32, 0.0)
-                }
-            },
-            |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
-        );
+        let layout = tab_bar_chrome_layout(bar, area, chrome);
         self.tab_bar_layouts.insert(bar.id, (rect, layout.clone()));
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
@@ -3494,7 +3462,6 @@ impl Backend for TuiBackend {
                 "TuiBackend::draw_context_menu_with_glyphs called outside enter_frame_scope"
             );
         }
-        let _ = menu;
         layout
             .hit_regions
             .iter()
@@ -6726,6 +6693,10 @@ mod tests {
             tab_screen.contains('x'),
             "overridden tab close glyph should reach the screen, got: {tab_screen}"
         );
+        assert!(
+            !tab_screen.contains(crate::tui::tab_bar::TAB_CLOSE_CHAR),
+            "default tab close glyph should not leak through the override, got: {tab_screen}"
+        );
 
         let mut menu_terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
         menu_terminal
@@ -6740,6 +6711,11 @@ mod tests {
             menu_screen.contains('+'),
             "overridden context-menu checked glyph should reach the screen, \
              got: {menu_screen}"
+        );
+        assert!(
+            !menu_screen.contains('✓'),
+            "default context-menu checked glyph should not leak through the \
+             override, got: {menu_screen}"
         );
 
         let mut table_terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
@@ -6760,6 +6736,11 @@ mod tests {
             table_screen.contains('^'),
             "overridden data-table sort glyph should reach the screen, got: \
              {table_screen}"
+        );
+        assert!(
+            !table_screen.contains('▲'),
+            "default data-table sort-ascending glyph should not leak through \
+             the override, got: {table_screen}"
         );
     }
 

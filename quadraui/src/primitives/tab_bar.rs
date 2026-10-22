@@ -643,8 +643,10 @@ impl TabChrome {
 /// Nerd Font form and a plain-Unicode fallback; the TUI rasteriser
 /// paints a single terminal cell, resolves the glyph via
 /// [`crate::Backend::nerd_fonts_enabled`], and only consumes the first
-/// `char`.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// `char` — a multi-character override silently degrades to its
+/// leading character. `Icon::color` is resolved but not painted on
+/// TUI: the glyph cell always uses the surrounding theme foreground.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TabBarGlyphs {
     close: Option<Icon>,
@@ -673,11 +675,13 @@ impl TabBarGlyphs {
     }
 
     /// The overridden close-button glyph, or `None` to keep the default.
+    #[must_use]
     pub fn close_glyph(&self) -> Option<&Icon> {
         self.close.as_ref()
     }
 
     /// The overridden dirty-mark glyph, or `None` to keep the default.
+    #[must_use]
     pub fn dirty_glyph(&self) -> Option<&Icon> {
         self.dirty.as_ref()
     }
