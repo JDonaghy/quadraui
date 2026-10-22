@@ -122,6 +122,26 @@ only a push to `main` runs this workflow.
   a `c0` conformance entry per new trait method. Additive — no hits for
   any of the six new symbol names in either downstream consumer's source
   tree.
+- GTK native painter honours the chrome-glyph overrides above:
+  `GtkBackend` overrides `draw_tab_bar_with_chrome_and_glyphs`,
+  `draw_data_table_with_glyphs` and `draw_context_menu_with_glyphs`
+  instead of inheriting the glyph-ignoring trait defaults, so a
+  `TabBarGlyphs` close/dirty override, a `DataTableGlyphs` sort
+  ascending/descending override and a `ContextMenuGlyphs` checked /
+  submenu-arrow override all reach the Cairo paint. Each override
+  `Icon` is resolved through `Icon::resolve` against
+  `Backend::nerd_fonts_enabled`, and `None` (or a `Default` registry
+  with no field set) paints byte-identical to today's codicon
+  defaults. Three new free functions carry the extra arguments
+  alongside the existing ones rather than changing them:
+  `gtk::draw_data_table_with_glyphs`,
+  `gtk::draw_tab_bar_with_chrome_and_glyphs` and
+  `gtk::draw_tab_bar_icons_with_chrome_and_glyphs`. Covered by a
+  Cairo `ImageSurface` pixel-comparison test per site, asserting an
+  empty override is byte-identical to `None` and a populated one is
+  not. Additive — no hits
+  for any of the three new function names in either downstream
+  consumer's source tree.
 - GTK scroll translation (`gtk::events::gdk_scroll_to_uievent` and
   `gdk_scroll_to_uievent_with_direction`) documents and regression-pins
   real wheel/trackpad delta magnitude as a guarantee: GDK's `dx`/`dy`
