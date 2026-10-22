@@ -497,3 +497,206 @@ mod tests {
         );
     }
 }
+
+/// Multi-select click wiring over [`crate::macos::testing::MacDriver`].
+///
+/// `ListView` stays purely declarative (no selection-set field of its
+/// own — see `crate::types::apply_selection_gesture`'s doc), so the app
+/// owns the selected-index set and the gesture anchor, resolves each
+/// `MouseDown` to a row via [`ListViewLayout::hit_test`], and derives the
+/// gesture from the event's `Modifiers`. The layout comes from
+/// `Backend::list_layout` (the same trait method `draw_list` resolves
+/// internally while painting), not a locally fabricated measure, so the
+/// click router stays backend-agnostic per the portability commitment.
+///
+/// Mirrors `gtk::list`'s and `win::list`'s `multi_select_driver_tests`,
+/// minus the x-axis click spacing `win::list` needs:
+/// `MacDriver::dispatch` feeds `dispatch_event` directly and never calls
+/// `MacBackend::fold_double_click` (only `macos::run` does), so repeated
+/// clicks on one row stay independent `MouseDown`s.
+#[cfg(test)]
+mod multi_select_driver_tests {
+    use crate::macos::testing::MacDriver;
+    use crate::runner::{AppLogic, Reaction};
+    use crate::{
+        apply_selection_gesture, Backend, Decoration, ListItem, ListView, ListViewEvent,
+        ListViewHit, Modifiers, MouseButton, Point, Rect, SelectionGesture, StyledText, UiEvent,
+        WidgetId,
+    };
+
+    const VIEWPORT_W: f32 = 200.0;
+    const VIEWPORT_H: f32 = 400.0;
+
+    fn item(label: &str) -> ListItem {
+        ListItem {
+            text: StyledText::plain(label.to_string()),
+            icon: None,
+            detail: None,
+            decoration: Decoration::Normal,
+        }
+    }
+
+    fn sample_list() -> ListView {
+        ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..5).map(|i| item(&format!("row {i}"))).collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        }
+    }
+
+    struct ListApp {
+        list: ListView,
+        selected: Vec<usize>,
+        anchor: usize,
+        events: Vec<ListViewEvent>,
+    }
+
+    impl ListApp {
+        fn new() -> Self {
+            Self {
+                list: sample_list(),
+                selected: Vec::new(),
+                anchor: 0,
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl AppLogic for ListApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_list(Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H), &self.list);
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::MouseDown {
+                position,
+                modifiers,
+                ..
+            } = event
+            else {
+                return Reaction::Continue;
+            };
+            // Route through `Backend::list_layout` — the same no-paint
+            // resolver a real click router calls — rather than a locally
+            // fabricated `ListItemMeasure`, so this test's hit-test agrees
+            // with what `render`'s `draw_list` actually painted.
+            let rect = Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H);
+            let layout = backend.list_layout(rect, &self.list);
+            let ListViewHit::Item(idx) = layout.hit_test(position.x, position.y) else {
+                return Reaction::Continue;
+            };
+            let gesture = SelectionGesture::from_modifiers(modifiers);
+            let indices = apply_selection_gesture(&self.selected, self.anchor, idx, gesture);
+            self.selected = indices.clone();
+            if !matches!(gesture, SelectionGesture::Range) {
+                self.anchor = idx;
+            }
+            self.events.push(ListViewEvent::SelectionSet { indices });
+            Reaction::Redraw
+        }
+    }
+
+    fn mouse_down(x: f32, y: f32, modifiers: Modifiers) -> UiEvent {
+        UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers,
+        }
+    }
+
+    /// Row `idx`'s vertical center in `Backend::list_layout`'s real
+    /// geometry, resolved against the driver's own backend — the very
+    /// instance `ListApp::render`/`handle` paint and hit-test through —
+    /// so these clicks land on the rows that were actually painted
+    /// rather than on an assumed row height.
+    fn row_center_y(driver: &MacDriver<ListApp>, idx: usize) -> f32 {
+        let rect = Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H);
+        let layout = Backend::list_layout(driver.backend(), rect, &driver.app().list);
+        let item = layout
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == idx)
+            .expect("row visible in layout");
+        item.bounds.y + item.bounds.height / 2.0
+    }
+
+    fn driver() -> MacDriver<ListApp> {
+        MacDriver::new(ListApp::new(), VIEWPORT_W as u32, VIEWPORT_H as u32)
+    }
+
+    #[test]
+    fn plain_click_replaces_selection() {
+        let mut driver = driver();
+        let y = row_center_y(&driver, 2);
+        driver.dispatch(mouse_down(2.0, y, Modifiers::default()));
+        assert_eq!(driver.app().selected, vec![2]);
+    }
+
+    #[test]
+    fn ctrl_click_toggles_rows_into_a_multi_selection() {
+        let mut driver = driver();
+        let y0 = row_center_y(&driver, 0);
+        let y2 = row_center_y(&driver, 2);
+        driver.dispatch(mouse_down(2.0, y0, Modifiers::default()));
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        driver.dispatch(mouse_down(2.0, y2, ctrl));
+        assert_eq!(driver.app().selected, vec![0, 2]);
+        // Ctrl-click the same row again toggles it back off.
+        driver.dispatch(mouse_down(2.0, y2, ctrl));
+        assert_eq!(driver.app().selected, vec![0]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&ListViewEvent::SelectionSet { indices: vec![0] })
+        );
+    }
+
+    #[test]
+    fn shift_click_selects_the_range_from_the_anchor() {
+        let mut driver = driver();
+        let y0 = row_center_y(&driver, 0);
+        let y3 = row_center_y(&driver, 3);
+        driver.dispatch(mouse_down(2.0, y0, Modifiers::default()));
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        driver.dispatch(mouse_down(2.0, y3, shift));
+        assert_eq!(driver.app().selected, vec![0, 1, 2, 3]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&ListViewEvent::SelectionSet {
+                indices: vec![0, 1, 2, 3]
+            })
+        );
+    }
+
+    #[test]
+    fn cmd_click_toggles_the_same_as_ctrl_click() {
+        let mut driver = driver();
+        let y1 = row_center_y(&driver, 1);
+        let y4 = row_center_y(&driver, 4);
+        driver.dispatch(mouse_down(2.0, y1, Modifiers::default()));
+        driver.dispatch(mouse_down(
+            2.0,
+            y4,
+            Modifiers {
+                cmd: true,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(driver.app().selected, vec![1, 4]);
+    }
+}
