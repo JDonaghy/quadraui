@@ -112,6 +112,18 @@ only a push to `main` runs this workflow.
   cursor row without moving it, all through the shared
   `types::apply_selection_gesture` seam. Verified by `TuiDriver`-based tests
   in `tui::list`, `tui::tree` and `tui::data_table`.
+- macOS rasteriser module for `DatePicker` (`quadraui::macos::date_picker`):
+  the macOS twin of the Win-GUI module above, carrying no production code of
+  its own — `MacBackend`'s `Backend::draw_date_picker` delegates entirely to
+  the shared `primitives::date_picker::native_surface_paint::paint`. Keyboard
+  navigation (arrow keys, page up/down, enter-to-select), the painted
+  header/prev/next/day glyphs and the `theme.selected_bg` fill on the
+  selected day's cell are covered by `MacDriver` tests. `SelectionMode::Multi`'s
+  plain-click/Ctrl-or-Cmd-click/Shift-range wiring is additionally covered by
+  new `MacDriver`-based tests in `macos::list`, `macos::tree` and
+  `macos::data_table`, confirming the same `types::apply_selection_gesture`
+  seam round-trips on macOS. The gallery demo is deferred to the `DatePicker`
+  gallery-page issue.
 - `ScreenLayout::tree_frame` returns each pushed `Surface::Tree`'s geometry
   as `(Handle<TreeView>, Rect)` pairs, backed internally by
   `DescriptorStore<TreeView>`. On a retained `ScreenLayout` kept across
