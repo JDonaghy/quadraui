@@ -107,7 +107,7 @@
 //! and `src/tui_main/mod.rs` (post-`terminal.draw` block) for TUI.
 
 use crate::event::Rect;
-use crate::types::{Color, Modifiers, WidgetId};
+use crate::types::{Color, Icon, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a tab bar.
@@ -625,6 +625,61 @@ impl TabChrome {
     pub fn with_active_frame(mut self, active_frame: TabFrame) -> Self {
         self.active_frame = active_frame;
         self
+    }
+}
+
+/// Optional app-supplied override for the close and dirty (unsaved)
+/// marks a tab bar paints.
+///
+/// A standalone, `#[non_exhaustive]` registry — not fields on
+/// [`TabBar`]/[`TabItem`], which stay exhaustive — so a consumer that
+/// wants its own iconography (e.g. a Nerd Font glyph) passes a
+/// `TabBarGlyphs` to the rasteriser without the crate taking on a
+/// breaking field addition. Leaving a field `None`, or passing no
+/// `TabBarGlyphs` at all, keeps today's default (`×` for close, `●` for
+/// dirty) byte-for-byte unchanged.
+///
+/// Each glyph is an [`Icon`], so a consumer can hand it a
+/// Nerd Font form and a plain-Unicode fallback; the TUI rasteriser
+/// paints a single terminal cell, resolves the glyph via
+/// [`crate::Backend::nerd_fonts_enabled`], and only consumes the first
+/// `char`.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct TabBarGlyphs {
+    close: Option<Icon>,
+    dirty: Option<Icon>,
+}
+
+impl TabBarGlyphs {
+    /// No overrides — every tab paints today's default glyphs.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Override the close-button glyph (default `×`).
+    #[must_use]
+    pub fn with_close_glyph(mut self, glyph: impl Into<Icon>) -> Self {
+        self.close = Some(glyph.into());
+        self
+    }
+
+    /// Override the dirty (unsaved) mark (default `●`).
+    #[must_use]
+    pub fn with_dirty_glyph(mut self, glyph: impl Into<Icon>) -> Self {
+        self.dirty = Some(glyph.into());
+        self
+    }
+
+    /// The overridden close-button glyph, or `None` to keep the default.
+    pub fn close_glyph(&self) -> Option<&Icon> {
+        self.close.as_ref()
+    }
+
+    /// The overridden dirty-mark glyph, or `None` to keep the default.
+    pub fn dirty_glyph(&self) -> Option<&Icon> {
+        self.dirty.as_ref()
     }
 }
 
