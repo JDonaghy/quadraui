@@ -651,3 +651,191 @@ mod tests {
         );
     }
 }
+
+/// Multi-select click wiring over [`crate::win::testing::WinDriver`].
+///
+/// `TreeView` stays purely declarative (no selection-set field of its
+/// own — see `crate::types::apply_selection_gesture`'s doc), so the app
+/// owns the selected-index set and the gesture anchor, resolves each
+/// `MouseDown` to a flattened row via `TreeViewLayout::hit_test`, derives
+/// the gesture from the event's `Modifiers`, and maps the resulting
+/// indices back to `TreePath`s via
+/// [`crate::primitives::tree::selected_paths_for_indices`] before
+/// emitting `TreeEvent::SelectionSet`. Mirrors `gtk::tree`'s
+/// `multi_select_driver_tests`, except `WinDriver` has no
+/// `set_double_click_folding` toggle, so consecutive clicks that must stay
+/// independent are spaced more than `WIN_DOUBLE_CLICK_RADIUS` DIPs apart
+/// on the x axis — row hit testing only depends on y, and these leaf rows
+/// have no chevron, so an x offset never lands in a chevron zone.
+///
+/// This module's own file is already `#[cfg(target_os = "windows")]`-gated
+/// at the `mod tree;` declaration in `win::mod`, so `#[cfg(test)]` alone
+/// is enough here — unlike `win::list`/`win::data_table`, whose modules
+/// compile everywhere and need the extra `target_os` gate on this block.
+#[cfg(test)]
+mod multi_select_driver_tests {
+    use super::super::testing::WinDriver;
+    use crate::primitives::tree::{selected_paths_for_indices, TreeEvent, TreeRow, TreeRowMeasure};
+    use crate::runner::{AppLogic, Reaction};
+    use crate::{
+        apply_selection_gesture, Backend, Decoration, Modifiers, MouseButton, Point, Rect,
+        SelectionGesture, SelectionMode, StyledText, TreeView, TreeViewHit, UiEvent, WidgetId,
+    };
+
+    const VIEWPORT_W: f32 = 40.0;
+    const VIEWPORT_H: f32 = 10.0;
+    const ROW_H: f32 = 1.0;
+
+    fn leaf(idx: u16, label: &str) -> TreeRow {
+        TreeRow {
+            path: vec![idx],
+            indent: 0,
+            icon: None,
+            text: StyledText::plain(label.to_string()),
+            badge: None,
+            is_expanded: None,
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
+    fn sample_tree() -> TreeView {
+        TreeView {
+            id: WidgetId::new("t"),
+            rows: (0..5).map(|i| leaf(i, &format!("row {i}"))).collect(),
+            selection_mode: SelectionMode::Multi,
+            selected_path: None,
+            scroll_offset: 0,
+            style: Default::default(),
+            has_focus: true,
+        }
+    }
+
+    struct TreeApp {
+        tree: TreeView,
+        selected: Vec<usize>,
+        anchor: usize,
+        events: Vec<TreeEvent>,
+    }
+
+    impl TreeApp {
+        fn new() -> Self {
+            Self {
+                tree: sample_tree(),
+                selected: Vec::new(),
+                anchor: 0,
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl AppLogic for TreeApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_tree(Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H), &self.tree);
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::MouseDown {
+                position,
+                modifiers,
+                ..
+            } = event
+            else {
+                return Reaction::Continue;
+            };
+            let layout = self
+                .tree
+                .layout(VIEWPORT_W, VIEWPORT_H, |_| TreeRowMeasure::new(ROW_H));
+            let hit = layout.hit_test(position.x, position.y);
+            let idx = match hit {
+                TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => idx,
+                TreeViewHit::Empty => return Reaction::Continue,
+            };
+            let gesture = SelectionGesture::from_modifiers(modifiers);
+            let indices = apply_selection_gesture(&self.selected, self.anchor, idx, gesture);
+            self.selected = indices.clone();
+            if !matches!(gesture, SelectionGesture::Range) {
+                self.anchor = idx;
+            }
+            let paths = selected_paths_for_indices(&self.tree.rows, &indices);
+            self.events.push(TreeEvent::SelectionSet { paths });
+            Reaction::Redraw
+        }
+    }
+
+    fn mouse_down(x: f32, y: f32, modifiers: Modifiers) -> UiEvent {
+        UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn plain_click_replaces_selection() {
+        let mut driver = WinDriver::new(TreeApp::new(), 80, 40);
+        driver.dispatch(mouse_down(2.0, 2.0, Modifiers::default()));
+        assert_eq!(driver.app().selected, vec![2]);
+    }
+
+    #[test]
+    fn ctrl_click_toggles_rows_into_a_multi_selection() {
+        let mut driver = WinDriver::new(TreeApp::new(), 80, 40);
+        driver.dispatch(mouse_down(2.0, 0.0, Modifiers::default()));
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        // x is spaced > WIN_DOUBLE_CLICK_RADIUS DIPs from the previous
+        // click so the shared `DoubleClickDetector` doesn't fold these
+        // back-to-back single clicks into a `DoubleClick`; y alone picks
+        // the row.
+        driver.dispatch(mouse_down(10.0, 2.0, ctrl));
+        assert_eq!(driver.app().selected, vec![0, 2]);
+        // Ctrl-click the same row again toggles it back off.
+        driver.dispatch(mouse_down(18.0, 2.0, ctrl));
+        assert_eq!(driver.app().selected, vec![0]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&TreeEvent::SelectionSet {
+                paths: vec![vec![0]]
+            })
+        );
+    }
+
+    #[test]
+    fn shift_click_selects_the_range_from_the_anchor() {
+        let mut driver = WinDriver::new(TreeApp::new(), 80, 40);
+        driver.dispatch(mouse_down(2.0, 0.0, Modifiers::default()));
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        driver.dispatch(mouse_down(10.0, 3.0, shift));
+        assert_eq!(driver.app().selected, vec![0, 1, 2, 3]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&TreeEvent::SelectionSet {
+                paths: vec![vec![0], vec![1], vec![2], vec![3]]
+            })
+        );
+    }
+
+    #[test]
+    fn cmd_click_toggles_the_same_as_ctrl_click() {
+        let mut driver = WinDriver::new(TreeApp::new(), 80, 40);
+        driver.dispatch(mouse_down(2.0, 1.0, Modifiers::default()));
+        driver.dispatch(mouse_down(
+            10.0,
+            4.0,
+            Modifiers {
+                cmd: true,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(driver.app().selected, vec![1, 4]);
+    }
+}

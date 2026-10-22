@@ -63,6 +63,11 @@ mod context_menu;
 /// Direct2D / DirectWrite rasteriser for [`crate::DataTable`]. Issue
 /// Only its paint fn is Windows-only — see its module docs.
 mod data_table;
+/// Windows rasteriser for [`crate::DatePicker`]. All painting delegates
+/// to [`crate::primitives::date_picker::native_surface_paint::paint`] via
+/// [`crate::Backend::draw_date_picker`], so this module carries no
+/// production code of its own — see its module docs.
+mod date_picker;
 /// Direct2D / DirectWrite rasteriser for [`crate::Dialog`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
