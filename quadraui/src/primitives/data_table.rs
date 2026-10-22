@@ -150,6 +150,15 @@ pub enum SortDirection {
 /// [`crate::Backend::nerd_fonts_enabled`] is set, `fallback` otherwise
 /// — rather than a bare string. A bare `&str`/`String` still works via
 /// `Icon`'s blanket `From` impls.
+///
+/// Unlike [`crate::primitives::context_menu::ContextMenuGlyphs`] and
+/// [`crate::primitives::tab_bar::TabBarGlyphs`] — both of which paint a
+/// single terminal cell and so take only the resolved string's first
+/// `char` — the TUI rasteriser splices this override's whole resolved
+/// `&str` into the column-header title, so a multi-character glyph is
+/// not truncated here. `Icon::color` is resolved but not painted on
+/// TUI either way: the header always uses the theme's header
+/// foreground colour.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DataTableGlyphs {
@@ -182,11 +191,13 @@ impl DataTableGlyphs {
     }
 
     /// The overridden ascending-sort glyph, if set.
+    #[must_use]
     pub fn sort_ascending_glyph(&self) -> Option<&Icon> {
         self.sort_ascending.as_ref()
     }
 
     /// The overridden descending-sort glyph, if set.
+    #[must_use]
     pub fn sort_descending_glyph(&self) -> Option<&Icon> {
         self.sort_descending.as_ref()
     }

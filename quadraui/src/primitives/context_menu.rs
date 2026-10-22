@@ -100,6 +100,17 @@ pub struct ContextMenu {
 /// [`crate::Backend::nerd_fonts_enabled`] is set, `fallback` otherwise
 /// — rather than a bare string. A bare `&str`/`String` still works via
 /// `Icon`'s blanket `From` impls.
+///
+/// The TUI rasteriser paints a single cell per glyph: it resolves the
+/// `Icon` to a `&str` and takes only its first `char`, so a
+/// multi-character override silently degrades to its leading character.
+/// `Icon::color` is resolved but not painted on TUI — the glyph cell
+/// always uses the surrounding theme foreground, never the `Icon`'s own
+/// colour.
+///
+/// [`crate::tui::draw_context_menu_with_submenus`] does not take a
+/// `glyphs` argument and always paints the default submenu-arrow glyph;
+/// only [`native_surface_paint::paint_with_glyphs`] honours this override.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ContextMenuGlyphs {
@@ -133,11 +144,13 @@ impl ContextMenuGlyphs {
     }
 
     /// The overridden check-mark glyph, if set.
+    #[must_use]
     pub fn checked_glyph(&self) -> Option<&Icon> {
         self.checked.as_ref()
     }
 
     /// The overridden submenu-arrow glyph, if set.
+    #[must_use]
     pub fn submenu_arrow_glyph(&self) -> Option<&Icon> {
         self.submenu_arrow.as_ref()
     }

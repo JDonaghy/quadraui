@@ -267,6 +267,11 @@ pub fn draw_context_menu_with_glyphs(
 /// Each child popup anchors its left edge to the parent popup's right
 /// border column. If that would overflow the viewport's right edge the
 /// popup flips to the left of the parent instead.
+///
+/// Does not take a [`crate::primitives::context_menu::ContextMenuGlyphs`]
+/// override — every level always paints the default check-mark and
+/// submenu-arrow glyphs. An app-supplied override only reaches a
+/// production menu through `Backend::draw_context_menu_with_glyphs`.
 pub fn draw_context_menu_with_submenus(
     buf: &mut Buffer,
     root_menu: &ContextMenu,
