@@ -132,6 +132,18 @@ only a push to `main` runs this workflow.
   what the GTK event path did; it is now stated in the public docs and
   covered by tests for both the discrete and smooth paths rather than
   holding only by absence of a bug.
+- The Windows native painter honors the chrome-glyph override registries at
+  all four sites that have one: `Backend::draw_data_table_with_glyphs`
+  (sort asc/desc), `Backend::draw_tab_bar_with_glyphs` (close/dirty marks)
+  and `Backend::draw_context_menu_with_glyphs` (checked mark, submenu
+  pull-right arrow) now paint the app-supplied `Icon` in place of the
+  default codicon when one is set, and fall back to today's codicon glyph
+  when `glyphs` is `None`. The tree expand/collapse chevron already honors
+  a `TreeStyle` override glyph through the shared
+  `primitives::tree::native_surface_paint::paint` path, so that site needed
+  no production change. Each site has a `WinDriver`-style black-box test
+  confirming the override glyph paints and `None` leaves the default
+  codicon unchanged.
 
 ### Changed
 
