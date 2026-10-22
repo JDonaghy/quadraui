@@ -2374,22 +2374,37 @@ impl Backend for GtkBackend {
         table: &crate::DataTable,
         hovered_idx: Option<usize>,
     ) -> crate::DataTableLayout {
+        self.draw_data_table_with_glyphs(rect, table, hovered_idx, None)
+    }
+
+    /// [`Self::draw_data_table`] plus an optional
+    /// [`crate::primitives::data_table::DataTableGlyphs`] override for the
+    /// header's sort-direction glyph, honoured in full here (unlike the
+    /// trait default, which ignores `glyphs`).
+    fn draw_data_table_with_glyphs(
+        &mut self,
+        rect: QRect,
+        table: &crate::DataTable,
+        hovered_idx: Option<usize>,
+        glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
+    ) -> crate::DataTableLayout {
         let lh = self.current_line_height;
         let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
-            .expect("GtkBackend::draw_data_table called outside enter_frame_scope");
+            .expect("GtkBackend::draw_data_table_with_glyphs called outside enter_frame_scope");
         // `DataTable` is chrome, not editor content — save the editor
         // font on the shared layout, paint the table in `ui_font`, then
         // restore, matching `Self::draw_tree`'s save/swap/restore.
-        // `crate::gtk::draw_data_table` derives its bold/icon font
-        // variants from whatever base font `layout` carries in, so
+        // `crate::gtk::draw_data_table_with_glyphs` derives its bold/icon
+        // font variants from whatever base font `layout` carries in, so
         // without this swap it painted with whatever the ambient
         // per-frame font happened to be (the editor font by default).
         let saved_font = layout.font_description();
         layout.set_font_description(Some(&ui_font_desc));
-        let table_layout = crate::gtk::draw_data_table(
+        let table_layout = crate::gtk::draw_data_table_with_glyphs(
             cr,
             layout,
             rect.x as f64,
@@ -2400,6 +2415,8 @@ impl Backend for GtkBackend {
             &theme,
             lh,
             hovered_idx,
+            glyphs,
+            nerd_fonts_enabled,
         );
         layout.set_font_description(saved_font.as_ref());
 
@@ -2873,6 +2890,47 @@ impl Backend for GtkBackend {
             chrome,
             &self.current_theme,
             hovered_close_tab,
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        self.tab_bar_layouts.insert(bar.id, (rect, resolved_layout));
+        hits
+    }
+
+    /// [`Self::draw_tab_bar_with_chrome`] plus an optional
+    /// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
+    /// close/dirty glyph, honoured in full here (unlike the trait default,
+    /// which ignores `glyphs`).
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+    fn draw_tab_bar_with_chrome_and_glyphs(
+        &mut self,
+        rect: QRect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        chrome: &TabChrome,
+        glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
+    ) -> crate::TabBarHits {
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, pango_layout) = self.current_frame_refs().expect(
+            "GtkBackend::draw_tab_bar_with_chrome_and_glyphs called outside enter_frame_scope",
+        );
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let (hits, resolved_layout) = crate::gtk::draw_tab_bar_icons_with_chrome_and_glyphs(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.width as f64,
+            self.current_line_height,
+            rect.y as f64,
+            rect.height as f64,
+            bar,
+            &[],
+            chrome,
+            &self.current_theme,
+            hovered_close_tab,
+            glyphs,
+            nerd_fonts_enabled,
         );
         pango_layout.set_font_description(saved_font.as_ref());
         self.tab_bar_layouts.insert(bar.id, (rect, resolved_layout));
@@ -3783,6 +3841,50 @@ impl Backend for GtkBackend {
             &mut surface,
             &self.current_theme,
             &style,
+        );
+        pango_layout.set_attributes(None);
+        pango_layout.set_font_description(saved_font.as_ref());
+        hits
+    }
+
+    /// [`Self::draw_context_menu`] plus an optional
+    /// [`crate::primitives::context_menu::ContextMenuGlyphs`] override for
+    /// the checked-item check mark and submenu pull-right arrow, honoured
+    /// in full here (unlike the trait default, which ignores `glyphs`).
+    fn draw_context_menu_with_glyphs(
+        &mut self,
+        menu: &crate::ContextMenu,
+        layout_arg: &crate::ContextMenuLayout,
+        glyphs: Option<&crate::primitives::context_menu::ContextMenuGlyphs>,
+    ) -> Vec<(QRect, crate::WidgetId)> {
+        // See draw_palette for why this happens before the frame borrow.
+        self.modal_stack.borrow_mut().mark_painted(&menu.id);
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_context_menu_with_glyphs called outside enter_frame_scope");
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        // Calls the shared paint directly (rather than through
+        // `crate::gtk::draw_context_menu`, whose public signature stays
+        // additive-only and so cannot take a live `&Style`) so this live
+        // backend path honours `Self::set_style` overrides.
+        let style = self.style();
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        let mut surface = crate::gtk::surface::CairoSurface {
+            cr,
+            layout: Some(pango_layout),
+            translucent_fill: true,
+        };
+        let hits = crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
+            menu,
+            layout_arg,
+            crate::accelerator::Platform::Linux,
+            &mut surface,
+            &self.current_theme,
+            &style,
+            glyphs,
+            nerd_fonts_enabled,
         );
         pango_layout.set_attributes(None);
         pango_layout.set_font_description(saved_font.as_ref());
@@ -7862,6 +7964,73 @@ mod tests {
         );
     }
 
+    /// `draw_tab_bar_with_chrome_and_glyphs`'s `TabBarGlyphs` override
+    /// replaces the close-button glyph; `None` and an empty override (no
+    /// fields set) must paint byte-identical to each other, and a
+    /// populated `with_close_glyph` override must visibly change the
+    /// painted ink.
+    #[test]
+    fn gtk_backend_draw_tab_bar_honors_close_glyph_override() {
+        const W: i32 = 300;
+        const H: i32 = 40;
+
+        let bar = TabBar {
+            id: WidgetId::new("test:tabs-glyphs"),
+            tabs: vec![crate::primitives::tab_bar::TabItem {
+                label: "main.rs".to_string(),
+                is_active: true,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: true,
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+        let chrome =
+            crate::primitives::tab_bar::TabChrome::new(crate::primitives::tab_bar::TabFrame::None);
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let render = |glyphs: Option<&crate::TabBarGlyphs>| {
+            let mut surface =
+                pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                    .expect("create ImageSurface");
+            {
+                let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.paint().ok();
+                let pango_ctx = pangocairo::functions::create_context(&cr);
+                pango_ctx.set_font_description(&pango::FontDescription::from_string("Sans 8"));
+                let layout = pango::Layout::new(&pango_ctx);
+                let mut backend = GtkBackend::new();
+                Backend::set_current_line_height(&mut backend, 20.0);
+                backend.enter_frame_scope(&cr, &layout, |b| {
+                    b.draw_tab_bar_with_chrome_and_glyphs(rect, &bar, None, &chrome, glyphs);
+                });
+            }
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data");
+            data[..(H as usize) * stride].to_vec()
+        };
+
+        let default_pixels = render(None);
+        let empty_override_pixels = render(Some(&crate::TabBarGlyphs::new()));
+        assert_eq!(
+            default_pixels, empty_override_pixels,
+            "an empty TabBarGlyphs override must paint byte-identical to None"
+        );
+
+        let overridden = crate::TabBarGlyphs::new().with_close_glyph("X");
+        let override_pixels = render(Some(&overridden));
+        assert_ne!(
+            default_pixels, override_pixels,
+            "a close_glyph override must change the painted close-button glyph"
+        );
+    }
+
     #[test]
     fn gtk_backend_draw_tree_uses_ui_font_not_editor_font() {
         let small_editor_font = pango::FontDescription::from_string("Sans 8");
@@ -8039,6 +8208,79 @@ mod tests {
             xs(&measured),
             xs(&painted),
             "data_table_layout must measure with the same chrome font draw_data_table paints with"
+        );
+    }
+
+    /// `draw_data_table_with_glyphs`'s `DataTableGlyphs` override replaces
+    /// the header's sort-direction glyph; `None` and an empty override
+    /// (no fields set) must paint byte-identical to each other, and a
+    /// populated `sort_ascending_glyph` override must visibly change the
+    /// painted header ink.
+    #[test]
+    fn gtk_backend_draw_data_table_honors_sort_glyph_override() {
+        const W: i32 = 400;
+        const H: i32 = 100;
+
+        let header_pixels = |glyphs: Option<&crate::DataTableGlyphs>| {
+            let mut surface =
+                pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                    .expect("create ImageSurface");
+            let table = crate::DataTable {
+                id: WidgetId::new("test:data-table-glyphs"),
+                columns: vec![crate::Column {
+                    title: String::new(),
+                    width: crate::ColumnWidth::Flex(1.0),
+                    align: crate::ColumnAlign::Left,
+                }],
+                rows: vec![],
+                selected_idx: None,
+                scroll_offset: 0,
+                sort: Some((0, crate::SortDirection::Ascending)),
+                has_focus: false,
+                show_scrollbar: false,
+                min_total_width: None,
+                h_scroll: 0.0,
+                column_overrides: vec![],
+                footer: None,
+            };
+            let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+            let header_height;
+            {
+                let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.paint().ok();
+                let pango_ctx = pangocairo::functions::create_context(&cr);
+                pango_ctx.set_font_description(&pango::FontDescription::from_string("Sans 8"));
+                let layout = pango::Layout::new(&pango_ctx);
+                let mut backend = GtkBackend::new();
+                Backend::set_current_line_height(&mut backend, 20.0);
+                let mut painted = None;
+                backend.enter_frame_scope(&cr, &layout, |b| {
+                    painted = Some(b.draw_data_table_with_glyphs(rect, &table, None, glyphs));
+                });
+                header_height = painted
+                    .expect("draw_data_table_with_glyphs ran")
+                    .header_height;
+            }
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data");
+            let rows = (header_height.ceil() as usize).max(1);
+            data[..rows * stride].to_vec()
+        };
+
+        let default_pixels = header_pixels(None);
+        let empty_override_pixels = header_pixels(Some(&crate::DataTableGlyphs::new()));
+        assert_eq!(
+            default_pixels, empty_override_pixels,
+            "an empty DataTableGlyphs override must paint byte-identical to None"
+        );
+
+        let overridden = crate::DataTableGlyphs::new().with_sort_ascending_glyph("^");
+        let override_pixels = header_pixels(Some(&overridden));
+        assert_ne!(
+            default_pixels, override_pixels,
+            "a sort_ascending_glyph override must change the painted header glyph"
         );
     }
 
@@ -8511,6 +8753,77 @@ mod tests {
             ui_font_extent > small_editor_extent + 20,
             "changing ui_font alone must visibly widen the painted item label: \
              default_ui_font={small_editor_extent}, ui_font_Sans_40={ui_font_extent}"
+        );
+    }
+
+    /// `draw_context_menu_with_glyphs`'s `ContextMenuGlyphs` override
+    /// replaces the checked-item check-mark glyph; `None` and an empty
+    /// override (no fields set) must paint byte-identical to each other,
+    /// and a populated `with_checked_glyph` override must visibly change
+    /// the painted ink.
+    #[test]
+    fn gtk_backend_draw_context_menu_honors_checked_glyph_override() {
+        const W: i32 = 300;
+        const H: i32 = 40;
+        const ITEM_H: f32 = 40.0;
+
+        let menu = crate::ContextMenu {
+            id: WidgetId::new("test:menu-glyphs"),
+            items: vec![crate::primitives::context_menu::ContextMenuItem {
+                id: Some(WidgetId::new("test:menu-glyphs:item")),
+                label: crate::types::StyledText::plain("Word Wrap".to_string()),
+                checked: Some(true),
+                ..Default::default()
+            }],
+            selected_idx: 1,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+        };
+        let viewport = crate::event::Rect::new(0.0, 0.0, W as f32, H as f32);
+        let menu_layout = menu.layout_at(
+            crate::event::Rect::new(0.0, 0.0, 0.0, 0.0),
+            viewport,
+            W as f32,
+            |_| crate::primitives::context_menu::ContextMenuItemMeasure::new(ITEM_H),
+        );
+
+        let render = |glyphs: Option<&crate::primitives::context_menu::ContextMenuGlyphs>| {
+            let mut surface =
+                pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                    .expect("create ImageSurface");
+            {
+                let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.paint().ok();
+                let pango_ctx = pangocairo::functions::create_context(&cr);
+                pango_ctx.set_font_description(&pango::FontDescription::from_string("Sans 8"));
+                let layout = pango::Layout::new(&pango_ctx);
+                let mut backend = GtkBackend::new();
+                backend.enter_frame_scope(&cr, &layout, |b| {
+                    b.draw_context_menu_with_glyphs(&menu, &menu_layout, glyphs);
+                });
+            }
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data");
+            data[..(H as usize) * stride].to_vec()
+        };
+
+        let default_pixels = render(None);
+        let empty_override_pixels = render(Some(
+            &crate::primitives::context_menu::ContextMenuGlyphs::new(),
+        ));
+        assert_eq!(
+            default_pixels, empty_override_pixels,
+            "an empty ContextMenuGlyphs override must paint byte-identical to None"
+        );
+
+        let overridden =
+            crate::primitives::context_menu::ContextMenuGlyphs::new().with_checked_glyph("X");
+        let override_pixels = render(Some(&overridden));
+        assert_ne!(
+            default_pixels, override_pixels,
+            "a checked_glyph override must change the painted check-mark glyph"
         );
     }
 

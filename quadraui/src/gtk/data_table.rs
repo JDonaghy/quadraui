@@ -30,6 +30,44 @@ pub fn draw_data_table(
     line_height: f64,
     hovered_idx: Option<usize>,
 ) -> DataTableLayout {
+    draw_data_table_with_glyphs(
+        cr,
+        pango_layout,
+        x,
+        y,
+        width,
+        height,
+        table,
+        theme,
+        line_height,
+        hovered_idx,
+        None,
+        false,
+    )
+}
+
+/// Identical to [`draw_data_table`], plus an optional
+/// [`crate::primitives::data_table::DataTableGlyphs`] override for the
+/// header's sort-direction glyph and the `nerd_fonts_enabled` flag (see
+/// [`crate::Backend::nerd_fonts_enabled`]) that selects each override
+/// [`crate::primitives::Icon`]'s `glyph` vs. `fallback` form. `glyphs: None`
+/// (what [`draw_data_table`] passes) renders byte-for-byte the same as
+/// today's codicon defaults.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_data_table_with_glyphs(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    table: &DataTable,
+    theme: &Theme,
+    line_height: f64,
+    hovered_idx: Option<usize>,
+    glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
+    nerd_fonts_enabled: bool,
+) -> DataTableLayout {
     pango_layout.set_attributes(None);
     let measure = super::toolbar::PangoMeasure {
         pango_layout: Some(pango_layout),
@@ -76,15 +114,30 @@ pub fn draw_data_table(
     bold_icon_font.set_weight(pango::Weight::Bold);
     let bold_icon_font = super::with_nerd_font_fallback(&bold_icon_font);
 
+    // Resolved once, outside the per-column loop below — these two
+    // values are constant across the whole header row.
+    let sort_ascending_glyph: std::borrow::Cow<'_, str> = glyphs
+        .and_then(crate::primitives::data_table::DataTableGlyphs::sort_ascending_glyph)
+        .map(|icon| std::borrow::Cow::Borrowed(icon.resolve(nerd_fonts_enabled)))
+        .unwrap_or(std::borrow::Cow::Owned(
+            crate::codicon::SORT_ASCENDING.to_string(),
+        ));
+    let sort_descending_glyph: std::borrow::Cow<'_, str> = glyphs
+        .and_then(crate::primitives::data_table::DataTableGlyphs::sort_descending_glyph)
+        .map(|icon| std::borrow::Cow::Borrowed(icon.resolve(nerd_fonts_enabled)))
+        .unwrap_or(std::borrow::Cow::Owned(
+            crate::codicon::SORT_DESCENDING.to_string(),
+        ));
+
     for (col_idx, rc) in layout.columns.iter().enumerate() {
         if col_idx >= table.columns.len() || rc.width <= 0.0 {
             break;
         }
         let col = &table.columns[col_idx];
-        let sort_glyph = match &table.sort {
+        let sort_glyph: Option<&str> = match &table.sort {
             Some((si, dir)) if *si == col_idx => Some(match dir {
-                SortDirection::Ascending => crate::codicon::SORT_ASCENDING,
-                SortDirection::Descending => crate::codicon::SORT_DESCENDING,
+                SortDirection::Ascending => sort_ascending_glyph.as_ref(),
+                SortDirection::Descending => sort_descending_glyph.as_ref(),
             }),
             _ => None,
         };
