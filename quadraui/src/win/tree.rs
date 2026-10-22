@@ -650,6 +650,68 @@ mod tests {
             "the measured boundary itself must still resolve to the chevron hit region",
         );
     }
+
+    /// An app-supplied `TreeStyle` chevron override is painted verbatim;
+    /// leaving `TreeStyle::default()`'s `"▾"`/`"▸"` paints the sharper
+    /// codicon substitute instead — see `draw_tree`'s "Chevrons" doc and
+    /// `tree::tree_chevron_glyph`.
+    #[test]
+    fn chevron_override_paints_app_glyph_default_paints_codicon() {
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        let mut overridden = make_tree(vec![branch(0, "src", true)]);
+        overridden.style.chevron_expanded = "V".to_string();
+
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let previous = crate::testing::install_text_run_sink();
+        surface
+            .paint(|target| {
+                draw_tree(
+                    target,
+                    &dwrite,
+                    rect,
+                    &overridden,
+                    LINE_HEIGHT,
+                    false,
+                    &Theme::default(),
+                );
+            })
+            .expect("paint with chevron override");
+        let runs = crate::testing::take_text_run_sink(previous);
+        assert!(
+            runs.iter().any(|r| r.text == "V"),
+            "expected the overridden chevron glyph among painted runs, got {:?}",
+            runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+        );
+        assert!(!runs
+            .iter()
+            .any(|r| r.text.contains(crate::codicon::CHEVRON_DOWN)));
+
+        let default_tree = make_tree(vec![branch(0, "src", true)]);
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let previous = crate::testing::install_text_run_sink();
+        surface
+            .paint(|target| {
+                draw_tree(
+                    target,
+                    &dwrite,
+                    rect,
+                    &default_tree,
+                    LINE_HEIGHT,
+                    false,
+                    &Theme::default(),
+                );
+            })
+            .expect("paint with default style");
+        let runs = crate::testing::take_text_run_sink(previous);
+        assert!(
+            runs.iter()
+                .any(|r| r.text.contains(crate::codicon::CHEVRON_DOWN)),
+            "expected the default codicon chevron glyph among painted runs, got {:?}",
+            runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+        );
+    }
 }
 
 /// Multi-select click wiring over [`crate::win::testing::WinDriver`].

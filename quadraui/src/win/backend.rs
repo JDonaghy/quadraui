@@ -63,7 +63,7 @@ use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Key, ListView, Modifiers, Palette, StatusBar, TabBar,
-    TabBarLayout, Terminal, TextDisplay, TooltipChrome, TreeView, UserPayload,
+    TabBarLayout, TabChrome, Terminal, TextDisplay, TooltipChrome, TreeView, UserPayload,
 };
 #[cfg(target_os = "windows")]
 use crate::{FieldKind, Theme};
@@ -2709,6 +2709,37 @@ impl Backend for WinBackend {
         )
     }
 
+    /// [`Self::draw_data_table`], but honouring an optional
+    /// [`crate::primitives::data_table::DataTableGlyphs`] override for the
+    /// sort-direction glyphs — `glyphs: None` reproduces
+    /// [`Self::draw_data_table`] exactly.
+    fn draw_data_table_with_glyphs(
+        &mut self,
+        rect: Rect,
+        table: &crate::DataTable,
+        hovered_idx: Option<usize>,
+        glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
+    ) -> crate::DataTableLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            let nerd_fonts = self.nerd_fonts_enabled;
+            return super::data_table::draw_data_table_with_glyphs(
+                &surface.target,
+                dwrite,
+                rect,
+                table,
+                self.current_line_height,
+                hovered_idx,
+                glyphs,
+                nerd_fonts,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = glyphs;
+        self.draw_data_table(rect, table, hovered_idx)
+    }
+
     /// Pure measurement — only needs `self.dwrite`, not a live
     /// render target. See [`Self::status_bar_layout`]'s doc. Prefers
     /// `chrome_dwrite`, matching [`Self::draw_data_table`]'s paint font
@@ -3176,6 +3207,44 @@ impl Backend for WinBackend {
             bar,
             icons,
         )
+    }
+
+    /// [`Self::draw_tab_bar_icons`], but honouring an optional
+    /// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
+    /// close/dirty mark — `glyphs: None` reproduces
+    /// [`Self::draw_tab_bar_icons`] exactly. `chrome` is unused: the
+    /// Windows rasteriser has no bracket-chrome support (see
+    /// `super::tab_bar`'s module doc), matching the trait default's
+    /// own posture of ignoring `chrome` on backends without it.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+    fn draw_tab_bar_with_chrome_and_glyphs(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        chrome: &TabChrome,
+        glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
+    ) -> TabBarHits {
+        let _ = chrome;
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            let nerd_fonts = self.nerd_fonts_enabled;
+            return super::tab_bar::draw_tab_bar_icons_with_glyphs(
+                &surface.target,
+                dwrite,
+                rect,
+                bar,
+                &[],
+                hovered_close_tab,
+                &self.current_theme,
+                glyphs,
+                nerd_fonts,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = glyphs;
+        self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
     }
 
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
@@ -3724,6 +3793,41 @@ impl Backend for WinBackend {
             .filter(|vis| vis.clickable)
             .filter_map(|vis| menu.items[vis.item_idx].id.map(|id| (vis.bounds, id)))
             .collect()
+    }
+
+    /// [`Self::draw_context_menu`], but honouring an optional
+    /// [`crate::primitives::context_menu::ContextMenuGlyphs`] override for
+    /// the check-mark / submenu-arrow glyphs — `glyphs: None` reproduces
+    /// [`Self::draw_context_menu`] exactly.
+    fn draw_context_menu_with_glyphs(
+        &mut self,
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
+        glyphs: Option<&crate::primitives::context_menu::ContextMenuGlyphs>,
+    ) -> Vec<(Rect, WidgetId)> {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            let style = self.style();
+            let nerd_fonts = self.nerd_fonts_enabled;
+            let mut surf = super::surface::D2dSurface {
+                target: &surface.target,
+                dwrite: Some(dwrite),
+            };
+            return crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
+                menu,
+                layout,
+                crate::accelerator::Platform::Windows,
+                &mut surf,
+                &self.current_theme,
+                &style,
+                glyphs,
+                nerd_fonts,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = glyphs;
+        self.draw_context_menu(menu, layout)
     }
 
     /// Real Direct2D/DirectWrite rasteriser via `win::dialog` once a

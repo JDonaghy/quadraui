@@ -20,6 +20,8 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use crate::event::Rect;
 use crate::primitives::data_table::DataTable;
+#[cfg(target_os = "windows")]
+use crate::primitives::data_table::DataTableGlyphs;
 use crate::primitives::layout_metrics::{pixel_data_table_layout, TextMeasure};
 #[cfg(target_os = "windows")]
 use crate::theme::Theme;
@@ -69,6 +71,40 @@ pub fn draw_data_table(
         rect,
         line_height,
         hovered_idx,
+    )
+}
+
+/// Identical to [`draw_data_table`], plus an optional [`DataTableGlyphs`]
+/// override for the sort-direction glyphs and the `nerd_fonts_enabled`
+/// flag that selects each override [`crate::types::Icon`]'s `glyph` vs.
+/// `fallback` form. `glyphs: None` renders byte-for-byte the same as
+/// [`draw_data_table`].
+#[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
+pub fn draw_data_table_with_glyphs(
+    target: &ID2D1RenderTarget,
+    dwrite: &super::text::DWrite,
+    rect: Rect,
+    table: &DataTable,
+    line_height: f32,
+    hovered_idx: Option<usize>,
+    glyphs: Option<&DataTableGlyphs>,
+    nerd_fonts_enabled: bool,
+) -> DataTableLayout {
+    let theme = Theme::default();
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    crate::primitives::data_table::native_surface_paint::paint_with_glyphs(
+        table,
+        &mut surface,
+        &theme,
+        rect,
+        line_height,
+        hovered_idx,
+        glyphs,
+        nerd_fonts_enabled,
     )
 }
 
@@ -253,6 +289,69 @@ mod tests {
             found_red,
             "footer 'Total' span should paint in its own red fg, not \
              the pre-#1084 whole-cell `theme.foreground`"
+        );
+    }
+
+    /// An app-supplied [`DataTableGlyphs`] override swaps the sort-direction
+    /// glyph the Windows rasteriser paints; with `glyphs: None`,
+    /// [`draw_data_table_with_glyphs`] paints the same codicon default as
+    /// [`draw_data_table`].
+    #[test]
+    fn sort_glyph_override_paints_app_glyph_default_paints_codicon() {
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let mut t = table(vec![row("a.txt", "1kb")]);
+        t.sort = Some((0, crate::primitives::data_table::SortDirection::Ascending));
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        let glyphs = DataTableGlyphs::new().with_sort_ascending_glyph("^");
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let previous = crate::testing::install_text_run_sink();
+        surface
+            .paint(|target| {
+                draw_data_table_with_glyphs(
+                    target,
+                    &dwrite,
+                    rect,
+                    &t,
+                    LINE_HEIGHT,
+                    None,
+                    Some(&glyphs),
+                    true,
+                );
+            })
+            .expect("paint with glyph override");
+        let runs = crate::testing::take_text_run_sink(previous);
+        assert!(
+            runs.iter().any(|r| r.text.contains("Name ^")),
+            "expected the overridden sort glyph among painted runs, got {:?}",
+            runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+        );
+        assert!(!runs
+            .iter()
+            .any(|r| r.text.contains(crate::codicon::SORT_ASCENDING)));
+
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let previous = crate::testing::install_text_run_sink();
+        surface
+            .paint(|target| {
+                draw_data_table_with_glyphs(
+                    target,
+                    &dwrite,
+                    rect,
+                    &t,
+                    LINE_HEIGHT,
+                    None,
+                    None,
+                    true,
+                );
+            })
+            .expect("paint with no override");
+        let runs = crate::testing::take_text_run_sink(previous);
+        assert!(
+            runs.iter()
+                .any(|r| r.text.contains(crate::codicon::SORT_ASCENDING)),
+            "expected the default codicon sort glyph among painted runs, got {:?}",
+            runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
         );
     }
 }
