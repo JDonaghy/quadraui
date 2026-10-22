@@ -3685,6 +3685,21 @@ impl Backend for GtkBackend {
         self.register_zone(combo_box.id, layout.field_bounds);
     }
 
+    fn draw_date_picker(
+        &mut self,
+        date_picker: &crate::primitives::date_picker::DatePicker,
+        layout: &crate::primitives::date_picker::DatePickerLayout,
+    ) {
+        let theme = self.current_theme;
+        crate::primitives::date_picker::native_surface_paint::paint(
+            date_picker,
+            layout,
+            self,
+            &theme,
+        );
+        self.register_zone(date_picker.id, layout.bounds());
+    }
+
     fn draw_tooltip(&mut self, tooltip: &crate::Tooltip, layout_arg: &crate::TooltipLayout) {
         self.draw_tooltip_with_chrome(tooltip, layout_arg, &crate::TooltipChrome::default());
     }

@@ -60,6 +60,22 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `Backend::draw_date_picker(&mut self, date_picker: &DatePicker, layout: &DatePickerLayout)`
+  rasterises `DatePicker`'s month grid (header, prev/next controls, 42-day
+  grid with focus/selection styling) and optional time field. TUI
+  (`tui::date_picker`) and GTK (shared
+  `primitives::date_picker::native_surface_paint::paint`, reached through
+  `gtk::backend`) are implemented; macOS and Win-GUI compile against the
+  new trait method (per-backend rasterisation tracked separately). New
+  trait method with no default, per `PRIMITIVE_RULES.md` rule 7 — no
+  consumer hits (`grep -rn 'draw_date_picker' ~/src/coord-tui/src
+  ~/src/vimcode/src` returns nothing), so this is additive, not breaking.
+- `SelectionMode::Multi` is wired into GTK's `List`, `Tree` and
+  `DataTable` event handling: a plain click replaces the selection,
+  Ctrl/Cmd-click toggles the clicked row, and Shift-click selects the
+  range from the last anchor, via the shared
+  `types::apply_selection_gesture` seam. Covered by `GtkDriver`-based
+  tests in each primitive's own module.
 - `ScreenLayout::tree_frame` returns each pushed `Surface::Tree`'s geometry
   as `(Handle<TreeView>, Rect)` pairs, backed internally by
   `DescriptorStore<TreeView>`. On a retained `ScreenLayout` kept across

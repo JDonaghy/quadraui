@@ -28,24 +28,24 @@
 
 use quadraui::{
     compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, Anchor, AppLogic, Backend,
-    BadgeStatus, BoardCard, BoardColumn, BoardModel, Button, Canvas, CardBadge, Chart, ChartKind,
-    Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter, CommandLine, CompletionItem,
-    CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem, ContextMenuItemMeasure,
-    ContextMenuPlacement, DataRow, DataTable, Decoration, Dialog, DialogButton, DialogMeasure,
-    DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, DropOverlay, Editor, EditorCursor,
-    EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan, FieldKind,
-    FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField, Image, ImageFit, ImageSource,
-    InteractionState, ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap,
-    MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette, PaletteItem, PaletteMode, Panel,
-    PipelineStage, PipelineView, PopupPlacement, ProgressBar, RadioGroup, RadioOption, Reaction,
-    Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section,
-    SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side, SidebarPanel, Spinner,
-    Split, SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan,
-    StyledText, Switch, TabBar, TabChrome, TabFrame, TabIcon, TabItem, Terminal, TerminalCell,
-    TextDisplay, TextDisplayLine, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity,
-    Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarPaintOptions, ToolbarVAlign, Tooltip,
-    TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView,
-    UiEvent, WidgetId,
+    BadgeStatus, BoardCard, BoardColumn, BoardModel, Button, CalendarDate, Canvas, CardBadge,
+    Chart, ChartKind, Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter,
+    CommandLine, CompletionItem, CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem,
+    ContextMenuItemMeasure, ContextMenuPlacement, DataRow, DataTable, DatePicker, Decoration,
+    Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp,
+    DropOverlay, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
+    EditorStyledSpan, FieldKind, FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField,
+    Image, ImageFit, ImageSource, InteractionState, ListItem, ListView, MenuBar, MenuBarItem,
+    MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette,
+    PaletteItem, PaletteMode, Panel, PipelineStage, PipelineView, PopupPlacement, ProgressBar,
+    RadioGroup, RadioOption, Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis,
+    ScrollMode, Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series,
+    Side, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StageStatus, StatusBar,
+    StatusBarSegment, StyledSpan, StyledText, Switch, TabBar, TabChrome, TabFrame, TabIcon,
+    TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, Toast, ToastCorner,
+    ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarPaintOptions,
+    ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
+    TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -1451,6 +1451,18 @@ pub const CASES: &[Case] = &[
                 CompletionItemMeasure::new(lh)
             });
             b.draw_combo_box(&combo_box, &layout);
+        },
+    },
+    Case {
+        method: "draw_date_picker",
+        needle: Some("2024-03"),
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            let date_picker = DatePicker::new(id("date-picker"), CalendarDate::new(2024, 3, 15));
+            let layout = date_picker.layout(0.0, 0.0, cw * 4.0, lh, lh, 0.0);
+            let _ = area;
+            b.draw_date_picker(&date_picker, &layout);
         },
     },
 ];
