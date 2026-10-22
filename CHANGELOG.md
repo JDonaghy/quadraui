@@ -86,6 +86,15 @@ only a push to `main` runs this workflow.
   confirming the same `types::apply_selection_gesture` seam round-trips on
   Windows. The gallery demo is deferred to the `DatePicker` gallery-page
   issue.
+- TUI delivery of `DatePicker` keyboard navigation and `SelectionMode::Multi`:
+  the `tui::date_picker` cell-grid rasteriser is driven keyboard-only (arrow
+  keys move within the month grid, page up/down change month, enter selects),
+  and List/Tree/DataTable gain keyboard multi-select since TUI has no mouse —
+  a plain Up/Down only moves the cursor, Shift+Up/Down extends a range from
+  the anchor via `SelectionGesture::from_modifiers`, and Space toggles the
+  cursor row without moving it, all through the shared
+  `types::apply_selection_gesture` seam. Verified by `TuiDriver`-based tests
+  in `tui::list`, `tui::tree` and `tui::data_table`.
 - `ScreenLayout::tree_frame` returns each pushed `Surface::Tree`'s geometry
   as `(Handle<TreeView>, Rect)` pairs, backed internally by
   `DescriptorStore<TreeView>`. On a retained `ScreenLayout` kept across
