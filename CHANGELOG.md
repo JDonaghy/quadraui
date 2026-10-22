@@ -75,6 +75,17 @@ only a push to `main` runs this workflow.
   range from the last anchor, via the shared
   `types::apply_selection_gesture` seam. Covered by `GtkDriver`-based
   tests in each primitive's own module.
+- Windows rasteriser for `DatePicker` (`quadraui::win::date_picker`): same
+  shape as the GTK rasteriser above — `Backend::draw_date_picker` delegates
+  entirely to the shared `primitives::date_picker::native_surface_paint::paint`,
+  so this module carries no production code of its own; keyboard
+  navigation (arrow keys, page up/down, enter-to-select) is covered by a
+  `WinDriver` test. `SelectionMode::Multi`'s Ctrl-click/Shift-range wiring,
+  already exercised on GTK above, is additionally covered by new
+  `WinDriver`-based tests in `win::list`, `win::tree` and `win::data_table`,
+  confirming the same `types::apply_selection_gesture` seam round-trips on
+  Windows. The gallery demo is deferred to the `DatePicker` gallery-page
+  issue.
 - `ScreenLayout::tree_frame` returns each pushed `Surface::Tree`'s geometry
   as `(Handle<TreeView>, Rect)` pairs, backed internally by
   `DescriptorStore<TreeView>`. On a retained `ScreenLayout` kept across
