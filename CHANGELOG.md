@@ -63,13 +63,12 @@ only a push to `main` runs this workflow.
 - `Backend::draw_date_picker(&mut self, date_picker: &DatePicker, layout: &DatePickerLayout)`
   rasterises `DatePicker`'s month grid (header, prev/next controls, 42-day
   grid with focus/selection styling) and optional time field. TUI
-  (`tui::date_picker`) and GTK (shared
-  `primitives::date_picker::native_surface_paint::paint`, reached through
-  `gtk::backend`) are implemented; macOS and Win-GUI compile against the
-  new trait method (per-backend rasterisation tracked separately). New
-  trait method with no default, per `PRIMITIVE_RULES.md` rule 7 — no
-  consumer hits (`grep -rn 'draw_date_picker' ~/src/coord-tui/src
-  ~/src/vimcode/src` returns nothing), so this is additive, not breaking.
+  (`tui::date_picker`) has its own cell-grid rasteriser; GTK, macOS and
+  Win-GUI all paint through the shared
+  `primitives::date_picker::native_surface_paint::paint`, each reached
+  through its own `Backend::draw_date_picker` impl. New trait method
+  with no default, per `PRIMITIVE_RULES.md` rule 7 — no hits in either
+  downstream consumer's source tree, so this is additive, not breaking.
 - `SelectionMode::Multi` is wired into GTK's `List`, `Tree` and
   `DataTable` event handling: a plain click replaces the selection,
   Ctrl/Cmd-click toggles the clicked row, and Shift-click selects the
@@ -118,6 +117,15 @@ only a push to `main` runs this workflow.
   dispatches inflate a single notch into ~14 rows of over-scroll.
 ### Fixed
 
+- `DatePicker`'s GTK/native rasteriser
+  (`primitives::date_picker::native_surface_paint::paint`) centers the
+  `YYYY-MM` header label between the prev/next controls instead of
+  left-aligning it at the header's origin, where it collided with the
+  `<` glyph. `tui::date_picker`'s day-cell focus ring and time-field
+  border no longer overwrite the digits/text they decorate: both now go
+  through `fill_text_with_ring`, which insets the text by one column so
+  the ring's corner glyphs land on blank cells, falling back to reverse
+  video when a cell is too narrow to spare the inset columns.
 - Win-GUI `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` handling forwards every
   message's delta immediately and in full, with no per-axis accumulation
   or gating on a full `WHEEL_DELTA` notch: a high-resolution wheel or

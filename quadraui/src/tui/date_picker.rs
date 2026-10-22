@@ -43,7 +43,14 @@ fn fill_text_aligned(
     let h = rect.height.round() as u16;
     for row in 0..h {
         for col in 0..w {
-            set_cell(buf, x0 + col, y0 + row, ' ', fg, bg);
+            set_cell(
+                buf,
+                x0.saturating_add(col),
+                y0.saturating_add(row),
+                ' ',
+                fg,
+                bg,
+            );
         }
     }
     let len = text.chars().count() as u16;
@@ -57,7 +64,14 @@ fn fill_text_aligned(
         .take(w.saturating_sub(start) as usize)
         .enumerate()
     {
-        set_cell(buf, x0 + start + i as u16, y0, ch, fg, bg);
+        set_cell(
+            buf,
+            x0.saturating_add(start).saturating_add(i as u16),
+            y0,
+            ch,
+            fg,
+            bg,
+        );
     }
 }
 
@@ -74,8 +88,8 @@ fn stroke_corners(
     if w == 0 || h == 0 {
         return;
     }
-    let x1 = x0 + w.saturating_sub(1);
-    let y1 = y0 + h.saturating_sub(1);
+    let x1 = x0.saturating_add(w.saturating_sub(1));
+    let y1 = y0.saturating_add(h.saturating_sub(1));
     set_cell(buf, x0, y0, '┌', fg, bg);
     if x1 != x0 {
         set_cell(buf, x1, y0, '┐', fg, bg);
@@ -84,6 +98,64 @@ fn stroke_corners(
         set_cell(buf, x0, y1, '└', fg, bg);
         if x1 != x0 {
             set_cell(buf, x1, y1, '┘', fg, bg);
+        }
+    }
+}
+
+/// Fill `rect` with `bg` and draw `text`, left-aligned on the first row.
+/// When `ring` is `Some`, a border/focus ring is also drawn around `rect`
+/// using [`stroke_corners`] — but never on top of the text. The text is
+/// inset by one column on each side so the ring's corner glyphs land on
+/// blank cells instead of overwriting digits; when `rect` is too narrow
+/// to spare those columns, the ring falls back to reverse video over the
+/// text instead of destroying it.
+fn fill_text_with_ring(
+    buf: &mut Buffer,
+    rect: crate::event::Rect,
+    text: &str,
+    fg: ratatui::style::Color,
+    bg: ratatui::style::Color,
+    ring: Option<ratatui::style::Color>,
+) {
+    let x0 = rect.x.round() as u16;
+    let y0 = rect.y.round() as u16;
+    let w = rect.width.round() as u16;
+    let h = rect.height.round() as u16;
+    for row in 0..h {
+        for col in 0..w {
+            set_cell(
+                buf,
+                x0.saturating_add(col),
+                y0.saturating_add(row),
+                ' ',
+                fg,
+                bg,
+            );
+        }
+    }
+    let len = text.chars().count() as u16;
+    let has_inset_ring = ring.is_some() && w >= 3 && w >= len.saturating_add(2);
+    let text_start = u16::from(has_inset_ring);
+    let text_w = if has_inset_ring { w - 2 } else { w };
+    for (i, ch) in text.chars().take(text_w as usize).enumerate() {
+        set_cell(
+            buf,
+            x0.saturating_add(text_start).saturating_add(i as u16),
+            y0,
+            ch,
+            fg,
+            bg,
+        );
+    }
+    if let Some(ring_fg) = ring {
+        if has_inset_ring {
+            stroke_corners(buf, rect, ring_fg, bg);
+        } else if w > 0 && h > 0 {
+            // No spare columns to draw a non-destructive ring into —
+            // indicate focus/border with reverse video instead.
+            for (i, ch) in text.chars().take(w as usize).enumerate() {
+                set_cell(buf, x0.saturating_add(i as u16), y0, ch, bg, ring_fg);
+            }
         }
     }
 }
@@ -134,10 +206,15 @@ pub fn draw_date_picker(
         } else {
             muted_fg
         };
-        fill_text(buf, cell.bounds, &cell.date.day.to_string(), fg, cell_bg);
-        if cell.is_focused {
-            stroke_corners(buf, cell.bounds, accent_fg, cell_bg);
-        }
+        let ring = cell.is_focused.then_some(accent_fg);
+        fill_text_with_ring(
+            buf,
+            cell.bounds,
+            &cell.date.day.to_string(),
+            fg,
+            cell_bg,
+            ring,
+        );
     }
 
     if let Some(time) = layout.time_bounds {
@@ -145,8 +222,7 @@ pub fn draw_date_picker(
             let input_bg = super::qc(theme.input_bg);
             let border_fg = super::qc(theme.border_fg);
             let text = date_picker.time.map(|t| t.format()).unwrap_or_default();
-            fill_text(buf, time, &text, surface_fg, input_bg);
-            stroke_corners(buf, time, border_fg, input_bg);
+            fill_text_with_ring(buf, time, &text, surface_fg, input_bg, Some(border_fg));
         }
     }
 }
@@ -191,15 +267,15 @@ mod tests {
             .iter()
             .find(|c| c.is_focused)
             .expect("focused day is in the grid");
-        // Focused day's top-left corner gets the focus-ring glyph.
-        assert_eq!(
-            cell_char(
-                &buf,
-                focused_cell.bounds.x as u16,
-                focused_cell.bounds.y as u16
-            ),
-            '┌'
-        );
+        let fx = focused_cell.bounds.x as u16;
+        let fy = focused_cell.bounds.y as u16;
+        // Focused day's top-left corner gets the focus-ring glyph, but the
+        // digits it decorates stay readable: they are inset by one column
+        // so the ring glyph never overwrites them.
+        assert_eq!(cell_char(&buf, fx, fy), '┌');
+        for (i, ch) in focused_cell.date.day.to_string().chars().enumerate() {
+            assert_eq!(cell_char(&buf, fx + 1 + i as u16, fy), ch);
+        }
 
         let p = Rect::new(focused_cell.bounds.x + 1.0, focused_cell.bounds.y, 0.0, 0.0);
         assert_eq!(
