@@ -126,7 +126,6 @@ mod tests {
         use crate::backend::Backend;
         use crate::primitives::context_menu::ContextMenuGlyphs;
         use crate::win::backend::WinBackend;
-        use crate::win::testing::HeadlessSurface;
 
         const W: u32 = 200;
         const H: u32 = 100;
@@ -152,9 +151,8 @@ mod tests {
             backend.set_painted_text_recording(true);
             backend.begin_frame(crate::event::Viewport::new(W as f32, H as f32, 1.0));
             let _ = backend.draw_context_menu_with_glyphs(&m, &layout, glyphs);
-            let runs = backend.text_runs().to_vec();
             backend.end_frame();
-            runs
+            backend.text_runs().to_vec()
         };
 
         let glyphs = ContextMenuGlyphs::new()

@@ -2723,7 +2723,6 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            let nerd_fonts = self.nerd_fonts_enabled;
             return super::data_table::draw_data_table_with_glyphs(
                 &surface.target,
                 dwrite,
@@ -2732,7 +2731,7 @@ impl Backend for WinBackend {
                 self.current_line_height,
                 hovered_idx,
                 glyphs,
-                nerd_fonts,
+                self.nerd_fonts_enabled,
             );
         }
         #[cfg(not(target_os = "windows"))]
@@ -3229,7 +3228,6 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            let nerd_fonts = self.nerd_fonts_enabled;
             return super::tab_bar::draw_tab_bar_icons_with_glyphs(
                 &surface.target,
                 dwrite,
@@ -3239,7 +3237,7 @@ impl Backend for WinBackend {
                 hovered_close_tab,
                 &self.current_theme,
                 glyphs,
-                nerd_fonts,
+                self.nerd_fonts_enabled,
             );
         }
         #[cfg(not(target_os = "windows"))]
@@ -3809,7 +3807,6 @@ impl Backend for WinBackend {
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             let style = self.style();
-            let nerd_fonts = self.nerd_fonts_enabled;
             let mut surf = super::surface::D2dSurface {
                 target: &surface.target,
                 dwrite: Some(dwrite),
@@ -3822,7 +3819,7 @@ impl Backend for WinBackend {
                 &self.current_theme,
                 &style,
                 glyphs,
-                nerd_fonts,
+                self.nerd_fonts_enabled,
             );
         }
         #[cfg(not(target_os = "windows"))]
