@@ -1,185 +1,298 @@
-//! TUI rasteriser for [`crate::primitives::date_picker::DatePicker`].
+//! TUI rasteriser for [`crate::DatePicker`].
 //!
-//! Paints a one-row month/year header with prev/next controls, a 7-column
-//! × 6-row day grid, and an optional one-row time field below. One TUI
-//! cell per day row/column — no sub-cell fractional painting, matching
-//! `board.rs`/`data_table.rs`'s cell-granular style.
+//! Paints the month/year header with prev/next controls, the 42-cell day
+//! grid (focus ring on `is_focused`, fill on `is_selected`, dimmed text for
+//! days outside `in_visible_month`), and — when `layout.time_bounds` is
+//! `Some` — the time field, mirroring
+//! [`crate::primitives::date_picker::native_surface_paint::paint`]'s pixel
+//! rasteriser but through direct cell writes, the same split
+//! [`crate::tui::combo_box`] uses against
+//! [`crate::primitives::combo_box::native_surface_paint::paint`].
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::Color as RatatuiColor;
 
-use super::{ratatui_color, set_cell};
+use super::set_cell;
 use crate::primitives::date_picker::{DatePicker, DatePickerLayout};
 use crate::theme::Theme;
 
-/// Row height in TUI cells for the header, each day row, and the time row.
-const TUI_DATE_PICKER_ROW_H: f32 = 1.0;
-
-/// Resolve the layout `draw_date_picker` paints `picker` at, without
-/// touching a buffer.
-///
-/// This is the **single** definition of TUI DatePicker geometry: both
-/// [`draw_date_picker`] and `Backend::date_picker_layout` go through it,
-/// so the layout a cache-free, layout-on-demand hit-test runs against is
-/// bit-for-bit the layout that was painted.
-pub fn tui_date_picker_layout(area: Rect, picker: &DatePicker) -> DatePickerLayout {
-    let cell_width = area.width as f32 / 7.0;
-    let time_height = if picker.time.is_some() {
-        TUI_DATE_PICKER_ROW_H
-    } else {
-        0.0
-    };
-    picker.layout(
-        area.x as f32,
-        area.y as f32,
-        cell_width,
-        TUI_DATE_PICKER_ROW_H,
-        TUI_DATE_PICKER_ROW_H,
-        time_height,
-    )
-}
-
-/// Fill one row of `rect` (clipped to `area`) with `bg`, so a selected or
-/// focused day cell's whole cell-width is tinted, not just the glyph.
-fn fill_row(buf: &mut Buffer, area: Rect, rect: crate::event::Rect, bg: RatatuiColor) {
-    let y = rect.y.round() as i32;
-    if y < area.y as i32 || y >= (area.y + area.height) as i32 {
-        return;
-    }
-    let x0 = rect.x.round() as i32;
-    let w = rect.width.round() as i32;
-    for dx in 0..w {
-        let cx = x0 + dx;
-        if cx >= area.x as i32 && cx < (area.x + area.width) as i32 {
-            set_cell(buf, cx as u16, y as u16, ' ', bg, bg);
-        }
-    }
-}
-
-/// Draw `text` left-aligned within one row of `rect`, clipped to `area`.
-fn draw_row_text(
+fn fill_text(
     buf: &mut Buffer,
-    area: Rect,
     rect: crate::event::Rect,
     text: &str,
-    fg: RatatuiColor,
-    bg: RatatuiColor,
+    fg: ratatui::style::Color,
+    bg: ratatui::style::Color,
 ) {
-    let y = rect.y.round() as i32;
-    if y < area.y as i32 || y >= (area.y + area.height) as i32 {
+    fill_text_aligned(buf, rect, text, fg, bg, false);
+}
+
+/// Fill `rect` with `bg` and draw `text`, either left-aligned (`centered =
+/// false`) or centered (`centered = true`). The header label is centered so
+/// it does not collide with the prev/next glyphs drawn into the header's
+/// edge columns.
+fn fill_text_aligned(
+    buf: &mut Buffer,
+    rect: crate::event::Rect,
+    text: &str,
+    fg: ratatui::style::Color,
+    bg: ratatui::style::Color,
+    centered: bool,
+) {
+    let x0 = rect.x.round() as u16;
+    let y0 = rect.y.round() as u16;
+    let w = rect.width.round() as u16;
+    let h = rect.height.round() as u16;
+    for row in 0..h {
+        for col in 0..w {
+            set_cell(
+                buf,
+                x0.saturating_add(col),
+                y0.saturating_add(row),
+                ' ',
+                fg,
+                bg,
+            );
+        }
+    }
+    let len = text.chars().count() as u16;
+    let start = if centered && len < w {
+        (w - len) / 2
+    } else {
+        0
+    };
+    for (i, ch) in text
+        .chars()
+        .take(w.saturating_sub(start) as usize)
+        .enumerate()
+    {
+        set_cell(
+            buf,
+            x0.saturating_add(start).saturating_add(i as u16),
+            y0,
+            ch,
+            fg,
+            bg,
+        );
+    }
+}
+
+fn stroke_corners(
+    buf: &mut Buffer,
+    rect: crate::event::Rect,
+    fg: ratatui::style::Color,
+    bg: ratatui::style::Color,
+) {
+    let x0 = rect.x.round() as u16;
+    let y0 = rect.y.round() as u16;
+    let w = rect.width.round() as u16;
+    let h = rect.height.round() as u16;
+    if w == 0 || h == 0 {
         return;
     }
-    let x0 = rect.x.round() as i32;
-    let w = rect.width.round() as i32;
-    for (i, ch) in text.chars().enumerate() {
-        let cx = x0 + i as i32;
-        if cx >= x0 + w {
-            break;
-        }
-        if cx >= area.x as i32 && cx < (area.x + area.width) as i32 {
-            set_cell(buf, cx as u16, y as u16, ch, fg, bg);
+    let x1 = x0.saturating_add(w.saturating_sub(1));
+    let y1 = y0.saturating_add(h.saturating_sub(1));
+    set_cell(buf, x0, y0, '┌', fg, bg);
+    if x1 != x0 {
+        set_cell(buf, x1, y0, '┐', fg, bg);
+    }
+    if y1 != y0 {
+        set_cell(buf, x0, y1, '└', fg, bg);
+        if x1 != x0 {
+            set_cell(buf, x1, y1, '┘', fg, bg);
         }
     }
 }
 
-/// Draw a [`DatePicker`] into `area`: month/year header with prev/next
-/// controls, the day grid, and the time row (when `picker.time` is
-/// `Some`). Returns the layout used for painting so callers can hit-test
-/// at the same coordinates.
+/// Fill `rect` with `bg` and draw `text`, left-aligned on the first row.
+/// When `ring` is `Some`, a border/focus ring is also drawn around `rect`
+/// using [`stroke_corners`] — but never on top of the text. The text is
+/// inset by one column on each side so the ring's corner glyphs land on
+/// blank cells instead of overwriting digits; when `rect` is too narrow
+/// to spare those columns, the ring falls back to reverse video over the
+/// text instead of destroying it.
+fn fill_text_with_ring(
+    buf: &mut Buffer,
+    rect: crate::event::Rect,
+    text: &str,
+    fg: ratatui::style::Color,
+    bg: ratatui::style::Color,
+    ring: Option<ratatui::style::Color>,
+) {
+    let x0 = rect.x.round() as u16;
+    let y0 = rect.y.round() as u16;
+    let w = rect.width.round() as u16;
+    let h = rect.height.round() as u16;
+    for row in 0..h {
+        for col in 0..w {
+            set_cell(
+                buf,
+                x0.saturating_add(col),
+                y0.saturating_add(row),
+                ' ',
+                fg,
+                bg,
+            );
+        }
+    }
+    let len = text.chars().count() as u16;
+    let has_inset_ring = ring.is_some() && w >= 3 && w >= len.saturating_add(2);
+    let text_start = u16::from(has_inset_ring);
+    let text_w = if has_inset_ring { w - 2 } else { w };
+    for (i, ch) in text.chars().take(text_w as usize).enumerate() {
+        set_cell(
+            buf,
+            x0.saturating_add(text_start).saturating_add(i as u16),
+            y0,
+            ch,
+            fg,
+            bg,
+        );
+    }
+    if let Some(ring_fg) = ring {
+        if has_inset_ring {
+            stroke_corners(buf, rect, ring_fg, bg);
+        } else if w > 0 && h > 0 {
+            // No spare columns to draw a non-destructive ring into —
+            // indicate focus/border with reverse video instead.
+            for (i, ch) in text.chars().take(w as usize).enumerate() {
+                set_cell(buf, x0.saturating_add(i as u16), y0, ch, bg, ring_fg);
+            }
+        }
+    }
+}
+
+/// Draw a [`DatePicker`] at its resolved `layout`.
 pub fn draw_date_picker(
     buf: &mut Buffer,
-    area: Rect,
-    picker: &DatePicker,
+    date_picker: &DatePicker,
+    layout: &DatePickerLayout,
     theme: &Theme,
-) -> DatePickerLayout {
-    let layout = tui_date_picker_layout(area, picker);
-
-    if area.width == 0 || area.height == 0 {
-        return layout;
-    }
-
-    let fg = ratatui_color(theme.foreground);
-    let muted_fg = ratatui_color(theme.muted_fg);
-    let accent_fg = ratatui_color(theme.accent_fg);
-    let accent_bg = ratatui_color(theme.accent_bg);
-    let bg = ratatui_color(theme.background);
-    let sel_bg = ratatui_color(theme.selection_bg);
+) {
+    let bg = ratatui::style::Color::Reset;
+    let header_fg = super::qc(theme.header_fg);
+    let header_bg = super::qc(theme.header_bg);
 
     if let Some(header) = layout.header_bounds {
-        let label = format!(
-            "{:04}-{:02}",
-            picker.visible_month.year, picker.visible_month.month
-        );
-        draw_row_text(buf, area, header, &label, fg, bg);
+        if header.width > 0.0 && header.height > 0.0 {
+            let label = format!(
+                "{:04}-{:02}",
+                date_picker.visible_month.year, date_picker.visible_month.month
+            );
+            fill_text_aligned(buf, header, &label, header_fg, header_bg, true);
+        }
     }
     if let Some(prev) = layout.prev_bounds {
-        draw_row_text(buf, area, prev, "<", muted_fg, bg);
+        if prev.width > 0.0 && prev.height > 0.0 {
+            fill_text(buf, prev, "<", header_fg, header_bg);
+        }
     }
     if let Some(next) = layout.next_bounds {
-        draw_row_text(buf, area, next, ">", muted_fg, bg);
+        if next.width > 0.0 && next.height > 0.0 {
+            fill_text(buf, next, ">", header_fg, header_bg);
+        }
     }
+
+    let selected_bg = super::qc(theme.selected_bg);
+    let accent_fg = super::qc(theme.accent_fg);
+    let surface_fg = super::qc(theme.surface_fg);
+    let muted_fg = super::qc(theme.muted_fg);
 
     for cell in &layout.day_cells {
         if cell.bounds.width <= 0.0 || cell.bounds.height <= 0.0 {
             continue;
         }
-        let cell_bg = if cell.is_selected {
-            accent_bg
-        } else if cell.is_focused && picker.has_focus {
-            sel_bg
+        let cell_bg = if cell.is_selected { selected_bg } else { bg };
+        let fg = if cell.in_visible_month {
+            surface_fg
         } else {
-            bg
-        };
-        let cell_fg = if cell.is_selected {
-            accent_fg
-        } else if !cell.in_visible_month {
             muted_fg
-        } else {
-            fg
         };
-        fill_row(buf, area, cell.bounds, cell_bg);
-        let label = format!("{:>2}", cell.date.day);
-        draw_row_text(buf, area, cell.bounds, &label, cell_fg, cell_bg);
+        let ring = cell.is_focused.then_some(accent_fg);
+        fill_text_with_ring(
+            buf,
+            cell.bounds,
+            &cell.date.day.to_string(),
+            fg,
+            cell_bg,
+            ring,
+        );
     }
 
-    if let Some(time_bounds) = layout.time_bounds {
-        if let Some(time) = picker.time {
-            draw_row_text(buf, area, time_bounds, &time.format(), fg, bg);
+    if let Some(time) = layout.time_bounds {
+        if time.width > 0.0 && time.height > 0.0 {
+            let input_bg = super::qc(theme.input_bg);
+            let border_fg = super::qc(theme.border_fg);
+            let text = date_picker.time.map(|t| t.format()).unwrap_or_default();
+            fill_text_with_ring(buf, time, &text, surface_fg, input_bg, Some(border_fg));
         }
     }
-
-    layout
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::date_picker::CalendarDate;
+    use crate::event::Rect;
+    use crate::primitives::date_picker::{CalendarDate, DatePickerHit};
     use crate::types::WidgetId;
+    use ratatui::layout::Rect as RRect;
 
-    fn theme() -> Theme {
-        Theme::default()
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    fn mk_date_picker() -> DatePicker {
+        let mut picker = DatePicker::new(WidgetId::new("date"), CalendarDate::new(2024, 3, 15));
+        picker.has_focus = true;
+        picker
+    }
+
+    fn paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let date_picker = mk_date_picker();
+        let layout = date_picker.layout(origin_x as f32, origin_y as f32, 4.0, 1.0, 1.0, 0.0);
+
+        let rect = RRect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(rect);
+        draw_date_picker(&mut buf, &date_picker, &layout, &Theme::default());
+
+        // Header label is centered in the header row, clear of the prev/next
+        // glyphs painted into the header's edge columns.
+        let header = layout.header_bounds.expect("header is reserved");
+        let label_len = 7u16; // "2024-03"
+        let label_x = header.x as u16 + (header.width as u16 - label_len) / 2;
+        assert_eq!(cell_char(&buf, label_x, origin_y), '2');
+        // Prev/next glyphs still own the header's edge columns.
+        assert_eq!(cell_char(&buf, origin_x, origin_y), '<');
+
+        let focused_cell = layout
+            .day_cells
+            .iter()
+            .find(|c| c.is_focused)
+            .expect("focused day is in the grid");
+        let fx = focused_cell.bounds.x as u16;
+        let fy = focused_cell.bounds.y as u16;
+        // Focused day's top-left corner gets the focus-ring glyph, but the
+        // digits it decorates stay readable: they are inset by one column
+        // so the ring glyph never overwrites them.
+        assert_eq!(cell_char(&buf, fx, fy), '┌');
+        for (i, ch) in focused_cell.date.day.to_string().chars().enumerate() {
+            assert_eq!(cell_char(&buf, fx + 1 + i as u16, fy), ch);
+        }
+
+        let p = Rect::new(focused_cell.bounds.x + 1.0, focused_cell.bounds.y, 0.0, 0.0);
+        assert_eq!(
+            layout.hit_test(p.x, p.y),
+            DatePickerHit::Day(focused_cell.date)
+        );
     }
 
     #[test]
-    fn layout_and_paint_agree_on_day_cell_count() {
-        let picker = DatePicker::new(WidgetId::new("date_picker"), CalendarDate::new(2024, 3, 15));
-        let area = Rect::new(0, 0, 21, 10);
-        let layout = tui_date_picker_layout(area, &picker);
-        assert_eq!(layout.day_cells.len(), 42);
-
-        let mut buf = Buffer::empty(area);
-        let painted = draw_date_picker(&mut buf, area, &picker, &theme());
-        assert_eq!(painted.day_cells.len(), layout.day_cells.len());
+    fn paint_and_click_round_trip() {
+        paint_and_click_round_trip_at(0, 0);
     }
 
+    /// Paint and hit-test must work correctly when the control is not at
+    /// the screen origin.
     #[test]
-    fn zero_area_returns_layout_without_panicking() {
-        let picker = DatePicker::new(WidgetId::new("date_picker"), CalendarDate::new(2024, 3, 15));
-        let area = Rect::new(0, 0, 0, 0);
-        let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
-        let layout = draw_date_picker(&mut buf, area, &picker, &theme());
-        assert_eq!(layout.day_cells.len(), 42);
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        paint_and_click_round_trip_at(7, 3);
     }
 }

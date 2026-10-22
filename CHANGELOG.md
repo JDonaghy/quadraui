@@ -77,6 +77,41 @@ only a push to `main` runs this workflow.
   mocks) via the shared `primitives::date_picker::native_surface_paint::paint`
   helper or a dedicated `tui::date_picker` rasteriser; `MacBackend` is tracked
   separately under #1453.
+- `Backend::draw_date_picker(&mut self, date_picker: &DatePicker, layout: &DatePickerLayout)`
+  rasterises `DatePicker`'s month grid (header, prev/next controls, 42-day
+  grid with focus/selection styling) and optional time field. TUI
+  (`tui::date_picker`) has its own cell-grid rasteriser; GTK, macOS and
+  Win-GUI all paint through the shared
+  `primitives::date_picker::native_surface_paint::paint`, each reached
+  through its own `Backend::draw_date_picker` impl. New trait method
+  with no default, per `PRIMITIVE_RULES.md` rule 7 — no hits in either
+  downstream consumer's source tree, so this is additive, not breaking.
+- `SelectionMode::Multi` is wired into GTK's `List`, `Tree` and
+  `DataTable` event handling: a plain click replaces the selection,
+  Ctrl/Cmd-click toggles the clicked row, and Shift-click selects the
+  range from the last anchor, via the shared
+  `types::apply_selection_gesture` seam. Covered by `GtkDriver`-based
+  tests in each primitive's own module.
+- Windows rasteriser for `DatePicker` (`quadraui::win::date_picker`): same
+  shape as the GTK rasteriser above — `Backend::draw_date_picker` delegates
+  entirely to the shared `primitives::date_picker::native_surface_paint::paint`,
+  so this module carries no production code of its own; keyboard
+  navigation (arrow keys, page up/down, enter-to-select) is covered by a
+  `WinDriver` test. `SelectionMode::Multi`'s Ctrl-click/Shift-range wiring,
+  already exercised on GTK above, is additionally covered by new
+  `WinDriver`-based tests in `win::list`, `win::tree` and `win::data_table`,
+  confirming the same `types::apply_selection_gesture` seam round-trips on
+  Windows. The gallery demo is deferred to the `DatePicker` gallery-page
+  issue.
+- TUI delivery of `DatePicker` keyboard navigation and `SelectionMode::Multi`:
+  the `tui::date_picker` cell-grid rasteriser is driven keyboard-only (arrow
+  keys move within the month grid, page up/down change month, enter selects),
+  and List/Tree/DataTable gain keyboard multi-select since TUI has no mouse —
+  a plain Up/Down only moves the cursor, Shift+Up/Down extends a range from
+  the anchor via `SelectionGesture::from_modifiers`, and Space toggles the
+  cursor row without moving it, all through the shared
+  `types::apply_selection_gesture` seam. Verified by `TuiDriver`-based tests
+  in `tui::list`, `tui::tree` and `tui::data_table`.
 - `ScreenLayout::tree_frame` returns each pushed `Surface::Tree`'s geometry
   as `(Handle<TreeView>, Rect)` pairs, backed internally by
   `DescriptorStore<TreeView>`. On a retained `ScreenLayout` kept across
@@ -87,6 +122,43 @@ only a push to `main` runs this workflow.
   built every frame still inserts every tree from an empty store each call.
   Internal and additive — `Surface`'s shape and `ScreenLayout::push`'s
   signature are unchanged, and no in-crate caller consumes this yet.
+- App-facing chrome-glyph override hook for context menus, tab bars and
+  data tables: three `#[non_exhaustive]` + `Default` registries
+  (`primitives::context_menu::ContextMenuGlyphs`,
+  `primitives::tab_bar::TabBarGlyphs`,
+  `primitives::data_table::DataTableGlyphs`) each hold optional `Icon`
+  overrides, and three new default-delegating `Backend` trait methods
+  (`draw_context_menu_with_glyphs`, `draw_tab_bar_with_chrome_and_glyphs`,
+  `draw_data_table_with_glyphs`) accept them, falling back to the
+  existing codicon-based method when an app passes the registry's
+  `Default`. TUI rasterisers resolve each override via `Icon::resolve`
+  and paint its first `char`, except `DataTableGlyphs`'s sort-direction
+  glyphs, which splice the whole resolved string into the column-header
+  title; `Icon::color` is resolved but never painted by any of the three
+  TUI paths. Covered by a black-box paint/screen-text test per site plus
+  a `c0` conformance entry per new trait method. Additive — no hits for
+  any of the six new symbol names in either downstream consumer's source
+  tree.
+- GTK native painter honours the chrome-glyph overrides above:
+  `GtkBackend` overrides `draw_tab_bar_with_chrome_and_glyphs`,
+  `draw_data_table_with_glyphs` and `draw_context_menu_with_glyphs`
+  instead of inheriting the glyph-ignoring trait defaults, so a
+  `TabBarGlyphs` close/dirty override, a `DataTableGlyphs` sort
+  ascending/descending override and a `ContextMenuGlyphs` checked /
+  submenu-arrow override all reach the Cairo paint. Each override
+  `Icon` is resolved through `Icon::resolve` against
+  `Backend::nerd_fonts_enabled`, and `None` (or a `Default` registry
+  with no field set) paints byte-identical to today's codicon
+  defaults. Three new free functions carry the extra arguments
+  alongside the existing ones rather than changing them:
+  `gtk::draw_data_table_with_glyphs`,
+  `gtk::draw_tab_bar_with_chrome_and_glyphs` and
+  `gtk::draw_tab_bar_icons_with_chrome_and_glyphs`. Covered by a
+  Cairo `ImageSurface` pixel-comparison test per site, asserting an
+  empty override is byte-identical to `None` and a populated one is
+  not. Additive — no hits
+  for any of the three new function names in either downstream
+  consumer's source tree.
 - GTK scroll translation (`gtk::events::gdk_scroll_to_uievent` and
   `gdk_scroll_to_uievent_with_direction`) documents and regression-pins
   real wheel/trackpad delta magnitude as a guarantee: GDK's `dx`/`dy`
@@ -119,6 +191,15 @@ only a push to `main` runs this workflow.
   dispatches inflate a single notch into ~14 rows of over-scroll.
 ### Fixed
 
+- `DatePicker`'s GTK/native rasteriser
+  (`primitives::date_picker::native_surface_paint::paint`) centers the
+  `YYYY-MM` header label between the prev/next controls instead of
+  left-aligning it at the header's origin, where it collided with the
+  `<` glyph. `tui::date_picker`'s day-cell focus ring and time-field
+  border no longer overwrite the digits/text they decorate: both now go
+  through `fill_text_with_ring`, which insets the text by one column so
+  the ring's corner glyphs land on blank cells, falling back to reverse
+  video when a cell is too narrow to spare the inset columns.
 - Win-GUI `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` handling forwards every
   message's delta immediately and in full, with no per-axis accumulation
   or gating on a full `WHEEL_DELTA` notch: a high-resolution wheel or

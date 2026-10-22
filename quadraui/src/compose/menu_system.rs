@@ -1163,6 +1163,7 @@ mod tests {
         }
         fn draw_number_input(&mut self, _n: &crate::NumberInput, _l: &crate::NumberInputLayout) {}
         fn draw_combo_box(&mut self, _c: &crate::ComboBox, _l: &crate::ComboBoxLayout) {}
+        fn draw_date_picker(&mut self, _d: &crate::DatePicker, _l: &crate::DatePickerLayout) {}
         fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
         fn draw_context_menu(
             &mut self,
@@ -1453,21 +1454,6 @@ mod tests {
             crate::backend::ImagePaintResult::Unsupported
         }
 
-        fn draw_date_picker(
-            &mut self,
-            _r: Rect,
-            _p: &crate::primitives::date_picker::DatePicker,
-        ) -> crate::primitives::date_picker::DatePickerLayout {
-            unimplemented!()
-        }
-
-        fn date_picker_layout(
-            &self,
-            _r: Rect,
-            _p: &crate::primitives::date_picker::DatePicker,
-        ) -> crate::primitives::date_picker::DatePickerLayout {
-            unimplemented!()
-        }
     }
 
     // Helper: construct a `KeyPressed` event with no modifiers.

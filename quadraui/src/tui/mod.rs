@@ -91,10 +91,11 @@ pub use combo_box::draw_combo_box;
 pub use command_center::{draw_command_center, tui_command_center_layout};
 pub use completions::draw_completions;
 pub use context_menu::{
-    draw_context_menu, draw_context_menu_with_submenus, BORDER_INSET as CONTEXT_MENU_BORDER_INSET,
+    draw_context_menu, draw_context_menu_with_glyphs, draw_context_menu_with_submenus,
+    BORDER_INSET as CONTEXT_MENU_BORDER_INSET,
 };
-pub use data_table::{data_table_layout, draw_data_table};
-pub use date_picker::{draw_date_picker, tui_date_picker_layout};
+pub use data_table::{data_table_layout, draw_data_table, draw_data_table_with_glyphs};
+pub use date_picker::draw_date_picker;
 pub use dialog::{draw_dialog, tui_dialog_layout};
 pub use diff_view::draw_diff_view;
 pub use drop_overlay::draw_drop_overlay;
@@ -129,8 +130,9 @@ pub use split_tree::{draw_split_tree, tui_split_tree_layout};
 pub use status_bar::draw_status_bar;
 pub use switch::{draw_switch, tui_switch_layout};
 pub use tab_bar::{
-    draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome, draw_tab_bar_with_chrome,
-    TAB_CLOSE_CHAR, TAB_CLOSE_COLS, TAB_SEPARATOR_CHAR, TAB_SEPARATOR_COLS,
+    draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome,
+    draw_tab_bar_icons_with_chrome_and_glyphs, draw_tab_bar_with_chrome, TAB_CLOSE_CHAR,
+    TAB_CLOSE_COLS, TAB_SEPARATOR_CHAR, TAB_SEPARATOR_COLS,
 };
 pub use terminal::{draw_terminal, draw_terminal_divider};
 pub use text::{char_cell_width, display_width, truncate_to_width, truncate_to_width_ellipsis};

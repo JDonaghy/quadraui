@@ -315,7 +315,45 @@ pub fn draw_tab_bar_with_chrome(
     theme: &Theme,
     hovered_close_tab: Option<usize>,
 ) -> (TabBarHits, TabBarLayout) {
-    draw_tab_bar_icons_with_chrome(
+    draw_tab_bar_with_chrome_and_glyphs(
+        cr,
+        pango_layout,
+        x_offset,
+        width,
+        line_height,
+        y_offset,
+        row_height,
+        bar,
+        chrome,
+        theme,
+        hovered_close_tab,
+        None,
+        false,
+    )
+}
+
+/// Identical to [`draw_tab_bar_with_chrome`], plus an optional
+/// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
+/// close/dirty glyph and the `nerd_fonts_enabled` flag — see
+/// [`draw_tab_bar_icons_with_chrome_and_glyphs`], which this delegates to.
+#[allow(clippy::too_many_arguments)]
+#[allow(deprecated)]
+pub fn draw_tab_bar_with_chrome_and_glyphs(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    x_offset: f64,
+    width: f64,
+    line_height: f64,
+    y_offset: f64,
+    row_height: f64,
+    bar: &TabBar,
+    chrome: &TabChrome,
+    theme: &Theme,
+    hovered_close_tab: Option<usize>,
+    glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
+    nerd_fonts_enabled: bool,
+) -> (TabBarHits, TabBarLayout) {
+    draw_tab_bar_icons_with_chrome_and_glyphs(
         cr,
         pango_layout,
         x_offset,
@@ -328,6 +366,8 @@ pub fn draw_tab_bar_with_chrome(
         chrome,
         theme,
         hovered_close_tab,
+        glyphs,
+        nerd_fonts_enabled,
     )
 }
 
@@ -354,6 +394,49 @@ pub fn draw_tab_bar_icons_with_chrome(
     theme: &Theme,
     hovered_close_tab: Option<usize>,
 ) -> (TabBarHits, TabBarLayout) {
+    draw_tab_bar_icons_with_chrome_and_glyphs(
+        cr,
+        pango_layout,
+        x_offset,
+        width,
+        line_height,
+        y_offset,
+        row_height,
+        bar,
+        icons,
+        chrome,
+        theme,
+        hovered_close_tab,
+        None,
+        false,
+    )
+}
+
+/// Identical to [`draw_tab_bar_icons_with_chrome`], plus an optional
+/// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
+/// close/dirty glyph and the `nerd_fonts_enabled` flag (see
+/// [`crate::Backend::nerd_fonts_enabled`]) that selects each override
+/// [`crate::types::Icon`]'s `glyph` vs. `fallback` form. `glyphs: None`
+/// (what [`draw_tab_bar_icons_with_chrome`] passes) renders byte-for-byte
+/// the same as today's codicon defaults.
+#[allow(clippy::too_many_arguments)]
+#[allow(deprecated)]
+pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    x_offset: f64,
+    width: f64,
+    line_height: f64,
+    y_offset: f64,
+    row_height: f64,
+    bar: &TabBar,
+    icons: &[Option<crate::primitives::tab_bar::TabIcon>],
+    chrome: &TabChrome,
+    theme: &Theme,
+    hovered_close_tab: Option<usize>,
+    glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
+    nerd_fonts_enabled: bool,
+) -> (TabBarHits, TabBarLayout) {
     let tab_row_height = row_height;
     let text_y_offset = y_offset + (tab_row_height - line_height) / 2.0;
 
@@ -377,12 +460,26 @@ pub fn draw_tab_bar_icons_with_chrome(
     // below, since that block needs it already.
     let icon_font = tab_icon_font(&normal_font);
 
+    // Resolved once, outside the pre-measure block and the per-tab
+    // paint loop below — both consult the same two strings.
+    let close_glyph_str: std::borrow::Cow<'_, str> = glyphs
+        .and_then(crate::primitives::tab_bar::TabBarGlyphs::close_glyph)
+        .map(|icon| std::borrow::Cow::Borrowed(icon.resolve(nerd_fonts_enabled)))
+        .unwrap_or(std::borrow::Cow::Owned(crate::codicon::CLOSE.to_string()));
+    let dirty_glyph_str: std::borrow::Cow<'_, str> = glyphs
+        .and_then(crate::primitives::tab_bar::TabBarGlyphs::dirty_glyph)
+        .map(|icon| std::borrow::Cow::Borrowed(icon.resolve(nerd_fonts_enabled)))
+        .unwrap_or(std::borrow::Cow::Owned(crate::codicon::DIRTY.to_string()));
+
     // ── Pre-measure close glyph ─────────────────────────────────────
     // Measure the close glyph's width once; individual tabs use it
     // conditionally based on `bar.show_tab_close && tab.is_closable`.
+    // Matches the un-overridden code's existing behaviour of sizing the
+    // hover box / bracket offset off the close glyph's width even when
+    // a dirty tab paints the dirty glyph instead.
     let close_glyph_w = if bar.show_tab_close {
         pango_layout.set_font_description(Some(&icon_font));
-        pango_layout.set_text(&crate::codicon::CLOSE.to_string());
+        pango_layout.set_text(close_glyph_str.as_ref());
         let (w, _) = pango_layout.pixel_size();
         w as f64
     } else {
@@ -590,10 +687,10 @@ pub fn draw_tab_bar_icons_with_chrome(
                 // glyphs with), since that's the font whose family
                 // list carries `codicon::FONT_FAMILY` (see
                 // `tab_icon_font`'s doc).
-                let close_glyph = if tab.is_dirty && !is_close_hovered {
-                    crate::codicon::DIRTY
+                let selected_glyph = if tab.is_dirty && !is_close_hovered {
+                    dirty_glyph_str.as_ref()
                 } else {
-                    crate::codicon::CLOSE
+                    close_glyph_str.as_ref()
                 };
                 let close_fg = if tab.is_dirty || is_close_hovered {
                     theme.foreground
@@ -604,7 +701,7 @@ pub fn draw_tab_bar_icons_with_chrome(
                 };
                 set_source(cr, close_fg);
                 pango_layout.set_font_description(Some(&icon_font));
-                pango_layout.set_text(&close_glyph.to_string());
+                pango_layout.set_text(selected_glyph);
                 cr.move_to(x_offset + close_x, text_y_offset);
                 super::painted_text::show_layout(cr, pango_layout);
                 pango_layout.set_font_description(Some(&normal_font));
