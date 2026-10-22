@@ -571,6 +571,7 @@ pub enum DatePickerEvent {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{DatePicker, DatePickerLayout};
+    use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
@@ -588,14 +589,28 @@ pub(crate) mod native_surface_paint {
         if let Some(header) = layout.header_bounds {
             if header.width > 0.0 && header.height > 0.0 {
                 surface.surface_fill_rect(header, theme.header_bg);
-                surface.surface_draw_text_run(
-                    header,
-                    &format!(
-                        "{:04}-{:02}",
-                        date_picker.visible_month.year, date_picker.visible_month.month
-                    ),
-                    theme.header_fg,
+                let label = format!(
+                    "{:04}-{:02}",
+                    date_picker.visible_month.year, date_picker.visible_month.month
                 );
+                // Centre the label between the prev/next controls so it
+                // never overlaps the glyphs drawn into the header's edge
+                // columns (mirrors `tui::date_picker`'s `fill_text_aligned`
+                // centring, which solves the identical collision).
+                let left = layout
+                    .prev_bounds
+                    .map(|r| r.x + r.width)
+                    .unwrap_or(header.x);
+                let right = layout
+                    .next_bounds
+                    .map(|r| r.x)
+                    .unwrap_or(header.x + header.width);
+                let available = (right - left).max(0.0);
+                let (label_w, _) = surface.surface_measure_text(&label);
+                let label_x = left + ((available - label_w) / 2.0).max(0.0);
+                let label_rect =
+                    Rect::new(label_x, header.y, label_w.min(available), header.height);
+                surface.surface_draw_text_run(label_rect, &label, theme.header_fg);
             }
         }
         if let Some(prev) = layout.prev_bounds {
@@ -733,6 +748,25 @@ pub(crate) mod native_surface_paint {
             assert!(labels.contains(&"2024-03"));
             assert!(labels.contains(&"<"));
             assert!(labels.contains(&">"));
+
+            // The label's run must not overlap the prev/next controls: it
+            // starts no earlier than where `prev_bounds` ends and finishes
+            // no later than where `next_bounds` begins.
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "2024-03")
+                .expect("label run is emitted");
+            let prev_bounds = layout.prev_bounds.unwrap();
+            let next_bounds = layout.next_bounds.unwrap();
+            assert!(
+                label_rect.x >= prev_bounds.x + prev_bounds.width,
+                "label rect {label_rect:?} overlaps prev_bounds {prev_bounds:?}"
+            );
+            assert!(
+                label_rect.x + label_rect.width <= next_bounds.x,
+                "label rect {label_rect:?} overlaps next_bounds {next_bounds:?}"
+            );
         }
 
         #[test]

@@ -1,12 +1,12 @@
-//! GTK rasteriser for [`crate::DatePicker`].
+//! GTK coverage for [`crate::DatePicker`].
 //!
 //! Painting is implemented in the shared
 //! [`crate::primitives::date_picker::native_surface_paint::paint`] — see
-//! that function's documentation for details. Callers reach the paint
-//! through [`crate::Backend::draw_date_picker`]. Focus movement, month
+//! that function's documentation for details; [`crate::gtk::backend`]'s
+//! `Backend::draw_date_picker` impl reaches it. Focus movement, month
 //! navigation and day/time selection semantics live on `DatePicker`
-//! itself (`DatePicker::navigate`); this module only turns a resolved
-//! [`crate::DatePickerLayout`] into pixels.
+//! itself (`DatePicker::navigate`). This module holds only the GTK-side
+//! `GtkDriver` round-trip tests exercising that full path.
 
 #[cfg(test)]
 mod tests {
