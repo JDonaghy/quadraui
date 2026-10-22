@@ -329,6 +329,7 @@ pub(crate) mod native_surface_paint {
 /// selected option changes. Carries the new index so a host doesn't need
 /// to re-read [`RadioGroup::selected`] after applying the event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum RadioGroupEvent {
     SelectionChanged { index: usize },
 }

@@ -1325,6 +1325,7 @@ pub(crate) mod native_surface_paint {
 
 /// Events a `Palette` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum PaletteEvent {
     /// The query text changed (user typed, pasted, or deleted).
     QueryChanged { value: String },

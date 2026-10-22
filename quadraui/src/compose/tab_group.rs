@@ -526,6 +526,7 @@ impl Pane {
 
 /// Semantic events emitted by [`TabGroupController`].
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum TabGroupEvent {
     /// User activated a tab in `pane_idx`.
     TabActivated { pane_idx: usize, tab_id: String },

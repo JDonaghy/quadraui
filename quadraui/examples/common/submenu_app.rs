@@ -689,6 +689,7 @@ impl AppLogic for SubmenuApp {
             }
             MenuEvent::StateChanged | MenuEvent::Consumed => return Reaction::Redraw,
             MenuEvent::Ignored => {}
+            _ => return Reaction::Continue,
         }
 
         // Fallback event handling.

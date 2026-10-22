@@ -32,6 +32,7 @@ use crate::{
 
 /// What happened after [`TreeController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum TreeControllerEvent {
     /// Row clicked or selected via keyboard navigation.
     RowSelected { path: TreePath },

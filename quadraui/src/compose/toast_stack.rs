@@ -80,6 +80,7 @@ use crate::{Key, NamedKey, UiEvent};
 /// What happened after [`ToastStackController::handle`] processed an
 /// event.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ToastStackEvent {
     /// Enter activated the focused action button — carries that
     /// action's own [`WidgetId`] (matching [`crate::primitives::toast::ToastHit::Action`]'s

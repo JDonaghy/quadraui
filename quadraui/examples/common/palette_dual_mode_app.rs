@@ -229,6 +229,7 @@ impl AppLogic for PaletteDualModeApp {
                 }
                 DualModePaletteEvent::Consumed => return Reaction::Redraw,
                 DualModePaletteEvent::Ignored => {}
+                _ => {}
             }
         } else {
             // Picker is closed — handle reopen / quit.

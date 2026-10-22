@@ -212,6 +212,7 @@ pub struct DataTable {
 
 /// Events a `DataTable` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum DataTableEvent {
     /// User clicked a column header — app should toggle sort.
     HeaderClicked { col: usize },

@@ -334,6 +334,7 @@ impl ComboBoxLayout {
 /// only the id — the host reverts `text` to `committed` and closes the
 /// dropdown.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ComboBoxEvent {
     TextChanged { id: WidgetId, text: String },
     HighlightChanged { id: WidgetId, index: usize },

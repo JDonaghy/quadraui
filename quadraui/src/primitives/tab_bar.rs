@@ -913,6 +913,7 @@ impl TabBar {
 /// defined for plugin invariants §10 — plugin-declared tab bars will
 /// consume events directly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum TabBarEvent {
     /// User clicked a tab body (not its close button) — index is into
     /// `tabs`, matching the visible order (scroll_offset still applies).

@@ -198,6 +198,7 @@ pub struct ChatTurn {
 
 /// Events emitted by [`ChatController::handle`].
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ChatControllerEvent {
     /// User submitted a message (`Ctrl+S`, `Alt+Enter`, or `Ctrl+Enter`). Contains the full input text
     /// (with embedded `\n` for multi-line messages). Apps should:

@@ -163,6 +163,7 @@ impl AppLogic for ToastActionsApp {
                 return Reaction::Redraw;
             }
             ToastStackEvent::Ignored => {}
+            _ => {}
         }
 
         match event {

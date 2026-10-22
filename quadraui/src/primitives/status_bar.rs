@@ -136,6 +136,7 @@ pub struct StatusBarHitRegion {
 
 /// Events a `StatusBar` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum StatusBarEvent {
     /// A clickable segment was activated (mouse click, or future enter-on-focus).
     SegmentClicked { id: WidgetId },

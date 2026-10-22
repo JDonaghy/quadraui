@@ -69,6 +69,7 @@ use crate::{Backend, Key, Modifiers, NamedKey};
 
 /// What happened after [`MessageDialogController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MessageDialogEvent {
     /// The user resolved the dialog — via Enter, a click on a button, or
     /// Escape resolving to the cancel/default button. The consumer should

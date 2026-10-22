@@ -436,6 +436,7 @@ impl<'de> Deserialize<'de> for UserPayload {
 /// Produced by [`Backend::poll_events`][crate::Backend::poll_events] every
 /// frame; consumed by app dispatch code.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum UiEvent {
     // ── Input ───────────────────────────────────────────────────────────
     /// A declared accelerator fired. The backend matched a

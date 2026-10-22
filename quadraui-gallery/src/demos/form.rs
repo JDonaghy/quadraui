@@ -572,6 +572,7 @@ impl Demo for FormDemo {
                         Reaction::Redraw
                     }
                     FormControllerEvent::Ignored => Reaction::Continue,
+                    _ => Reaction::Continue,
                 }
             }
         }

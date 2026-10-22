@@ -316,6 +316,7 @@ impl NumberInputLayout {
 /// `Cancelled` carries only the id — the host clears `draft` and leaves
 /// `value` untouched.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum NumberInputEvent {
     ValueChanged { id: WidgetId, value: f64 },
     DraftChanged { id: WidgetId, draft: String },

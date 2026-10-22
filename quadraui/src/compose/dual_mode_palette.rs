@@ -41,6 +41,7 @@ use crate::{
 /// What happened after [`DualModePaletteController::handle`] processed an
 /// event.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DualModePaletteEvent {
     /// In List mode: the user confirmed the highlighted item. `idx` is the
     /// index into the `items` slice supplied to the controller.

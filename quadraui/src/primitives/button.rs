@@ -188,6 +188,7 @@ impl ButtonLayout {
 /// Emitted by [`Button::handle_key`]/[`Button::click`] when the button
 /// activates.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ButtonEvent {
     Activated { id: WidgetId },
 }

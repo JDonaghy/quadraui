@@ -188,6 +188,7 @@ impl Demo for MessageDialogDemo {
                     }
                     MessageDialogEvent::Consumed => return Reaction::Redraw,
                     MessageDialogEvent::Ignored => {}
+                    _ => {}
                 }
             } else if let UiEvent::KeyPressed {
                 key: Key::Named(quadraui::NamedKey::Enter),

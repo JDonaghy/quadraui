@@ -169,6 +169,7 @@ impl Demo for ToastDemo {
                 return Reaction::Redraw;
             }
             ToastStackEvent::Ignored => {}
+            _ => {}
         }
 
         match event {

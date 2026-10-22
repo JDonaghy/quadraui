@@ -109,6 +109,7 @@ pub enum ShellPosition {
 
 /// Semantic events emitted by [`AppShell::handle`].
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum AppShellEvent {
     PanelChanged { panel_id: WidgetId },
     SidebarHidden,

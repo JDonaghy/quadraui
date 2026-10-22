@@ -158,6 +158,7 @@ impl Demo for MenuBarDemo {
             }
             MenuEvent::StateChanged | MenuEvent::Consumed => Reaction::Redraw,
             MenuEvent::Ignored => Reaction::Continue,
+            _ => Reaction::Continue,
         }
     }
 

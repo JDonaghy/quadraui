@@ -137,6 +137,7 @@ pub struct PipelineView {
 
 /// Events emitted by a [`PipelineView`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum PipelineEvent {
     /// User clicked (or pressed Enter on) the action button of a stage.
     StageAction { index: usize },

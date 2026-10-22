@@ -198,6 +198,7 @@ impl Demo for PaletteDemo {
             // every other gallery demo's convention of not re-handling
             // the quit key itself.
             DualModePaletteEvent::Ignored => Reaction::Continue,
+            _ => Reaction::Continue,
         }
     }
 

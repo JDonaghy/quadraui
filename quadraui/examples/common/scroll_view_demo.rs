@@ -98,6 +98,7 @@ impl ScrollViewDemo {
             Some(event) => {
                 self.scroll_offset = match event {
                     quadraui::ScrollViewEvent::Scrolled { offset } => offset,
+                    _ => self.scroll_offset,
                 };
                 Reaction::Redraw
             }
@@ -148,6 +149,7 @@ impl AppLogic for ScrollViewDemo {
                     self.scroll_offset = offset;
                     Reaction::Redraw
                 }
+                Some(_) => Reaction::Redraw,
                 None => Reaction::Continue,
             },
             UiEvent::MouseDown {

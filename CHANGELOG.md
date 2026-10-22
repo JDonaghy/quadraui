@@ -354,6 +354,18 @@ only a push to `main` runs this workflow.
   blending in ~21% of the background and making an opaque fill's interior
   look translucent.
 
+## [0.3.0] - 2026-10-17
+### Changed
+
+- **Breaking:** all 34 `*Event` enums (`DataTableEvent`, `ListViewEvent`,
+  `TreeEvent`, `UiEvent`, `AppShellEvent`, …) are now `#[non_exhaustive]`.
+  Downstream `match` arms must add a `_ => {}` wildcard.  Zero downstream
+  consumers matched on these types at the time of this change (confirmed via
+  grep of vimcode + coord-tui), so the practical migration cost is nil — but
+  this is a semver-major break by definition.  Doing this in a single sweep
+  unblocks future variant additions (e.g. `SelectionSet` for multi-select)
+  as additive/minor changes.
+
 ## [0.2.2] - 2026-10-17
 ### Fixed
 

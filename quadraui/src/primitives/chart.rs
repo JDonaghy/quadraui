@@ -171,6 +171,7 @@ pub struct Series {
 
 /// Events a `Chart` emits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ChartEvent {
     /// User clicked the chart body.
     Clicked { id: WidgetId },

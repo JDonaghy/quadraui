@@ -160,6 +160,7 @@ impl SwitchLayout {
 /// value flips. Carries the *new* value so a host doesn't need to
 /// re-read `Switch::value` after applying the event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum SwitchEvent {
     Toggled { id: WidgetId, value: bool },
 }

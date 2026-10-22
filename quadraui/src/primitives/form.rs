@@ -1624,6 +1624,7 @@ pub(crate) use native_surface_paint::paint;
 
 /// Events a `Form` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum FormEvent {
     /// A `Toggle` field's value changed.
     ToggleChanged { id: WidgetId, value: bool },

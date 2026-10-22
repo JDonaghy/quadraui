@@ -230,6 +230,10 @@ impl ShellApp for HelpLayerDemo {
                     self.palette = Some(palette);
                     return Reaction::Continue;
                 }
+                _ => {
+                    self.palette = Some(palette);
+                    return Reaction::Continue;
+                }
             };
             // Reached only for ItemConfirmed / Cancelled — palette closes.
             return reaction;
@@ -248,6 +252,7 @@ impl ShellApp for HelpLayerDemo {
             }
             HelpOverlayEvent::Consumed => return Reaction::Redraw,
             HelpOverlayEvent::Ignored => {}
+            _ => {}
         }
 
         match event {

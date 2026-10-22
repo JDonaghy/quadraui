@@ -158,6 +158,7 @@ impl HelpRegistry {
 /// Result of [`HelpOverlayController::handle`] / `open` / `close` /
 /// `toggle`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HelpOverlayEvent {
     /// The overlay just opened.
     Opened,
