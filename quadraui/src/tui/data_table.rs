@@ -1202,3 +1202,190 @@ mod tests {
         }
     }
 }
+
+/// Multi-select keyboard wiring over [`crate::tui::testing::TuiDriver`].
+///
+/// `DataTable` stays purely declarative (no selection-set field of its
+/// own — see `crate::types::apply_selection_gesture`'s doc), so the app
+/// owns the selected-index set, the keyboard cursor, and the gesture
+/// anchor. TUI has no mouse, so unlike the click-driven
+/// `crate::gtk::data_table`/`crate::win::data_table` counterparts, a
+/// plain Up/Down only moves the cursor; Shift+Up/Down extends a range
+/// from the anchor via [`SelectionGesture::from_modifiers`], and Space
+/// toggles the cursor row without moving it.
+#[cfg(test)]
+mod multi_select_driver_tests {
+    use crate::primitives::data_table::{Column, DataRow, DataTable};
+    use crate::runner::{AppLogic, Reaction};
+    use crate::tui::testing::TuiDriver;
+    use crate::{
+        apply_selection_gesture, Backend, DataTableEvent, Decoration, Key, Modifiers, NamedKey,
+        Rect, SelectionGesture, StyledText, UiEvent, WidgetId,
+    };
+
+    const VIEWPORT_W: u16 = 40;
+    const VIEWPORT_H: u16 = 10;
+
+    fn row(label: &str) -> DataRow {
+        DataRow {
+            cells: vec![StyledText::plain(label.to_string())],
+            decoration: Decoration::Normal,
+        }
+    }
+
+    fn sample_table() -> DataTable {
+        DataTable {
+            id: WidgetId::new("dt"),
+            columns: vec![Column {
+                title: "Name".to_string(),
+                width: Default::default(),
+                align: Default::default(),
+            }],
+            rows: (0..5).map(|i| row(&format!("row {i}"))).collect(),
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: true,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+        }
+    }
+
+    struct TableApp {
+        table: DataTable,
+        cursor: usize,
+        selected: Vec<usize>,
+        anchor: usize,
+        events: Vec<DataTableEvent>,
+    }
+
+    impl TableApp {
+        fn new() -> Self {
+            Self {
+                table: sample_table(),
+                cursor: 0,
+                selected: Vec::new(),
+                anchor: 0,
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl AppLogic for TableApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_data_table(
+                Rect::new(0.0, 0.0, VIEWPORT_W as f32, VIEWPORT_H as f32),
+                &self.table,
+                None,
+            );
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::KeyPressed { key, modifiers, .. } = event else {
+                return Reaction::Continue;
+            };
+            let last = self.table.rows.len().saturating_sub(1);
+            match key {
+                Key::Named(NamedKey::Down) | Key::Named(NamedKey::Up) => {
+                    let delta: isize = if key == Key::Named(NamedKey::Down) {
+                        1
+                    } else {
+                        -1
+                    };
+                    self.cursor = (self.cursor as isize + delta).clamp(0, last as isize) as usize;
+                    if !modifiers.shift {
+                        // A plain move repositions the cursor only; the
+                        // selection changes explicitly via Space/Shift.
+                        return Reaction::Redraw;
+                    }
+                    let indices = apply_selection_gesture(
+                        &self.selected,
+                        self.anchor,
+                        self.cursor,
+                        SelectionGesture::Range,
+                    );
+                    self.selected = indices.clone();
+                    self.events.push(DataTableEvent::SelectionSet { indices });
+                    Reaction::Redraw
+                }
+                Key::Char(' ') => {
+                    let indices = apply_selection_gesture(
+                        &self.selected,
+                        self.anchor,
+                        self.cursor,
+                        SelectionGesture::Toggle,
+                    );
+                    self.selected = indices.clone();
+                    self.anchor = self.cursor;
+                    self.events.push(DataTableEvent::SelectionSet { indices });
+                    Reaction::Redraw
+                }
+                _ => Reaction::Continue,
+            }
+        }
+    }
+
+    fn key_event(key: Key, modifiers: Modifiers) -> UiEvent {
+        UiEvent::KeyPressed {
+            key,
+            modifiers,
+            repeat: false,
+        }
+    }
+
+    fn driver() -> TuiDriver<TableApp> {
+        TuiDriver::new(TableApp::new(), VIEWPORT_W, VIEWPORT_H)
+    }
+
+    #[test]
+    fn plain_arrow_moves_the_cursor_without_changing_selection() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        assert_eq!(driver.app().cursor, 1);
+        assert_eq!(driver.app().selected, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn space_toggles_rows_into_a_multi_selection() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        assert_eq!(driver.app().selected, vec![0, 2]);
+        // Space toggles the same row back off.
+        driver.dispatch(key_event(Key::Named(NamedKey::Up), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Up), Modifiers::default()));
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        assert_eq!(driver.app().selected, vec![2]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&DataTableEvent::SelectionSet { indices: vec![2] })
+        );
+    }
+
+    #[test]
+    fn shift_arrow_extends_a_range_from_the_anchor() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        assert_eq!(driver.app().selected, vec![0, 1, 2, 3]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&DataTableEvent::SelectionSet {
+                indices: vec![0, 1, 2, 3]
+            })
+        );
+    }
+}

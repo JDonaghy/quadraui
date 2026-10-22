@@ -1003,3 +1003,198 @@ mod tests {
         );
     }
 }
+
+/// Multi-select keyboard wiring over [`crate::tui::testing::TuiDriver`].
+///
+/// `TreeView` stays purely declarative — selection state lives on the app,
+/// keyed by flattened-row index, and [`selected_paths_for_indices`] maps
+/// that index set back to `TreePath`s before it's reported. TUI has no
+/// mouse, so unlike the click-driven `crate::gtk::tree`/`crate::win::tree`
+/// counterparts, a plain Up/Down only moves the keyboard cursor; Shift+Up/
+/// Down extends a range from the anchor via
+/// [`SelectionGesture::from_modifiers`], and Space toggles the cursor row
+/// without moving it.
+#[cfg(test)]
+mod multi_select_driver_tests {
+    use crate::primitives::tree::{selected_paths_for_indices, TreeRow, TreeView};
+    use crate::runner::{AppLogic, Reaction};
+    use crate::tui::testing::TuiDriver;
+    use crate::{
+        apply_selection_gesture, Backend, Decoration, Key, Modifiers, NamedKey, Rect,
+        SelectionGesture, SelectionMode, StyledText, TreeEvent, TreePath, TreeStyle, UiEvent,
+        WidgetId,
+    };
+
+    const VIEWPORT_W: u16 = 40;
+    const VIEWPORT_H: u16 = 10;
+
+    fn leaf(idx: u16, label: &str) -> TreeRow {
+        TreeRow {
+            path: vec![idx],
+            indent: 0,
+            icon: None,
+            text: StyledText::plain(label.to_string()),
+            badge: None,
+            is_expanded: None,
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
+    fn sample_tree() -> TreeView {
+        TreeView {
+            id: WidgetId::new("t"),
+            rows: (0..5).map(|i| leaf(i, &format!("row {i}"))).collect(),
+            selection_mode: SelectionMode::Multi,
+            selected_path: None,
+            scroll_offset: 0,
+            style: TreeStyle::default(),
+            has_focus: true,
+        }
+    }
+
+    struct TreeApp {
+        tree: TreeView,
+        cursor: usize,
+        selected: Vec<usize>,
+        anchor: usize,
+        events: Vec<TreeEvent>,
+    }
+
+    impl TreeApp {
+        fn new() -> Self {
+            Self {
+                tree: sample_tree(),
+                cursor: 0,
+                selected: Vec::new(),
+                anchor: 0,
+                events: Vec::new(),
+            }
+        }
+
+        fn selected_paths(&self) -> Vec<TreePath> {
+            selected_paths_for_indices(&self.tree.rows, &self.selected)
+        }
+    }
+
+    impl AppLogic for TreeApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_tree(
+                Rect::new(0.0, 0.0, VIEWPORT_W as f32, VIEWPORT_H as f32),
+                &self.tree,
+            );
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::KeyPressed { key, modifiers, .. } = event else {
+                return Reaction::Continue;
+            };
+            let last = self.tree.rows.len().saturating_sub(1);
+            match key {
+                Key::Named(NamedKey::Down) | Key::Named(NamedKey::Up) => {
+                    let delta: isize = if key == Key::Named(NamedKey::Down) {
+                        1
+                    } else {
+                        -1
+                    };
+                    self.cursor = (self.cursor as isize + delta).clamp(0, last as isize) as usize;
+                    if !modifiers.shift {
+                        // A plain move repositions the cursor only; the
+                        // selection changes explicitly via Space/Shift.
+                        return Reaction::Redraw;
+                    }
+                    let indices = apply_selection_gesture(
+                        &self.selected,
+                        self.anchor,
+                        self.cursor,
+                        SelectionGesture::Range,
+                    );
+                    self.selected = indices;
+                    let paths = self.selected_paths();
+                    self.events.push(TreeEvent::SelectionSet { paths });
+                    Reaction::Redraw
+                }
+                Key::Char(' ') => {
+                    let indices = apply_selection_gesture(
+                        &self.selected,
+                        self.anchor,
+                        self.cursor,
+                        SelectionGesture::Toggle,
+                    );
+                    self.selected = indices;
+                    self.anchor = self.cursor;
+                    let paths = self.selected_paths();
+                    self.events.push(TreeEvent::SelectionSet { paths });
+                    Reaction::Redraw
+                }
+                _ => Reaction::Continue,
+            }
+        }
+    }
+
+    fn key_event(key: Key, modifiers: Modifiers) -> UiEvent {
+        UiEvent::KeyPressed {
+            key,
+            modifiers,
+            repeat: false,
+        }
+    }
+
+    fn driver() -> TuiDriver<TreeApp> {
+        TuiDriver::new(TreeApp::new(), VIEWPORT_W, VIEWPORT_H)
+    }
+
+    #[test]
+    fn plain_arrow_moves_the_cursor_without_changing_selection() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        assert_eq!(driver.app().cursor, 1);
+        assert_eq!(driver.app().selected, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn space_toggles_rows_into_a_multi_selection() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        assert_eq!(driver.app().selected_paths(), vec![vec![0], vec![2]]);
+        // Space toggles the same row back off.
+        driver.dispatch(key_event(Key::Named(NamedKey::Up), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Up), Modifiers::default()));
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        assert_eq!(driver.app().selected_paths(), vec![vec![2]]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&TreeEvent::SelectionSet {
+                paths: vec![vec![2]]
+            })
+        );
+    }
+
+    #[test]
+    fn shift_arrow_extends_a_range_from_the_anchor() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        assert_eq!(
+            driver.app().selected_paths(),
+            vec![vec![0], vec![1], vec![2], vec![3]]
+        );
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&TreeEvent::SelectionSet {
+                paths: vec![vec![0], vec![1], vec![2], vec![3]]
+            })
+        );
+    }
+}
