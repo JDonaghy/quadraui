@@ -259,6 +259,20 @@ impl Icon {
         self.color = Some(color);
         self
     }
+
+    /// The Nerd Font glyph when `nerd_fonts_enabled` is set, otherwise
+    /// the ASCII/Unicode fallback. Centralises the
+    /// `if nerd_fonts_enabled { &self.glyph } else { &self.fallback }`
+    /// choice every rasteriser otherwise repeats inline; see
+    /// [`crate::Backend::nerd_fonts_enabled`].
+    #[must_use]
+    pub fn resolve(&self, nerd_fonts_enabled: bool) -> &str {
+        if nerd_fonts_enabled {
+            &self.glyph
+        } else {
+            &self.fallback
+        }
+    }
 }
 
 /// Collapse a bare string into an [`Icon`] with `glyph == fallback` —
