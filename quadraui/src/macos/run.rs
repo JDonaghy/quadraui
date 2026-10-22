@@ -63,7 +63,7 @@ use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::sys::CGContextRef;
@@ -90,7 +90,9 @@ use objc2_foundation::{
 
 use super::backend::MacBackend;
 use super::events::{
-    ns_files_dropped, ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_scroll,
+    ease_out_cubic, fold_wheel_momentum_remaining, ns_files_dropped, ns_key_to_uievent,
+    ns_mouse_down, ns_mouse_moved, ns_mouse_up, route_wheel_event, wheel_momentum_quantized_target,
+    WheelRouting, WHEEL_MOMENTUM_DURATION, WHEEL_MOMENTUM_TICK,
 };
 use super::text::make_font;
 // Reuses the tray icon's AppKit-decoder for the Dock/app-switcher
@@ -110,7 +112,8 @@ use crate::runtime::{self, ReactionSink, ResizeDebouncer, RESIZE_SETTLE};
 // module — keeps working unchanged after the type moved to
 // `crate::runtime`.
 pub(crate) use crate::runtime::EventOutcome;
-use crate::{ButtonMask, UiEvent};
+use crate::transition::Transition;
+use crate::{ButtonMask, Point, ScrollDelta, UiEvent};
 
 /// Opaque stand-in for the C type `CGContext`. We only ever hold a
 /// `*mut OpaqueCGContext`, which we then cast to `core-graphics`'
@@ -486,6 +489,26 @@ impl WindowCloseFlag {
     }
 }
 
+/// In-flight synthetic momentum glide for one discrete (non-trackpad)
+/// wheel notch, animated via [`Transition`] rather than dispatched as a
+/// single lump — see `events.rs`'s "Precise vs. discrete deltas" doc.
+///
+/// `total_dx`/`total_dy` is the total delta this glide must deliver;
+/// `delivered_dx`/`delivered_dy` is the whole-unit amount already
+/// dispatched out of it (the previous tick's
+/// [`wheel_momentum_quantized_target`] result), read back by
+/// [`fold_wheel_momentum_remaining`] if another notch arrives before
+/// this glide finishes.
+struct WheelMomentum {
+    transition: Transition,
+    total_dx: f32,
+    total_dy: f32,
+    delivered_dx: f32,
+    delivered_dy: f32,
+    x: f32,
+    y: f32,
+}
+
 /// `QuadraView`'s per-instance state. `last_viewport` is retained for
 /// diagnostics + future paint↔click harness work; `paint` / `handle`
 /// are the AppLogic bridge.
@@ -528,6 +551,16 @@ pub(crate) struct QuadraViewIvars {
     /// [`MacRunner::window_open`] through the same `Rc`, held as
     /// [`MacBootstrap::window_closed`]. See [`WindowCloseFlag`]'s doc.
     window_closed: Rc<WindowCloseFlag>,
+    /// The currently-animating discrete-wheel momentum glide, if any.
+    /// `None` whenever no synthetic glide is in flight (trackpad
+    /// scrolling never touches this — see [`WheelMomentum`]'s doc).
+    wheel_momentum: RefCell<Option<WheelMomentum>>,
+    /// The in-flight *repeating* momentum timer, if any. Unlike
+    /// `resize_timer` (one-shot, re-armed from scratch on every
+    /// notification), this timer is armed once per glide and left
+    /// running across folded notches — see
+    /// `start_or_extend_wheel_momentum`'s doc.
+    momentum_timer: RefCell<Option<Retained<NSTimer>>>,
 }
 
 define_class!(
@@ -749,13 +782,33 @@ define_class!(
 
         // ── Scroll wheel + key down ──────────────────────────────
 
+        /// Trackpad ("precise") deltas are dispatched straight through —
+        /// AppKit already drives a decaying stream of real `scrollWheel:`
+        /// calls during a momentum-phase flick, so animating them again
+        /// here would double the glide. A discrete wheel notch
+        /// (`hasPreciseScrollingDeltas() == false`) has no such native
+        /// follow-up, so it's wired through `start_or_extend_wheel_momentum`
+        /// to glide via `Transition` instead of landing as a single lump.
+        /// `route_wheel_event` makes that decision as a pure function; see
+        /// `events.rs`'s "Precise vs. discrete deltas" doc for the full
+        /// rationale and the pure math behind the glide.
         #[unsafe(method(scrollWheel:))]
         fn objc_scroll_wheel(&self, event: &NSEvent) {
             let (x, y, _flags) = self.locate(event);
-            // SAFETY: scrollingDeltaX/Y are safe on a scroll event.
+            // SAFETY: scrollingDeltaX/Y/hasPreciseScrollingDeltas are safe
+            // on a scroll event.
             let dx = event.scrollingDeltaX();
             let dy = event.scrollingDeltaY();
-            self.dispatch(ns_scroll(dx, dy, x, y));
+            let precise = event.hasPreciseScrollingDeltas();
+            match route_wheel_event(precise, dx, dy, x, y) {
+                WheelRouting::Immediate(ev) => {
+                    self.cancel_wheel_momentum();
+                    self.dispatch(ev);
+                }
+                WheelRouting::Glide { dx, dy, x, y } => {
+                    self.start_or_extend_wheel_momentum(dx, dy, x, y);
+                }
+            }
         }
 
         #[unsafe(method(keyDown:))]
@@ -839,6 +892,45 @@ define_class!(
             self.ivars().resize_timer.borrow_mut().take();
             if let Some(viewport) = self.ivars().resize_debouncer.borrow_mut().take() {
                 self.dispatch(UiEvent::WindowResized { viewport });
+            }
+        }
+
+        /// Fires every [`WHEEL_MOMENTUM_TICK`] while a discrete-wheel
+        /// momentum glide is in flight — see `start_or_extend_wheel_momentum`
+        /// for how it's armed and `WheelMomentum`'s doc for the state it
+        /// reads. Samples the glide's eased progress, computes the
+        /// whole-unit cumulative target via
+        /// [`wheel_momentum_quantized_target`], dispatches only the
+        /// incremental (always whole-unit) delta since the last tick, and
+        /// tears the glide down once it finishes.
+        #[unsafe(method(wheelMomentumTick:))]
+        fn wheel_momentum_tick(&self, _timer: &NSTimer) {
+            let now = Instant::now();
+            let (tick_dx, tick_dy, x, y, finished) = {
+                let mut momentum = self.ivars().wheel_momentum.borrow_mut();
+                let Some(state) = momentum.as_mut() else {
+                    return;
+                };
+                let eased = ease_out_cubic(state.transition.progress_at(now));
+                let target_dx = wheel_momentum_quantized_target(state.total_dx, eased);
+                let target_dy = wheel_momentum_quantized_target(state.total_dy, eased);
+                let tick_dx = target_dx - state.delivered_dx;
+                let tick_dy = target_dy - state.delivered_dy;
+                let (x, y) = (state.x, state.y);
+                let finished = state.transition.is_finished_at(now);
+                state.delivered_dx = target_dx;
+                state.delivered_dy = target_dy;
+                (tick_dx, tick_dy, x, y, finished)
+            };
+            if tick_dx != 0.0 || tick_dy != 0.0 {
+                self.dispatch(UiEvent::Scroll {
+                    widget: None,
+                    delta: ScrollDelta::new(tick_dx, tick_dy),
+                    position: Point::new(x, y),
+                });
+            }
+            if finished {
+                self.cancel_wheel_momentum();
             }
         }
 
@@ -1018,6 +1110,8 @@ impl QuadraView {
             resize_timer: RefCell::new(None),
             exit_gate,
             window_closed,
+            wheel_momentum: RefCell::new(None),
+            momentum_timer: RefCell::new(None),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -1151,6 +1245,73 @@ impl QuadraView {
             }
         };
         self.apply_reaction(reaction);
+    }
+
+    /// Tear down any in-flight discrete-wheel momentum glide: drop the
+    /// [`WheelMomentum`] state and invalidate the repeating timer driving
+    /// it. Called both when a trackpad gesture starts (precise deltas
+    /// never need a synthetic glide — see `objc_scroll_wheel`'s doc) and
+    /// once `wheel_momentum_tick`'s [`Transition`] finishes.
+    fn cancel_wheel_momentum(&self) {
+        self.ivars().wheel_momentum.borrow_mut().take();
+        if let Some(timer) = self.ivars().momentum_timer.borrow_mut().take() {
+            timer.invalidate();
+        }
+    }
+
+    /// Start (or extend) a discrete-wheel momentum glide for one
+    /// `scrollWheel:` notch at view-local `(x, y)`.
+    ///
+    /// If a glide is already in flight, its undelivered remainder is
+    /// folded into this new notch via [`fold_wheel_momentum_remaining`]
+    /// rather than discarded or queued — so a quick run of repeated
+    /// notches reads as one continuously-extending glide, not a stutter.
+    /// The [`Transition`] always restarts from `0.0` on a fresh notch
+    /// (whether folded or not), since the folded *amount* already
+    /// accounts for what's left to deliver. The repeating `NSTimer`
+    /// itself is armed once and left running across folded notches —
+    /// only a from-scratch glide (no timer yet armed) needs a new one.
+    fn start_or_extend_wheel_momentum(&self, dx: f32, dy: f32, x: f32, y: f32) {
+        let now = Instant::now();
+        let (total_dx, total_dy) = {
+            let momentum = self.ivars().wheel_momentum.borrow();
+            match momentum.as_ref() {
+                Some(state) => (
+                    fold_wheel_momentum_remaining(state.total_dx, state.delivered_dx, dx),
+                    fold_wheel_momentum_remaining(state.total_dy, state.delivered_dy, dy),
+                ),
+                None => (dx, dy),
+            }
+        };
+        self.ivars()
+            .wheel_momentum
+            .borrow_mut()
+            .replace(WheelMomentum {
+                transition: Transition::starting_at(now, WHEEL_MOMENTUM_DURATION),
+                total_dx,
+                total_dy,
+                delivered_dx: 0.0,
+                delivered_dy: 0.0,
+                x,
+                y,
+            });
+        if self.ivars().momentum_timer.borrow().is_some() {
+            return;
+        }
+        // SAFETY: `self` is a valid, live `QuadraView` for at least as
+        // long as this method call — same no-op upcast
+        // `view_frame_did_change` uses to arm its own timer.
+        let self_obj: &AnyObject = unsafe { &*(self as *const Self as *const AnyObject) };
+        let timer = unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                WHEEL_MOMENTUM_TICK.as_secs_f64(),
+                self_obj,
+                sel!(wheelMomentumTick:),
+                None,
+                true,
+            )
+        };
+        self.ivars().momentum_timer.borrow_mut().replace(timer);
     }
 
     /// Backing logic for `windowShouldClose:` — the
