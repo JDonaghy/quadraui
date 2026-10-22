@@ -507,6 +507,40 @@ impl DatePickerLayout {
         }
         DatePickerHit::Empty
     }
+
+    /// The smallest [`Rect`] enclosing every populated region (header,
+    /// day grid, time field). Backends pass this to
+    /// [`Backend::register_zone`](crate::Backend::register_zone) under
+    /// the picker's single `WidgetId`, mirroring how `ComboBox`
+    /// registers its one `field_bounds` zone — `DatePicker` has no
+    /// per-cell `WidgetId`s, so hit-testing within the zone goes back
+    /// through [`DatePickerLayout::hit_test`] rather than through
+    /// multiple registered zones.
+    pub fn bounds(&self) -> Rect {
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        let mut grow = |r: Rect| {
+            min_x = min_x.min(r.x);
+            min_y = min_y.min(r.y);
+            max_x = max_x.max(r.x + r.width);
+            max_y = max_y.max(r.y + r.height);
+        };
+        if let Some(r) = self.header_bounds {
+            grow(r);
+        }
+        for cell in &self.day_cells {
+            grow(cell.bounds);
+        }
+        if let Some(r) = self.time_bounds {
+            grow(r);
+        }
+        if !min_x.is_finite() {
+            return Rect::default();
+        }
+        Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+    }
 }
 
 /// Events a `DatePicker` emits back to the app. The app applies these to
@@ -520,6 +554,264 @@ pub enum DatePickerEvent {
     FocusMoved(CalendarDate),
     /// `Enter` or a click on a day confirmed that date as `selected`.
     DateSelected(CalendarDate),
+}
+
+/// Shared-paint executor for [`DatePicker`] — a rasteriser calls into
+/// this (never re-deriving geometry itself) instead of walking the
+/// layout fields directly, matching every other primitive's
+/// `native_surface_paint` module (see `docs/PRIMITIVE_RULES.md`'s
+/// "Primitive-first" rule). Gated to the backends that actually paint
+/// pixels — the TUI backend renders `DatePicker` through its own
+/// cell-grid path instead.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{DatePicker, DatePickerLayout};
+    use crate::paint_surface::PaintSurface;
+    use crate::theme::Theme;
+
+    /// Paint a [`DatePicker`] onto `surface`: the month/year header with
+    /// prev/next controls, the 42-cell day grid (focus ring on
+    /// `is_focused`, fill on `is_selected`, dimmed text for cells outside
+    /// `in_visible_month`), and — when `layout.time_bounds` is `Some` —
+    /// the time field.
+    pub(crate) fn paint(
+        date_picker: &DatePicker,
+        layout: &DatePickerLayout,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+    ) {
+        if let Some(header) = layout.header_bounds {
+            if header.width > 0.0 && header.height > 0.0 {
+                surface.surface_fill_rect(header, theme.header_bg);
+                surface.surface_draw_text_run(
+                    header,
+                    &format!(
+                        "{:04}-{:02}",
+                        date_picker.visible_month.year, date_picker.visible_month.month
+                    ),
+                    theme.header_fg,
+                );
+            }
+        }
+        if let Some(prev) = layout.prev_bounds {
+            if prev.width > 0.0 && prev.height > 0.0 {
+                surface.surface_draw_text_run(prev, "<", theme.header_fg);
+            }
+        }
+        if let Some(next) = layout.next_bounds {
+            if next.width > 0.0 && next.height > 0.0 {
+                surface.surface_draw_text_run(next, ">", theme.header_fg);
+            }
+        }
+
+        for cell in &layout.day_cells {
+            if cell.bounds.width <= 0.0 || cell.bounds.height <= 0.0 {
+                continue;
+            }
+            if cell.is_selected {
+                surface.surface_fill_rect(cell.bounds, theme.selected_bg);
+            }
+            if cell.is_focused {
+                surface.surface_stroke_rect(cell.bounds, theme.accent_fg, 1.0);
+            }
+            let fg = if cell.in_visible_month {
+                theme.surface_fg
+            } else {
+                theme.muted_fg
+            };
+            surface.surface_draw_text_run(cell.bounds, &cell.date.day.to_string(), fg);
+        }
+
+        if let Some(time) = layout.time_bounds {
+            if time.width > 0.0 && time.height > 0.0 {
+                surface.surface_fill_rect(time, theme.input_bg);
+                surface.surface_stroke_rect(time, theme.border_fg, 1.0);
+                if let Some(t) = date_picker.time {
+                    surface.surface_draw_text_run(time, &t.format(), theme.surface_fg);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::{Point, Rect, Viewport};
+        use crate::primitives::date_picker::{CalendarDate, TimeOfDay, Weekday};
+        use crate::types::{Color, WidgetId};
+        use crate::Image;
+
+        /// Records every surface verb `DatePicker`'s paint uses — mirrors
+        /// `primitives::combo_box`'s identical test double, so this test
+        /// runs on any host without Cairo/Core Graphics/Direct2D.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color)>,
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, _stroke_width: f32) {
+                self.strokes.push((rect, color));
+            }
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: Point,
+                _to: Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn picker() -> DatePicker {
+            let mut picker =
+                DatePicker::new(WidgetId::new("test:date"), CalendarDate::new(2024, 3, 15));
+            picker.locale.first_weekday = Weekday::Monday;
+            picker
+        }
+
+        #[test]
+        fn paints_header_label_and_prev_next_controls() {
+            let picker = picker();
+            let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 1.0, 0.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&picker, &layout, &mut surface, &theme);
+
+            assert!(surface
+                .fills
+                .contains(&(layout.header_bounds.unwrap(), theme.header_bg)));
+            let labels: Vec<&str> = surface
+                .text_runs
+                .iter()
+                .map(|(_, text, _)| text.as_str())
+                .collect();
+            assert!(labels.contains(&"2024-03"));
+            assert!(labels.contains(&"<"));
+            assert!(labels.contains(&">"));
+        }
+
+        #[test]
+        fn selected_day_gets_a_fill_and_focused_day_gets_a_stroke() {
+            let mut picker = picker();
+            picker.selected = Some(CalendarDate::new(2024, 3, 10));
+            let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 1.0, 0.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&picker, &layout, &mut surface, &theme);
+
+            let selected_bounds = layout
+                .day_cells
+                .iter()
+                .find(|c| c.is_selected)
+                .unwrap()
+                .bounds;
+            assert!(surface
+                .fills
+                .contains(&(selected_bounds, theme.selected_bg)));
+
+            let focused_bounds = layout
+                .day_cells
+                .iter()
+                .find(|c| c.is_focused)
+                .unwrap()
+                .bounds;
+            assert!(surface.strokes.contains(&(focused_bounds, theme.accent_fg)));
+        }
+
+        #[test]
+        fn days_outside_the_visible_month_paint_with_muted_text() {
+            let picker = picker();
+            let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 1.0, 0.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&picker, &layout, &mut surface, &theme);
+
+            let leading_cell = layout.day_cells[0];
+            assert!(!leading_cell.in_visible_month);
+            assert!(surface.text_runs.contains(&(
+                leading_cell.bounds,
+                leading_cell.date.day.to_string(),
+                theme.muted_fg
+            )));
+        }
+
+        #[test]
+        fn time_field_paints_only_when_reserved_and_set() {
+            let mut picker = picker();
+            picker.time = Some(TimeOfDay::new(9, 30));
+            let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 1.0, 2.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&picker, &layout, &mut surface, &theme);
+
+            let time_bounds = layout.time_bounds.expect("time field reserved");
+            assert!(surface.strokes.contains(&(time_bounds, theme.border_fg)));
+            assert!(surface.text_runs.iter().any(|(_, text, _)| text == "09:30"));
+
+            let no_time_layout = picker.layout(0.0, 0.0, 10.0, 2.0, 1.0, 0.0);
+            let mut surface2 = RecordingSurface::default();
+            paint(&picker, &no_time_layout, &mut surface2, &theme);
+            assert!(no_time_layout.time_bounds.is_none());
+        }
+
+        #[test]
+        fn zero_size_header_and_time_paint_nothing_for_those_regions() {
+            let picker = picker();
+            let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 0.0, 0.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&picker, &layout, &mut surface, &theme);
+
+            assert!(layout.header_bounds.is_none());
+            assert!(layout.time_bounds.is_none());
+            assert!(!surface.fills.contains(&(Rect::default(), theme.header_bg)));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -750,6 +1042,36 @@ mod tests {
         assert_eq!(layout.time_bounds, None);
         assert_eq!(layout.prev_bounds, None);
         assert_eq!(layout.next_bounds, None);
+    }
+
+    #[test]
+    fn bounds_encloses_header_grid_and_time_field() {
+        let picker = DatePicker {
+            id: WidgetId::new("dp"),
+            visible_month: CalendarDate::new(2024, 3, 1),
+            selected: None,
+            focused: CalendarDate::new(2024, 3, 15),
+            locale: DateLocale::default(),
+            time: Some(TimeOfDay::new(10, 30)),
+            has_focus: true,
+        };
+        let layout = picker.layout(5.0, 5.0, 10.0, 2.0, 1.0, 2.0);
+
+        let bounds = layout.bounds();
+        assert_eq!(bounds.x, 5.0);
+        assert_eq!(bounds.y, 5.0);
+        assert_eq!(bounds.width, 70.0);
+        // header (1.0) + 6 grid rows (12.0) + time field (2.0).
+        assert_eq!(bounds.height, 15.0);
+    }
+
+    #[test]
+    fn bounds_covers_just_the_grid_when_header_and_time_are_absent() {
+        let picker = DatePicker::new(WidgetId::new("dp"), CalendarDate::new(2024, 3, 1));
+        let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 0.0, 0.0);
+
+        let bounds = layout.bounds();
+        assert_eq!(bounds, Rect::new(0.0, 0.0, 70.0, 12.0));
     }
 
     #[test]

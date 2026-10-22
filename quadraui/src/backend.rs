@@ -52,6 +52,7 @@ use crate::primitives::command_line::{CommandLine, CommandLineLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::data_table::{DataTable, DataTableLayout};
+use crate::primitives::date_picker::{DatePicker, DatePickerLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout, DialogSeverity};
 use crate::primitives::diff_view::{DiffMode, DiffView, DiffViewLayout};
 use crate::primitives::drop_zone::DropOverlay;
@@ -2901,6 +2902,17 @@ pub trait Backend: sealed::Sealed {
     /// "every backend must rasterise it" reasoning as
     /// [`Self::draw_number_input`].
     fn draw_combo_box(&mut self, combo_box: &ComboBox, layout: &ComboBoxLayout);
+
+    /// Draw a [`DatePicker`] at its caller-resolved `layout`: the
+    /// month/year header with prev/next controls, the 42-cell day grid,
+    /// and — when `layout.time_bounds` is `Some` — the time field. The
+    /// caller computes `layout` itself via [`DatePicker::layout`], same
+    /// host-resolves-layout shape as [`Self::draw_combo_box`].
+    ///
+    /// Required, no default (`PRIMITIVE_RULES.md` rule 7) — same
+    /// "every backend must rasterise it" reasoning as
+    /// [`Self::draw_combo_box`].
+    fn draw_date_picker(&mut self, date_picker: &DatePicker, layout: &DatePickerLayout);
 
     /// Draw a [`Tooltip`] popup at its caller-resolved layout, with the
     /// default chrome ([`crate::TooltipBorder::Full`], no title). The

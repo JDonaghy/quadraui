@@ -29,6 +29,7 @@ mod command_line;
 mod completions;
 mod context_menu;
 mod data_table;
+mod date_picker;
 mod dialog;
 mod diff_view;
 mod drop_overlay;

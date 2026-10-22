@@ -3821,6 +3821,21 @@ impl Backend for WinBackend {
         self.register_zone(combo_box.id, layout.field_bounds);
     }
 
+    fn draw_date_picker(
+        &mut self,
+        date_picker: &crate::primitives::date_picker::DatePicker,
+        layout: &crate::primitives::date_picker::DatePickerLayout,
+    ) {
+        let theme = self.current_theme;
+        crate::primitives::date_picker::native_surface_paint::paint(
+            date_picker,
+            layout,
+            self,
+            &theme,
+        );
+        self.register_zone(date_picker.id, layout.bounds());
+    }
+
     /// Real Direct2D/DirectWrite rasteriser via `win::multi_section_view`
     /// once a surface is attached. See [`Self::draw_status_bar`]'s doc for
     /// the "surface not attached yet" fallback posture.

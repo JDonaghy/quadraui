@@ -3648,6 +3648,23 @@ impl Backend for TuiBackend {
         self.register_zone(combo_box.id, layout.field_bounds);
     }
 
+    fn draw_date_picker(
+        &mut self,
+        date_picker: &crate::primitives::date_picker::DatePicker,
+        layout: &crate::primitives::date_picker::DatePickerLayout,
+    ) {
+        let theme = self.current_theme;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_date_picker called outside enter_frame_scope"
+            );
+            return;
+        };
+        crate::tui::draw_date_picker(frame.buffer_mut(), date_picker, layout, &theme);
+        self.register_zone(date_picker.id, layout.bounds());
+    }
+
     fn draw_scrollbar(
         &mut self,
         _rect: QRect,
@@ -4659,6 +4676,7 @@ mod tests {
         }
         fn draw_number_input(&mut self, _n: &crate::NumberInput, _l: &crate::NumberInputLayout) {}
         fn draw_combo_box(&mut self, _c: &crate::ComboBox, _l: &crate::ComboBoxLayout) {}
+        fn draw_date_picker(&mut self, _d: &crate::DatePicker, _l: &crate::DatePickerLayout) {}
         fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
         fn draw_context_menu(
             &mut self,
