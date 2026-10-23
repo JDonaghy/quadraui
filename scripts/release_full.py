@@ -101,6 +101,44 @@ def read_cargo_version() -> str:
     return m.group(1)
 
 
+def check_readme_truth_version_strings(version: str) -> None:
+    """Fail before any push if README.md/lib.rs's hard-coded version strings
+    don't already match `version`.
+
+    Belt-and-suspenders for `quadraui/tests/readme_truth.rs`
+    (`readme_and_lib_doc_state_the_real_version`,
+    `readme_leads_with_a_resolvable_published_version`): `release.py
+    prepare` keeps these in lockstep with the Cargo.toml bump in the same
+    commit, but this catches a hand-run release (or a stale checkout) that
+    skipped it, before it ever reaches a push.
+    """
+    from release import pre_1_0_status_string, published_dependency_version
+
+    want_status = f"`{pre_1_0_status_string(version)}`"
+    want_dependency = f'quadraui = {{ version = "{published_dependency_version(version)}"'
+
+    readme = (REPO_DIR / "README.md").read_text()
+    lib_rs = (REPO_DIR / "quadraui" / "src" / "lib.rs").read_text()
+
+    problems = []
+    if want_status not in readme:
+        problems.append(f"README.md's Status section doesn't say {want_status}")
+    if want_dependency not in readme:
+        problems.append(
+            f"README.md's Getting started section doesn't contain {want_dependency!r}"
+        )
+    if want_status not in lib_rs:
+        problems.append(f"quadraui/src/lib.rs's crate doc doesn't say {want_status}")
+
+    if problems:
+        fail(
+            "README/lib.rs version strings don't match "
+            f"{version} (readme_truth.rs will red out on develop):\n    "
+            + "\n    ".join(problems)
+        )
+    info(f"README.md + lib.rs version strings match {version}")
+
+
 def tag_exists_on_remote(tag: str) -> bool:
     r = git(["ls-remote", "--tags", "origin", f"refs/tags/{tag}"], check=False)
     return tag in r.stdout
@@ -289,10 +327,12 @@ def prepare(version: str) -> None:
 
     if current == branch:
         info(f"already on {branch} — skipping prepare")
+        check_readme_truth_version_strings(version)
         return
 
     if read_cargo_version() == version:
         info(f"version already bumped to {version} — skipping prepare")
+        check_readme_truth_version_strings(version)
         return
 
     if current != "develop":
@@ -323,6 +363,7 @@ def prepare(version: str) -> None:
     if result.returncode != 0:
         fail("release.py prepare failed")
 
+    check_readme_truth_version_strings(version)
     info(f"release branch {branch} ready")
 
 
@@ -333,6 +374,7 @@ def bump_pr(version: str) -> None:
     banner("3/5", "Bump PR → develop")
 
     branch = f"release-{version}"
+    check_readme_truth_version_strings(version)
 
     existing = pr_for_branch("develop", branch)
     if existing and existing["state"] == "MERGED":

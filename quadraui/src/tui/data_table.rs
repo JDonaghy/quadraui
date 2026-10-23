@@ -11,7 +11,7 @@ use ratatui::style::Modifier;
 
 use super::{ratatui_color, set_cell};
 use crate::primitives::data_table::{
-    ColumnAlign, ColumnMeasure, DataTable, DataTableLayout, SortDirection,
+    ColumnAlign, ColumnMeasure, DataTable, DataTableGlyphs, DataTableLayout, SortDirection,
 };
 use crate::theme::Theme;
 
@@ -51,6 +51,32 @@ pub fn draw_data_table(
     table: &DataTable,
     theme: &Theme,
     hovered_idx: Option<usize>,
+) -> DataTableLayout {
+    draw_data_table_with_glyphs(buf, area, table, theme, hovered_idx, None, false)
+}
+
+/// [`draw_data_table`] with an optional app-supplied [`DataTableGlyphs`]
+/// override for the column-header sort-direction indicators.
+/// `nerd_fonts_enabled` selects which half of each override [`Icon`][crate::Icon] —
+/// `glyph` or `fallback` — is resolved (see
+/// [`crate::Backend::nerd_fonts_enabled`]); it is ignored when `glyphs`
+/// does not set the indicator being drawn.
+///
+/// `glyphs: None` reproduces [`draw_data_table`] cell for cell — the
+/// default `▲`/`▼` indicators are unchanged. Passing `Some` only
+/// overrides the glyph it sets; a field left `None` keeps the default for
+/// that direction. Unlike the GUI backends' codicon defaults
+/// (`crate::codicon::SORT_ASCENDING`/`SORT_DESCENDING`), TUI's own default
+/// is the plain Unicode arrow — this function preserves that default
+/// rather than adopting the codicon one.
+pub fn draw_data_table_with_glyphs(
+    buf: &mut Buffer,
+    area: Rect,
+    table: &DataTable,
+    theme: &Theme,
+    hovered_idx: Option<usize>,
+    glyphs: Option<&DataTableGlyphs>,
+    nerd_fonts_enabled: bool,
 ) -> DataTableLayout {
     let layout = data_table_layout(area, table);
 
@@ -100,14 +126,23 @@ pub fn draw_data_table(
             }
         }
 
-        let sort_suffix = match &table.sort {
-            Some((si, dir)) if *si == col_idx => match dir {
-                SortDirection::Ascending => " ▲",
-                SortDirection::Descending => " ▼",
-            },
-            _ => "",
+        let sort_glyph: Option<&str> = match &table.sort {
+            Some((si, dir)) if *si == col_idx => Some(match dir {
+                SortDirection::Ascending => glyphs
+                    .and_then(DataTableGlyphs::sort_ascending_glyph)
+                    .map(|icon| icon.resolve(nerd_fonts_enabled))
+                    .unwrap_or("▲"),
+                SortDirection::Descending => glyphs
+                    .and_then(DataTableGlyphs::sort_descending_glyph)
+                    .map(|icon| icon.resolve(nerd_fonts_enabled))
+                    .unwrap_or("▼"),
+            }),
+            _ => None,
         };
-        let title = format!("{}{}", col.title, sort_suffix);
+        let title = match sort_glyph {
+            Some(glyph) => format!("{} {glyph}", col.title),
+            None => col.title.clone(),
+        };
         let text_len = title.chars().count() as i32;
         let usable_w = if col_idx + 1 < table.columns.len() {
             col_w.saturating_sub(1) as i32
@@ -466,6 +501,99 @@ mod tests {
         assert!(
             header.contains("▲"),
             "sorted column should show ▲, got: {header}"
+        );
+    }
+
+    /// An app-supplied [`DataTableGlyphs`] override replaces the
+    /// sort-direction indicator appended to the sorted column's header;
+    /// with no override, [`draw_data_table_with_glyphs`] (what
+    /// [`draw_data_table`] always calls) appends the same `▲`/`▼` as
+    /// today's default.
+    #[test]
+    fn data_table_glyphs_override_swaps_sort_arrow_default_keeps_arrow() {
+        let area = Rect::new(0, 0, 40, 10);
+
+        // Default (no override): ascending sort shows '▲'.
+        let table = make_table();
+        let mut buf = Buffer::empty(area);
+        draw_data_table_with_glyphs(&mut buf, area, &table, &Theme::default(), None, None, false);
+        let header: String = (0..40)
+            .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            header.contains('▲'),
+            "expected default '▲' sort glyph, got: {header}"
+        );
+
+        // Override: the app's own ascending glyph replaces '▲', and '▲'
+        // no longer appears in the header.
+        let glyphs = DataTableGlyphs::new().with_sort_ascending_glyph("^");
+        let mut buf = Buffer::empty(area);
+        draw_data_table_with_glyphs(
+            &mut buf,
+            area,
+            &table,
+            &Theme::default(),
+            None,
+            Some(&glyphs),
+            false,
+        );
+        let header: String = (0..40)
+            .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            !header.contains('▲'),
+            "default '▲' sort glyph leaked through override, got: {header}"
+        );
+        assert!(
+            header.contains('^'),
+            "expected overridden '^' sort glyph, got: {header}"
+        );
+
+        // Descending sort with no override still shows the default '▼'.
+        let mut desc_table = make_table();
+        desc_table.sort = Some((0, SortDirection::Descending));
+        let mut buf = Buffer::empty(area);
+        draw_data_table_with_glyphs(
+            &mut buf,
+            area,
+            &desc_table,
+            &Theme::default(),
+            None,
+            None,
+            false,
+        );
+        let header: String = (0..40)
+            .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            header.contains('▼'),
+            "expected default '▼' sort glyph, got: {header}"
+        );
+
+        // Override: the app's own descending glyph replaces '▼', and '▼'
+        // no longer appears in the header.
+        let desc_glyphs = DataTableGlyphs::new().with_sort_descending_glyph("v");
+        let mut buf = Buffer::empty(area);
+        draw_data_table_with_glyphs(
+            &mut buf,
+            area,
+            &desc_table,
+            &Theme::default(),
+            None,
+            Some(&desc_glyphs),
+            false,
+        );
+        let header: String = (0..40)
+            .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            !header.contains('▼'),
+            "default '▼' sort glyph leaked through override, got: {header}"
+        );
+        assert!(
+            header.contains('v'),
+            "expected overridden 'v' sort glyph, got: {header}"
         );
     }
 
@@ -1200,5 +1328,192 @@ mod tests {
                 "footer row {y} should not be painted over by the scrollbar track"
             );
         }
+    }
+}
+
+/// Multi-select keyboard wiring over [`crate::tui::testing::TuiDriver`].
+///
+/// `DataTable` stays purely declarative (no selection-set field of its
+/// own — see `crate::types::apply_selection_gesture`'s doc), so the app
+/// owns the selected-index set, the keyboard cursor, and the gesture
+/// anchor. TUI has no mouse, so unlike the click-driven
+/// `crate::gtk::data_table`/`crate::win::data_table` counterparts, a
+/// plain Up/Down only moves the cursor; Shift+Up/Down extends a range
+/// from the anchor via [`SelectionGesture::from_modifiers`], and Space
+/// toggles the cursor row without moving it.
+#[cfg(test)]
+mod multi_select_driver_tests {
+    use crate::primitives::data_table::{Column, DataRow, DataTable};
+    use crate::runner::{AppLogic, Reaction};
+    use crate::tui::testing::TuiDriver;
+    use crate::{
+        apply_selection_gesture, Backend, DataTableEvent, Decoration, Key, Modifiers, NamedKey,
+        Rect, SelectionGesture, StyledText, UiEvent, WidgetId,
+    };
+
+    const VIEWPORT_W: u16 = 40;
+    const VIEWPORT_H: u16 = 10;
+
+    fn row(label: &str) -> DataRow {
+        DataRow {
+            cells: vec![StyledText::plain(label.to_string())],
+            decoration: Decoration::Normal,
+        }
+    }
+
+    fn sample_table() -> DataTable {
+        DataTable {
+            id: WidgetId::new("dt"),
+            columns: vec![Column {
+                title: "Name".to_string(),
+                width: Default::default(),
+                align: Default::default(),
+            }],
+            rows: (0..5).map(|i| row(&format!("row {i}"))).collect(),
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: true,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+        }
+    }
+
+    struct TableApp {
+        table: DataTable,
+        cursor: usize,
+        selected: Vec<usize>,
+        anchor: usize,
+        events: Vec<DataTableEvent>,
+    }
+
+    impl TableApp {
+        fn new() -> Self {
+            Self {
+                table: sample_table(),
+                cursor: 0,
+                selected: Vec::new(),
+                anchor: 0,
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl AppLogic for TableApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_data_table(
+                Rect::new(0.0, 0.0, VIEWPORT_W as f32, VIEWPORT_H as f32),
+                &self.table,
+                None,
+            );
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::KeyPressed { key, modifiers, .. } = event else {
+                return Reaction::Continue;
+            };
+            let last = self.table.rows.len().saturating_sub(1);
+            match key {
+                Key::Named(NamedKey::Down) | Key::Named(NamedKey::Up) => {
+                    let delta: isize = if key == Key::Named(NamedKey::Down) {
+                        1
+                    } else {
+                        -1
+                    };
+                    self.cursor = (self.cursor as isize + delta).clamp(0, last as isize) as usize;
+                    if !modifiers.shift {
+                        // A plain move repositions the cursor only; the
+                        // selection changes explicitly via Space/Shift.
+                        return Reaction::Redraw;
+                    }
+                    let indices = apply_selection_gesture(
+                        &self.selected,
+                        self.anchor,
+                        self.cursor,
+                        SelectionGesture::Range,
+                    );
+                    self.selected = indices.clone();
+                    self.events.push(DataTableEvent::SelectionSet { indices });
+                    Reaction::Redraw
+                }
+                Key::Char(' ') => {
+                    let indices = apply_selection_gesture(
+                        &self.selected,
+                        self.anchor,
+                        self.cursor,
+                        SelectionGesture::Toggle,
+                    );
+                    self.selected = indices.clone();
+                    self.anchor = self.cursor;
+                    self.events.push(DataTableEvent::SelectionSet { indices });
+                    Reaction::Redraw
+                }
+                _ => Reaction::Continue,
+            }
+        }
+    }
+
+    fn key_event(key: Key, modifiers: Modifiers) -> UiEvent {
+        UiEvent::KeyPressed {
+            key,
+            modifiers,
+            repeat: false,
+        }
+    }
+
+    fn driver() -> TuiDriver<TableApp> {
+        TuiDriver::new(TableApp::new(), VIEWPORT_W, VIEWPORT_H)
+    }
+
+    #[test]
+    fn plain_arrow_moves_the_cursor_without_changing_selection() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        assert_eq!(driver.app().cursor, 1);
+        assert_eq!(driver.app().selected, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn space_toggles_rows_into_a_multi_selection() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        assert_eq!(driver.app().selected, vec![0, 2]);
+        // Space toggles the same row back off.
+        driver.dispatch(key_event(Key::Named(NamedKey::Up), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Up), Modifiers::default()));
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        assert_eq!(driver.app().selected, vec![2]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&DataTableEvent::SelectionSet { indices: vec![2] })
+        );
+    }
+
+    #[test]
+    fn shift_arrow_extends_a_range_from_the_anchor() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        assert_eq!(driver.app().selected, vec![0, 1, 2, 3]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&DataTableEvent::SelectionSet {
+                indices: vec![0, 1, 2, 3]
+            })
+        );
     }
 }

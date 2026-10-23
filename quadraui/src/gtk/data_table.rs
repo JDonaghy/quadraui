@@ -30,6 +30,44 @@ pub fn draw_data_table(
     line_height: f64,
     hovered_idx: Option<usize>,
 ) -> DataTableLayout {
+    draw_data_table_with_glyphs(
+        cr,
+        pango_layout,
+        x,
+        y,
+        width,
+        height,
+        table,
+        theme,
+        line_height,
+        hovered_idx,
+        None,
+        false,
+    )
+}
+
+/// Identical to [`draw_data_table`], plus an optional
+/// [`crate::primitives::data_table::DataTableGlyphs`] override for the
+/// header's sort-direction glyph and the `nerd_fonts_enabled` flag (see
+/// [`crate::Backend::nerd_fonts_enabled`]) that selects each override
+/// [`crate::primitives::Icon`]'s `glyph` vs. `fallback` form. `glyphs: None`
+/// (what [`draw_data_table`] passes) renders byte-for-byte the same as
+/// today's codicon defaults.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_data_table_with_glyphs(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    table: &DataTable,
+    theme: &Theme,
+    line_height: f64,
+    hovered_idx: Option<usize>,
+    glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
+    nerd_fonts_enabled: bool,
+) -> DataTableLayout {
     pango_layout.set_attributes(None);
     let measure = super::toolbar::PangoMeasure {
         pango_layout: Some(pango_layout),
@@ -76,15 +114,30 @@ pub fn draw_data_table(
     bold_icon_font.set_weight(pango::Weight::Bold);
     let bold_icon_font = super::with_nerd_font_fallback(&bold_icon_font);
 
+    // Resolved once, outside the per-column loop below — these two
+    // values are constant across the whole header row.
+    let sort_ascending_glyph: std::borrow::Cow<'_, str> = glyphs
+        .and_then(crate::primitives::data_table::DataTableGlyphs::sort_ascending_glyph)
+        .map(|icon| std::borrow::Cow::Borrowed(icon.resolve(nerd_fonts_enabled)))
+        .unwrap_or(std::borrow::Cow::Owned(
+            crate::codicon::SORT_ASCENDING.to_string(),
+        ));
+    let sort_descending_glyph: std::borrow::Cow<'_, str> = glyphs
+        .and_then(crate::primitives::data_table::DataTableGlyphs::sort_descending_glyph)
+        .map(|icon| std::borrow::Cow::Borrowed(icon.resolve(nerd_fonts_enabled)))
+        .unwrap_or(std::borrow::Cow::Owned(
+            crate::codicon::SORT_DESCENDING.to_string(),
+        ));
+
     for (col_idx, rc) in layout.columns.iter().enumerate() {
         if col_idx >= table.columns.len() || rc.width <= 0.0 {
             break;
         }
         let col = &table.columns[col_idx];
-        let sort_glyph = match &table.sort {
+        let sort_glyph: Option<&str> = match &table.sort {
             Some((si, dir)) if *si == col_idx => Some(match dir {
-                SortDirection::Ascending => crate::codicon::SORT_ASCENDING,
-                SortDirection::Descending => crate::codicon::SORT_DESCENDING,
+                SortDirection::Ascending => sort_ascending_glyph.as_ref(),
+                SortDirection::Descending => sort_descending_glyph.as_ref(),
             }),
             _ => None,
         };
@@ -661,5 +714,198 @@ mod tests {
             "separator must survive even when the left column's text fills the \
              entire column width: header pixel {header_px:?}, body pixel {body_px:?}"
         );
+    }
+}
+
+/// Multi-select click wiring over [`crate::gtk::testing::GtkDriver`].
+///
+/// `DataTable` stays purely declarative (no selection-set field of its
+/// own — see `crate::types::apply_selection_gesture`'s doc), so the app
+/// owns the selected-index set and the gesture anchor, resolves each
+/// `MouseDown` to a row via [`crate::primitives::data_table::DataTableLayout::hit_test`],
+/// derives the gesture from the event's `Modifiers`, and emits
+/// `DataTableEvent::SelectionSet` with the resulting indices. Mirrors
+/// [`super::list::multi_select_driver_tests`] and
+/// [`super::tree::multi_select_driver_tests`]'s shape.
+#[cfg(test)]
+mod multi_select_driver_tests {
+    use crate::gtk::testing::GtkDriver;
+    use crate::primitives::data_table::ColumnMeasure;
+    use crate::runner::{AppLogic, Reaction};
+    use crate::{
+        apply_selection_gesture, Backend, Column, DataRow, DataTable, DataTableEvent, DataTableHit,
+        Decoration, Modifiers, MouseButton, Point, Rect, SelectionGesture, StyledText, WidgetId,
+    };
+
+    const VIEWPORT_W: f32 = 40.0;
+    const VIEWPORT_H: f32 = 10.0;
+    const ROW_H: f32 = 1.0;
+    const HEADER_H: f32 = 1.0;
+    const SCROLLBAR_W: f32 = 1.0;
+
+    fn row(label: &str) -> DataRow {
+        DataRow {
+            cells: vec![StyledText::plain(label.to_string())],
+            decoration: Decoration::Normal,
+        }
+    }
+
+    fn sample_table() -> DataTable {
+        DataTable {
+            id: WidgetId::new("dt"),
+            columns: vec![Column {
+                title: "Name".to_string(),
+                width: Default::default(),
+                align: Default::default(),
+            }],
+            rows: (0..5).map(|i| row(&format!("row {i}"))).collect(),
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: true,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+        }
+    }
+
+    struct TableApp {
+        table: DataTable,
+        selected: Vec<usize>,
+        anchor: usize,
+        events: Vec<DataTableEvent>,
+    }
+
+    impl TableApp {
+        fn new() -> Self {
+            Self {
+                table: sample_table(),
+                selected: Vec::new(),
+                anchor: 0,
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl AppLogic for TableApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_data_table(
+                Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H),
+                &self.table,
+                None,
+            );
+        }
+
+        fn handle(&mut self, event: crate::UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            let crate::UiEvent::MouseDown {
+                position,
+                modifiers,
+                ..
+            } = event
+            else {
+                return Reaction::Continue;
+            };
+            let layout =
+                self.table
+                    .layout(VIEWPORT_W, VIEWPORT_H, ROW_H, HEADER_H, SCROLLBAR_W, |_| {
+                        ColumnMeasure::new(20.0)
+                    });
+            let hit = layout.hit_test(
+                position.x,
+                position.y,
+                self.table.scroll_offset,
+                self.table.rows.len(),
+            );
+            let idx = match hit {
+                DataTableHit::Row { idx } => idx,
+                _ => return Reaction::Continue,
+            };
+            let gesture = SelectionGesture::from_modifiers(modifiers);
+            let indices = apply_selection_gesture(&self.selected, self.anchor, idx, gesture);
+            self.selected = indices.clone();
+            if !matches!(gesture, SelectionGesture::Range) {
+                self.anchor = idx;
+            }
+            self.events.push(DataTableEvent::SelectionSet { indices });
+            Reaction::Redraw
+        }
+    }
+
+    fn mouse_down(x: f32, y: f32, modifiers: Modifiers) -> crate::UiEvent {
+        crate::UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn plain_click_replaces_selection() {
+        let mut driver = GtkDriver::new(TableApp::new(), 80, 40);
+        driver.dispatch(mouse_down(
+            2.0,
+            HEADER_H + 2.0 * ROW_H,
+            Modifiers::default(),
+        ));
+        assert_eq!(driver.app().selected, vec![2]);
+    }
+
+    #[test]
+    fn ctrl_click_toggles_rows_into_a_multi_selection() {
+        let mut driver = GtkDriver::new(TableApp::new(), 80, 40);
+        driver.set_double_click_folding(false);
+        driver.dispatch(mouse_down(2.0, HEADER_H, Modifiers::default()));
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        driver.dispatch(mouse_down(2.0, HEADER_H + 2.0 * ROW_H, ctrl));
+        assert_eq!(driver.app().selected, vec![0, 2]);
+        driver.dispatch(mouse_down(2.0, HEADER_H + 2.0 * ROW_H, ctrl));
+        assert_eq!(driver.app().selected, vec![0]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&DataTableEvent::SelectionSet { indices: vec![0] })
+        );
+    }
+
+    #[test]
+    fn shift_click_selects_the_range_from_the_anchor() {
+        let mut driver = GtkDriver::new(TableApp::new(), 80, 40);
+        driver.set_double_click_folding(false);
+        driver.dispatch(mouse_down(2.0, HEADER_H, Modifiers::default()));
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        driver.dispatch(mouse_down(2.0, HEADER_H + 3.0 * ROW_H, shift));
+        assert_eq!(driver.app().selected, vec![0, 1, 2, 3]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&DataTableEvent::SelectionSet {
+                indices: vec![0, 1, 2, 3]
+            })
+        );
+    }
+
+    #[test]
+    fn cmd_click_toggles_the_same_as_ctrl_click() {
+        let mut driver = GtkDriver::new(TableApp::new(), 80, 40);
+        driver.set_double_click_folding(false);
+        driver.dispatch(mouse_down(2.0, HEADER_H + ROW_H, Modifiers::default()));
+        driver.dispatch(mouse_down(
+            2.0,
+            HEADER_H + 4.0 * ROW_H,
+            Modifiers {
+                cmd: true,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(driver.app().selected, vec![1, 4]);
     }
 }

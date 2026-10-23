@@ -116,4 +116,86 @@ mod tests {
         let hit = layout.hit_test(rect0.x + 4.0, rect0.y + 2.0);
         assert_eq!(hit, ContextMenuHit::Item(WidgetId::new("copy")));
     }
+
+    /// An app-supplied [`ContextMenuGlyphs`] override swaps the checked-item
+    /// check mark and submenu pull-right arrow the Windows rasteriser
+    /// paints; with `glyphs: None`, [`WinBackend::draw_context_menu_with_glyphs`]
+    /// paints the same codicon defaults as [`draw_context_menu`].
+    #[test]
+    fn checked_and_submenu_glyph_override_paints_app_glyph_default_paints_codicon() {
+        use crate::backend::Backend;
+        use crate::primitives::context_menu::ContextMenuGlyphs;
+        use crate::win::backend::WinBackend;
+
+        const W: u32 = 200;
+        const H: u32 = 100;
+
+        let mut m = menu();
+        m.items[0].checked = Some(true);
+        m.items[2].submenu = Some(vec![action("nested")]);
+        let viewport = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = m.layout(10.0, 10.0, viewport, 120.0, |i| {
+            if m.items[i].is_separator() {
+                ContextMenuItemMeasure::new(6.0)
+            } else {
+                ContextMenuItemMeasure::new(20.0)
+            }
+        });
+
+        let paint = |glyphs: Option<&ContextMenuGlyphs>| {
+            let surface = HeadlessSurface::new(W, H).expect("create surface");
+            let mut backend = WinBackend::new();
+            backend
+                .attach_headless(surface.target().clone(), W, H)
+                .expect("attach headless surface");
+            backend.set_painted_text_recording(true);
+            backend.begin_frame(crate::event::Viewport::new(W as f32, H as f32, 1.0));
+            let _ = backend.draw_context_menu_with_glyphs(&m, &layout, glyphs);
+            backend.end_frame();
+            backend.text_runs().to_vec()
+        };
+
+        let glyphs = ContextMenuGlyphs::new()
+            .with_checked_glyph("V")
+            .with_submenu_arrow_glyph(">");
+        let overridden = paint(Some(&glyphs));
+        assert!(
+            overridden.iter().any(|r| r.text == "V"),
+            "expected the overridden check glyph among painted runs, got {:?}",
+            overridden
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            overridden.iter().any(|r| r.text == ">"),
+            "expected the overridden submenu-arrow glyph among painted runs, got {:?}",
+            overridden
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(!overridden
+            .iter()
+            .any(|r| r.text.contains(crate::codicon::CHECK)));
+        assert!(!overridden
+            .iter()
+            .any(|r| r.text.contains(crate::codicon::CHEVRON_RIGHT)));
+
+        let default = paint(None);
+        assert!(
+            default
+                .iter()
+                .any(|r| r.text.contains(crate::codicon::CHECK)),
+            "expected the default codicon check glyph among painted runs, got {:?}",
+            default.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+        );
+        assert!(
+            default
+                .iter()
+                .any(|r| r.text.contains(crate::codicon::CHEVRON_RIGHT)),
+            "expected the default codicon submenu-arrow glyph among painted runs, got {:?}",
+            default.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+        );
+    }
 }

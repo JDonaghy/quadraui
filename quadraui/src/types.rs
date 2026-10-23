@@ -239,7 +239,14 @@ pub struct Icon {
     pub fallback: String,
     /// Glyph colour. `None` paints the icon in the surrounding row's
     /// default foreground. `Some` paints both the Nerd Font glyph and
-    /// its ASCII fallback in this colour.
+    /// its ASCII fallback in this colour — honoured by tree renderers
+    /// (see [`crate::TreeStyle::chevron_expanded`]). The TUI chrome-glyph
+    /// override registries
+    /// ([`crate::primitives::context_menu::ContextMenuGlyphs`],
+    /// [`crate::primitives::data_table::DataTableGlyphs`],
+    /// [`crate::primitives::tab_bar::TabBarGlyphs`]) resolve an `Icon`
+    /// via [`Self::resolve`] but do not paint `color`: their glyph cells
+    /// always use the surrounding theme foreground.
     #[serde(default)]
     pub color: Option<Color>,
 }
@@ -258,6 +265,20 @@ impl Icon {
     pub fn with_color(mut self, color: Color) -> Self {
         self.color = Some(color);
         self
+    }
+
+    /// The Nerd Font glyph when `nerd_fonts_enabled` is set, otherwise
+    /// the ASCII/Unicode fallback. Centralises the
+    /// `if nerd_fonts_enabled { &self.glyph } else { &self.fallback }`
+    /// choice every rasteriser otherwise repeats inline; see
+    /// [`crate::Backend::nerd_fonts_enabled`].
+    #[must_use]
+    pub fn resolve(&self, nerd_fonts_enabled: bool) -> &str {
+        if nerd_fonts_enabled {
+            &self.glyph
+        } else {
+            &self.fallback
+        }
     }
 }
 

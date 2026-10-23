@@ -1080,6 +1080,9 @@ impl crate::Backend for RecordingBackend {
     fn draw_combo_box(&mut self, _c: &crate::ComboBox, _l: &crate::ComboBoxLayout) {
         self.record("draw_combo_box");
     }
+    fn draw_date_picker(&mut self, _d: &crate::DatePicker, _l: &crate::DatePickerLayout) {
+        self.record("draw_date_picker");
+    }
     fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {
         self.record("draw_tooltip");
     }

@@ -1173,6 +1173,63 @@ fn q_rect_to_ratatui(r: QRect) -> Rect {
     Rect::new(x, y, w, h)
 }
 
+/// Shared tab-width measurement for [`TuiBackend::draw_tab_bar_with_chrome`]
+/// and its glyph-override sibling. A bracket-framed active tab reserves
+/// one extra column on each side of its ordinary close-column
+/// reservation — see `tui::tab_bar`'s module doc for the cell-by-cell
+/// breakdown — and a glyph override only ever substitutes a single-cell
+/// glyph, never the reserved width, so both callers measure through this
+/// one helper rather than two copies that could drift apart.
+fn tab_bar_chrome_layout(bar: &TabBar, area: Rect, chrome: &TabChrome) -> TabBarLayout {
+    let close_cols = if bar.show_tab_close {
+        crate::tui::TAB_CLOSE_COLS as usize
+    } else {
+        0
+    };
+    let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
+    let tab_widths: Vec<usize> = bar
+        .tabs
+        .iter()
+        .map(|t| {
+            let has_close = bar.show_tab_close && t.is_closable;
+            let is_bracket = brackets && t.is_active;
+            let base = display_width(&t.label);
+            if is_bracket && has_close {
+                // '[' + glyph(1) + ']' , replacing the plain
+                // glyph+separator reservation.
+                base + 1 + 1 + 1
+            } else if is_bracket {
+                // '[' + ']' around a label with no close button.
+                base + 2
+            } else if has_close {
+                base + close_cols
+            } else {
+                // No close button and no bracket framing to supply a
+                // visual boundary — reserve a column for the separator
+                // glyph so adjacent labels don't run together.
+                base + crate::tui::TAB_SEPARATOR_COLS as usize
+            }
+        })
+        .collect();
+    bar.layout(
+        area.width as f32,
+        area.height as f32,
+        0.0,
+        |i| {
+            let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
+            let is_bracket = brackets && bar.tabs[i].is_active;
+            if is_bracket && has_close {
+                crate::TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0)
+            } else if has_close {
+                crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32)
+            } else {
+                crate::TabMeasure::new(tab_widths[i] as f32, 0.0)
+            }
+        },
+        |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
+    )
+}
+
 /// Reassemble one leaked SGR mouse escape sequence out of a run of
 /// individual `KeyPressed(Char(_))` events, if `events[0]` opens one.
 ///
@@ -2309,6 +2366,34 @@ impl Backend for TuiBackend {
         crate::tui::draw_data_table(frame.buffer_mut(), area, table, &theme, hovered_idx)
     }
 
+    fn draw_data_table_with_glyphs(
+        &mut self,
+        rect: QRect,
+        table: &crate::DataTable,
+        hovered_idx: Option<usize>,
+        glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
+    ) -> crate::DataTableLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_data_table_with_glyphs called outside enter_frame_scope"
+            );
+            return self.data_table_layout(rect, table);
+        };
+        crate::tui::draw_data_table_with_glyphs(
+            frame.buffer_mut(),
+            area,
+            table,
+            &theme,
+            hovered_idx,
+            glyphs,
+            nerd_fonts,
+        )
+    }
+
     fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
         // Must go through the same resolver `draw_data_table` uses — in
         // particular the cell-granular `h_scroll.round()`. This is the
@@ -2646,56 +2731,7 @@ impl Backend for TuiBackend {
     ) -> crate::TabBarHits {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let close_cols = if bar.show_tab_close {
-            crate::tui::TAB_CLOSE_COLS as usize
-        } else {
-            0
-        };
-        let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
-        // A bracket-framed active tab reserves one extra column on
-        // each side of its ordinary close-column reservation — see
-        // `tui::tab_bar`'s module doc for the cell-by-cell breakdown.
-        let tab_widths: Vec<usize> = bar
-            .tabs
-            .iter()
-            .map(|t| {
-                let has_close = bar.show_tab_close && t.is_closable;
-                let is_bracket = brackets && t.is_active;
-                let base = display_width(&t.label);
-                if is_bracket && has_close {
-                    // '[' + glyph(1) + ']' , replacing the plain
-                    // glyph+separator reservation.
-                    base + 1 + 1 + 1
-                } else if is_bracket {
-                    // '[' + ']' around a label with no close button.
-                    base + 2
-                } else if has_close {
-                    base + close_cols
-                } else {
-                    // No close button and no bracket framing to supply a
-                    // visual boundary — reserve a column for the separator
-                    // glyph so adjacent labels don't run together.
-                    base + crate::tui::TAB_SEPARATOR_COLS as usize
-                }
-            })
-            .collect();
-        let layout = bar.layout(
-            area.width as f32,
-            area.height as f32,
-            0.0,
-            |i| {
-                let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-                let is_bracket = brackets && bar.tabs[i].is_active;
-                if is_bracket && has_close {
-                    crate::TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0)
-                } else if has_close {
-                    crate::TabMeasure::new(tab_widths[i] as f32, close_cols as f32)
-                } else {
-                    crate::TabMeasure::new(tab_widths[i] as f32, 0.0)
-                }
-            },
-            |i| crate::SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
-        );
+        let layout = tab_bar_chrome_layout(bar, area, chrome);
         self.tab_bar_layouts.insert(bar.id, (rect, layout.clone()));
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
@@ -2707,6 +2743,49 @@ impl Backend for TuiBackend {
             return self.tab_bar_layout_with_chrome(rect, bar, chrome);
         };
         crate::tui::draw_tab_bar_with_chrome(frame.buffer_mut(), area, bar, chrome, &layout, &theme)
+    }
+
+    /// [`Self::draw_tab_bar_with_chrome`] plus an optional
+    /// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
+    /// close/dirty marks, honoured in full here (unlike the trait
+    /// default, which ignores `glyphs`).
+    ///
+    /// Shares [`tab_bar_chrome_layout`] with [`Self::draw_tab_bar_with_chrome`]
+    /// — an override only ever substitutes a single-cell glyph, it never
+    /// changes a tab's reserved width — so the two methods measure through
+    /// the same helper rather than risking the arithmetic drifting apart.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+    fn draw_tab_bar_with_chrome_and_glyphs(
+        &mut self,
+        rect: QRect,
+        bar: &TabBar,
+        _hovered_close_tab: Option<usize>,
+        chrome: &TabChrome,
+        glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
+    ) -> crate::TabBarHits {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
+        let layout = tab_bar_chrome_layout(bar, area, chrome);
+        self.tab_bar_layouts.insert(bar.id, (rect, layout.clone()));
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_tab_bar_with_chrome_and_glyphs called outside enter_frame_scope"
+            );
+            return self.tab_bar_layout_with_chrome(rect, bar, chrome);
+        };
+        crate::tui::draw_tab_bar_icons_with_chrome_and_glyphs(
+            frame.buffer_mut(),
+            area,
+            bar,
+            &[],
+            chrome,
+            &layout,
+            &theme,
+            glyphs,
+            nerd_fonts,
+        )
     }
 
     /// Issue #919's `TabBarLayout`-returning counterpart to
@@ -3358,6 +3437,41 @@ impl Backend for TuiBackend {
             .collect()
     }
 
+    fn draw_context_menu_with_glyphs(
+        &mut self,
+        menu: &crate::ContextMenu,
+        layout: &crate::ContextMenuLayout,
+        glyphs: Option<&crate::primitives::context_menu::ContextMenuGlyphs>,
+    ) -> Vec<(QRect, crate::WidgetId)> {
+        // See draw_palette for why this happens before the frame borrow.
+        self.modal_stack.borrow_mut().mark_painted(&menu.id);
+        let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
+        if let Some(frame) = self.current_frame_mut() {
+            crate::tui::draw_context_menu_with_glyphs(
+                frame.buffer_mut(),
+                menu,
+                layout,
+                &theme,
+                glyphs,
+                nerd_fonts,
+            );
+        } else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_context_menu_with_glyphs called outside enter_frame_scope"
+            );
+        }
+        layout
+            .hit_regions
+            .iter()
+            .filter_map(|(rect, hit)| match hit {
+                crate::primitives::context_menu::ContextMenuHit::Item(id) => Some((*rect, *id)),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn draw_dialog(
         &mut self,
         dialog: &crate::primitives::dialog::Dialog,
@@ -3646,6 +3760,23 @@ impl Backend for TuiBackend {
         };
         crate::tui::draw_combo_box(frame.buffer_mut(), combo_box, layout, &theme);
         self.register_zone(combo_box.id, layout.field_bounds);
+    }
+
+    fn draw_date_picker(
+        &mut self,
+        date_picker: &crate::primitives::date_picker::DatePicker,
+        layout: &crate::primitives::date_picker::DatePickerLayout,
+    ) {
+        let theme = self.current_theme;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_date_picker called outside enter_frame_scope"
+            );
+            return;
+        };
+        crate::tui::draw_date_picker(frame.buffer_mut(), date_picker, layout, &theme);
+        self.register_zone(date_picker.id, layout.bounds());
     }
 
     fn draw_scrollbar(
@@ -4659,6 +4790,7 @@ mod tests {
         }
         fn draw_number_input(&mut self, _n: &crate::NumberInput, _l: &crate::NumberInputLayout) {}
         fn draw_combo_box(&mut self, _c: &crate::ComboBox, _l: &crate::ComboBoxLayout) {}
+        fn draw_date_picker(&mut self, _d: &crate::DatePicker, _l: &crate::DatePickerLayout) {}
         fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
         fn draw_context_menu(
             &mut self,
@@ -6476,6 +6608,147 @@ mod tests {
             show_tab_close: true,
             compact: false,
         }
+    }
+
+    /// The glyph-override `Backend` trait methods are reachable through
+    /// `TuiBackend` and actually honour an app-supplied override — not
+    /// just present with an ignored default body. Drives all three
+    /// through a real frame scope, the same production path `AppLogic`
+    /// implementations use.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn backend_trait_glyph_overrides_are_reachable_and_honoured() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut backend = TuiBackend::new();
+        backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
+        let bar = audit_bar();
+        let tab_glyphs = crate::primitives::tab_bar::TabBarGlyphs::new().with_close_glyph("x");
+
+        let menu = crate::ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![crate::primitives::context_menu::ContextMenuItem {
+                id: Some(WidgetId::new("wrap")),
+                label: StyledText {
+                    spans: vec![StyledSpan::plain("Word Wrap")],
+                },
+                checked: Some(true),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let menu_layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| crate::primitives::context_menu::ContextMenuItemMeasure::new(1.0),
+        );
+        let menu_glyphs =
+            crate::primitives::context_menu::ContextMenuGlyphs::new().with_checked_glyph("+");
+
+        let table = crate::DataTable {
+            id: WidgetId::new("table"),
+            columns: vec![crate::primitives::data_table::Column {
+                title: "Name".into(),
+                width: crate::primitives::data_table::ColumnWidth::Flex(1.0),
+                align: crate::primitives::data_table::ColumnAlign::Left,
+            }],
+            rows: vec![],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: Some((0, crate::primitives::data_table::SortDirection::Ascending)),
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+        };
+        let table_glyphs =
+            crate::primitives::data_table::DataTableGlyphs::new().with_sort_ascending_glyph("^");
+
+        // Each primitive paints into its own terminal — a shared one would
+        // let whichever paints last overwrite the others' rows, which
+        // would make this a test of paint order, not of reachability.
+        let mut tab_terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        tab_terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    b.draw_tab_bar_with_chrome_and_glyphs(
+                        QRect::new(0.0, 0.0, 40.0, 1.0),
+                        &bar,
+                        None,
+                        &TabChrome::default(),
+                        Some(&tab_glyphs),
+                    );
+                });
+            })
+            .expect("draw");
+        let tab_screen = screen_text(tab_terminal.backend().buffer());
+        assert!(
+            tab_screen.contains('x'),
+            "overridden tab close glyph should reach the screen, got: {tab_screen}"
+        );
+        assert!(
+            !tab_screen.contains(crate::tui::tab_bar::TAB_CLOSE_CHAR),
+            "default tab close glyph should not leak through the override, got: {tab_screen}"
+        );
+
+        let mut menu_terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        menu_terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    b.draw_context_menu_with_glyphs(&menu, &menu_layout, Some(&menu_glyphs));
+                });
+            })
+            .expect("draw");
+        let menu_screen = screen_text(menu_terminal.backend().buffer());
+        assert!(
+            menu_screen.contains('+'),
+            "overridden context-menu checked glyph should reach the screen, \
+             got: {menu_screen}"
+        );
+        assert!(
+            !menu_screen.contains('✓'),
+            "default context-menu checked glyph should not leak through the \
+             override, got: {menu_screen}"
+        );
+
+        let mut table_terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        table_terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    b.draw_data_table_with_glyphs(
+                        QRect::new(0.0, 0.0, 40.0, 5.0),
+                        &table,
+                        None,
+                        Some(&table_glyphs),
+                    );
+                });
+            })
+            .expect("draw");
+        let table_screen = screen_text(table_terminal.backend().buffer());
+        assert!(
+            table_screen.contains('^'),
+            "overridden data-table sort glyph should reach the screen, got: \
+             {table_screen}"
+        );
+        assert!(
+            !table_screen.contains('▲'),
+            "default data-table sort-ascending glyph should not leak through \
+             the override, got: {table_screen}"
+        );
+    }
+
+    fn screen_text(buf: &ratatui::buffer::Buffer) -> String {
+        buf.content.iter().fold(String::new(), |mut s, cell| {
+            s.push_str(cell.symbol());
+            s
+        })
     }
 
     #[test]

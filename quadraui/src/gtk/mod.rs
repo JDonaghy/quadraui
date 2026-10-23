@@ -29,6 +29,7 @@ mod command_line;
 mod completions;
 mod context_menu;
 mod data_table;
+mod date_picker;
 mod dialog;
 mod diff_view;
 mod drop_overlay;
@@ -82,7 +83,7 @@ pub use chart::gtk_chart_layout;
 pub use command_center::{draw_command_center, gtk_command_center_layout};
 pub use completions::draw_completions;
 pub use context_menu::draw_context_menu;
-pub use data_table::{draw_data_table, gtk_data_table_layout};
+pub use data_table::{draw_data_table, draw_data_table_with_glyphs, gtk_data_table_layout};
 pub use dialog::draw_dialog;
 pub use editor::{draw_editor, editor_col_at_x};
 pub use events::{wire_da_events, wire_da_events_with_scroll_direction};
@@ -120,7 +121,9 @@ pub use split_tree::gtk_split_tree_layout;
 // directly with no alternative — see `status_bar.rs`'s module doc.
 pub use status_bar::{draw_status_bar, MIN_GAP_PX};
 pub use tab_bar::{
-    draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome, draw_tab_bar_with_chrome,
+    draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome,
+    draw_tab_bar_icons_with_chrome_and_glyphs, draw_tab_bar_with_chrome,
+    draw_tab_bar_with_chrome_and_glyphs,
 };
 pub use text_display::{draw_text_display, gtk_text_display_layout};
 pub use text_input::{draw_text_input, gtk_text_input_layout};

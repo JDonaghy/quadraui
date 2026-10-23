@@ -962,3 +962,186 @@ mod tests {
         );
     }
 }
+
+/// Multi-select keyboard wiring over [`crate::tui::testing::TuiDriver`].
+///
+/// `ListView` stays purely declarative (no selection-set field of its
+/// own — see `crate::types::apply_selection_gesture`'s doc), so the app
+/// owns the selected-index set, the keyboard cursor, and the gesture
+/// anchor. TUI has no mouse, so unlike the click-driven
+/// `crate::gtk::list::multi_select_driver_tests` / `crate::win::list`
+/// counterparts, a plain Up/Down only moves the cursor and leaves the
+/// selection untouched; Shift+Up/Down extends a range from the anchor via
+/// [`SelectionGesture::from_modifiers`], and Space toggles the cursor row
+/// without moving it.
+#[cfg(test)]
+mod multi_select_driver_tests {
+    use crate::primitives::list::{ListItem, ListView};
+    use crate::runner::{AppLogic, Reaction};
+    use crate::tui::testing::TuiDriver;
+    use crate::{
+        apply_selection_gesture, Backend, Decoration, Key, ListViewEvent, Modifiers, NamedKey,
+        Rect, SelectionGesture, StyledText, UiEvent, WidgetId,
+    };
+
+    const VIEWPORT_W: u16 = 40;
+    const VIEWPORT_H: u16 = 10;
+
+    fn item(label: &str) -> ListItem {
+        ListItem {
+            text: StyledText::plain(label.to_string()),
+            icon: None,
+            detail: None,
+            decoration: Decoration::Normal,
+        }
+    }
+
+    fn sample_list() -> ListView {
+        ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..5).map(|i| item(&format!("row {i}"))).collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        }
+    }
+
+    struct ListApp {
+        list: ListView,
+        cursor: usize,
+        selected: Vec<usize>,
+        anchor: usize,
+        events: Vec<ListViewEvent>,
+    }
+
+    impl ListApp {
+        fn new() -> Self {
+            Self {
+                list: sample_list(),
+                cursor: 0,
+                selected: Vec::new(),
+                anchor: 0,
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl AppLogic for ListApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_list(
+                Rect::new(0.0, 0.0, VIEWPORT_W as f32, VIEWPORT_H as f32),
+                &self.list,
+            );
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::KeyPressed { key, modifiers, .. } = event else {
+                return Reaction::Continue;
+            };
+            let last = self.list.items.len().saturating_sub(1);
+            match key {
+                Key::Named(NamedKey::Down) | Key::Named(NamedKey::Up) => {
+                    let delta: isize = if key == Key::Named(NamedKey::Down) {
+                        1
+                    } else {
+                        -1
+                    };
+                    self.cursor = (self.cursor as isize + delta).clamp(0, last as isize) as usize;
+                    if !modifiers.shift {
+                        // A plain move repositions the cursor only; the
+                        // selection changes explicitly via Space/Shift.
+                        return Reaction::Redraw;
+                    }
+                    let indices = apply_selection_gesture(
+                        &self.selected,
+                        self.anchor,
+                        self.cursor,
+                        SelectionGesture::Range,
+                    );
+                    self.selected = indices.clone();
+                    self.events.push(ListViewEvent::SelectionSet { indices });
+                    Reaction::Redraw
+                }
+                Key::Char(' ') => {
+                    let indices = apply_selection_gesture(
+                        &self.selected,
+                        self.anchor,
+                        self.cursor,
+                        SelectionGesture::Toggle,
+                    );
+                    self.selected = indices.clone();
+                    self.anchor = self.cursor;
+                    self.events.push(ListViewEvent::SelectionSet { indices });
+                    Reaction::Redraw
+                }
+                _ => Reaction::Continue,
+            }
+        }
+    }
+
+    fn key_event(key: Key, modifiers: Modifiers) -> UiEvent {
+        UiEvent::KeyPressed {
+            key,
+            modifiers,
+            repeat: false,
+        }
+    }
+
+    fn driver() -> TuiDriver<ListApp> {
+        TuiDriver::new(ListApp::new(), VIEWPORT_W, VIEWPORT_H)
+    }
+
+    #[test]
+    fn plain_arrow_moves_the_cursor_without_changing_selection() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        assert_eq!(driver.app().cursor, 1);
+        assert_eq!(driver.app().selected, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn space_toggles_rows_into_a_multi_selection() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        assert_eq!(driver.app().selected, vec![0, 2]);
+        // Space toggles the same row back off.
+        driver.dispatch(key_event(Key::Named(NamedKey::Up), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Up), Modifiers::default()));
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        assert_eq!(driver.app().selected, vec![2]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&ListViewEvent::SelectionSet { indices: vec![2] })
+        );
+    }
+
+    #[test]
+    fn shift_arrow_extends_a_range_from_the_anchor() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        assert_eq!(driver.app().selected, vec![0, 1, 2, 3]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&ListViewEvent::SelectionSet {
+                indices: vec![0, 1, 2, 3]
+            })
+        );
+    }
+}

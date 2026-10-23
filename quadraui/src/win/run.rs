@@ -2366,7 +2366,22 @@ mod win32 {
                 // converts before handing off to `win_wheel_to_uievent`,
                 // which (like every other translator here) expects
                 // client-area pixels. See `super::events`' module docs.
+                // Forward every message's own delta immediately and in full
+                // — no per-axis accumulation, no gating on a full notch.
+                // `win_wheel_to_uievent` already divides by `WHEEL_DELTA`
+                // into a fractional-notch `ScrollDelta`, so a high-
+                // resolution wheel/trackpad message smaller than one notch
+                // still produces a proportional sub-row `UiEvent::Scroll`
+                // rather than being withheld until several messages sum to
+                // a full notch. This matches the GTK/macOS translators,
+                // which likewise forward the native delta with only a
+                // sign/precision cast (see `super::events`' module docs);
+                // reducing any nonzero magnitude to a whole row is a
+                // decision the shared `primitives::scrollbar::wheel_row_delta`
+                // makes once for every backend, not something this
+                // translator should pre-empt by withholding events.
                 let raw_delta = wheel_delta_from_wparam(wparam.0);
+                let horizontal = msg == WM_MOUSEHWHEEL;
                 let (screen_x, screen_y) = point_from_lparam(lparam.0);
                 let mut pt = POINT {
                     x: screen_x as i32,
@@ -2379,13 +2394,8 @@ mod win32 {
                     let _ = ScreenToClient(hwnd, &mut pt);
                 }
                 let scale = ws.state.borrow().backend.viewport().scale;
-                let event = win_wheel_to_uievent(
-                    raw_delta,
-                    pt.x as i16,
-                    pt.y as i16,
-                    scale,
-                    msg == WM_MOUSEHWHEEL,
-                );
+                let event =
+                    win_wheel_to_uievent(raw_delta, pt.x as i16, pt.y as i16, scale, horizontal);
                 dispatch(ws, hwnd, event);
                 LRESULT(0)
             }

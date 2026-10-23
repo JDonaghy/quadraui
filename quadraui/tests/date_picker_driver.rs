@@ -4,12 +4,13 @@
 //! date formatting, all driven through the real `event -> handle -> render`
 //! path on the in-memory TUI backend.
 //!
-//! `DatePicker` has no dedicated backend rasteriser yet (it is a seam
-//! primitive: calendar math + layout only). This harness renders its
-//! `month_grid()` / `CalendarDate::format()` output through the existing
-//! `TextDisplay` primitive, the same way a host app can until a native
-//! `draw_date_picker` lands — `quadraui/tests/scroll_view_driver.rs` is the
-//! template this follows.
+//! This harness renders `DatePicker`'s `month_grid()` /
+//! `CalendarDate::format()` output through the existing `TextDisplay`
+//! primitive rather than `Backend::draw_date_picker`'s own rasteriser,
+//! matching the text-level assertions a host app sees —
+//! `quadraui/tests/scroll_view_driver.rs` is the template this follows.
+//! The pixel-level rasteriser itself is covered by `tui::date_picker`'s
+//! and `primitives::date_picker::native_surface_paint`'s own unit tests.
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{

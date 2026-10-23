@@ -3114,6 +3114,20 @@ impl Backend for MacBackend {
         crate::primitives::combo_box::native_surface_paint::paint(combo_box, layout, self, &theme);
         self.register_zone(combo_box.id, layout.field_bounds);
     }
+    fn draw_date_picker(
+        &mut self,
+        date_picker: &crate::primitives::date_picker::DatePicker,
+        layout: &crate::primitives::date_picker::DatePickerLayout,
+    ) {
+        let theme = self.current_theme;
+        crate::primitives::date_picker::native_surface_paint::paint(
+            date_picker,
+            layout,
+            self,
+            &theme,
+        );
+        self.register_zone(date_picker.id, layout.bounds());
+    }
     fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
         let ctx = self.current_cg();
         debug_assert!(

@@ -28,24 +28,24 @@
 
 use quadraui::{
     compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, Anchor, AppLogic, Backend,
-    BadgeStatus, BoardCard, BoardColumn, BoardModel, Button, Canvas, CardBadge, Chart, ChartKind,
-    Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter, CommandLine, CompletionItem,
-    CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem, ContextMenuItemMeasure,
-    ContextMenuPlacement, DataRow, DataTable, Decoration, Dialog, DialogButton, DialogMeasure,
-    DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, DropOverlay, Editor, EditorCursor,
-    EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan, FieldKind,
-    FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField, Image, ImageFit, ImageSource,
-    InteractionState, ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap,
-    MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette, PaletteItem, PaletteMode, Panel,
-    PipelineStage, PipelineView, PopupPlacement, ProgressBar, RadioGroup, RadioOption, Reaction,
-    Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section,
-    SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side, SidebarPanel, Spinner,
-    Split, SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan,
-    StyledText, Switch, TabBar, TabChrome, TabFrame, TabIcon, TabItem, Terminal, TerminalCell,
-    TextDisplay, TextDisplayLine, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity,
-    Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarPaintOptions, ToolbarVAlign, Tooltip,
-    TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView,
-    UiEvent, WidgetId,
+    BadgeStatus, BoardCard, BoardColumn, BoardModel, Button, CalendarDate, Canvas, CardBadge,
+    Chart, ChartKind, Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter,
+    CommandLine, CompletionItem, CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem,
+    ContextMenuItemMeasure, ContextMenuPlacement, DataRow, DataTable, DatePicker, Decoration,
+    Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp,
+    DropOverlay, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
+    EditorStyledSpan, FieldKind, FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField,
+    Image, ImageFit, ImageSource, InteractionState, ListItem, ListView, MenuBar, MenuBarItem,
+    MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette,
+    PaletteItem, PaletteMode, Panel, PipelineStage, PipelineView, PopupPlacement, ProgressBar,
+    RadioGroup, RadioOption, Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis,
+    ScrollMode, Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series,
+    Side, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StageStatus, StatusBar,
+    StatusBarSegment, StyledSpan, StyledText, Switch, TabBar, TabChrome, TabFrame, TabIcon,
+    TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, Toast, ToastCorner,
+    ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarPaintOptions,
+    ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
+    TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -1451,6 +1451,110 @@ pub const CASES: &[Case] = &[
                 CompletionItemMeasure::new(lh)
             });
             b.draw_combo_box(&combo_box, &layout);
+        },
+    },
+    Case {
+        method: "draw_date_picker",
+        needle: Some("2024-03"),
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            let date_picker = DatePicker::new(id("date-picker"), CalendarDate::new(2024, 3, 15));
+            let layout = date_picker.layout(0.0, 0.0, cw * 4.0, lh, lh, 0.0);
+            let _ = area;
+            b.draw_date_picker(&date_picker, &layout);
+        },
+    },
+    Case {
+        // Glyph-override counterpart to `draw_data_table`. `None`
+        // overrides exercises the default-delegating path every
+        // `Backend` implementor gets for free.
+        method: "draw_data_table_with_glyphs",
+        needle: Some("c0dtblg"),
+        paint: |b, area| {
+            let table = DataTable {
+                id: id("data-table-glyphs"),
+                columns: vec![Column {
+                    title: "c0dtblg".to_string(),
+                    width: ColumnWidth::Flex(1.0),
+                    align: ColumnAlign::Left,
+                }],
+                rows: vec![DataRow {
+                    cells: vec![StyledText::plain("row")],
+                    decoration: Decoration::Normal,
+                }],
+                selected_idx: None,
+                scroll_offset: 0,
+                sort: None,
+                has_focus: false,
+                show_scrollbar: false,
+                min_total_width: None,
+                h_scroll: 0.0,
+                column_overrides: vec![],
+                footer: None,
+            };
+            let _ = b.draw_data_table_with_glyphs(area, &table, None, None);
+        },
+    },
+    Case {
+        // Glyph-override counterpart to `draw_tab_bar_with_chrome`. Same
+        // `Brackets` framing as that case, with `None` overrides.
+        method: "draw_tab_bar_with_chrome_and_glyphs",
+        needle: Some("c0chrometabsg"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = TabBar {
+                id: id("tab-bar-chrome-glyphs"),
+                tabs: vec![TabItem {
+                    label: " c0chrometabsg ".to_string(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                }],
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: true,
+                compact: false,
+            };
+            let chrome = TabChrome::new(TabFrame::Brackets);
+            let _ = b.draw_tab_bar_with_chrome_and_glyphs(
+                Rect::new(0.0, 0.0, area.width, lh),
+                &bar,
+                None,
+                &chrome,
+                None,
+            );
+        },
+    },
+    Case {
+        // Glyph-override counterpart to `draw_context_menu`, with `None`
+        // overrides exercising the default-delegating path.
+        method: "draw_context_menu_with_glyphs",
+        needle: Some("c0ctxmg"),
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            let menu = ContextMenu {
+                id: id("context-menu-glyphs"),
+                items: vec![ContextMenuItem {
+                    id: Some(id("context-menu-glyphs-item")),
+                    label: StyledText::plain("c0ctxmg"),
+                    detail: None,
+                    disabled: false,
+                    key_equivalent: None,
+                    checked: None,
+                    submenu: None,
+                }],
+                selected_idx: 0,
+                bg: None,
+                placement: ContextMenuPlacement::AnchorPoint,
+            };
+            let layout = menu.layout(0.0, 0.0, area, cw * 20.0, |_| {
+                ContextMenuItemMeasure::new(lh)
+            });
+            let _ = b.draw_context_menu_with_glyphs(&menu, &layout, None);
         },
     },
 ];

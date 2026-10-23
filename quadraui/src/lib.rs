@@ -100,7 +100,7 @@
 //!
 //! ## Status
 //!
-//! `0.2.x` — pre-1.0, published on crates.io. Breaking changes are
+//! `0.4.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
 //! `quadraui/docs/decisions/DECISIONS.md`. 49 primitives shipped. The TUI
@@ -433,12 +433,12 @@ pub use primitives::completions::{
     CompletionsLayout, CompletionsPlacement, VisibleCompletion,
 };
 pub use primitives::context_menu::{
-    ContextMenu, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure, ContextMenuLayout,
-    ContextMenuPlacement, ResolvedContextMenuPlacement, VisibleContextMenuItem,
+    ContextMenu, ContextMenuGlyphs, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure,
+    ContextMenuLayout, ContextMenuPlacement, ResolvedContextMenuPlacement, VisibleContextMenuItem,
 };
 pub use primitives::data_table::{
     Column, ColumnAlign, ColumnMeasure, ColumnWidth, DataRow, DataTable, DataTableEvent,
-    DataTableHit, DataTableLayout, ResolvedColumn, SortDirection,
+    DataTableGlyphs, DataTableHit, DataTableLayout, ResolvedColumn, SortDirection,
 };
 pub use primitives::date_picker::{
     CalendarDate, DateFormat, DateLocale, DatePicker, DatePickerEvent, DatePickerHit,
@@ -542,9 +542,9 @@ pub use primitives::switch::{Switch, SwitchEvent, SwitchHit, SwitchLayout};
 // signature swap to `TabBarLayout` — see `TabBarHits`'s own doc.
 #[allow(deprecated)]
 pub use primitives::tab_bar::{
-    tab_icon_at, tab_icon_cols, SegmentMeasure, TabBar, TabBarEvent, TabBarHit, TabBarHits,
-    TabBarLayout, TabBarSegment, TabChrome, TabFrame, TabIcon, TabItem, TabMeasure, VisibleSegment,
-    VisibleTab,
+    tab_icon_at, tab_icon_cols, SegmentMeasure, TabBar, TabBarEvent, TabBarGlyphs, TabBarHit,
+    TabBarHits, TabBarLayout, TabBarSegment, TabChrome, TabFrame, TabIcon, TabItem, TabMeasure,
+    VisibleSegment, VisibleTab,
 };
 pub use primitives::terminal::{
     Terminal, TerminalCell, TerminalCellSize, TerminalCursorShape, TerminalEvent, TerminalHit,
