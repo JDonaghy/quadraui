@@ -324,6 +324,49 @@ class PrepareCommandTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("empty", result.stderr)
 
+    def test_prepare_reuses_existing_branch_already_bumped(self):
+        """A re-run from develop after the release branch already exists
+        (e.g. a `release_full.py` run that timed out past this point)
+        resumes by checking the existing branch out, instead of failing on
+        `checkout -b`."""
+        with ReleaseFixtureRepo() as repo:
+            first = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root), "--date", "2026-10-11"],
+                repo.root,
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(repo.current_branch(), "release-0.2.0")
+            first_sha = run_git(["rev-parse", "HEAD"], repo.root).stdout.strip()
+
+            run_git(["checkout", "develop"], repo.root)
+            self.assertEqual(repo.current_branch(), "develop")
+
+            second = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root)], repo.root
+            )
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertIn("already exists", second.stdout)
+            self.assertEqual(repo.current_branch(), "release-0.2.0")
+
+            second_sha = run_git(["rev-parse", "HEAD"], repo.root).stdout.strip()
+            self.assertEqual(first_sha, second_sha, "should not re-commit the bump")
+
+    def test_prepare_refuses_existing_branch_with_mismatched_bump(self):
+        with ReleaseFixtureRepo() as repo:
+            run_git(["checkout", "-b", "release-0.2.0"], repo.root)
+            (repo.root / "quadraui" / "Cargo.toml").write_text(
+                '[package]\nname = "quadraui"\nversion = "0.3.0"\nedition = "2021"\n'
+            )
+            run_git(["commit", "-a", "-m", "stray bump"], repo.root)
+            run_git(["checkout", "develop"], repo.root)
+
+            result = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root)], repo.root
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("already exists", result.stderr)
+            self.assertIn("0.3.0", result.stderr)
+
 
 class PromoteCommandTests(unittest.TestCase):
     def test_promote_prints_pr_commands_with_changelog_body(self):

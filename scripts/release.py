@@ -277,6 +277,39 @@ def cmd_prepare(args: argparse.Namespace) -> int:
             )
 
         branch = f"release-{args.version}"
+        branch_exists = (
+            run_git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+                    repo_dir, check=False).returncode
+            == 0
+        )
+        if branch_exists:
+            # A prior `prepare` run (or a resumed `release_full.py`) already
+            # created this branch. Reuse it instead of letting `checkout -b`
+            # abort with "a branch named ... already exists" — but only when
+            # its tip already carries the version bump; otherwise this is a
+            # genuine conflict a human needs to resolve.
+            run_git(["checkout", branch], repo_dir)
+            branch_version = read_package_version(
+                cargo_toml_path.read_text(encoding="utf-8")
+            )
+            if branch_version == args.version:
+                print(
+                    f"Branch {branch} already exists and is already bumped to "
+                    f"{args.version} — reusing it."
+                )
+                print("\nRun these commands to open the bump PR:\n")
+                print(f"  git push -u origin release-{args.version}")
+                print(
+                    f'  gh pr create --base develop --head release-{args.version} '
+                    f'--title "Release v{args.version} (version bump + CHANGELOG)" '
+                    f'--body "Bumps quadraui to {args.version} and retitles CHANGELOG.md\'s '
+                    f'[Unreleased] section."'
+                )
+                return 0
+            raise ReleaseError(
+                f"branch {branch!r} already exists but its quadraui/Cargo.toml "
+                f"version is {branch_version!r}, not {args.version!r} — resolve manually"
+            )
         run_git(["checkout", "-b", branch], repo_dir)
 
         cargo_toml_path.write_text(
