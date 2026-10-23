@@ -58,6 +58,8 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+
+## [0.5.0] - 2026-10-23
 ### Added
 
 - `FieldKind::DatePicker(DatePicker)` embeds the full `DatePicker` primitive
