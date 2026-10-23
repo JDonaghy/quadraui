@@ -1282,6 +1282,13 @@ mod tests {
                     focused_index: None,
                 }),
             ),
+            (
+                "date-picker",
+                FieldKind::DatePicker(crate::primitives::date_picker::DatePicker::new(
+                    WidgetId::new("dp"),
+                    crate::primitives::date_picker::CalendarDate::new(2024, 3, 15),
+                )),
+            ),
         ];
 
         for (name, kind) in kinds {

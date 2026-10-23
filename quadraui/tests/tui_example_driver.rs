@@ -5218,6 +5218,7 @@ fn form_all_fields_paints_every_field_kind_value() {
         "Casesens",
         "Runaction",
         "Buildaction",
+        "2024-03-15",
     ] {
         assert!(
             screen.contains(needle),
@@ -5297,6 +5298,27 @@ fn form_date_picker_enter_confirms_the_focused_day() {
         after.contains("confirmed=2024-03-17"),
         "Enter should emit FormEvent::DateChanged, which the app persists \
          and echoes in the status bar:\n{after}"
+    );
+}
+
+#[test]
+fn form_date_picker_right_arrow_after_enter_scrubs_past_the_confirmed_day() {
+    let mut driver = TuiDriver::new(FormDatePickerApp::new(), 100, 12);
+    driver.press_named(quadraui::NamedKey::Right);
+    driver.press_named(quadraui::NamedKey::Enter);
+    driver.press_named(quadraui::NamedKey::Right);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("2024-03-17"),
+        "a Right press after Enter must keep scrubbing from the confirmed \
+         day, not redraw the stale confirmed date — the field paints the \
+         live focused position while it stays focused, never `selected`:\n{after}"
+    );
+    assert!(
+        after.contains("confirmed=2024-03-16"),
+        "the earlier confirmation must still be the app's persisted value \
+         until the next Enter:\n{after}"
     );
 }
 
