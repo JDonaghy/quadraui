@@ -182,6 +182,87 @@ mod tests {
         );
     }
 
+    /// An app-supplied [`crate::primitives::context_menu::ContextMenuGlyphs`]
+    /// override swaps the check-mark / submenu-arrow glyphs
+    /// `Backend::draw_context_menu_with_glyphs` paints on [`MacBackend`];
+    /// with `glyphs: None` it paints the same codicon default as
+    /// [`MacBackend::draw_context_menu`].
+    #[test]
+    fn checked_submenu_glyph_override_paints_app_glyph_default_paints_codicon() {
+        use crate::primitives::context_menu::ContextMenuGlyphs;
+
+        let mut menu = sample_menu();
+        menu.items[0].checked = Some(true);
+        menu.items[3].submenu = Some(vec![item("paste-plain", "Paste as Plain Text")]);
+        let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = layout_for(&menu, viewport, 20.0);
+
+        let glyphs = ContextMenuGlyphs::new()
+            .with_checked_glyph("V")
+            .with_submenu_arrow_glyph(">");
+
+        let paint = |glyphs: Option<&ContextMenuGlyphs>| -> Vec<crate::testing::TextRun> {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(0.0, 0.0, 0.0, 0.0);
+            let mut backend = MacBackend::new();
+            backend.set_current_font(font());
+            backend.set_painted_text_recording(true);
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                let _ = b.draw_context_menu_with_glyphs(&menu, &layout, glyphs);
+            });
+            let runs = backend.text_runs().to_vec();
+            backend.end_frame();
+            runs
+        };
+
+        let overridden = paint(Some(&glyphs));
+        assert!(
+            overridden.iter().any(|r| r.text == "V"),
+            "expected the overridden checked glyph among painted runs, got {:?}",
+            overridden
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(!overridden
+            .iter()
+            .any(|r| r.text.contains(crate::codicon::CHECK)));
+        assert!(
+            overridden.iter().any(|r| r.text == ">"),
+            "expected the overridden submenu-arrow glyph among painted runs, got {:?}",
+            overridden
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(!overridden
+            .iter()
+            .any(|r| r.text.contains(crate::codicon::CHEVRON_RIGHT)));
+
+        let default_runs = paint(None);
+        assert!(
+            default_runs
+                .iter()
+                .any(|r| r.text.contains(crate::codicon::CHECK)),
+            "expected the default codicon check glyph among painted runs, got {:?}",
+            default_runs
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            default_runs
+                .iter()
+                .any(|r| r.text.contains(crate::codicon::CHEVRON_RIGHT)),
+            "expected the default codicon submenu-arrow glyph among painted runs, got {:?}",
+            default_runs
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn hits_returned_for_clickable_items_only() {
         let menu = sample_menu();

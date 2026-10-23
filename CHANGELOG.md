@@ -58,6 +58,22 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Added
+
+- The macOS native painter honors the chrome-glyph override registries at
+  all four sites that have one: `MacBackend::draw_tab_bar_with_chrome_and_glyphs`
+  (close/dirty marks) and `MacBackend::draw_context_menu_with_glyphs`
+  (checked mark, submenu pull-right arrow) now paint the app-supplied
+  `Icon` in place of the default codicon when one is set, and fall back
+  to today's codicon glyph when `glyphs` is `None`. `draw_data_table_with_glyphs`
+  (sort asc/desc) and the tree expand/collapse chevron already honored
+  their overrides through the shared `native_surface_paint`/`Backend`
+  paths, so those two sites needed only a confirming test. Each of the
+  four sites has a black-box test, using the crate's text-run recording
+  harness (`MacBackend::set_painted_text_recording`/`text_runs`), proving
+  the override glyph paints and `None` reproduces the current default
+  exactly.
+
 ### Fixed
 
 - `DatePicker::layout()`'s `header_bounds` now spans only the middle 5 of 7
