@@ -9,7 +9,8 @@
 //! `screen_contains()` reflect it without a separate step.
 //!
 //! Event marshalling and a GIL-releasing run loop are a later milestone leg
-//! — [`PyAppLogic::handle`] and [`PyAppLogic::tick`] are no-ops today.
+//! — [`PyAppLogic::handle`] is a no-op today, and `tick` isn't overridden at
+//! all (it rides [`AppLogic`]'s own no-op default).
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -56,6 +57,19 @@ impl PyAppLogic {
             SLOT_TAB_BAR => self.tab_bar.is_some(),
             _ => false,
         }
+    }
+
+    /// Whether `slot` names one of this app's fixed primitive slots.
+    fn is_known_slot(slot: i64) -> bool {
+        matches!(
+            slot,
+            SLOT_BUTTON
+                | SLOT_TEXT_DISPLAY
+                | SLOT_LIST
+                | SLOT_TREE
+                | SLOT_DATA_TABLE
+                | SLOT_TAB_BAR
+        )
     }
 
     /// Empties one slot, returning whether it held anything.
@@ -145,10 +159,7 @@ struct QuiApp {
 
 /// Decodes a Python `dict` into `T` via `pythonize`, raising `ValueError`
 /// on a shape mismatch rather than panicking across the PyO3 boundary.
-fn decode<'py, T: serde::de::DeserializeOwned>(
-    what: &str,
-    dict: &Bound<'py, PyDict>,
-) -> PyResult<T> {
+fn decode<T: serde::de::DeserializeOwned>(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<T> {
     pythonize::depythonize(dict.as_any())
         .map_err(|err| PyValueError::new_err(format!("{what}: invalid descriptor: {err}")))
 }
@@ -169,8 +180,8 @@ impl QuiApp {
     }
 
     /// Inserts a `Button` descriptor from a Python dict, returning its slot
-    /// handle. Raises `ValueError` if the button slot is already occupied —
-    /// call `slot_clear` first.
+    /// handle. Raises `RuntimeError` if the button slot is already
+    /// occupied — call `slot_clear` first.
     fn insert_button(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
         self.insert(
             SLOT_BUTTON,
@@ -183,7 +194,8 @@ impl QuiApp {
     }
 
     /// Inserts a `TextDisplay` descriptor from a Python dict, returning its
-    /// slot handle.
+    /// slot handle. Raises `RuntimeError` if the text-display slot is
+    /// already occupied — call `slot_clear` first.
     fn insert_text_display(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
         self.insert(
             SLOT_TEXT_DISPLAY,
@@ -196,7 +208,8 @@ impl QuiApp {
     }
 
     /// Inserts a `ListView` descriptor from a Python dict, returning its
-    /// slot handle.
+    /// slot handle. Raises `RuntimeError` if the list slot is already
+    /// occupied — call `slot_clear` first.
     fn insert_list(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
         self.insert(
             SLOT_LIST,
@@ -209,7 +222,8 @@ impl QuiApp {
     }
 
     /// Inserts a `TreeView` descriptor from a Python dict, returning its
-    /// slot handle.
+    /// slot handle. Raises `RuntimeError` if the tree slot is already
+    /// occupied — call `slot_clear` first.
     fn insert_tree(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
         self.insert(
             SLOT_TREE,
@@ -222,7 +236,8 @@ impl QuiApp {
     }
 
     /// Inserts a `DataTable` descriptor from a Python dict, returning its
-    /// slot handle.
+    /// slot handle. Raises `RuntimeError` if the data-table slot is
+    /// already occupied — call `slot_clear` first.
     fn insert_data_table(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
         self.insert(
             SLOT_DATA_TABLE,
@@ -235,7 +250,8 @@ impl QuiApp {
     }
 
     /// Inserts a `TabBar` descriptor from a Python dict, returning its slot
-    /// handle.
+    /// handle. Raises `RuntimeError` if the tab-bar slot is already
+    /// occupied — call `slot_clear` first.
     fn insert_tab_bar(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<i64> {
         self.insert(
             SLOT_TAB_BAR,
@@ -249,13 +265,17 @@ impl QuiApp {
 
     /// Empties a slot (one of the integers returned by an `insert_*` call),
     /// re-rendering so `screen()` no longer shows it. Returns whether the
-    /// slot held anything.
-    fn slot_clear(&mut self, slot: i64) -> bool {
+    /// slot held anything. Raises `ValueError` if `slot` doesn't name one
+    /// of this app's six fixed primitive slots.
+    fn slot_clear(&mut self, slot: i64) -> PyResult<bool> {
+        if !PyAppLogic::is_known_slot(slot) {
+            return Err(PyValueError::new_err(format!("unknown slot id: {slot}")));
+        }
         let cleared = self.driver.app_mut().clear_slot(slot);
         if cleared {
             self.driver.render();
         }
-        cleared
+        Ok(cleared)
     }
 
     /// Renders the current frame and returns it as a plain-text screen
@@ -294,8 +314,8 @@ impl QuiApp {
     }
 }
 
-/// The compiled extension module `quadraui.python-source`'s
-/// `quadraui/__init__.py` imports names from.
+/// The compiled extension module (`_quadraui`) that `python/quadraui/__init__.py`
+/// imports names from.
 #[pymodule]
 fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QuiApp>()?;

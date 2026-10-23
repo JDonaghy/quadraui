@@ -8,6 +8,8 @@ Run against a built wheel/extension, e.g.:
     pytest quadraui-py/tests/test_descriptors.py
 """
 
+import pytest
+
 from quadraui import QuiApp
 
 
@@ -94,11 +96,8 @@ def test_insert_tab_bar():
 def test_slot_occupied_then_cleared():
     app = QuiApp(40, 20)
     app.insert_button({"id": "demo:ok", "label": "OK"})
-    try:
+    with pytest.raises(RuntimeError):
         app.insert_button({"id": "demo:ok2", "label": "OK2"})
-        assert False, "expected the second insert into an occupied slot to raise"
-    except RuntimeError:
-        pass
 
     assert app.slot_clear(0) is True
     assert not app.screen_contains("OK")
@@ -109,8 +108,35 @@ def test_slot_occupied_then_cleared():
 
 def test_invalid_descriptor_raises_value_error():
     app = QuiApp(40, 20)
-    try:
+    with pytest.raises(ValueError):
         app.insert_button({"not": "a button"})
-        assert False, "expected an invalid descriptor dict to raise"
-    except ValueError:
-        pass
+
+
+def test_zero_sized_app_raises_value_error():
+    with pytest.raises(ValueError):
+        QuiApp(0, 0)
+    with pytest.raises(ValueError):
+        QuiApp(40, 0)
+    with pytest.raises(ValueError):
+        QuiApp(0, 20)
+
+
+def test_slot_clear_unknown_slot_raises_value_error():
+    app = QuiApp(40, 20)
+    with pytest.raises(ValueError):
+        app.slot_clear(999)
+
+
+def test_slot_clear_empty_slot_returns_false():
+    app = QuiApp(40, 20)
+    assert app.slot_clear(0) is False
+
+
+def test_screen_reflects_inserted_descriptors():
+    app = QuiApp(40, 20)
+    app.insert_button({"id": "demo:ok", "label": "OK"})
+    screen = app.screen()
+    assert isinstance(screen, str)
+    assert "OK" in screen
+    # One line per row of the cell grid.
+    assert screen.count("\n") >= 19

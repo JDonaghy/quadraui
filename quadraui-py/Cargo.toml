@@ -9,9 +9,11 @@ description = "PyO3 bindings: insert quadraui descriptors from Python and render
 
 [lib]
 name = "quadraui_py"
-# `cdylib` is what maturin loads as the Python extension module; `rlib` lets
-# this crate's own `#[cfg(test)] cargo test -p quadraui-py` link normally
-# (a pure `cdylib` can't be used as a test harness dependency).
+# `cdylib` is what maturin loads as the Python extension module. `rlib` is
+# reserved for a future in-crate `#[cfg(test)]` harness that links this
+# crate as a normal Rust test dependency — a pure `cdylib` can't be used
+# that way. No such harness exists yet; `pytest` (`quadraui-py/tests/`)
+# is what currently exercises the built extension.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

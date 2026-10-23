@@ -595,7 +595,23 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings -A deprecated"
       - name: Clippy (tui feature)
+        # This step is CLAUDE.md's documented Quality Gate command
+        # `cargo clippy --features tui --workspace --exclude kubeui-gtk -- -D warnings`
+        # plus the same `--exclude quadraui-py` as the two steps above, for
+        # the same reason.
         run: cargo clippy --features tui --workspace --exclude kubeui-gtk --exclude quadraui-py -- -D warnings
+      - name: Clippy (quadraui-py, extension-module)
+        # `quadraui-py` is excluded from every step above because its
+        # default `cdylib` build links against libpython, which this
+        # runner doesn't provision. `pyo3`'s `extension-module` feature
+        # changes that: the resulting `cdylib` resolves Python symbols
+        # dynamically at import time instead of linking libpython at
+        # build time, so this is a cheap compile-and-lint-only check that
+        # still exercises the crate on every PR. It is not a substitute
+        # for the maturin/wheel build (that's a dedicated job in a later
+        # milestone leg) or for `pytest`, which does need a real
+        # interpreter to load the extension.
+        run: cargo clippy -p quadraui-py --features pyo3/extension-module -- -D warnings
       # Benches (#1118): `cargo build`/`cargo test` don't build bench
       # targets by default (verified: neither the plain `cargo test
       # --workspace` step above nor a bare `cargo test -p quadraui` runs
@@ -1032,10 +1048,14 @@ jobs:
         # --workspace` compiles that target under this job's `gtk,tui`
         # features too. Only `deprecated` is relaxed; every other lint
         # stays denied.
-        run: cargo test --features gtk,tui --workspace --exclude kubeui --exclude quadraui-py --no-fail-fast
+        run: cargo test --features gtk,tui --workspace --exclude kubeui --no-fail-fast --exclude quadraui-py
         env:
           RUSTFLAGS: "-D warnings -A deprecated"
       - name: Clippy (gtk + tui features)
+        # This step is CLAUDE.md's documented Quality Gate command
+        # `cargo clippy --features gtk,tui --workspace --exclude kubeui -- -D warnings`
+        # plus the same `--exclude quadraui-py` as the two steps above, for
+        # the same reason.
         run: cargo clippy --features gtk,tui --workspace --exclude kubeui --exclude quadraui-py -- -D warnings
       # Benches (#1118): same "not built by a plain `cargo build`/`cargo
       # test`" gap, same "named `--bench` flags, not a bare `-p quadraui`"
