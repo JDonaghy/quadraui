@@ -10,7 +10,13 @@ Run against a built wheel/extension, e.g.:
 
 import pytest
 
-from quadraui import QuiApp
+from quadraui import (
+    InvalidDescriptorError,
+    InvalidDimensionsError,
+    QuiApp,
+    SlotOccupiedError,
+    UnknownSlotError,
+)
 
 
 def test_insert_button():
@@ -96,7 +102,7 @@ def test_insert_tab_bar():
 def test_slot_occupied_then_cleared():
     app = QuiApp(40, 20)
     app.insert_button({"id": "demo:ok", "label": "OK"})
-    with pytest.raises(RuntimeError):
+    with pytest.raises(SlotOccupiedError):
         app.insert_button({"id": "demo:ok2", "label": "OK2"})
 
     assert app.slot_clear(0) is True
@@ -106,24 +112,24 @@ def test_slot_occupied_then_cleared():
     assert app.screen_contains("OK2")
 
 
-def test_invalid_descriptor_raises_value_error():
+def test_invalid_descriptor_raises_invalid_descriptor_error():
     app = QuiApp(40, 20)
-    with pytest.raises(ValueError):
+    with pytest.raises(InvalidDescriptorError):
         app.insert_button({"not": "a button"})
 
 
-def test_zero_sized_app_raises_value_error():
-    with pytest.raises(ValueError):
+def test_zero_sized_app_raises_invalid_dimensions_error():
+    with pytest.raises(InvalidDimensionsError):
         QuiApp(0, 0)
-    with pytest.raises(ValueError):
+    with pytest.raises(InvalidDimensionsError):
         QuiApp(40, 0)
-    with pytest.raises(ValueError):
+    with pytest.raises(InvalidDimensionsError):
         QuiApp(0, 20)
 
 
-def test_slot_clear_unknown_slot_raises_value_error():
+def test_slot_clear_unknown_slot_raises_unknown_slot_error():
     app = QuiApp(40, 20)
-    with pytest.raises(ValueError):
+    with pytest.raises(UnknownSlotError):
         app.slot_clear(999)
 
 

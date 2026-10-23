@@ -14,9 +14,20 @@
 //! and re-acquiring it only for the duration of each registered Python
 //! callback (`set_handler`/`set_tick_handler`). An exception raised inside a
 //! callback is captured and re-raised out of `step`/`run` rather than lost.
+//!
+//! Every error this binding can raise itself (as opposed to one a
+//! registered Python callback raised, which passes through unchanged) is a
+//! [`QuadrauiError`] subclass — see the `errors` section below. A Rust
+//! panic reaching a driver call is caught at the [`QuiApp::guarded`]
+//! boundary, raised as [`PanicError`] instead of unwinding into Python, and
+//! poisons the handle so every later call raises [`PoisonedError`] rather
+//! than touching a driver that may have panicked mid-mutation.
+use std::any::Any;
 use std::collections::VecDeque;
+use std::panic::{self, AssertUnwindSafe};
 
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::create_exception;
+use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
@@ -25,6 +36,81 @@ use quadraui::{
     AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, Reaction, Rect, TabBar,
     TextDisplay, TreeView, UiEvent,
 };
+
+create_exception!(
+    _quadraui,
+    QuadrauiError,
+    PyException,
+    "Base class for every exception this binding raises itself. Mirrors \
+    the `QUI_ERR_*` taxonomy `quadraui-ffi` exposes at its C boundary -- a \
+    specific subclass corresponds to one `QUI_ERR_*` code."
+);
+
+create_exception!(
+    _quadraui,
+    InvalidDescriptorError,
+    QuadrauiError,
+    "A descriptor dict passed to `push_event` or an `insert_*` method did \
+    not decode into the shape it was expected to have (mirrors \
+    `QUI_ERR_INVALID_JSON`)."
+);
+
+create_exception!(
+    _quadraui,
+    SlotOccupiedError,
+    QuadrauiError,
+    "An `insert_*` method was called on a slot that already holds a \
+    descriptor (mirrors `QUI_ERR_SLOT_OCCUPIED`)."
+);
+
+create_exception!(
+    _quadraui,
+    UnknownSlotError,
+    QuadrauiError,
+    "`slot_clear` was given an id that isn't one of this app's six fixed \
+    primitive slots (mirrors `QUI_ERR_UNKNOWN_SLOT`)."
+);
+
+create_exception!(
+    _quadraui,
+    InvalidDimensionsError,
+    QuadrauiError,
+    "A `width`/`height` argument to `QuiApp` or `resize` was zero \
+    (mirrors `QUI_ERR_INVALID_DIMENSIONS`)."
+);
+
+create_exception!(
+    _quadraui,
+    InvalidCharError,
+    QuadrauiError,
+    "`push_key_event` was given a code point that is not a Unicode scalar \
+    value (mirrors `QUI_ERR_INVALID_CHAR`)."
+);
+
+create_exception!(
+    _quadraui,
+    PanicError,
+    QuadrauiError,
+    "A Rust panic was caught at the binding boundary; the `QuiApp` it \
+    happened on is now poisoned (mirrors `QUI_ERR_PANIC`)."
+);
+
+create_exception!(
+    _quadraui,
+    PoisonedError,
+    QuadrauiError,
+    "A `QuiApp` is unusable because an earlier call on it panicked and \
+    was caught (mirrors `QUI_ERR_POISONED`)."
+);
+
+create_exception!(
+    _quadraui,
+    InternalError,
+    QuadrauiError,
+    "A failure internal to this binding rather than caused by a caller's \
+    input, e.g. being unable to convert an event back into a Python value \
+    (mirrors `QUI_ERR_INTERNAL`)."
+);
 
 /// Slot id of the app's `Button` descriptor.
 const SLOT_BUTTON: i64 = 0;
@@ -159,7 +245,9 @@ impl AppLogic for PyAppLogic {
             let payload = match pythonize::pythonize(py, &event) {
                 Ok(value) => value,
                 Err(err) => {
-                    self.pending_error = Some(PyErr::from(err));
+                    self.pending_error = Some(InternalError::new_err(format!(
+                        "failed to pythonize event: {err}"
+                    )));
                     return Reaction::Exit;
                 }
             };
@@ -206,6 +294,10 @@ struct QuiApp {
     /// `step_once` call (oldest first); `step_once` ticks the app instead
     /// when this is empty.
     pending_events: VecDeque<UiEvent>,
+    /// Set once a call into `driver` has panicked and been caught by
+    /// [`QuiApp::guarded`]. Every method on a poisoned app raises
+    /// `PoisonedError` instead of touching the driver again.
+    poisoned: bool,
 }
 
 /// Wraps a value that is provably safe to move across [`Python::detach`]'s
@@ -224,11 +316,25 @@ struct AssertUngil<T>(T);
 // so no concurrent access to the wrapped `!Send` value can occur.
 unsafe impl<T> Send for AssertUngil<T> {}
 
-/// Decodes a Python `dict` into `T` via `pythonize`, raising `ValueError`
-/// on a shape mismatch rather than panicking across the PyO3 boundary.
+/// Decodes a Python `dict` into `T` via `pythonize`, raising
+/// `InvalidDescriptorError` on a shape mismatch rather than panicking
+/// across the PyO3 boundary.
 fn decode<T: serde::de::DeserializeOwned>(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<T> {
-    pythonize::depythonize(dict.as_any())
-        .map_err(|err| PyValueError::new_err(format!("{what}: invalid descriptor: {err}")))
+    pythonize::depythonize(dict.as_any()).map_err(|err| {
+        InvalidDescriptorError::new_err(format!("{what}: invalid descriptor: {err}"))
+    })
+}
+
+/// Downcasts a caught panic payload to a human-readable message, mirroring
+/// `quadraui-ffi`'s `record_panic`.
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&'static str>() {
+        (*text).to_owned()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "<non-string panic payload>".to_owned()
+    }
 }
 
 #[pymethods]
@@ -240,7 +346,7 @@ impl QuiApp {
     #[pyo3(signature = (width, height, on_event=None))]
     fn new(width: u16, height: u16, on_event: Option<Py<PyAny>>) -> PyResult<Self> {
         if width == 0 || height == 0 {
-            return Err(PyValueError::new_err(
+            return Err(InvalidDimensionsError::new_err(
                 "width and height must both be non-zero",
             ));
         }
@@ -251,6 +357,7 @@ impl QuiApp {
         Ok(QuiApp {
             driver: TuiDriver::new(app_logic, width, height),
             pending_events: VecDeque::new(),
+            poisoned: false,
         })
     }
 
@@ -277,11 +384,12 @@ impl QuiApp {
     }
 
     /// Queues a synthetic `KeyPressed` event for the character with Unicode
-    /// code point `ch`, no modifiers held, not a repeat. Raises `ValueError`
-    /// if `ch` isn't a valid Unicode scalar value.
+    /// code point `ch`, no modifiers held, not a repeat. Raises
+    /// `InvalidCharError` if `ch` isn't a valid Unicode scalar value.
     fn push_key_event(&mut self, ch: u32) -> PyResult<()> {
-        let ch = char::from_u32(ch)
-            .ok_or_else(|| PyValueError::new_err(format!("invalid Unicode code point: {ch}")))?;
+        let ch = char::from_u32(ch).ok_or_else(|| {
+            InvalidCharError::new_err(format!("invalid Unicode code point: {ch}"))
+        })?;
         self.pending_events.push_back(UiEvent::KeyPressed {
             key: Key::Char(ch),
             modifiers: Modifiers::default(),
@@ -293,12 +401,14 @@ impl QuiApp {
     /// Resizes the underlying cell grid to `width`x`height`.
     fn resize(&mut self, width: u16, height: u16) -> PyResult<()> {
         if width == 0 || height == 0 {
-            return Err(PyValueError::new_err(
+            return Err(InvalidDimensionsError::new_err(
                 "width and height must both be non-zero",
             ));
         }
-        self.driver.resize(width, height);
-        Ok(())
+        self.guarded(|app| {
+            app.driver.resize(width, height);
+            Ok(())
+        })
     }
 
     /// Advances the runner by one step: dispatches the oldest queued event,
@@ -307,7 +417,7 @@ impl QuiApp {
     /// whatever exception a registered handler/tick callback raised while
     /// handling this step.
     fn step(&mut self) -> PyResult<bool> {
-        self.step_once()
+        self.guarded(|app| app.step_once())
     }
 
     /// Runs up to `max_steps` steps (default 1), releasing the GIL for the
@@ -324,7 +434,7 @@ impl QuiApp {
             let app = wrapped;
             let mut running = true;
             for _ in 0..steps {
-                running = app.0.step_once()?;
+                running = app.0.guarded(|app| app.step_once())?;
                 if !running {
                     break;
                 }
@@ -419,34 +529,63 @@ impl QuiApp {
 
     /// Empties a slot (one of the integers returned by an `insert_*` call),
     /// re-rendering so `screen()` no longer shows it. Returns whether the
-    /// slot held anything. Raises `ValueError` if `slot` doesn't name one
-    /// of this app's six fixed primitive slots.
+    /// slot held anything. Raises `UnknownSlotError` if `slot` doesn't name
+    /// one of this app's six fixed primitive slots.
     fn slot_clear(&mut self, slot: i64) -> PyResult<bool> {
         if !PyAppLogic::is_known_slot(slot) {
-            return Err(PyValueError::new_err(format!("unknown slot id: {slot}")));
+            return Err(UnknownSlotError::new_err(format!(
+                "unknown slot id: {slot}"
+            )));
         }
-        let cleared = self.driver.app_mut().clear_slot(slot);
-        if cleared {
-            self.driver.render();
-        }
-        Ok(cleared)
+        self.guarded(|app| {
+            let cleared = app.driver.app_mut().clear_slot(slot);
+            if cleared {
+                app.driver.render();
+            }
+            Ok(cleared)
+        })
     }
 
     /// Renders the current frame and returns it as a plain-text screen
     /// dump, one row per line.
-    fn screen(&mut self) -> String {
-        self.driver.render();
-        self.driver.screen()
+    fn screen(&mut self) -> PyResult<String> {
+        self.guarded(|app| {
+            app.driver.render();
+            Ok(app.driver.screen())
+        })
     }
 
     /// Whether `needle` appears anywhere in the current rendered frame.
-    fn screen_contains(&mut self, needle: &str) -> bool {
-        self.driver.render();
-        self.driver.screen_contains(needle)
+    fn screen_contains(&mut self, needle: &str) -> PyResult<bool> {
+        self.guarded(|app| {
+            app.driver.render();
+            Ok(app.driver.screen_contains(needle))
+        })
     }
 }
 
 impl QuiApp {
+    /// Runs `body` on `self`, catching a Rust panic instead of letting it
+    /// unwind across the PyO3 boundary. On success returns `body`'s result
+    /// unchanged; on a panic, poisons this app and raises `PanicError`. If
+    /// this app is already poisoned (an earlier call panicked), raises
+    /// `PoisonedError` without running `body` at all — mirrors
+    /// `quadraui-ffi`'s `with_app`/`boundary` pair.
+    fn guarded<T>(&mut self, body: impl FnOnce(&mut Self) -> PyResult<T>) -> PyResult<T> {
+        if self.poisoned {
+            return Err(PoisonedError::new_err(
+                "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
+            ));
+        }
+        match panic::catch_unwind(AssertUnwindSafe(|| body(self))) {
+            Ok(result) => result,
+            Err(payload) => {
+                self.poisoned = true;
+                Err(PanicError::new_err(panic_message(&*payload)))
+            }
+        }
+    }
+
     /// Shared body of every `insert_*` method: reject an occupied slot,
     /// decode the dict into `T`, store it with `store`, then re-render.
     fn insert<T: serde::de::DeserializeOwned>(
@@ -457,14 +596,16 @@ impl QuiApp {
         descriptor: &Bound<'_, PyDict>,
     ) -> PyResult<i64> {
         if self.driver.app().slot_occupied(slot) {
-            return Err(PyRuntimeError::new_err(format!(
+            return Err(SlotOccupiedError::new_err(format!(
                 "{what}: slot already occupied; call slot_clear({slot}) first"
             )));
         }
         let value: T = decode(what, descriptor)?;
-        store(self.driver.app_mut(), value);
-        self.driver.render();
-        Ok(slot)
+        self.guarded(|app| {
+            store(app.driver.app_mut(), value);
+            app.driver.render();
+            Ok(slot)
+        })
     }
 
     /// Dispatches the oldest queued event (or ticks, if none is queued),
@@ -494,5 +635,50 @@ impl QuiApp {
 #[pymodule]
 fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QuiApp>()?;
+    let py = m.py();
+    m.add("QuadrauiError", py.get_type::<QuadrauiError>())?;
+    m.add(
+        "InvalidDescriptorError",
+        py.get_type::<InvalidDescriptorError>(),
+    )?;
+    m.add("SlotOccupiedError", py.get_type::<SlotOccupiedError>())?;
+    m.add("UnknownSlotError", py.get_type::<UnknownSlotError>())?;
+    m.add(
+        "InvalidDimensionsError",
+        py.get_type::<InvalidDimensionsError>(),
+    )?;
+    m.add("InvalidCharError", py.get_type::<InvalidCharError>())?;
+    m.add("PanicError", py.get_type::<PanicError>())?;
+    m.add("PoisonedError", py.get_type::<PoisonedError>())?;
+    m.add("InternalError", py.get_type::<InternalError>())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Rust panic raised from inside `guarded`'s body is caught and
+    /// re-raised as `PanicError`, and poisons the app so a later call
+    /// raises `PoisonedError` without running its body.
+    #[test]
+    fn guarded_catches_panic_then_poisons() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(10, 10, None).expect("valid dimensions");
+
+            let panicked: PyResult<()> = app.guarded(|_| panic!("boom"));
+            let err = panicked.expect_err("a caught panic must surface as an error");
+            assert!(err.is_instance_of::<PanicError>(py));
+            assert!(app.poisoned);
+
+            let mut body_ran = false;
+            let after_poison: PyResult<()> = app.guarded(|_| {
+                body_ran = true;
+                Ok(())
+            });
+            assert!(!body_ran, "a poisoned app must not run the guarded body");
+            let err = after_poison.expect_err("a poisoned app must keep erroring");
+            assert!(err.is_instance_of::<PoisonedError>(py));
+        });
+    }
 }
