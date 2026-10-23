@@ -1,9 +1,9 @@
-//! Backend-agnostic Form demo showcasing `FieldKind::DatePicker` routed
-//! through `FormController`.
+//! TUI Form demo showcasing `FieldKind::DatePicker` routed through
+//! `FormController`.
 //!
-//! Single [`AppLogic`] impl drives both the TUI runner and the GTK
-//! runner. The thin shells in `examples/{tui,gtk}_form_date_picker.rs`
-//! are each ~10 lines.
+//! [`AppLogic`] impl driving the TUI runner; the thin shell in
+//! `examples/tui_form_date_picker.rs` is ~10 lines. TUI-only for now;
+//! a GTK twin can follow once GTK's `DatePicker` rasteriser exists.
 //!
 //! Shape: a one-field form holding a `DatePicker`. `FormController`
 //! forwards arrow/page keys straight into the embedded picker's own

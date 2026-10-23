@@ -41,7 +41,6 @@
 //!   arrow/page-key day/month navigation and Enter-to-confirm for free,
 //!   emitting `FormEvent::DateChanged` on confirm.
 //!
-
 //! Tab / Shift-Tab move `focused_field` forward/backward through
 //! interactive fields (skip `Label`, skip disabled fields); emit
 //! `FormEvent::FocusChanged { id }`. The *app* updates `focused_field`
@@ -1068,11 +1067,23 @@ mod native_surface_paint {
                     // rasteriser.
                 }
                 FieldKind::DatePicker(picker) => {
-                    let date = picker.selected.unwrap_or(picker.focused);
+                    // While this row is focused, `focused` is the live
+                    // scrub position `FormController` overlays per
+                    // keystroke (see `compose::form_controller`'s "Date
+                    // picker fields" doc section) — showing `selected`
+                    // instead would make every scrub past the first
+                    // confirmation invisible. Once focus moves on,
+                    // `selected` (falling back to `focused` pre-first-
+                    // confirmation) is the field's settled value.
+                    let date = if is_focused {
+                        picker.focused
+                    } else {
+                        picker.selected.unwrap_or(picker.focused)
+                    };
                     let text = date.format(picker.locale.format);
                     let (tw, th) = surface.surface_measure_text(&text);
-                    let ix = input_right - tw;
-                    if ix > label_right + 8.0 {
+                    let ix = if no_label { label_x } else { input_right - tw };
+                    if no_label || ix > label_right + 8.0 {
                         let ty = row_rect.y + (row_h - th) / 2.0;
                         surface.surface_draw_text_run(Rect::new(ix, ty, tw, th), &text, field_fg);
                     }

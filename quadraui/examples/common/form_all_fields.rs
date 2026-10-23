@@ -1,12 +1,13 @@
-//! Backend-agnostic [`Form`] demo covering all 14 [`FieldKind`] variants
+//! Backend-agnostic [`Form`] demo covering all 15 [`FieldKind`] variants
 //!
 //! Exercises every `FieldKind` variant to verify all backends render them.
 //! Static display only — no field in this form needs interactive state
 //! for the parity check, so `handle` only wires up quit.
 
 use quadraui::{
-    AppLogic, Backend, ButtonRowItem, Color, FieldKind, Form, FormField, Key, NamedKey, Reaction,
-    Rect, StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
+    AppLogic, Backend, ButtonRowItem, CalendarDate, Color, DatePicker, FieldKind, Form, FormField,
+    Key, NamedKey, Reaction, Rect, StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent,
+    WidgetId,
 };
 
 pub struct FormAllFieldsApp;
@@ -188,6 +189,17 @@ impl FormAllFieldsApp {
                             },
                         ]),
                     ),
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                },
+                FormField {
+                    id: WidgetId::new("due-date"),
+                    label: StyledText::plain("Due date"),
+                    kind: FieldKind::DatePicker(DatePicker::new(
+                        WidgetId::new("due-date-picker"),
+                        CalendarDate::new(2024, 3, 15),
+                    )),
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,

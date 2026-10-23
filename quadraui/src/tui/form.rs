@@ -741,14 +741,29 @@ fn draw_field_date_picker(
         row_bg,
         field_fg,
         label_end,
+        no_label,
+        is_focused,
         ..
     } = *ctx;
 
-    let date = picker.selected.unwrap_or(picker.focused);
+    // While this row is focused, show the live scrub position
+    // `FormController` overlays per keystroke rather than the
+    // app-confirmed `selected` — see `compose::form_controller`'s
+    // "Date picker fields" doc section. Otherwise fall back to
+    // `selected`, or `focused` before any date has been confirmed.
+    let date = if is_focused {
+        picker.focused
+    } else {
+        picker.selected.unwrap_or(picker.focused)
+    };
     let text = date.format(picker.locale.format);
     let total = text.chars().count();
-    let start_col = (area.width as usize).saturating_sub(total + 1);
-    if start_col > label_end + 1 {
+    let start_col = if no_label {
+        1
+    } else {
+        (area.width as usize).saturating_sub(total + 2)
+    };
+    if start_col > label_end + 1 || no_label {
         for (col, ch) in (start_col..).zip(text.chars()) {
             if col >= area.width as usize {
                 break;

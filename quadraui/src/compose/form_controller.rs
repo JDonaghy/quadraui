@@ -57,6 +57,36 @@
 //!   `EditOp::Undo`/`Redo` never have history to act on for a form
 //!   field — out of scope here, since nothing in `Form`'s per-frame data
 //!   carries edit history across keystrokes.
+//!
+//! ## Date picker fields
+//!
+//! `FieldKind::DatePicker` splits ownership the same way text fields do
+//! (see "Keyboard editing" above): the app stays the source of truth for
+//! the *confirmed* value (`selected`, pushed back via
+//! [`FormEvent::DateChanged`] once `Enter` confirms a day), while
+//! `FormController` owns the live scrubbing position between keystrokes
+//! (see `DateEditState`) so `Left`/`Right`/`Up`/`Down`/`PageUp`/`PageDown`
+//! keep moving the calendar without an app round-trip on every key.
+//!
+//! - While the row is focused, the renderer shows the cached scrub
+//!   position (`focused`), not `selected` — otherwise a scrub past the
+//!   first confirmed date would be invisible. Once focus moves on, the
+//!   renderer falls back to `selected` (or `focused` before any date has
+//!   ever been confirmed).
+//! - `Tab`/`Shift+Tab`/`BackTab` are excluded from the picker's own key
+//!   set, so focus traversal off a `DatePicker` field still works
+//!   normally, and `Ctrl`/`Alt`/`Cmd` + any of the picker's keys fall
+//!   through to the generic dispatch (and from there to the host) rather
+//!   than being swallowed as navigation.
+//! - A disabled focused `DatePicker` does not intercept its navigation
+//!   keys at all — they fall through to the generic dispatch below,
+//!   which is a no-op for a non-text field, the same as any other
+//!   disabled field kind.
+//! - Clicking a `DatePicker` field only changes focus (`FieldKind` has no
+//!   click-driven navigation yet); the cached scrub position is only
+//!   ever overlaid onto the field that is still focused, so a click that
+//!   moves focus elsewhere can't leave a stale scrub position visible on
+//!   the field it left.
 
 use crate::primitives::date_picker::{CalendarDate, DatePickerEvent};
 use crate::primitives::form::{
@@ -346,9 +376,18 @@ impl FormController {
                         overlay_text_cursor(&mut field.kind, e.cursor, e.selection_anchor);
                     }
                 }
+                // Gated on the field still being focused (unlike the
+                // `text_edit` overlay above): a click that moves focus
+                // off a `DatePicker` field goes through `form_click_event`
+                // (not `move_focus`), which doesn't reseed/clear
+                // `date_edit`, so a stale cached scrub position could
+                // otherwise outlive the row it was scrubbed on.
                 if let Some(e) = &self.date_edit {
-                    if let Some(field) = form.fields.iter_mut().find(|fld| fld.id == e.field_id) {
-                        overlay_date_edit(&mut field.kind, e.focused, e.visible_month);
+                    if form.focused_field == Some(e.field_id) {
+                        if let Some(field) = form.fields.iter_mut().find(|fld| fld.id == e.field_id)
+                        {
+                            overlay_date_edit(&mut field.kind, e.focused, e.visible_month);
+                        }
                     }
                 }
                 form
@@ -377,9 +416,19 @@ impl FormController {
         // non-text field) or, for `Enter`, to `commit_focused_text`
         // (also a no-op). `Tab`/`BackTab` aren't in this set, so focus
         // traversal off a `DatePicker` field still works normally.
-        if let Some(key_name) = date_picker_key_name(key) {
-            if self.focused_field_is_date_picker() {
-                return self.handle_date_picker_key(key_name);
+        //
+        // Guarded the same way the `Tab` arm below is: without the
+        // modifier check, a host accelerator like Ctrl+Enter would be
+        // swallowed into `navigate` whenever a date field has focus
+        // instead of falling through to the app. A disabled focused
+        // field is excluded too, so its keys reach the generic dispatch
+        // below (which is a no-op for a non-text field) rather than
+        // being eaten outright.
+        if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd {
+            if let Some(key_name) = date_picker_key_name(key) {
+                if self.focused_field_is_enabled_date_picker() {
+                    return self.handle_date_picker_key(key_name);
+                }
             }
         }
         match key {
@@ -428,9 +477,12 @@ impl FormController {
             .is_some_and(|f| matches!(f.kind, FieldKind::TextArea { .. }))
     }
 
-    /// Whether the currently-focused field is a `DatePicker` — gates
-    /// `handle_key`'s date-navigation interception.
-    fn focused_field_is_date_picker(&self) -> bool {
+    /// Whether the currently-focused field is a non-disabled
+    /// `DatePicker` — gates `handle_key`'s date-navigation interception.
+    /// Excluding the disabled case here (rather than inside
+    /// `handle_date_picker_key`) lets its keys fall through to the
+    /// generic dispatch below instead of being swallowed outright.
+    fn focused_field_is_enabled_date_picker(&self) -> bool {
         let Some(form) = &self.form else {
             return false;
         };
@@ -440,7 +492,7 @@ impl FormController {
         form.fields
             .iter()
             .find(|f| &f.id == focused_id)
-            .is_some_and(|f| matches!(f.kind, FieldKind::DatePicker(_)))
+            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::DatePicker(_)))
     }
 
     /// Route `key_name` into the focused `DatePicker`'s own
@@ -2172,6 +2224,119 @@ mod tests {
                 d2_start.add_days(1),
                 "moving focus to d2 should seed its own focused day, not \
                  carry over d1's cached scrubbing position"
+            ),
+            other => panic!("expected DatePicker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_form_shows_live_scrub_position_over_a_confirmed_selected_date() {
+        let start = CalendarDate::new(2024, 3, 15);
+        let field_with_selected = |selected: CalendarDate| {
+            let mut f = date_field("d", start, false);
+            if let FieldKind::DatePicker(picker) = &mut f.kind {
+                picker.selected = Some(selected);
+            }
+            f
+        };
+        let mut fc = controller_with(vec![field_with_selected(start)], Some("d"));
+
+        // Scrub past the already-confirmed date. The renderer (see the
+        // "Date picker fields" doc section above) picks `focused` over
+        // `selected` while the row is focused, so this must advance
+        // `focused` without touching `selected`.
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Consumed);
+
+        let form = fc.build_form(RECT);
+        match &form.fields[0].kind {
+            FieldKind::DatePicker(picker) => {
+                assert_eq!(
+                    picker.selected,
+                    Some(start),
+                    "scrubbing must not touch the app's confirmed value"
+                );
+                assert_eq!(
+                    picker.focused,
+                    start.add_days(1),
+                    "the live scrub position must be exposed via `focused` \
+                     even once a date has already been confirmed, so the \
+                     renderer doesn't show a frozen `selected` instead"
+                );
+            }
+            other => panic!("expected DatePicker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_modified_date_picker_key_falls_through_instead_of_navigating() {
+        let start = CalendarDate::new(2024, 3, 15);
+        let mut fc = controller_with(vec![date_field("d", start, false)], Some("d"));
+        let ev = fc.handle_cached(
+            &key_event(
+                Key::Named(NamedKey::Right),
+                Modifiers {
+                    ctrl: true,
+                    ..Modifiers::default()
+                },
+            ),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::Ignored,
+            "Ctrl+Right is a host accelerator candidate, not calendar \
+             navigation, so it must not be swallowed by the DatePicker"
+        );
+        let form = fc.build_form(RECT);
+        match &form.fields[0].kind {
+            FieldKind::DatePicker(picker) => {
+                assert_eq!(picker.focused, start, "the calendar must not have moved")
+            }
+            other => panic!("expected DatePicker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_form_does_not_overlay_a_stale_cached_scrub_onto_an_unfocused_date_picker() {
+        let d1_start = CalendarDate::new(2024, 3, 15);
+        let d2_start = CalendarDate::new(2024, 6, 1);
+        let mut fc = controller_with(
+            vec![
+                date_field("d1", d1_start, false),
+                date_field("d2", d2_start, false),
+            ],
+            Some("d1"),
+        );
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+
+        // Move focus to "d2" by a click rather than Tab — unlike
+        // `move_focus`, `click_inner`'s path to `FormEvent::FocusChanged`
+        // doesn't reseed/clear the cached scrub on "d1", so this is the
+        // scenario where a stale `date_edit` could otherwise leak.
+        fc.set_form(Form {
+            id: WidgetId::new("form"),
+            fields: vec![
+                date_field("d1", d1_start, false),
+                date_field("d2", d2_start, false),
+            ],
+            focused_field: Some(WidgetId::new("d2")),
+            scroll_offset: 0,
+            has_focus: true,
+        });
+
+        let form = fc.build_form(RECT);
+        match &form.fields[0].kind {
+            FieldKind::DatePicker(picker) => assert_eq!(
+                picker.focused, d1_start,
+                "the stale cached scrub for \"d1\" must not be overlaid \
+                 once focus has moved to \"d2\""
             ),
             other => panic!("expected DatePicker, got {other:?}"),
         }
