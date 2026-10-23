@@ -60,6 +60,16 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `FieldKind::DatePicker(DatePicker)` embeds the full `DatePicker` primitive
+  as a `Form` field, and `FormEvent::DateChanged { id, value: CalendarDate }`
+  fires on confirmation. `FormController` routes `Left`/`Right`/`Up`/`Down`/
+  `PageUp`/`PageDown`/`Enter` into the embedded picker's own `navigate` while
+  it has focus — `Tab`/`BackTab` still traverse focus normally — and caches
+  the in-flight focused day/visible month the same way it already caches a
+  text field's cursor, so scrubbing composes across keystrokes even when the
+  host app never echoes the uncommitted position back. The TUI renderer
+  shows the field's focused/selected date as a single right-aligned line.
+
 - `quadraui-ffi`'s C ABI is hardened for a real consumer: every `extern "C"`
   entry point catches a Rust panic at the boundary (reported as
   `QUI_ERR_PANIC`, after which the handle is poisoned and every call but

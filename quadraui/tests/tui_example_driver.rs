@@ -88,6 +88,8 @@ mod focus_demo;
 mod folder_picker_app;
 #[path = "../examples/common/form_all_fields.rs"]
 mod form_all_fields;
+#[path = "../examples/common/form_date_picker.rs"]
+mod form_date_picker;
 #[path = "../examples/common/form_groups.rs"]
 mod form_groups;
 #[path = "../examples/common/form_scroll.rs"]
@@ -203,6 +205,7 @@ use float_app::FloatApp;
 use focus_demo::{FocusDemo, LEFT_ID, RIGHT_ID, STATUS_ID};
 use folder_picker_app::FolderPickerApp;
 use form_all_fields::FormAllFieldsApp;
+use form_date_picker::FormDatePickerApp;
 use form_groups::FormGroupsApp;
 use form_scroll::FormScrollApp;
 use frame_demo::FrameDemo;
@@ -5221,6 +5224,91 @@ fn form_all_fields_paints_every_field_kind_value() {
             "expected {needle:?} painted somewhere on screen:\n{screen}"
         );
     }
+}
+
+// ─── FormDatePickerApp: FieldKind::DatePicker routed through FormController ──
+//
+// `FormController::handle_cached` forwards arrow/page keys straight into the
+// embedded `DatePicker`'s own `navigate` method (see
+// `compose::form_controller`'s "Date picker fields" doc section) rather than
+// decoding them itself — these tests exercise that routing end to end
+// through the real example app and TUI renderer.
+
+#[test]
+fn form_date_picker_shows_the_initial_focused_date() {
+    let driver = TuiDriver::new(FormDatePickerApp::new(), 100, 12);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("2024-03-15"),
+        "the field should paint the picker's initial focused date before \
+         any key is pressed:\n{screen}"
+    );
+    assert!(
+        screen.contains("confirmed=none"),
+        "nothing is confirmed until Enter is pressed:\n{screen}"
+    );
+}
+
+#[test]
+fn form_date_picker_right_arrow_scrubs_the_focused_day_without_confirming() {
+    let mut driver = TuiDriver::new(FormDatePickerApp::new(), 100, 12);
+    driver.press_named(quadraui::NamedKey::Right);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("2024-03-16"),
+        "Right should move the picker's in-flight focused day forward by \
+         one, rendered via FormController's date-edit overlay even though \
+         the app has not persisted anything yet:\n{after}"
+    );
+    assert!(
+        after.contains("confirmed=none"),
+        "moving the focused day must not itself emit FormEvent::DateChanged \
+         — only Enter confirms:\n{after}"
+    );
+}
+
+#[test]
+fn form_date_picker_page_down_moves_the_focused_day_by_a_month() {
+    let mut driver = TuiDriver::new(FormDatePickerApp::new(), 100, 12);
+    driver.press_named(quadraui::NamedKey::PageDown);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("2024-04-15"),
+        "PageDown should move the focused day forward by one month:\n{after}"
+    );
+}
+
+#[test]
+fn form_date_picker_enter_confirms_the_focused_day() {
+    let mut driver = TuiDriver::new(FormDatePickerApp::new(), 100, 12);
+    driver.press_named(quadraui::NamedKey::Right);
+    driver.press_named(quadraui::NamedKey::Right);
+    driver.press_named(quadraui::NamedKey::Enter);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("2024-03-17"),
+        "two Right presses then Enter should confirm the third day forward, \
+         not the original focused date:\n{after}"
+    );
+    assert!(
+        after.contains("confirmed=2024-03-17"),
+        "Enter should emit FormEvent::DateChanged, which the app persists \
+         and echoes in the status bar:\n{after}"
+    );
+}
+
+#[test]
+fn form_date_picker_q_quits() {
+    let mut driver = TuiDriver::new(FormDatePickerApp::new(), 100, 12);
+    driver.type_char('q');
+    assert!(
+        driver.exited(),
+        "'q' should quit — unlike FormScrollApp's text field, this demo has \
+         no field that consumes plain character keys"
+    );
 }
 
 // ─── ChartApp: state-derived axis labels + gridlines ──────────────────────
