@@ -51,7 +51,7 @@ use super::text::{draw_text, measure_text};
 // the same allow every use site below does.
 use crate::event::Rect;
 use crate::primitives::tab_bar::{
-    tab_icon_at, TabBarHit, TabBarLayout, TabIcon, VisibleSegment, VisibleTab,
+    tab_icon_at, TabBarGlyphs, TabBarHit, TabBarLayout, TabIcon, VisibleSegment, VisibleTab,
 };
 #[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBar, TabBarHits};
@@ -434,6 +434,18 @@ pub unsafe fn draw_tab_bar(
     )
 }
 
+/// Resolve a [`TabBarGlyphs`] slot (the close or dirty override) to the
+/// text this rasteriser paints via `draw_text`, falling back to `default`
+/// when the slot is unset.
+fn tab_glyph_text(
+    icon: Option<&crate::types::Icon>,
+    nerd_fonts_enabled: bool,
+    default: char,
+) -> String {
+    icon.map(|icon| icon.resolve(nerd_fonts_enabled).to_string())
+        .unwrap_or_else(|| default.to_string())
+}
+
 /// [`draw_tab_bar`] plus per-tab icon glyphs.
 ///
 /// `icons` is a sidecar slice parallel to `bar.tabs` (see
@@ -478,6 +490,47 @@ pub unsafe fn draw_tab_bar_icons(
     theme: &Theme,
     hovered_close_tab: Option<usize>,
     icons: &[Option<TabIcon>],
+) -> TabBarHits {
+    draw_tab_bar_icons_with_glyphs(
+        ctx,
+        font,
+        width,
+        line_height,
+        y_offset,
+        row_height,
+        bar,
+        theme,
+        hovered_close_tab,
+        icons,
+        None,
+        false,
+    )
+}
+
+/// [`draw_tab_bar_icons`], but honouring an optional [`TabBarGlyphs`]
+/// override for the close/dirty mark — `glyphs: None` reproduces
+/// [`draw_tab_bar_icons`] exactly.
+///
+/// # Safety
+///
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of the
+/// call (typical: the frame-scope pointer stashed on [`super::MacBackend`]).
+/// Calling with a freed or null pointer is UB.
+#[allow(clippy::too_many_arguments)]
+#[allow(deprecated)]
+pub unsafe fn draw_tab_bar_icons_with_glyphs(
+    ctx: CGContextRef,
+    font: &CTFont,
+    width: f64,
+    line_height: f64,
+    y_offset: f64,
+    row_height: f64,
+    bar: &TabBar,
+    theme: &Theme,
+    hovered_close_tab: Option<usize>,
+    icons: &[Option<TabIcon>],
+    glyphs: Option<&TabBarGlyphs>,
+    nerd_fonts_enabled: bool,
 ) -> TabBarHits {
     let text_y_offset = y_offset + (row_height - line_height) / 2.0;
     let tab_pad = if bar.compact { 2.0 } else { TAB_PAD };
@@ -611,15 +664,24 @@ pub unsafe fn draw_tab_bar_icons(
         if let Some((close_lo, _)) = hits.close_bounds[tab_idx] {
             let close_x = close_lo + CLOSE_PAD;
             let is_close_hovered = hovered_close_tab == Some(tab_idx);
-            // Codicon glyphs, painted through the same `font` the
-            // label/icon above already use, since
+            // Codicon glyphs by default, painted through the same `font`
+            // the label/icon above already use, since
             // `MacBackend::set_chrome_font` wraps it with the bundled
             // codicon cascade unconditionally (see
-            // `font_with_builtin_fallback`'s doc).
+            // `font_with_builtin_fallback`'s doc). An app-supplied
+            // `glyphs` override replaces either mark.
             let close_glyph = if tab.is_dirty && !is_close_hovered {
-                crate::codicon::DIRTY.to_string()
+                tab_glyph_text(
+                    glyphs.and_then(TabBarGlyphs::dirty_glyph),
+                    nerd_fonts_enabled,
+                    crate::codicon::DIRTY,
+                )
             } else {
-                crate::codicon::CLOSE.to_string()
+                tab_glyph_text(
+                    glyphs.and_then(TabBarGlyphs::close_glyph),
+                    nerd_fonts_enabled,
+                    crate::codicon::CLOSE,
+                )
             };
             let close_fg = if tab.is_dirty || is_close_hovered {
                 theme.foreground
@@ -1896,6 +1958,85 @@ mod tests {
             "label ink painted in a row with no chip colour beneath it \
              (chrome_line_height={chrome_line_height}, demo_row_h={DEMO_ROW_H}): \
              rows={violations:?}"
+        );
+    }
+
+    /// An app-supplied [`TabBarGlyphs`] override swaps the close/dirty
+    /// mark `Backend::draw_tab_bar_with_chrome_and_glyphs` paints on
+    /// [`MacBackend`]; with `glyphs: None` it paints the same codicon
+    /// default as [`MacBackend::draw_tab_bar`].
+    #[test]
+    fn close_dirty_glyph_override_paints_app_glyph_default_paints_codicon() {
+        use crate::primitives::tab_bar::TabChrome;
+
+        let bar = sample_bar();
+        let chrome = TabChrome::default();
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let glyphs = TabBarGlyphs::new()
+            .with_close_glyph("x")
+            .with_dirty_glyph("*");
+
+        let paint = |glyphs: Option<&TabBarGlyphs>| -> Vec<crate::testing::TextRun> {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(0.0, 0.0, 0.0, 0.0);
+            let mut backend = backend_with_test_fonts();
+            backend.set_painted_text_recording(true);
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                let _ = b.draw_tab_bar_with_chrome_and_glyphs(rect, &bar, None, &chrome, glyphs);
+            });
+            let runs = backend.text_runs().to_vec();
+            backend.end_frame();
+            runs
+        };
+
+        let overridden = paint(Some(&glyphs));
+        assert!(
+            overridden.iter().any(|r| r.text == "*"),
+            "expected the overridden dirty glyph among painted runs, got {:?}",
+            overridden
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(!overridden
+            .iter()
+            .any(|r| r.text.contains(crate::codicon::DIRTY)));
+        // Tab 0 (`main.rs`) is closable and not dirty, so the close-glyph
+        // override paints there too.
+        assert!(
+            overridden.iter().any(|r| r.text == "x"),
+            "expected the overridden close glyph among painted runs, got {:?}",
+            overridden
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(!overridden
+            .iter()
+            .any(|r| r.text.contains(crate::codicon::CLOSE)));
+
+        let default_runs = paint(None);
+        assert!(
+            default_runs
+                .iter()
+                .any(|r| r.text.contains(crate::codicon::DIRTY)),
+            "expected the default codicon dirty glyph among painted runs, got {:?}",
+            default_runs
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            default_runs
+                .iter()
+                .any(|r| r.text.contains(crate::codicon::CLOSE)),
+            "expected the default codicon close glyph among painted runs, got {:?}",
+            default_runs
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
         );
     }
 }

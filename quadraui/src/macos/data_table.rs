@@ -12,7 +12,7 @@
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use crate::primitives::data_table::DataTable;
+use crate::primitives::data_table::{DataTable, DataTableGlyphs};
 use crate::primitives::layout_metrics::pixel_data_table_layout;
 use crate::theme::Theme;
 use crate::DataTableLayout;
@@ -57,18 +57,59 @@ pub unsafe fn draw_data_table(
     line_height: f64,
     hovered_idx: Option<usize>,
 ) -> DataTableLayout {
+    draw_data_table_with_glyphs(
+        ctx,
+        font,
+        x,
+        y,
+        w,
+        h,
+        table,
+        theme,
+        line_height,
+        hovered_idx,
+        None,
+        false,
+    )
+}
+
+/// [`draw_data_table`], but honouring an optional [`DataTableGlyphs`]
+/// override for the sort-direction marks — `glyphs: None` reproduces
+/// [`draw_data_table`] exactly.
+///
+/// # Safety
+///
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
+/// the call.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_data_table_with_glyphs(
+    ctx: CGContextRef,
+    font: &CTFont,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    table: &DataTable,
+    theme: &Theme,
+    line_height: f64,
+    hovered_idx: Option<usize>,
+    glyphs: Option<&DataTableGlyphs>,
+    nerd_fonts_enabled: bool,
+) -> DataTableLayout {
     let mut surface = super::surface::CgSurface {
         ctx,
         font: Some(font),
     };
     let rect = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
-    crate::primitives::data_table::native_surface_paint::paint(
+    crate::primitives::data_table::native_surface_paint::paint_with_glyphs(
         table,
         &mut surface,
         theme,
         rect,
         line_height as f32,
         hovered_idx,
+        glyphs,
+        nerd_fonts_enabled,
     )
 }
 
@@ -287,6 +328,84 @@ mod tests {
             total,
         );
         assert!(matches!(hit, DataTableHit::Row { idx: 1 }));
+    }
+
+    /// An app-supplied [`DataTableGlyphs`] override swaps the
+    /// sort-direction glyph painted into the header, through
+    /// `Backend::draw_data_table_with_glyphs` — the actual deliverable
+    /// this module's free functions are wired behind; `glyphs: None`
+    /// paints the same pixels [`MacBackend::draw_data_table`] (the
+    /// no-override path) does. Column 0's header title is a single
+    /// "Name {glyph}" text run, so a leftmost/rightmost-ink-pixel span
+    /// can't isolate the appended glyph from the fixed "Name " label —
+    /// both already touch the span's left edge, and the column's right
+    /// border pixel anchors its right edge regardless of glyph width.
+    /// Diffing the two renders' raw pixels directly sidesteps that: any
+    /// override that changes what's painted shows up as a pixel
+    /// mismatch somewhere in the row.
+    #[test]
+    fn sort_glyph_override_changes_header_paint_default_matches_no_glyphs_path() {
+        let table = sample_table();
+        let theme = Theme::default();
+
+        let header_row_pixels = |glyphs: Option<&DataTableGlyphs>| -> Vec<(u8, u8, u8, u8)> {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(1.0, 1.0, 1.0, 1.0);
+            let mut backend = MacBackend::new();
+            backend.set_current_font(font());
+            backend.set_theme(theme);
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let layout = std::cell::RefCell::new(None);
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                let l = b.draw_data_table_with_glyphs(
+                    QRect::new(0.0, 0.0, W as f32, H as f32),
+                    &table,
+                    None,
+                    glyphs,
+                );
+                *layout.borrow_mut() = Some(l);
+            });
+            backend.end_frame();
+            let layout = layout.into_inner().unwrap();
+            let col0 = &layout.columns[0];
+            let mid_y = (layout.header_height / 2.0) as u32;
+            ((col0.x as u32)..((col0.x + col0.width) as u32).min(W))
+                .map(|x| surface.pixel(x, mid_y))
+                .collect()
+        };
+
+        let no_glyphs_row = header_row_pixels(None);
+        let plain_draw_row = {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(1.0, 1.0, 1.0, 1.0);
+            let mut backend = MacBackend::new();
+            backend.set_current_font(font());
+            backend.set_theme(theme);
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let layout = std::cell::RefCell::new(None);
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                let l = b.draw_data_table(QRect::new(0.0, 0.0, W as f32, H as f32), &table, None);
+                *layout.borrow_mut() = Some(l);
+            });
+            backend.end_frame();
+            let layout = layout.into_inner().unwrap();
+            let col0 = &layout.columns[0];
+            let mid_y = (layout.header_height / 2.0) as u32;
+            ((col0.x as u32)..((col0.x + col0.width) as u32).min(W))
+                .map(|x| surface.pixel(x, mid_y))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            no_glyphs_row, plain_draw_row,
+            "glyphs: None must paint the same pixels as the no-override draw_data_table path"
+        );
+
+        let glyphs = DataTableGlyphs::new().with_sort_ascending_glyph("W");
+        let overridden_row = header_row_pixels(Some(&glyphs));
+        assert_ne!(
+            overridden_row, no_glyphs_row,
+            "an app-supplied sort_ascending_glyph override should change the painted header pixels"
+        );
     }
 
     #[test]

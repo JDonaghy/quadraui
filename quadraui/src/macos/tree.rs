@@ -364,6 +364,49 @@ mod tests {
         );
     }
 
+    /// `TreeStyle::chevron_expanded` is painted verbatim through the shared
+    /// `primitives::tree::native_surface_paint::paint` path `draw_tree`
+    /// calls — this is the tree chevron's existing override mechanism (no
+    /// new `Backend` trait method is needed, unlike the tab-bar / data-table
+    /// / context-menu sites). An empty-text branch row isolates the chevron
+    /// glyph as the row's only ink, so the painted ink span measures it
+    /// directly: a wide override string paints wider than the narrow
+    /// codicon substitute `TreeStyle::default()` paints.
+    #[test]
+    fn chevron_override_paints_app_glyph_wider_than_default_codicon() {
+        let mut overridden = make_tree(vec![branch_row(0, "", true)]);
+        overridden.style.chevron_expanded = "WWWWWWWW".to_string();
+        let default_tree = make_tree(vec![branch_row(0, "", true)]);
+
+        let ink_width = |tree: &TreeView| -> u32 {
+            let (surface, layout) = paint_via_backend(tree);
+            let row = &layout.visible_rows[0];
+            let mid_y = (row.bounds.y + row.bounds.height / 2.0) as u32;
+            let mut left = None;
+            let mut right = None;
+            for x in 0..W {
+                let (r, g, b, _) = surface.pixel(x, mid_y);
+                if (r, g, b) != (255, 255, 255) {
+                    left.get_or_insert(x);
+                    right = Some(x);
+                }
+            }
+            match (left, right) {
+                (Some(l), Some(r)) => r - l + 1,
+                _ => 0,
+            }
+        };
+
+        let overridden_width = ink_width(&overridden);
+        let default_width = ink_width(&default_tree);
+        assert!(
+            overridden_width > default_width,
+            "the overridden chevron_expanded (\"WWWWWWWW\", measured \
+             {overridden_width}px) should paint wider than the default \
+             codicon substitute (measured {default_width}px)"
+        );
+    }
+
     #[test]
     fn mixed_header_and_leaves_use_different_row_pitch() {
         // Sanity: header_height < item_height (1.2 vs 1.4 multiplier).

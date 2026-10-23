@@ -2199,6 +2199,43 @@ impl Backend for MacBackend {
             )
         }
     }
+    /// [`Self::draw_data_table`], but honouring an optional
+    /// [`crate::primitives::data_table::DataTableGlyphs`] override for the
+    /// sort-direction glyphs — `glyphs: None` reproduces
+    /// [`Self::draw_data_table`] exactly.
+    fn draw_data_table_with_glyphs(
+        &mut self,
+        rect: Rect,
+        table: &DataTable,
+        hovered_idx: Option<usize>,
+        glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
+    ) -> DataTableLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_data_table_with_glyphs called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::data_table::draw_data_table_with_glyphs(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                table,
+                &theme,
+                line_height,
+                hovered_idx,
+                glyphs,
+                self.nerd_fonts_enabled,
+            )
+        }
+    }
     fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout {
         // No-paint twin of `draw_data_table` — must agree with what
         // that method painted.
@@ -2496,6 +2533,55 @@ impl Backend for MacBackend {
                 &theme,
                 hovered_close_tab,
                 icons,
+            );
+            CGContextRestoreGState(ctx);
+            crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
+            hits
+        }
+    }
+    /// [`Self::draw_tab_bar_icons`], but honouring an optional
+    /// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
+    /// close/dirty mark — `glyphs: None` reproduces
+    /// [`Self::draw_tab_bar_icons`] exactly. `chrome` is unused: this
+    /// rasteriser has no bracket-chrome support, matching the trait
+    /// default's own posture of ignoring `chrome` on backends without it.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits`
+    fn draw_tab_bar_with_chrome_and_glyphs(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        chrome: &crate::primitives::tab_bar::TabChrome,
+        glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
+    ) -> TabBarHits {
+        let _ = chrome;
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_tab_bar_with_chrome_and_glyphs called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let line_height = self.chrome_line_height;
+        // SAFETY: `ctx` is non-null inside the frame scope. See
+        // `Self::draw_tab_bar_icons`'s doc for the CTM-translate / hit-shift
+        // dance this mirrors.
+        unsafe {
+            CGContextSaveGState(ctx);
+            CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
+            let mut hits = super::tab_bar::draw_tab_bar_icons_with_glyphs(
+                ctx,
+                font,
+                rect.width as f64,
+                line_height,
+                rect.y as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+                hovered_close_tab,
+                &[],
+                glyphs,
+                self.nerd_fonts_enabled,
             );
             CGContextRestoreGState(ctx);
             crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
@@ -3020,6 +3106,43 @@ impl Backend for MacBackend {
             &mut surface,
             &theme,
             &style,
+        )
+    }
+    /// [`Self::draw_context_menu`], but honouring an optional
+    /// [`crate::primitives::context_menu::ContextMenuGlyphs`] override for
+    /// the check-mark / submenu-arrow glyphs — `glyphs: None` reproduces
+    /// [`Self::draw_context_menu`] exactly.
+    fn draw_context_menu_with_glyphs(
+        &mut self,
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
+        glyphs: Option<&crate::primitives::context_menu::ContextMenuGlyphs>,
+    ) -> Vec<(Rect, WidgetId)> {
+        // See draw_palette for why this happens before the CG borrow.
+        self.modal_stack.borrow_mut().mark_painted(&menu.id);
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_context_menu_with_glyphs called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let style = self.style();
+        // Calls the shared paint directly — see `Self::draw_context_menu`'s
+        // comment for why.
+        let mut surface = super::surface::CgSurface {
+            ctx,
+            font: Some(font),
+        };
+        crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
+            menu,
+            layout,
+            crate::accelerator::Platform::Macos,
+            &mut surface,
+            &theme,
+            &style,
+            glyphs,
+            self.nerd_fonts_enabled,
         )
     }
     fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect> {
