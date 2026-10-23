@@ -129,8 +129,35 @@ int64_t qui_data_table_insert(struct QuiApp *app, const uint8_t *json, uintptr_t
 int64_t qui_tab_bar_insert(struct QuiApp *app, const uint8_t *json, uintptr_t json_len);
 
 /**
+ * Queue any [`quadraui::UiEvent`] for the next [`qui_step`]/[`qui_run`]
+ * call, JSON-encoded at `json`/`json_len` — the real input surface a host
+ * drives: mouse, key, scroll, focus, window and every other variant all go
+ * through this one function, exactly the same JSON-only-for-payloads shape
+ * every `qui_<name>_insert` function already uses. Mirror quadraui's own
+ * `#[derive(Serialize, Deserialize)]` field names and shape for the variant
+ * being sent (see `quadraui::UiEvent`'s docs for each variant's payload).
+ *
+ * [`quadraui::UiEvent::User`] deliberately has no `Serialize`/`Deserialize`
+ * impl (its payload is an in-process-only `Arc<dyn Any>`), so JSON for it
+ * always fails to decode here — there is nothing meaningful to send across
+ * a wire boundary for that variant.
+ *
+ * Returns `0` on success, `-1` if `app` is null, `json` is null (with
+ * `json_len != 0`), the bytes aren't valid UTF-8, or the JSON doesn't
+ * decode to a `UiEvent` — see [`qui_last_error`] for which.
+ *
+ * # Safety
+ * `app` must be a live pointer from [`qui_app_new`]. `json` must be either
+ * null (only valid when `json_len` is `0`, and rejected as an error) or a
+ * pointer to `json_len` valid bytes.
+ */
+int32_t qui_push_event(struct QuiApp *app, const uint8_t *json, uintptr_t json_len);
+
+/**
  * Queue a synthetic `KeyPressed` event for the next [`qui_step`]/
- * [`qui_run`] call — the PoC's stand-in for a real backend's input source.
+ * [`qui_run`] call — a convenience over [`qui_push_event`] for the common
+ * single-character-key case, so a host doesn't have to hand-build the
+ * `KeyPressed` JSON just to type a character.
  *
  * Returns `0` on success, `-1` if `app` is null.
  *
@@ -140,9 +167,26 @@ int64_t qui_tab_bar_insert(struct QuiApp *app, const uint8_t *json, uintptr_t js
 int32_t qui_push_key_event(struct QuiApp *app, uint32_t ch);
 
 /**
+ * Resize the app's headless cell grid to `width`×`height` and queue the
+ * matching `WindowResized` event — the "resize" leg of the real input
+ * surface, kept separate from [`qui_push_event`] because resizing the
+ * underlying grid itself is a [`quadraui::tui::testing::TuiDriver`]
+ * operation, not something any `UiEvent` payload can express on its own; a
+ * plain [`qui_push_event`] with a `WindowResized` payload would notify the
+ * app's `handle` callback but leave the grid at its old size.
+ *
+ * Returns `0` on success, `-1` if `app` is null or `width`/`height` is `0`.
+ *
+ * # Safety
+ * `app` must be a live pointer from [`qui_app_new`].
+ */
+int32_t qui_resize(struct QuiApp *app, uint16_t width, uint16_t height);
+
+/**
  * Advance the app by one non-blocking step: dispatch one queued event (if
- * any; see [`qui_push_key_event`] — events dispatch in the order they were
- * queued) through the app's `handle` callback, otherwise call its `tick`
+ * any; see [`qui_push_event`]/[`qui_push_key_event`]/[`qui_resize`] —
+ * events dispatch in the order they were queued) through the app's
+ * `handle` callback, otherwise call its `tick`
  * callback, then repaint if the reaction calls for it. Never blocks
  * waiting for input, because there is nothing to wait on in this headless
  * PoC.
