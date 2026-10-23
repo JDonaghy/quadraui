@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "quadraui",
+    "quadraui-ffi",
     "quadraui-gallery",
     "kubeui-core",
     "kubeui",
