@@ -2,6 +2,7 @@
 members = [
     "quadraui",
     "quadraui-ffi",
+    "quadraui-py",
     "quadraui-gallery",
     "kubeui-core",
     "kubeui",

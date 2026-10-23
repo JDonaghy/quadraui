@@ -6,3 +6,9 @@ __pycache__/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 *.log
+
+# `maturin develop`'s compiled extension, built in place under the
+# pure-Python package it backs (`quadraui-py/python/quadraui/`).
+*.abi3.so
+quadraui-py/.venv/
+

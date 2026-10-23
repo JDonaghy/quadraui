@@ -1,0 +1,22 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "quadraui"
+version = "0.0.0"
+description = "Python bindings for quadraui: insert descriptors and render them headlessly."
+requires-python = ">=3.8"
+license = { text = "MIT OR Apache-2.0" }
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+
+[tool.maturin]
+# Compiled extension lives at `quadraui/_quadraui` underneath the pure-Python
+# package in `python/quadraui/`, which re-exports its public names — see
+# `python/quadraui/__init__.py`.
+module-name = "quadraui._quadraui"
+python-source = "python"
+features = ["pyo3/extension-module"]
