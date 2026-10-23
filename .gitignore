@@ -8,7 +8,7 @@ __pycache__/
 *.log
 
 # `maturin develop`'s compiled extension, built in place under the
-# pure-Python package it backs (`quadraui-py/python/quadraui/`).
-*.abi3.so
+# pure-Python package it backs.
+quadraui-py/python/quadraui/*.abi3.so
+quadraui-py/python/quadraui/*.pyd
 quadraui-py/.venv/
-
