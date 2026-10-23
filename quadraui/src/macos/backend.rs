@@ -4056,7 +4056,6 @@ impl Backend for MacBackend {
         // `ctx` after confirming it's non-null.
         unsafe { super::image::draw_image_cached(ctx, rect, image, &mut self.image_cache, scale) }
     }
-
 }
 
 /// macOS's `WindowControl` surface, backed by exactly the

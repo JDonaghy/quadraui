@@ -4671,54 +4671,6 @@ impl Backend for GtkBackend {
         switch.layout(rect)
     }
 
-    /// Paint via the shared [`crate::primitives::date_picker::native_surface_paint::paint`].
-    fn draw_date_picker(
-        &mut self,
-        rect: QRect,
-        picker: &crate::DatePicker,
-    ) -> crate::DatePickerLayout {
-        let theme = self.current_theme;
-        let row_height = self.current_line_height as f32;
-        let header_height = row_height;
-        let time_height = if picker.time.is_some() {
-            row_height
-        } else {
-            0.0
-        };
-        crate::primitives::date_picker::native_surface_paint::paint(
-            picker,
-            self,
-            &theme,
-            rect,
-            row_height,
-            header_height,
-            time_height,
-        )
-    }
-
-    fn date_picker_layout(
-        &self,
-        rect: QRect,
-        picker: &crate::DatePicker,
-    ) -> crate::DatePickerLayout {
-        let row_height = self.current_line_height as f32;
-        let header_height = row_height;
-        let time_height = if picker.time.is_some() {
-            row_height
-        } else {
-            0.0
-        };
-        let cell_width = rect.width / 7.0;
-        picker.layout(
-            rect.x,
-            rect.y,
-            cell_width,
-            row_height,
-            header_height,
-            time_height,
-        )
-    }
-
     fn toast_stack_layout(
         &self,
         rect: QRect,

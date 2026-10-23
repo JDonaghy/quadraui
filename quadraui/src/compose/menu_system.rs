@@ -1453,7 +1453,6 @@ mod tests {
         ) -> crate::backend::ImagePaintResult {
             crate::backend::ImagePaintResult::Unsupported
         }
-
     }
 
     // Helper: construct a `KeyPressed` event with no modifiers.

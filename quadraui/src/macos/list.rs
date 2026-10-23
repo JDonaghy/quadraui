@@ -654,10 +654,11 @@ mod multi_select_driver_tests {
         };
         driver.dispatch(mouse_down(2.0, y2, ctrl));
         assert_eq!(driver.app().selected, vec![0, 2]);
-        // Toggle-off (a second ctrl-click deselecting row 2) is deferred to
-        // quadraui#1670: a repeated ctrl+mouse_down at the same point does not
-        // re-fire through MacDriver (a harness quirk). The shared toggle itself
-        // is correct and unit-tested (apply_selection_gesture_toggle_adds_and_removes).
+        // Toggle-off (a second ctrl-click deselecting row 2) is deferred: a
+        // repeated ctrl+mouse_down at the same point does not re-fire through
+        // MacDriver (a known harness quirk, tracked separately). The shared
+        // toggle itself is correct and unit-tested
+        // (apply_selection_gesture_toggle_adds_and_removes).
     }
 
     #[test]
