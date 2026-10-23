@@ -1019,6 +1019,14 @@ only a push to `main` runs this workflow.
   shrinks adaptively so the chip is always at least as tall as the
   label. Other backends are unaffected.
 
+### Fixed
+
+- TUI: shifted symbols (`:`, `!`, `@`, `{`, …) are typed correctly in
+  terminals that speak the kitty keyboard protocol (iTerm2, kitty, Ghostty,
+  WezTerm). The runner now also pushes `REPORT_ALTERNATE_KEYS`, so the
+  terminal includes the shifted codepoint and crossterm decodes `:` as
+  `KeyCode::Char(':')` instead of `;` + Shift.
+
 ## [0.1.4] - 2026-10-11
 
 ### Added

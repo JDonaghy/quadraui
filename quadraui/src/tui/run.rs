@@ -6,7 +6,8 @@
 //! - Terminal raw-mode + alternate screen + mouse + bracketed-paste
 //!   setup / teardown.
 //! - Best-effort kitty keyboard-protocol push (REPORT_ALL_KEYS_AS_ESCAPE_CODES
-//!   so Ctrl+Shift+L is unambiguous from Ctrl+L), with the outcome exposed
+//!   so Ctrl+Shift+L is unambiguous from Ctrl+L, plus REPORT_ALTERNATE_KEYS
+//!   so shifted keys still arrive as the character they type), with the outcome exposed
 //!   via [`crate::backend::BackendCaps::kitty_keyboard`] so
 //!   an app can tell whether it actually worked instead of finding out by
 //!   a gesture silently never firing.
@@ -820,10 +821,16 @@ fn push_keyboard_enhancement(stdout: &mut io::Stdout) -> bool {
     }
     execute!(
         stdout,
+        // REPORT_ALL_KEYS_AS_ESCAPE_CODES makes the terminal encode text keys
+        // as their base key plus modifiers (`:` arrives as `;` + Shift).
+        // REPORT_ALTERNATE_KEYS adds the shifted codepoint, which crossterm
+        // decodes back to `KeyCode::Char(':')` with Shift cleared; without it
+        // every shifted symbol reaches the app as the unshifted key.
         PushKeyboardEnhancementFlags(
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
                 | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
         )
     )
     .is_ok()
