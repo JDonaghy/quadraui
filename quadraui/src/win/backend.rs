@@ -23,7 +23,6 @@ use crate::primitives::button::{Button, ButtonLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterHit, CommandCenterLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
-use crate::primitives::date_picker::{DatePicker, DatePickerLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
