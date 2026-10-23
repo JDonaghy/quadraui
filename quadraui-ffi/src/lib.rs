@@ -2,20 +2,34 @@
 //!
 //! This crate is a scaffold, not a full C ABI — it proves
 //! the opaque-handle + JSON-descriptor + vtable-callback + non-blocking-step
-//! shape end to end for exactly **one** primitive ([`quadraui::Button`]),
-//! driven through quadraui's headless `tui` backend
-//! ([`quadraui::tui::testing::TuiDriver`]) so the PoC runs in any sandbox or
-//! CI host with no real terminal and no platform-specific GUI toolkit. See
-//! `README.md` at the root of this crate for the toolchain evaluation
-//! (cbindgen vs Diplomat vs UniFFI), the rationale for `tui` over `gtk` as
-//! the PoC backend, and the call on how this work relates to #118.
+//! shape end to end for a handful of core primitives, each inserted through
+//! its own `qui_<name>_insert` function following exactly the same pattern:
+//! [`quadraui::Button`] ([`qui_button_insert`]), [`quadraui::TextDisplay`]
+//! ([`qui_text_display_insert`] — quadraui has no primitive literally named
+//! "Label"; `TextDisplay` is the closest match), [`quadraui::ListView`]
+//! ([`qui_list_insert`]), [`quadraui::TreeView`] ([`qui_tree_insert`]),
+//! [`quadraui::DataTable`] ([`qui_data_table_insert`]), and
+//! [`quadraui::TabBar`] ([`qui_tab_bar_insert`]). Driven through quadraui's
+//! headless `tui` backend ([`quadraui::tui::testing::TuiDriver`]) so the PoC
+//! runs in any sandbox or CI host with no real terminal and no
+//! platform-specific GUI toolkit. See `README.md` at the root of this crate
+//! for the toolchain evaluation (cbindgen vs Diplomat vs UniFFI), the
+//! rationale for `tui` over `gtk` as the PoC backend, and the call on how
+//! this work relates to #118.
+//!
+//! Remaining primitives (ComboBox, NumberInput, DatePicker, ScrollView,
+//! context menu, dialog, …) are intentionally out of scope here; they follow
+//! as sibling batches rather than one big-bang extension.
 //!
 //! ## Surface
 //!
 //! - [`QuiApp`] is the opaque handle (`QuiApp*` on the C side); every other
 //!   function takes one as its first argument.
-//! - [`qui_button_insert`] takes a UTF-8 JSON-encoded [`quadraui::Button`]
-//!   and returns an opaque per-app slot id (an `i64`, `-1` on error).
+//! - Each `qui_<name>_insert` function takes a UTF-8 JSON-encoded descriptor
+//!   and returns an opaque per-app slot id (an `i64`, `-1` on error). Every
+//!   primitive gets exactly one slot per app — a second insert of the same
+//!   type is an error — so the returned id is always `0` on success; it
+//!   exists for forward compatibility with a future multi-instance slot.
 //! - [`QuiVTable`] is the vtable callbacks a host registers: `handle`/`tick`
 //!   function pointers plus a `user_data` the host owns. There is
 //!   deliberately no `render` member: quadraui's retained-descriptor model
@@ -48,7 +62,10 @@ use std::panic::{self, AssertUnwindSafe};
 use std::slice;
 
 use quadraui::tui::testing::TuiDriver;
-use quadraui::{AppLogic, Backend, Button, Key, Modifiers, Reaction, Rect, UiEvent};
+use quadraui::{
+    AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, Reaction, Rect, TabBar,
+    TextDisplay, TreeView, UiEvent,
+};
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -94,26 +111,69 @@ fn reaction_from_code(code: i32) -> Reaction {
 }
 
 /// Backend-generic app logic the PoC drives through
-/// [`quadraui::tui::testing::TuiDriver`]: one retained [`Button`] descriptor
-/// plus the two foreign callbacks from [`QuiVTable`].
+/// [`quadraui::tui::testing::TuiDriver`]: one retained descriptor per
+/// supported primitive, plus the two foreign callbacks from [`QuiVTable`].
 struct FfiApp {
     button: Option<Button>,
+    text_display: Option<TextDisplay>,
+    list: Option<ListView>,
+    tree: Option<TreeView>,
+    data_table: Option<DataTable>,
+    tab_bar: Option<TabBar>,
     vtable: QuiVTable,
 }
 
 impl AppLogic for FfiApp {
     type AreaId = ();
 
-    /// Paints whatever [`Button`] descriptor is currently held, through the
-    /// same `Backend::draw_button` every in-tree TUI app uses. See
+    /// Paints whatever descriptors are currently held, each through the
+    /// same `Backend::draw_*` method every in-tree TUI app uses, stacked
+    /// vertically in a fixed band order so no two primitives overlap. See
     /// [`QuiVTable`]'s doc for why there is no foreign `render` callback.
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let Some(button) = &self.button else {
-            return;
-        };
         let viewport = backend.viewport();
-        let rect = Rect::new(0.0, 0.0, viewport.width, 3.0_f32.min(viewport.height));
-        let _ = backend.draw_button(rect, button);
+        let mut y = 0.0_f32;
+        let mut next_band = |height: f32| -> Option<Rect> {
+            let remaining = viewport.height - y;
+            if remaining <= 0.0 {
+                return None;
+            }
+            let band_height = height.min(remaining);
+            let rect = Rect::new(0.0, y, viewport.width, band_height);
+            y += band_height;
+            Some(rect)
+        };
+
+        if let Some(button) = &self.button {
+            if let Some(rect) = next_band(3.0) {
+                let _ = backend.draw_button(rect, button);
+            }
+        }
+        if let Some(text_display) = &self.text_display {
+            if let Some(rect) = next_band(3.0) {
+                backend.draw_text_display(rect, text_display);
+            }
+        }
+        if let Some(list) = &self.list {
+            if let Some(rect) = next_band(4.0) {
+                backend.draw_list(rect, list);
+            }
+        }
+        if let Some(tree) = &self.tree {
+            if let Some(rect) = next_band(4.0) {
+                backend.draw_tree(rect, tree);
+            }
+        }
+        if let Some(data_table) = &self.data_table {
+            if let Some(rect) = next_band(4.0) {
+                let _ = backend.draw_data_table(rect, data_table, None);
+            }
+        }
+        if let Some(tab_bar) = &self.tab_bar {
+            if let Some(rect) = next_band(3.0) {
+                let _ = backend.draw_tab_bar_layout(rect, tab_bar, None);
+            }
+        }
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
@@ -168,6 +228,11 @@ pub unsafe extern "C" fn qui_app_new(width: u16, height: u16, vtable: QuiVTable)
     }
     let app = FfiApp {
         button: None,
+        text_display: None,
+        list: None,
+        tree: None,
+        data_table: None,
+        tab_bar: None,
         vtable,
     };
     let driver = TuiDriver::new(app, width, height);
@@ -240,6 +305,235 @@ pub unsafe extern "C" fn qui_button_insert(
         }
     };
     app.driver.app_mut().button = Some(button);
+    app.driver.render();
+    0
+}
+
+/// Insert the one `TextDisplay` descriptor this PoC supports, JSON-encoded
+/// at `json`/`json_len`. quadraui has no primitive literally named "Label";
+/// `TextDisplay` is the closest match for that role. Behaves exactly like
+/// [`qui_button_insert`] otherwise: immediately repaints on success, and
+/// returns `0`/`-1` with [`qui_last_error`] set on failure.
+///
+/// # Safety
+/// Same contract as [`qui_button_insert`].
+#[no_mangle]
+pub unsafe extern "C" fn qui_text_display_insert(
+    app: *mut QuiApp,
+    json: *const u8,
+    json_len: usize,
+) -> i64 {
+    clear_last_error();
+    let Some(app) = app.as_mut() else {
+        set_last_error("qui_text_display_insert: app is null");
+        return -1;
+    };
+    if json.is_null() {
+        set_last_error("qui_text_display_insert: json is null");
+        return -1;
+    }
+    if app.driver.app().text_display.is_some() {
+        set_last_error(
+            "qui_text_display_insert: this PoC supports exactly one TextDisplay descriptor",
+        );
+        return -1;
+    }
+    let bytes = slice::from_raw_parts(json, json_len);
+    let text = match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => {
+            set_last_error(format!("qui_text_display_insert: invalid UTF-8: {err}"));
+            return -1;
+        }
+    };
+    let text_display: TextDisplay = match serde_json::from_str(text) {
+        Ok(text_display) => text_display,
+        Err(err) => {
+            set_last_error(format!(
+                "qui_text_display_insert: invalid TextDisplay JSON: {err}"
+            ));
+            return -1;
+        }
+    };
+    app.driver.app_mut().text_display = Some(text_display);
+    app.driver.render();
+    0
+}
+
+/// Insert the one `ListView` descriptor this PoC supports, JSON-encoded at
+/// `json`/`json_len`. Behaves exactly like [`qui_button_insert`] otherwise.
+///
+/// # Safety
+/// Same contract as [`qui_button_insert`].
+#[no_mangle]
+pub unsafe extern "C" fn qui_list_insert(
+    app: *mut QuiApp,
+    json: *const u8,
+    json_len: usize,
+) -> i64 {
+    clear_last_error();
+    let Some(app) = app.as_mut() else {
+        set_last_error("qui_list_insert: app is null");
+        return -1;
+    };
+    if json.is_null() {
+        set_last_error("qui_list_insert: json is null");
+        return -1;
+    }
+    if app.driver.app().list.is_some() {
+        set_last_error("qui_list_insert: this PoC supports exactly one ListView descriptor");
+        return -1;
+    }
+    let bytes = slice::from_raw_parts(json, json_len);
+    let text = match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => {
+            set_last_error(format!("qui_list_insert: invalid UTF-8: {err}"));
+            return -1;
+        }
+    };
+    let list: ListView = match serde_json::from_str(text) {
+        Ok(list) => list,
+        Err(err) => {
+            set_last_error(format!("qui_list_insert: invalid ListView JSON: {err}"));
+            return -1;
+        }
+    };
+    app.driver.app_mut().list = Some(list);
+    app.driver.render();
+    0
+}
+
+/// Insert the one `TreeView` descriptor this PoC supports, JSON-encoded at
+/// `json`/`json_len`. Behaves exactly like [`qui_button_insert`] otherwise.
+///
+/// # Safety
+/// Same contract as [`qui_button_insert`].
+#[no_mangle]
+pub unsafe extern "C" fn qui_tree_insert(
+    app: *mut QuiApp,
+    json: *const u8,
+    json_len: usize,
+) -> i64 {
+    clear_last_error();
+    let Some(app) = app.as_mut() else {
+        set_last_error("qui_tree_insert: app is null");
+        return -1;
+    };
+    if json.is_null() {
+        set_last_error("qui_tree_insert: json is null");
+        return -1;
+    }
+    if app.driver.app().tree.is_some() {
+        set_last_error("qui_tree_insert: this PoC supports exactly one TreeView descriptor");
+        return -1;
+    }
+    let bytes = slice::from_raw_parts(json, json_len);
+    let text = match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => {
+            set_last_error(format!("qui_tree_insert: invalid UTF-8: {err}"));
+            return -1;
+        }
+    };
+    let tree: TreeView = match serde_json::from_str(text) {
+        Ok(tree) => tree,
+        Err(err) => {
+            set_last_error(format!("qui_tree_insert: invalid TreeView JSON: {err}"));
+            return -1;
+        }
+    };
+    app.driver.app_mut().tree = Some(tree);
+    app.driver.render();
+    0
+}
+
+/// Insert the one `DataTable` descriptor this PoC supports, JSON-encoded at
+/// `json`/`json_len`. Behaves exactly like [`qui_button_insert`] otherwise.
+///
+/// # Safety
+/// Same contract as [`qui_button_insert`].
+#[no_mangle]
+pub unsafe extern "C" fn qui_data_table_insert(
+    app: *mut QuiApp,
+    json: *const u8,
+    json_len: usize,
+) -> i64 {
+    clear_last_error();
+    let Some(app) = app.as_mut() else {
+        set_last_error("qui_data_table_insert: app is null");
+        return -1;
+    };
+    if json.is_null() {
+        set_last_error("qui_data_table_insert: json is null");
+        return -1;
+    }
+    if app.driver.app().data_table.is_some() {
+        set_last_error("qui_data_table_insert: this PoC supports exactly one DataTable descriptor");
+        return -1;
+    }
+    let bytes = slice::from_raw_parts(json, json_len);
+    let text = match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => {
+            set_last_error(format!("qui_data_table_insert: invalid UTF-8: {err}"));
+            return -1;
+        }
+    };
+    let data_table: DataTable = match serde_json::from_str(text) {
+        Ok(data_table) => data_table,
+        Err(err) => {
+            set_last_error(format!(
+                "qui_data_table_insert: invalid DataTable JSON: {err}"
+            ));
+            return -1;
+        }
+    };
+    app.driver.app_mut().data_table = Some(data_table);
+    app.driver.render();
+    0
+}
+
+/// Insert the one `TabBar` descriptor this PoC supports, JSON-encoded at
+/// `json`/`json_len`. Behaves exactly like [`qui_button_insert`] otherwise.
+///
+/// # Safety
+/// Same contract as [`qui_button_insert`].
+#[no_mangle]
+pub unsafe extern "C" fn qui_tab_bar_insert(
+    app: *mut QuiApp,
+    json: *const u8,
+    json_len: usize,
+) -> i64 {
+    clear_last_error();
+    let Some(app) = app.as_mut() else {
+        set_last_error("qui_tab_bar_insert: app is null");
+        return -1;
+    };
+    if json.is_null() {
+        set_last_error("qui_tab_bar_insert: json is null");
+        return -1;
+    }
+    if app.driver.app().tab_bar.is_some() {
+        set_last_error("qui_tab_bar_insert: this PoC supports exactly one TabBar descriptor");
+        return -1;
+    }
+    let bytes = slice::from_raw_parts(json, json_len);
+    let text = match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => {
+            set_last_error(format!("qui_tab_bar_insert: invalid UTF-8: {err}"));
+            return -1;
+        }
+    };
+    let tab_bar: TabBar = match serde_json::from_str(text) {
+        Ok(tab_bar) => tab_bar,
+        Err(err) => {
+            set_last_error(format!("qui_tab_bar_insert: invalid TabBar JSON: {err}"));
+            return -1;
+        }
+    };
+    app.driver.app_mut().tab_bar = Some(tab_bar);
     app.driver.render();
     0
 }
@@ -537,6 +831,169 @@ mod tests {
                 .into_owned();
             assert!(message.contains("invalid Button JSON"));
             qui_free(error_ptr);
+
+            qui_app_free(app);
+        }
+    }
+
+    fn no_op_vtable() -> QuiVTable {
+        QuiVTable {
+            user_data: std::ptr::null_mut(),
+            handle: None,
+            tick: None,
+        }
+    }
+
+    #[test]
+    fn insert_run_and_find_the_text_display_line() {
+        let json = serde_json::json!({
+            "id": "text:1",
+            "lines": [{ "spans": [{ "text": "Hello", "fg": null, "bg": null }] }]
+        })
+        .to_string();
+        unsafe {
+            let app = qui_app_new(40, 5, no_op_vtable());
+            assert!(!app.is_null());
+
+            let inserted = qui_text_display_insert(app, json.as_ptr(), json.len());
+            assert_eq!(inserted, 0);
+            assert!(qui_last_error().is_null());
+            assert_eq!(qui_screen_contains(app, b"Hello".as_ptr(), 5), 1);
+
+            // A second insert is rejected: the PoC keeps exactly one slot
+            // per type.
+            let again = qui_text_display_insert(app, json.as_ptr(), json.len());
+            assert_eq!(again, -1);
+            let error_ptr = qui_last_error();
+            assert!(!error_ptr.is_null());
+            qui_free(error_ptr);
+
+            qui_app_free(app);
+        }
+    }
+
+    #[test]
+    fn insert_run_and_find_the_list_item() {
+        let json = serde_json::json!({
+            "id": "list:1",
+            "items": [{ "text": { "spans": [{ "text": "Row 1", "fg": null, "bg": null }] } }],
+            "selected_idx": 0
+        })
+        .to_string();
+        unsafe {
+            let app = qui_app_new(40, 5, no_op_vtable());
+            assert!(!app.is_null());
+
+            let inserted = qui_list_insert(app, json.as_ptr(), json.len());
+            assert_eq!(inserted, 0);
+            assert!(qui_last_error().is_null());
+            assert_eq!(qui_screen_contains(app, b"Row 1".as_ptr(), 5), 1);
+
+            qui_app_free(app);
+        }
+    }
+
+    #[test]
+    fn insert_run_and_find_the_tree_row() {
+        let json = serde_json::json!({
+            "id": "tree:1",
+            "rows": [{
+                "path": [0],
+                "indent": 0,
+                "icon": null,
+                "text": { "spans": [{ "text": "Alpha", "fg": null, "bg": null }] },
+                "badge": null,
+                "is_expanded": null
+            }],
+            "selection_mode": "Single",
+            "selected_path": null,
+            "style": {
+                "indent": 2,
+                "show_chevrons": true,
+                "chevron_expanded": "v",
+                "chevron_collapsed": ">"
+            }
+        })
+        .to_string();
+        unsafe {
+            let app = qui_app_new(40, 5, no_op_vtable());
+            assert!(!app.is_null());
+
+            let inserted = qui_tree_insert(app, json.as_ptr(), json.len());
+            assert_eq!(inserted, 0);
+            assert!(qui_last_error().is_null());
+            assert_eq!(qui_screen_contains(app, b"Alpha".as_ptr(), 5), 1);
+
+            qui_app_free(app);
+        }
+    }
+
+    #[test]
+    fn insert_run_and_find_the_data_table_cell() {
+        let json = serde_json::json!({
+            "id": "table:1",
+            "columns": [{ "title": "Name" }],
+            "rows": [{ "cells": [{ "spans": [{ "text": "Row1", "fg": null, "bg": null }] }] }]
+        })
+        .to_string();
+        unsafe {
+            let app = qui_app_new(40, 5, no_op_vtable());
+            assert!(!app.is_null());
+
+            let inserted = qui_data_table_insert(app, json.as_ptr(), json.len());
+            assert_eq!(inserted, 0);
+            assert!(qui_last_error().is_null());
+            assert_eq!(qui_screen_contains(app, b"Row1".as_ptr(), 4), 1);
+
+            qui_app_free(app);
+        }
+    }
+
+    #[test]
+    fn insert_run_and_find_the_tab_bar_label() {
+        let json = serde_json::json!({
+            "id": "tabbar:1",
+            "tabs": [{ "label": "Tab 1" }]
+        })
+        .to_string();
+        unsafe {
+            let app = qui_app_new(40, 5, no_op_vtable());
+            assert!(!app.is_null());
+
+            let inserted = qui_tab_bar_insert(app, json.as_ptr(), json.len());
+            assert_eq!(inserted, 0);
+            assert!(qui_last_error().is_null());
+            assert_eq!(qui_screen_contains(app, b"Tab 1".as_ptr(), 5), 1);
+
+            qui_app_free(app);
+        }
+    }
+
+    #[test]
+    fn bad_json_reports_last_error_for_each_new_primitive() {
+        let bad = b"not json";
+        unsafe {
+            let app = qui_app_new(10, 3, no_op_vtable());
+            assert!(!app.is_null());
+
+            for (name, inserted) in [
+                (
+                    "text_display",
+                    qui_text_display_insert(app, bad.as_ptr(), bad.len()),
+                ),
+                ("list", qui_list_insert(app, bad.as_ptr(), bad.len())),
+                ("tree", qui_tree_insert(app, bad.as_ptr(), bad.len())),
+                (
+                    "data_table",
+                    qui_data_table_insert(app, bad.as_ptr(), bad.len()),
+                ),
+                ("tab_bar", qui_tab_bar_insert(app, bad.as_ptr(), bad.len())),
+            ] {
+                assert_eq!(inserted, -1, "{name} should reject non-JSON input");
+                let error_ptr = qui_last_error();
+                assert!(!error_ptr.is_null(), "{name} should set qui_last_error");
+                qui_free(error_ptr);
+            }
 
             qui_app_free(app);
         }
