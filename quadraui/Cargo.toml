@@ -1,6 +1,6 @@
 [package]
 name = "quadraui"
-version = "0.4.0"
+version = "0.5.0"
 edition.workspace = true
 description = "Cross-platform Rust UI toolkit: write one AppLogic and run it unmodified on TUI, GTK4 (Linux), macOS, and Windows backends"
 license.workspace = true
@@ -992,6 +992,11 @@ required-features = ["tui"]
 name = "gtk_form_all_fields"
 path = "examples/gtk_form_all_fields.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_form_date_picker"
+path = "examples/tui_form_date_picker.rs"
+required-features = ["tui"]
 
 [[example]]
 name = "tui_chart"

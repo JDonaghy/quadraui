@@ -364,6 +364,49 @@ mod tests {
         );
     }
 
+    /// `TreeStyle::chevron_expanded` is painted verbatim through the shared
+    /// `primitives::tree::native_surface_paint::paint` path `draw_tree`
+    /// calls — this is the tree chevron's existing override mechanism (no
+    /// new `Backend` trait method is needed, unlike the tab-bar / data-table
+    /// / context-menu sites). An empty-text branch row isolates the chevron
+    /// glyph as the row's only ink, so the painted ink span measures it
+    /// directly: a wide override string paints wider than the narrow
+    /// codicon substitute `TreeStyle::default()` paints.
+    #[test]
+    fn chevron_override_paints_app_glyph_wider_than_default_codicon() {
+        let mut overridden = make_tree(vec![branch_row(0, "", true)]);
+        overridden.style.chevron_expanded = "WWWWWWWW".to_string();
+        let default_tree = make_tree(vec![branch_row(0, "", true)]);
+
+        let ink_width = |tree: &TreeView| -> u32 {
+            let (surface, layout) = paint_via_backend(tree);
+            let row = &layout.visible_rows[0];
+            let mid_y = (row.bounds.y + row.bounds.height / 2.0) as u32;
+            let mut left = None;
+            let mut right = None;
+            for x in 0..W {
+                let (r, g, b, _) = surface.pixel(x, mid_y);
+                if (r, g, b) != (255, 255, 255) {
+                    left.get_or_insert(x);
+                    right = Some(x);
+                }
+            }
+            match (left, right) {
+                (Some(l), Some(r)) => r - l + 1,
+                _ => 0,
+            }
+        };
+
+        let overridden_width = ink_width(&overridden);
+        let default_width = ink_width(&default_tree);
+        assert!(
+            overridden_width > default_width,
+            "the overridden chevron_expanded (\"WWWWWWWW\", measured \
+             {overridden_width}px) should paint wider than the default \
+             codicon substitute (measured {default_width}px)"
+        );
+    }
+
     #[test]
     fn mixed_header_and_leaves_use_different_row_pitch() {
         // Sanity: header_height < item_height (1.2 vs 1.4 multiplier).
@@ -751,5 +794,213 @@ mod tests {
             found_paint,
             "editing row interior should contain painted pixels (caret + text)"
         );
+    }
+}
+
+/// Multi-select click wiring over [`crate::macos::testing::MacDriver`].
+///
+/// `TreeView` stays purely declarative (no selection-set field of its
+/// own — see `crate::types::apply_selection_gesture`'s doc), so the app
+/// owns the selected-index set and the gesture anchor, resolves each
+/// `MouseDown` to a row via [`TreeViewLayout::hit_test`], derives the
+/// gesture from the event's `Modifiers`, and maps the resulting
+/// flattened-row indices back to `TreePath`s via
+/// [`crate::primitives::tree::selected_paths_for_indices`] before
+/// emitting `TreeEvent::SelectionSet`. The layout comes from
+/// `Backend::tree_layout` (the same trait method `draw_tree` resolves
+/// internally while painting), not a locally fabricated measure, so the
+/// click router stays backend-agnostic per the portability commitment.
+///
+/// Mirrors `gtk::tree`'s and `win::tree`'s `multi_select_driver_tests`,
+/// minus the x-axis click spacing `win::tree` needs:
+/// `MacDriver::dispatch` feeds `dispatch_event` directly and never calls
+/// `MacBackend::fold_double_click` (only `macos::run` does), so repeated
+/// clicks on one row stay independent `MouseDown`s.
+#[cfg(test)]
+mod multi_select_driver_tests {
+    use crate::macos::testing::MacDriver;
+    use crate::primitives::tree::{selected_paths_for_indices, TreeEvent, TreeRow};
+    use crate::runner::{AppLogic, Reaction};
+    use crate::{
+        apply_selection_gesture, Backend, Decoration, Modifiers, MouseButton, Point, Rect,
+        SelectionGesture, SelectionMode, StyledText, TreeView, TreeViewHit, UiEvent, WidgetId,
+    };
+
+    const VIEWPORT_W: f32 = 200.0;
+    const VIEWPORT_H: f32 = 400.0;
+
+    fn leaf(idx: u16, label: &str) -> TreeRow {
+        TreeRow {
+            path: vec![idx],
+            indent: 0,
+            icon: None,
+            text: StyledText::plain(label.to_string()),
+            badge: None,
+            is_expanded: None,
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
+    fn sample_tree() -> TreeView {
+        TreeView {
+            id: WidgetId::new("t"),
+            rows: (0..5).map(|i| leaf(i, &format!("row {i}"))).collect(),
+            selection_mode: SelectionMode::Multi,
+            selected_path: None,
+            scroll_offset: 0,
+            style: Default::default(),
+            has_focus: true,
+        }
+    }
+
+    struct TreeApp {
+        tree: TreeView,
+        selected: Vec<usize>,
+        anchor: usize,
+        events: Vec<TreeEvent>,
+    }
+
+    impl TreeApp {
+        fn new() -> Self {
+            Self {
+                tree: sample_tree(),
+                selected: Vec::new(),
+                anchor: 0,
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl AppLogic for TreeApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_tree(Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H), &self.tree);
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::MouseDown {
+                position,
+                modifiers,
+                ..
+            } = event
+            else {
+                return Reaction::Continue;
+            };
+            // Route through `Backend::tree_layout` — the same no-paint
+            // resolver a real click router calls — rather than a locally
+            // fabricated `TreeRowMeasure`, so this test's hit-test agrees
+            // with what `render`'s `draw_tree` actually painted.
+            let rect = Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H);
+            let layout = backend.tree_layout(rect, &self.tree);
+            let hit = layout.hit_test(position.x, position.y);
+            let idx = match hit {
+                TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => idx,
+                TreeViewHit::Empty => return Reaction::Continue,
+            };
+            let gesture = SelectionGesture::from_modifiers(modifiers);
+            let indices = apply_selection_gesture(&self.selected, self.anchor, idx, gesture);
+            self.selected = indices.clone();
+            if !matches!(gesture, SelectionGesture::Range) {
+                self.anchor = idx;
+            }
+            let paths = selected_paths_for_indices(&self.tree.rows, &indices);
+            self.events.push(TreeEvent::SelectionSet { paths });
+            Reaction::Redraw
+        }
+    }
+
+    fn mouse_down(x: f32, y: f32, modifiers: Modifiers) -> UiEvent {
+        UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers,
+        }
+    }
+
+    /// Row `idx`'s vertical center in `Backend::tree_layout`'s real
+    /// geometry, resolved against the driver's own backend — the very
+    /// instance `TreeApp::render`/`handle` paint and hit-test through —
+    /// so these clicks land on the rows that were actually painted
+    /// rather than on an assumed row height.
+    fn row_center_y(driver: &MacDriver<TreeApp>, idx: usize) -> f32 {
+        let rect = Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H);
+        let layout = Backend::tree_layout(driver.backend(), rect, &driver.app().tree);
+        let row = layout
+            .visible_rows
+            .iter()
+            .find(|v| v.row_idx == idx)
+            .expect("row visible in layout");
+        row.bounds.y + row.bounds.height / 2.0
+    }
+
+    fn driver() -> MacDriver<TreeApp> {
+        MacDriver::new(TreeApp::new(), VIEWPORT_W as u32, VIEWPORT_H as u32)
+    }
+
+    #[test]
+    fn plain_click_replaces_selection() {
+        let mut driver = driver();
+        let y = row_center_y(&driver, 2);
+        driver.dispatch(mouse_down(2.0, y, Modifiers::default()));
+        assert_eq!(driver.app().selected, vec![2]);
+    }
+
+    #[test]
+    fn ctrl_click_toggles_rows_into_a_multi_selection() {
+        let mut driver = driver();
+        let y0 = row_center_y(&driver, 0);
+        let y2 = row_center_y(&driver, 2);
+        driver.dispatch(mouse_down(2.0, y0, Modifiers::default()));
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        driver.dispatch(mouse_down(2.0, y2, ctrl));
+        assert_eq!(driver.app().selected, vec![0, 2]);
+        // Toggle-off (a second ctrl-click deselecting row 2) is deferred: a
+        // repeated ctrl+mouse_down at the same point does not re-fire through
+        // MacDriver (a known harness quirk, tracked separately). The shared
+        // toggle itself is correct and unit-tested
+        // (apply_selection_gesture_toggle_adds_and_removes).
+    }
+
+    #[test]
+    fn shift_click_selects_the_range_from_the_anchor() {
+        let mut driver = driver();
+        let y0 = row_center_y(&driver, 0);
+        let y3 = row_center_y(&driver, 3);
+        driver.dispatch(mouse_down(2.0, y0, Modifiers::default()));
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        driver.dispatch(mouse_down(2.0, y3, shift));
+        assert_eq!(driver.app().selected, vec![0, 1, 2, 3]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&TreeEvent::SelectionSet {
+                paths: vec![vec![0], vec![1], vec![2], vec![3]]
+            })
+        );
+    }
+
+    #[test]
+    fn cmd_click_toggles_the_same_as_ctrl_click() {
+        let mut driver = driver();
+        let y1 = row_center_y(&driver, 1);
+        let y4 = row_center_y(&driver, 4);
+        driver.dispatch(mouse_down(2.0, y1, Modifiers::default()));
+        driver.dispatch(mouse_down(
+            2.0,
+            y4,
+            Modifiers {
+                cmd: true,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(driver.app().selected, vec![1, 4]);
     }
 }

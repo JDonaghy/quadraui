@@ -8,6 +8,12 @@ and **Windows** (Direct2D + DirectWrite). You write your app once, and the
 same code runs over SSH in a terminal or as a native window, with only
 the one-line runner call in `main` changing.
 
+![The quadraui gallery's Sidebar demo rendered as a native macOS window via the Core Graphics backend.](images/hero-macos-sidebar-tree.png)
+
+*The quadraui gallery running as a native macOS window (Core Graphics).
+The same widget code renders in a terminal and on the other native
+backends — compare any demo across backends in the [Gallery](gallery/index.md).*
+
 ```rust
 use quadraui::prelude::*;
 
@@ -88,6 +94,7 @@ The full version is `quadraui/examples/hello.rs`:
   the actual event loop — see the [Gallery](gallery/index.md) for every
   primitive this produces, captured straight from that same harness.
 
-Browse the [Gallery](gallery/index.md) for a demo of every primitive on
-every backend, or jump to [Getting Started](getting-started.md) to add
-quadraui to your own project.
+Browse the [Gallery](gallery/index.md) for a demo of every primitive —
+captured live on the TUI and macOS backends today, with the GTK and
+Windows columns in progress — or jump to
+[Getting Started](getting-started.md) to add quadraui to your own project.

@@ -59,9 +59,69 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-23
+### Added
+
+- `FieldKind::DatePicker(DatePicker)` embeds the full `DatePicker` primitive
+  as a `Form` field, and `FormEvent::DateChanged { id, value: CalendarDate }`
+  fires on confirmation. `FormController` routes `Left`/`Right`/`Up`/`Down`/
+  `PageUp`/`PageDown`/`Enter` into the embedded picker's own `navigate` while
+  it has focus — `Tab`/`BackTab` still traverse focus normally — and caches
+  the in-flight focused day/visible month the same way it already caches a
+  text field's cursor, so scrubbing composes across keystrokes even when the
+  host app never echoes the uncommitted position back. The TUI renderer
+  shows the field's focused/selected date as a single right-aligned line.
+
+- `quadraui-ffi`'s C ABI is hardened for a real consumer: every `extern "C"`
+  entry point catches a Rust panic at the boundary (reported as
+  `QUI_ERR_PANIC`, after which the handle is poisoned and every call but
+  `qui_app_free` returns `QUI_ERR_POISONED`); a documented 13-code error
+  taxonomy (`QUI_ERR_NULL_HANDLE` … `QUI_ERR_INTERNAL`) replaces the flat
+  `-1`, with `qui_last_error_code` and `qui_error_name` alongside
+  `qui_last_error`; the header now exports every code and `QUI_SLOT_*` id
+  as a `#define`, inserts return the slot id they filled, and
+  `qui_slot_clear` empties one again. `qui_screen` hands out a freeable
+  frame dump, and the ownership rule for every pointer the ABI passes is
+  documented on the header. `smoke/smoke.c` is a worked C consumer that
+  builds a six-primitive screen, drives the key/mouse/resize paths through
+  a registered vtable, walks every error path and frees every
+  callee-allocated string.
+
+- The macOS native painter honors the chrome-glyph override registries at
+  all four sites that have one: `MacBackend::draw_tab_bar_with_chrome_and_glyphs`
+  (close/dirty marks) and `MacBackend::draw_context_menu_with_glyphs`
+  (checked mark, submenu pull-right arrow) now paint the app-supplied
+  `Icon` in place of the default codicon when one is set, and fall back
+  to today's codicon glyph when `glyphs` is `None`. `draw_data_table_with_glyphs`
+  (sort asc/desc) and the tree expand/collapse chevron already honored
+  their overrides through the shared `native_surface_paint`/`Backend`
+  paths, so those two sites needed only a confirming test. Each of the
+  four sites has a black-box test, using the crate's text-run recording
+  harness (`MacBackend::set_painted_text_recording`/`text_runs`), proving
+  the override glyph paints and `None` reproduces the current default
+  exactly.
+
+### Fixed
+
+- `DatePicker::layout()`'s `header_bounds` now spans only the middle 5 of 7
+  columns instead of the full header row, so the month/year label no longer
+  shares pixels with `prev_bounds`/`next_bounds`. The overlap previously
+  corrupted the label's leading character wherever a rasteriser painted the
+  header and the prev/next controls in sequence (`tui::date_picker` and the
+  shared `primitives::date_picker::native_surface_paint::paint` fallback used
+  by GTK/Win/macOS).
+
+
 ## [0.4.0] - 2026-10-22
 ### Added
 
+- `Backend::draw_date_picker`/`date_picker_layout` (no default body, per
+  `PRIMITIVE_RULES.md` rule 7) paint and measure `DatePicker`'s month grid
+  and time field. Implemented on every backend (`TuiBackend`, `GtkBackend`,
+  `WinBackend`, plus the crate's test-only `MockBackend`/`RecordingBackend`
+  mocks) via the shared `primitives::date_picker::native_surface_paint::paint`
+  helper or a dedicated `tui::date_picker` rasteriser; `MacBackend` is tracked
+  separately under #1453.
 - `Backend::draw_date_picker(&mut self, date_picker: &DatePicker, layout: &DatePickerLayout)`
   rasterises `DatePicker`'s month grid (header, prev/next controls, 42-day
   grid with focus/selection styling) and optional time field. TUI
@@ -97,6 +157,18 @@ only a push to `main` runs this workflow.
   cursor row without moving it, all through the shared
   `types::apply_selection_gesture` seam. Verified by `TuiDriver`-based tests
   in `tui::list`, `tui::tree` and `tui::data_table`.
+- macOS rasteriser module for `DatePicker` (`quadraui::macos::date_picker`):
+  the macOS twin of the Win-GUI module above, carrying no production code of
+  its own — `MacBackend`'s `Backend::draw_date_picker` delegates entirely to
+  the shared `primitives::date_picker::native_surface_paint::paint`. Keyboard
+  navigation (arrow keys, page up/down, enter-to-select), the painted
+  header/prev/next/day glyphs and the `theme.selected_bg` fill on the
+  selected day's cell are covered by `MacDriver` tests. `SelectionMode::Multi`'s
+  plain-click/Ctrl-or-Cmd-click/Shift-range wiring is additionally covered by
+  new `MacDriver`-based tests in `macos::list`, `macos::tree` and
+  `macos::data_table`, confirming the same `types::apply_selection_gesture`
+  seam round-trips on macOS. The gallery demo is deferred to the `DatePicker`
+  gallery-page issue.
 - `ScreenLayout::tree_frame` returns each pushed `Surface::Tree`'s geometry
   as `(Handle<TreeView>, Rect)` pairs, backed internally by
   `DescriptorStore<TreeView>`. On a retained `ScreenLayout` kept across

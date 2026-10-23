@@ -105,14 +105,19 @@ These are the commands `.github/workflows/ci.yml` runs (the repo-lint
 # tui leg — kubeui-gtk is EXCLUDED (it has no `tui` feature, and its
 # unconditional gtk4/pangocairo dep needs pkg-config + the GTK4 -dev
 # packages). Excluding it is what lets the whole tui gate run on a
-# machine with no GTK toolchain installed.
+# machine with no GTK toolchain installed. ci.yml also excludes
+# `quadraui-py` from every line below (it links against libpython, which
+# neither leg's runner provisions — see `quadraui-py`'s own dedicated
+# `cargo clippy -p quadraui-py --features pyo3/extension-module` step for
+# the cheap compile-only check that stands in for it here).
 cargo build  --features tui --workspace --exclude kubeui-gtk
 cargo test   --features tui --workspace --exclude kubeui-gtk
 cargo clippy --features tui --workspace --exclude kubeui-gtk -- -D warnings
 
 # gtk leg — kubeui (the TUI demo binary) is excluded instead. Needs
 # pkg-config + libgtk-4-dev; skip this leg locally if you don't have them
-# and let CI's gtk job cover it.
+# and let CI's gtk job cover it. Same `quadraui-py` exclusion as the tui
+# leg above.
 cargo build  --features gtk,tui --workspace --exclude kubeui
 cargo test   --features gtk,tui --workspace --exclude kubeui --no-fail-fast
 cargo clippy --features gtk,tui --workspace --exclude kubeui -- -D warnings

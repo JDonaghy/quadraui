@@ -35,6 +35,11 @@
 //!   keystroke and `TextInputCommitted` on Enter.
 //! - `Button` — render label, click emits `FormEvent::ButtonClicked`.
 //! - `Label` — non-interactive header / divider.
+//! - `DatePicker` — render the focused/selected date as a compact
+//!   single-line summary (the row stays one `row_h` tall like every
+//!   other field); a consumer going through `FormController` gets
+//!   arrow/page-key day/month navigation and Enter-to-confirm for free,
+//!   emitting `FormEvent::DateChanged` on confirm.
 //!
 //! Tab / Shift-Tab move `focused_field` forward/backward through
 //! interactive fields (skip `Label`, skip disabled fields); emit
@@ -261,6 +266,23 @@ pub enum FieldKind {
     /// where the toolbar idiom (hover states, separators, key hints) is
     /// more appropriate than `ButtonRow`'s simple bracketed labels.
     Toolbar(crate::primitives::toolbar::Toolbar),
+    /// A full [`crate::primitives::date_picker::DatePicker`] embedded as a
+    /// single field row. The field's row stays the same height as every
+    /// other field — see [`crate::primitives::layout_metrics::form_field_measure`]'s
+    /// doc for why no `FieldKind` grows the row — so only a compact
+    /// single-line summary (the focused or selected date, formatted per
+    /// the picker's locale) renders in the value column, not the full
+    /// month grid.
+    ///
+    /// A consumer going through
+    /// [`crate::compose::form_controller::FormController`] gets arrow-key
+    /// day/week navigation, Page Up/Down month navigation, and Enter-to-
+    /// confirm for free: the controller calls the embedded picker's own
+    /// [`crate::primitives::date_picker::DatePicker::navigate`] and emits
+    /// `FormEvent::DateChanged` on confirmation. Clicking the field's row
+    /// only moves focus to it (`FormEvent::FocusChanged`) — day-cell
+    /// hit-testing is the keyboard path's job here, not the pointer's.
+    DatePicker(crate::primitives::date_picker::DatePicker),
 }
 
 /// One toggle in a [`FieldKind::ToggleGroup`].
@@ -1044,6 +1066,28 @@ mod native_surface_paint {
                     // `paint` returns, using the backend's own toolbar
                     // rasteriser.
                 }
+                FieldKind::DatePicker(picker) => {
+                    // While this row is focused, `focused` is the live
+                    // scrub position `FormController` overlays per
+                    // keystroke (see `compose::form_controller`'s "Date
+                    // picker fields" doc section) — showing `selected`
+                    // instead would make every scrub past the first
+                    // confirmation invisible. Once focus moves on,
+                    // `selected` (falling back to `focused` pre-first-
+                    // confirmation) is the field's settled value.
+                    let date = if is_focused {
+                        picker.focused
+                    } else {
+                        picker.selected.unwrap_or(picker.focused)
+                    };
+                    let text = date.format(picker.locale.format);
+                    let (tw, th) = surface.surface_measure_text(&text);
+                    let ix = if no_label { label_x } else { input_right - tw };
+                    if no_label || ix > label_right + 8.0 {
+                        let ty = row_rect.y + (row_h - th) / 2.0;
+                        surface.surface_draw_text_run(Rect::new(ix, ty, tw, th), &text, field_fg);
+                    }
+                }
             }
 
             if let Some((color, msg)) = validation_info {
@@ -1640,6 +1684,14 @@ pub enum FormEvent {
     DropdownChanged { id: WidgetId, selected_idx: usize },
     /// A `SegmentedControl` field committed a new selection.
     SegmentedControlChanged { id: WidgetId, selected_idx: usize },
+    /// A `DatePicker` field confirmed a new date (Enter on the focused
+    /// day). Mirrors `TextInputCommitted`'s "fires once, on confirm" shape
+    /// rather than `TextInputChanged`'s "fires every keystroke" shape —
+    /// moving the focused day without confirming does not emit this.
+    DateChanged {
+        id: WidgetId,
+        value: crate::primitives::date_picker::CalendarDate,
+    },
     /// Keyboard focus moved to a different field.
     FocusChanged { id: WidgetId },
     /// A `Button` was clicked or activated with Enter / Space.

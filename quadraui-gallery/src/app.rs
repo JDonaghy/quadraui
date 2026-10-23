@@ -63,6 +63,22 @@ pub fn group_panel_id(index: usize) -> WidgetId {
     WidgetId::new(format!("gallery:group:{index}"))
 }
 
+/// The [`WidgetId`] the sidebar row for `registry()[index]` (or any
+/// other demo list passed to [`GalleryApp::from_demos`], same order) is
+/// given as its `StatusBar` segment's `action_id` — parallel to
+/// `GalleryApp`'s own `demo_ids` field, built the same way in
+/// [`GalleryApp::from_demos`]. Only `quadraui::win::backend::WinBackend`'s
+/// `draw_status_bar_interactive` turns a segment's `action_id` into a
+/// registered zone, so `quadraui::testing::ConformanceDriver::inventory()`
+/// only reports this id's real painted bounds on the `win` backend — public
+/// so `capture_win_over` can resolve a demo's real click target from its
+/// zone instead of scraping its name as painted text, which two demos
+/// sharing a name substring (e.g. `"Panel"` and `"Bottom Panel"`) makes
+/// ambiguous for a first-match-wins text search.
+pub fn demo_zone_id(index: usize) -> WidgetId {
+    WidgetId::new(format!("gallery:demo:{index}"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MainTab {
     Demo,

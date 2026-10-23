@@ -77,6 +77,8 @@ use std::path::Path;
 
 use serde::Serialize;
 
+#[cfg(all(feature = "win", target_os = "windows"))]
+use crate::app::demo_zone_id;
 use crate::registry::registry;
 #[cfg(any(
     feature = "tui",
@@ -321,7 +323,13 @@ fn capture_tui_over(
                     TUI_CAPTURE_WIDTH,
                     TUI_CAPTURE_HEIGHT,
                 );
-                click_group_zone(&mut driver, group_idx);
+                // Group 0 is already active on a freshly built `GalleryApp`
+                // (`GalleryApp::from_demos` defaults `active_group` to 0),
+                // so clicking its own activity-bar icon here would toggle
+                // it hidden instead of selecting it.
+                if group_idx != 0 {
+                    click_group_zone(&mut driver, group_idx);
+                }
                 driver.click_text_at(demo.name(), Anchor::Center);
                 if variants.len() > 1 {
                     driver.click_text_at(variant, Anchor::Center);
@@ -370,7 +378,14 @@ fn capture_outcome_entry(
         Err(panic_payload) => (
             None,
             Some("error".to_string()),
-            Some(panic_message(&panic_payload)),
+            // `.as_ref()` on purpose, not `&panic_payload`: `panic_payload` is
+            // `Box<dyn Any + Send>`, and letting the call site coerce
+            // `&Box<dyn Any + Send>` down to `&(dyn Any + Send)` itself is the
+            // one path that has been seen to hand `panic_message` a reference
+            // whose `downcast_ref` never matches, even for a genuine `String`
+            // payload — `.as_ref()` performs the same deref explicitly and
+            // downcasts correctly.
+            Some(panic_message(panic_payload.as_ref())),
         ),
     };
     ManifestEntry {
@@ -430,6 +445,38 @@ where
         .iter()
         .find(|z| z.id == id)
         .unwrap_or_else(|| panic!("no registered zone for group panel {index}"))
+        .bounds;
+    driver.click(zone.x + zone.width / 2.0, zone.y + zone.height / 2.0);
+}
+
+/// Click the sidebar row for `demos_fn()[index]` at its real painted
+/// bounds, resolved from [`quadraui::testing::ConformanceDriver::inventory`]'s
+/// registered zone for [`demo_zone_id`] — a sibling of [`click_group_zone`],
+/// clicking by zone id rather than by the demo's painted name text. Two
+/// demos in the same group can have names where one is a literal substring
+/// of the other (e.g. "Panel" and "Bottom Panel"); the shared
+/// `find`/`find_bounds` text search every `ConformanceDriver` uses is a
+/// first-match substring search, so clicking by name text can silently
+/// select the wrong demo's row when its name collides with an
+/// earlier-registered one.
+///
+/// Only [`quadraui::win::backend::WinBackend`]'s
+/// `draw_status_bar_interactive` registers a zone per `StatusBar` segment
+/// (TUI, GTK and macOS paint the bar without registering one), so this is
+/// only usable from `capture_win_over` — the other three capture functions
+/// still click by name text.
+#[cfg(all(feature = "win", target_os = "windows"))]
+fn click_demo_zone<D>(driver: &mut D, index: usize)
+where
+    D: quadraui::testing::ConformanceDriver + quadraui::testing::DriverInput,
+{
+    let id = demo_zone_id(index);
+    let zone = driver
+        .inventory()
+        .zones()
+        .iter()
+        .find(|z| z.id == id)
+        .unwrap_or_else(|| panic!("no registered zone for demo {index}"))
         .bounds;
     driver.click(zone.x + zone.width / 2.0, zone.y + zone.height / 2.0);
 }
@@ -640,7 +687,12 @@ fn capture_macos(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()
                     MAC_CAPTURE_WIDTH,
                     MAC_CAPTURE_HEIGHT,
                 );
-                click_group_zone(&mut driver, group_idx);
+                // `GalleryApp::new()` defaults `active_group` to 0, so
+                // clicking group 0's own activity-bar icon here would
+                // toggle it hidden instead of selecting it.
+                if group_idx != 0 {
+                    click_group_zone(&mut driver, group_idx);
+                }
                 driver.click_text_at(demo.name(), Anchor::Center);
                 if variants.len() > 1 {
                     driver.click_text_at(variant, Anchor::Center);
@@ -752,7 +804,13 @@ fn capture_gtk_over(
                     GTK_CAPTURE_WIDTH,
                     GTK_CAPTURE_HEIGHT,
                 );
-                click_group_zone(&mut driver, group_idx);
+                // Group 0 is already active on a freshly built `GalleryApp`
+                // (`GalleryApp::from_demos` defaults `active_group` to 0),
+                // so clicking its own activity-bar icon here would toggle
+                // it hidden instead of selecting it.
+                if group_idx != 0 {
+                    click_group_zone(&mut driver, group_idx);
+                }
                 driver.click_text_at(demo.name(), Anchor::Center);
                 if variants.len() > 1 {
                     driver.click_text_at(variant, Anchor::Center);
@@ -887,7 +945,7 @@ fn capture_win_over(
     use quadraui::testing::{Anchor, ConformanceDriver};
     use quadraui::win::testing::driver_with_shell;
 
-    for demo in demos_fn() {
+    for (demo_idx, demo) in demos_fn().into_iter().enumerate() {
         let group = demo.group().to_string();
         let group_idx = group_index_of(demo.as_ref());
         let variants = demo.variants();
@@ -906,8 +964,14 @@ fn capture_win_over(
                     WIN_CAPTURE_WIDTH,
                     WIN_CAPTURE_HEIGHT,
                 );
-                click_group_zone(&mut driver, group_idx);
-                driver.click_text_at(demo.name(), Anchor::Center);
+                // Group 0 is already active on a freshly built `GalleryApp`
+                // (`GalleryApp::from_demos` defaults `active_group` to 0),
+                // so clicking its own activity-bar icon here would toggle
+                // it hidden instead of selecting it.
+                if group_idx != 0 {
+                    click_group_zone(&mut driver, group_idx);
+                }
+                click_demo_zone(&mut driver, demo_idx);
                 if variants.len() > 1 {
                     driver.click_text_at(variant, Anchor::Center);
                 }
@@ -1034,6 +1098,31 @@ mod tests {
         assert_eq!(
             panic_message(&*other_payload),
             "capture panicked with a non-string payload"
+        );
+    }
+
+    #[test]
+    fn capture_outcome_entry_reports_the_real_panic_message_not_non_string_payload() {
+        // Mirrors the real call path: `outcome` comes from
+        // `std::panic::catch_unwind`, whose `Err` payload is a genuine
+        // `Box<dyn Any + Send>` — not a pre-deref'd `&(dyn Any + Send)` like
+        // `panic_message`'s own unit test above uses. This is the path that
+        // silently lost the panic message down to the generic fallback.
+        let outcome: std::thread::Result<io::Result<()>> =
+            std::panic::catch_unwind(|| panic!("WinDriver: \"Panel\" not painted"));
+        let entry = capture_outcome_entry(
+            "Panel",
+            "Chrome",
+            "default",
+            "win",
+            "demo.png".to_string(),
+            outcome,
+        );
+        assert_eq!(entry.path, None);
+        assert_eq!(entry.status.as_deref(), Some("error"));
+        assert_eq!(
+            entry.note.as_deref(),
+            Some("WinDriver: \"Panel\" not painted")
         );
     }
 
@@ -1323,6 +1412,138 @@ mod tests {
              render different status-bar text — proves the variant click \
              actually changed what was rendered, not just that two files \
              of the right size were written"
+        );
+    }
+
+    /// A single-variant [`crate::Demo`] test double that paints its own
+    /// name — used in a pair below, under group index 0 (`GROUPS[0]`, the
+    /// group every freshly built [`GalleryApp`] already has active), and
+    /// with one demo's name a literal substring of the other's (mirroring
+    /// the production "Panel"/"Bottom Panel" pair). Pins two regressions
+    /// at once: clicking group 0's own already-active activity-bar icon
+    /// (which toggles it hidden instead of selecting it), and selecting a
+    /// demo's sidebar row by its painted name text (ambiguous whenever
+    /// another registered demo's name contains it as a substring).
+    #[cfg(all(feature = "win", target_os = "windows"))]
+    struct NamedDemo(&'static str);
+
+    #[cfg(all(feature = "win", target_os = "windows"))]
+    impl crate::Demo for NamedDemo {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+
+        fn group(&self) -> &'static str {
+            GROUPS[0]
+        }
+
+        fn variants(&self) -> &'static [&'static str] {
+            &["default"]
+        }
+
+        fn render(
+            &self,
+            _variant: usize,
+            backend: &mut dyn quadraui::Backend,
+            area: quadraui::Rect,
+        ) {
+            use quadraui::{Color, InteractionState, StatusBar, StatusBarSegment, WidgetId};
+            let bar = StatusBar {
+                id: WidgetId::new("test:named-demo"),
+                left_segments: vec![StatusBarSegment {
+                    text: format!(" selected={} ", self.0),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(0, 0, 0),
+                    bold: false,
+                    action_id: None,
+                }],
+                right_segments: vec![],
+            };
+            let _ = backend.draw_status_bar_interactive(area, &bar, &InteractionState::new());
+        }
+
+        fn handle(
+            &mut self,
+            _variant: usize,
+            _event: &quadraui::UiEvent,
+            _backend: &mut dyn quadraui::Backend,
+            _area: quadraui::Rect,
+        ) -> quadraui::Reaction {
+            quadraui::Reaction::Continue
+        }
+
+        fn source(&self) -> &'static str {
+            "struct NamedDemo(&'static str);"
+        }
+
+        fn data(&self, _variant: usize) -> serde_json::Value {
+            serde_json::Value::Null
+        }
+    }
+
+    /// The longer name is registered first, exactly like the production
+    /// `BottomPanelDemo`/`PanelDemo` pair in `registry()` — a text search
+    /// for `"Zone"` would match this row first, since `"Drop Zone"`
+    /// contains `"Zone"` as a substring.
+    #[cfg(all(feature = "win", target_os = "windows"))]
+    fn name_collision_registry() -> Vec<Box<dyn crate::Demo>> {
+        vec![
+            Box::new(NamedDemo("Drop Zone")),
+            Box::new(NamedDemo("Zone")),
+        ]
+    }
+
+    /// `click_demo_zone` lands each click by the sidebar row's registered
+    /// `WidgetId` zone rather than by searching for its painted name, so a
+    /// name collision like `"Drop Zone"`/`"Zone"` can't make it select the
+    /// wrong row. That zone lookup only resolves on `win`: only
+    /// [`quadraui::win::backend::WinBackend`]'s `draw_status_bar_interactive`
+    /// registers a zone per `StatusBar` segment (TUI, GTK and macOS paint
+    /// the bar without registering one), so `capture_win_over` is the only
+    /// one of the four capture functions this fix applies to — see
+    /// `capture_tui_selects_the_clicked_variant_and_names_it_in_the_filename`
+    /// and its GTK/macOS counterparts for the name-text click path the
+    /// other three backends still use.
+    #[cfg(all(feature = "win", target_os = "windows"))]
+    #[test]
+    fn capture_win_selects_each_demo_by_its_own_zone_despite_a_group_0_name_collision() {
+        let dir = tempfile::tempdir().expect("create temp capture dir");
+        let mut manifest = Vec::new();
+
+        capture_win_on_large_stack(name_collision_registry, dir.path(), &mut manifest)
+            .expect("capture_win_on_large_stack");
+
+        assert_eq!(manifest.len(), 2, "one row per demo: {manifest:#?}");
+        let mut rendered_pixels = Vec::new();
+        for name in ["Drop Zone", "Zone"] {
+            let entry = manifest
+                .iter()
+                .find(|e| e.demo == name)
+                .unwrap_or_else(|| panic!("missing manifest row for demo {name}: {manifest:#?}"));
+            assert!(
+                entry.status.is_none(),
+                "demo {name} should have captured cleanly: {entry:#?}"
+            );
+            let path = entry
+                .path
+                .as_deref()
+                .unwrap_or_else(|| panic!("demo {name} should have a path: {entry:#?}"));
+
+            let img = image::open(dir.path().join(path)).expect("open captured PNG");
+            assert_eq!(
+                (img.width(), img.height()),
+                (WIN_CAPTURE_WIDTH, WIN_CAPTURE_HEIGHT),
+                "captured PNG for {name} should match the capture surface size"
+            );
+            rendered_pixels.push(img.to_rgba8().into_raw());
+        }
+
+        assert_ne!(
+            rendered_pixels[0], rendered_pixels[1],
+            "\"Drop Zone\"'s and \"Zone\"'s captured pixel buffers must differ, \
+             since each paints its own name — proves the demo click actually \
+             landed on each one's own row, not the other's whose name \
+             collides with it as a substring"
         );
     }
 }

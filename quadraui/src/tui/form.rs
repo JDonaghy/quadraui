@@ -163,6 +163,7 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                 draw_field_button_row(buf, &ctx, visible_field, field, buttons)
             }
             FieldKind::Toolbar(toolbar) => draw_field_toolbar(buf, &ctx, visible_field, toolbar),
+            FieldKind::DatePicker(picker) => draw_field_date_picker(buf, &ctx, picker),
             FieldKind::TextArea {
                 value,
                 placeholder,
@@ -719,6 +720,55 @@ fn draw_field_button_row(
             if cx < area.x + area.width {
                 set_cell(buf, cx, y, ']', brk_fg, row_bg);
             }
+        }
+    }
+}
+
+/// Renders the embedded [`crate::primitives::date_picker::DatePicker`]'s
+/// focused/selected date as a single right-aligned line of text — the row
+/// stays one cell tall like every other field, so the full month grid never
+/// appears here. Day-by-day keyboard navigation and selection still work;
+/// they're just not visualized inline (see `FormController`, which drives
+/// the picker's own `navigate` and emits `FormEvent::DateChanged`).
+fn draw_field_date_picker(
+    buf: &mut Buffer,
+    ctx: &RowCtx,
+    picker: &crate::primitives::date_picker::DatePicker,
+) {
+    let RowCtx {
+        area,
+        y,
+        row_bg,
+        field_fg,
+        label_end,
+        no_label,
+        is_focused,
+        ..
+    } = *ctx;
+
+    // While this row is focused, show the live scrub position
+    // `FormController` overlays per keystroke rather than the
+    // app-confirmed `selected` — see `compose::form_controller`'s
+    // "Date picker fields" doc section. Otherwise fall back to
+    // `selected`, or `focused` before any date has been confirmed.
+    let date = if is_focused {
+        picker.focused
+    } else {
+        picker.selected.unwrap_or(picker.focused)
+    };
+    let text = date.format(picker.locale.format);
+    let total = text.chars().count();
+    let start_col = if no_label {
+        1
+    } else {
+        (area.width as usize).saturating_sub(total + 2)
+    };
+    if start_col > label_end + 1 || no_label {
+        for (col, ch) in (start_col..).zip(text.chars()) {
+            if col >= area.width as usize {
+                break;
+            }
+            set_cell(buf, area.x + col as u16, y, ch, field_fg, row_bg);
         }
     }
 }

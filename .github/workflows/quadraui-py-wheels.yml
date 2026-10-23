@@ -1,0 +1,79 @@
+name: quadraui-py wheels
+
+# Builds an abi3 wheel for `quadraui-py` on each of the three platforms it
+# ships to, then installs the built wheel into a throwaway venv and
+# imports it -- proving the wheel is actually loadable, not just that
+# `maturin build` exited zero.
+#
+# Linux has no manylinux-compatible system GTK to bundle, so this crate
+# is TUI-only on every platform by construction: `quadraui-py/Cargo.toml`'s
+# `quadraui` dependency enables only the `tui` feature, never `gtk`. That
+# makes the Linux wheel in the matrix below identical in shape to the
+# macOS/Windows ones -- no separate "GTK-less Linux variant" job is
+# needed, because there is only ever one variant.
+#
+# `abi3-py38` (set on the `pyo3` dependency itself, not a maturin flag) is
+# what makes one wheel per OS/arch work across every CPython >= 3.8, so
+# this matrix has no Python-version axis.
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "quadraui-py/**"
+      - "quadraui/src/**"
+      - "quadraui/Cargo.toml"
+      - ".github/workflows/quadraui-py-wheels.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "quadraui-py/**"
+      - "quadraui/src/**"
+      - "quadraui/Cargo.toml"
+      - ".github/workflows/quadraui-py-wheels.yml"
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: wheel (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    # Sized generously for a cold Rust + maturin build; a healthy run is a
+    # few minutes once dependencies are warm.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: quadraui-py
+          args: --release --out dist
+          # `auto` picks the oldest manylinux maturin supports on Linux and
+          # is a no-op on macOS/Windows; there is no GTK dependency here to
+          # make manylinux's older glibc/toolchain a problem.
+          manylinux: auto
+      - name: Import the built wheel
+        shell: bash
+        run: |
+          python -m venv /tmp/quadraui-py-wheel-check
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            /tmp/quadraui-py-wheel-check/Scripts/python.exe -m pip install --no-index --find-links quadraui-py/dist quadraui
+            /tmp/quadraui-py-wheel-check/Scripts/python.exe -c "import quadraui; print(quadraui.QuiApp)"
+          else
+            /tmp/quadraui-py-wheel-check/bin/python -m pip install --no-index --find-links quadraui-py/dist quadraui
+            /tmp/quadraui-py-wheel-check/bin/python -c "import quadraui; print(quadraui.QuiApp)"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quadraui-py-wheel-${{ matrix.os }}
+          path: quadraui-py/dist/*.whl
+          if-no-files-found: error

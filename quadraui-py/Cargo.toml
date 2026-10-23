@@ -1,0 +1,29 @@
+[package]
+name = "quadraui-py"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "PyO3 bindings: insert quadraui descriptors from Python and render them headlessly."
+
+[lib]
+name = "quadraui_py"
+# `cdylib` is what maturin loads as the Python extension module. `rlib`
+# lets the in-crate `#[cfg(test)]` harness link this crate as a normal Rust
+# test dependency — a pure `cdylib` can't be used that way. Black-box
+# behaviour through the Python surface stays in `pytest`
+# (`quadraui-py/tests/`); the Rust harness covers paths pytest can't reach,
+# such as a caught panic poisoning the app before any Python frame exists.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+quadraui = { path = "../quadraui", features = ["tui"] }
+pyo3 = { version = "0.29", features = ["abi3-py38"] }
+pythonize = "0.29"
+serde = "1.0"
+
+[dev-dependencies]
+# `cargo test -p quadraui-py` runs as a standalone binary rather than an
+# embedded extension module, so it needs to start its own interpreter.
+pyo3 = { version = "0.29", features = ["abi3-py38", "auto-initialize"] }

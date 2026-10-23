@@ -8,10 +8,10 @@
 //! panel long enough to need [`FormController`]'s built-in scrollbar.
 
 use quadraui::{
-    Backend, BackendCaps, ButtonRowItem, Color, FieldKind, FocusRing, Form, FormController,
-    FormControllerEvent, FormEvent, FormField, FormHit, InteractionState, Key, MouseButton,
-    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, ToggleGroupItem, Toolbar,
-    ToolbarButton, UiEvent, WidgetId,
+    Backend, BackendCaps, ButtonRowItem, CalendarDate, Color, DatePicker, FieldKind, FocusRing,
+    Form, FormController, FormControllerEvent, FormEvent, FormField, FormHit, InteractionState,
+    Key, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
+    ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -392,6 +392,17 @@ fn build_all_fields_form() -> Form {
                 disabled: false,
                 validation: None,
             },
+            FormField {
+                id: WidgetId::new("due-date"),
+                label: StyledText::plain("Due date"),
+                kind: FieldKind::DatePicker(DatePicker::new(
+                    WidgetId::new("due-date-picker"),
+                    CalendarDate::new(2024, 3, 15),
+                )),
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+            },
         ],
         focused_field: None,
         scroll_offset: 0,
@@ -681,6 +692,10 @@ mod tests {
         assert!(
             has(|k| matches!(k, FieldKind::Toolbar(_))),
             "Toolbar missing"
+        );
+        assert!(
+            has(|k| matches!(k, FieldKind::DatePicker(_))),
+            "DatePicker missing"
         );
     }
 }
