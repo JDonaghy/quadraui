@@ -81,6 +81,54 @@ void qui_app_free(struct QuiApp *app);
 int64_t qui_button_insert(struct QuiApp *app, const uint8_t *json, uintptr_t json_len);
 
 /**
+ * Insert the one `TextDisplay` descriptor this PoC supports, JSON-encoded
+ * at `json`/`json_len`. quadraui has no primitive literally named "Label";
+ * `TextDisplay` is the closest match for that role. Behaves exactly like
+ * [`qui_button_insert`] otherwise: immediately repaints on success, and
+ * returns `0`/`-1` with [`qui_last_error`] set on failure.
+ *
+ * # Safety
+ * Same contract as [`qui_button_insert`].
+ */
+int64_t qui_text_display_insert(struct QuiApp *app, const uint8_t *json, uintptr_t json_len);
+
+/**
+ * Insert the one `ListView` descriptor this PoC supports, JSON-encoded at
+ * `json`/`json_len`. Behaves exactly like [`qui_button_insert`] otherwise.
+ *
+ * # Safety
+ * Same contract as [`qui_button_insert`].
+ */
+int64_t qui_list_insert(struct QuiApp *app, const uint8_t *json, uintptr_t json_len);
+
+/**
+ * Insert the one `TreeView` descriptor this PoC supports, JSON-encoded at
+ * `json`/`json_len`. Behaves exactly like [`qui_button_insert`] otherwise.
+ *
+ * # Safety
+ * Same contract as [`qui_button_insert`].
+ */
+int64_t qui_tree_insert(struct QuiApp *app, const uint8_t *json, uintptr_t json_len);
+
+/**
+ * Insert the one `DataTable` descriptor this PoC supports, JSON-encoded at
+ * `json`/`json_len`. Behaves exactly like [`qui_button_insert`] otherwise.
+ *
+ * # Safety
+ * Same contract as [`qui_button_insert`].
+ */
+int64_t qui_data_table_insert(struct QuiApp *app, const uint8_t *json, uintptr_t json_len);
+
+/**
+ * Insert the one `TabBar` descriptor this PoC supports, JSON-encoded at
+ * `json`/`json_len`. Behaves exactly like [`qui_button_insert`] otherwise.
+ *
+ * # Safety
+ * Same contract as [`qui_button_insert`].
+ */
+int64_t qui_tab_bar_insert(struct QuiApp *app, const uint8_t *json, uintptr_t json_len);
+
+/**
  * Queue a synthetic `KeyPressed` event for the next [`qui_step`]/
  * [`qui_run`] call — the PoC's stand-in for a real backend's input source.
  *
