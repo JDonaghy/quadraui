@@ -8,7 +8,11 @@
  * end from a real C translation unit built against cbindgen's generated
  * header, not just from Rust-side tests. Covers `Button`, `TextDisplay`
  * (quadraui's closest match to a "Label"), `ListView`, `TreeView`,
- * `DataTable`, and `TabBar` — one `qui_<name>_insert` call each.
+ * `DataTable`, and `TabBar` — one `qui_<name>_insert` call each. Also drives
+ * the real input surface — `qui_push_key_event`, `qui_push_event` (a mouse
+ * click, JSON-encoded exactly like a host's own input source would build
+ * it) and `qui_resize` — and checks each one's event actually reaches
+ * `handle`.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,13 +20,17 @@
 
 #include "quadraui_ffi.h"
 
+#define LAST_EVENT_JSON_CAP 256
+
 static int g_handle_calls = 0;
+static char g_last_event_json[LAST_EVENT_JSON_CAP];
 
 static int32_t on_handle(void *user_data, const uint8_t *event_json, uintptr_t len) {
     (void)user_data;
-    (void)event_json;
-    (void)len;
     g_handle_calls += 1;
+    size_t copy_len = len < LAST_EVENT_JSON_CAP - 1 ? len : LAST_EVENT_JSON_CAP - 1;
+    memcpy(g_last_event_json, event_json, copy_len);
+    g_last_event_json[copy_len] = '\0';
     return 0; /* Reaction::Continue */
 }
 
@@ -34,6 +42,17 @@ static void fail(const char *what) {
         qui_free(err);
     }
     exit(1);
+}
+
+/* Fails with `what` unless the most recent `handle` callback's JSON names
+ * `variant_tag` as its outer (externally-tagged) key, e.g. `"MouseDown"`. */
+static void expect_last_event_variant(const char *variant_tag, const char *what) {
+    char needle[64];
+    snprintf(needle, sizeof(needle), "\"%s\"", variant_tag);
+    if (strstr(g_last_event_json, needle) == NULL) {
+        fprintf(stderr, "  last event JSON: %s\n", g_last_event_json);
+        fail(what);
+    }
 }
 
 /* Asserts `needle` is somewhere in the app's current rendered frame,
@@ -125,10 +144,44 @@ int main(void) {
         fprintf(stderr, "FAIL: expected exactly 1 handle callback, got %d\n", g_handle_calls);
         exit(1);
     }
+    expect_last_event_variant("KeyPressed", "qui_push_key_event's event did not reach handle");
+
+    /* `qui_push_event` is the real input surface: any `UiEvent` variant,
+     * JSON-encoded by the host exactly as it would be for a wire protocol,
+     * not a synthetic key stand-in. */
+    const char *mouse_down_json =
+        "{\"MouseDown\":{\"widget\":null,\"button\":\"Left\","
+        "\"position\":{\"x\":2.0,\"y\":1.0},\"modifiers\":{}}}";
+    if (qui_push_event(app, (const uint8_t *)mouse_down_json, strlen(mouse_down_json)) != 0) {
+        fail("qui_push_event failed to queue a MouseDown event");
+    }
+    if (qui_run(app, 4) < 0) {
+        fail("qui_run reported an error after qui_push_event");
+    }
+    if (g_handle_calls != 2) {
+        fprintf(stderr, "FAIL: expected exactly 2 handle callbacks, got %d\n", g_handle_calls);
+        exit(1);
+    }
+    expect_last_event_variant("MouseDown", "qui_push_event's MouseDown event did not reach handle");
+
+    /* `qui_resize` grows the headless grid and queues the matching
+     * `WindowResized` event in one call. */
+    if (qui_resize(app, 60, 40) != 0) {
+        fail("qui_resize failed");
+    }
+    if (qui_run(app, 4) < 0) {
+        fail("qui_run reported an error after qui_resize");
+    }
+    if (g_handle_calls != 3) {
+        fprintf(stderr, "FAIL: expected exactly 3 handle callbacks, got %d\n", g_handle_calls);
+        exit(1);
+    }
+    expect_last_event_variant("WindowResized", "qui_resize's WindowResized event did not reach handle");
 
     qui_app_free(app);
 
     printf("ok: Button, TextDisplay, ListView, TreeView, DataTable and TabBar descriptors "
-           "round-tripped through qui_run/qui_step\n");
+           "round-tripped through qui_run/qui_step, and qui_push_key_event, qui_push_event "
+           "and qui_resize each delivered their event through handle\n");
     return 0;
 }

@@ -38,10 +38,17 @@
 //!   layout/paint logic on the other side of the ABI for every consumer
 //!   language — exactly the per-backend duplication the descriptor-store
 //!   design exists to avoid.
-//! - [`qui_push_key_event`] queues a synthetic `KeyPressed` for the next
-//!   [`qui_step`]/[`qui_run`] call — standing in for a real backend's input
-//!   source, which the headless PoC has none of. Events dispatch in the
-//!   order they were queued (FIFO).
+//! - [`qui_push_event`] queues any JSON-encoded [`quadraui::UiEvent`] (mouse,
+//!   key, scroll, focus, window, …) for the next [`qui_step`]/[`qui_run`]
+//!   call — the real input surface a host drives: construct the JSON for
+//!   whichever variant the host's own input source produced and hand it
+//!   across the ABI unchanged, same JSON-only-for-payloads shape every
+//!   `qui_<name>_insert` function already uses. [`qui_push_key_event`] stays
+//!   as an ergonomic convenience over it for the common single-character-key
+//!   case. [`qui_resize`] additionally resizes the headless backend's cell
+//!   grid before queuing the matching `WindowResized` event, since resizing
+//!   the grid itself is not something any `UiEvent` payload can express.
+//!   Every queued event dispatches in the order it was pushed (FIFO).
 //! - [`qui_step`]/[`qui_run`]/[`qui_screen_contains`] are the non-blocking
 //!   step loop and the assertion a host (or this crate's own smoke test)
 //!   uses to prove a frame actually painted the button's label.
@@ -64,7 +71,7 @@ use std::slice;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
     AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, Reaction, Rect, TabBar,
-    TextDisplay, TreeView, UiEvent,
+    TextDisplay, TreeView, UiEvent, Viewport,
 };
 
 thread_local! {
@@ -204,9 +211,10 @@ impl AppLogic for FfiApp {
 /// the caller; only ever passed back into this crate's other functions.
 pub struct QuiApp {
     driver: TuiDriver<FfiApp>,
-    /// FIFO queue: [`qui_push_key_event`] pushes at the back,
-    /// [`qui_step`] pops from the front, so events dispatch in the order
-    /// they were queued.
+    /// FIFO queue: [`qui_push_event`], [`qui_push_key_event`] and
+    /// [`qui_resize`] all push at the back, [`qui_step`] pops from the
+    /// front, so events dispatch in the order they were queued regardless
+    /// of which function queued them.
     pending_events: VecDeque<UiEvent>,
 }
 
@@ -538,8 +546,61 @@ pub unsafe extern "C" fn qui_tab_bar_insert(
     0
 }
 
+/// Queue any [`quadraui::UiEvent`] for the next [`qui_step`]/[`qui_run`]
+/// call, JSON-encoded at `json`/`json_len` — the real input surface a host
+/// drives: mouse, key, scroll, focus, window and every other variant all go
+/// through this one function, exactly the same JSON-only-for-payloads shape
+/// every `qui_<name>_insert` function already uses. Mirror quadraui's own
+/// `#[derive(Serialize, Deserialize)]` field names and shape for the variant
+/// being sent (see `quadraui::UiEvent`'s docs for each variant's payload).
+///
+/// [`quadraui::UiEvent::User`] deliberately has no `Serialize`/`Deserialize`
+/// impl (its payload is an in-process-only `Arc<dyn Any>`), so JSON for it
+/// always fails to decode here — there is nothing meaningful to send across
+/// a wire boundary for that variant.
+///
+/// Returns `0` on success, `-1` if `app` is null, `json` is null (with
+/// `json_len != 0`), the bytes aren't valid UTF-8, or the JSON doesn't
+/// decode to a `UiEvent` — see [`qui_last_error`] for which.
+///
+/// # Safety
+/// `app` must be a live pointer from [`qui_app_new`]. `json` must be either
+/// null (only valid when `json_len` is `0`, and rejected as an error) or a
+/// pointer to `json_len` valid bytes.
+#[no_mangle]
+pub unsafe extern "C" fn qui_push_event(app: *mut QuiApp, json: *const u8, json_len: usize) -> i32 {
+    clear_last_error();
+    let Some(app) = app.as_mut() else {
+        set_last_error("qui_push_event: app is null");
+        return -1;
+    };
+    if json.is_null() {
+        set_last_error("qui_push_event: json is null");
+        return -1;
+    }
+    let bytes = slice::from_raw_parts(json, json_len);
+    let text = match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => {
+            set_last_error(format!("qui_push_event: invalid UTF-8: {err}"));
+            return -1;
+        }
+    };
+    let event: UiEvent = match serde_json::from_str(text) {
+        Ok(event) => event,
+        Err(err) => {
+            set_last_error(format!("qui_push_event: invalid UiEvent JSON: {err}"));
+            return -1;
+        }
+    };
+    app.pending_events.push_back(event);
+    0
+}
+
 /// Queue a synthetic `KeyPressed` event for the next [`qui_step`]/
-/// [`qui_run`] call — the PoC's stand-in for a real backend's input source.
+/// [`qui_run`] call — a convenience over [`qui_push_event`] for the common
+/// single-character-key case, so a host doesn't have to hand-build the
+/// `KeyPressed` JSON just to type a character.
 ///
 /// Returns `0` on success, `-1` if `app` is null.
 ///
@@ -564,6 +625,36 @@ pub unsafe extern "C" fn qui_push_key_event(app: *mut QuiApp, ch: u32) -> i32 {
     0
 }
 
+/// Resize the app's headless cell grid to `width`×`height` and queue the
+/// matching `WindowResized` event — the "resize" leg of the real input
+/// surface, kept separate from [`qui_push_event`] because resizing the
+/// underlying grid itself is a [`quadraui::tui::testing::TuiDriver`]
+/// operation, not something any `UiEvent` payload can express on its own; a
+/// plain [`qui_push_event`] with a `WindowResized` payload would notify the
+/// app's `handle` callback but leave the grid at its old size.
+///
+/// Returns `0` on success, `-1` if `app` is null or `width`/`height` is `0`.
+///
+/// # Safety
+/// `app` must be a live pointer from [`qui_app_new`].
+#[no_mangle]
+pub unsafe extern "C" fn qui_resize(app: *mut QuiApp, width: u16, height: u16) -> i32 {
+    clear_last_error();
+    let Some(app) = app.as_mut() else {
+        set_last_error("qui_resize: app is null");
+        return -1;
+    };
+    if width == 0 || height == 0 {
+        set_last_error("qui_resize: width and height must both be non-zero");
+        return -1;
+    }
+    app.driver.resize(width, height);
+    app.pending_events.push_back(UiEvent::WindowResized {
+        viewport: Viewport::new(f32::from(width), f32::from(height), 1.0),
+    });
+    0
+}
+
 /// `qui_step`'s result — mirrors `quadraui::StepOutcome`, plus `-1` for a
 /// call error (see [`qui_last_error`]).
 const QUI_STEP_CONTINUE: i32 = 0;
@@ -571,8 +662,9 @@ const QUI_STEP_EXITED: i32 = 1;
 const QUI_STEP_ERROR: i32 = -1;
 
 /// Advance the app by one non-blocking step: dispatch one queued event (if
-/// any; see [`qui_push_key_event`] — events dispatch in the order they were
-/// queued) through the app's `handle` callback, otherwise call its `tick`
+/// any; see [`qui_push_event`]/[`qui_push_key_event`]/[`qui_resize`] —
+/// events dispatch in the order they were queued) through the app's
+/// `handle` callback, otherwise call its `tick`
 /// callback, then repaint if the reaction calls for it. Never blocks
 /// waiting for input, because there is nothing to wait on in this headless
 /// PoC.
@@ -997,5 +1089,222 @@ mod tests {
 
             qui_app_free(app);
         }
+    }
+
+    /// Decodes the dispatched event's JSON and records the outer tag (the
+    /// externally-tagged variant name serde emits, e.g. `"MouseDown"`) so a
+    /// test can assert which `UiEvent` variants actually arrived, in order.
+    unsafe extern "C" fn record_variant_tag_handle(
+        user_data: *mut c_void,
+        json: *const u8,
+        len: usize,
+    ) -> i32 {
+        let bytes = slice::from_raw_parts(json, len);
+        let text = std::str::from_utf8(bytes).expect("event JSON is valid UTF-8");
+        let value: serde_json::Value =
+            serde_json::from_str(text).expect("event JSON is valid JSON");
+        let tag = value
+            .as_object()
+            .and_then(|obj| obj.keys().next())
+            .cloned()
+            .unwrap_or_else(|| value.to_string());
+        let order = user_data as *mut Vec<String>;
+        (*order).push(tag);
+        0
+    }
+
+    /// `qui_push_event` round-trips every non-`KeyPressed` shape the issue
+    /// calls out by name (mouse down, scroll, window resize) through the
+    /// exact same `handle`-callback JSON path [`qui_push_key_event`] already
+    /// proved for keys — no per-variant special-casing in `handle` means
+    /// none is needed here either.
+    #[test]
+    fn qui_push_event_round_trips_mouse_and_scroll_variants() {
+        let mut order: Vec<String> = Vec::new();
+        let vtable = QuiVTable {
+            user_data: &mut order as *mut Vec<String> as *mut c_void,
+            handle: Some(record_variant_tag_handle),
+            tick: None,
+        };
+        unsafe {
+            let app = qui_app_new(40, 10, vtable);
+            assert!(!app.is_null());
+
+            let mouse_down = serde_json::json!({
+                "MouseDown": {
+                    "widget": null,
+                    "button": "Left",
+                    "position": { "x": 3.0, "y": 1.0 },
+                    "modifiers": {}
+                }
+            })
+            .to_string();
+            assert_eq!(
+                qui_push_event(app, mouse_down.as_ptr(), mouse_down.len()),
+                0
+            );
+            assert!(qui_last_error().is_null());
+
+            let scroll = serde_json::json!({
+                "Scroll": {
+                    "widget": null,
+                    "delta": { "x": 0.0, "y": 1.0 },
+                    "position": { "x": 3.0, "y": 1.0 }
+                }
+            })
+            .to_string();
+            assert_eq!(qui_push_event(app, scroll.as_ptr(), scroll.len()), 0);
+            assert!(qui_last_error().is_null());
+
+            assert_eq!(qui_run(app, 2), QUI_STEP_CONTINUE);
+
+            qui_app_free(app);
+        }
+        assert_eq!(order, vec!["MouseDown".to_string(), "Scroll".to_string()]);
+    }
+
+    /// `qui_push_event` rejects malformed input through the same
+    /// null/UTF-8/JSON error ladder every other push/insert function uses.
+    #[test]
+    fn qui_push_event_rejects_bad_input() {
+        unsafe {
+            let app = qui_app_new(10, 3, no_op_vtable());
+            assert!(!app.is_null());
+
+            let bad = b"not an event";
+            assert_eq!(qui_push_event(app, bad.as_ptr(), bad.len()), -1);
+            let error_ptr = qui_last_error();
+            assert!(!error_ptr.is_null());
+            let message = std::ffi::CStr::from_ptr(error_ptr)
+                .to_string_lossy()
+                .into_owned();
+            assert!(message.contains("invalid UiEvent JSON"));
+            qui_free(error_ptr);
+
+            assert_eq!(
+                qui_push_event(std::ptr::null_mut(), bad.as_ptr(), bad.len()),
+                -1
+            );
+            assert!(!qui_last_error().is_null());
+
+            qui_app_free(app);
+        }
+    }
+
+    /// [`quadraui::UiEvent::User`] has no `Deserialize` impl by design (its
+    /// payload is an in-process-only `Arc<dyn Any>`), so JSON claiming to be
+    /// one must be rejected the same way any other malformed payload is,
+    /// not treated as a special case.
+    #[test]
+    fn qui_push_event_rejects_the_user_variant() {
+        unsafe {
+            let app = qui_app_new(10, 3, no_op_vtable());
+            assert!(!app.is_null());
+
+            let user_event = serde_json::json!({ "User": {} }).to_string();
+            assert_eq!(
+                qui_push_event(app, user_event.as_ptr(), user_event.len()),
+                -1
+            );
+            assert!(!qui_last_error().is_null());
+
+            qui_app_free(app);
+        }
+    }
+
+    /// `qui_resize` both grows the headless grid `qui_app_new` sized and
+    /// queues the matching `WindowResized` event, so a host doesn't have to
+    /// separately remember to call both.
+    #[test]
+    fn qui_resize_grows_the_grid_and_queues_window_resized() {
+        let mut order: Vec<String> = Vec::new();
+        let vtable = QuiVTable {
+            user_data: &mut order as *mut Vec<String> as *mut c_void,
+            handle: Some(record_variant_tag_handle),
+            tick: None,
+        };
+        unsafe {
+            let app = qui_app_new(10, 3, vtable);
+            assert!(!app.is_null());
+
+            assert_eq!(qui_resize(app, 80, 24), 0);
+            assert!(qui_last_error().is_null());
+            // `TuiDriver::screen` reads the physical cell buffer directly
+            // (not the `Backend::viewport()` cache, which only resyncs on
+            // the next render — see `TuiDriver::resize`'s doc), so it
+            // reflects the resize immediately.
+            let screen = (*app).driver.screen();
+            let lines: Vec<&str> = screen.lines().collect();
+            assert_eq!(lines.len(), 24, "grid should have grown to 24 rows");
+            assert_eq!(
+                lines[0].chars().count(),
+                80,
+                "grid should have grown to 80 columns"
+            );
+
+            assert_eq!(qui_run(app, 1), QUI_STEP_CONTINUE);
+
+            qui_app_free(app);
+        }
+        assert_eq!(order, vec!["WindowResized".to_string()]);
+    }
+
+    #[test]
+    fn qui_resize_rejects_zero_dimensions_and_null_app() {
+        unsafe {
+            let app = qui_app_new(10, 3, no_op_vtable());
+            assert!(!app.is_null());
+
+            assert_eq!(qui_resize(app, 0, 5), -1);
+            assert!(!qui_last_error().is_null());
+            assert_eq!(qui_resize(app, 5, 0), -1);
+            assert!(!qui_last_error().is_null());
+            assert_eq!(qui_resize(std::ptr::null_mut(), 5, 5), -1);
+            assert!(!qui_last_error().is_null());
+
+            qui_app_free(app);
+        }
+    }
+
+    /// FIFO ordering holds across every push function, not just within one
+    /// of them: a key queued via [`qui_push_key_event`], a mouse event via
+    /// [`qui_push_event`], and a resize via [`qui_resize`] must dispatch in
+    /// the order they were queued.
+    #[test]
+    fn events_from_every_push_function_dispatch_in_fifo_order() {
+        let mut order: Vec<String> = Vec::new();
+        let vtable = QuiVTable {
+            user_data: &mut order as *mut Vec<String> as *mut c_void,
+            handle: Some(record_variant_tag_handle),
+            tick: None,
+        };
+        unsafe {
+            let app = qui_app_new(10, 3, vtable);
+            assert!(!app.is_null());
+
+            assert_eq!(qui_push_key_event(app, 'a' as u32), 0);
+            let mouse_up = serde_json::json!({
+                "MouseUp": {
+                    "widget": null,
+                    "button": "Left",
+                    "position": { "x": 0.0, "y": 0.0 }
+                }
+            })
+            .to_string();
+            assert_eq!(qui_push_event(app, mouse_up.as_ptr(), mouse_up.len()), 0);
+            assert_eq!(qui_resize(app, 20, 6), 0);
+
+            assert_eq!(qui_run(app, 3), QUI_STEP_CONTINUE);
+
+            qui_app_free(app);
+        }
+        assert_eq!(
+            order,
+            vec![
+                "KeyPressed".to_string(),
+                "MouseUp".to_string(),
+                "WindowResized".to_string(),
+            ]
+        );
     }
 }
