@@ -8,17 +8,22 @@
 //! primitive's slot, and re-renders immediately so `screen()`/
 //! `screen_contains()` reflect it without a separate step.
 //!
-//! Event marshalling and a GIL-releasing run loop are a later milestone leg
-//! — [`PyAppLogic::handle`] is a no-op today, and `tick` isn't overridden at
-//! all (it rides [`AppLogic`]'s own no-op default).
+//! `push_event`/`push_key_event` queue a [`UiEvent`] (decoded from a Python
+//! dict, or synthesized from a key code); `step`/`run` drain that queue
+//! through [`PyAppLogic::handle`], releasing the GIL for the run loop itself
+//! and re-acquiring it only for the duration of each registered Python
+//! callback (`set_handler`/`set_tick_handler`). An exception raised inside a
+//! callback is captured and re-raised out of `step`/`run` rather than lost.
+use std::collections::VecDeque;
+
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, Button, DataTable, ListView, Reaction, Rect, TabBar, TextDisplay, TreeView,
-    UiEvent,
+    AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, Reaction, Rect, TabBar,
+    TextDisplay, TreeView, UiEvent,
 };
 
 /// Slot id of the app's `Button` descriptor.
@@ -44,6 +49,17 @@ struct PyAppLogic {
     tree: Option<TreeView>,
     data_table: Option<DataTable>,
     tab_bar: Option<TabBar>,
+    /// Registered via `QuiApp::set_handler` / the `on_event` constructor
+    /// argument; called with the pythonized event payload for every
+    /// dispatched `UiEvent`.
+    handler: Option<Py<PyAny>>,
+    /// Registered via `QuiApp::set_tick_handler`; called with no arguments
+    /// whenever the runner advances with no event queued.
+    on_tick: Option<Py<PyAny>>,
+    /// Set by `handle`/`tick` when the Python callback they invoke raises.
+    /// `step_once` takes this and re-raises it out of `step`/`run` instead
+    /// of letting it vanish at the `AppLogic` boundary.
+    pending_error: Option<PyErr>,
 }
 
 impl PyAppLogic {
@@ -135,8 +151,39 @@ impl AppLogic for PyAppLogic {
         }
     }
 
-    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-        Reaction::Continue
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        let Some(handler) = self.handler.as_ref() else {
+            return Reaction::Continue;
+        };
+        Python::attach(|py| {
+            let payload = match pythonize::pythonize(py, &event) {
+                Ok(value) => value,
+                Err(err) => {
+                    self.pending_error = Some(PyErr::from(err));
+                    return Reaction::Exit;
+                }
+            };
+            match handler.call1(py, (payload,)) {
+                Ok(_) => Reaction::Continue,
+                Err(err) => {
+                    self.pending_error = Some(err);
+                    Reaction::Exit
+                }
+            }
+        })
+    }
+
+    fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+        let Some(on_tick) = self.on_tick.as_ref() else {
+            return Reaction::Continue;
+        };
+        Python::attach(|py| match on_tick.call0(py) {
+            Ok(_) => Reaction::Continue,
+            Err(err) => {
+                self.pending_error = Some(err);
+                Reaction::Exit
+            }
+        })
     }
 }
 
@@ -150,12 +197,32 @@ impl AppLogic for PyAppLogic {
 /// `RefCell` (shared with its dialog-surface plumbing), so a `QuiApp` is
 /// pinned to the Python thread that created it — attempting to hand it to
 /// another thread raises at the Python level rather than needing `Send`/
-/// `Sync` here. A GIL-releasing, thread-safe run loop is a later milestone
-/// leg.
+/// `Sync` here. `run` still releases the GIL for the duration of the Rust
+/// loop (see [`AssertUngil`]); that pinning is what makes doing so sound.
 #[pyclass(module = "quadraui", unsendable)]
 struct QuiApp {
     driver: TuiDriver<PyAppLogic>,
+    /// Events queued by `push_event`/`push_key_event`, drained one per
+    /// `step_once` call (oldest first); `step_once` ticks the app instead
+    /// when this is empty.
+    pending_events: VecDeque<UiEvent>,
 }
+
+/// Wraps a value that is provably safe to move across [`Python::detach`]'s
+/// closure boundary even though it isn't [`Send`].
+///
+/// `detach` only suspends *this* thread's GIL attachment so other Python
+/// threads can run concurrently; it never migrates `T` onto a different OS
+/// thread. `QuiApp` (the only type this wraps) is `#[pyclass(unsendable)]`,
+/// so pyo3 already panics at runtime before any other thread can reach the
+/// same instance — nothing can race the detached closure for access to the
+/// wrapped value.
+struct AssertUngil<T>(T);
+
+// SAFETY: see the type's doc comment — `QuiApp` is pinned to one Python
+// thread by `unsendable`, and `detach` keeps execution on that same thread,
+// so no concurrent access to the wrapped `!Send` value can occur.
+unsafe impl<T> Send for AssertUngil<T> {}
 
 /// Decodes a Python `dict` into `T` via `pythonize`, raising `ValueError`
 /// on a shape mismatch rather than panicking across the PyO3 boundary.
@@ -167,15 +234,102 @@ fn decode<T: serde::de::DeserializeOwned>(what: &str, dict: &Bound<'_, PyDict>) 
 #[pymethods]
 impl QuiApp {
     /// Creates a new headless app on a `width`x`height` cell grid.
+    /// `on_event`, if given, is registered as the event handler — equivalent
+    /// to calling `set_handler` right after construction.
     #[new]
-    fn new(width: u16, height: u16) -> PyResult<Self> {
+    #[pyo3(signature = (width, height, on_event=None))]
+    fn new(width: u16, height: u16, on_event: Option<Py<PyAny>>) -> PyResult<Self> {
         if width == 0 || height == 0 {
             return Err(PyValueError::new_err(
                 "width and height must both be non-zero",
             ));
         }
+        let app_logic = PyAppLogic {
+            handler: on_event,
+            ..PyAppLogic::default()
+        };
         Ok(QuiApp {
-            driver: TuiDriver::new(PyAppLogic::default(), width, height),
+            driver: TuiDriver::new(app_logic, width, height),
+            pending_events: VecDeque::new(),
+        })
+    }
+
+    /// Registers `handler` as the callable invoked (with the pythonized
+    /// event payload) for every event drained by `step`/`run`. Replaces any
+    /// previously registered handler.
+    fn set_handler(&mut self, handler: Py<PyAny>) {
+        self.driver.app_mut().handler = Some(handler);
+    }
+
+    /// Registers `handler` as the no-argument callable invoked by
+    /// `step`/`run` whenever it advances with no event queued. Replaces any
+    /// previously registered tick handler.
+    fn set_tick_handler(&mut self, handler: Py<PyAny>) {
+        self.driver.app_mut().on_tick = Some(handler);
+    }
+
+    /// Decodes `descriptor` into a `UiEvent` and queues it for the next
+    /// `step`/`run` call. Raises `ValueError` on a shape mismatch.
+    fn push_event(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<()> {
+        let event: UiEvent = decode("push_event", descriptor)?;
+        self.pending_events.push_back(event);
+        Ok(())
+    }
+
+    /// Queues a synthetic `KeyPressed` event for the character with Unicode
+    /// code point `ch`, no modifiers held, not a repeat. Raises `ValueError`
+    /// if `ch` isn't a valid Unicode scalar value.
+    fn push_key_event(&mut self, ch: u32) -> PyResult<()> {
+        let ch = char::from_u32(ch)
+            .ok_or_else(|| PyValueError::new_err(format!("invalid Unicode code point: {ch}")))?;
+        self.pending_events.push_back(UiEvent::KeyPressed {
+            key: Key::Char(ch),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        Ok(())
+    }
+
+    /// Resizes the underlying cell grid to `width`x`height`.
+    fn resize(&mut self, width: u16, height: u16) -> PyResult<()> {
+        if width == 0 || height == 0 {
+            return Err(PyValueError::new_err(
+                "width and height must both be non-zero",
+            ));
+        }
+        self.driver.resize(width, height);
+        Ok(())
+    }
+
+    /// Advances the runner by one step: dispatches the oldest queued event,
+    /// or ticks the app if none is queued. Returns `True` if the app is
+    /// still running afterwards, `False` once it has exited. Re-raises
+    /// whatever exception a registered handler/tick callback raised while
+    /// handling this step.
+    fn step(&mut self) -> PyResult<bool> {
+        self.step_once()
+    }
+
+    /// Runs up to `max_steps` steps (default 1), releasing the GIL for the
+    /// duration of the Rust loop and re-acquiring it only for each
+    /// individual handler/tick callback. Stops early once the app exits.
+    /// Returns `True` if still running afterwards, `False` once exited.
+    /// Re-raises whatever exception a registered handler/tick callback
+    /// raised during any step.
+    #[pyo3(signature = (max_steps=1))]
+    fn run(&mut self, py: Python<'_>, max_steps: u32) -> PyResult<bool> {
+        let steps = max_steps.max(1);
+        let wrapped = AssertUngil(self);
+        py.detach(move || {
+            let app = wrapped;
+            let mut running = true;
+            for _ in 0..steps {
+                running = app.0.step_once()?;
+                if !running {
+                    break;
+                }
+            }
+            Ok(running)
         })
     }
 
@@ -311,6 +465,27 @@ impl QuiApp {
         store(self.driver.app_mut(), value);
         self.driver.render();
         Ok(slot)
+    }
+
+    /// Dispatches the oldest queued event (or ticks, if none is queued),
+    /// then surfaces any exception a Python callback raised while handling
+    /// it. Returns whether the app is still running.
+    fn step_once(&mut self) -> PyResult<bool> {
+        if self.driver.exited() {
+            return Ok(false);
+        }
+        match self.pending_events.pop_front() {
+            Some(event) => {
+                self.driver.dispatch(event);
+            }
+            None => {
+                self.driver.tick();
+            }
+        }
+        if let Some(err) = self.driver.app_mut().pending_error.take() {
+            return Err(err);
+        }
+        Ok(!self.driver.exited())
     }
 }
 
