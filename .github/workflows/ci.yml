@@ -567,7 +567,11 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Build (tui feature)
-        run: cargo build --features tui --workspace --exclude kubeui-gtk
+        # `quadraui-py` is excluded here (and from the `test`/`clippy` steps
+        # below): it links against libpython, which this job's runner
+        # doesn't provision, and its own maturin/wheel build is this job's
+        # own dedicated CI job in a later milestone leg.
+        run: cargo build --features tui --workspace --exclude kubeui-gtk --exclude quadraui-py
       - name: Test (tui feature)
         # #823: the sealed `quadraui/tests/acceptance/ms-11/wide_tab_labels.rs`
         # (`#[cfg(feature = "tui")]`, so it compiles under this tui-only job
@@ -587,11 +591,11 @@ jobs:
         # `README.md` (between the `TERMINAL_MATRIX` markers) differs from
         # what it generates — the same guard shape `tests/readme_truth.rs`
         # (#798) uses for the rest of the README.
-        run: cargo test --features tui --workspace --exclude kubeui-gtk
+        run: cargo test --features tui --workspace --exclude kubeui-gtk --exclude quadraui-py
         env:
           RUSTFLAGS: "-D warnings -A deprecated"
       - name: Clippy (tui feature)
-        run: cargo clippy --features tui --workspace --exclude kubeui-gtk -- -D warnings
+        run: cargo clippy --features tui --workspace --exclude kubeui-gtk --exclude quadraui-py -- -D warnings
       # Benches (#1118): `cargo build`/`cargo test` don't build bench
       # targets by default (verified: neither the plain `cargo test
       # --workspace` step above nor a bare `cargo test -p quadraui` runs
@@ -1009,7 +1013,10 @@ jobs:
       # runs in CI. Both drivers are display-free, so this stays headless;
       # no Xvfb, no capability gate (quadraui#446/#447/#448, GD-1..GD-3).
       - name: Build (gtk + tui features)
-        run: cargo build --features gtk,tui --workspace --exclude kubeui
+        # `quadraui-py` is excluded here too, for the same reason as the
+        # `tui` job above: it links against libpython, which this job's
+        # runner doesn't provision.
+        run: cargo build --features gtk,tui --workspace --exclude kubeui --exclude quadraui-py
       # --no-fail-fast: without it, a failure in the `quadraui` lib unit-test
       # target (e.g. pre-existing gtk::services main-thread panics) makes
       # cargo abort before ever building/running the tests/*.rs integration
@@ -1025,11 +1032,11 @@ jobs:
         # --workspace` compiles that target under this job's `gtk,tui`
         # features too. Only `deprecated` is relaxed; every other lint
         # stays denied.
-        run: cargo test --features gtk,tui --workspace --exclude kubeui --no-fail-fast
+        run: cargo test --features gtk,tui --workspace --exclude kubeui --exclude quadraui-py --no-fail-fast
         env:
           RUSTFLAGS: "-D warnings -A deprecated"
       - name: Clippy (gtk + tui features)
-        run: cargo clippy --features gtk,tui --workspace --exclude kubeui -- -D warnings
+        run: cargo clippy --features gtk,tui --workspace --exclude kubeui --exclude quadraui-py -- -D warnings
       # Benches (#1118): same "not built by a plain `cargo build`/`cargo
       # test`" gap, same "named `--bench` flags, not a bare `-p quadraui`"
       # (a bare invocation also runs the whole lib unit-test suite as a
