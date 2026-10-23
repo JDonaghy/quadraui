@@ -38,6 +38,13 @@ RESET = "\033[0m"
 
 AUTO_YES = False
 
+# `wait_for_checks`'s default poll timeout (seconds). The quadraui CI matrix
+# (cargo-semver-checks + win + macos + gallery) routinely runs past the old
+# 900s/15min cap on a bump PR's full check set; 2400s/40min gives it enough
+# room before `release_full.py` gives up and forces a manual resume.
+# Overridable with `--check-timeout`.
+CHECK_TIMEOUT = 2400
+
 
 def banner(phase: str, msg: str) -> None:
     print(f"\n{BOLD}{'=' * 60}{RESET}")
@@ -213,12 +220,14 @@ def pr_checks_status(number: int) -> tuple[str, list[dict]]:
     return ("pass", checks)
 
 
-def wait_for_checks(number: int, label: str, timeout: int = 900) -> None:
+def wait_for_checks(number: int, label: str, timeout: int | None = None) -> None:
     """Poll until CI checks on a PR reach a terminal state (all done or timed out).
 
     Non-required failures are warned but don't block — gh pr merge is
     the authority on whether the PR is actually mergeable.
     """
+    if timeout is None:
+        timeout = CHECK_TIMEOUT
     deadline = time.time() + timeout
     last_msg = ""
     while time.time() < deadline:
@@ -319,6 +328,46 @@ def preflight(version: str) -> None:
 # ── Phase 2: Prepare ────────────────────────────────────────────────
 
 
+def _release_branch_cargo_version(branch: str, ref: str) -> str | None:
+    """Read `quadraui/Cargo.toml`'s version at `ref` (e.g. `release-0.5.0` or
+    `origin/release-0.5.0`), or None if the ref/path doesn't exist."""
+    r = git(["show", f"{ref}:quadraui/Cargo.toml"], check=False)
+    if r.returncode != 0:
+        return None
+    m = re.search(r'(?m)^version\s*=\s*"([^"]+)"', r.stdout)
+    return m.group(1) if m else None
+
+
+def find_and_checkout_bumped_release_branch(version: str) -> bool:
+    """Detect a `release-<version>` branch — local or remote-only — whose
+    tip already carries the version bump, and check it out.
+
+    Lets a re-run resume from *any* starting branch (develop or the release
+    branch itself) instead of calling `release.py prepare`, whose
+    `checkout -b` aborts if the branch already exists. Returns True if such
+    a branch was found and checked out.
+    """
+    branch = f"release-{version}"
+
+    local = git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], check=False)
+    if local.returncode == 0:
+        if _release_branch_cargo_version(branch, branch) == version:
+            git(["checkout", branch])
+            info(f"found local branch {branch} already bumped to {version} — resuming")
+            return True
+        return False
+
+    remote = git(["ls-remote", "--heads", "origin", branch], check=False)
+    if remote.stdout.strip():
+        git(["fetch", "origin", branch])
+        if _release_branch_cargo_version(branch, f"origin/{branch}") == version:
+            git(["checkout", "-b", branch, f"origin/{branch}"])
+            info(f"found remote branch {branch} already bumped to {version} — resuming")
+            return True
+
+    return False
+
+
 def prepare(version: str) -> None:
     banner("2/5", f"Prepare release branch for {version}")
 
@@ -332,6 +381,10 @@ def prepare(version: str) -> None:
 
     if read_cargo_version() == version:
         info(f"version already bumped to {version} — skipping prepare")
+        check_readme_truth_version_strings(version)
+        return
+
+    if find_and_checkout_bumped_release_branch(version):
         check_readme_truth_version_strings(version)
         return
 
@@ -482,6 +535,7 @@ def publish(version: str) -> None:
 
 
 def main() -> None:
+    global AUTO_YES, CHECK_TIMEOUT
     parser = argparse.ArgumentParser(
         description="End-to-end quadraui release.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -489,11 +543,15 @@ def main() -> None:
     parser.add_argument("version", help="new version to release (e.g. 0.2.1)")
     parser.add_argument("--yes", "-y", action="store_true",
                         help="answer yes to all prompts")
+    parser.add_argument("--check-timeout", type=int, default=CHECK_TIMEOUT,
+                        help="seconds to wait for a PR's CI checks before "
+                             f"giving up (default: {CHECK_TIMEOUT})")
     args = parser.parse_args()
 
     if args.yes:
-        global AUTO_YES
         AUTO_YES = True
+
+    CHECK_TIMEOUT = args.check_timeout
 
     # Add scripts/ to sys.path so we can import release.py helpers
     sys.path.insert(0, str(REPO_DIR / "scripts"))
