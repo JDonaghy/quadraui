@@ -60,6 +60,21 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `quadraui-ffi`'s C ABI is hardened for a real consumer: every `extern "C"`
+  entry point catches a Rust panic at the boundary (reported as
+  `QUI_ERR_PANIC`, after which the handle is poisoned and every call but
+  `qui_app_free` returns `QUI_ERR_POISONED`); a documented 13-code error
+  taxonomy (`QUI_ERR_NULL_HANDLE` … `QUI_ERR_INTERNAL`) replaces the flat
+  `-1`, with `qui_last_error_code` and `qui_error_name` alongside
+  `qui_last_error`; the header now exports every code and `QUI_SLOT_*` id
+  as a `#define`, inserts return the slot id they filled, and
+  `qui_slot_clear` empties one again. `qui_screen` hands out a freeable
+  frame dump, and the ownership rule for every pointer the ABI passes is
+  documented on the header. `smoke/smoke.c` is a worked C consumer that
+  builds a six-primitive screen, drives the key/mouse/resize paths through
+  a registered vtable, walks every error path and frees every
+  callee-allocated string.
+
 - The macOS native painter honors the chrome-glyph override registries at
   all four sites that have one: `MacBackend::draw_tab_bar_with_chrome_and_glyphs`
   (close/dirty marks) and `MacBackend::draw_context_menu_with_glyphs`
