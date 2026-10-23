@@ -58,10 +58,27 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Fixed
+
+- `DatePicker::layout()`'s `header_bounds` now spans only the middle 5 of 7
+  columns instead of the full header row, so the month/year label no longer
+  shares pixels with `prev_bounds`/`next_bounds`. The overlap previously
+  corrupted the label's leading character wherever a rasteriser painted the
+  header and the prev/next controls in sequence (`tui::date_picker` and the
+  shared `primitives::date_picker::native_surface_paint::paint` fallback used
+  by GTK/Win/macOS).
+
 
 ## [0.4.0] - 2026-10-22
 ### Added
 
+- `Backend::draw_date_picker`/`date_picker_layout` (no default body, per
+  `PRIMITIVE_RULES.md` rule 7) paint and measure `DatePicker`'s month grid
+  and time field. Implemented on every backend (`TuiBackend`, `GtkBackend`,
+  `WinBackend`, plus the crate's test-only `MockBackend`/`RecordingBackend`
+  mocks) via the shared `primitives::date_picker::native_surface_paint::paint`
+  helper or a dedicated `tui::date_picker` rasteriser; `MacBackend` is tracked
+  separately under #1453.
 - `Backend::draw_date_picker(&mut self, date_picker: &DatePicker, layout: &DatePickerLayout)`
   rasterises `DatePicker`'s month grid (header, prev/next controls, 42-day
   grid with focus/selection styling) and optional time field. TUI
@@ -97,6 +114,18 @@ only a push to `main` runs this workflow.
   cursor row without moving it, all through the shared
   `types::apply_selection_gesture` seam. Verified by `TuiDriver`-based tests
   in `tui::list`, `tui::tree` and `tui::data_table`.
+- macOS rasteriser module for `DatePicker` (`quadraui::macos::date_picker`):
+  the macOS twin of the Win-GUI module above, carrying no production code of
+  its own — `MacBackend`'s `Backend::draw_date_picker` delegates entirely to
+  the shared `primitives::date_picker::native_surface_paint::paint`. Keyboard
+  navigation (arrow keys, page up/down, enter-to-select), the painted
+  header/prev/next/day glyphs and the `theme.selected_bg` fill on the
+  selected day's cell are covered by `MacDriver` tests. `SelectionMode::Multi`'s
+  plain-click/Ctrl-or-Cmd-click/Shift-range wiring is additionally covered by
+  new `MacDriver`-based tests in `macos::list`, `macos::tree` and
+  `macos::data_table`, confirming the same `types::apply_selection_gesture`
+  seam round-trips on macOS. The gallery demo is deferred to the `DatePicker`
+  gallery-page issue.
 - `ScreenLayout::tree_frame` returns each pushed `Surface::Tree`'s geometry
   as `(Handle<TreeView>, Rect)` pairs, backed internally by
   `DescriptorStore<TreeView>`. On a retained `ScreenLayout` kept across
