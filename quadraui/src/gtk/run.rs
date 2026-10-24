@@ -296,6 +296,23 @@ impl RunConfig {
     }
 }
 
+/// Whether `app_id` is a syntactically valid `GApplication` id — ASCII,
+/// dot-separated, starting with a letter, no element starting with a
+/// digit, no two consecutive dots, no trailing dot, 255 bytes or fewer
+/// (see the [GNOME application ID guidelines](https://developer.gnome.org/documentation/tutorials/application-id.html)
+/// and `g_application_id_is_valid`, which this wraps directly). An
+/// embedding host building a [`RunConfig`] (or [`GtkRunner::new_with`])
+/// from a caller-supplied string should check this *before* handing the
+/// id to [`run_with`]/[`GtkRunner::new`] — an invalid id reaching
+/// `Application::builder().application_id(...)` trips
+/// `g_return_if_fail` as an uncatchable `GLib-GIO-CRITICAL` on stderr
+/// (GLib's own assertion failures don't unwind, so there is no `Result`
+/// a caller in this crate could turn into one), rather than a value this
+/// crate can turn into an error.
+pub fn app_id_is_valid(app_id: &str) -> bool {
+    gtk4::gio::Application::id_is_valid(app_id)
+}
+
 impl Default for RunConfig {
     /// Default configuration: matches [`run`]'s previously-hardcoded defaults,
     /// so `run_with(app, RunConfig::default())` and `run(app)` behave identically.
@@ -516,6 +533,65 @@ pub struct GtkRunner {
     smoke_failed: Rc<Cell<bool>>,
 }
 
+/// Best-effort check for whether a GTK display is currently reachable,
+/// without the fatal failure mode [`GtkRunner::new`]/[`GtkRunner::new_with`]
+/// hit when one isn't: those build an `Application` and `register()` it,
+/// which — on the primary instance — emits GTK's own `startup` signal, and
+/// `GtkApplication`'s default handler for that signal calls the C
+/// `gtk_init()` function directly. When no display is reachable, `gtk_init()`
+/// prints its own warning and calls the process's `exit(1)` rather than
+/// returning an error either GTK's `Application::run()` or this crate could
+/// intercept. Calling `gtk4::init()` — the Rust binding's own, separate
+/// entry point into the same underlying check — here first surfaces that
+/// exact failure as an ordinary `bool` instead, so a caller can raise or
+/// otherwise degrade gracefully before ever reaching `GtkRunner::new`/
+/// `new_with`.
+///
+/// On macOS, `gtk4::init()` panics (rather than hard-exiting) when called
+/// off the process's real OS main thread — GTK's AppKit backend requires
+/// it, mirroring [`run`]/[`run_with`]'s own main-thread requirement. This
+/// returns `false` off the main thread instead of letting that panic
+/// surface, so a caller on the wrong thread gets a graceful "no display"
+/// answer rather than a different, confusing crash.
+///
+/// That main-thread check is macOS-only, but the underlying "GTK only
+/// tolerates being initialized once, from one thread" rule is not: on every
+/// platform, calling this (or any other GTK entry point) from a *second*,
+/// different thread after GTK has already been initialized from a first one
+/// still panics, same as calling `gtk4::init()` a second time from a
+/// different thread would. Callers that might run this from more than one
+/// thread over a process's lifetime need their own serialization (e.g.
+/// always calling it from the same thread, or behind a lock) — this
+/// function only degrades the macOS-specific "never ran on the main thread
+/// at all" case to `false`, not the general cross-platform one.
+///
+/// Not a pure query: on success this leaves GTK initialized for the rest of
+/// the process (the same global, one-time init `GtkRunner::new`/`new_with`
+/// would otherwise have performed), and on `false` it currently makes no
+/// promise about state. Calling this at all is itself an observable
+/// side effect, not a value a caller can freely re-request —
+/// see the thread-affinity note above.
+pub fn display_available() -> bool {
+    #[cfg(target_os = "macos")]
+    if !is_main_thread() {
+        return false;
+    }
+    gtk4::init().is_ok()
+}
+
+/// True when called from the process's actual OS main thread. Declares the
+/// same C symbol gtk4-rs's own `rt.rs` calls internally (`pthread_main_np`,
+/// macOS-only) rather than adding a `libc` dependency to the `gtk` feature
+/// for one FFI call — see [`display_available`]'s doc for why this matters
+/// only on macOS.
+#[cfg(target_os = "macos")]
+fn is_main_thread() -> bool {
+    unsafe extern "C" {
+        fn pthread_main_np() -> i32;
+    }
+    unsafe { pthread_main_np() != 0 }
+}
+
 impl GtkRunner {
     /// Build a runner with the default [`RunConfig`] (generic app id and
     /// window title). Builds the `Application`, window, and `DrawingArea`,
@@ -644,6 +720,26 @@ impl GtkRunner {
         }
 
         self.outcome()
+    }
+
+    /// Closes every window this runner's `Application` owns, so the next
+    /// `step`/`pump` call observes [`StepOutcome::Exited`] — the embedding
+    /// counterpart of [`GtkSink::request_exit`]'s `Reaction::Exit`/
+    /// `EventOutcome::Exit` handling for a host that drives this runner
+    /// itself (e.g. reacting to its own Ctrl-C) rather than letting
+    /// `AppLogic` ask for the exit.
+    ///
+    /// Uses `destroy()`, not `close()`, for the same reason
+    /// [`GtkSink::request_exit`] does: `close()` re-emits GTK's
+    /// `close-request` signal, re-entering the veto handler `activate`
+    /// wires via `setup_close_request` as a brand-new, synthetic
+    /// `WindowClose` dispatch. A host calling this has already decided to
+    /// exit, not asked the app's own close handling to decide again —
+    /// `destroy()` tears the window down directly, so this always exits.
+    pub fn request_exit(&self) {
+        for window in self.gapp.windows() {
+            window.destroy();
+        }
     }
 }
 

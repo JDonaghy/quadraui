@@ -1057,6 +1057,45 @@ jobs:
         # plus the same `--exclude quadraui-py` as the two steps above, for
         # the same reason.
         run: cargo clippy --features gtk,tui --workspace --exclude kubeui --exclude quadraui-py -- -D warnings
+      # `quadraui-py`'s own `gtk`-gated code (`run_native` and friends) is
+      # excluded from every workspace-wide step above, so without this it
+      # never gets type-checked against `quadraui::gtk` at all — a renamed
+      # or re-signatured `quadraui::gtk` item could silently break this
+      # binding with no CI signal. `cargo check`, not `build`/`clippy`: this
+      # job doesn't link libpython (same reason the workspace steps exclude
+      # the crate), and `extension-module` resolves Python symbols
+      # dynamically so a type-check-only pass is enough to catch the gap.
+      # `--all-targets` so the crate's own `#[cfg(test)]` module (gated
+      # behind `gtk` in places) is type-checked too, not just the `lib`
+      # target — still check-only, so no libpython link either way.
+      - name: Check (quadraui-py, gtk feature)
+        run: cargo check -p quadraui-py --features gtk,pyo3/extension-module --all-targets
+      # Same gap for the `macos` feature, which no other job covers at all:
+      # `macos.yml` only builds `-p quadraui`, and its `paths` filter
+      # doesn't fire for a `quadraui-py`-only change. On this Linux runner
+      # `quadraui::macos` itself compiles to nothing (`lib.rs` gates `mod
+      # macos` on `target_os = "macos"` as well as the feature), so this
+      # doesn't type-check the AppKit handoff — what it does cover is
+      # everything in `quadraui-py` gated on the *feature* rather than the
+      # target: `NativeAppLogic`'s `Reaction::Exit` downgrade (a `Cell` and
+      # a `matches!`, no AppKit), its `#[cfg(test)]` unit tests via
+      # `--all-targets`, and the non-Apple-target arm of `run_native`.
+      # Without it, a `macos`-feature build of this crate is only ever
+      # compiled on a developer's own Mac.
+      - name: Check (quadraui-py, macos feature)
+        run: cargo check -p quadraui-py --features macos,pyo3/extension-module --all-targets
+      # Same gap again for the `win` feature, which no other job covers at
+      # all: `quadraui::win` itself compiles to nothing on this Linux
+      # runner (`lib.rs` gates `mod win` on `target_os = "windows"` as well
+      # as the feature), so this doesn't type-check the Direct2D/DirectWrite
+      # handoff either — what it does cover is everything in `quadraui-py`
+      # gated on the *feature* rather than the target, including the
+      # non-Windows-target arm of `run_native` and the matching
+      # `_NATIVE_BACKEND` assertion in `#[cfg(test)]`, via `--all-targets`.
+      # Without it, a `win`-feature build of this crate is only ever
+      # compiled on dell64.
+      - name: Check (quadraui-py, win feature)
+        run: cargo check -p quadraui-py --features win,pyo3/extension-module --all-targets
       # Benches (#1118): same "not built by a plain `cargo build`/`cargo
       # test`" gap, same "named `--bench` flags, not a bare `-p quadraui`"
       # (a bare invocation also runs the whole lib unit-test suite as a

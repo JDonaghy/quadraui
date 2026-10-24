@@ -5,12 +5,23 @@ name: quadraui-py wheels
 # imports it -- proving the wheel is actually loadable, not just that
 # `maturin build` exited zero.
 #
-# Linux has no manylinux-compatible system GTK to bundle, so this crate
-# is TUI-only on every platform by construction: `quadraui-py/Cargo.toml`'s
-# `quadraui` dependency enables only the `tui` feature, never `gtk`. That
-# makes the Linux wheel in the matrix below identical in shape to the
-# macOS/Windows ones -- no separate "GTK-less Linux variant" job is
-# needed, because there is only ever one variant.
+# Each OS gets the native-window feature it can actually ship as a clean
+# abi3 wheel with no extra runtime dependency:
+#   - macOS: `macos` (Core Graphics/AppKit via `objc2`) links against system
+#     frameworks every Mac already has -- no bundling problem.
+#   - Windows: `win` (Direct2D/DirectWrite) links against system DLLs every
+#     Windows install already has -- same story.
+#   - Linux: **no** native feature. `gtk` needs a real libgtk-4 (plus its
+#     own transitive GLib/Pango/Cairo stack) at both link and run time, and
+#     there is no manylinux-blessed way to vendor that into a portable
+#     wheel the way `auditwheel`/`manylinux` do for a handful of common C
+#     libraries -- GTK is explicitly outside that set. So the Linux wheel
+#     stays TUI-only (`QuiApp.run_native` is undefined on it, same as
+#     today); a Linux user who wants `run_native` installs system GTK and
+#     builds from source with `maturin develop --features gtk` instead, or
+#     runs `run_tui()` which the wheel already supports unchanged. See
+#     `quadraui-py/README.md`'s *Wheels* section for the user-facing
+#     writeup of this tradeoff.
 #
 # `abi3-py38` (set on the `pyo3` dependency itself, not a maturin flag) is
 # what makes one wheel per OS/arch work across every CPython >= 3.8, so
@@ -31,6 +42,11 @@ on:
       - "quadraui/Cargo.toml"
       - ".github/workflows/quadraui-py-wheels.yml"
   workflow_dispatch: {}
+  # Lets `quadraui-py-release.yml` build this same matrix for a tagged
+  # release instead of duplicating the build-and-smoke-test steps. No
+  # inputs/secrets needed — the caller only cares about the uploaded
+  # `quadraui-py-wheel-*` artifacts this workflow already produces.
+  workflow_call: {}
 
 env:
   CARGO_TERM_COLOR: always
@@ -41,7 +57,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          # `pyo3/extension-module` is listed explicitly in every
+          # `cargo_features` entry below (duplicating `pyproject.toml`'s
+          # `[tool.maturin] features`) because the `Build wheel` step passes
+          # `--features` on the CLI to let the macOS/Windows legs add their
+          # native feature on top, and relying on maturin to merge that
+          # with `pyproject.toml`'s own `features` list (rather than
+          # override it) is an assumption not worth making. Linux has no
+          # native feature (see the header comment for why GTK can't ship
+          # in a manylinux wheel), so `run_native` stays undefined on that
+          # wheel.
+          - os: ubuntu-latest
+            cargo_features: "pyo3/extension-module"
+            has_run_native: "false"
+          - os: macos-latest
+            cargo_features: "pyo3/extension-module,macos"
+            has_run_native: "true"
+          - os: windows-latest
+            cargo_features: "pyo3/extension-module,win"
+            has_run_native: "true"
     runs-on: ${{ matrix.os }}
     # Sized generously for a cold Rust + maturin build; a healthy run is a
     # few minutes once dependencies are warm.
@@ -56,22 +91,32 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           working-directory: quadraui-py
-          args: --release --out dist
+          args: --release --out dist --features ${{ matrix.cargo_features }}
           # `auto` picks the oldest manylinux maturin supports on Linux and
           # is a no-op on macOS/Windows; there is no GTK dependency here to
           # make manylinux's older glibc/toolchain a problem.
           manylinux: auto
       - name: Import the built wheel
         shell: bash
+        env:
+          HAS_RUN_NATIVE: ${{ matrix.has_run_native }}
         run: |
           python -m venv /tmp/quadraui-py-wheel-check
           if [ "$RUNNER_OS" = "Windows" ]; then
-            /tmp/quadraui-py-wheel-check/Scripts/python.exe -m pip install --no-index --find-links quadraui-py/dist quadraui
-            /tmp/quadraui-py-wheel-check/Scripts/python.exe -c "import quadraui; print(quadraui.QuiApp)"
+            PYTHON=/tmp/quadraui-py-wheel-check/Scripts/python.exe
           else
-            /tmp/quadraui-py-wheel-check/bin/python -m pip install --no-index --find-links quadraui-py/dist quadraui
-            /tmp/quadraui-py-wheel-check/bin/python -c "import quadraui; print(quadraui.QuiApp)"
+            PYTHON=/tmp/quadraui-py-wheel-check/bin/python
           fi
+          "$PYTHON" -m pip install --no-index --find-links quadraui-py/dist quadraui
+          "$PYTHON" -c "
+          import quadraui
+          print(quadraui.QuiApp)
+          has_run_native = hasattr(quadraui.QuiApp, 'run_native')
+          expected = '${HAS_RUN_NATIVE}' == 'true'
+          assert has_run_native == expected, (
+              f'QuiApp.run_native presence {has_run_native} != expected {expected}'
+          )
+          "
       - uses: actions/upload-artifact@v4
         with:
           name: quadraui-py-wheel-${{ matrix.os }}

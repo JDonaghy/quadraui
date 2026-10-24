@@ -1,0 +1,130 @@
+name: quadraui-py release
+
+# Publishes `quadraui-py` to PyPI as the `quadraui` package. Triggered by a
+# `py-v<version>` tag — deliberately distinct from the `v<version>` tags
+# `release.yml` pushes for the `quadraui` Rust crate's own crates.io
+# releases (#1368): the Python binding versions independently (see
+# `quadraui-py/pyproject.toml`'s `[project] version` comment), so a crate
+# release and a PyPI release are separate events that must not collide on
+# one tag namespace.
+#
+# Publishing uses PyPI Trusted Publishing (OIDC): `pypa/gh-action-pypi-
+# publish` exchanges this job's GitHub OIDC identity for a short-lived
+# upload credential, so no long-lived PyPI API token is stored anywhere —
+# the same shape `release.yml` uses for crates.io via
+# `crates-io-auth-action`. This requires an **operator-side** one-time setup
+# that nothing in this file can perform: on pypi.org, the `quadraui` project
+# must have a "trusted publisher" entry naming this repo
+# (`JDonaghy/quadraui`), this workflow file (`quadraui-py-release.yml`), and
+# the `pypi` environment below. Until that's configured, the `publish` job
+# fails at the PyPI upload step with an authentication error — the build
+# jobs still succeed and upload wheels/sdist as workflow artifacts, so the
+# binary content is never lost even before that setup lands.
+on:
+  push:
+    tags:
+      - "py-v*"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-version:
+    name: Verify tag matches pyproject.toml version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      # Reads `[project] version` with the stdlib `tomllib` (Python >= 3.11
+      # on `ubuntu-latest`) rather than installing a TOML dependency just
+      # for this one field.
+      - name: Read pyproject.toml version and compare against the tag
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          version=$(python3 -c '
+          import tomllib
+          with open("quadraui-py/pyproject.toml", "rb") as f:
+              print(tomllib.load(f)["project"]["version"])
+          ')
+          echo "pyproject.toml version: ${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ]; then
+            echo "workflow_dispatch run; skipping tag/version match check"
+            exit 0
+          fi
+          expected_tag="py-v${version}"
+          if [ "${GITHUB_REF_NAME}" != "${expected_tag}" ]; then
+            echo "::error::tag '${GITHUB_REF_NAME}' does not match quadraui-py/pyproject.toml's version '${version}' (expected tag '${expected_tag}')" >&2
+            exit 1
+          fi
+        shell: bash
+
+  wheels:
+    name: Build wheels
+    needs: check-version
+    uses: ./.github/workflows/quadraui-py-wheels.yml
+
+  sdist:
+    name: Build sdist
+    needs: check-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: quadraui-py
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quadraui-py-sdist
+          path: quadraui-py/dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: [wheels, sdist]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The `pypi` environment is where the operator's trusted-publisher
+    # config (see the header comment) is scoped; it is also where a human
+    # "required reviewers" rule could later gate the upload, same as
+    # `release.yml`'s `release` environment does for crates.io.
+    environment: pypi
+    permissions:
+      # Lets `gh-action-pypi-publish` request the OIDC token PyPI's trusted
+      # publisher exchanges for an upload credential. No other permission is
+      # needed -- this job doesn't push a tag or create a GitHub release,
+      # since the `py-v*` tag that triggered it already exists.
+      id-token: write
+    steps:
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: quadraui-py-wheel-*
+          path: dist
+          merge-multiple: true
+      - name: Download sdist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: quadraui-py-sdist
+          path: dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

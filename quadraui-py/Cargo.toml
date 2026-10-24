@@ -1,11 +1,16 @@
 [package]
 name = "quadraui-py"
-version = "0.0.0"
+# Kept in step with `quadraui-py/pyproject.toml`'s `[project] version` for
+# readability, but it is `pyproject.toml`'s value — not this one — that
+# `maturin` actually bakes into the published wheel; see that file's comment
+# for why the Python binding has its own version line. `publish = false`
+# below means this field never goes to crates.io.
+version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "PyO3 bindings: insert quadraui descriptors from Python and render them headlessly."
+description = "PyO3 bindings: insert quadraui descriptors from Python and render them headlessly or in a real terminal."
 
 [lib]
 name = "quadraui_py"
@@ -17,11 +22,43 @@ name = "quadraui_py"
 # such as a caught panic poisoning the app before any Python frame exists.
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Each of these enables `QuiApp.run_native`, which opens a real OS window
+# instead of driving the headless driver: `gtk` via `quadraui::gtk::GtkRunner`,
+# `macos` via `quadraui::macos::MacRunner`, `win` via `quadraui::win::WinRunner`.
+# All three forward to `quadraui`'s own same-named feature rather than
+# duplicating its dependency list, since this crate never calls GTK/AppKit/
+# Win32 APIs directly except for the `objc2` main-thread preflight check
+# `macos` needs before handing off to `MacRunner` (see `run_native`'s doc).
+# `win` needs no equivalent extra dependency: `WinRunner::new_with`/`pump`
+# already report every failure through a `windows::core::Result` this crate
+# converts to a `String` inline, so there is no raw `windows` crate type to
+# name here the way `macos` needs `objc2::MainThreadMarker`.
+gtk = ["quadraui/gtk"]
+macos = ["quadraui/macos", "dep:objc2"]
+win = ["quadraui/win"]
+
 [dependencies]
+# `tui` is unconditional (not under `[features]`) because it already gates
+# both the headless `testing::TuiDriver` this crate's default `QuiApp` path
+# wraps and the real `TuiRunner` `QuiApp.run_tui` wraps — one dependency
+# feature, no Python-visible flag, covers both.
 quadraui = { path = "../quadraui", features = ["tui"] }
 pyo3 = { version = "0.29", features = ["abi3-py38"] }
 pythonize = "0.29"
 serde = "1.0"
+
+# macOS-only optional dep. Gated on `target_os = "macos"`, mirroring
+# `quadraui/Cargo.toml`'s own table for the same crate, so enabling the
+# `macos` feature is a no-op on other platforms (e.g. `cargo check -p
+# quadraui-py --features macos` on Linux) instead of failing on objc2's own
+# `compile_error!` for a non-Apple target. Version pinned to match
+# `quadraui`'s own `objc2` dependency; only used for `MainThreadMarker::new()`
+# in `run_native`'s macOS preflight check, so this crate's own dependency
+# entry stays independent of whatever `quadraui` re-exports (it re-exports
+# nothing from `objc2`).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
 
 [dev-dependencies]
 # `cargo test -p quadraui-py` runs as a standalone binary rather than an

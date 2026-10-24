@@ -112,7 +112,9 @@ pub use progress::gtk_progress_layout;
 pub use rich_text_popup::{
     draw_rich_text_popup, RICH_TEXT_POPUP_SB_INSET, RICH_TEXT_POPUP_SB_WIDTH,
 };
-pub use run::{run, run_with, GtkRunner, RunConfig, StepOutcome};
+pub use run::{
+    app_id_is_valid, display_available, run, run_with, GtkRunner, RunConfig, StepOutcome,
+};
 pub use sidebar_panel::gtk_sidebar_panel_layout;
 pub use spinner::{draw_spinner, gtk_spinner_layout};
 pub use split::gtk_split_layout;
