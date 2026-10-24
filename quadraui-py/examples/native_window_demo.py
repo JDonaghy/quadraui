@@ -2,9 +2,14 @@
 but shown in a real OS window via `run_native()` instead of read back
 headlessly via `screen()`.
 
-Requires the extension to be built with the `gtk` feature:
+Nothing below is backend-specific -- `run_native()` opens a GTK window on
+Linux or a real AppKit window on macOS depending on which feature the
+extension was built with (`gtk` wins if both are enabled), and this demo's
+`title`-only call works unchanged either way. Requires the extension to be
+built with the `gtk` or `macos` feature:
 
-    maturin develop --features gtk
+    maturin develop --features gtk     # Linux
+    maturin develop --features macos   # macOS
     python quadraui-py/examples/native_window_demo.py
 
 Interaction is keyboard-only, for two reasons specific to this spike:
