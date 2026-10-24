@@ -32,11 +32,22 @@
 //! `activate` directly instead of parsing the host process's own argv —
 //! the right entry point for an embedded interpreter, which has no
 //! `gio::Application`-shaped argv of its own to hand over.
+//!
+//! [`QuiApp::run_tui`] is `run_native`'s terminal counterpart: it moves this
+//! app's whole [`PyAppLogic`] into a real `quadraui::tui::TuiRunner`, which
+//! takes over the controlling terminal (raw mode, alternate screen, real
+//! crossterm keyboard/resize events) and restores it on exit — no new Cargo
+//! feature gates it, because the `quadraui` dependency's `tui` feature
+//! (which already compiles in both `testing::TuiDriver` and the real
+//! `TuiRunner`) is unconditionally on for this whole crate; the headless
+//! driver `QuiApp` otherwise wraps needs it too.
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
+use std::time::Duration;
 
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
@@ -44,6 +55,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use quadraui::tui::testing::TuiDriver;
+use quadraui::tui::{StepOutcome, TuiRunner};
 use quadraui::{
     AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, Reaction, Rect, TabBar,
     TextDisplay, TreeView, UiEvent,
@@ -599,6 +611,80 @@ impl QuiApp {
                 return Err(err);
             }
             Ok(())
+        })
+    }
+
+    /// Takes over the controlling terminal (raw mode, alternate screen,
+    /// real crossterm keyboard/resize events) via a real
+    /// `quadraui::tui::TuiRunner` showing this app's current descriptors,
+    /// and blocks the calling thread until the app exits — restoring the
+    /// terminal on the way out even if a handler raises or the process
+    /// panics.
+    ///
+    /// A terminal has no close button or window manager to force an exit
+    /// the way `run_native`'s `NativeAppLogic` does for `WindowClose`: this
+    /// only returns once the moved app's `handle`/`tick` itself returns
+    /// `Reaction::Exit`, which — same as the headless path — only happens
+    /// when a registered handler or tick callback raises. Register one
+    /// that raises on whichever keystroke(s) should quit before calling
+    /// this; with no handler registered at all, `run_tui()` blocks
+    /// forever (bar a signal).
+    ///
+    /// Moves this app's whole `PyAppLogic` — every inserted descriptor
+    /// plus both registered handlers — out of the headless driver this
+    /// `QuiApp` wraps and hands it to `TuiRunner` by value; no
+    /// `NativeAppLogic`-style wrapper is needed here, since there's no
+    /// runner-forced exit event to intercept. The GIL is released for the
+    /// duration of each bounded `pump` wait (mirroring `run_native`), with
+    /// the same per-iteration `py.check_signals()` call so a Ctrl-C at the
+    /// controlling terminal still raises `KeyboardInterrupt` promptly
+    /// instead of only being noticed once the app exits on its own;
+    /// `handle`/`tick` re-acquire the GIL per callback via `Python::attach`,
+    /// exactly as they do for the headless path.
+    ///
+    /// After the terminal is released, the headless driver is left holding
+    /// an empty `PyAppLogic`, same as after `run_native` returns. Raises
+    /// `InternalError` if the terminal couldn't be taken over at all (most
+    /// commonly: stdin/stdout isn't a real tty, e.g. under a piped
+    /// subprocess), or re-raises whatever exception a registered
+    /// handler/tick callback raised, or a `KeyboardInterrupt` from a
+    /// Ctrl-C the pump loop observed.
+    fn run_tui(&mut self, py: Python<'_>) -> PyResult<()> {
+        self.guarded(|app| {
+            let app_logic = std::mem::take(app.driver.app_mut());
+            // Same double-clone rationale as `run_native`: `tui_error` stays
+            // outside the `detach` closure for the caller to read back,
+            // `loop_error` is the clone the loop writes a
+            // `check_signals()` failure into.
+            let tui_error = app_logic.pending_error.clone();
+            let loop_error = app_logic.pending_error.clone();
+            let wrapped = AssertUngil((app_logic, loop_error));
+            let setup_result: io::Result<()> = py.detach(move || {
+                let wrapped = wrapped;
+                let (app_logic, loop_error) = wrapped.0;
+                let mut runner = TuiRunner::new(app_logic)?;
+                let poll_interval = Duration::from_millis(50);
+                loop {
+                    if let StepOutcome::Exited = runner.pump(poll_interval)? {
+                        break;
+                    }
+                    // Re-acquiring the GIL here, even briefly, is what lets
+                    // CPython's pending-signal check run: with no
+                    // handler/tick ever called, control otherwise never
+                    // returns to Python for the whole terminal loop, and a
+                    // Ctrl-C would go unnoticed until the app exits some
+                    // other way.
+                    if let Err(err) = Python::attach(|py| py.check_signals()) {
+                        *loop_error.borrow_mut() = Some(err);
+                        break;
+                    }
+                }
+                Ok(())
+            });
+            if let Some(err) = tui_error.borrow_mut().take() {
+                return Err(err);
+            }
+            setup_result.map_err(|err| InternalError::new_err(format!("run_tui: {err}")))
         })
     }
 
