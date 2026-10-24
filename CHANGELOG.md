@@ -80,6 +80,15 @@ only a push to `main` runs this workflow.
   shows without re-entering `QuiApp` from inside the runner's borrow of it.
   Existing `insert_*`/`run_*` call sites are unaffected.
 
+### Fixed
+
+- `MinimapSizing::RepeatToFill` no longer leaves a blank gap below the last
+  row when the strip height isn't an exact multiple of `base_pitch *
+  row_count`: instead of every row sharing one floor-ed repeat count, the
+  whole-unit remainder is now spread across the first few rows (one extra
+  repeat each), so the painted rows sum to the strip's height exactly
+  whenever a full-row-count display is possible at all.
+
 ## [0.5.1] - 2026-10-24
 ### Added
 
