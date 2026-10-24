@@ -59,6 +59,16 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+### Added
+
+- `quadraui-py`: `QuiApp.__new__` takes an optional `render` keyword argument,
+  and a new `QuiApp.set_render(fn)` method sets one after construction. The
+  callback takes no arguments, runs once per frame, and returns a `dict`
+  mapping slot names to descriptor dicts (or `None` to clear a slot) — the
+  per-frame way for a `set_handler` callback to drive what the next frame
+  shows without re-entering `QuiApp` from inside the runner's borrow of it.
+  Existing `insert_*`/`run_*` call sites are unaffected.
+
 ## [0.5.1] - 2026-10-24
 ### Added
 

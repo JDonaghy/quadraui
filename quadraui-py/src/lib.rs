@@ -13,12 +13,27 @@
 //! dict, or synthesized from a key code); `step`/`run` drain that queue
 //! through [`PyAppLogic::handle`], releasing the GIL for the run loop itself
 //! and re-acquiring it only for the duration of each registered Python
-//! callback (`set_handler`/`set_tick_handler`). An exception raised inside a
-//! callback is captured and re-raised out of `step`/`run` rather than lost.
-//! A callback can also request exit without raising, by returning `False`
-//! (see [`reaction_from_return`]) — useful for a handler that wants to stop
-//! the loop as part of its normal control flow rather than via an
-//! exception.
+//! callback (`set_handler`/`set_tick_handler`/`set_render`). An exception
+//! raised inside a callback is captured and re-raised out of `step`/`run`
+//! rather than lost. A callback can also request exit without raising, by
+//! returning `False` (see [`reaction_from_return`]) — useful for a handler
+//! that wants to stop the loop as part of its normal control flow rather
+//! than via an exception.
+//!
+//! A registered event handler runs while the run loop holds the one
+//! mutable borrow of this app's [`PyAppLogic`] for the whole step, so it
+//! cannot call back into `QuiApp.insert_*`/`slot_clear` on the same
+//! instance — PyO3's runtime borrow guard rejects that second borrow. The
+//! `render` callback (`QuiApp(..., render=...)` or `set_render`) is the way
+//! around that: it takes no arguments and returns a `dict` mapping slot
+//! names (`"button"`, `"text_display"`, `"list"`, `"tree"`, `"data_table"`,
+//! `"tab_bar"`) to a descriptor `dict` (or `None`/omitted to draw nothing in
+//! that slot this frame). [`PyAppLogic::render`] calls it once per frame —
+//! the same frame the runner already repaints after every dispatched event
+//! or tick — so an app keeps its live state in a plain Python object the
+//! event handler mutates directly and the render callback reads back out,
+//! instead of mutating `QuiApp` itself. The render callback must not call
+//! back into `QuiApp` either; like the event handler, it only returns data.
 //!
 //! Every error this binding can raise itself (as opposed to one a
 //! registered Python callback raised, which passes through unchanged) is a
@@ -212,8 +227,10 @@ const SLOT_DATA_TABLE: i64 = 4;
 /// Slot id of the app's `TabBar` descriptor.
 const SLOT_TAB_BAR: i64 = 5;
 
-/// The [`AppLogic`] a [`QuiApp`] drives: a bag of optional descriptors,
-/// one per core primitive, painted top-to-bottom in fixed-height bands.
+/// The [`AppLogic`] a [`QuiApp`] drives: a bag of optional descriptors, one
+/// per core primitive, painted top-to-bottom in fixed-height bands — unless
+/// `render_callback` is registered, in which case each frame asks it for a
+/// fresh set of descriptors instead of reading these static fields.
 #[derive(Default)]
 struct PyAppLogic {
     button: Option<Button>,
@@ -229,6 +246,16 @@ struct PyAppLogic {
     /// Registered via `QuiApp::set_tick_handler`; called with no arguments
     /// whenever the runner advances with no event queued.
     on_tick: Option<Py<PyAny>>,
+    /// Registered via `QuiApp::set_render` / the `render` constructor
+    /// argument; called with no arguments once per frame and expected to
+    /// return a `dict` mapping slot names to a descriptor `dict` (or
+    /// `None`/omitted to draw nothing in that slot). When set, this
+    /// overrides the static `button`/`text_display`/.../`tab_bar` fields
+    /// above for every render — it is the one way an app's displayed state
+    /// can change after the runner has taken over the event loop, since the
+    /// event handler that mutates that state cannot itself re-borrow this
+    /// `QuiApp` to call `insert_*`.
+    render_callback: Option<Py<PyAny>>,
     /// Set by `handle`/`tick` when the Python callback they invoke raises.
     /// `step_once` takes this and re-raises it out of `step`/`run` instead
     /// of letting it vanish at the `AppLogic` boundary.
@@ -299,48 +326,22 @@ impl AppLogic for PyAppLogic {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let viewport = backend.viewport();
-        let mut y = 0.0_f32;
-        let mut next_band = |height: f32| -> Option<Rect> {
-            let remaining = viewport.height - y;
-            if remaining <= 0.0 {
-                return None;
-            }
-            let band_height = height.min(remaining);
-            let rect = Rect::new(0.0, y, viewport.width, band_height);
-            y += band_height;
-            Some(rect)
+        let Some(callback) = self.render_callback.as_ref() else {
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: self.button.as_ref(),
+                    text_display: self.text_display.as_ref(),
+                    list: self.list.as_ref(),
+                    tree: self.tree.as_ref(),
+                    data_table: self.data_table.as_ref(),
+                    tab_bar: self.tab_bar.as_ref(),
+                },
+            );
+            return;
         };
-
-        if let Some(button) = &self.button {
-            if let Some(rect) = next_band(3.0) {
-                backend.draw_button(rect, button);
-            }
-        }
-        if let Some(text_display) = &self.text_display {
-            if let Some(rect) = next_band(3.0) {
-                backend.draw_text_display(rect, text_display);
-            }
-        }
-        if let Some(list) = &self.list {
-            if let Some(rect) = next_band(4.0) {
-                backend.draw_list(rect, list);
-            }
-        }
-        if let Some(tree) = &self.tree {
-            if let Some(rect) = next_band(4.0) {
-                backend.draw_tree(rect, tree);
-            }
-        }
-        if let Some(data_table) = &self.data_table {
-            if let Some(rect) = next_band(4.0) {
-                backend.draw_data_table(rect, data_table, None);
-            }
-        }
-        if let Some(tab_bar) = &self.tab_bar {
-            if let Some(rect) = next_band(3.0) {
-                backend.draw_tab_bar_layout(rect, tab_bar, None);
-            }
+        if let Some(frame) = render_frame_from_callback(callback, &self.pending_error) {
+            draw_bands(backend, frame.as_refs());
         }
     }
 
@@ -380,6 +381,169 @@ impl AppLogic for PyAppLogic {
             }
         })
     }
+}
+
+/// One descriptor reference per slot, borrowed either from `PyAppLogic`'s
+/// static fields or from a [`RenderFrame`] just decoded from a render
+/// callback's return value — the one shape [`draw_bands`] paints from,
+/// regardless of which path produced it.
+struct RenderRefs<'a> {
+    button: Option<&'a Button>,
+    text_display: Option<&'a TextDisplay>,
+    list: Option<&'a ListView>,
+    tree: Option<&'a TreeView>,
+    data_table: Option<&'a DataTable>,
+    tab_bar: Option<&'a TabBar>,
+}
+
+/// Paints each present slot top-to-bottom in a fixed-height band, skipping
+/// any slot once the viewport runs out of room.
+fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>) {
+    let viewport = backend.viewport();
+    let mut y = 0.0_f32;
+    let mut next_band = |height: f32| -> Option<Rect> {
+        let remaining = viewport.height - y;
+        if remaining <= 0.0 {
+            return None;
+        }
+        let band_height = height.min(remaining);
+        let rect = Rect::new(0.0, y, viewport.width, band_height);
+        y += band_height;
+        Some(rect)
+    };
+
+    if let Some(button) = refs.button {
+        if let Some(rect) = next_band(3.0) {
+            backend.draw_button(rect, button);
+        }
+    }
+    if let Some(text_display) = refs.text_display {
+        if let Some(rect) = next_band(3.0) {
+            backend.draw_text_display(rect, text_display);
+        }
+    }
+    if let Some(list) = refs.list {
+        if let Some(rect) = next_band(4.0) {
+            backend.draw_list(rect, list);
+        }
+    }
+    if let Some(tree) = refs.tree {
+        if let Some(rect) = next_band(4.0) {
+            backend.draw_tree(rect, tree);
+        }
+    }
+    if let Some(data_table) = refs.data_table {
+        if let Some(rect) = next_band(4.0) {
+            backend.draw_data_table(rect, data_table, None);
+        }
+    }
+    if let Some(tab_bar) = refs.tab_bar {
+        if let Some(rect) = next_band(3.0) {
+            backend.draw_tab_bar_layout(rect, tab_bar, None);
+        }
+    }
+}
+
+/// Owned decode of a render callback's returned `dict` — one optional
+/// descriptor per slot, keyed by `"button"`, `"text_display"`, `"list"`,
+/// `"tree"`, `"data_table"`, and `"tab_bar"`.
+#[derive(Default)]
+struct RenderFrame {
+    button: Option<Button>,
+    text_display: Option<TextDisplay>,
+    list: Option<ListView>,
+    tree: Option<TreeView>,
+    data_table: Option<DataTable>,
+    tab_bar: Option<TabBar>,
+}
+
+impl RenderFrame {
+    fn as_refs(&self) -> RenderRefs<'_> {
+        RenderRefs {
+            button: self.button.as_ref(),
+            text_display: self.text_display.as_ref(),
+            list: self.list.as_ref(),
+            tree: self.tree.as_ref(),
+            data_table: self.data_table.as_ref(),
+            tab_bar: self.tab_bar.as_ref(),
+        }
+    }
+
+    /// Decodes a render callback's returned `dict`, raising
+    /// `InvalidDescriptorError` if it isn't a `dict`, if an entry isn't a
+    /// `dict`/`None`, or if an entry's shape doesn't match its slot's
+    /// descriptor type. An unrecognized key is ignored rather than
+    /// rejected, so a render callback built against a future slot set stays
+    /// forward-compatible with this one.
+    fn from_dict(dict: &Bound<'_, PyDict>) -> PyResult<Self> {
+        Ok(RenderFrame {
+            button: decode_slot_entry("render", dict, "button")?,
+            text_display: decode_slot_entry("render", dict, "text_display")?,
+            list: decode_slot_entry("render", dict, "list")?,
+            tree: decode_slot_entry("render", dict, "tree")?,
+            data_table: decode_slot_entry("render", dict, "data_table")?,
+            tab_bar: decode_slot_entry("render", dict, "tab_bar")?,
+        })
+    }
+}
+
+/// Reads and decodes one optional slot entry from a render callback's
+/// returned `dict`: a missing key or a `None` value both mean "draw nothing
+/// in this slot this frame"; anything else must be a `dict` decodable into
+/// `T`.
+fn decode_slot_entry<T: serde::de::DeserializeOwned>(
+    what: &str,
+    dict: &Bound<'_, PyDict>,
+    key: &str,
+) -> PyResult<Option<T>> {
+    match dict.get_item(key)? {
+        Some(value) if !value.is_none() => {
+            let value_dict = value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!("{what}: {key:?} must be a dict or None"))
+            })?;
+            Ok(Some(decode(what, value_dict)?))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Invokes a registered render callback with no arguments and decodes its
+/// returned `dict` into a [`RenderFrame`]. On any failure — the callback
+/// raising, returning something other than a `dict`, or an entry with the
+/// wrong shape — records the error in `pending_error` (so `step`/`run`
+/// re-raise it, matching how `handle`/`tick` report a callback failure) and
+/// returns `None`, leaving the caller to skip drawing this frame rather
+/// than paint a half-decoded one.
+fn render_frame_from_callback(
+    callback: &Py<PyAny>,
+    pending_error: &Rc<RefCell<Option<PyErr>>>,
+) -> Option<RenderFrame> {
+    Python::attach(|py| {
+        let result = match callback.call0(py) {
+            Ok(result) => result,
+            Err(err) => {
+                *pending_error.borrow_mut() = Some(err);
+                return None;
+            }
+        };
+        let bound = result.bind(py);
+        let dict = match bound.cast::<PyDict>() {
+            Ok(dict) => dict,
+            Err(_) => {
+                *pending_error.borrow_mut() = Some(InvalidDescriptorError::new_err(
+                    "render callback must return a dict",
+                ));
+                return None;
+            }
+        };
+        match RenderFrame::from_dict(dict) {
+            Ok(frame) => Some(frame),
+            Err(err) => {
+                *pending_error.borrow_mut() = Some(err);
+                None
+            }
+        }
+    })
 }
 
 /// Wraps [`PyAppLogic`] for `run_native`'s native runner loop (`GtkRunner`
@@ -576,10 +740,17 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 impl QuiApp {
     /// Creates a new headless app on a `width`x`height` cell grid.
     /// `on_event`, if given, is registered as the event handler — equivalent
-    /// to calling `set_handler` right after construction.
+    /// to calling `set_handler` right after construction. `render`, if
+    /// given, is registered as the render callback — equivalent to calling
+    /// `set_render` right after construction.
     #[new]
-    #[pyo3(signature = (width, height, on_event=None))]
-    fn new(width: u16, height: u16, on_event: Option<Py<PyAny>>) -> PyResult<Self> {
+    #[pyo3(signature = (width, height, on_event=None, render=None))]
+    fn new(
+        width: u16,
+        height: u16,
+        on_event: Option<Py<PyAny>>,
+        render: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
         if width == 0 || height == 0 {
             return Err(InvalidDimensionsError::new_err(
                 "width and height must both be non-zero",
@@ -587,6 +758,7 @@ impl QuiApp {
         }
         let app_logic = PyAppLogic {
             handler: on_event,
+            render_callback: render,
             ..PyAppLogic::default()
         };
         Ok(QuiApp {
@@ -610,6 +782,19 @@ impl QuiApp {
     /// previously registered tick handler.
     fn set_tick_handler(&mut self, handler: Py<PyAny>) {
         self.driver.app_mut().on_tick = Some(handler);
+    }
+
+    /// Registers `callback` as the no-argument render callback invoked once
+    /// per frame. It must return a `dict` mapping slot names ("button",
+    /// "text_display", "list", "tree", "data_table", "tab_bar") to a
+    /// descriptor `dict` (or `None`/omitted to draw nothing in that slot),
+    /// and must not call back into this `QuiApp` — it only returns data.
+    /// Replaces any previously registered render callback, and overrides
+    /// whatever `insert_*` put in the static slots for every frame from
+    /// here on; `slot_clear`/`insert_*` still work but their effect on what
+    /// is drawn is masked while a render callback is registered.
+    fn set_render(&mut self, callback: Py<PyAny>) {
+        self.driver.app_mut().render_callback = Some(callback);
     }
 
     /// Decodes `descriptor` into a `UiEvent` and queues it for the next
@@ -1454,7 +1639,7 @@ mod tests {
     #[test]
     fn guarded_catches_panic_then_poisons() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(10, 10, None).expect("valid dimensions");
+            let mut app = QuiApp::new(10, 10, None, None).expect("valid dimensions");
 
             let panicked: PyResult<()> = app.guarded(|_| panic!("boom"));
             let err = panicked.expect_err("a caught panic must surface as an error");
@@ -1498,7 +1683,7 @@ mod tests {
     #[test]
     fn tick_handler_returning_false_exits_without_raising() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(10, 10, None).expect("valid dimensions");
+            let mut app = QuiApp::new(10, 10, None, None).expect("valid dimensions");
             let on_tick = py
                 .eval(c"lambda: False", None, None)
                 .expect("lambda literal")
