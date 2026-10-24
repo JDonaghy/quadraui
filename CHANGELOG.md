@@ -74,6 +74,13 @@ only a push to `main` runs this workflow.
   uncatchable `GLib-GIO-CRITICAL` once it reaches `Application::builder()`.
   `quadraui-py`'s `run_native()` now raises a catchable `InvalidAppIdError`
   for this case instead.
+- `Editor::layout_with_options_and_reserve()` adds a `right_reserve_w`
+  parameter that shrinks the text area (and the horizontal scrollbar it
+  derives from) without moving the vertical scrollbar off the viewport's
+  true right edge, so a host can dock a fixed-width panel — a minimap
+  strip, say — between the buffer text and the scrollbar.
+  `layout_with_options_and_v_scrollbar_w()` is unchanged and now delegates
+  to it with `right_reserve_w: 0.0`.
 
 ### Fixed
 
