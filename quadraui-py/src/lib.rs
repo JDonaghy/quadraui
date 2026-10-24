@@ -28,20 +28,26 @@
 //! poisons the handle so every later call raises [`PoisonedError`] rather
 //! than touching a driver that may have panicked mid-mutation.
 //!
-//! When built with the `gtk` or `macos` feature, [`QuiApp::run_native`]
+//! When built with the `gtk`, `macos`, or `win` feature, [`QuiApp::run_native`]
 //! opens a real OS window instead of driving the headless driver: it moves
 //! this app's whole [`PyAppLogic`] (wrapped in [`NativeAppLogic`]) into a
-//! `quadraui::gtk::GtkRunner` or `quadraui::macos::MacRunner` respectively
-//! (`gtk` wins when both features are enabled), pumped from a loop that
-//! also releases the GIL for the duration of each wait and re-acquires it
-//! per callback, the same discipline `run` uses for the headless loop.
-//! `GtkRunner` calls `activate` directly instead of parsing the host
-//! process's own argv — the right entry point for an embedded interpreter,
-//! which has no `gio::Application`-shaped argv of its own to hand over.
-//! `MacRunner` requires its caller to already be on the main thread (a
-//! `MainThreadMarker` check `run_native` makes itself, raising
-//! [`NotOnMainThreadError`] rather than letting the AppKit call beneath it
-//! panic off-thread).
+//! `quadraui::gtk::GtkRunner`, `quadraui::macos::MacRunner`, or
+//! `quadraui::win::WinRunner` respectively (`gtk` wins over `macos`, and
+//! both win over `win`, when more than one is enabled on the same build —
+//! only one is ever enabled for real, since each targets a different OS),
+//! pumped from a loop that also releases the GIL for the duration of each
+//! wait and re-acquires it per callback, the same discipline `run` uses for
+//! the headless loop. `GtkRunner` calls `activate` directly instead of
+//! parsing the host process's own argv — the right entry point for an
+//! embedded interpreter, which has no `gio::Application`-shaped argv of its
+//! own to hand over. `MacRunner` requires its caller to already be on the
+//! main thread (a `MainThreadMarker` check `run_native` makes itself,
+//! raising [`NotOnMainThreadError`] rather than letting the AppKit call
+//! beneath it panic off-thread). `WinRunner::new_with`/`pump` need no
+//! equivalent preflight — Win32 has no display/main-thread precondition
+//! this binding has to check up front — but both are `unsafe`, with a
+//! single-thread construct-and-step contract `run_native`'s pump loop
+//! satisfies simply by doing both inside the same `py.detach` closure.
 //!
 //! [`QuiApp::run_tui`] is `run_native`'s terminal counterpart: it moves this
 //! app's whole [`PyAppLogic`] into a real `quadraui::tui::TuiRunner`, which
@@ -428,9 +434,23 @@ impl AppLogic for PyAppLogic {
 /// build for any `target_os`, not just an Apple one. Only the
 /// `run_native` branch that constructs it is Apple-only, which is why the
 /// non-Apple configuration needs the `dead_code` allowance below.
-#[cfg(any(feature = "gtk", feature = "macos"))]
+///
+/// `win` needs no `exit_requested` field either, for the same reason `gtk`
+/// doesn't: `win::run::dispatch_with`/`tick` already call `DestroyWindow`
+/// directly for *any* `Reaction::Exit`, not just one reached through
+/// `WindowClose` — there is no AppKit-style `[NSApp terminate:]` for this
+/// wrapper to head off.
+#[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 #[cfg_attr(
-    all(feature = "macos", not(feature = "gtk"), not(target_os = "macos")),
+    any(
+        all(feature = "macos", not(feature = "gtk"), not(target_os = "macos")),
+        all(
+            feature = "win",
+            not(feature = "gtk"),
+            not(feature = "macos"),
+            not(target_os = "windows")
+        )
+    ),
     allow(dead_code)
 )]
 struct NativeAppLogic {
@@ -438,13 +458,14 @@ struct NativeAppLogic {
     /// Set by `handle`/`tick` when a non-`WindowClose` `Reaction::Exit`
     /// is intercepted; `run_native`'s pump loop breaks once this is set.
     /// Only present on the `macos` feature without `gtk` also enabled —
-    /// GTK's own `apply_reaction` already handles `Reaction::Exit` from
-    /// any event without this wrapper's help.
+    /// GTK's own `apply_reaction` and `win`'s `dispatch_with`/`tick`
+    /// already handle `Reaction::Exit` from any event without this
+    /// wrapper's help.
     #[cfg(all(feature = "macos", not(feature = "gtk")))]
     exit_requested: Rc<Cell<bool>>,
 }
 
-#[cfg(any(feature = "gtk", feature = "macos"))]
+#[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 impl AppLogic for NativeAppLogic {
     type AreaId = ();
 
@@ -504,7 +525,7 @@ struct QuiApp {
     /// native window. A later `run_native` call on the same `QuiApp` raises
     /// `NativeAlreadyRunError` instead of silently opening a window backed
     /// by the empty `PyAppLogic` the first call left behind.
-    #[cfg(any(feature = "gtk", feature = "macos"))]
+    #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
     native_consumed: bool,
 }
 
@@ -571,7 +592,7 @@ impl QuiApp {
             driver: TuiDriver::new(app_logic, width, height),
             pending_events: VecDeque::new(),
             poisoned: false,
-            #[cfg(any(feature = "gtk", feature = "macos"))]
+            #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
             native_consumed: false,
         })
     }
@@ -659,30 +680,40 @@ impl QuiApp {
     }
 
     /// Opens a real OS window (via `quadraui::gtk::GtkRunner` on the `gtk`
-    /// feature, `quadraui::macos::MacRunner` on the `macos` feature) showing
-    /// this app's current descriptors, and blocks the calling thread until
-    /// that window closes. `title`, if given, overrides the generic default
-    /// window title on both backends. `app_id` and `icon_name` set the
-    /// window's `gio::Application` id and icon on GTK, falling back to
-    /// `RunConfig`'s own defaults when omitted; `single_instance` defaults
-    /// to `False` on GTK, which sets `ApplicationFlags::NON_UNIQUE` so a
-    /// concurrent second `run_native()` call — or any other quadraui
-    /// `gtk_*` process sharing this `app_id` — always gets its own window.
-    /// Passing `True` only drops that flag; unlike `quadraui::gtk::run`/
-    /// `run_with`, `GtkRunner` (what `run_native` is built on) never wires
-    /// `Application::connect_open` and never calls `Application::run()`,
-    /// so there is no argv/open forwarding here for GLib's own D-Bus dedup
-    /// to deliver to — a second launch sharing this `app_id` with
-    /// `single_instance=True` is absorbed by the first instance with no
-    /// window and no event, not GTK's usual "bring the existing window
-    /// forward" behaviour. `MacRunner` has no `gio::Application`-style id or
-    /// single-instance concept, and no equivalent of GTK's `icon_name` —
-    /// its `RunConfig::app_icon` takes a `quadraui` `ImageSource`, not an
-    /// icon-theme name a string could be forwarded to — so on the `macos`
-    /// feature (with `gtk` not also enabled) `app_id`, `icon_name` and
-    /// `single_instance` are accepted but silently ignored. Only present when this extension
-    /// is built with the `gtk` or `macos` feature; if both are enabled in
-    /// the same build, `gtk` wins and the `macos` branch below never runs.
+    /// feature, `quadraui::macos::MacRunner` on the `macos` feature,
+    /// `quadraui::win::WinRunner` on the `win` feature) showing this app's
+    /// current descriptors, and blocks the calling thread until that window
+    /// closes. `title`, if given, overrides the generic default window title
+    /// on all three backends. `app_id` and `icon_name` set the window's
+    /// `gio::Application` id and icon on GTK, falling back to `RunConfig`'s
+    /// own defaults when omitted; `single_instance` defaults to `False` on
+    /// GTK, which sets `ApplicationFlags::NON_UNIQUE` so a concurrent second
+    /// `run_native()` call — or any other quadraui `gtk_*` process sharing
+    /// this `app_id` — always gets its own window. Passing `True` only drops
+    /// that flag; unlike `quadraui::gtk::run`/`run_with`, `GtkRunner` (what
+    /// `run_native` is built on) never wires `Application::connect_open` and
+    /// never calls `Application::run()`, so there is no argv/open forwarding
+    /// here for GLib's own D-Bus dedup to deliver to — a second launch
+    /// sharing this `app_id` with `single_instance=True` is absorbed by the
+    /// first instance with no window and no event, not GTK's usual "bring
+    /// the existing window forward" behaviour. `MacRunner` has no
+    /// `gio::Application`-style id or single-instance concept, and no
+    /// equivalent of GTK's `icon_name` — its `RunConfig::app_icon` takes a
+    /// `quadraui` `ImageSource`, not an icon-theme name a string could be
+    /// forwarded to — so on the `macos` feature (with `gtk` not also
+    /// enabled) `app_id`, `icon_name` and `single_instance` are accepted but
+    /// silently ignored. `WinRunner` falls in between: it has no `app_id`
+    /// concept and no equivalent of GTK's `icon_name` either (its own
+    /// `RunConfig::with_app_icon` takes an `ImageSource`, same as macOS), so
+    /// on the `win` feature (with neither `gtk` nor `macos` also enabled)
+    /// `app_id` and `icon_name` are accepted but silently ignored — but it
+    /// *does* support `single_instance`, via `RunConfig::with_single_instance`,
+    /// forwarding a second launch's `argv` to the first instance's window via
+    /// `WM_COPYDATA` instead of opening a second window. Only present when
+    /// this extension is built with the `gtk`, `macos`, or `win` feature; if
+    /// more than one is enabled in the same build, `gtk` wins over `macos`,
+    /// and both win over `win` — the branches below never run for whichever
+    /// features lose that precedence.
     ///
     /// Raises `NativeAlreadyRunError` if this `QuiApp` already ran
     /// `run_native` once before — see that exception's doc for why a
@@ -699,9 +730,15 @@ impl QuiApp {
     /// letting GLib's own assertion trip an uncatchable `GLib-GIO-CRITICAL`
     /// once it reaches `Application::builder()`. Raises `InternalError` if
     /// this extension was built with the `macos` feature for a non-Apple
-    /// `target_os` — a build/platform mismatch no thread or argument the
-    /// caller picks can satisfy, since there is no `quadraui::macos` runner
-    /// compiled into such a build at all.
+    /// `target_os`, or with the `win` feature for a non-Windows `target_os`
+    /// — a build/platform mismatch no thread or argument the caller picks
+    /// can satisfy, since there is no `quadraui::macos`/`quadraui::win`
+    /// runner compiled into such a build at all. Also raises `InternalError`
+    /// on the `win` feature if `WinRunner::new_with`/`pump` itself reports a
+    /// Win32 failure (e.g. window-class registration) — wrapping whatever
+    /// `windows::core::Error` message it carries, since there is no more
+    /// specific exception this binding can distinguish it into up front the
+    /// way the `gtk`/`macos` preflight checks above can.
     ///
     /// On GTK this routes through `GtkRunner` rather than
     /// `quadraui::gtk::run`/`run_with`, which own the whole process and
@@ -728,13 +765,18 @@ impl QuiApp {
     /// rather than leaving it open with a dead event loop behind it;
     /// `MacRunner` has no equivalent teardown call, so on macOS a Ctrl-C
     /// simply stops the pump loop and lets `runner` drop, leaving the
-    /// window itself open until the process exits. `handle`/`tick`
+    /// window itself open until the process exits. `WinRunner` falls
+    /// between the two: it has no `request_exit()` either, so a Ctrl-C on
+    /// Windows also just stops the pump loop and lets `runner` drop — but
+    /// its `Drop` impl calls `DestroyWindow` for a window that's still
+    /// open, so the window still closes, just as a side effect of the drop
+    /// rather than an explicit teardown call before it. `handle`/`tick`
     /// re-acquire the GIL per callback via `Python::attach`, exactly as
     /// they do for the headless path.
     ///
     /// A `Reaction::Exit` returned for any event other than `WindowClose`
     /// (e.g. a handler raising, or explicitly asking to exit, in response
-    /// to a key press) returns control to this call on both backends.
+    /// to a key press) returns control to this call on every backend.
     /// `GtkRunner::request_exit()` closes the window and returns control
     /// directly. On macOS, [`NativeAppLogic`] intercepts that `Reaction::Exit`
     /// before it would otherwise reach `apply_reaction`'s own `Exit` branch
@@ -742,10 +784,17 @@ impl QuiApp {
     /// swaps it for `Reaction::Continue`, and flags the pump loop below to
     /// break on its next iteration — so the window is left open (same as a
     /// Ctrl-C, above) rather than torn down, but `run_native` still returns
-    /// and any pending exception is still re-raised. `WindowClose` itself
-    /// always closes the window on either backend, since [`NativeAppLogic`]
-    /// forces that one case through `evaluate_window_should_close`/
-    /// `request_exit` rather than the general `Reaction::Exit` path.
+    /// and any pending exception is still re-raised. On the `win` feature no
+    /// such interception is needed: `win::run::dispatch_with`/`tick` already
+    /// call `DestroyWindow` directly for *any* `Reaction::Exit`, the same way
+    /// GTK's own `apply_reaction` does, so the window closes and
+    /// `WinRunner::pump` reports `StepOutcome::Exited` on the very next call,
+    /// breaking the loop below with no extra flag required. `WindowClose`
+    /// itself always closes the window on every backend, since
+    /// [`NativeAppLogic`] forces that one case through
+    /// `evaluate_window_should_close`/`request_exit`/`DestroyWindow` rather
+    /// than leaving it to the general `Reaction::Exit` path (which the
+    /// registered handler could otherwise veto by returning anything else).
     ///
     /// That `WindowClose` case returning control to Python (rather than
     /// AppKit terminating the interpreter) is a *timing* property worth
@@ -769,7 +818,7 @@ impl QuiApp {
     /// Re-raises whatever exception a registered handler/tick callback
     /// raised while the window was open, or a `KeyboardInterrupt` from a
     /// Ctrl-C the pump loop observed.
-    #[cfg(any(feature = "gtk", feature = "macos"))]
+    #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
     #[pyo3(signature = (title=None, app_id=None, icon_name=None, single_instance=false))]
     fn run_native(
         &mut self,
@@ -961,6 +1010,95 @@ impl QuiApp {
                 Err(InternalError::new_err(
                     "run_native with the `macos` feature requires building for a \
                     macOS target_os; this binary was built for a different platform",
+                ))
+            }
+
+            #[cfg(all(
+                feature = "win",
+                target_os = "windows",
+                not(feature = "gtk"),
+                not(feature = "macos")
+            ))]
+            {
+                // `app_id`/`icon_name` have no Windows analog
+                // (`RunConfig::with_app_icon` takes an `ImageSource`, not an
+                // icon-theme name, and Windows has no GTK-style
+                // application-id concept); accepted for signature parity
+                // with the `gtk` build and silently ignored here.
+                // `single_instance` *is* honored, via
+                // `RunConfig::with_single_instance`.
+                let _ = (&app_id, &icon_name);
+
+                app.native_consumed = true;
+
+                let app_logic = std::mem::take(app.driver.app_mut());
+                let native_error = app_logic.pending_error.clone();
+                let loop_error = app_logic.pending_error.clone();
+                let defaults = quadraui::win::RunConfig::default();
+                let config = quadraui::win::RunConfig::new(title.unwrap_or(defaults.title))
+                    .with_single_instance(single_instance);
+                let wrapped = AssertUngil((app_logic, config, loop_error));
+                let pump_result: Result<(), String> = py.detach(move || {
+                    let wrapped = wrapped;
+                    let (app_logic, config, loop_error) = wrapped.0;
+                    // SAFETY: `new_with`/`pump` require constructing and
+                    // stepping the runner on the same OS thread for its
+                    // whole lifetime, with no other window on that thread —
+                    // exactly what this `detach` closure does: `detach`
+                    // keeps execution on the calling thread, and nothing
+                    // else on it touches a `WinRunner` for the closure's
+                    // duration.
+                    let mut runner = unsafe {
+                        quadraui::win::WinRunner::new_with(
+                            NativeAppLogic { inner: app_logic },
+                            &config,
+                        )
+                    }
+                    .map_err(|err| err.to_string())?;
+                    let poll_interval = std::time::Duration::from_millis(50);
+                    loop {
+                        let outcome = runner.pump(poll_interval).map_err(|err| err.to_string())?;
+                        if outcome == quadraui::win::StepOutcome::Exited {
+                            break;
+                        }
+                        // Same signal-check discipline as the `gtk`/`macos`
+                        // loops above. `WinRunner` has no `request_exit()`
+                        // equivalent, but its `Drop` calls `DestroyWindow`
+                        // if the window is still open, so a Ctrl-C here
+                        // just stops pumping and lets `runner` drop, same
+                        // as the `macos` branch.
+                        if let Err(err) = Python::attach(|py| py.check_signals()) {
+                            *loop_error.borrow_mut() = Some(err);
+                            break;
+                        }
+                    }
+                    Ok(())
+                });
+                if let Some(err) = native_error.borrow_mut().take() {
+                    return Err(err);
+                }
+                pump_result.map_err(|err| InternalError::new_err(format!("run_native: {err}")))
+            }
+
+            // Reachable only when the `win` feature is enabled on a
+            // non-Windows `target_os` — e.g. a `cargo check -p quadraui-py
+            // --features win` typecheck run on Linux or macOS.
+            // `quadraui::win::WinRunner` is itself gated on
+            // `target_os = "windows"`, so there is no runner to hand off to
+            // here. Raises `InternalError` rather than anything more
+            // specific since this is a build/platform mismatch no argument
+            // the caller picks could satisfy.
+            #[cfg(all(
+                feature = "win",
+                not(feature = "gtk"),
+                not(feature = "macos"),
+                not(target_os = "windows")
+            ))]
+            {
+                let _ = (py, &app_id, &icon_name, single_instance, &title);
+                Err(InternalError::new_err(
+                    "run_native with the `win` feature requires building for a \
+                    Windows target_os; this binary was built for a different platform",
                 ))
             }
         })
@@ -1265,10 +1403,11 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     m.add("InvalidAppIdError", py.get_type::<InvalidAppIdError>())?;
     // Which native *feature* (if any) this build was compiled with — `gtk`
-    // wins when both are enabled (see `run_native`'s doc). This is a build
-    // configuration report, not a promise that a window can actually open:
-    // `"macos"` is reported by a `--features macos` build for any
-    // `target_os`, including the Linux/Windows typecheck builds where
+    // wins over `macos`, and both win over `win`, when more than one is
+    // enabled (see `run_native`'s doc). This is a build configuration
+    // report, not a promise that a window can actually open: `"macos"` (or
+    // `"win"`) is reported by a `--features macos` (or `--features win`)
+    // build for any `target_os`, including the Linux typecheck builds where
     // `run_native` can only raise `InternalError` for the platform
     // mismatch. Exists so a test/tool can tell the builds apart without the
     // backend-specific side effects `run_native` itself would have (opening
@@ -1278,7 +1417,9 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("_NATIVE_BACKEND", "gtk")?;
     #[cfg(all(feature = "macos", not(feature = "gtk")))]
     m.add("_NATIVE_BACKEND", "macos")?;
-    #[cfg(not(any(feature = "gtk", feature = "macos")))]
+    #[cfg(all(feature = "win", not(feature = "gtk"), not(feature = "macos")))]
+    m.add("_NATIVE_BACKEND", "win")?;
+    #[cfg(not(any(feature = "gtk", feature = "macos", feature = "win")))]
     m.add("_NATIVE_BACKEND", py.None())?;
     Ok(())
 }
@@ -1355,10 +1496,11 @@ mod tests {
     }
 
     /// `_NATIVE_BACKEND` reports exactly one native-feature name per build,
-    /// picking `gtk` when both are enabled (the same precedence
-    /// `run_native`'s own `#[cfg]` branches use) -- this is what lets
-    /// `test_run_native.py`'s skip guard and this test itself tell a `gtk`
-    /// build apart from a `macos` one without opening a real window.
+    /// picking `gtk` over `macos` over `win` when more than one is enabled
+    /// (the same precedence `run_native`'s own `#[cfg]` branches use) --
+    /// this is what lets `test_run_native.py`'s skip guard and this test
+    /// itself tell a `gtk`/`macos`/`win` build apart from one another
+    /// without opening a real window.
     #[test]
     fn native_backend_attribute_matches_enabled_feature() {
         Python::attach(|py| {
@@ -1374,7 +1516,9 @@ mod tests {
             assert_eq!(backend, Some("gtk".to_string()));
             #[cfg(all(feature = "macos", not(feature = "gtk")))]
             assert_eq!(backend, Some("macos".to_string()));
-            #[cfg(not(any(feature = "gtk", feature = "macos")))]
+            #[cfg(all(feature = "win", not(feature = "gtk"), not(feature = "macos")))]
+            assert_eq!(backend, Some("win".to_string()));
+            #[cfg(not(any(feature = "gtk", feature = "macos", feature = "win")))]
             assert_eq!(backend, None);
         });
     }
