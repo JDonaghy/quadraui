@@ -59,14 +59,16 @@ pub struct EditorPaintResult {
 ///
 /// `right_reserve` is a column count (in `buf` cells) trimmed off the
 /// *trailing* edge of `area` before the gutter/text/scrollbar layout is
-/// derived. Background fill, per-row text, selection overlays and the
-/// horizontal scrollbar track all stop short of this reserved strip,
-/// leaving it untouched for a caller to paint something else into (a
-/// minimap strip, for example) without that content being overwritten
-/// on the next repaint. The vertical scrollbar still hugs the true
-/// right edge of `area` — unaffected by the reserve — so the reserved
-/// strip ends up sandwiched between the text and the scrollbar, not
-/// behind it. Pass `0` to get the previous, unreserved behavior.
+/// derived. Background fill, per-row text, selection overlays, the
+/// block cursor, secondary cursors, AI ghost text and the horizontal
+/// scrollbar track all stop short of this reserved strip, leaving it
+/// untouched for a caller to paint something else into (a minimap
+/// strip, for example) without that content being overwritten on the
+/// next repaint. The vertical scrollbar still hugs the true right edge
+/// of `area` — unaffected by the reserve — so the reserved strip ends
+/// up sandwiched between the text and the scrollbar, not behind it.
+/// Pass `0` for the common case: no reserved strip, paint stops short
+/// of only the vertical scrollbar column (when one is present).
 pub fn draw_editor(
     buf: &mut Buffer,
     area: Rect,
@@ -93,8 +95,8 @@ pub fn draw_editor(
     let default_fg = qc(theme.foreground);
     let gutter_w = editor.gutter_char_width as u16;
     let viewport_lines = area.height as usize;
-    let has_scrollbar =
-        editor.total_lines > viewport_lines && area.width > gutter_w + right_reserve + 1;
+    let has_scrollbar = editor.total_lines > viewport_lines
+        && area.width > gutter_w.saturating_add(right_reserve).saturating_add(1);
     let viewport_cols = (area.width as usize).saturating_sub(
         gutter_w as usize + right_reserve as usize + if has_scrollbar { 1 } else { 0 },
     );
@@ -442,6 +444,12 @@ pub fn draw_editor(
         }
     }
 
+    // Exclusive right bound (in screen columns) of the text region the
+    // cursor / ghost text / secondary cursors are allowed to paint into:
+    // the gutter plus `text_width`, i.e. up to but not including the
+    // reserved trailing strip and the vertical scrollbar column.
+    let text_right = area.x + gutter_w + text_width;
+
     // ── Cursor ──────────────────────────────────────────────────
     if let Some(cursor) = &editor.cursor {
         let cursor_screen_y = area.y + cursor.pos.view_line as u16;
@@ -457,7 +465,7 @@ pub fn draw_editor(
         let buf_area = buf.area;
         match cursor.shape {
             CursorShape::Block => {
-                if cursor_screen_x < buf_area.x + buf_area.width
+                if cursor_screen_x < text_right.min(buf_area.x + buf_area.width)
                     && cursor_screen_y < buf_area.y + buf_area.height
                 {
                     let cell = &mut buf[(cursor_screen_x, cursor_screen_y)];
@@ -481,7 +489,7 @@ pub fn draw_editor(
                 let ghost_fg = qc(theme.ghost_text_fg);
                 for (i, ch) in ghost.chars().enumerate() {
                     let gx = ghost_start_x + i as u16;
-                    if gx >= area.x + area.width {
+                    if gx >= text_right {
                         break;
                     }
                     set_cell(buf, gx, ghost_screen_y, ch, ghost_fg, window_bg);
@@ -510,7 +518,7 @@ pub fn draw_editor(
             char_col_to_visual(raw, col, editor.tabstop).saturating_sub(editor.scroll_left) as u16;
         let sx = area.x + gutter_w + vis_col;
         let buf_area = buf.area;
-        if sx < buf_area.x + buf_area.width && sy < buf_area.y + buf_area.height {
+        if sx < text_right.min(buf_area.x + buf_area.width) && sy < buf_area.y + buf_area.height {
             let cell = &mut buf[(sx, sy)];
             cell.set_bg(cursor_color).set_fg(bg_color);
         }
