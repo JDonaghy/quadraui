@@ -22,9 +22,17 @@
 //! boundary, raised as [`PanicError`] instead of unwinding into Python, and
 //! poisons the handle so every later call raises [`PoisonedError`] rather
 //! than touching a driver that may have panicked mid-mutation.
+//!
+//! When built with the `gtk` feature, [`QuiApp::run_native`] opens a real
+//! OS window instead of driving the headless driver: it moves this app's
+//! whole [`PyAppLogic`] into `quadraui::gtk::run_with`, which also releases
+//! the GIL for its event loop and re-acquires it per callback, the same
+//! discipline `run` uses for the headless loop.
 use std::any::Any;
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::panic::{self, AssertUnwindSafe};
+use std::rc::Rc;
 
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
@@ -145,7 +153,13 @@ struct PyAppLogic {
     /// Set by `handle`/`tick` when the Python callback they invoke raises.
     /// `step_once` takes this and re-raises it out of `step`/`run` instead
     /// of letting it vanish at the `AppLogic` boundary.
-    pending_error: Option<PyErr>,
+    ///
+    /// `Rc<RefCell<_>>` rather than a bare `Option<PyErr>` so `run_native`
+    /// can keep reading it after handing this whole `PyAppLogic` by value
+    /// to `quadraui::gtk::run_with` — it clones the `Rc` first, and that
+    /// clone keeps observing writes `handle`/`tick` make to the moved
+    /// original for as long as the native loop runs.
+    pending_error: Rc<RefCell<Option<PyErr>>>,
 }
 
 impl PyAppLogic {
@@ -245,7 +259,7 @@ impl AppLogic for PyAppLogic {
             let payload = match pythonize::pythonize(py, &event) {
                 Ok(value) => value,
                 Err(err) => {
-                    self.pending_error = Some(InternalError::new_err(format!(
+                    *self.pending_error.borrow_mut() = Some(InternalError::new_err(format!(
                         "failed to pythonize event: {err}"
                     )));
                     return Reaction::Exit;
@@ -254,7 +268,7 @@ impl AppLogic for PyAppLogic {
             match handler.call1(py, (payload,)) {
                 Ok(_) => Reaction::Continue,
                 Err(err) => {
-                    self.pending_error = Some(err);
+                    *self.pending_error.borrow_mut() = Some(err);
                     Reaction::Exit
                 }
             }
@@ -268,7 +282,7 @@ impl AppLogic for PyAppLogic {
         Python::attach(|py| match on_tick.call0(py) {
             Ok(_) => Reaction::Continue,
             Err(err) => {
-                self.pending_error = Some(err);
+                *self.pending_error.borrow_mut() = Some(err);
                 Reaction::Exit
             }
         })
@@ -305,15 +319,19 @@ struct QuiApp {
 ///
 /// `detach` only suspends *this* thread's GIL attachment so other Python
 /// threads can run concurrently; it never migrates `T` onto a different OS
-/// thread. `QuiApp` (the only type this wraps) is `#[pyclass(unsendable)]`,
-/// so pyo3 already panics at runtime before any other thread can reach the
-/// same instance — nothing can race the detached closure for access to the
-/// wrapped value.
+/// thread, and the closure given to it runs to completion before `detach`
+/// returns — so nothing outside the closure can observe or race the
+/// wrapped value while it runs. `run` wraps `&mut QuiApp` (itself
+/// `#[pyclass(unsendable)]`, pinned to one Python thread, so no other
+/// thread could reach the same instance even if it tried); `run_native`
+/// wraps an owned `(PyAppLogic, RunConfig)` that `run_native` has already
+/// moved out of its `QuiApp` — in both cases the value lives only on this
+/// one thread for the closure's duration.
 struct AssertUngil<T>(T);
 
-// SAFETY: see the type's doc comment — `QuiApp` is pinned to one Python
-// thread by `unsendable`, and `detach` keeps execution on that same thread,
-// so no concurrent access to the wrapped `!Send` value can occur.
+// SAFETY: see the type's doc comment — `detach` keeps execution on the
+// calling OS thread for the closure's whole lifetime, so no concurrent
+// access to the wrapped `!Send` value can occur.
 unsafe impl<T> Send for AssertUngil<T> {}
 
 /// Decodes a Python `dict` into `T` via `pythonize`, raising
@@ -441,6 +459,60 @@ impl QuiApp {
             }
             Ok(running)
         })
+    }
+
+    /// Opens a real OS window (via `quadraui::gtk::run_with`) showing this
+    /// app's current descriptors, and blocks the calling thread until that
+    /// window closes. `title`, if given, overrides the generic default
+    /// window title. Only present when this extension is built with the
+    /// `gtk` feature.
+    ///
+    /// Moves this app's whole [`PyAppLogic`] — every inserted descriptor
+    /// plus both registered handlers — out of the headless driver this
+    /// `QuiApp` wraps and into the native runner, which takes it by value.
+    /// The GIL is released for the duration of the native event loop
+    /// (mirroring [`Self::run`]'s `py.detach`); `handle`/`tick` re-acquire
+    /// it per callback via `Python::attach`, exactly as they do for the
+    /// headless path — neither method needed a single change to drive a
+    /// native backend instead of the TUI one, since both only ever see a
+    /// `&mut dyn Backend`.
+    ///
+    /// After the window closes, the headless driver is left holding an
+    /// empty `PyAppLogic` (nothing to hand back — `gtk::run_with` owns the
+    /// one this call moved out for as long as the window was open):
+    /// `step`/`run`/`screen` still work, they just have nothing left to
+    /// paint or dispatch to until the caller inserts descriptors/handlers
+    /// again. Re-raises whatever exception a registered handler/tick
+    /// callback raised while the window was open.
+    #[cfg(feature = "gtk")]
+    #[pyo3(signature = (title=None))]
+    fn run_native(&mut self, py: Python<'_>, title: Option<String>) -> PyResult<()> {
+        if self.poisoned {
+            return Err(PoisonedError::new_err(
+                "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
+            ));
+        }
+        let app_logic = std::mem::take(self.driver.app_mut());
+        let native_error = app_logic.pending_error.clone();
+        let config = match title {
+            Some(title) => quadraui::gtk::RunConfig::new("org.quadraui.app", title),
+            None => quadraui::gtk::RunConfig::default(),
+        };
+        let wrapped = AssertUngil((app_logic, config));
+        py.detach(move || {
+            // Bind the whole `wrapped` first so the closure captures the
+            // `AssertUngil`-wrapped value itself rather than `wrapped.0`
+            // directly — 2021-edition disjoint capture would otherwise
+            // capture just the field, which isn't `Send` on its own and
+            // defeats the point of the wrapper.
+            let wrapped = wrapped;
+            let (app_logic, config) = wrapped.0;
+            quadraui::gtk::run_with(app_logic, config);
+        });
+        if let Some(err) = native_error.borrow_mut().take() {
+            return Err(err);
+        }
+        Ok(())
     }
 
     /// Inserts a `Button` descriptor from a Python dict, returning its slot
@@ -623,7 +695,7 @@ impl QuiApp {
                 self.driver.tick();
             }
         }
-        if let Some(err) = self.driver.app_mut().pending_error.take() {
+        if let Some(err) = self.driver.app_mut().pending_error.borrow_mut().take() {
             return Err(err);
         }
         Ok(!self.driver.exited())
