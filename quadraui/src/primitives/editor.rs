@@ -970,6 +970,9 @@ impl Editor {
     /// GUI hosts normally reach this through
     /// [`crate::Backend::set_editor_v_scrollbar_width`] rather than
     /// calling it directly.
+    ///
+    /// Equivalent to [`Self::layout_with_options_and_reserve`] with
+    /// `right_reserve_w: 0.0`.
     pub fn layout_with_options_and_v_scrollbar_w(
         &self,
         viewport: Rect,
@@ -978,6 +981,46 @@ impl Editor {
         options: EditorPaintOptions,
         v_scrollbar_w: Option<f32>,
     ) -> EditorLayout {
+        self.layout_with_options_and_reserve(
+            viewport,
+            cell_width,
+            line_height,
+            options,
+            v_scrollbar_w,
+            0.0,
+        )
+    }
+
+    /// [`Self::layout_with_options_and_v_scrollbar_w`], plus a fixed-width
+    /// strip a caller can reserve between the text area and the vertical
+    /// scrollbar.
+    ///
+    /// Every other tier of `layout*` derives `text_w`/`visible_cols` and
+    /// the scrollbar bounds from `viewport.width` alone, so a host that
+    /// wants to dock something between the buffer text and the scrollbar
+    /// — a minimap strip, for example — has no way to shrink the text
+    /// area without also shifting the vertical scrollbar off the
+    /// viewport's true right edge. `right_reserve_w` (in the same pixel
+    /// units as `cell_width`/`line_height`) is subtracted from the text
+    /// area only: `text_bounds`/`h_scrollbar_bounds` narrow by it, while
+    /// `v_scrollbar_bounds` keeps hugging `viewport.x + viewport.width`.
+    /// The reserved strip itself isn't a layout field — a caller derives
+    /// its bounds as the gap between `text_bounds`'s right edge and
+    /// `v_scrollbar_bounds`'s left edge (or the viewport's right edge
+    /// when there's no vertical scrollbar). `right_reserve_w: 0.0`
+    /// reproduces [`Self::layout_with_options_and_v_scrollbar_w`] exactly.
+    ///
+    /// A negative `right_reserve_w` is clamped to `0.0`.
+    pub fn layout_with_options_and_reserve(
+        &self,
+        viewport: Rect,
+        cell_width: f32,
+        line_height: f32,
+        options: EditorPaintOptions,
+        v_scrollbar_w: Option<f32>,
+        right_reserve_w: f32,
+    ) -> EditorLayout {
+        let right_reserve_w = right_reserve_w.max(0.0);
         let gutter_w = self.gutter_char_width as f32 * cell_width;
         let visible_lines = if line_height > 0.0 {
             (viewport.height / line_height).floor() as usize
@@ -986,14 +1029,14 @@ impl Editor {
         };
         let has_v_scrollbar = !options.suppress_v_scrollbar
             && self.total_lines > visible_lines
-            && viewport.width > gutter_w + cell_width;
+            && viewport.width > gutter_w + cell_width + right_reserve_w;
         let v_scrollbar_w = if has_v_scrollbar {
             v_scrollbar_w.unwrap_or(cell_width)
         } else {
             0.0
         };
 
-        let text_w = (viewport.width - gutter_w - v_scrollbar_w).max(0.0);
+        let text_w = (viewport.width - gutter_w - v_scrollbar_w - right_reserve_w).max(0.0);
         let visible_cols = if cell_width > 0.0 {
             (text_w / cell_width).floor() as usize
         } else {
@@ -1309,6 +1352,93 @@ mod tests {
         );
         assert!(l.v_scrollbar_bounds.is_none());
         assert_eq!(l.text_bounds.width, 76.0);
+    }
+
+    /// `right_reserve_w` narrows the text area and the horizontal
+    /// scrollbar by exactly the reserve, while the vertical scrollbar
+    /// stays pinned to the viewport's true right edge — the `text |
+    /// reserved strip | scrollbar` layout a minimap-beside-editor host
+    /// needs. `right_reserve_w: 0.0` must reproduce
+    /// `layout_with_options_and_v_scrollbar_w` exactly.
+    #[test]
+    fn editor_layout_reserve_narrows_text_keeps_scrollbar_flush() {
+        let ed = make_editor(4, 100, 40);
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+
+        let zero_reserve = ed.layout_with_options_and_reserve(
+            vp,
+            1.0,
+            1.0,
+            EditorPaintOptions::default(),
+            Some(14.0),
+            0.0,
+        );
+        let baseline = ed.layout_with_options_and_v_scrollbar_w(
+            vp,
+            1.0,
+            1.0,
+            EditorPaintOptions::default(),
+            Some(14.0),
+        );
+        assert_eq!(zero_reserve.text_bounds, baseline.text_bounds);
+        assert_eq!(zero_reserve.v_scrollbar_bounds, baseline.v_scrollbar_bounds);
+
+        let l = ed.layout_with_options_and_reserve(
+            vp,
+            1.0,
+            1.0,
+            EditorPaintOptions::default(),
+            Some(14.0),
+            10.0,
+        );
+        // gutter 4 + v_scrollbar 14 + reserve 10 = 28 consumed; text gets 52.
+        assert_eq!(l.text_bounds.width, 80.0 - 4.0 - 14.0 - 10.0);
+        let vsb = l.v_scrollbar_bounds.expect("buffer overflows the viewport");
+        // Scrollbar stays flush with the viewport's true right edge,
+        // unaffected by the reserve.
+        assert_eq!(vsb.x, vp.x + vp.width - 14.0);
+        assert_eq!(vsb.width, 14.0);
+        // The reserved strip is the gap between text_bounds and the
+        // scrollbar: [text_bounds right edge, v_scrollbar left edge).
+        let reserved_strip_w = vsb.x - (l.text_bounds.x + l.text_bounds.width);
+        assert_eq!(reserved_strip_w, 10.0);
+    }
+
+    /// A negative `right_reserve_w` must clamp to `0.0` rather than
+    /// growing the text area or panicking on an unsigned-looking
+    /// subtraction.
+    #[test]
+    fn editor_layout_reserve_negative_clamps_to_zero() {
+        let ed = make_editor(4, 10, 20);
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout_with_options_and_reserve(
+            vp,
+            1.0,
+            1.0,
+            EditorPaintOptions::default(),
+            None,
+            -10.0,
+        );
+        assert_eq!(l.text_bounds.width, 76.0);
+    }
+
+    /// When the reserve consumes the whole viewport (beyond what's left
+    /// after the gutter and a would-be scrollbar column), the vertical
+    /// scrollbar must be dropped rather than given negative width.
+    #[test]
+    fn editor_layout_reserve_suppresses_scrollbar_when_viewport_too_narrow() {
+        let ed = make_editor(4, 100, 40);
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout_with_options_and_reserve(
+            vp,
+            1.0,
+            1.0,
+            EditorPaintOptions::default(),
+            None,
+            76.0,
+        );
+        assert!(l.v_scrollbar_bounds.is_none());
+        assert_eq!(l.text_bounds.width, 0.0);
     }
 
     #[test]
