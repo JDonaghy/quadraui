@@ -18,6 +18,7 @@
 //! - Up/Down       scroll the viewport (moves the highlighted band)
 //! - Click minimap seek the viewport to that fraction of the file
 //! - s             toggle `MinimapScale::One` / `MinimapScale::Two`
+//! - r             toggle `MinimapSizing::RepeatToFill` stretch mode
 //! - q / Esc       quit
 //!
 //! `MinimapScale::Two` is a 2px wide x 4px tall cell (VS Code's default
@@ -30,11 +31,23 @@
 //! of `MinimapScale`), so the toggle is visually inert there — it's real
 //! on every pixel backend (GTK today; Win-GUI/macOS once their own atlas
 //! lands).
+//!
+//! `r` swaps the minimap's sampled lines for a short, fixed 12-line
+//! excerpt and asks the backend to size it with
+//! `MinimapSizing::RepeatToFill(1.0)` instead of the default
+//! `FixedPitch(1.0)`: the full 300-line buffer already has more rows
+//! than the strip can show at `k == 1`, so `RepeatToFill` would just
+//! degrade to `FixedPitch`'s own sliding window and look identical —
+//! the short excerpt is what makes the repeat-to-fill stretch visible.
+//! On TUI this repeat-paints each sampled row across a whole-number
+//! multiple of cell rows so the short excerpt still fills the tall
+//! strip; GTK (`FixedPitch` only, continuous pixel pitch) shows the
+//! excerpt top-aligned with blank space below instead.
 
 use quadraui::{
     aggregate_spans, sample_blocks, AppLogic, Backend, Color, InteractionState, Key, Minimap,
-    MinimapGrid, MinimapHit, MinimapScale, MinimapSpan, MouseButton, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    MinimapGrid, MinimapHit, MinimapScale, MinimapSizing, MinimapSpan, MouseButton, NamedKey,
+    Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// Rows of the buffer visible in the (non-minimap) editor viewport —
@@ -51,12 +64,21 @@ const VIEWPORT_ROWS: usize = 10;
 /// concern, not this app's.
 const LINES_PER_ROW: usize = 4;
 
+/// How many lines of `buffer` the minimap samples when
+/// [`MinimapApp::stretch`] is on — short enough that
+/// `MinimapSizing::RepeatToFill(1.0)` picks a `k > 1` and visibly
+/// repeat-paints, unlike the full 300-line buffer.
+const STRETCH_EXCERPT_LINES: usize = 12;
+
 pub struct MinimapApp {
     buffer: Vec<String>,
     scroll_offset: usize,
     /// Toggled by the `s` key — see the module doc's "Controls"
     /// section for what each value paints.
     scale_two: bool,
+    /// Toggled by the `r` key — see the module doc's "Controls"
+    /// section for what it swaps the minimap to.
+    stretch: bool,
 }
 
 impl MinimapApp {
@@ -75,6 +97,7 @@ impl MinimapApp {
             buffer,
             scroll_offset: 0,
             scale_two: false,
+            stretch: false,
         }
     }
 
@@ -83,6 +106,17 @@ impl MinimapApp {
             MinimapScale::Two
         } else {
             MinimapScale::One
+        }
+    }
+
+    /// `None` keeps every backend's own default (`FixedPitch(1.0)` on
+    /// every rasteriser today); `Some` is only ever `RepeatToFill`, which
+    /// only TUI currently honours — see the module doc's `r` control.
+    fn minimap_sizing(&self) -> Option<MinimapSizing> {
+        if self.stretch {
+            Some(MinimapSizing::RepeatToFill(1.0))
+        } else {
+            None
         }
     }
 
@@ -104,17 +138,31 @@ impl MinimapApp {
     /// content once a file's lines got wide enough to trigger the adaptive
     /// widening.
     fn minimap(&self, backend: &dyn Backend) -> Minimap {
+        // `stretch` samples a short, fixed excerpt instead of the full
+        // buffer — see `STRETCH_EXCERPT_LINES`'s doc for why.
+        let total_lines = if self.stretch {
+            self.buffer.len().min(STRETCH_EXCERPT_LINES)
+        } else {
+            self.buffer.len()
+        };
         let buffer = &self.buffer;
-        let lines = sample_blocks(buffer.len(), buffer.len(), |i| buffer[i].clone());
+        let lines = sample_blocks(total_lines, total_lines, |i| buffer[i].clone());
 
-        let visible_row_start = lines
-            .iter()
-            .position(|l| l.line_idx >= self.scroll_offset)
-            .unwrap_or(0);
-        let visible_row_end = lines
-            .iter()
-            .position(|l| l.line_idx >= self.scroll_offset + VIEWPORT_ROWS)
-            .unwrap_or(lines.len());
+        let (visible_row_start, visible_row_count) = if self.stretch {
+            // The whole excerpt is always visible — there is no scroll
+            // window over a dozen lines.
+            (0, lines.len().max(1))
+        } else {
+            let start = lines
+                .iter()
+                .position(|l| l.line_idx >= self.scroll_offset)
+                .unwrap_or(0);
+            let end = lines
+                .iter()
+                .position(|l| l.line_idx >= self.scroll_offset + VIEWPORT_ROWS)
+                .unwrap_or(lines.len());
+            (start, end.saturating_sub(start).max(1))
+        };
 
         // `syntax_spans` starts empty: layout only reads `lines`, so a
         // partial `Minimap` (no spans yet) is enough to ask the backend
@@ -124,8 +172,8 @@ impl MinimapApp {
             lines,
             syntax_spans: Vec::new(),
             visible_row_start,
-            visible_row_count: visible_row_end.saturating_sub(visible_row_start).max(1),
-            total_buffer_lines: self.buffer.len(),
+            visible_row_count,
+            total_buffer_lines: total_lines,
         };
 
         let minimap_rect = self.minimap_rect(backend);
@@ -188,11 +236,12 @@ impl MinimapApp {
 
     fn status_bar(&self) -> StatusBar {
         let scale_label = if self.scale_two { "2 (2x4)" } else { "1 (1x2)" };
+        let sizing_label = if self.stretch { "repeat" } else { "fixed" };
         StatusBar {
             id: WidgetId::new("status"),
             left_segments: vec![StatusBarSegment {
                 text: format!(
-                    " Minimap demo — line {} — scale {scale_label} ",
+                    " Minimap demo — line {} — scale {scale_label} sizing {sizing_label} ",
                     self.scroll_offset
                 ),
                 fg: Color::rgb(255, 255, 255),
@@ -201,7 +250,7 @@ impl MinimapApp {
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " up/down=scroll click=seek s=scale q=quit ".into(),
+                text: " ud=scroll click=seek s=scale r=size q=quit ".into(),
                 fg: Color::rgb(220, 220, 220),
                 bg: Color::rgb(40, 80, 120),
                 bold: false,
@@ -228,6 +277,7 @@ impl AppLogic for MinimapApp {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         backend.set_minimap_scale(self.minimap_scale());
+        backend.set_minimap_sizing(self.minimap_sizing());
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let minimap_rect = self.minimap_rect(backend);
@@ -272,6 +322,13 @@ impl AppLogic for MinimapApp {
                 ..
             } => {
                 self.scale_two = !self.scale_two;
+                Reaction::Redraw
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char('r'),
+                ..
+            } => {
+                self.stretch = !self.stretch;
                 Reaction::Redraw
             }
             UiEvent::MouseDown {

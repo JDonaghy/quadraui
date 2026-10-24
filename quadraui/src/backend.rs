@@ -3762,6 +3762,27 @@ pub trait Backend: sealed::Sealed {
     /// same way it configures `dpi_scale` or the editor font.
     fn set_minimap_scale(&mut self, _scale: MinimapScale) {}
 
+    /// The [`crate::MinimapSizing`] a later [`Self::draw_minimap`]/
+    /// [`Self::minimap_layout`] call resolves its row pitch *strategy*
+    /// from — orthogonal to [`Self::minimap_scale`], which only picks the
+    /// pixel/cell size of one row. Default-provided, returning `None`,
+    /// meaning "use this rasteriser's own hardcoded default sizing"
+    /// (TUI: [`crate::MinimapSizing::FixedPitch`]`(1.0)`) — a host that
+    /// never calls [`Self::set_minimap_sizing`] sees exactly the behaviour
+    /// it always has. `Some(sizing)` overrides that default, e.g. with
+    /// [`crate::MinimapSizing::RepeatToFill`] to stretch a short file
+    /// across a tall strip.
+    fn minimap_sizing(&self) -> Option<crate::primitives::minimap::MinimapSizing> {
+        None
+    }
+
+    /// Set the [`crate::MinimapSizing`] [`Self::draw_minimap`]/
+    /// [`Self::minimap_layout`] resolve their row-pitch strategy from.
+    /// Default no-op, mirroring [`Self::set_minimap_scale`]: a backend
+    /// that never overrides [`Self::minimap_sizing`] has nowhere to store
+    /// this and nothing reads it back.
+    fn set_minimap_sizing(&mut self, _sizing: Option<crate::primitives::minimap::MinimapSizing>) {}
+
     /// Compute [`Minimap`] layout without painting — mirrors
     /// [`Backend::chart_layout`] / [`Backend::tree_layout`]. Apps call
     /// this from `AppLogic::handle` (which only has `&mut self`, not the
