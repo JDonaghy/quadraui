@@ -3,13 +3,15 @@ but shown in a real OS window via `run_native()` instead of read back
 headlessly via `screen()`.
 
 Nothing below is backend-specific -- `run_native()` opens a GTK window on
-Linux or a real AppKit window on macOS depending on which feature the
-extension was built with (`gtk` wins if both are enabled), and this demo's
-`title`-only call works unchanged either way. Requires the extension to be
-built with the `gtk` or `macos` feature:
+Linux, a real AppKit window on macOS, or a real Win32 window on Windows,
+depending on which feature the extension was built with (`gtk` wins over
+`macos`, and both win over `win`, if more than one is enabled), and this
+demo's `title`-only call works unchanged on every backend. Requires the
+extension to be built with the `gtk`, `macos`, or `win` feature:
 
     maturin develop --features gtk     # Linux
     maturin develop --features macos   # macOS
+    maturin develop --features win     # Windows
     python quadraui-py/examples/native_window_demo.py
 
 Interaction is keyboard-only, for two reasons specific to this spike:
@@ -34,13 +36,15 @@ handler; the `q`/Escape path instead returns `False`, the other way a
 handler can ask `run_native()` to return -- both exercised here so neither
 path bit-rots.
 
-The two paths look the same on GTK but differ visibly on macOS: the
-`q`/Escape path returns from `run_native()` without tearing the window
+The two paths look the same on GTK and Win32 but differ visibly on macOS:
+the `q`/Escape path returns from `run_native()` without tearing the window
 down (AppKit's own exit route ends the whole process, so this binding
 stops pumping instead), so the window stays on screen, frozen, until the
-interpreter exits a moment later at the end of this script. Closing from
-the window manager closes the window first on either backend. Both end
-with the final `closed after N click(s)` line on stdout.
+interpreter exits a moment later at the end of this script. On GTK and
+Win32, that same path destroys the window immediately, same as closing
+from the window manager. Closing from the window manager closes the
+window first on every backend. All three end with the final
+`closed after N click(s)` line on stdout.
 """
 
 from quadraui import QuiApp

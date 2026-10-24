@@ -25,13 +25,18 @@ crate-type = ["cdylib", "rlib"]
 [features]
 # Each of these enables `QuiApp.run_native`, which opens a real OS window
 # instead of driving the headless driver: `gtk` via `quadraui::gtk::GtkRunner`,
-# `macos` via `quadraui::macos::MacRunner`. Both forward to `quadraui`'s own
-# same-named feature rather than duplicating its dependency list, since this
-# crate never calls GTK/AppKit APIs directly except for the `objc2`
-# main-thread preflight check `macos` needs before handing off to
-# `MacRunner` (see `run_native`'s doc).
+# `macos` via `quadraui::macos::MacRunner`, `win` via `quadraui::win::WinRunner`.
+# All three forward to `quadraui`'s own same-named feature rather than
+# duplicating its dependency list, since this crate never calls GTK/AppKit/
+# Win32 APIs directly except for the `objc2` main-thread preflight check
+# `macos` needs before handing off to `MacRunner` (see `run_native`'s doc).
+# `win` needs no equivalent extra dependency: `WinRunner::new_with`/`pump`
+# already report every failure through a `windows::core::Result` this crate
+# converts to a `String` inline, so there is no raw `windows` crate type to
+# name here the way `macos` needs `objc2::MainThreadMarker`.
 gtk = ["quadraui/gtk"]
 macos = ["quadraui/macos", "dep:objc2"]
+win = ["quadraui/win"]
 
 [dependencies]
 # `tui` is unconditional (not under `[features]`) because it already gates
