@@ -13,9 +13,13 @@ pip install quadraui
 from quadraui import QuiApp
 ```
 
-Today this binding ships the TUI-feature surface of `quadraui` only (see the
-*Linux wheel* note below); the native GTK/macOS/Windows backends are the next
-step on the ladder toward a pure-Python cross-platform UI.
+`run_native()` opens a real GTK window on Linux or a real AppKit window on
+macOS, built from the same descriptors `run_tui()` reads headlessly or over a
+terminal — the `gtk`/`macos` Cargo features that back it are source-available
+today, with a Windows backend the next step. The prebuilt wheels on PyPI are
+still TUI-only (see the *Linux wheel* note below); building with `maturin
+develop --features gtk` or `--features macos` is required for `run_native()`
+until a native-enabled wheel ships.
 
 Full docs, the primitive reference, and worked examples live on the project
 site: <https://jdonaghy.github.io/quadraui/>.
