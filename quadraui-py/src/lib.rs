@@ -697,7 +697,11 @@ impl QuiApp {
     /// Raises `InvalidAppIdError` on the `gtk` feature if `app_id` is given
     /// but is not a syntactically valid `GApplication` id, instead of
     /// letting GLib's own assertion trip an uncatchable `GLib-GIO-CRITICAL`
-    /// once it reaches `Application::builder()`.
+    /// once it reaches `Application::builder()`. Raises `InternalError` if
+    /// this extension was built with the `macos` feature for a non-Apple
+    /// `target_os` — a build/platform mismatch no thread or argument the
+    /// caller picks can satisfy, since there is no `quadraui::macos` runner
+    /// compiled into such a build at all.
     ///
     /// On GTK this routes through `GtkRunner` rather than
     /// `quadraui::gtk::run`/`run_with`, which own the whole process and
