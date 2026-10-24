@@ -16,10 +16,16 @@ frame. Neither callback calls back into `QuiApp` -- the handler only
 mutates `_state` and returns, the render callback only reads `_state` and
 returns a `dict`.
 
-Run headless:
+Run headless (prints the final screen and the recorded selections):
 
     maturin develop
     python quadraui-py/examples/tui_render_state_demo.py
+
+Run in a real terminal via `run_tui()` -- raw mode, live redraw on actual
+keyboard events, driven by the same `render`/`set_handler` pair above with
+`q`/Escape wired in to exit:
+
+    python quadraui-py/examples/tui_render_state_demo.py --interactive
 """
 
 from quadraui import QuiApp
@@ -108,7 +114,47 @@ def run_demo():
     return demo, selections
 
 
+class _Quit(Exception):
+    """Sentinel raised from the interactive handler to unwind out of
+    `run_tui()` -- a terminal has no window-manager close event, so a quit
+    keystroke raising from inside the handler is the only way to ask
+    `run_tui()` to return."""
+
+
+def _is_quit_key(key):
+    return key == {"Char": "q"} or key == {"Named": "Escape"}
+
+
+def _run_interactive():
+    """Builds the same `RenderStateDemo` the headless path uses, but drives
+    it from the real controlling terminal via `run_tui()` instead of
+    `step()`. `q`/Escape raise `_Quit` to exit; every other key is handed to
+    `RenderStateDemo._handle` unchanged, so Up/Down still move the
+    highlight exactly as under `step()` -- `run_tui()` is only a different
+    way of pumping the same `handle`/`render` pair."""
+    demo = RenderStateDemo(make_rows(ROW_COUNT))
+    original_handle = demo._handle
+
+    def handler(event):
+        if isinstance(event, dict) and "KeyPressed" in event:
+            if _is_quit_key(event["KeyPressed"]["key"]):
+                raise _Quit
+        original_handle(event)
+
+    demo.app.set_handler(handler)
+    try:
+        demo.app.run_tui()
+    except _Quit:
+        pass
+    print(f"tui_render_state_demo: closed at selected_idx={demo.state['selected_idx']}")
+
+
 if __name__ == "__main__":
-    demo, selections = run_demo()
-    print(demo.app.screen())
-    print(f"selected_idx after each Down press: {selections}")
+    import sys
+
+    if "--interactive" in sys.argv:
+        _run_interactive()
+    else:
+        demo, selections = run_demo()
+        print(demo.app.screen())
+        print(f"selected_idx after each Down press: {selections}")

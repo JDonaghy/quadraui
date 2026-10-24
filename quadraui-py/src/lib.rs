@@ -322,6 +322,44 @@ fn reaction_from_return(value: &Bound<'_, PyAny>) -> Reaction {
     }
 }
 
+/// Wraps [`reaction_from_return`], promoting an ordinary `Continue` to
+/// `Redraw` whenever `render_callback_present` — i.e. a render callback is
+/// registered on this app.
+///
+/// A render callback only runs when the runner decides a frame needs
+/// repainting (`AppLogic::render` is reached only after an
+/// `EventOutcome::Redraw`/`RedrawAfter`-driven repaint — see
+/// `quadraui::tui::run::TuiRunner::pump` and the GTK/macOS/Windows
+/// equivalents). `PyAppLogic::handle`/`tick` have no way to tell whether a
+/// Python handler's mutation of its own plain-Python state changed
+/// anything visible, so once a render callback is registered every
+/// non-exit dispatch is treated as one that might have — the same
+/// "redraw every frame, let the render callback decide what that looks
+/// like" contract a React/Electron-style `render(state)` callback expects.
+/// Without this, a handler returning `None` (the common case: no explicit
+/// `return`) maps to `Reaction::Continue`, the runner never calls
+/// `AppLogic::render` again, and the render callback never re-runs — the
+/// screen stays frozen at whatever the last repaint drew.
+fn reaction_for_callback(value: &Bound<'_, PyAny>, render_callback_present: bool) -> Reaction {
+    match reaction_from_return(value) {
+        Reaction::Continue if render_callback_present => Reaction::Redraw,
+        other => other,
+    }
+}
+
+/// Records `err` into `pending_error`, but only if no earlier error in the
+/// same dispatch already claimed the slot. Without this, a handler raise
+/// (recorded first) followed by the render callback also raising while
+/// painting the same frame would have the render error silently clobber
+/// the handler's — the one a caller actually wants to see, since it is
+/// closer to the root cause.
+fn record_error(pending_error: &Rc<RefCell<Option<PyErr>>>, err: PyErr) {
+    let mut slot = pending_error.borrow_mut();
+    if slot.is_none() {
+        *slot = Some(err);
+    }
+}
+
 impl AppLogic for PyAppLogic {
     type AreaId = ();
 
@@ -349,20 +387,22 @@ impl AppLogic for PyAppLogic {
         let Some(handler) = self.handler.as_ref() else {
             return Reaction::Continue;
         };
+        let render_callback_present = self.render_callback.is_some();
         Python::attach(|py| {
             let payload = match pythonize::pythonize(py, &event) {
                 Ok(value) => value,
                 Err(err) => {
-                    *self.pending_error.borrow_mut() = Some(InternalError::new_err(format!(
-                        "failed to pythonize event: {err}"
-                    )));
+                    record_error(
+                        &self.pending_error,
+                        InternalError::new_err(format!("failed to pythonize event: {err}")),
+                    );
                     return Reaction::Exit;
                 }
             };
             match handler.call1(py, (payload,)) {
-                Ok(result) => reaction_from_return(result.bind(py)),
+                Ok(result) => reaction_for_callback(result.bind(py), render_callback_present),
                 Err(err) => {
-                    *self.pending_error.borrow_mut() = Some(err);
+                    record_error(&self.pending_error, err);
                     Reaction::Exit
                 }
             }
@@ -373,10 +413,11 @@ impl AppLogic for PyAppLogic {
         let Some(on_tick) = self.on_tick.as_ref() else {
             return Reaction::Continue;
         };
+        let render_callback_present = self.render_callback.is_some();
         Python::attach(|py| match on_tick.call0(py) {
-            Ok(result) => reaction_from_return(result.bind(py)),
+            Ok(result) => reaction_for_callback(result.bind(py), render_callback_present),
             Err(err) => {
-                *self.pending_error.borrow_mut() = Some(err);
+                record_error(&self.pending_error, err);
                 Reaction::Exit
             }
         })
@@ -472,20 +513,29 @@ impl RenderFrame {
     /// Decodes a render callback's returned `dict`, raising
     /// `InvalidDescriptorError` if it isn't a `dict`, if an entry isn't a
     /// `dict`/`None`, or if an entry's shape doesn't match its slot's
-    /// descriptor type. An unrecognized key is ignored rather than
-    /// rejected, so a render callback built against a future slot set stays
-    /// forward-compatible with this one.
+    /// descriptor type. The exact recognized key set is `"button"`,
+    /// `"text_display"`, `"list"`, `"tree"`, `"data_table"`, `"tab_bar"` —
+    /// one per fixed slot, same names `insert_*`'s Rust-side `what` argument
+    /// uses. Any other key (including a near-miss typo like `"tabbar"`) is
+    /// ignored rather than rejected, so a render callback built against a
+    /// future slot set stays forward-compatible with this one.
     fn from_dict(dict: &Bound<'_, PyDict>) -> PyResult<Self> {
         Ok(RenderFrame {
-            button: decode_slot_entry("render", dict, "button")?,
-            text_display: decode_slot_entry("render", dict, "text_display")?,
-            list: decode_slot_entry("render", dict, "list")?,
-            tree: decode_slot_entry("render", dict, "tree")?,
-            data_table: decode_slot_entry("render", dict, "data_table")?,
-            tab_bar: decode_slot_entry("render", dict, "tab_bar")?,
+            button: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "button")?,
+            text_display: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "text_display")?,
+            list: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "list")?,
+            tree: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "tree")?,
+            data_table: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "data_table")?,
+            tab_bar: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "tab_bar")?,
         })
     }
 }
+
+/// The `what` label passed to [`decode_slot_entry`] for every slot of a
+/// render callback's returned `dict` — identifies the source of a decode
+/// error as "render" (vs. an `insert_*` call) in the raised
+/// `InvalidDescriptorError`'s message.
+const RENDER_CALLBACK_WHAT: &str = "render";
 
 /// Reads and decodes one optional slot entry from a render callback's
 /// returned `dict`: a missing key or a `None` value both mean "draw nothing
@@ -510,10 +560,17 @@ fn decode_slot_entry<T: serde::de::DeserializeOwned>(
 /// Invokes a registered render callback with no arguments and decodes its
 /// returned `dict` into a [`RenderFrame`]. On any failure — the callback
 /// raising, returning something other than a `dict`, or an entry with the
-/// wrong shape — records the error in `pending_error` (so `step`/`run`
-/// re-raise it, matching how `handle`/`tick` report a callback failure) and
-/// returns `None`, leaving the caller to skip drawing this frame rather
-/// than paint a half-decoded one.
+/// wrong shape — records the error in `pending_error` and returns `None`,
+/// leaving the caller to skip drawing this frame rather than paint a
+/// half-decoded one.
+///
+/// Every call site that can trigger a render — `step`/`run`, `screen`,
+/// `screen_contains`, `insert_*`, and `slot_clear` — drains `pending_error`
+/// after rendering and re-raises it, so a render-callback failure surfaces
+/// the same way a `handle`/`tick` callback failure does no matter which of
+/// those triggered the repaint. `run_tui`/`run_native` additionally break
+/// their loop as soon as `pending_error` is set, since nothing else is
+/// polling it on the Python side while the GIL is detached.
 fn render_frame_from_callback(
     callback: &Py<PyAny>,
     pending_error: &Rc<RefCell<Option<PyErr>>>,
@@ -522,7 +579,7 @@ fn render_frame_from_callback(
         let result = match callback.call0(py) {
             Ok(result) => result,
             Err(err) => {
-                *pending_error.borrow_mut() = Some(err);
+                record_error(pending_error, err);
                 return None;
             }
         };
@@ -530,16 +587,17 @@ fn render_frame_from_callback(
         let dict = match bound.cast::<PyDict>() {
             Ok(dict) => dict,
             Err(_) => {
-                *pending_error.borrow_mut() = Some(InvalidDescriptorError::new_err(
-                    "render callback must return a dict",
-                ));
+                record_error(
+                    pending_error,
+                    InvalidDescriptorError::new_err("render callback must return a dict"),
+                );
                 return None;
             }
         };
         match RenderFrame::from_dict(dict) {
             Ok(frame) => Some(frame),
             Err(err) => {
-                *pending_error.borrow_mut() = Some(err);
+                record_error(pending_error, err);
                 None
             }
         }
@@ -1098,6 +1156,16 @@ impl QuiApp {
                         if runner.pump(poll_interval) == quadraui::gtk::StepOutcome::Exited {
                             break;
                         }
+                        // A render callback invoked by this `pump` may have
+                        // recorded an unrecoverable error; nothing else is
+                        // polling `loop_error` while the GIL is detached, so
+                        // stop driving the window now instead of looping on
+                        // a broken app until some other exit condition fires.
+                        if loop_error.borrow().is_some() {
+                            runner.request_exit();
+                            runner.step();
+                            break;
+                        }
                         // Re-acquiring the GIL here, even briefly, is what lets
                         // CPython's pending-signal check run — with no
                         // handler/tick ever called (e.g. a window just sitting
@@ -1106,7 +1174,7 @@ impl QuiApp {
                         // and a Ctrl-C would go unnoticed until the window
                         // closes some other way.
                         if let Err(err) = Python::attach(|py| py.check_signals()) {
-                            *loop_error.borrow_mut() = Some(err);
+                            record_error(&loop_error, err);
                             runner.request_exit();
                             // `request_exit` only calls `window.destroy()`; one
                             // more non-blocking pass lets the main context
@@ -1173,6 +1241,12 @@ impl QuiApp {
                         if exit_requested.get() {
                             break;
                         }
+                        // A render callback invoked by this `pump` may have
+                        // recorded an unrecoverable error; stop pumping now
+                        // rather than looping on a broken app.
+                        if loop_error.borrow().is_some() {
+                            break;
+                        }
                         // Same signal-check discipline as the `gtk` loop
                         // above. `MacRunner` has no `request_exit()`
                         // equivalent to tear the window down on a Ctrl-C
@@ -1182,7 +1256,7 @@ impl QuiApp {
                         // record-and-break pattern below rather than the
                         // `gtk` branch's teardown-then-step pattern.
                         if let Err(err) = Python::attach(|py| py.check_signals()) {
-                            *loop_error.borrow_mut() = Some(err);
+                            record_error(&loop_error, err);
                             break;
                         }
                     }
@@ -1266,6 +1340,12 @@ impl QuiApp {
                         if outcome == quadraui::win::StepOutcome::Exited {
                             break;
                         }
+                        // A render callback invoked by this `pump` may have
+                        // recorded an unrecoverable error; stop pumping now
+                        // rather than looping on a broken app.
+                        if loop_error.borrow().is_some() {
+                            break;
+                        }
                         // Same signal-check discipline as the `gtk`/`macos`
                         // loops above. `WinRunner` has no `request_exit()`
                         // equivalent, but its `Drop` calls `DestroyWindow`
@@ -1273,7 +1353,7 @@ impl QuiApp {
                         // just stops pumping and lets `runner` drop, same
                         // as the `macos` branch.
                         if let Err(err) = Python::attach(|py| py.check_signals()) {
-                            *loop_error.borrow_mut() = Some(err);
+                            record_error(&loop_error, err);
                             break;
                         }
                     }
@@ -1369,6 +1449,12 @@ impl QuiApp {
                     if runner.pump(poll_interval)? == StepOutcome::Exited {
                         break;
                     }
+                    // A render callback invoked by this `pump` may have
+                    // recorded an unrecoverable error; stop pumping now
+                    // rather than looping on a broken app.
+                    if loop_error.borrow().is_some() {
+                        break;
+                    }
                     // Re-acquiring the GIL here, even briefly, is what lets
                     // CPython's pending-signal check run: with no
                     // handler/tick ever called, control otherwise never
@@ -1376,7 +1462,7 @@ impl QuiApp {
                     // Ctrl-C would go unnoticed until the app exits some
                     // other way.
                     if let Err(err) = Python::attach(|py| py.check_signals()) {
-                        *loop_error.borrow_mut() = Some(err);
+                        record_error(&loop_error, err);
                         break;
                     }
                 }
@@ -1487,6 +1573,7 @@ impl QuiApp {
             let cleared = app.driver.app_mut().clear_slot(slot);
             if cleared {
                 app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
             }
             Ok(cleared)
         })
@@ -1497,6 +1584,7 @@ impl QuiApp {
     fn screen(&mut self) -> PyResult<String> {
         self.guarded(|app| {
             app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
             Ok(app.driver.screen())
         })
     }
@@ -1505,9 +1593,23 @@ impl QuiApp {
     fn screen_contains(&mut self, needle: &str) -> PyResult<bool> {
         self.guarded(|app| {
             app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
             Ok(app.driver.screen_contains(needle))
         })
     }
+}
+
+/// Takes and re-raises any error a render callback recorded during the
+/// `render()` call that just ran, mirroring `step_once`'s handling of a
+/// `handle`/`tick` callback failure. Every `QuiApp` method that can trigger
+/// a render outside of `step`/`run` — `screen`, `screen_contains`,
+/// `insert_*`, `slot_clear` — calls this right after rendering so a render
+/// callback's exception is never silently swallowed.
+fn take_pending_error(app: &mut PyAppLogic) -> PyResult<()> {
+    if let Some(err) = app.pending_error.borrow_mut().take() {
+        return Err(err);
+    }
+    Ok(())
 }
 
 impl QuiApp {
@@ -1550,6 +1652,7 @@ impl QuiApp {
         self.guarded(|app| {
             store(app.driver.app_mut(), value);
             app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
             Ok(slot)
         })
     }
@@ -1569,9 +1672,7 @@ impl QuiApp {
                 self.driver.tick();
             }
         }
-        if let Some(err) = self.driver.app_mut().pending_error.borrow_mut().take() {
-            return Err(err);
-        }
+        take_pending_error(self.driver.app_mut())?;
         Ok(!self.driver.exited())
     }
 }
@@ -1677,6 +1778,37 @@ mod tests {
         });
     }
 
+    /// `reaction_for_callback` promotes an ordinary `Continue` to `Redraw`
+    /// only when a render callback is registered — the mechanism that lets
+    /// `run_tui`/`run_native` actually repaint after a handler/tick mutates
+    /// plain Python state, instead of leaving the screen frozen at the last
+    /// frame a `Reaction::Redraw` happened to trigger for some other reason.
+    /// `Exit` passes through unchanged either way, since nothing should
+    /// repaint after an explicit exit request.
+    #[test]
+    fn reaction_for_callback_promotes_continue_only_when_render_callback_present() {
+        Python::attach(|py| {
+            let none_val = py.None().into_bound(py);
+            assert_eq!(
+                reaction_for_callback(&none_val, false),
+                Reaction::Continue,
+                "no render callback registered: Continue must stay Continue"
+            );
+            assert_eq!(
+                reaction_for_callback(&none_val, true),
+                Reaction::Redraw,
+                "a render callback is registered: Continue must promote to Redraw"
+            );
+
+            let false_val = false.into_pyobject(py).expect("bool");
+            assert_eq!(
+                reaction_for_callback(&false_val, true),
+                Reaction::Exit,
+                "an explicit False exit request must not be overridden by Redraw"
+            );
+        });
+    }
+
     /// A tick handler that returns `False` exits the driver loop on its own
     /// step, with no exception raised — `step()` returns `Ok(false)` and
     /// `pending_error` stays unset, unlike the raise-to-exit path.
@@ -1697,6 +1829,28 @@ mod tests {
                 !running,
                 "returning False from the tick handler must stop the loop"
             );
+        });
+    }
+
+    /// `record_error` keeps the first error recorded in a dispatch and
+    /// ignores a later one — a render-callback failure painting the same
+    /// frame a handler already failed on must not clobber the handler's
+    /// error, which is closer to the root cause.
+    #[test]
+    fn record_error_preserves_the_first_error() {
+        Python::attach(|py| {
+            let pending_error: Rc<RefCell<Option<PyErr>>> = Rc::new(RefCell::new(None));
+            record_error(&pending_error, InternalError::new_err("first"));
+            record_error(&pending_error, InternalError::new_err("second"));
+            let recorded = pending_error
+                .borrow_mut()
+                .take()
+                .expect("an error must be recorded");
+            assert_eq!(
+                recorded.to_string(),
+                InternalError::new_err("first").to_string()
+            );
+            let _ = py;
         });
     }
 
