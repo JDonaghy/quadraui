@@ -7526,11 +7526,45 @@ fn pressing_s_toggles_the_minimap_scale_label() {
         "pressing s should flip the scale label to 2 (2x4):\n{}",
         driver.screen()
     );
+}
 
-    driver.type_char('s');
+/// `r` toggles `MinimapSizing::RepeatToFill`, which swaps the minimap's
+/// sampled lines for a short excerpt (see `MinimapApp`'s module doc) and
+/// repeat-paints it across the strip — proved here by the status bar's
+/// sizing label, mirroring `pressing_s_toggles_the_minimap_scale_label`.
+#[test]
+fn pressing_r_toggles_the_minimap_sizing_label() {
+    let mut driver = TuiDriver::new(MinimapApp::new(), 100, 30);
     assert!(
-        driver.screen_contains("scale 1 (1x2)"),
-        "pressing s again should flip the scale label back to 1 (1x2):\n{}",
+        driver.screen_contains("sizing fixed"),
+        "default sizing label should read fixed:\n{}",
+        driver.screen()
+    );
+
+    let has_braille = driver
+        .screen()
+        .chars()
+        .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c));
+    assert!(
+        has_braille,
+        "minimap should still paint braille glyphs before toggling sizing:\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('r');
+    assert!(
+        driver.screen_contains("sizing repeat"),
+        "pressing r should flip the sizing label to repeat:\n{}",
+        driver.screen()
+    );
+
+    let has_braille_after_stretch = driver
+        .screen()
+        .chars()
+        .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c));
+    assert!(
+        has_braille_after_stretch,
+        "minimap should still paint braille glyphs once stretched via RepeatToFill:\n{}",
         driver.screen()
     );
 }

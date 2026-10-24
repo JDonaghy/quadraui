@@ -61,6 +61,17 @@ only a push to `main` runs this workflow.
 
 ### Added
 
+- `MinimapSizing::RepeatToFill(f32)` — a new `Minimap` row-pitch sizing that
+  repeat-paints a short sampled-line list across a whole-number multiple of
+  the base pitch to visually stretch it across a taller strip, instead of
+  `FixedPitch`'s top-align-with-blank-space-below behaviour. `Backend` gains
+  `minimap_sizing()`/`set_minimap_sizing()` (both default-provided, mirroring
+  `minimap_scale()`/`set_minimap_scale()`) so a host can opt a `Minimap` into
+  it without changing any existing call site. `TuiBackend` is the first and
+  currently only backend to honour it, via `tui::draw_minimap_with_sizing`/
+  `tui::tui_minimap_layout_with_sizing`, since it is the one rasteriser that
+  quantises row pitch to whole terminal cells and so is the one that needs a
+  whole-number-multiple trick to avoid a fractional, unaddressable pitch.
 - `quadraui-py`: `QuiApp.__new__` takes an optional `render` keyword argument,
   and a new `QuiApp.set_render(fn)` method sets one after construction. The
   callback takes no arguments, runs once per frame, and returns a `dict`

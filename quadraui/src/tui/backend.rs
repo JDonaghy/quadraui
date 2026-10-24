@@ -314,6 +314,13 @@ pub struct TuiBackend {
     /// [`Self::input_gone`]'s doc and the `stdin_hung_up` guard (below in
     /// this file) for the full rationale.
     input_gone: bool,
+    /// Row-pitch strategy [`Backend::draw_minimap`]/[`Backend::minimap_layout`]
+    /// resolve from, set via [`Backend::set_minimap_sizing`]. `None` (the
+    /// default) means "use this rasteriser's own hardcoded default" —
+    /// [`crate::tui::tui_minimap_layout`]'s `FixedPitch(1.0)` — so a host
+    /// that never calls the setter sees byte-for-byte the same layout and
+    /// paint as before this field existed.
+    minimap_sizing: Option<crate::primitives::minimap::MinimapSizing>,
 }
 
 impl TuiBackend {
@@ -351,6 +358,7 @@ impl TuiBackend {
             frame_scheduler: crate::runtime::FrameScheduler::new(),
             full_repaint_requested: false,
             input_gone: false,
+            minimap_sizing: None,
         }
     }
 
@@ -4314,6 +4322,7 @@ impl Backend for TuiBackend {
     ) -> crate::backend::MinimapPaintResult {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
+        let sizing = self.minimap_sizing;
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
                 false,
@@ -4326,7 +4335,21 @@ impl Backend for TuiBackend {
                 painted: false,
             };
         };
-        let layout = crate::tui::draw_minimap(frame.buffer_mut(), area, minimap, &theme);
+        let layout = match sizing {
+            Some(sizing) => {
+                let cols_per_cell =
+                    crate::tui::minimap::resolve_cols_per_cell(minimap, area.width as usize);
+                crate::tui::draw_minimap_with_sizing(
+                    frame.buffer_mut(),
+                    area,
+                    minimap,
+                    &theme,
+                    cols_per_cell,
+                    sizing,
+                )
+            }
+            None => crate::tui::draw_minimap(frame.buffer_mut(), area, minimap, &theme),
+        };
         self.register_zone(minimap.id, rect);
         crate::backend::MinimapPaintResult {
             layout,
@@ -4339,7 +4362,19 @@ impl Backend for TuiBackend {
         rect: QRect,
         minimap: &crate::primitives::minimap::Minimap,
     ) -> crate::primitives::minimap::MinimapLayout {
-        crate::tui::tui_minimap_layout(minimap, q_rect_to_ratatui(rect))
+        let area = q_rect_to_ratatui(rect);
+        match self.minimap_sizing {
+            Some(sizing) => crate::tui::tui_minimap_layout_with_sizing(minimap, area, sizing),
+            None => crate::tui::tui_minimap_layout(minimap, area),
+        }
+    }
+
+    fn minimap_sizing(&self) -> Option<crate::primitives::minimap::MinimapSizing> {
+        self.minimap_sizing
+    }
+
+    fn set_minimap_sizing(&mut self, sizing: Option<crate::primitives::minimap::MinimapSizing>) {
+        self.minimap_sizing = sizing;
     }
 
     fn draw_image(

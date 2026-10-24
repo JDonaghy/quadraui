@@ -807,6 +807,57 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "braille has no font to scale — the cell-native dot packing described in \
          primitives::minimap's module doc has no `MinimapScale` concept to hold (#1143)",
     ),
+    // `minimap_sizing`/`set_minimap_sizing` let a host override the row-pitch strategy
+    // (e.g. `MinimapSizing::RepeatToFill` to stretch a short file across a tall strip).
+    // `RepeatToFill` exists to solve a problem specific to a cell-native rasteriser: TUI can
+    // only address whole terminal-cell rows, so stretching a short file to fill a tall strip
+    // needs the whole-number-multiple trick to avoid a fractional, unaddressable pitch.
+    // GTK/macOS/Win-GUI paint `FixedPitch` at a continuous float pixel `y` (see each
+    // rasteriser's `vline.bounds.y`-driven paint loop), so the same stretch is already just a
+    // larger `FixedPitch(px)` literal with no cell-boundary rounding to solve — they have
+    // nothing to opt into and the trait's no-op default is the correct answer.
+    (
+        "gtk",
+        "minimap_sizing",
+        "paints `FixedPitch` at a continuous float pixel y, so stretching a short file is \
+         already just a larger `FixedPitch(px)` literal — `RepeatToFill`'s whole-number-\
+         multiple trick solves a cell-quantisation problem that is TUI-only",
+    ),
+    (
+        "gtk",
+        "set_minimap_sizing",
+        "paints `FixedPitch` at a continuous float pixel y, so stretching a short file is \
+         already just a larger `FixedPitch(px)` literal — `RepeatToFill`'s whole-number-\
+         multiple trick solves a cell-quantisation problem that is TUI-only",
+    ),
+    (
+        "macos",
+        "minimap_sizing",
+        "paints `FixedPitch` at a continuous float pixel y, so stretching a short file is \
+         already just a larger `FixedPitch(px)` literal — `RepeatToFill`'s whole-number-\
+         multiple trick solves a cell-quantisation problem that is TUI-only",
+    ),
+    (
+        "macos",
+        "set_minimap_sizing",
+        "paints `FixedPitch` at a continuous float pixel y, so stretching a short file is \
+         already just a larger `FixedPitch(px)` literal — `RepeatToFill`'s whole-number-\
+         multiple trick solves a cell-quantisation problem that is TUI-only",
+    ),
+    (
+        "win",
+        "minimap_sizing",
+        "paints `FixedPitch` at a continuous float pixel y, so stretching a short file is \
+         already just a larger `FixedPitch(px)` literal — `RepeatToFill`'s whole-number-\
+         multiple trick solves a cell-quantisation problem that is TUI-only",
+    ),
+    (
+        "win",
+        "set_minimap_sizing",
+        "paints `FixedPitch` at a continuous float pixel y, so stretching a short file is \
+         already just a larger `FixedPitch(px)` literal — `RepeatToFill`'s whole-number-\
+         multiple trick solves a cell-quantisation problem that is TUI-only",
+    ),
     // `set_current_line_height`/`set_current_char_width` let a host re-apply a pixel
     // backend's font-derived metrics. TUI is a fixed-cell backend — its line height and
     // character width are `1.0` by construction — so there is no font-derived value for a
