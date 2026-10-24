@@ -58,6 +58,16 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Added
+
+- `gtk::display_available()` — a pre-flight check (`gtk4::init().is_ok()`,
+  with a macOS main-thread guard) that an embedder can call before
+  `GtkRunner::new`/`new_with` to detect "no display reachable" up front,
+  instead of GTK's own init path killing the whole process with
+  `exit(1)` and no catchable error.
+- `GtkRunner::request_exit()` — destroys every window the running
+  `gio::Application` owns, letting an embedder (or a signal handler) tear
+  the window down from outside the normal close-request path.
 
 ## [0.5.0] - 2026-10-23
 ### Added

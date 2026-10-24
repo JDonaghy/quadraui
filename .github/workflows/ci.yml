@@ -1057,6 +1057,16 @@ jobs:
         # plus the same `--exclude quadraui-py` as the two steps above, for
         # the same reason.
         run: cargo clippy --features gtk,tui --workspace --exclude kubeui --exclude quadraui-py -- -D warnings
+      # `quadraui-py`'s own `gtk`-gated code (`run_native` and friends) is
+      # excluded from every workspace-wide step above, so without this it
+      # never gets type-checked against `quadraui::gtk` at all — a renamed
+      # or re-signatured `quadraui::gtk` item could silently break this
+      # binding with no CI signal. `cargo check`, not `build`/`clippy`: this
+      # job doesn't link libpython (same reason the workspace steps exclude
+      # the crate), and `extension-module` resolves Python symbols
+      # dynamically so a type-check-only pass is enough to catch the gap.
+      - name: Check (quadraui-py, gtk feature)
+        run: cargo check -p quadraui-py --features gtk,pyo3/extension-module
       # Benches (#1118): same "not built by a plain `cargo build`/`cargo
       # test`" gap, same "named `--bench` flags, not a bare `-p quadraui`"
       # (a bare invocation also runs the whole lib unit-test suite as a

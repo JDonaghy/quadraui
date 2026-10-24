@@ -15,6 +15,10 @@
 //! and re-acquiring it only for the duration of each registered Python
 //! callback (`set_handler`/`set_tick_handler`). An exception raised inside a
 //! callback is captured and re-raised out of `step`/`run` rather than lost.
+//! A callback can also request exit without raising, by returning `False`
+//! (see [`reaction_from_return`]) — useful for a handler that wants to stop
+//! the loop as part of its normal control flow rather than via an
+//! exception.
 //!
 //! Every error this binding can raise itself (as opposed to one a
 //! registered Python callback raised, which passes through unchanged) is a
@@ -137,6 +141,26 @@ create_exception!(
     (mirrors `QUI_ERR_INTERNAL`)."
 );
 
+create_exception!(
+    _quadraui,
+    NativeAlreadyRunError,
+    QuadrauiError,
+    "`run_native` was called a second time on a `QuiApp` that already ran \
+    it once. The first call moves this app's handlers and descriptors into \
+    the native window it opens; once that window closes, this `QuiApp` has \
+    nothing left to show, so a second call raises instead of silently \
+    opening an empty window with no handlers."
+);
+
+create_exception!(
+    _quadraui,
+    NoDisplayError,
+    QuadrauiError,
+    "`run_native` was called with no GTK display reachable (no `DISPLAY`/\
+    `WAYLAND_DISPLAY`, no macOS window server, ...). Raised instead of \
+    letting GTK's own init path fail in a way this binding can't catch."
+);
+
 /// Slot id of the app's `Button` descriptor.
 const SLOT_BUTTON: i64 = 0;
 /// Slot id of the app's `TextDisplay` descriptor.
@@ -219,6 +243,20 @@ impl PyAppLogic {
     }
 }
 
+/// Maps a registered handler/tick callback's return value to a [`Reaction`]:
+/// returning `False` requests the same exit a raised exception would, with
+/// no exception needed; returning anything else (including the common case
+/// of no explicit `return`, i.e. `None`) continues. Checked with
+/// `extract::<bool>`, which only matches an actual Python `bool` — an int
+/// `0`, an empty string, or any other "falsy" value keeps running rather
+/// than exiting, so only an explicit `return False` opts in.
+fn reaction_from_return(value: &Bound<'_, PyAny>) -> Reaction {
+    match value.extract::<bool>() {
+        Ok(false) => Reaction::Exit,
+        _ => Reaction::Continue,
+    }
+}
+
 impl AppLogic for PyAppLogic {
     type AreaId = ();
 
@@ -283,7 +321,7 @@ impl AppLogic for PyAppLogic {
                 }
             };
             match handler.call1(py, (payload,)) {
-                Ok(_) => Reaction::Continue,
+                Ok(result) => reaction_from_return(result.bind(py)),
                 Err(err) => {
                     *self.pending_error.borrow_mut() = Some(err);
                     Reaction::Exit
@@ -297,7 +335,7 @@ impl AppLogic for PyAppLogic {
             return Reaction::Continue;
         };
         Python::attach(|py| match on_tick.call0(py) {
-            Ok(_) => Reaction::Continue,
+            Ok(result) => reaction_from_return(result.bind(py)),
             Err(err) => {
                 *self.pending_error.borrow_mut() = Some(err);
                 Reaction::Exit
@@ -370,6 +408,12 @@ struct QuiApp {
     /// [`QuiApp::guarded`]. Every method on a poisoned app raises
     /// `PoisonedError` instead of touching the driver again.
     poisoned: bool,
+    /// Set once `run_native` has moved this app's [`PyAppLogic`] into a
+    /// native window. A later `run_native` call on the same `QuiApp` raises
+    /// `NativeAlreadyRunError` instead of silently opening a window backed
+    /// by the empty `PyAppLogic` the first call left behind.
+    #[cfg(feature = "gtk")]
+    native_consumed: bool,
 }
 
 /// Wraps a value that is provably safe to move across [`Python::detach`]'s
@@ -435,6 +479,8 @@ impl QuiApp {
             driver: TuiDriver::new(app_logic, width, height),
             pending_events: VecDeque::new(),
             poisoned: false,
+            #[cfg(feature = "gtk")]
+            native_consumed: false,
         })
     }
 
@@ -523,8 +569,22 @@ impl QuiApp {
     /// Opens a real OS window (via `quadraui::gtk::GtkRunner`) showing this
     /// app's current descriptors, and blocks the calling thread until that
     /// window closes. `title`, if given, overrides the generic default
-    /// window title. Only present when this extension is built with the
-    /// `gtk` feature.
+    /// window title; `app_id` and `icon_name` set the window's
+    /// `gio::Application` id and icon the same way, falling back to
+    /// `RunConfig`'s own defaults when omitted. `single_instance` defaults
+    /// to `False` so a concurrent second `run_native()` call — or any other
+    /// quadraui `gtk_*` process already running — gets its own window
+    /// instead of being silently forwarded to the first instance with no
+    /// window and no error; pass `True` to opt into GTK's normal
+    /// single-instance dedup. Only present when this extension is built
+    /// with the `gtk` feature.
+    ///
+    /// Raises `NativeAlreadyRunError` if this `QuiApp` already ran
+    /// `run_native` once before — see that exception's doc for why a
+    /// second call can't just open another window. Raises `NoDisplayError`
+    /// if no display is reachable (no `DISPLAY`/`WAYLAND_DISPLAY`, no
+    /// macOS window server, ...), instead of letting GTK's own init path
+    /// fail in a way this binding can't catch.
     ///
     /// Routes through `GtkRunner` rather than `quadraui::gtk::run`/
     /// `run_with`, which own the whole process and parse the real `argv` —
@@ -533,12 +593,7 @@ impl QuiApp {
     /// demo`, `pytest ...`, ...), not a `gio::Application`-shaped argument
     /// list, and the first positional argument isn't a file to `open`.
     /// `GtkRunner` calls `activate` directly with no argv parsing and
-    /// deliberately doesn't wire `connect_open`, and single-instance
-    /// dedup is turned off (`RunConfig::with_single_instance(false)`) so a
-    /// concurrent second `run_native()` call — or any other quadraui
-    /// `gtk_*` process already running — gets its own window instead of
-    /// being silently forwarded to the first instance with no window and
-    /// no error.
+    /// deliberately doesn't wire `connect_open`.
     ///
     /// Moves this app's whole [`PyAppLogic`] — every inserted descriptor
     /// plus both registered handlers — out of the headless driver this
@@ -549,7 +604,10 @@ impl QuiApp {
     /// the pump loop (mirroring [`Self::run`]'s `py.detach`), with a
     /// `py.check_signals()` call between waits so a Ctrl-C at the
     /// controlling terminal still raises `KeyboardInterrupt` promptly
-    /// instead of only being noticed once the window closes on its own;
+    /// instead of only being noticed once the window closes on its own —
+    /// when that happens, `GtkRunner::request_exit()` tears the window
+    /// down before the loop returns, so a Ctrl-C closes the window rather
+    /// than leaving it open with a dead event loop behind it;
     /// `handle`/`tick` re-acquire the GIL per callback via `Python::attach`,
     /// exactly as they do for the headless path.
     ///
@@ -558,13 +616,36 @@ impl QuiApp {
     /// the one this call moved out for as long as the window was open):
     /// `step`/`run`/`screen` still work, they just have nothing left to
     /// paint or dispatch to until the caller inserts descriptors/handlers
-    /// again. Re-raises whatever exception a registered handler/tick
-    /// callback raised while the window was open, or a `KeyboardInterrupt`
-    /// from a Ctrl-C the pump loop observed.
+    /// again, and a further `run_native` call raises `NativeAlreadyRunError`.
+    /// Re-raises whatever exception a registered handler/tick callback
+    /// raised while the window was open, or a `KeyboardInterrupt` from a
+    /// Ctrl-C the pump loop observed.
     #[cfg(feature = "gtk")]
-    #[pyo3(signature = (title=None))]
-    fn run_native(&mut self, py: Python<'_>, title: Option<String>) -> PyResult<()> {
+    #[pyo3(signature = (title=None, app_id=None, icon_name=None, single_instance=false))]
+    fn run_native(
+        &mut self,
+        py: Python<'_>,
+        title: Option<String>,
+        app_id: Option<String>,
+        icon_name: Option<String>,
+        single_instance: bool,
+    ) -> PyResult<()> {
         self.guarded(|app| {
+            if app.native_consumed {
+                return Err(NativeAlreadyRunError::new_err(
+                    "run_native already ran once on this QuiApp; its handlers and \
+                    descriptors were moved into the window that call opened, so \
+                    there is nothing left for a second call to show",
+                ));
+            }
+            if !quadraui::gtk::display_available() {
+                return Err(NoDisplayError::new_err(
+                    "run_native found no display to open a window on (no \
+                    DISPLAY/WAYLAND_DISPLAY, no macOS window server, ...)",
+                ));
+            }
+            app.native_consumed = true;
+
             let app_logic = std::mem::take(app.driver.app_mut());
             // Cloned twice: `native_error` stays outside the `detach`
             // closure for the caller to read back once the window closes;
@@ -574,11 +655,17 @@ impl QuiApp {
             // through either handle.
             let native_error = app_logic.pending_error.clone();
             let loop_error = app_logic.pending_error.clone();
-            let config = match title {
-                Some(title) => quadraui::gtk::RunConfig::new("org.quadraui.app", title),
-                None => quadraui::gtk::RunConfig::default(),
+            let mut config = quadraui::gtk::RunConfig::default();
+            if let Some(app_id) = app_id {
+                config.app_id = app_id;
             }
-            .with_single_instance(false);
+            if let Some(title) = title {
+                config.title = title;
+            }
+            if let Some(icon_name) = icon_name {
+                config = config.with_icon_name(icon_name);
+            }
+            config = config.with_single_instance(single_instance);
             let wrapped = AssertUngil((app_logic, config, loop_error));
             py.detach(move || {
                 // Bind the whole `wrapped` first so the closure captures the
@@ -604,6 +691,7 @@ impl QuiApp {
                     // closes some other way.
                     if let Err(err) = Python::attach(|py| py.check_signals()) {
                         *loop_error.borrow_mut() = Some(err);
+                        runner.request_exit();
                         break;
                     }
                 }
@@ -903,6 +991,11 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("PanicError", py.get_type::<PanicError>())?;
     m.add("PoisonedError", py.get_type::<PoisonedError>())?;
     m.add("InternalError", py.get_type::<InternalError>())?;
+    m.add(
+        "NativeAlreadyRunError",
+        py.get_type::<NativeAlreadyRunError>(),
+    )?;
+    m.add("NoDisplayError", py.get_type::<NoDisplayError>())?;
     Ok(())
 }
 
@@ -931,6 +1024,49 @@ mod tests {
             assert!(!body_ran, "a poisoned app must not run the guarded body");
             let err = after_poison.expect_err("a poisoned app must keep erroring");
             assert!(err.is_instance_of::<PoisonedError>(py));
+        });
+    }
+
+    /// `reaction_from_return` treats only an explicit Python `False` as a
+    /// request to exit; `True`, `None` (the common no-explicit-`return`
+    /// case), and a falsy non-bool like `0` all continue.
+    #[test]
+    fn reaction_from_return_treats_only_explicit_false_as_exit() {
+        Python::attach(|py| {
+            let false_val = false.into_pyobject(py).expect("bool");
+            assert_eq!(reaction_from_return(&false_val), Reaction::Exit);
+
+            let true_val = true.into_pyobject(py).expect("bool");
+            assert_eq!(reaction_from_return(&true_val), Reaction::Continue);
+
+            let none_val = py.None().into_bound(py);
+            assert_eq!(reaction_from_return(&none_val), Reaction::Continue);
+
+            let zero_val = 0i32.into_pyobject(py).expect("int").into_any();
+            assert_eq!(reaction_from_return(&zero_val), Reaction::Continue);
+        });
+    }
+
+    /// A tick handler that returns `False` exits the driver loop on its own
+    /// step, with no exception raised — `step()` returns `Ok(false)` and
+    /// `pending_error` stays unset, unlike the raise-to-exit path.
+    #[test]
+    fn tick_handler_returning_false_exits_without_raising() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(10, 10, None).expect("valid dimensions");
+            let on_tick = py
+                .eval(c"lambda: False", None, None)
+                .expect("lambda literal")
+                .unbind();
+            app.set_tick_handler(on_tick);
+
+            let running = app
+                .guarded(|app| app.step_once())
+                .expect("no handler raised, so step_once must not error");
+            assert!(
+                !running,
+                "returning False from the tick handler must stop the loop"
+            );
         });
     }
 }
