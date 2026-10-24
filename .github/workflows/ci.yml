@@ -1065,8 +1065,11 @@ jobs:
       # job doesn't link libpython (same reason the workspace steps exclude
       # the crate), and `extension-module` resolves Python symbols
       # dynamically so a type-check-only pass is enough to catch the gap.
+      # `--all-targets` so the crate's own `#[cfg(test)]` module (gated
+      # behind `gtk` in places) is type-checked too, not just the `lib`
+      # target — still check-only, so no libpython link either way.
       - name: Check (quadraui-py, gtk feature)
-        run: cargo check -p quadraui-py --features gtk,pyo3/extension-module
+        run: cargo check -p quadraui-py --features gtk,pyo3/extension-module --all-targets
       # Benches (#1118): same "not built by a plain `cargo build`/`cargo
       # test`" gap, same "named `--bench` flags, not a bare `-p quadraui`"
       # (a bare invocation also runs the whole lib unit-test suite as a

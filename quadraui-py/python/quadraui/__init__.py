@@ -9,11 +9,12 @@ Python callback raised, which passes through unchanged) is a
 ``QuadrauiError`` subclass: ``InvalidDescriptorError``, ``SlotOccupiedError``,
 ``UnknownSlotError``, ``InvalidDimensionsError``, ``InvalidCharError``,
 ``PanicError``, ``PoisonedError``, ``InternalError``,
-``NativeAlreadyRunError``, and ``NoDisplayError``.
+``NativeAlreadyRunError``, ``NoDisplayError``, and ``InvalidAppIdError``.
 """
 
 from ._quadraui import (
     InternalError,
+    InvalidAppIdError,
     InvalidCharError,
     InvalidDescriptorError,
     InvalidDimensionsError,
@@ -40,4 +41,5 @@ __all__ = [
     "InternalError",
     "NativeAlreadyRunError",
     "NoDisplayError",
+    "InvalidAppIdError",
 ]

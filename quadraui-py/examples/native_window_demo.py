@@ -24,8 +24,10 @@ Interaction is keyboard-only, for two reasons specific to this spike:
 
 Press Enter or Space to "click" the button (prints a line to stdout),
 `q` or Escape to close the window, or just close it from the window
-manager -- both paths raise `_Quit` from inside the handler, since
-raising is the only way a handler can ask `run_native()` to return.
+manager. Closing from the window manager raises `_Quit` from inside the
+handler; the `q`/Escape path instead returns `False`, the other way a
+handler can ask `run_native()` to return -- both exercised here so neither
+path bit-rots.
 """
 
 from quadraui import QuiApp
@@ -102,7 +104,9 @@ def make_handler(clicks):
             key = event["KeyPressed"]["key"]
             if _is_quit_key(key):
                 print("native_window_demo: quit key pressed")
-                raise _Quit
+                # Returning `False` is the non-exception way to ask
+                # `run_native()` to exit -- no exception to catch here.
+                return False
             if _is_activate_key(key):
                 clicks.append(1)
                 print(f"native_window_demo: button activated (click #{len(clicks)})")

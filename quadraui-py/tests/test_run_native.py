@@ -10,7 +10,12 @@ like a human running `python demo.py` once and exiting.
 
 Only present when the extension is built with the `gtk` feature; skips
 (rather than fails) when it isn't, or when no display is reachable --
-mirroring the `gtk_*` Rust examples' own xvfb-run-friendly smoke tier.
+mirroring the `gtk_*` Rust examples' own xvfb-run-friendly smoke tier. "No
+display reachable" is detected primarily by having each script catch
+`quadraui.NoDisplayError` itself and print a dedicated `NO_DISPLAY_RAISED`
+sentinel -- `run_native`'s own pre-flight check, so this is a positive
+assertion ("no display raises a catchable Python error"), not a guess from
+subprocess stderr.
 
 Run against a build with the native feature enabled, under a virtual
 display:
@@ -32,10 +37,12 @@ pytestmark = pytest.mark.skipif(
     reason="extension built without the `gtk` feature (no `run_native`)",
 )
 
-# Markers GTK/GDK/GLib leave in stderr specifically when no display is
-# reachable at all -- the only condition these tests skip rather than fail
-# on. Anything else failing (a real `run_native` bug, a Python traceback)
-# falls through to an assertion failure instead of silently skipping.
+# Backstop only: markers GTK/GDK/GLib could still leave in stderr for a
+# display failure that happens *outside* `run_native`'s own `NoDisplayError`
+# pre-flight check (e.g. a GTK/Cairo library load failure). Every script
+# below catches `NoDisplayError` itself and prints `NO_DISPLAY_RAISED`, which
+# is the primary (and reliable) signal these tests skip on; this is only
+# consulted when that sentinel is absent from stdout.
 _NO_DISPLAY_MARKERS = (
     "cannot open display",
     "could not connect",
@@ -64,6 +71,17 @@ def _run_script(tmp_path, name, body, env):
         pytest.skip(f"run_native script did not exit: {exc!r}")
 
 
+def _skip_if_no_display(result):
+    """Skip the calling test if the script reported `NoDisplayError` (the
+    sentinel every script below prints from its own `except NoDisplayError`
+    clause), or if stderr otherwise looks like a display failure."""
+    if "NO_DISPLAY_RAISED" in result.stdout or _looks_like_no_display(result.stderr):
+        pytest.skip(
+            "no usable display for a native GTK window: "
+            f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+
+
 def test_run_native_opens_and_runs_handler_until_smoke_timeout(tmp_path):
     # `QUADRAUI_GTK_SMOKE_MS` is `GtkRunner`'s own documented unattended-exit
     # knob (see `quadraui/src/gtk/run.rs`) -- it closes the window itself
@@ -73,23 +91,23 @@ def test_run_native_opens_and_runs_handler_until_smoke_timeout(tmp_path):
     env["QUADRAUI_GTK_SMOKE_MS"] = "200"
 
     body = (
-        "from quadraui import QuiApp\n"
+        "from quadraui import QuiApp, NoDisplayError\n"
         "app = QuiApp(40, 20)\n"
         'app.insert_button({"id": "demo:ok", "label": "OK", "focused": True})\n'
         "seen = []\n"
         "app.set_handler(lambda event: seen.append(event))\n"
-        'app.run_native(title="quadraui run_native test")\n'
+        "try:\n"
+        '    app.run_native(title="quadraui run_native test")\n'
+        "except NoDisplayError as exc:\n"
+        "    print(f'NO_DISPLAY_RAISED:{exc}')\n"
+        "    raise SystemExit(0)\n"
         'print(f"RUN_NATIVE_RETURNED seen={len(seen)}")\n'
         'print("WINDOW_CLOSE_SEEN" if any(e == "WindowClose" for e in seen) else "NO_WINDOW_CLOSE")\n'
     )
     result = _run_script(tmp_path, "run_opens.py", body, env)
 
+    _skip_if_no_display(result)
     if result.returncode != 0:
-        if _looks_like_no_display(result.stderr):
-            pytest.skip(
-                "no usable display for a native GTK window: "
-                f"rc={result.returncode} stderr={result.stderr!r}"
-            )
         pytest.fail(
             f"run_native script failed unexpectedly: rc={result.returncode} "
             f"stdout={result.stdout!r} stderr={result.stderr!r}"
@@ -115,7 +133,7 @@ def test_run_native_propagates_tick_handler_exception(tmp_path):
     env["QUADRAUI_GTK_SMOKE_MS"] = "5000"
 
     body = (
-        "from quadraui import QuiApp\n"
+        "from quadraui import QuiApp, NoDisplayError\n"
         "app = QuiApp(40, 20)\n"
         'app.insert_button({"id": "demo:ok", "label": "OK", "focused": True})\n'
         "def on_tick():\n"
@@ -124,16 +142,107 @@ def test_run_native_propagates_tick_handler_exception(tmp_path):
         "try:\n"
         '    app.run_native(title="quadraui run_native test")\n'
         '    print("RUN_NATIVE_DID_NOT_RAISE")\n'
+        "except NoDisplayError as exc:\n"
+        "    print(f'NO_DISPLAY_RAISED:{exc}')\n"
         "except RuntimeError as exc:\n"
         '    print(f"RUN_NATIVE_RAISED:{exc}")\n'
     )
     result = _run_script(tmp_path, "run_propagates.py", body, env)
 
-    if "RUN_NATIVE_RAISED" not in result.stdout and _looks_like_no_display(result.stderr):
-        pytest.skip(
-            "no usable display for a native GTK window: "
-            f"rc={result.returncode} stderr={result.stderr!r}"
-        )
+    _skip_if_no_display(result)
     assert "RUN_NATIVE_RAISED:tick handler asked to exit" in result.stdout, (
         f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
     )
+
+
+def test_run_native_second_call_raises_native_already_run_error(tmp_path):
+    # The re-entrancy check (`native_consumed`) runs before the no-display
+    # check, so a second `run_native()` call only ever reaches
+    # `NativeAlreadyRunError` once the *first* call actually opened (and
+    # closed) a real window -- this needs a real display, unlike the
+    # no-display test below.
+    env = dict(os.environ)
+    env["QUADRAUI_GTK_SMOKE_MS"] = "200"
+
+    body = (
+        "from quadraui import QuiApp, NativeAlreadyRunError, NoDisplayError\n"
+        "app = QuiApp(10, 5)\n"
+        "try:\n"
+        '    app.run_native(title="first")\n'
+        "except NoDisplayError as exc:\n"
+        "    print(f'NO_DISPLAY_RAISED:{exc}')\n"
+        "    raise SystemExit(0)\n"
+        "try:\n"
+        '    app.run_native(title="second")\n'
+        "    print('SECOND_CALL_DID_NOT_RAISE')\n"
+        "except NativeAlreadyRunError as exc:\n"
+        "    print(f'SECOND_CALL_RAISED:{exc}')\n"
+    )
+    result = _run_script(tmp_path, "run_twice.py", body, env)
+
+    _skip_if_no_display(result)
+    assert "SECOND_CALL_RAISED" in result.stdout, (
+        f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+
+def test_run_native_invalid_app_id_raises_clear_error(tmp_path):
+    # The `app_id` validity check runs after the no-display check but
+    # before `native_consumed` is set (see `lib.rs`'s `run_native`), so
+    # reaching `InvalidAppIdError` still needs a real display to get past
+    # that earlier check -- same reasoning as the re-entrancy test above.
+    # The id below starts with a digit, which `g_application_id_is_valid`
+    # rejects outright.
+    env = dict(os.environ)
+    env["QUADRAUI_GTK_SMOKE_MS"] = "200"
+
+    body = (
+        "from quadraui import QuiApp, InvalidAppIdError, NoDisplayError\n"
+        "app = QuiApp(10, 5)\n"
+        "try:\n"
+        '    app.run_native(title="invalid app_id test", app_id="1.not.valid")\n'
+        "    print('RUN_NATIVE_DID_NOT_RAISE')\n"
+        "except NoDisplayError as exc:\n"
+        "    print(f'NO_DISPLAY_RAISED:{exc}')\n"
+        "except InvalidAppIdError as exc:\n"
+        "    print(f'INVALID_APP_ID_RAISED:{exc}')\n"
+    )
+    result = _run_script(tmp_path, "run_invalid_app_id.py", body, env)
+
+    _skip_if_no_display(result)
+    assert "INVALID_APP_ID_RAISED" in result.stdout, (
+        f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+
+def test_run_native_no_display_raises_clear_error(tmp_path):
+    """With `DISPLAY`/`WAYLAND_DISPLAY` stripped from the environment, GTK's
+    own display check fails before `run_native` ever builds a window or an
+    `Application` -- this forces the "no display reachable" branch via the
+    environment rather than depending on what the host actually has
+    plugged in, so (on Linux/Windows) it passes on any host, display or
+    not. Skips rather than asserts if the host still finds a display with
+    those variables unset (e.g. a macOS window server, which isn't gated by
+    either variable)."""
+    env = dict(os.environ)
+    for var in ("DISPLAY", "WAYLAND_DISPLAY"):
+        env.pop(var, None)
+
+    body = (
+        "from quadraui import QuiApp, NoDisplayError\n"
+        "app = QuiApp(10, 5)\n"
+        "try:\n"
+        "    app.run_native(title='no display test')\n"
+        "    print('RUN_NATIVE_DID_NOT_RAISE')\n"
+        "except NoDisplayError as exc:\n"
+        "    print(f'NO_DISPLAY_RAISED:{exc}')\n"
+    )
+    result = _run_script(tmp_path, "run_no_display.py", body, env)
+
+    if "NO_DISPLAY_RAISED" not in result.stdout:
+        pytest.skip(
+            "host still found a reachable display with DISPLAY/WAYLAND_DISPLAY "
+            f"unset (e.g. a macOS window server): rc={result.returncode} "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+    assert "NO_DISPLAY_RAISED:run_native found no display" in result.stdout
