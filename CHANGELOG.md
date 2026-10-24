@@ -61,6 +61,13 @@ only a push to `main` runs this workflow.
 
 ### Added
 
+- `Backend::set_editor_right_reserve_w()`/`editor_right_reserve_w()` (both
+  default-provided, no-op/`None`) let a host reserve trailing width in an
+  `Editor` area — e.g. a minimap strip — without relocating the vertical
+  scrollbar. `TuiBackend` overrides both: the gutter, text, selection
+  overlays and horizontal-scrollbar track all narrow by the reserved column
+  count, while the vertical scrollbar stays pinned to the area's true right
+  edge.
 - `MinimapSizing::RepeatToFill(f32)` — a new `Minimap` row-pitch sizing that
   repeat-paints a short sampled-line list across a whole-number multiple of
   the base pitch to visually stretch it across a taller strip, instead of

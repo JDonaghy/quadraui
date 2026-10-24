@@ -56,11 +56,23 @@ pub struct EditorPaintResult {
 
 /// Paint an [`Editor`] into `buf`. See module docs for paint-category
 /// inventory and exclusions (status line stays with the host).
+///
+/// `right_reserve` is a column count (in `buf` cells) trimmed off the
+/// *trailing* edge of `area` before the gutter/text/scrollbar layout is
+/// derived. Background fill, per-row text, selection overlays and the
+/// horizontal scrollbar track all stop short of this reserved strip,
+/// leaving it untouched for a caller to paint something else into (a
+/// minimap strip, for example) without that content being overwritten
+/// on the next repaint. The vertical scrollbar still hugs the true
+/// right edge of `area` — unaffected by the reserve — so the reserved
+/// strip ends up sandwiched between the text and the scrollbar, not
+/// behind it. Pass `0` to get the previous, unreserved behavior.
 pub fn draw_editor(
     buf: &mut Buffer,
     area: Rect,
     editor: &Editor,
     theme: &Theme,
+    right_reserve: u16,
 ) -> EditorPaintResult {
     let mut result = EditorPaintResult::default();
 
@@ -81,14 +93,29 @@ pub fn draw_editor(
     let default_fg = qc(theme.foreground);
     let gutter_w = editor.gutter_char_width as u16;
     let viewport_lines = area.height as usize;
-    let has_scrollbar = editor.total_lines > viewport_lines && area.width > gutter_w + 1;
-    let viewport_cols =
-        (area.width as usize).saturating_sub(gutter_w as usize + if has_scrollbar { 1 } else { 0 });
+    let has_scrollbar =
+        editor.total_lines > viewport_lines && area.width > gutter_w + right_reserve + 1;
+    let viewport_cols = (area.width as usize).saturating_sub(
+        gutter_w as usize + right_reserve as usize + if has_scrollbar { 1 } else { 0 },
+    );
     let has_h_scrollbar = editor.max_col > viewport_cols && area.height > 1;
+    // Width shared by the background fill, the per-row text and the
+    // horizontal scrollbar track: `area.width` minus the gutter, minus
+    // `right_reserve`, minus the vertical scrollbar's own column — i.e.
+    // everything up to (but not including) the reserved trailing strip.
+    let text_width = area
+        .width
+        .saturating_sub(gutter_w)
+        .saturating_sub(right_reserve)
+        .saturating_sub(if has_scrollbar { 1 } else { 0 });
+    let bg_width = area
+        .width
+        .saturating_sub(right_reserve)
+        .saturating_sub(if has_scrollbar { 1 } else { 0 });
 
     // ── Background fill ─────────────────────────────────────────
     for row in 0..area.height {
-        for col in 0..area.width {
+        for col in 0..bg_width {
             set_cell(buf, area.x + col, area.y + row, ' ', default_fg, window_bg);
         }
     }
@@ -114,10 +141,9 @@ pub fn draw_editor(
             }
         };
         if line_bg != window_bg {
-            // Stop short of the reserved vertical scrollbar column, like
-            // `viewport_cols`/`text_width` below — the row highlight must
-            // not bleed into the scrollbar track.
-            let bg_width = area.width.saturating_sub(if has_scrollbar { 1 } else { 0 });
+            // Stop short of the vertical scrollbar column and the
+            // reserved trailing strip (`bg_width`, computed above) — the
+            // row highlight must not bleed into either.
             for col in 0..bg_width {
                 set_cell(buf, area.x + col, screen_y, ' ', default_fg, line_bg);
             }
@@ -188,12 +214,8 @@ pub fn draw_editor(
             }
         }
 
-        // ── Text (narrowed by 1 when scrollbar is shown) ────────
+        // ── Text (narrowed by the scrollbar column and any reserve) ─
         let text_area_x = area.x + gutter_w;
-        let text_width = area
-            .width
-            .saturating_sub(gutter_w)
-            .saturating_sub(if has_scrollbar { 1 } else { 0 });
         render_text_line(
             buf,
             text_area_x,
@@ -338,26 +360,10 @@ pub fn draw_editor(
 
     // ── Selection overlays ──────────────────────────────────────
     if let Some(sel) = &editor.selection {
-        render_selection(
-            buf,
-            area,
-            editor,
-            sel,
-            window_bg,
-            theme.selection,
-            default_fg,
-        );
+        render_selection(buf, area, editor, sel, theme, theme.selection, text_width);
     }
     for esel in &editor.extra_selections {
-        render_selection(
-            buf,
-            area,
-            editor,
-            esel,
-            window_bg,
-            theme.selection,
-            default_fg,
-        );
+        render_selection(buf, area, editor, esel, theme, theme.selection, text_width);
     }
     if let Some(yh) = &editor.yank_highlight {
         render_selection(
@@ -365,9 +371,9 @@ pub fn draw_editor(
             area,
             editor,
             yh,
-            window_bg,
+            theme,
             theme.yank_highlight_bg,
-            default_fg,
+            text_width,
         );
     }
 
@@ -406,9 +412,10 @@ pub fn draw_editor(
         };
         let sb_y = area.y + area.height - 1;
         let track_x = area.x + gutter_w;
-        let track_w = area
-            .width
-            .saturating_sub(gutter_w + if has_scrollbar { 1 } else { 0 });
+        // Same width as the text columns above — the h-scrollbar spans
+        // exactly the text region, stopping short of both the vertical
+        // scrollbar column and the reserved trailing strip.
+        let track_w = text_width;
         if track_w > 0 {
             let track = crate::event::Rect::new(track_x as f32, sb_y as f32, track_w as f32, 1.0);
             let scrollbar = Scrollbar::horizontal(
@@ -622,22 +629,29 @@ fn render_text_line(
 /// wrapped lines highlight only the segment that overlaps the selection
 /// range, and ghost-continuation / diff-padding rows are skipped
 /// entirely). Sets each touched cell's bg to `color`, preserving the
-/// cell's existing fg unless that fg equals `window_bg` (in which case
-/// the cell would be invisible against the new bg, so it's swapped to
-/// `default_fg`). Mirrors `vimcode::tui_main::render_impl::render_selection`.
+/// cell's existing fg unless that fg equals the window background (in
+/// which case the cell would be invisible against the new bg, so it's
+/// swapped to the theme's default foreground). Mirrors
+/// `vimcode::tui_main::render_impl::render_selection`.
 fn render_selection(
     buf: &mut Buffer,
     area: Rect,
     editor: &Editor,
     sel: &EditorSelection,
-    window_bg: RColor,
+    theme: &Theme,
     color: Color,
-    default_fg: RColor,
+    text_width: u16,
 ) {
+    let window_bg = qc(if editor.show_active_bg {
+        theme.editor_active_background
+    } else {
+        theme.background
+    });
+    let default_fg = qc(theme.foreground);
     let sel_bg = qc(color);
     let gutter_w = editor.gutter_char_width as u16;
     let text_area_x = area.x + gutter_w;
-    let text_width = area.width.saturating_sub(gutter_w) as usize;
+    let text_width = text_width as usize;
 
     for (row_idx, line) in editor.lines.iter().enumerate() {
         let Some(cols) = sel.cols_on(line) else {
@@ -769,7 +783,66 @@ mod tests {
         let area = RtRect::new(0, 0, 20, 5);
 
         // Must not panic.
-        let _ = draw_editor(&mut buf, area, &editor, &theme);
+        let _ = draw_editor(&mut buf, area, &editor, &theme, 0);
+    }
+
+    /// `right_reserve` must carve out a strip at the trailing edge of
+    /// `area` that the background fill and text paint leave untouched,
+    /// while the vertical scrollbar still hugs the true right edge of
+    /// `area` — unaffected by the reserve, per this function's doc.
+    #[test]
+    fn draw_editor_right_reserve_leaves_strip_untouched_and_keeps_scrollbar_at_edge() {
+        let lines = vec![sel_test_line(0, "hi", 0, false, None)];
+        let mut editor = test_editor(lines, vec![]);
+        // > viewport_lines (area.height below) so a v-scrollbar is drawn.
+        editor.total_lines = 100;
+        let theme = Theme::default();
+
+        let area = RtRect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        let right_reserve: u16 = 3;
+
+        // Sentinel: mark the whole buffer with a glyph/style the paint
+        // never produces, so any cell still carrying it afterward proves
+        // this function skipped writing there.
+        for y in 0..area.height {
+            for x in 0..area.width {
+                set_cell(&mut buf, x, y, '?', RColor::Reset, RColor::Reset);
+            }
+        }
+
+        let _ = draw_editor(&mut buf, area, &editor, &theme, right_reserve);
+
+        let scrollbar_x = area.x + area.width - 1;
+        for y in 0..area.height {
+            let scrollbar_cell = &buf[(scrollbar_x, y)];
+            assert_ne!(
+                scrollbar_cell.symbol(),
+                "?",
+                "vertical scrollbar must hug the true right edge regardless of right_reserve"
+            );
+
+            // Every column inside the reserved strip (between the text
+            // area and the scrollbar column) must still carry the
+            // sentinel — untouched by background fill or text paint.
+            for x in (scrollbar_x - right_reserve)..scrollbar_x {
+                let cell = &buf[(x, y)];
+                assert_eq!(
+                    cell.symbol(),
+                    "?",
+                    "column {x} is inside the right_reserve strip and must be left untouched"
+                );
+            }
+        }
+
+        // A column inside the text area (left of the reserved strip)
+        // must have been painted over by the background fill.
+        let painted_cell = &buf[(0, 0)];
+        assert_ne!(
+            painted_cell.symbol(),
+            "?",
+            "columns left of the reserve strip must still be painted"
+        );
     }
 
     // ── Selection column math via `EditorSelection::cols_on` ────────────
@@ -848,7 +921,7 @@ mod tests {
 
         let mut buf = Buffer::empty(RtRect::new(0, 0, 10, 4));
         let area = RtRect::new(0, 0, 10, 4);
-        let _ = draw_editor(&mut buf, area, &editor, &theme);
+        let _ = draw_editor(&mut buf, area, &editor, &theme, 0);
 
         let sel_bg = qc(theme.selection);
         let window_bg = qc(theme.background);

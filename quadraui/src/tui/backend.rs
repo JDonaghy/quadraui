@@ -321,6 +321,15 @@ pub struct TuiBackend {
     /// that never calls the setter sees byte-for-byte the same layout and
     /// paint as before this field existed.
     minimap_sizing: Option<crate::primitives::minimap::MinimapSizing>,
+    /// Column count reserved between the editor's text area and its
+    /// vertical scrollbar, set via
+    /// [`Backend::set_editor_right_reserve_w`]. `None` (the default)
+    /// reserves nothing — [`Self::draw_editor`]/[`Backend::editor_layout`]
+    /// paint and hit-test exactly as before this field existed. One TUI
+    /// cell is one pixel unit here (`char_width` is `1.0`), so the stored
+    /// `f32` rounds losslessly to the `u16` column count
+    /// [`crate::tui::draw_editor`] takes directly.
+    editor_right_reserve_w: Option<f32>,
 }
 
 impl TuiBackend {
@@ -359,6 +368,7 @@ impl TuiBackend {
             full_repaint_requested: false,
             input_gone: false,
             minimap_sizing: None,
+            editor_right_reserve_w: None,
         }
     }
 
@@ -3600,6 +3610,7 @@ impl Backend for TuiBackend {
     ) -> crate::backend::EditorPaintResult {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
+        let right_reserve = self.editor_right_reserve_w.unwrap_or(0.0).max(0.0).round() as u16;
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
                 false,
@@ -3607,7 +3618,8 @@ impl Backend for TuiBackend {
             );
             return crate::backend::EditorPaintResult::default();
         };
-        let tui_result = crate::tui::draw_editor(frame.buffer_mut(), area, editor, &theme);
+        let tui_result =
+            crate::tui::draw_editor(frame.buffer_mut(), area, editor, &theme, right_reserve);
         // Cache for `render_frame` — `draw_editor` only sees
         // the buffer, not the `Frame`, so it can't call
         // `Frame::set_cursor_position` itself. See
@@ -4375,6 +4387,14 @@ impl Backend for TuiBackend {
 
     fn set_minimap_sizing(&mut self, sizing: Option<crate::primitives::minimap::MinimapSizing>) {
         self.minimap_sizing = sizing;
+    }
+
+    fn editor_right_reserve_w(&self) -> Option<f32> {
+        self.editor_right_reserve_w
+    }
+
+    fn set_editor_right_reserve_w(&mut self, px: Option<f32>) {
+        self.editor_right_reserve_w = px;
     }
 
     fn draw_image(
@@ -7410,13 +7430,77 @@ mod tests {
         // exposes resolves at the painted track's own origin.
         let area = q_rect_to_ratatui(rect);
         let mut buf = ratatui::buffer::Buffer::empty(area);
-        crate::tui::draw_editor(&mut buf, area, &editor, &backend.current_theme);
+        crate::tui::draw_editor(&mut buf, area, &editor, &backend.current_theme, 0);
 
         assert_eq!(
             layout.hit_test(vsb.x, vsb.y),
             crate::EditorHit::VScrollbar,
             "a click at the painted scrollbar track's origin must resolve via editor_layout's \
              own hit_test as VScrollbar"
+        );
+    }
+
+    /// `Backend::set_editor_right_reserve_w`/`editor_right_reserve_w` must
+    /// round-trip, default to `None`, and `TuiBackend::editor_layout` must
+    /// fold the stored value into `Editor::layout_with_options_and_reserve`
+    /// so `text_bounds`/`h_scrollbar_bounds` narrow by the reserve while
+    /// `v_scrollbar_bounds` keeps hugging the true right edge — matching
+    /// `draw_editor`'s own `right_reserve` handling (`src/tui/editor.rs`).
+    #[test]
+    fn editor_right_reserve_w_narrows_layout_without_moving_scrollbar() {
+        let mut backend = TuiBackend::new();
+        assert_eq!(
+            backend.editor_right_reserve_w(),
+            None,
+            "a host that never calls the setter must see no reserve"
+        );
+
+        let rect = QRect::new(2.0, 1.0, 20.0, 5.0);
+        let editor = crate::Editor {
+            id: WidgetId::new("ed"),
+            rect,
+            lines: (0..5).map(blank_editor_line).collect(),
+            cursor: None,
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines: 100,
+            max_col: 4,
+            gutter_char_width: 0,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: HashMap::new(),
+            code_action_lines: std::collections::HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: false,
+            lightbulb_glyph: '!',
+        };
+
+        let baseline = backend.editor_layout(rect, &editor);
+
+        backend.set_editor_right_reserve_w(Some(3.0));
+        assert_eq!(backend.editor_right_reserve_w(), Some(3.0));
+        let reserved = backend.editor_layout(rect, &editor);
+
+        let vsb = baseline
+            .v_scrollbar_bounds
+            .expect("100 lines in a 5-row viewport must trigger a v-scrollbar");
+        assert_eq!(
+            reserved.v_scrollbar_bounds,
+            Some(vsb),
+            "v_scrollbar_bounds must stay put — right_reserve_w only narrows the text area"
+        );
+        assert_eq!(
+            reserved.text_bounds.width,
+            baseline.text_bounds.width - 3.0,
+            "text_bounds must narrow by exactly the stored reserve"
         );
     }
 
