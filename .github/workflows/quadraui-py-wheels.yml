@@ -31,6 +31,11 @@ on:
       - "quadraui/Cargo.toml"
       - ".github/workflows/quadraui-py-wheels.yml"
   workflow_dispatch: {}
+  # Lets `quadraui-py-release.yml` build this same matrix for a tagged
+  # release instead of duplicating the build-and-smoke-test steps. No
+  # inputs/secrets needed — the caller only cares about the uploaded
+  # `quadraui-py-wheel-*` artifacts this workflow already produces.
+  workflow_call: {}
 
 env:
   CARGO_TERM_COLOR: always

@@ -4,14 +4,32 @@ build-backend = "maturin"
 
 [project]
 name = "quadraui"
-version = "0.0.0"
+# Versioned on its own line, independent of the `quadraui` Rust crate's
+# version (currently 0.5.0): the Python binding's surface is a narrower,
+# slower-moving subset of the Rust API (see `quadraui-py/src/lib.rs`), so a
+# crate version bump should not force a PyPI release and vice versa. Tagged
+# and published by `.github/workflows/quadraui-py-release.yml` off a
+# `py-v<version>` tag, which asserts this field matches the tag before
+# building anything.
+version = "0.1.0"
 description = "Python bindings for quadraui: insert descriptors and render them headlessly."
+readme = "README.md"
 requires-python = ">=3.8"
 license = "MIT OR Apache-2.0"
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: User Interfaces",
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
+    "Operating System :: OS Independent",
 ]
+
+[project.urls]
+Homepage = "https://jdonaghy.github.io/quadraui/"
+Documentation = "https://jdonaghy.github.io/quadraui/"
+Repository = "https://github.com/JDonaghy/quadraui"
+Issues = "https://github.com/JDonaghy/quadraui/issues"
 
 [tool.maturin]
 # Compiled extension lives at `quadraui/_quadraui` underneath the pure-Python
