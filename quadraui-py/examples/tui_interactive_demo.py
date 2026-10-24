@@ -30,6 +30,9 @@ is the only way to ask `run_tui()` to return.
 
 from quadraui import QuiApp
 
+# Only used to seed the headless `TuiDriver` this demo builds against before
+# `run_tui()` takes over; `run_tui()` itself ignores both and sizes the real
+# viewport from the actual terminal's current dimensions instead.
 WIDTH = 80
 HEIGHT = 24
 

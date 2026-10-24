@@ -12,15 +12,24 @@ the headless `TuiDriver` and the real `TuiRunner`), so unlike
 `test_run_native.py` these tests are not skipped based on `hasattr`.
 
 Deterministic coverage here is deliberately narrow: `TuiRunner::new`'s
-very first step is `enable_raw_mode()`, which fails fast with a plain
-`io::Error` (not a panic, not a hang) whenever stdin/stdout isn't a real
-tty -- exactly the case for a subprocess run with its stdin piped or
-redirected from `/dev/null`, as every test here does. This is the only
-`run_tui` failure mode that is both fast and host-independent; actually
-driving a live keypress through a real tty would need a full terminal
-emulator responding to crossterm's own terminal queries (e.g. the cursor
-position report `ESC[6n`), which a bare pty slave does not do on its own,
-so that path is left to a human running the terminal demo in
+very first step is `enable_raw_mode()`, which on Unix opens the fd it
+operates on via crossterm's `tty_fd()` (`terminal/sys/file_descriptor.rs`
+in the `crossterm` crate) -- `STDIN_FILENO` when it `isatty()`, falling
+back to `open("/dev/tty")` otherwise. A piped/`/dev/null` stdin alone does
+NOT make that fallback fail: `open("/dev/tty")` still succeeds and hands
+back the *same* controlling terminal the parent shell owns, so without
+extra care a subprocess run from an interactive shell would seize and
+raw-mode the developer's real terminal instead of failing fast. The fix
+is to drop the controlling terminal entirely before `exec`: `_run_script`
+passes `start_new_session=True`, which (POSIX `setsid()`) detaches the
+child into its own session with no controlling terminal at all, so
+`open("/dev/tty")` fails with `ENXIO` and `enable_raw_mode()` fails fast
+with a plain `io::Error` -- deterministic and host-independent, since it
+no longer depends on whether a controlling terminal happens to be present.
+Actually driving a live keypress through a real tty would need a full
+terminal emulator responding to crossterm's own terminal queries (e.g.
+the cursor position report `ESC[6n`), which a bare pty slave does not do
+on its own, so that path is left to a human running the terminal demo in
 `examples/tui_interactive_demo.py` instead.
 """
 
@@ -29,11 +38,16 @@ import sys
 
 import pytest
 
-from quadraui import InternalError, QuiApp
+from quadraui import QuiApp
 
-# `run_tui` is always present -- confirm the binding itself didn't regress
-# to being feature-gated before relying on that in every other test here.
-assert hasattr(QuiApp, "run_tui")
+
+def test_run_tui_binding_is_present():
+    # `run_tui` is always compiled in -- confirm the binding itself didn't
+    # regress to being feature-gated before relying on that in every other
+    # test here. A real test function (rather than a bare module-level
+    # `assert`) turns a regression into a reported failure instead of a
+    # silent collection error, and still runs under `python -O`.
+    assert hasattr(QuiApp, "run_tui")
 
 
 def _run_script(tmp_path, name, body):
@@ -46,6 +60,12 @@ def _run_script(tmp_path, name, body):
             text=True,
             timeout=30,
             stdin=subprocess.DEVNULL,
+            # Detach from the controlling terminal (POSIX `setsid`) so
+            # crossterm's `open("/dev/tty")` fallback has nothing to open.
+            # Without this, a piped/`/dev/null` stdin does not stop
+            # `enable_raw_mode()` from reaching for -- and raw-moding --
+            # whatever real terminal invoked this test.
+            start_new_session=True,
         )
     except subprocess.TimeoutExpired as exc:  # pragma: no cover - environment-dependent
         pytest.fail(f"run_tui script did not exit: {exc!r}")
