@@ -64,10 +64,10 @@ only a push to `main` runs this workflow.
 - `Backend::set_editor_right_reserve_w()`/`editor_right_reserve_w()` (both
   default-provided, no-op/`None`) let a host reserve trailing width in an
   `Editor` area — e.g. a minimap strip — without relocating the vertical
-  scrollbar. `TuiBackend` overrides both: the gutter, text, selection
-  overlays and horizontal-scrollbar track all narrow by the reserved column
-  count, while the vertical scrollbar stays pinned to the area's true right
-  edge.
+  scrollbar. `TuiBackend` overrides both: the background fill, text,
+  selection overlays, cursor (block and secondary), AI ghost text and the
+  horizontal-scrollbar track all stop short of the reserved column count,
+  while the vertical scrollbar stays pinned to the area's true right edge.
 - `MinimapSizing::RepeatToFill(f32)` — a new `Minimap` row-pitch sizing that
   repeat-paints a short sampled-line list across a whole-number multiple of
   the base pitch to visually stretch it across a taller strip, instead of
@@ -95,6 +95,12 @@ only a push to `main` runs this workflow.
   whole-unit remainder is now spread across the first few rows (one extra
   repeat each), so the painted rows sum to the strip's height exactly
   whenever a full-row-count display is possible at all.
+### Changed
+
+- `quadraui::tui::draw_editor` takes a new required `right_reserve: u16`
+  parameter (pass `0` to reproduce the prior unreserved layout); it narrows
+  paint to leave room for the trailing strip `set_editor_right_reserve_w`
+  reserves (see the `### Added` entry above).
 
 ## [0.5.1] - 2026-10-24
 ### Added

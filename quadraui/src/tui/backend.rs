@@ -325,10 +325,14 @@ pub struct TuiBackend {
     /// vertical scrollbar, set via
     /// [`Backend::set_editor_right_reserve_w`]. `None` (the default)
     /// reserves nothing — [`Self::draw_editor`]/[`Backend::editor_layout`]
-    /// paint and hit-test exactly as before this field existed. One TUI
-    /// cell is one pixel unit here (`char_width` is `1.0`), so the stored
-    /// `f32` rounds losslessly to the `u16` column count
-    /// [`crate::tui::draw_editor`] takes directly.
+    /// paint and hit-test exactly as before this field existed. The
+    /// setter quantises to a whole cell at set-time (one TUI cell is one
+    /// pixel unit here, so this is a no-op for already-integral input),
+    /// which is what keeps this value's two readers in agreement:
+    /// [`Backend::editor_layout`]'s default body folds the raw `f32` in
+    /// directly, while [`crate::tui::draw_editor`] takes a `u16` and
+    /// would otherwise round independently (and possibly differently,
+    /// for a non-integral input) from what `editor_layout` saw.
     editor_right_reserve_w: Option<f32>,
 }
 
@@ -4394,7 +4398,13 @@ impl Backend for TuiBackend {
     }
 
     fn set_editor_right_reserve_w(&mut self, px: Option<f32>) {
-        self.editor_right_reserve_w = px;
+        // Quantise to a whole cell at set-time (one TUI cell == one pixel
+        // unit here), so the stored value already matches what
+        // `draw_editor`'s `.round() as u16` produces. Without this, a
+        // non-integral `px` (e.g. `Some(2.5)`) would round one way for
+        // `editor_layout`'s raw-`f32` fold and round again (independently)
+        // for `draw_editor`'s `u16` cast, and the two could disagree.
+        self.editor_right_reserve_w = px.map(|v| v.max(0.0).round());
     }
 
     fn draw_image(
@@ -7446,6 +7456,13 @@ mod tests {
     /// so `text_bounds`/`h_scrollbar_bounds` narrow by the reserve while
     /// `v_scrollbar_bounds` keeps hugging the true right edge — matching
     /// `draw_editor`'s own `right_reserve` handling (`src/tui/editor.rs`).
+    /// `max_col` is large enough (relative to the 20-column viewport) that
+    /// an h-scrollbar is actually present in both the baseline and the
+    /// reserved layout, so `h_scrollbar_bounds` narrowing is a real
+    /// assertion rather than a vacuous `None`. The paint call at the end
+    /// cross-checks `editor_layout` against `draw_editor` at this same
+    /// *non-zero* reserve, not just at `0` (which is all
+    /// `editor_layout_matches_draw_editor_scrollbar_track` above covers).
     #[test]
     fn editor_right_reserve_w_narrows_layout_without_moving_scrollbar() {
         let mut backend = TuiBackend::new();
@@ -7468,7 +7485,10 @@ mod tests {
             scroll_top: 0,
             scroll_left: 0,
             total_lines: 100,
-            max_col: 4,
+            // > the ~16-19 visible columns left after the gutter/
+            // scrollbar/reserve in both the baseline and reserved
+            // layouts below, so an h-scrollbar is present in both.
+            max_col: 40,
             gutter_char_width: 0,
             is_active: true,
             show_active_bg: false,
@@ -7501,6 +7521,33 @@ mod tests {
             reserved.text_bounds.width,
             baseline.text_bounds.width - 3.0,
             "text_bounds must narrow by exactly the stored reserve"
+        );
+
+        let baseline_hsb = baseline
+            .h_scrollbar_bounds
+            .expect("max_col 40 over a narrow viewport must trigger an h-scrollbar");
+        let reserved_hsb = reserved
+            .h_scrollbar_bounds
+            .expect("the reserve narrows visible_cols further, still triggering an h-scrollbar");
+        assert_eq!(
+            reserved_hsb.width,
+            baseline_hsb.width - 3.0,
+            "h_scrollbar_bounds must narrow by exactly the stored reserve, same as text_bounds"
+        );
+
+        // Cross-check against the real `draw_editor` paint at this same
+        // non-zero reserve: `v_scrollbar_bounds` must match the track
+        // `draw_editor` actually painted (area.x + area.width - 1, …),
+        // same invariant as the reserve-0 test above but exercised here
+        // with `right_reserve = 3`.
+        let area = q_rect_to_ratatui(rect);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        crate::tui::draw_editor(&mut buf, area, &editor, &backend.current_theme, 3);
+        assert_eq!(
+            vsb.x,
+            rect.x + rect.width - 1.0,
+            "v_scrollbar_bounds's x must match draw_editor's track formula \
+             (area.x + area.width - 1) even with a non-zero reserve"
         );
     }
 
