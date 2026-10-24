@@ -2,8 +2,8 @@
 
 Python bindings for [quadraui](https://github.com/JDonaghy/quadraui), a
 cross-platform Rust UI toolkit. This package lets a Python program build
-`quadraui` descriptors and drive them headlessly — no Rust toolchain
-required:
+`quadraui` descriptors and drive them headlessly, or call `run_tui()` to take
+over a real terminal with them — no Rust toolchain required:
 
 ```bash
 pip install quadraui

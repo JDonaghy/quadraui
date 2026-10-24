@@ -1,4 +1,5 @@
-//! PyO3 bindings over `quadraui`'s headless TUI driver.
+//! PyO3 bindings over `quadraui`'s headless TUI driver, plus the real
+//! terminal and native-window runners that take it over.
 //!
 //! [`QuiApp`] wraps a `quadraui::tui::testing::TuiDriver` running an
 //! in-crate [`AppLogic`] that holds one optional descriptor per core
@@ -636,19 +637,25 @@ impl QuiApp {
     /// `NativeAppLogic`-style wrapper is needed here, since there's no
     /// runner-forced exit event to intercept. The GIL is released for the
     /// duration of each bounded `pump` wait (mirroring `run_native`), with
-    /// the same per-iteration `py.check_signals()` call so a Ctrl-C at the
-    /// controlling terminal still raises `KeyboardInterrupt` promptly
-    /// instead of only being noticed once the app exits on its own;
-    /// `handle`/`tick` re-acquire the GIL per callback via `Python::attach`,
-    /// exactly as they do for the headless path.
+    /// the same per-iteration `py.check_signals()` call `run_native` uses —
+    /// but note raw mode (`cfmakeraw`) disables `ISIG`, so a Ctrl-C *at the
+    /// terminal* no longer raises `SIGINT` at all; it instead arrives as an
+    /// ordinary key event through `handle`, same as any other keystroke, and
+    /// it's that handler's job to turn it into an exit if desired.
+    /// `check_signals()` here only catches a signal delivered some other
+    /// way (e.g. `kill -INT` from another process) promptly instead of only
+    /// being noticed once the app exits on its own; `handle`/`tick`
+    /// re-acquire the GIL per callback via `Python::attach`, exactly as
+    /// they do for the headless path.
     ///
     /// After the terminal is released, the headless driver is left holding
     /// an empty `PyAppLogic`, same as after `run_native` returns. Raises
     /// `InternalError` if the terminal couldn't be taken over at all (most
-    /// commonly: stdin/stdout isn't a real tty, e.g. under a piped
-    /// subprocess), or re-raises whatever exception a registered
-    /// handler/tick callback raised, or a `KeyboardInterrupt` from a
-    /// Ctrl-C the pump loop observed.
+    /// commonly: no controlling terminal is reachable, e.g. a subprocess
+    /// detached from its session with `setsid`), or re-raises whatever
+    /// exception a registered handler/tick callback raised, or a
+    /// `KeyboardInterrupt` from an externally delivered signal the pump loop
+    /// observed.
     fn run_tui(&mut self, py: Python<'_>) -> PyResult<()> {
         self.guarded(|app| {
             let app_logic = std::mem::take(app.driver.app_mut());
@@ -665,7 +672,7 @@ impl QuiApp {
                 let mut runner = TuiRunner::new(app_logic)?;
                 let poll_interval = Duration::from_millis(50);
                 loop {
-                    if let StepOutcome::Exited = runner.pump(poll_interval)? {
+                    if runner.pump(poll_interval)? == StepOutcome::Exited {
                         break;
                     }
                     // Re-acquiring the GIL here, even briefly, is what lets
