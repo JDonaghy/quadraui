@@ -69,6 +69,13 @@ only a push to `main` runs this workflow.
   shows without re-entering `QuiApp` from inside the runner's borrow of it.
   Existing `insert_*`/`run_*` call sites are unaffected.
 
+### Fixed
+
+- TUI minimap: a file shorter than the sampling budget now stretches its row
+  pitch (up to `MAX_ROW_PITCH`) to fill more of a tall strip's height instead
+  of leaving most of it blank below the last sampled row. The GTK backend and
+  the generic `MinimapSizing`/`layout_with_sizing` mechanism are unchanged.
+
 ## [0.5.1] - 2026-10-24
 ### Added
 
