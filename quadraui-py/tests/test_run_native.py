@@ -1,16 +1,12 @@
 """Black-box coverage for `QuiApp.run_native()`: opens a real OS window via
-`quadraui::gtk::run_with`, closed deterministically rather than by a human,
+`quadraui::gtk::GtkRunner`, closed deterministically rather than by a human,
 and asserts the handler the window dispatched into actually ran.
 
 Each test shells out to a tiny standalone script instead of calling
-`run_native()` in-process. `quadraui::gtk::run_with` hands the raw process
-argv to `gio::Application::run()`, which parses it as GLib/GTK options --
-and pytest's own invocation (`-m pytest ...`, `-v`, ...) contains flags
-`gio::Application` doesn't recognize, so it errors out of the main loop
-before a window is ever built and this module's assertions would be
-checking state that was never exercised. Launching `python <script path>`
-with no other argv keeps that parse clean, exactly like a user double
--clicking (or `python demo.py`-ing) the example script would see.
+`run_native()` in-process, so a GTK window/display connection from one test
+can never leak into the next -- each script gets its own fresh interpreter,
+`GApplication` registration and (if reachable) display connection, exactly
+like a human running `python demo.py` once and exiting.
 
 Only present when the extension is built with the `gtk` feature; skips
 (rather than fails) when it isn't, or when no display is reachable --
@@ -36,8 +32,24 @@ pytestmark = pytest.mark.skipif(
     reason="extension built without the `gtk` feature (no `run_native`)",
 )
 
+# Markers GTK/GDK/GLib leave in stderr specifically when no display is
+# reachable at all -- the only condition these tests skip rather than fail
+# on. Anything else failing (a real `run_native` bug, a Python traceback)
+# falls through to an assertion failure instead of silently skipping.
+_NO_DISPLAY_MARKERS = (
+    "cannot open display",
+    "could not connect",
+    "no protocol specified",
+    "failed to open display",
+)
 
-def _run_script(tmp_path, name, body, env_extra):
+
+def _looks_like_no_display(stderr):
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _NO_DISPLAY_MARKERS)
+
+
+def _run_script(tmp_path, name, body, env):
     script = tmp_path / name
     script.write_text(body)
     try:
@@ -46,17 +58,17 @@ def _run_script(tmp_path, name, body, env_extra):
             capture_output=True,
             text=True,
             timeout=30,
-            env=env_extra,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:  # pragma: no cover - environment-dependent
         pytest.skip(f"run_native script did not exit: {exc!r}")
 
 
 def test_run_native_opens_and_runs_handler_until_smoke_timeout(tmp_path):
-    # `QUADRAUI_GTK_SMOKE_MS` is `quadraui::gtk::run_with`'s own documented
-    # unattended-exit knob (see `quadraui/src/gtk/run.rs`) -- it closes the
-    # window itself after the given number of milliseconds, so this never
-    # blocks on a human closing it.
+    # `QUADRAUI_GTK_SMOKE_MS` is `GtkRunner`'s own documented unattended-exit
+    # knob (see `quadraui/src/gtk/run.rs`) -- it closes the window itself
+    # after the given number of milliseconds, so this never blocks on a
+    # human closing it.
     env = dict(os.environ)
     env["QUADRAUI_GTK_SMOKE_MS"] = "200"
 
@@ -64,18 +76,30 @@ def test_run_native_opens_and_runs_handler_until_smoke_timeout(tmp_path):
         "from quadraui import QuiApp\n"
         "app = QuiApp(40, 20)\n"
         'app.insert_button({"id": "demo:ok", "label": "OK", "focused": True})\n'
-        "app.set_handler(lambda event: None)\n"
+        "seen = []\n"
+        "app.set_handler(lambda event: seen.append(event))\n"
         'app.run_native(title="quadraui run_native test")\n'
-        'print("RUN_NATIVE_RETURNED")\n'
+        'print(f"RUN_NATIVE_RETURNED seen={len(seen)}")\n'
+        'print("WINDOW_CLOSE_SEEN" if any(e == "WindowClose" for e in seen) else "NO_WINDOW_CLOSE")\n'
     )
     result = _run_script(tmp_path, "run_opens.py", body, env)
 
     if result.returncode != 0:
-        pytest.skip(
-            "no usable display for a native GTK window: "
-            f"rc={result.returncode} stderr={result.stderr!r}"
+        if _looks_like_no_display(result.stderr):
+            pytest.skip(
+                "no usable display for a native GTK window: "
+                f"rc={result.returncode} stderr={result.stderr!r}"
+            )
+        pytest.fail(
+            f"run_native script failed unexpectedly: rc={result.returncode} "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
         )
     assert "RUN_NATIVE_RETURNED" in result.stdout
+    # The smoke timeout destroys the window directly rather than going
+    # through `WindowClose`, so the handler must have seen no events at all
+    # -- confirming `run_native` returned because the window actually
+    # closed, not because it errored out before ever registering one.
+    assert "NO_WINDOW_CLOSE" in result.stdout, result.stdout
 
 
 def test_run_native_propagates_tick_handler_exception(tmp_path):
@@ -105,9 +129,11 @@ def test_run_native_propagates_tick_handler_exception(tmp_path):
     )
     result = _run_script(tmp_path, "run_propagates.py", body, env)
 
-    if result.returncode != 0 and "RUN_NATIVE_RAISED" not in result.stdout:
+    if "RUN_NATIVE_RAISED" not in result.stdout and _looks_like_no_display(result.stderr):
         pytest.skip(
             "no usable display for a native GTK window: "
             f"rc={result.returncode} stderr={result.stderr!r}"
         )
-    assert "RUN_NATIVE_RAISED:tick handler asked to exit" in result.stdout
+    assert "RUN_NATIVE_RAISED:tick handler asked to exit" in result.stdout, (
+        f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+    )

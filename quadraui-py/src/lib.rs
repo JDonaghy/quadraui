@@ -25,9 +25,13 @@
 //!
 //! When built with the `gtk` feature, [`QuiApp::run_native`] opens a real
 //! OS window instead of driving the headless driver: it moves this app's
-//! whole [`PyAppLogic`] into `quadraui::gtk::run_with`, which also releases
-//! the GIL for its event loop and re-acquires it per callback, the same
-//! discipline `run` uses for the headless loop.
+//! whole [`PyAppLogic`] (wrapped in [`NativeAppLogic`]) into a
+//! `quadraui::gtk::GtkRunner`, pumped from a loop that also releases the
+//! GIL for the duration of each wait and re-acquires it per callback, the
+//! same discipline `run` uses for the headless loop. `GtkRunner` calls
+//! `activate` directly instead of parsing the host process's own argv —
+//! the right entry point for an embedded interpreter, which has no
+//! `gio::Application`-shaped argv of its own to hand over.
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -289,6 +293,47 @@ impl AppLogic for PyAppLogic {
     }
 }
 
+/// Wraps [`PyAppLogic`] for `run_native`'s native `GtkRunner` loop,
+/// forcing a `WindowClose` event to exit the loop regardless of what the
+/// registered handler (if any) returns.
+///
+/// `quadraui::gtk`'s own window-close wiring vetoes the OS close request
+/// ("×", Alt-F4, window-manager close) unless the dispatched handler
+/// returns `Reaction::Exit` — the right default for an app that wants to
+/// confirm/veto a close, but `PyAppLogic::handle` returns
+/// `Reaction::Continue` whenever no handler is registered at all, which
+/// would otherwise leave a bare `run_native()` call with no way to close
+/// its own window. This wrapper still calls through to the inner
+/// `PyAppLogic::handle` first (so a registered handler keeps seeing
+/// `WindowClose`, observing it, and raising to signal its own exit, same
+/// as every other event), then overrides only the `WindowClose` case to
+/// always return `Reaction::Exit` afterwards.
+#[cfg(feature = "gtk")]
+struct NativeAppLogic(PyAppLogic);
+
+#[cfg(feature = "gtk")]
+impl AppLogic for NativeAppLogic {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, area: ()) {
+        self.0.render(backend, area);
+    }
+
+    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+        let is_window_close = matches!(event, UiEvent::WindowClose);
+        let reaction = self.0.handle(event, backend);
+        if is_window_close {
+            Reaction::Exit
+        } else {
+            reaction
+        }
+    }
+
+    fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
+        self.0.tick(backend)
+    }
+}
+
 /// A headless quadraui app, driven entirely from Python.
 ///
 /// Construct it with a `width`/`height` cell grid, insert descriptors with
@@ -323,10 +368,11 @@ struct QuiApp {
 /// returns — so nothing outside the closure can observe or race the
 /// wrapped value while it runs. `run` wraps `&mut QuiApp` (itself
 /// `#[pyclass(unsendable)]`, pinned to one Python thread, so no other
-/// thread could reach the same instance even if it tried); `run_native`
-/// wraps an owned `(PyAppLogic, RunConfig)` that `run_native` has already
-/// moved out of its `QuiApp` — in both cases the value lives only on this
-/// one thread for the closure's duration.
+/// thread could reach the same instance even if it tried); when built
+/// with the `gtk` feature, `run_native` wraps an owned
+/// `(PyAppLogic, RunConfig)` that it has already moved out of its
+/// `QuiApp` — in both cases the value lives only on this one thread for
+/// the closure's duration.
 struct AssertUngil<T>(T);
 
 // SAFETY: see the type's doc comment — `detach` keeps execution on the
@@ -461,58 +507,99 @@ impl QuiApp {
         })
     }
 
-    /// Opens a real OS window (via `quadraui::gtk::run_with`) showing this
+    /// Opens a real OS window (via `quadraui::gtk::GtkRunner`) showing this
     /// app's current descriptors, and blocks the calling thread until that
     /// window closes. `title`, if given, overrides the generic default
     /// window title. Only present when this extension is built with the
     /// `gtk` feature.
     ///
+    /// Routes through `GtkRunner` rather than `quadraui::gtk::run`/
+    /// `run_with`, which own the whole process and parse the real `argv` —
+    /// wrong for an embedded interpreter, since that argv is whatever
+    /// Python itself was launched with (`python demo.py`, `python -m
+    /// demo`, `pytest ...`, ...), not a `gio::Application`-shaped argument
+    /// list, and the first positional argument isn't a file to `open`.
+    /// `GtkRunner` calls `activate` directly with no argv parsing and
+    /// deliberately doesn't wire `connect_open`, and single-instance
+    /// dedup is turned off (`RunConfig::with_single_instance(false)`) so a
+    /// concurrent second `run_native()` call — or any other quadraui
+    /// `gtk_*` process already running — gets its own window instead of
+    /// being silently forwarded to the first instance with no window and
+    /// no error.
+    ///
     /// Moves this app's whole [`PyAppLogic`] — every inserted descriptor
     /// plus both registered handlers — out of the headless driver this
-    /// `QuiApp` wraps and into the native runner, which takes it by value.
-    /// The GIL is released for the duration of the native event loop
-    /// (mirroring [`Self::run`]'s `py.detach`); `handle`/`tick` re-acquire
-    /// it per callback via `Python::attach`, exactly as they do for the
-    /// headless path — neither method needed a single change to drive a
-    /// native backend instead of the TUI one, since both only ever see a
-    /// `&mut dyn Backend`.
+    /// `QuiApp` wraps, wraps it in [`NativeAppLogic`] (so closing the
+    /// window from the OS always works, even with no handler registered —
+    /// see that type's doc), and hands it to the native runner by value.
+    /// The GIL is released for the duration of each bounded wait inside
+    /// the pump loop (mirroring [`Self::run`]'s `py.detach`), with a
+    /// `py.check_signals()` call between waits so a Ctrl-C at the
+    /// controlling terminal still raises `KeyboardInterrupt` promptly
+    /// instead of only being noticed once the window closes on its own;
+    /// `handle`/`tick` re-acquire the GIL per callback via `Python::attach`,
+    /// exactly as they do for the headless path.
     ///
     /// After the window closes, the headless driver is left holding an
-    /// empty `PyAppLogic` (nothing to hand back — `gtk::run_with` owns the
-    /// one this call moved out for as long as the window was open):
+    /// empty `PyAppLogic` (nothing to hand back — the native runner owned
+    /// the one this call moved out for as long as the window was open):
     /// `step`/`run`/`screen` still work, they just have nothing left to
     /// paint or dispatch to until the caller inserts descriptors/handlers
     /// again. Re-raises whatever exception a registered handler/tick
-    /// callback raised while the window was open.
+    /// callback raised while the window was open, or a `KeyboardInterrupt`
+    /// from a Ctrl-C the pump loop observed.
     #[cfg(feature = "gtk")]
     #[pyo3(signature = (title=None))]
     fn run_native(&mut self, py: Python<'_>, title: Option<String>) -> PyResult<()> {
-        if self.poisoned {
-            return Err(PoisonedError::new_err(
-                "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
-            ));
-        }
-        let app_logic = std::mem::take(self.driver.app_mut());
-        let native_error = app_logic.pending_error.clone();
-        let config = match title {
-            Some(title) => quadraui::gtk::RunConfig::new("org.quadraui.app", title),
-            None => quadraui::gtk::RunConfig::default(),
-        };
-        let wrapped = AssertUngil((app_logic, config));
-        py.detach(move || {
-            // Bind the whole `wrapped` first so the closure captures the
-            // `AssertUngil`-wrapped value itself rather than `wrapped.0`
-            // directly — 2021-edition disjoint capture would otherwise
-            // capture just the field, which isn't `Send` on its own and
-            // defeats the point of the wrapper.
-            let wrapped = wrapped;
-            let (app_logic, config) = wrapped.0;
-            quadraui::gtk::run_with(app_logic, config);
-        });
-        if let Some(err) = native_error.borrow_mut().take() {
-            return Err(err);
-        }
-        Ok(())
+        self.guarded(|app| {
+            let app_logic = std::mem::take(app.driver.app_mut());
+            // Cloned twice: `native_error` stays outside the `detach`
+            // closure for the caller to read back once the window closes;
+            // `loop_error` is the clone the loop itself writes a
+            // `check_signals()` failure into — both are the same
+            // `Rc<RefCell<_>>` cell underneath, so either write is visible
+            // through either handle.
+            let native_error = app_logic.pending_error.clone();
+            let loop_error = app_logic.pending_error.clone();
+            let config = match title {
+                Some(title) => quadraui::gtk::RunConfig::new("org.quadraui.app", title),
+                None => quadraui::gtk::RunConfig::default(),
+            }
+            .with_single_instance(false);
+            let wrapped = AssertUngil((app_logic, config, loop_error));
+            py.detach(move || {
+                // Bind the whole `wrapped` first so the closure captures the
+                // `AssertUngil`-wrapped value itself rather than `wrapped.0`
+                // directly — 2021-edition disjoint capture would otherwise
+                // capture just the field, which isn't `Send` on its own and
+                // defeats the point of the wrapper.
+                let wrapped = wrapped;
+                let (app_logic, config, loop_error) = wrapped.0;
+                let mut runner =
+                    quadraui::gtk::GtkRunner::new_with(NativeAppLogic(app_logic), config);
+                let poll_interval = std::time::Duration::from_millis(50);
+                loop {
+                    if runner.pump(poll_interval) == quadraui::gtk::StepOutcome::Exited {
+                        break;
+                    }
+                    // Re-acquiring the GIL here, even briefly, is what lets
+                    // CPython's pending-signal check run — with no
+                    // handler/tick ever called (e.g. a window just sitting
+                    // open with no events), control otherwise never
+                    // returns to Python at all for the whole native loop,
+                    // and a Ctrl-C would go unnoticed until the window
+                    // closes some other way.
+                    if let Err(err) = Python::attach(|py| py.check_signals()) {
+                        *loop_error.borrow_mut() = Some(err);
+                        break;
+                    }
+                }
+            });
+            if let Some(err) = native_error.borrow_mut().take() {
+                return Err(err);
+            }
+            Ok(())
+        })
     }
 
     /// Inserts a `Button` descriptor from a Python dict, returning its slot
