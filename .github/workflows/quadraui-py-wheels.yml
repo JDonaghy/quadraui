@@ -5,12 +5,15 @@ name: quadraui-py wheels
 # imports it -- proving the wheel is actually loadable, not just that
 # `maturin build` exited zero.
 #
-# Linux has no manylinux-compatible system GTK to bundle, so this crate
-# is TUI-only on every platform by construction: `quadraui-py/Cargo.toml`'s
-# `quadraui` dependency enables only the `tui` feature, never `gtk`. That
-# makes the Linux wheel in the matrix below identical in shape to the
-# macOS/Windows ones -- no separate "GTK-less Linux variant" job is
-# needed, because there is only ever one variant.
+# Linux has no manylinux-compatible system GTK to bundle, so every wheel
+# this workflow ships is TUI-only by construction: `maturin build` below
+# never passes `--features gtk`, so the published wheel never links GTK
+# even though `quadraui-py/Cargo.toml` does declare an optional `gtk`
+# feature (gating `QuiApp.run_native`) for embedders who build the crate
+# themselves with that feature on. That makes the Linux wheel in the
+# matrix below identical in shape to the macOS/Windows ones -- no separate
+# "GTK-less Linux variant" job is needed, because there is only ever one
+# variant.
 #
 # `abi3-py38` (set on the `pyo3` dependency itself, not a maturin flag) is
 # what makes one wheel per OS/arch work across every CPython >= 3.8, so

@@ -8,7 +8,8 @@ Every error ``QuiApp`` raises itself (as opposed to one a registered
 Python callback raised, which passes through unchanged) is a
 ``QuadrauiError`` subclass: ``InvalidDescriptorError``, ``SlotOccupiedError``,
 ``UnknownSlotError``, ``InvalidDimensionsError``, ``InvalidCharError``,
-``PanicError``, ``PoisonedError``, and ``InternalError``.
+``PanicError``, ``PoisonedError``, ``InternalError``,
+``NativeAlreadyRunError``, and ``NoDisplayError``.
 """
 
 from ._quadraui import (
@@ -16,6 +17,8 @@ from ._quadraui import (
     InvalidCharError,
     InvalidDescriptorError,
     InvalidDimensionsError,
+    NativeAlreadyRunError,
+    NoDisplayError,
     PanicError,
     PoisonedError,
     QuadrauiError,
@@ -35,4 +38,6 @@ __all__ = [
     "PanicError",
     "PoisonedError",
     "InternalError",
+    "NativeAlreadyRunError",
+    "NoDisplayError",
 ]
