@@ -33,6 +33,14 @@ manager. Closing from the window manager raises `_Quit` from inside the
 handler; the `q`/Escape path instead returns `False`, the other way a
 handler can ask `run_native()` to return -- both exercised here so neither
 path bit-rots.
+
+The two paths look the same on GTK but differ visibly on macOS: the
+`q`/Escape path returns from `run_native()` without tearing the window
+down (AppKit's own exit route ends the whole process, so this binding
+stops pumping instead), so the window stays on screen, frozen, until the
+interpreter exits a moment later at the end of this script. Closing from
+the window manager closes the window first on either backend. Both end
+with the final `closed after N click(s)` line on stdout.
 """
 
 from quadraui import QuiApp

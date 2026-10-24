@@ -1070,6 +1070,20 @@ jobs:
       # target — still check-only, so no libpython link either way.
       - name: Check (quadraui-py, gtk feature)
         run: cargo check -p quadraui-py --features gtk,pyo3/extension-module --all-targets
+      # Same gap for the `macos` feature, which no other job covers at all:
+      # `macos.yml` only builds `-p quadraui`, and its `paths` filter
+      # doesn't fire for a `quadraui-py`-only change. On this Linux runner
+      # `quadraui::macos` itself compiles to nothing (`lib.rs` gates `mod
+      # macos` on `target_os = "macos"` as well as the feature), so this
+      # doesn't type-check the AppKit handoff — what it does cover is
+      # everything in `quadraui-py` gated on the *feature* rather than the
+      # target: `NativeAppLogic`'s `Reaction::Exit` downgrade (a `Cell` and
+      # a `matches!`, no AppKit), its `#[cfg(test)]` unit tests via
+      # `--all-targets`, and the non-Apple-target arm of `run_native`.
+      # Without it, a `macos`-feature build of this crate is only ever
+      # compiled on a developer's own Mac.
+      - name: Check (quadraui-py, macos feature)
+        run: cargo check -p quadraui-py --features macos,pyo3/extension-module --all-targets
       # Benches (#1118): same "not built by a plain `cargo build`/`cargo
       # test`" gap, same "named `--bench` flags, not a bare `-p quadraui`"
       # (a bare invocation also runs the whole lib unit-test suite as a

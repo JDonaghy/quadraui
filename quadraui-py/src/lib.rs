@@ -52,7 +52,7 @@
 //! `TuiRunner`) is unconditionally on for this whole crate; the headless
 //! driver `QuiApp` otherwise wraps needs it too.
 use std::any::Any;
-#[cfg(all(feature = "macos", target_os = "macos", not(feature = "gtk")))]
+#[cfg(all(feature = "macos", not(feature = "gtk")))]
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -400,7 +400,14 @@ impl AppLogic for PyAppLogic {
 /// instead of routing through `apply_reaction`'s `Reaction::Exit` branch —
 /// so the window closes on its own without calling `[NSApp terminate:]`,
 /// the same "closes cleanly, returns control to the caller" outcome GTK's
-/// `request_exit()` gives for its own window-close path.
+/// `request_exit()` gives for its own window-close path. That outcome also
+/// depends on a timing property of `MacRunner`: closing the last window
+/// makes AppKit ask `applicationShouldTerminateAfterLastWindowClosed:`,
+/// which answers `true` and would route on to `applicationShouldTerminate:`
+/// and end the process — but `MacRunner::run_one` reads its
+/// `windowWillClose:` latch and reports `StepOutcome::Exited`
+/// *synchronously*, so `run_native`'s pump loop breaks (and `run_native`
+/// returns) before that deferred last-window check ever runs.
 ///
 /// On the `macos` feature (with `gtk` not also enabled), this wrapper also
 /// intercepts any *other* `Reaction::Exit` — a registered handler raising,
@@ -415,7 +422,17 @@ impl AppLogic for PyAppLogic {
 /// re-raised normally, exactly like GTK. The window itself is left open
 /// (not torn down) until the process exits, the same outcome already
 /// documented for a Ctrl-C on this backend.
-#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
+///
+/// None of that interception touches AppKit — it is a `Cell<bool>` and a
+/// `matches!` — so the type is compiled (and unit-tested) on a `macos`-feature
+/// build for any `target_os`, not just an Apple one. Only the
+/// `run_native` branch that constructs it is Apple-only, which is why the
+/// non-Apple configuration needs the `dead_code` allowance below.
+#[cfg(any(feature = "gtk", feature = "macos"))]
+#[cfg_attr(
+    all(feature = "macos", not(feature = "gtk"), not(target_os = "macos")),
+    allow(dead_code)
+)]
 struct NativeAppLogic {
     inner: PyAppLogic,
     /// Set by `handle`/`tick` when a non-`WindowClose` `Reaction::Exit`
@@ -423,11 +440,11 @@ struct NativeAppLogic {
     /// Only present on the `macos` feature without `gtk` also enabled —
     /// GTK's own `apply_reaction` already handles `Reaction::Exit` from
     /// any event without this wrapper's help.
-    #[cfg(all(feature = "macos", target_os = "macos", not(feature = "gtk")))]
+    #[cfg(all(feature = "macos", not(feature = "gtk")))]
     exit_requested: Rc<Cell<bool>>,
 }
 
-#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
+#[cfg(any(feature = "gtk", feature = "macos"))]
 impl AppLogic for NativeAppLogic {
     type AreaId = ();
 
@@ -441,7 +458,7 @@ impl AppLogic for NativeAppLogic {
         if is_window_close {
             return Reaction::Exit;
         }
-        #[cfg(all(feature = "macos", target_os = "macos", not(feature = "gtk")))]
+        #[cfg(all(feature = "macos", not(feature = "gtk")))]
         if matches!(reaction, Reaction::Exit) {
             self.exit_requested.set(true);
             return Reaction::Continue;
@@ -451,7 +468,7 @@ impl AppLogic for NativeAppLogic {
 
     fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
         let reaction = self.inner.tick(backend);
-        #[cfg(all(feature = "macos", target_os = "macos", not(feature = "gtk")))]
+        #[cfg(all(feature = "macos", not(feature = "gtk")))]
         if matches!(reaction, Reaction::Exit) {
             self.exit_requested.set(true);
             return Reaction::Continue;
@@ -658,10 +675,12 @@ impl QuiApp {
     /// to deliver to — a second launch sharing this `app_id` with
     /// `single_instance=True` is absorbed by the first instance with no
     /// window and no event, not GTK's usual "bring the existing window
-    /// forward" behaviour. `MacRunner` has no `gio::Application`-style id,
-    /// icon or single-instance concept, so on the `macos` feature (with
-    /// `gtk` not also enabled) `app_id`, `icon_name` and `single_instance`
-    /// are accepted but silently ignored. Only present when this extension
+    /// forward" behaviour. `MacRunner` has no `gio::Application`-style id or
+    /// single-instance concept, and no equivalent of GTK's `icon_name` —
+    /// its `RunConfig::app_icon` takes a `quadraui` `ImageSource`, not an
+    /// icon-theme name a string could be forwarded to — so on the `macos`
+    /// feature (with `gtk` not also enabled) `app_id`, `icon_name` and
+    /// `single_instance` are accepted but silently ignored. Only present when this extension
     /// is built with the `gtk` or `macos` feature; if both are enabled in
     /// the same build, `gtk` wins and the `macos` branch below never runs.
     ///
@@ -723,6 +742,19 @@ impl QuiApp {
     /// always closes the window on either backend, since [`NativeAppLogic`]
     /// forces that one case through `evaluate_window_should_close`/
     /// `request_exit` rather than the general `Reaction::Exit` path.
+    ///
+    /// That `WindowClose` case returning control to Python (rather than
+    /// AppKit terminating the interpreter) is a *timing* property worth
+    /// stating outright: `MacRunner::run_one` reads the latch
+    /// `windowWillClose:` sets and reports `StepOutcome::Exited`
+    /// synchronously, within the same pump call, so the loop below breaks
+    /// before AppKit's deferred
+    /// `applicationShouldTerminateAfterLastWindowClosed:` →
+    /// `applicationShouldTerminate:` → `NSApplicationTerminateReply`
+    /// sequence gets a chance to run. Closing the window from the
+    /// titlebar on macOS is therefore the load-bearing manual check for
+    /// this binding: if that ordering ever changed, `run_native` would
+    /// take the interpreter down with the window instead of returning.
     ///
     /// After the window closes, the headless driver is left holding an
     /// empty `PyAppLogic` (nothing to hand back — the native runner owned
@@ -912,11 +944,17 @@ impl QuiApp {
             // build arm needs. `quadraui::macos` is itself gated on
             // `target_os = "macos"`, so there is no runner to hand off to
             // here; this arm exists only to keep `run_native` buildable on
-            // other hosts, never to run for real.
+            // other hosts, never to run for real. It raises `InternalError`
+            // rather than `NotOnMainThreadError` because the condition is a
+            // build/platform mismatch — no thread the caller could have
+            // picked would make it work.
             #[cfg(all(feature = "macos", not(feature = "gtk"), not(target_os = "macos")))]
             {
-                let _ = (&app_id, &icon_name, single_instance, &title);
-                Err(NotOnMainThreadError::new_err(
+                // Every argument the two real arms consume, discarded in one
+                // place: this arm opens no window, so each would otherwise
+                // be an unused-variable warning under `-D warnings`.
+                let _ = (py, &app_id, &icon_name, single_instance, &title);
+                Err(InternalError::new_err(
                     "run_native with the `macos` feature requires building for a \
                     macOS target_os; this binary was built for a different platform",
                 ))
@@ -1222,9 +1260,13 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<NotOnMainThreadError>(),
     )?;
     m.add("InvalidAppIdError", py.get_type::<InvalidAppIdError>())?;
-    // Which native backend (if any) `run_native` is wired to in this build —
-    // `gtk` wins when both features are enabled (see `run_native`'s doc).
-    // Exists so a test/tool can tell the two builds apart without the
+    // Which native *feature* (if any) this build was compiled with — `gtk`
+    // wins when both are enabled (see `run_native`'s doc). This is a build
+    // configuration report, not a promise that a window can actually open:
+    // `"macos"` is reported by a `--features macos` build for any
+    // `target_os`, including the Linux/Windows typecheck builds where
+    // `run_native` can only raise `InternalError` for the platform
+    // mismatch. Exists so a test/tool can tell the builds apart without the
     // backend-specific side effects `run_native` itself would have (opening
     // a real window, a `GApplication` id check that only applies to GTK,
     // ...); not part of the stable Python API.
@@ -1308,8 +1350,8 @@ mod tests {
         });
     }
 
-    /// `_NATIVE_BACKEND` reports exactly one backend name per build, picking
-    /// `gtk` when both native features are enabled (the same precedence
+    /// `_NATIVE_BACKEND` reports exactly one native-feature name per build,
+    /// picking `gtk` when both are enabled (the same precedence
     /// `run_native`'s own `#[cfg]` branches use) -- this is what lets
     /// `test_run_native.py`'s skip guard and this test itself tell a `gtk`
     /// build apart from a `macos` one without opening a real window.
@@ -1339,9 +1381,12 @@ mod tests {
     /// `exit_requested`, instead of letting it reach `apply_reaction`'s own
     /// `Exit` branch -- which would call `[NSApp terminate:]` and kill the
     /// whole process rather than letting `run_native`'s pump loop return
-    /// control normally. Driven through `TuiDriver` purely as a headless
-    /// `AppLogic` harness here; no real window is involved.
-    #[cfg(all(feature = "macos", target_os = "macos", not(feature = "gtk")))]
+    /// control normally. The `q` keystroke mirrors the quit key
+    /// `examples/native_window_demo.py` answers with `return False`.
+    /// Driven through `TuiDriver` purely as a headless `AppLogic` harness
+    /// here; no real window is involved, and no `target_os` gate, so this
+    /// covers the downgrade on every host.
+    #[cfg(all(feature = "macos", not(feature = "gtk")))]
     #[test]
     fn native_app_logic_downgrades_handler_exit_to_continue() {
         Python::attach(|py| {
@@ -1360,7 +1405,11 @@ mod tests {
             };
             let mut driver = TuiDriver::new(logic, 10, 10);
 
-            let reaction = driver.dispatch(UiEvent::DisplaysChanged);
+            let reaction = driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Char('q'),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
 
             assert_eq!(
                 reaction,
@@ -1376,7 +1425,7 @@ mod tests {
 
     /// Same downgrade, but via the `tick` path (an `on_tick` handler
     /// returning `False` rather than an event handler).
-    #[cfg(all(feature = "macos", target_os = "macos", not(feature = "gtk")))]
+    #[cfg(all(feature = "macos", not(feature = "gtk")))]
     #[test]
     fn native_app_logic_downgrades_tick_exit_to_continue() {
         Python::attach(|py| {
@@ -1413,7 +1462,7 @@ mod tests {
     /// inner handler returns, and does *not* go through the downgrade --
     /// `exit_requested` stays unset because `run_native`'s native runner
     /// (not this flag) tears the window down for that case.
-    #[cfg(all(feature = "macos", target_os = "macos", not(feature = "gtk")))]
+    #[cfg(all(feature = "macos", not(feature = "gtk")))]
     #[test]
     fn native_app_logic_window_close_still_exits_without_flag() {
         Python::attach(|py| {
