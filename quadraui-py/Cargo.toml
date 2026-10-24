@@ -23,11 +23,15 @@ name = "quadraui_py"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# Enables `QuiApp.run_native`, which opens a real OS window via
-# `quadraui::gtk::GtkRunner` instead of driving the headless driver.
-# Forwards to `quadraui`'s own `gtk` feature rather than duplicating its
-# dependency list, since this crate never calls GTK APIs directly.
+# Each of these enables `QuiApp.run_native`, which opens a real OS window
+# instead of driving the headless driver: `gtk` via `quadraui::gtk::GtkRunner`,
+# `macos` via `quadraui::macos::MacRunner`. Both forward to `quadraui`'s own
+# same-named feature rather than duplicating its dependency list, since this
+# crate never calls GTK/AppKit APIs directly except for the `objc2`
+# main-thread preflight check `macos` needs before handing off to
+# `MacRunner` (see `run_native`'s doc).
 gtk = ["quadraui/gtk"]
+macos = ["quadraui/macos", "dep:objc2"]
 
 [dependencies]
 # `tui` is unconditional (not under `[features]`) because it already gates
@@ -38,6 +42,11 @@ quadraui = { path = "../quadraui", features = ["tui"] }
 pyo3 = { version = "0.29", features = ["abi3-py38"] }
 pythonize = "0.29"
 serde = "1.0"
+# Version pinned to match `quadraui`'s own `objc2` dependency; only used for
+# `MainThreadMarker::new()` in `run_native`'s macOS preflight check, so this
+# crate's own `[dependencies]` entry stays independent of whatever `quadraui`
+# re-exports (it re-exports nothing from `objc2`).
+objc2 = { version = "0.6", optional = true }
 
 [dev-dependencies]
 # `cargo test -p quadraui-py` runs as a standalone binary rather than an

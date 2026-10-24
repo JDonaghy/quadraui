@@ -31,10 +31,12 @@ import sys
 import pytest
 
 from quadraui import QuiApp
+from quadraui import _quadraui as _native
 
 pytestmark = pytest.mark.skipif(
-    not hasattr(QuiApp, "run_native"),
-    reason="extension built without the `gtk` feature (no `run_native`)",
+    getattr(_native, "_NATIVE_BACKEND", None) != "gtk",
+    reason="extension not built with the `gtk` feature (or built with `macos` "
+    "instead, which this suite's GtkRunner-specific env vars/errors don't apply to)",
 )
 
 # Backstop only: markers GTK/GDK/GLib could still leave in stderr for a
