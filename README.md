@@ -2,6 +2,8 @@
 
 **One Rust UI codebase that runs in a terminal and as a native desktop window.**
 
+📖 **Docs, guides & getting started → [jdonaghy.github.io/quadraui](https://jdonaghy.github.io/quadraui)**
+
 quadraui is a widget toolkit with four rendering backends: **TUI** (via
 ratatui), **GTK4** (Cairo + Pango), **macOS** (Core Graphics + Core Text)
 and **Windows** (Direct2D + DirectWrite). You write your app once, and the
@@ -153,10 +155,17 @@ tracker.
 
 ## Getting started
 
+**Rust** — add the crate:
+
 ```toml
 [dependencies]
 quadraui = { version = "0.5", features = ["tui", "gtk"] }
 ```
+
+**Python** — quadraui has PyO3 bindings (`quadraui-py`): build descriptors from
+Python and have quadraui render them. The Python getting-started lives on the
+[docs site](https://jdonaghy.github.io/quadraui); see also `quadraui-py/` in this
+repo.
 
 Feature flags, the system packages each backend needs, and every
 platform combination CI verifies are in
