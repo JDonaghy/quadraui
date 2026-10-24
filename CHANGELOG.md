@@ -68,6 +68,19 @@ only a push to `main` runs this workflow.
 - `GtkRunner::request_exit()` — destroys every window the running
   `gio::Application` owns, letting an embedder (or a signal handler) tear
   the window down from outside the normal close-request path.
+- `gtk::app_id_is_valid(&str) -> bool` — wraps `g_application_id_is_valid`
+  so an embedder can check a caller-supplied `app_id` before handing it to
+  `RunConfig`/`GtkRunner::new_with`, instead of an invalid id tripping an
+  uncatchable `GLib-GIO-CRITICAL` once it reaches `Application::builder()`.
+  `quadraui-py`'s `run_native()` now raises a catchable `InvalidAppIdError`
+  for this case instead.
+
+### Fixed
+
+- `run_native()`'s Ctrl-C path now runs one more non-blocking pump after
+  `GtkRunner::request_exit()` before returning, so the window's `destroy()`
+  actually gets processed instead of being left for an already-abandoned
+  `MainContext`.
 
 ## [0.5.0] - 2026-10-23
 ### Added

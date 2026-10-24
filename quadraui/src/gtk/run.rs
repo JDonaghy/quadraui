@@ -296,6 +296,23 @@ impl RunConfig {
     }
 }
 
+/// Whether `app_id` is a syntactically valid `GApplication` id — ASCII,
+/// dot-separated, starting with a letter, no element starting with a
+/// digit, no two consecutive dots, no trailing dot, 255 bytes or fewer
+/// (see the [GNOME application ID guidelines](https://developer.gnome.org/documentation/tutorials/application-id.html)
+/// and `g_application_id_is_valid`, which this wraps directly). An
+/// embedding host building a [`RunConfig`] (or [`GtkRunner::new_with`])
+/// from a caller-supplied string should check this *before* handing the
+/// id to [`run_with`]/[`GtkRunner::new`] — an invalid id reaching
+/// `Application::builder().application_id(...)` trips
+/// `g_return_if_fail` as an uncatchable `GLib-GIO-CRITICAL` on stderr
+/// (GLib's own assertion failures don't unwind, so there is no `Result`
+/// a caller in this crate could turn into one), rather than a value this
+/// crate can turn into an error.
+pub fn app_id_is_valid(app_id: &str) -> bool {
+    gtk4::gio::Application::id_is_valid(app_id)
+}
+
 impl Default for RunConfig {
     /// Default configuration: matches [`run`]'s previously-hardcoded defaults,
     /// so `run_with(app, RunConfig::default())` and `run(app)` behave identically.
@@ -536,6 +553,24 @@ pub struct GtkRunner {
 /// returns `false` off the main thread instead of letting that panic
 /// surface, so a caller on the wrong thread gets a graceful "no display"
 /// answer rather than a different, confusing crash.
+///
+/// That main-thread check is macOS-only, but the underlying "GTK only
+/// tolerates being initialized once, from one thread" rule is not: on every
+/// platform, calling this (or any other GTK entry point) from a *second*,
+/// different thread after GTK has already been initialized from a first one
+/// still panics, same as calling `gtk4::init()` a second time from a
+/// different thread would. Callers that might run this from more than one
+/// thread over a process's lifetime need their own serialization (e.g.
+/// always calling it from the same thread, or behind a lock) — this
+/// function only degrades the macOS-specific "never ran on the main thread
+/// at all" case to `false`, not the general cross-platform one.
+///
+/// Not a pure query: on success this leaves GTK initialized for the rest of
+/// the process (the same global, one-time init `GtkRunner::new`/`new_with`
+/// would otherwise have performed), and on `false` it currently makes no
+/// promise about state. Calling this at all is itself an observable
+/// side effect, not a value a caller can freely re-request —
+/// see the thread-affinity note above.
 pub fn display_available() -> bool {
     #[cfg(target_os = "macos")]
     if !is_main_thread() {

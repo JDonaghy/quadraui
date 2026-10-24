@@ -161,6 +161,17 @@ create_exception!(
     letting GTK's own init path fail in a way this binding can't catch."
 );
 
+create_exception!(
+    _quadraui,
+    InvalidAppIdError,
+    QuadrauiError,
+    "`run_native`'s `app_id` argument is not a syntactically valid \
+    `GApplication` id (see `quadraui::gtk::app_id_is_valid`). Raised \
+    instead of letting GLib's own `g_application_id_is_valid` assertion \
+    trip an uncatchable `GLib-GIO-CRITICAL` once the id reaches \
+    `Application::builder()`."
+);
+
 /// Slot id of the app's `Button` descriptor.
 const SLOT_BUTTON: i64 = 0;
 /// Slot id of the app's `TextDisplay` descriptor.
@@ -356,9 +367,11 @@ impl AppLogic for PyAppLogic {
 /// would otherwise leave a bare `run_native()` call with no way to close
 /// its own window. This wrapper still calls through to the inner
 /// `PyAppLogic::handle` first (so a registered handler keeps seeing
-/// `WindowClose`, observing it, and raising to signal its own exit, same
-/// as every other event), then overrides only the `WindowClose` case to
-/// always return `Reaction::Exit` afterwards.
+/// `WindowClose` and can still ask to exit itself, either by raising or by
+/// returning `False`, same as every other event — see
+/// [`reaction_from_return`]), then overrides only the `WindowClose` case to
+/// always return `Reaction::Exit` afterwards regardless of what the
+/// handler returned.
 #[cfg(feature = "gtk")]
 struct NativeAppLogic(PyAppLogic);
 
@@ -572,19 +585,29 @@ impl QuiApp {
     /// window title; `app_id` and `icon_name` set the window's
     /// `gio::Application` id and icon the same way, falling back to
     /// `RunConfig`'s own defaults when omitted. `single_instance` defaults
-    /// to `False` so a concurrent second `run_native()` call — or any other
-    /// quadraui `gtk_*` process already running — gets its own window
-    /// instead of being silently forwarded to the first instance with no
-    /// window and no error; pass `True` to opt into GTK's normal
-    /// single-instance dedup. Only present when this extension is built
-    /// with the `gtk` feature.
+    /// to `False`, which sets `ApplicationFlags::NON_UNIQUE` so a
+    /// concurrent second `run_native()` call — or any other quadraui
+    /// `gtk_*` process sharing this `app_id` — always gets its own window.
+    /// Passing `True` only drops that flag; unlike `quadraui::gtk::run`/
+    /// `run_with`, `GtkRunner` (what `run_native` is built on) never wires
+    /// `Application::connect_open` and never calls `Application::run()`,
+    /// so there is no argv/open forwarding here for GLib's own D-Bus dedup
+    /// to deliver to — a second launch sharing this `app_id` with
+    /// `single_instance=True` is absorbed by the first instance with no
+    /// window and no event, not GTK's usual "bring the existing window
+    /// forward" behaviour. Only present when this extension is built with
+    /// the `gtk` feature.
     ///
     /// Raises `NativeAlreadyRunError` if this `QuiApp` already ran
     /// `run_native` once before — see that exception's doc for why a
     /// second call can't just open another window. Raises `NoDisplayError`
     /// if no display is reachable (no `DISPLAY`/`WAYLAND_DISPLAY`, no
     /// macOS window server, ...), instead of letting GTK's own init path
-    /// fail in a way this binding can't catch.
+    /// fail in a way this binding can't catch. Raises `InvalidAppIdError`
+    /// if `app_id` is given but is not a syntactically valid
+    /// `GApplication` id, instead of letting GLib's own assertion trip an
+    /// uncatchable `GLib-GIO-CRITICAL` once it reaches
+    /// `Application::builder()`.
     ///
     /// Routes through `GtkRunner` rather than `quadraui::gtk::run`/
     /// `run_with`, which own the whole process and parse the real `argv` —
@@ -644,6 +667,14 @@ impl QuiApp {
                     DISPLAY/WAYLAND_DISPLAY, no macOS window server, ...)",
                 ));
             }
+            if let Some(app_id) = &app_id {
+                if !quadraui::gtk::app_id_is_valid(app_id) {
+                    return Err(InvalidAppIdError::new_err(format!(
+                        "run_native's app_id {app_id:?} is not a valid GApplication id \
+                        (see https://developer.gnome.org/documentation/tutorials/application-id.html)"
+                    )));
+                }
+            }
             app.native_consumed = true;
 
             let app_logic = std::mem::take(app.driver.app_mut());
@@ -655,13 +686,15 @@ impl QuiApp {
             // through either handle.
             let native_error = app_logic.pending_error.clone();
             let loop_error = app_logic.pending_error.clone();
-            let mut config = quadraui::gtk::RunConfig::default();
-            if let Some(app_id) = app_id {
-                config.app_id = app_id;
-            }
-            if let Some(title) = title {
-                config.title = title;
-            }
+            // `RunConfig::new` for the fields with a documented default
+            // (`app_id`/`title`), builder calls for the rest, rather than
+            // mixing direct field writes on a `default()` value with
+            // builder calls on the same `config`.
+            let defaults = quadraui::gtk::RunConfig::default();
+            let mut config = quadraui::gtk::RunConfig::new(
+                app_id.unwrap_or(defaults.app_id),
+                title.unwrap_or(defaults.title),
+            );
             if let Some(icon_name) = icon_name {
                 config = config.with_icon_name(icon_name);
             }
@@ -692,6 +725,14 @@ impl QuiApp {
                     if let Err(err) = Python::attach(|py| py.check_signals()) {
                         *loop_error.borrow_mut() = Some(err);
                         runner.request_exit();
+                        // `request_exit` only calls `window.destroy()`; one
+                        // more non-blocking pass lets the main context
+                        // actually process that destroy (and whatever
+                        // `destroy`-signal/idle follow-up it queues) before
+                        // this loop exits and `runner` drops, rather than
+                        // leaving it to whatever GLib does on an
+                        // already-abandoned `MainContext`.
+                        runner.step();
                         break;
                     }
                 }
@@ -996,6 +1037,7 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<NativeAlreadyRunError>(),
     )?;
     m.add("NoDisplayError", py.get_type::<NoDisplayError>())?;
+    m.add("InvalidAppIdError", py.get_type::<InvalidAppIdError>())?;
     Ok(())
 }
 
