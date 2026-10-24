@@ -383,14 +383,15 @@ impl AppLogic for PyAppLogic {
 }
 
 /// Wraps [`PyAppLogic`] for `run_native`'s native runner loop (`GtkRunner`
-/// on the `gtk` feature, `MacRunner` on the `macos` feature), forcing a
-/// `WindowClose` event to exit the loop regardless of what the registered
-/// handler (if any) returns.
+/// on the `gtk` feature, `MacRunner` on the `macos` feature, `WinRunner` on
+/// the `win` feature), forcing a `WindowClose` event to exit the loop
+/// regardless of what the registered handler (if any) returns.
 ///
-/// Both backends' own window-close wiring vetoes the OS close request
+/// All three backends' own window-close wiring vetoes the OS close request
 /// ("×"/Alt-F4/window-manager close on GTK, the red traffic-light button on
-/// macOS) unless the dispatched handler returns `Reaction::Exit` — the
-/// right default for an app that wants to confirm/veto a close, but
+/// macOS, the "×"/Alt-F4 close on Windows) unless the dispatched handler
+/// returns `Reaction::Exit` — the right default for an app that wants to
+/// confirm/veto a close, but
 /// `PyAppLogic::handle` returns `Reaction::Continue` whenever no handler is
 /// registered at all, which would otherwise leave a bare `run_native()`
 /// call with no way to close its own window. This wrapper still calls
@@ -539,7 +540,7 @@ struct QuiApp {
 /// wrapped value while it runs. `run` wraps `&mut QuiApp` (itself
 /// `#[pyclass(unsendable)]`, pinned to one Python thread, so no other
 /// thread could reach the same instance even if it tried); when built
-/// with the `gtk` or `macos` feature, `run_native` wraps an owned
+/// with the `gtk`, `macos`, or `win` feature, `run_native` wraps an owned
 /// `(PyAppLogic, RunConfig, ...)` that it has already moved out of its
 /// `QuiApp` — in both cases the value lives only on this one thread for
 /// the closure's duration.
@@ -702,14 +703,15 @@ impl QuiApp {
     /// `quadraui` `ImageSource`, not an icon-theme name a string could be
     /// forwarded to — so on the `macos` feature (with `gtk` not also
     /// enabled) `app_id`, `icon_name` and `single_instance` are accepted but
-    /// silently ignored. `WinRunner` falls in between: it has no `app_id`
-    /// concept and no equivalent of GTK's `icon_name` either (its own
-    /// `RunConfig::with_app_icon` takes an `ImageSource`, same as macOS), so
-    /// on the `win` feature (with neither `gtk` nor `macos` also enabled)
-    /// `app_id` and `icon_name` are accepted but silently ignored — but it
-    /// *does* support `single_instance`, via `RunConfig::with_single_instance`,
-    /// forwarding a second launch's `argv` to the first instance's window via
-    /// `WM_COPYDATA` instead of opening a second window. Only present when
+    /// silently ignored. `WinRunner` is in the same position as
+    /// `MacRunner` here, for a different reason: `RunConfig::single_instance`
+    /// is only ever read by the blocking, process-owning `win::run::run`
+    /// (which creates a `CreateMutexW` guard and forwards a second launch's
+    /// `argv` to the first instance's window via `WM_COPYDATA`), not by
+    /// `WinRunner::new_with`, the runner `run_native` is built on — so on
+    /// the `win` feature (with neither `gtk` nor `macos` also enabled)
+    /// `app_id`, `icon_name` and `single_instance` are all accepted but
+    /// silently ignored, same as on `macos`. Only present when
     /// this extension is built with the `gtk`, `macos`, or `win` feature; if
     /// more than one is enabled in the same build, `gtk` wins over `macos`,
     /// and both win over `win` — the branches below never run for whichever
@@ -749,6 +751,22 @@ impl QuiApp {
     /// argument isn't a file to `open`. `GtkRunner` calls `activate`
     /// directly with no argv parsing and deliberately doesn't wire
     /// `connect_open`.
+    ///
+    /// `WinRunner` has no equivalent of that GTK argv-avoidance: its
+    /// `create_window` (which `WinRunner::new_with` calls) unconditionally
+    /// reads the real process `argv` (skipping `argv[0]`) and, if
+    /// non-empty, dispatches it as `UiEvent::OpenRequested` into the
+    /// handler the moment the window is created — independent of
+    /// `single_instance`. Under `run_native`, that argv belongs to the
+    /// host Python interpreter, not this app, so `python demo.py` (or
+    /// `python -m demo`, `pytest ...`, ...) delivers `OpenRequested {
+    /// files: ["demo.py"] }` (or similar) to the registered handler on
+    /// the `win` feature as soon as the window opens, with no way for a
+    /// caller to suppress it. A handler that tolerates an unrecognised
+    /// event (returning `None`/`False` without raising) is unaffected;
+    /// one that raises on it will see the window open and immediately
+    /// close, with `run_native()` re-raising that exception once the
+    /// pump loop below notices — on Windows only.
     ///
     /// Moves this app's whole [`PyAppLogic`] — every inserted descriptor
     /// plus both registered handlers — out of the headless driver this
@@ -1025,9 +1043,12 @@ impl QuiApp {
                 // icon-theme name, and Windows has no GTK-style
                 // application-id concept); accepted for signature parity
                 // with the `gtk` build and silently ignored here.
-                // `single_instance` *is* honored, via
-                // `RunConfig::with_single_instance`.
-                let _ = (&app_id, &icon_name);
+                // `single_instance` is accepted and ignored too:
+                // `RunConfig::single_instance` is only ever consumed by
+                // `win::run::run` (the mutex guard and `WM_COPYDATA`
+                // forwarding live there), not by `WinRunner::new_with`,
+                // which this binding uses instead.
+                let _ = (&app_id, &icon_name, single_instance);
 
                 app.native_consumed = true;
 
@@ -1035,8 +1056,7 @@ impl QuiApp {
                 let native_error = app_logic.pending_error.clone();
                 let loop_error = app_logic.pending_error.clone();
                 let defaults = quadraui::win::RunConfig::default();
-                let config = quadraui::win::RunConfig::new(title.unwrap_or(defaults.title))
-                    .with_single_instance(single_instance);
+                let config = quadraui::win::RunConfig::new(title.unwrap_or(defaults.title));
                 let wrapped = AssertUngil((app_logic, config, loop_error));
                 let pump_result: Result<(), String> = py.detach(move || {
                     let wrapped = wrapped;
@@ -1407,8 +1427,8 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // enabled (see `run_native`'s doc). This is a build configuration
     // report, not a promise that a window can actually open: `"macos"` (or
     // `"win"`) is reported by a `--features macos` (or `--features win`)
-    // build for any `target_os`, including the Linux typecheck builds where
-    // `run_native` can only raise `InternalError` for the platform
+    // build for any `target_os`, including the Linux/Windows typecheck builds
+    // where `run_native` can only raise `InternalError` for the platform
     // mismatch. Exists so a test/tool can tell the builds apart without the
     // backend-specific side effects `run_native` itself would have (opening
     // a real window, a `GApplication` id check that only applies to GTK,
@@ -1497,10 +1517,13 @@ mod tests {
 
     /// `_NATIVE_BACKEND` reports exactly one native-feature name per build,
     /// picking `gtk` over `macos` over `win` when more than one is enabled
-    /// (the same precedence `run_native`'s own `#[cfg]` branches use) --
-    /// this is what lets `test_run_native.py`'s skip guard and this test
-    /// itself tell a `gtk`/`macos`/`win` build apart from one another
-    /// without opening a real window.
+    /// (the same precedence `run_native`'s own `#[cfg]` branches use).
+    /// `test_run_native.py`'s skip guard only compares this against `"gtk"`
+    /// (it is GTK-specific, not a shared native-backend suite), so it tells
+    /// a `gtk` build apart from every non-`gtk` build (`macos`, `win`, or
+    /// neither) but does not itself distinguish `macos` from `win`; this
+    /// test checks the `win` value precisely, without opening a real
+    /// window.
     #[test]
     fn native_backend_attribute_matches_enabled_feature() {
         Python::attach(|py| {

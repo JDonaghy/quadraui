@@ -1084,6 +1084,18 @@ jobs:
       # compiled on a developer's own Mac.
       - name: Check (quadraui-py, macos feature)
         run: cargo check -p quadraui-py --features macos,pyo3/extension-module --all-targets
+      # Same gap again for the `win` feature, which no other job covers at
+      # all: `quadraui::win` itself compiles to nothing on this Linux
+      # runner (`lib.rs` gates `mod win` on `target_os = "windows"` as well
+      # as the feature), so this doesn't type-check the Direct2D/DirectWrite
+      # handoff either — what it does cover is everything in `quadraui-py`
+      # gated on the *feature* rather than the target, including the
+      # non-Windows-target arm of `run_native` and the matching
+      # `_NATIVE_BACKEND` assertion in `#[cfg(test)]`, via `--all-targets`.
+      # Without it, a `win`-feature build of this crate is only ever
+      # compiled on dell64.
+      - name: Check (quadraui-py, win feature)
+        run: cargo check -p quadraui-py --features win,pyo3/extension-module --all-targets
       # Benches (#1118): same "not built by a plain `cargo build`/`cargo
       # test`" gap, same "named `--bench` flags, not a bare `-p quadraui`"
       # (a bare invocation also runs the whole lib unit-test suite as a
