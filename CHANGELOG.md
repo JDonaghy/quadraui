@@ -58,6 +58,8 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+
+## [0.5.1] - 2026-10-24
 ### Added
 
 - `gtk::display_available()` — a pre-flight check (`gtk4::init().is_ok()`,
