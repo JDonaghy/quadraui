@@ -13,14 +13,14 @@ pip install quadraui
 from quadraui import QuiApp
 ```
 
-`run_native()` opens a real GTK window on Linux, a real AppKit window on
-macOS, or a real Direct2D/DirectWrite window on Windows, built from the same
-descriptors `run_tui()` reads headlessly or over a terminal — the
-`gtk`/`macos`/`win` Cargo features that back it are all source-available
-today. The prebuilt wheels on PyPI are still TUI-only (see the *Linux wheel*
-note below); building with `maturin develop --features gtk`, `--features
-macos`, or `--features win` is required for `run_native()` until a
-native-enabled wheel ships.
+`run_native()` opens a real AppKit window on macOS, a real
+Direct2D/DirectWrite window on Windows, or a real GTK window on Linux, built
+from the same descriptors `run_tui()` reads headlessly or over a terminal.
+The prebuilt macOS and Windows wheels on PyPI ship `run_native()` built in —
+`pip install quadraui` is enough, no Rust toolchain needed. The prebuilt
+Linux wheel is TUI-only (see the *Wheels* section below for why); call
+`hasattr(QuiApp, "run_native")` to check at runtime, or use `run_tui()`,
+which every platform's wheel supports unchanged.
 
 Full docs, the primitive reference, and worked examples live on the project
 site: <https://jdonaghy.github.io/quadraui/>.
@@ -28,10 +28,24 @@ site: <https://jdonaghy.github.io/quadraui/>.
 ## Wheels
 
 Prebuilt `abi3` wheels (CPython >= 3.8) are published for Linux, macOS, and
-Windows. Linux has no manylinux-compatible system GTK to bundle, so every
-platform's wheel is TUI-only by construction — there is no separate
-"GTK-less Linux variant", because that is the only variant on any platform
-today.
+Windows, each with the native-window feature it can ship as a clean,
+self-contained wheel:
+
+- **macOS** — built with the `macos` feature (Core Graphics/AppKit via
+  `objc2`), which links only against frameworks every Mac already has.
+  `run_native()` works out of the box.
+- **Windows** — built with the `win` feature (Direct2D/DirectWrite), which
+  links only against system DLLs every Windows install already has.
+  `run_native()` works out of the box.
+- **Linux** — built with neither `gtk` feature nor any other native
+  feature, so it stays TUI-only. `gtk` needs a real `libgtk-4` (plus its own
+  transitive GLib/Pango/Cairo stack) at both link and run time, and GTK is
+  not in the handful of C libraries `auditwheel`/manylinux knows how to
+  vendor into a portable wheel — there is no manylinux-compatible way to
+  ship it today. A Linux user who wants `run_native()` installs system GTK
+  development packages and builds from source with `maturin develop
+  --features gtk`; `run_tui()` needs none of that and works on the
+  published wheel as-is.
 
 ## License
 
