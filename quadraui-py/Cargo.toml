@@ -24,7 +24,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 # Enables `QuiApp.run_native`, which opens a real OS window via
-# `quadraui::gtk::run_with` instead of driving the headless driver.
+# `quadraui::gtk::GtkRunner` instead of driving the headless driver.
 # Forwards to `quadraui`'s own `gtk` feature rather than duplicating its
 # dependency list, since this crate never calls GTK APIs directly.
 gtk = ["quadraui/gtk"]
