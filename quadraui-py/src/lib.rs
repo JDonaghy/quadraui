@@ -441,13 +441,21 @@ struct RenderRefs<'a> {
 /// any slot once the viewport runs out of room.
 fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>) {
     let viewport = backend.viewport();
+    // Band heights below are given in text LINES, not raw viewport units: a
+    // button is 3 lines tall, a tree 4. `viewport` and `line_height` share
+    // the backend's own unit (cells on TUI, where `line_height` is 1.0;
+    // device pixels on the native backends, where it is the font's pixel line
+    // height), so scaling the line count by `line_height` lays the bands out
+    // correctly on every backend instead of collapsing them to a few pixels
+    // tall on native.
+    let line_height = backend.line_height();
     let mut y = 0.0_f32;
-    let mut next_band = |height: f32| -> Option<Rect> {
+    let mut next_band = |lines: f32| -> Option<Rect> {
         let remaining = viewport.height - y;
         if remaining <= 0.0 {
             return None;
         }
-        let band_height = height.min(remaining);
+        let band_height = (lines * line_height).min(remaining);
         let rect = Rect::new(0.0, y, viewport.width, band_height);
         y += band_height;
         Some(rect)

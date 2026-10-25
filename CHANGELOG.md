@@ -80,6 +80,16 @@ only a push to `main` runs this workflow.
   shows without re-entering `QuiApp` from inside the runner's borrow of it.
   Existing `insert_*`/`run_*` call sites are unaffected.
 
+### Fixed
+
+- `quadraui-py`: a Python app's descriptor bands now lay out correctly in a
+  native window. `draw_bands` sized each band in character-cell counts while
+  `Backend::viewport()` reports device pixels on the native backends, so every
+  app collapsed into a ~17px strip at the top of its macOS/GTK/Win window. Band
+  heights are now scaled by `Backend::line_height()` (1.0 on TUI, the font's
+  pixel line height on native), so a band is N text lines tall on every
+  backend; the TUI/headless path is byte-for-byte unchanged.
+
 ## [0.5.1] - 2026-10-24
 ### Added
 
