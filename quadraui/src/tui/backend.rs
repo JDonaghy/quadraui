@@ -330,9 +330,10 @@ pub struct TuiBackend {
     /// pixel unit here, so this is a no-op for already-integral input),
     /// which is what keeps this value's two readers in agreement:
     /// [`Backend::editor_layout`]'s default body folds the raw `f32` in
-    /// directly, while [`crate::tui::draw_editor`] takes a `u16` and
-    /// would otherwise round independently (and possibly differently,
-    /// for a non-integral input) from what `editor_layout` saw.
+    /// directly, while [`crate::tui::draw_editor_with_reserve`] takes a
+    /// `u16` and would otherwise round independently (and possibly
+    /// differently, for a non-integral input) from what `editor_layout`
+    /// saw.
     editor_right_reserve_w: Option<f32>,
 }
 
@@ -3622,8 +3623,13 @@ impl Backend for TuiBackend {
             );
             return crate::backend::EditorPaintResult::default();
         };
-        let tui_result =
-            crate::tui::draw_editor(frame.buffer_mut(), area, editor, &theme, right_reserve);
+        let tui_result = crate::tui::draw_editor_with_reserve(
+            frame.buffer_mut(),
+            area,
+            editor,
+            &theme,
+            right_reserve,
+        );
         // Cache for `render_frame` — `draw_editor` only sees
         // the buffer, not the `Frame`, so it can't call
         // `Frame::set_cursor_position` itself. See
@@ -4400,10 +4406,10 @@ impl Backend for TuiBackend {
     fn set_editor_right_reserve_w(&mut self, px: Option<f32>) {
         // Quantise to a whole cell at set-time (one TUI cell == one pixel
         // unit here), so the stored value already matches what
-        // `draw_editor`'s `.round() as u16` produces. Without this, a
-        // non-integral `px` (e.g. `Some(2.5)`) would round one way for
-        // `editor_layout`'s raw-`f32` fold and round again (independently)
-        // for `draw_editor`'s `u16` cast, and the two could disagree.
+        // `draw_editor_with_reserve`'s `.round() as u16` produces. Without
+        // this, a non-integral `px` (e.g. `Some(2.5)`) would round one way
+        // for `editor_layout`'s raw-`f32` fold and round again
+        // (independently) for the `u16` cast, and the two could disagree.
         self.editor_right_reserve_w = px.map(|v| v.max(0.0).round());
     }
 
@@ -7440,7 +7446,7 @@ mod tests {
         // exposes resolves at the painted track's own origin.
         let area = q_rect_to_ratatui(rect);
         let mut buf = ratatui::buffer::Buffer::empty(area);
-        crate::tui::draw_editor(&mut buf, area, &editor, &backend.current_theme, 0);
+        crate::tui::draw_editor(&mut buf, area, &editor, &backend.current_theme);
 
         assert_eq!(
             layout.hit_test(vsb.x, vsb.y),
@@ -7542,7 +7548,7 @@ mod tests {
         // with `right_reserve = 3`.
         let area = q_rect_to_ratatui(rect);
         let mut buf = ratatui::buffer::Buffer::empty(area);
-        crate::tui::draw_editor(&mut buf, area, &editor, &backend.current_theme, 3);
+        crate::tui::draw_editor_with_reserve(&mut buf, area, &editor, &backend.current_theme, 3);
         assert_eq!(
             vsb.x,
             rect.x + rect.width - 1.0,
