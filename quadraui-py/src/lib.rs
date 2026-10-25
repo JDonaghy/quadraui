@@ -76,7 +76,7 @@ use std::any::Any;
 #[cfg(all(feature = "macos", not(feature = "gtk")))]
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
@@ -85,7 +85,7 @@ use std::time::Duration;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{StepOutcome, TuiRunner};
@@ -378,8 +378,14 @@ impl AppLogic for PyAppLogic {
             );
             return;
         };
-        if let Some(frame) = render_frame_from_callback(callback, &self.pending_error) {
-            draw_bands(backend, frame.as_refs());
+        match render_output_from_callback(callback, &self.pending_error) {
+            Some(RenderOutput::Flat(frame)) => draw_bands(backend, frame.as_refs()),
+            Some(RenderOutput::Tree(node)) => {
+                let viewport = backend.viewport();
+                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                paint_layout(backend, area, &node);
+            }
+            None => {}
         }
     }
 
@@ -493,6 +499,73 @@ fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>) {
     }
 }
 
+/// Paints a layout tree into `area`. A `Row`/`Column` divides its area into
+/// equal shares — one per child, side by side or stacked — and recurses;
+/// equal shares (rather than `draw_bands`'s fixed line-count bands) fill
+/// the whole area regardless of viewport size. A `Leaf` paints its one
+/// descriptor into the whole area its container gave it. Per-child flex
+/// weights are a follow-up; every child gets the same share for now.
+fn paint_layout(backend: &mut dyn Backend, area: Rect, node: &LayoutNode) {
+    match node {
+        LayoutNode::Row(children) => {
+            for (child, rect) in children.iter().zip(split_rects(area, children.len(), true)) {
+                paint_layout(backend, rect, child);
+            }
+        }
+        LayoutNode::Column(children) => {
+            for (child, rect) in children
+                .iter()
+                .zip(split_rects(area, children.len(), false))
+            {
+                paint_layout(backend, rect, child);
+            }
+        }
+        LayoutNode::Leaf(leaf) => paint_leaf(backend, area, leaf),
+    }
+}
+
+/// Divides `area` into `n` equal shares, side by side when `horizontal` or
+/// stacked top-to-bottom otherwise. Returns an empty `Vec` for `n == 0`.
+fn split_rects(area: Rect, n: usize, horizontal: bool) -> Vec<Rect> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let n_f = n as f32;
+    (0..n)
+        .map(|i| {
+            let i_f = i as f32;
+            if horizontal {
+                let share = area.width / n_f;
+                Rect::new(area.x + share * i_f, area.y, share, area.height)
+            } else {
+                let share = area.height / n_f;
+                Rect::new(area.x, area.y + share * i_f, area.width, share)
+            }
+        })
+        .collect()
+}
+
+/// Paints one leaf's descriptor into the whole `area` its container gave
+/// it.
+fn paint_leaf(backend: &mut dyn Backend, area: Rect, leaf: &LayoutLeaf) {
+    match &leaf.descriptor {
+        LeafDescriptor::Button(button) => {
+            backend.draw_button(area, button);
+        }
+        LeafDescriptor::TextDisplay(text_display) => {
+            backend.draw_text_display(area, text_display);
+        }
+        LeafDescriptor::List(list) => backend.draw_list(area, list),
+        LeafDescriptor::Tree(tree) => backend.draw_tree(area, tree),
+        LeafDescriptor::DataTable(data_table) => {
+            backend.draw_data_table(area, data_table, None);
+        }
+        LeafDescriptor::TabBar(tab_bar) => {
+            backend.draw_tab_bar_layout(area, tab_bar, None);
+        }
+    }
+}
+
 /// Owned decode of a render callback's returned `dict` — one optional
 /// descriptor per slot, keyed by `"button"`, `"text_display"`, `"list"`,
 /// `"tree"`, `"data_table"`, and `"tab_bar"`.
@@ -565,12 +638,181 @@ fn decode_slot_entry<T: serde::de::DeserializeOwned>(
     }
 }
 
+/// One node of a render callback's layout tree: a `Row`/`Column` container
+/// holding child nodes, or a `Leaf` wrapping one id-addressable primitive
+/// descriptor. `Tabs`/`Split` containers are a follow-up — only `Row` and
+/// `Column` are built here.
+enum LayoutNode {
+    Row(Vec<LayoutNode>),
+    Column(Vec<LayoutNode>),
+    Leaf(LayoutLeaf),
+}
+
+/// One id-addressable primitive inside a layout tree, decoded from a
+/// `{"id": ..., "<kind>": <descriptor>}` dict. `id` is unique across the
+/// whole tree ([`validate_unique_leaf_ids`]), so a kind may appear more
+/// than once (e.g. two `data_table`s side by side) with each instance
+/// still addressable on its own.
+struct LayoutLeaf {
+    id: String,
+    descriptor: LeafDescriptor,
+}
+
+/// The decoded descriptor carried by a [`LayoutLeaf`] — one variant per
+/// primitive kind a layout tree leaf may wrap.
+enum LeafDescriptor {
+    Button(Button),
+    TextDisplay(TextDisplay),
+    List(ListView),
+    Tree(TreeView),
+    DataTable(DataTable),
+    TabBar(TabBar),
+}
+
+/// The descriptor keys a layout tree leaf dict may carry, one per
+/// [`LeafDescriptor`] variant — the same names [`RenderFrame::from_dict`]
+/// uses for its flat slots.
+const LEAF_KIND_KEYS: [&str; 6] = [
+    "button",
+    "text_display",
+    "list",
+    "tree",
+    "data_table",
+    "tab_bar",
+];
+
+/// Decodes one layout tree node from a render callback's returned `dict`:
+/// a `"row"` or `"column"` key holds the container's children; any other
+/// shape is decoded as a leaf via [`layout_leaf_from_dict`].
+fn layout_node_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutNode> {
+    if let Some(value) = dict.get_item("row")? {
+        if !value.is_none() {
+            return Ok(LayoutNode::Row(layout_children_from_value(what, &value)?));
+        }
+    }
+    if let Some(value) = dict.get_item("column")? {
+        if !value.is_none() {
+            return Ok(LayoutNode::Column(layout_children_from_value(
+                what, &value,
+            )?));
+        }
+    }
+    Ok(LayoutNode::Leaf(layout_leaf_from_dict(what, dict)?))
+}
+
+/// Decodes a `"row"`/`"column"` container's children: a `list` of child
+/// dicts, each recursively decoded by [`layout_node_from_dict`].
+fn layout_children_from_value(what: &str, value: &Bound<'_, PyAny>) -> PyResult<Vec<LayoutNode>> {
+    let list = value.cast::<PyList>().map_err(|_| {
+        InvalidDescriptorError::new_err(format!("{what}: row/column children must be a list"))
+    })?;
+    list.iter()
+        .map(|child| {
+            let child_dict = child.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: each row/column child must be a dict"
+                ))
+            })?;
+            layout_node_from_dict(what, child_dict)
+        })
+        .collect()
+}
+
+/// Decodes one `{"id": ..., "<kind>": <descriptor>}` leaf dict. `"id"`
+/// must be present and a string; exactly one of [`LEAF_KIND_KEYS`] must be
+/// present and hold a `dict`.
+fn layout_leaf_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutLeaf> {
+    let id: String = match dict.get_item("id")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!("{what}: leaf \"id\" must be a string"))
+        })?,
+        _ => {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: leaf is missing required \"id\""
+            )));
+        }
+    };
+
+    let mut found: Option<LeafDescriptor> = None;
+    for key in LEAF_KIND_KEYS {
+        let Some(value) = dict.get_item(key)? else {
+            continue;
+        };
+        if value.is_none() {
+            continue;
+        }
+        let value_dict = value.cast::<PyDict>().map_err(|_| {
+            InvalidDescriptorError::new_err(format!("{what}: leaf {id:?} {key:?} must be a dict"))
+        })?;
+        if found.is_some() {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: leaf {id:?} has more than one descriptor kind"
+            )));
+        }
+        found = Some(match key {
+            "button" => LeafDescriptor::Button(decode(what, value_dict)?),
+            "text_display" => LeafDescriptor::TextDisplay(decode(what, value_dict)?),
+            "list" => LeafDescriptor::List(decode(what, value_dict)?),
+            "tree" => LeafDescriptor::Tree(decode(what, value_dict)?),
+            "data_table" => LeafDescriptor::DataTable(decode(what, value_dict)?),
+            "tab_bar" => LeafDescriptor::TabBar(decode(what, value_dict)?),
+            _ => unreachable!("LEAF_KIND_KEYS is exhaustive"),
+        });
+    }
+
+    let descriptor = found.ok_or_else(|| {
+        InvalidDescriptorError::new_err(format!(
+            "{what}: leaf {id:?} is missing a descriptor (one of {LEAF_KIND_KEYS:?})"
+        ))
+    })?;
+
+    Ok(LayoutLeaf { id, descriptor })
+}
+
+/// Walks `node` collecting every leaf `id`, raising `InvalidDescriptorError`
+/// on the first repeat. A unique id per leaf lets host code address one
+/// instance unambiguously even when a kind appears more than once.
+fn validate_unique_leaf_ids(node: &LayoutNode) -> PyResult<()> {
+    fn walk(node: &LayoutNode, seen: &mut HashSet<String>) -> PyResult<()> {
+        match node {
+            LayoutNode::Row(children) | LayoutNode::Column(children) => {
+                for child in children {
+                    walk(child, seen)?;
+                }
+                Ok(())
+            }
+            LayoutNode::Leaf(leaf) => {
+                if !seen.insert(leaf.id.clone()) {
+                    return Err(InvalidDescriptorError::new_err(format!(
+                        "render: duplicate leaf id {:?}",
+                        leaf.id
+                    )));
+                }
+                Ok(())
+            }
+        }
+    }
+    let mut seen = HashSet::new();
+    walk(node, &mut seen)
+}
+
+/// The decoded shape of a render callback's return value: either the flat
+/// per-slot `dict` ([`RenderFrame`], the pre-layout-tree shape) or a
+/// `Row`/`Column` layout tree ([`LayoutNode`]).
+enum RenderOutput {
+    Flat(Box<RenderFrame>),
+    Tree(LayoutNode),
+}
+
 /// Invokes a registered render callback with no arguments and decodes its
-/// returned `dict` into a [`RenderFrame`]. On any failure — the callback
-/// raising, returning something other than a `dict`, or an entry with the
-/// wrong shape — records the error in `pending_error` and returns `None`,
-/// leaving the caller to skip drawing this frame rather than paint a
-/// half-decoded one.
+/// returned `dict` into a [`RenderOutput`]. A `dict` carrying a `"row"` or
+/// `"column"` key is parsed as a layout tree; any other `dict` is parsed as
+/// the flat per-slot shape, so a render callback written against the flat
+/// shape keeps working unchanged. On any failure — the callback raising,
+/// returning something other than a `dict`, or an entry with the wrong
+/// shape — records the error in `pending_error` and returns `None`, leaving
+/// the caller to skip drawing this frame rather than paint a half-decoded
+/// one.
 ///
 /// Every call site that can trigger a render — `step`/`run`, `screen`,
 /// `screen_contains`, `insert_*`, and `slot_clear` — drains `pending_error`
@@ -579,10 +821,10 @@ fn decode_slot_entry<T: serde::de::DeserializeOwned>(
 /// those triggered the repaint. `run_tui`/`run_native` additionally break
 /// their loop as soon as `pending_error` is set, since nothing else is
 /// polling it on the Python side while the GIL is detached.
-fn render_frame_from_callback(
+fn render_output_from_callback(
     callback: &Py<PyAny>,
     pending_error: &Rc<RefCell<Option<PyErr>>>,
-) -> Option<RenderFrame> {
+) -> Option<RenderOutput> {
     Python::attach(|py| {
         let result = match callback.call0(py) {
             Ok(result) => result,
@@ -602,8 +844,23 @@ fn render_frame_from_callback(
                 return None;
             }
         };
+
+        let is_tree = matches!(dict.get_item("row"), Ok(Some(ref value)) if !value.is_none())
+            || matches!(dict.get_item("column"), Ok(Some(ref value)) if !value.is_none());
+        if is_tree {
+            let parsed = layout_node_from_dict(RENDER_CALLBACK_WHAT, dict)
+                .and_then(|node| validate_unique_leaf_ids(&node).map(|()| node));
+            return match parsed {
+                Ok(node) => Some(RenderOutput::Tree(node)),
+                Err(err) => {
+                    record_error(pending_error, err);
+                    None
+                }
+            };
+        }
+
         match RenderFrame::from_dict(dict) {
-            Ok(frame) => Some(frame),
+            Ok(frame) => Some(RenderOutput::Flat(Box::new(frame))),
             Err(err) => {
                 record_error(pending_error, err);
                 None
@@ -2005,6 +2262,121 @@ mod tests {
             assert!(
                 !exit_requested.get(),
                 "WindowClose exits through the normal path, not the flag"
+            );
+        });
+    }
+
+    /// A render callback returning `{"row": [...]}` lays its children out
+    /// side by side rather than stacked: a `tree` leaf and a `data_table`
+    /// leaf share the same top row, with the tree's columns entirely to
+    /// the left of the table's.
+    #[test]
+    fn render_callback_row_places_children_side_by_side() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(40, 20, None, None).expect("valid dimensions");
+            let callback = py
+                .eval(
+                    c"lambda: {\"row\": [\
+                        {\"id\": \"tree:1\", \"tree\": {\
+                            \"id\": \"tree:1\", \
+                            \"rows\": [{\
+                                \"path\": [0], \"indent\": 0, \"icon\": None, \
+                                \"text\": {\"spans\": [{\"text\": \"Alpha\", \"fg\": None, \"bg\": None}]}, \
+                                \"badge\": None, \"is_expanded\": None\
+                            }], \
+                            \"selection_mode\": \"Single\", \"selected_path\": None, \
+                            \"style\": {\
+                                \"indent\": 2, \"show_chevrons\": True, \
+                                \"chevron_expanded\": \"v\", \"chevron_collapsed\": \">\"\
+                            }\
+                        }}, \
+                        {\"id\": \"table:1\", \"data_table\": {\
+                            \"id\": \"table:1\", \
+                            \"columns\": [{\"title\": \"Name\"}], \
+                            \"rows\": [{\"cells\": [{\"spans\": [{\"text\": \"Row1\", \"fg\": None, \"bg\": None}]}]}]\
+                        }}\
+                    ]}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate")
+                .unbind();
+            app.set_render(callback);
+
+            let screen = app.screen().expect("render must not raise");
+            assert!(screen.contains("Alpha"), "tree content must be painted");
+            assert!(screen.contains("Name"), "table header must be painted");
+            assert!(screen.contains("Row1"), "table content must be painted");
+
+            let tree_bounds = app
+                .driver
+                .find_bounds("Alpha")
+                .expect("tree content must be on screen");
+            // The table's own header row ("Name") shares the leaf's top row
+            // with the tree's first row ("Alpha"); the table's data row
+            // ("Row1") is one row further down *inside the table's own
+            // leaf*, not stacked below the tree's leaf.
+            let header_bounds = app
+                .driver
+                .find_bounds("Name")
+                .expect("table header must be on screen");
+            let table_bounds = app
+                .driver
+                .find_bounds("Row1")
+                .expect("table content must be on screen");
+
+            assert_eq!(
+                tree_bounds.y, header_bounds.y,
+                "a Row's children must share the same top row, not stack vertically"
+            );
+            assert!(
+                tree_bounds.x + tree_bounds.width <= header_bounds.x,
+                "the tree's columns must be entirely left of the table's: tree={tree_bounds:?} header={header_bounds:?}"
+            );
+            assert!(
+                tree_bounds.x + tree_bounds.width <= table_bounds.x,
+                "the tree's columns must be entirely left of the table's: tree={tree_bounds:?} table={table_bounds:?}"
+            );
+        });
+    }
+
+    /// A render callback may place more than one instance of the same
+    /// primitive kind in a layout tree -- two `data_table`s in a `Row` both
+    /// render, each addressable by its own leaf `id`.
+    #[test]
+    fn render_callback_row_supports_multiple_instances_of_the_same_kind() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(60, 20, None, None).expect("valid dimensions");
+            let callback = py
+                .eval(
+                    c"lambda: {\"row\": [\
+                        {\"id\": \"table:left\", \"data_table\": {\
+                            \"id\": \"table:left\", \
+                            \"columns\": [{\"title\": \"Name\"}], \
+                            \"rows\": [{\"cells\": [{\"spans\": [{\"text\": \"LeftCell\", \"fg\": None, \"bg\": None}]}]}]\
+                        }}, \
+                        {\"id\": \"table:right\", \"data_table\": {\
+                            \"id\": \"table:right\", \
+                            \"columns\": [{\"title\": \"Name\"}], \
+                            \"rows\": [{\"cells\": [{\"spans\": [{\"text\": \"RightCell\", \"fg\": None, \"bg\": None}]}]}]\
+                        }}\
+                    ]}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate")
+                .unbind();
+            app.set_render(callback);
+
+            assert!(
+                app.screen_contains("LeftCell")
+                    .expect("render must not raise"),
+                "the first data_table instance must render"
+            );
+            assert!(
+                app.screen_contains("RightCell")
+                    .expect("render must not raise"),
+                "the second data_table instance must render"
             );
         });
     }
