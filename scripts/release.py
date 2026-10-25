@@ -48,6 +48,18 @@ Two subcommands:
   10. prints the `git push` and `gh pr create --base develop` commands for
       a human to run.
 
+`--with-py` additionally releases the `quadraui` PyPI wheel (`quadraui-py`)
+in lockstep, in the same branch/commit: it bumps
+`quadraui-py/pyproject.toml`'s `[project] version` and
+`quadraui-py/Cargo.toml`'s `[package] version` to the same `X.Y.Z`, and the
+lock refresh in step 6 also passes `-p quadraui-py`. It refuses if `X.Y.Z`
+is not greater than the current wheel version (PyPI is append-only — a wheel
+version can never go down). Without the flag the wheel is untouched: the two
+artifacts version independently by design (the binding surface is a
+narrower, slower-moving subset of the crate), so most crate releases do not
+ship a wheel. The wheel's own release trigger is a `py-v<version>` tag, which
+`promote` prints (see below) — not this bump PR.
+
 All refusals exit 1 before touching the working tree (step 4 is the first
 mutation).
 
@@ -57,7 +69,11 @@ the `gh pr create --base main --head develop` and `gh pr merge --merge`
 commands, with the PR body pre-filled with that section. Never runs them.
 `--merge` is load-bearing in that last command: a squash or rebase merge of
 `develop` into `main` leaves the two branches' histories diverged, breaking
-the next promotion's merge-base.
+the next promotion's merge-base. When `quadraui-py`'s current version has no
+`py-v<version>` tag yet, `promote` also prints the `git tag py-v<version>` +
+`git push` step to run after the promotion merges — the trigger that
+publishes the wheel to PyPI — so one `--with-py` release flows crate and
+wheel through together.
 """
 from __future__ import annotations
 
@@ -106,19 +122,33 @@ def parse_version(text: str) -> tuple[int, int, int]:
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
-def read_package_version(cargo_toml_text: str) -> str:
-    match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', cargo_toml_text)
+def read_version_line(text: str, *, label: str) -> str:
+    """Return the first `version = "..."` value in `text`.
+
+    Works for both a `[package]` Cargo.toml and a `[project]` pyproject.toml:
+    in each the package/project version is the first bare `version =` line
+    (comment lines start with `#`, so they never match)."""
+    match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
     if not match:
-        raise ReleaseError("could not find a `version = \"...\"` line in quadraui/Cargo.toml")
+        raise ReleaseError(f'could not find a `version = "..."` line in {label}')
     return match.group(1)
 
 
-def set_package_version(cargo_toml_text: str, new_version: str) -> str:
+def set_version_line(text: str, new_version: str, *, label: str) -> str:
+    """Rewrite the first `version = "..."` line in `text` to `new_version`."""
     pattern = re.compile(r'(?m)^(version\s*=\s*)"[^"]+"')
-    new_text, count = pattern.subn(rf'\1"{new_version}"', cargo_toml_text, count=1)
+    new_text, count = pattern.subn(rf'\1"{new_version}"', text, count=1)
     if count != 1:
-        raise ReleaseError("could not find a `version = \"...\"` line in quadraui/Cargo.toml")
+        raise ReleaseError(f'could not find a `version = "..."` line in {label}')
     return new_text
+
+
+def read_package_version(cargo_toml_text: str) -> str:
+    return read_version_line(cargo_toml_text, label="quadraui/Cargo.toml")
+
+
+def set_package_version(cargo_toml_text: str, new_version: str) -> str:
+    return set_version_line(cargo_toml_text, new_version, label="quadraui/Cargo.toml")
 
 
 def pre_1_0_status_string(version: str) -> str:
@@ -204,28 +234,26 @@ def release_section_body(changelog_text: str, version: str) -> str:
     return (rest[: next_header.start()] if next_header else rest).strip()
 
 
-def refresh_lock(repo_dir: Path) -> None:
-    """Run `cargo update -p quadraui --offline` to sync Cargo.lock's version line."""
-    result = subprocess.run(
-        ["cargo", "update", "-p", "quadraui", "--offline"],
-        cwd=repo_dir,
-        capture_output=True,
-        text=True,
-    )
+def refresh_lock(repo_dir: Path, packages: tuple[str, ...] = ("quadraui",)) -> None:
+    """Run `cargo update -p <pkg>… --offline` to sync Cargo.lock's version lines.
+
+    Defaults to just `quadraui`; a `--with-py` release also passes
+    `quadraui-py` so both path crates' lock lines move in one invocation."""
+    package_args = [arg for pkg in packages for arg in ("-p", pkg)]
+    cmd = ["cargo", "update", *package_args, "--offline"]
+    result = subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True)
     if result.returncode != 0:
-        raise ReleaseError(
-            "`cargo update -p quadraui --offline` failed:\n" + result.stderr
-        )
+        raise ReleaseError(f"`{' '.join(cmd)}` failed:\n" + result.stderr)
 
 
-def verify_lock_diff_is_quadraui_version_only(repo_dir: Path) -> None:
-    """Refuse if `cargo update` touched anything in Cargo.lock besides quadraui's version line.
+def verify_lock_diff_is_version_lines_only(repo_dir: Path) -> None:
+    """Refuse if `cargo update` touched anything in Cargo.lock besides a `version =` line.
 
-    Deliberately paranoid: `cargo update -p quadraui` should only ever bump
-    quadraui's own `version =` line (it's a path dependency, nothing else in
-    the lock depends on its registry resolution), but if a future cargo
-    version ever resolves something else too, this must fail loudly rather
-    than let an unrelated lockfile change slip into a release commit.
+    Deliberately paranoid: `cargo update -p quadraui[ -p quadraui-py]` should
+    only ever bump those path crates' own `version =` lines (nothing in the
+    lock depends on their registry resolution), but if a future cargo version
+    ever resolves something else too, this must fail loudly rather than let an
+    unrelated lockfile change slip into a release commit.
     """
     diff = run_git(["diff", "--unified=0", "--", "Cargo.lock"], repo_dir).stdout
     changed_lines = [
@@ -236,14 +264,12 @@ def verify_lock_diff_is_quadraui_version_only(repo_dir: Path) -> None:
         and not line.startswith("---")
     ]
     if not changed_lines:
-        raise ReleaseError(
-            "`cargo update -p quadraui --offline` made no changes to Cargo.lock"
-        )
+        raise ReleaseError("`cargo update --offline` made no changes to Cargo.lock")
     bad_lines = [line for line in changed_lines if not LOCK_VERSION_LINE_RE.match(line)]
     if bad_lines:
         raise ReleaseError(
-            "`cargo update -p quadraui --offline` changed more than quadraui's "
-            "own version line in Cargo.lock:\n" + "\n".join(bad_lines)
+            "`cargo update --offline` changed more than a `version =` line in "
+            "Cargo.lock:\n" + "\n".join(bad_lines)
         )
 
 
@@ -253,6 +279,8 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     changelog_path = repo_dir / "CHANGELOG.md"
     readme_path = repo_dir / "README.md"
     lib_rs_path = repo_dir / "quadraui" / "src" / "lib.rs"
+    py_pyproject_path = repo_dir / "quadraui-py" / "pyproject.toml"
+    py_cargo_toml_path = repo_dir / "quadraui-py" / "Cargo.toml"
 
     try:
         if not git_is_clean(repo_dir):
@@ -269,6 +297,22 @@ def cmd_prepare(args: argparse.Namespace) -> int:
                 f"{args.version} is not greater than the current version "
                 f"({current_version_str})"
             )
+
+        if args.with_py:
+            if not py_pyproject_path.exists():
+                raise ReleaseError(
+                    "--with-py given but quadraui-py/pyproject.toml does not exist"
+                )
+            py_current_str = read_version_line(
+                py_pyproject_path.read_text(encoding="utf-8"),
+                label="quadraui-py/pyproject.toml",
+            )
+            # PyPI is append-only: a wheel version can never go down.
+            if target <= parse_version(py_current_str):
+                raise ReleaseError(
+                    f"--with-py: {args.version} is not greater than the current "
+                    f"quadraui-py version ({py_current_str})"
+                )
 
         changelog_text = changelog_path.read_text(encoding="utf-8")
         if not unreleased_body(changelog_text).strip():
@@ -316,8 +360,28 @@ def cmd_prepare(args: argparse.Namespace) -> int:
             set_package_version(cargo_toml_text, args.version), encoding="utf-8"
         )
 
-        refresh_lock(repo_dir)
-        verify_lock_diff_is_quadraui_version_only(repo_dir)
+        lock_packages = ("quadraui",)
+        if args.with_py:
+            py_pyproject_path.write_text(
+                set_version_line(
+                    py_pyproject_path.read_text(encoding="utf-8"),
+                    args.version,
+                    label="quadraui-py/pyproject.toml",
+                ),
+                encoding="utf-8",
+            )
+            py_cargo_toml_path.write_text(
+                set_version_line(
+                    py_cargo_toml_path.read_text(encoding="utf-8"),
+                    args.version,
+                    label="quadraui-py/Cargo.toml",
+                ),
+                encoding="utf-8",
+            )
+            lock_packages = ("quadraui", "quadraui-py")
+
+        refresh_lock(repo_dir, lock_packages)
+        verify_lock_diff_is_version_lines_only(repo_dir)
 
         readme_text = readme_path.read_text(encoding="utf-8")
         readme_text = set_pre_1_0_status_string(
@@ -339,25 +403,23 @@ def cmd_prepare(args: argparse.Namespace) -> int:
             retitle_changelog(changelog_text, args.version, date), encoding="utf-8"
         )
 
-        run_git(
-            [
-                "add",
-                "quadraui/Cargo.toml",
-                "Cargo.lock",
-                "README.md",
-                "quadraui/src/lib.rs",
-                "CHANGELOG.md",
-            ],
-            repo_dir,
+        paths_to_add = [
+            "quadraui/Cargo.toml",
+            "Cargo.lock",
+            "README.md",
+            "quadraui/src/lib.rs",
+            "CHANGELOG.md",
+        ]
+        if args.with_py:
+            paths_to_add += ["quadraui-py/pyproject.toml", "quadraui-py/Cargo.toml"]
+        run_git(["add", *paths_to_add], repo_dir)
+
+        commit_subject = (
+            f"Release v{args.version} (crate + quadraui-py version bump + CHANGELOG)"
+            if args.with_py
+            else f"Release v{args.version} (version bump + CHANGELOG)"
         )
-        run_git(
-            [
-                "commit",
-                "-m",
-                f"Release v{args.version} (version bump + CHANGELOG)",
-            ],
-            repo_dir,
-        )
+        run_git(["commit", "-m", commit_subject], repo_dir)
     except ReleaseError as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 1
@@ -365,10 +427,16 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         print(f"::error::`{' '.join(exc.cmd)}` failed:\n{exc.stderr}", file=sys.stderr)
         return 1
 
-    print(
-        f"Prepared release-{args.version} with the version bump + README/lib.rs "
-        "version strings + CHANGELOG commit."
-    )
+    if args.with_py:
+        print(
+            f"Prepared release-{args.version} with the crate + quadraui-py version "
+            "bump + README/lib.rs version strings + CHANGELOG commit."
+        )
+    else:
+        print(
+            f"Prepared release-{args.version} with the version bump + README/lib.rs "
+            "version strings + CHANGELOG commit."
+        )
     print("\nRun these commands to open the bump PR:\n")
     print(f"  git push -u origin release-{args.version}")
     print(
@@ -377,6 +445,12 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         f'--body "Bumps quadraui to {args.version} and retitles CHANGELOG.md\'s '
         f'[Unreleased] section."'
     )
+    if args.with_py:
+        print(
+            f"\nThis release also bumps quadraui-py to {args.version}. After the "
+            f"develop -> main promotion merges, `promote` will print the "
+            f"`py-v{args.version}` tag step that publishes the wheel to PyPI."
+        )
     return 0
 
 
@@ -406,6 +480,35 @@ def cmd_promote(args: argparse.Namespace) -> int:
         "\n`--merge` is required: a squash or rebase merge here diverges "
         "`main` and `develop`'s histories."
     )
+
+    # Opt-in PyPI lockstep: if quadraui-py's current version has no `py-v<version>`
+    # tag yet, this promotion also carries an unreleased wheel — print the tag
+    # step that `quadraui-py-release.yml` fires on.
+    py_pyproject_path = repo_dir / "quadraui-py" / "pyproject.toml"
+    if py_pyproject_path.exists():
+        try:
+            py_version = read_version_line(
+                py_pyproject_path.read_text(encoding="utf-8"),
+                label="quadraui-py/pyproject.toml",
+            )
+        except ReleaseError as exc:
+            print(f"::error::{exc}", file=sys.stderr)
+            return 1
+        tag = f"py-v{py_version}"
+        existing_tag = run_git(["tag", "-l", tag], repo_dir).stdout.strip()
+        if not existing_tag:
+            print(
+                f"\nquadraui-py is at {py_version} with no {tag} tag yet, so this "
+                "promotion also carries an unpublished wheel. After the promotion "
+                "merges to `main`, publish it to PyPI:\n"
+            )
+            print("  git fetch origin main")
+            print(f"  git tag {tag} origin/main")
+            print(f"  git push origin {tag}")
+            print(
+                f"\nThe {tag} push triggers `quadraui-py-release.yml`, which asserts "
+                "the tag matches quadraui-py/pyproject.toml before building."
+            )
     return 0
 
 
@@ -422,6 +525,15 @@ def main(argv: list[str] | None = None) -> int:
         "--date",
         default=None,
         help="override today's date (YYYY-MM-DD); mainly for tests",
+    )
+    prepare.add_argument(
+        "--with-py",
+        action="store_true",
+        help=(
+            "also bump quadraui-py (pyproject.toml + Cargo.toml) to the same "
+            "version for a lockstep PyPI release; refuses if it would downgrade "
+            "the wheel version"
+        ),
     )
     prepare.set_defaults(func=cmd_prepare)
 
