@@ -84,16 +84,43 @@ class ReleaseFixtureRepo:
     `CHANGELOG.md`) without pulling in any real dependency.
     """
 
-    def __init__(self, unreleased_body: str = "### Added\n\n- a new thing"):
+    def __init__(
+        self,
+        unreleased_body: str = "### Added\n\n- a new thing",
+        *,
+        with_py: bool = False,
+        py_version: str = "0.1.0",
+    ):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
+        self.with_py = with_py
         (self.root / "quadraui" / "src").mkdir(parents=True)
+        members = '"quadraui"' + (', "quadraui-py"' if with_py else "")
         (self.root / "Cargo.toml").write_text(
-            '[workspace]\nmembers = ["quadraui"]\nresolver = "2"\n'
+            f'[workspace]\nmembers = [{members}]\nresolver = "2"\n'
         )
         (self.root / "quadraui" / "Cargo.toml").write_text(
             '[package]\nname = "quadraui"\nversion = "0.1.0"\nedition = "2021"\n'
         )
+        if with_py:
+            (self.root / "quadraui-py" / "src").mkdir(parents=True)
+            (self.root / "quadraui-py" / "Cargo.toml").write_text(
+                "[package]\n"
+                '# a comment with version = "9.9.9" that must not be matched\n'
+                'name = "quadraui-py"\n'
+                f'version = "{py_version}"\n'
+                'edition = "2021"\n'
+            )
+            (self.root / "quadraui-py" / "src" / "lib.rs").write_text("pub fn p() {}\n")
+            (self.root / "quadraui-py" / "pyproject.toml").write_text(
+                "[build-system]\n"
+                'requires = ["maturin>=1.5,<2.0"]\n'
+                'build-backend = "maturin"\n'
+                "\n"
+                "[project]\n"
+                'name = "quadraui"\n'
+                f'version = "{py_version}"\n'
+            )
         (self.root / "quadraui" / "src" / "lib.rs").write_text(
             "//! ## Status\n"
             "//!\n"
@@ -150,6 +177,12 @@ class ReleaseFixtureRepo:
 
     def lib_rs_text(self) -> str:
         return (self.root / "quadraui" / "src" / "lib.rs").read_text(encoding="utf-8")
+
+    def py_pyproject_text(self) -> str:
+        return (self.root / "quadraui-py" / "pyproject.toml").read_text(encoding="utf-8")
+
+    def py_cargo_toml_text(self) -> str:
+        return (self.root / "quadraui-py" / "Cargo.toml").read_text(encoding="utf-8")
 
     def current_branch(self) -> str:
         return run_git(["branch", "--show-current"], self.root).stdout.strip()
@@ -368,6 +401,77 @@ class PrepareCommandTests(unittest.TestCase):
             self.assertIn("0.3.0", result.stderr)
 
 
+class PrepareWithPyTests(unittest.TestCase):
+    def test_with_py_bumps_both_crate_and_wheel(self):
+        with ReleaseFixtureRepo(with_py=True) as repo:
+            result = run_release(
+                [
+                    "prepare", "0.2.0",
+                    "--repo-dir", str(repo.root),
+                    "--date", "2026-10-11",
+                    "--with-py",
+                ],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            # Crate bumped as usual.
+            self.assertIn('version = "0.2.0"', repo.cargo_toml_text())
+            # Both wheel version fields bumped.
+            self.assertIn('version = "0.2.0"', repo.py_pyproject_text())
+            self.assertIn('version = "0.2.0"', repo.py_cargo_toml_text())
+            # The comment line's fake version is untouched (regex skips comments).
+            self.assertIn('version = "9.9.9"', repo.py_cargo_toml_text())
+
+            # Lock carries both crates at the new version.
+            lock = repo.lock_text()
+            self.assertIn('name = "quadraui-py"', lock)
+            # Two `version = "0.2.0"` lines (quadraui + quadraui-py).
+            self.assertGreaterEqual(lock.count('version = "0.2.0"'), 2)
+
+            # Commit names both; output points at the py tag follow-up.
+            log = run_git(["log", "-1", "--format=%s"], repo.root).stdout
+            self.assertIn("quadraui-py", log)
+            self.assertIn("py-v0.2.0", result.stdout)
+
+    def test_with_py_refuses_wheel_downgrade(self):
+        # Crate at 0.1.0, wheel already ahead at 0.5.0: a 0.2.0 crate release
+        # must not drag the wheel backwards (PyPI is append-only).
+        with ReleaseFixtureRepo(with_py=True, py_version="0.5.0") as repo:
+            result = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root), "--with-py"],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("not greater", result.stderr)
+            self.assertIn("quadraui-py", result.stderr)
+            self.assertEqual(repo.current_branch(), "develop")
+            self.assertIn('version = "0.5.0"', repo.py_pyproject_text())
+
+    def test_without_flag_leaves_wheel_untouched(self):
+        with ReleaseFixtureRepo(with_py=True) as repo:
+            result = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root), "--date", "2026-10-11"],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('version = "0.2.0"', repo.cargo_toml_text())
+            # Wheel stays at 0.1.0 — independent by default.
+            self.assertIn('version = "0.1.0"', repo.py_pyproject_text())
+            self.assertIn('version = "0.1.0"', repo.py_cargo_toml_text())
+            self.assertNotIn("py-v", result.stdout)
+
+    def test_with_py_refuses_when_wheel_missing(self):
+        with ReleaseFixtureRepo(with_py=False) as repo:
+            result = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root), "--with-py"],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("quadraui-py/pyproject.toml", result.stderr)
+            self.assertEqual(repo.current_branch(), "develop")
+
+
 class PromoteCommandTests(unittest.TestCase):
     def test_promote_prints_pr_commands_with_changelog_body(self):
         with ReleaseFixtureRepo() as repo:
@@ -386,6 +490,31 @@ class PromoteCommandTests(unittest.TestCase):
             result = run_release(["promote", "--repo-dir", str(repo.root)], repo.root)
             self.assertEqual(result.returncode, 1)
             self.assertIn("no released", result.stderr)
+
+    def test_promote_prints_py_tag_when_wheel_untagged(self):
+        with ReleaseFixtureRepo(with_py=True, py_version="0.2.0") as repo:
+            result = run_release(["promote", "--repo-dir", str(repo.root)], repo.root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # Crate promotion commands still printed.
+            self.assertIn("gh pr create --base main --head develop", result.stdout)
+            # Plus the wheel tag step, since no py-v0.2.0 tag exists yet.
+            self.assertIn("git tag py-v0.2.0 origin/main", result.stdout)
+            self.assertIn("git push origin py-v0.2.0", result.stdout)
+
+    def test_promote_omits_py_tag_when_wheel_already_tagged(self):
+        with ReleaseFixtureRepo(with_py=True, py_version="0.2.0") as repo:
+            run_git(["tag", "py-v0.2.0"], repo.root)
+            result = run_release(["promote", "--repo-dir", str(repo.root)], repo.root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("gh pr create --base main --head develop", result.stdout)
+            # Wheel already released at this version — no tag step.
+            self.assertNotIn("py-v0.2.0", result.stdout)
+
+    def test_promote_no_py_tag_without_wheel(self):
+        with ReleaseFixtureRepo(with_py=False) as repo:
+            result = run_release(["promote", "--repo-dir", str(repo.root)], repo.root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("py-v", result.stdout)
 
 
 if __name__ == "__main__":
