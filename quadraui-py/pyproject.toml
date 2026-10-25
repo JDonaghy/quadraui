@@ -4,14 +4,15 @@ build-backend = "maturin"
 
 [project]
 name = "quadraui"
-# Versioned on its own line, independent of the `quadraui` Rust crate's
-# version (currently 0.5.0): the Python binding's surface is a narrower,
-# slower-moving subset of the Rust API (see `quadraui-py/src/lib.rs`), so a
-# crate version bump should not force a PyPI release and vice versa. Tagged
-# and published by `.github/workflows/quadraui-py-release.yml` off a
+# Versioned on its own line, nominally independent of the `quadraui` Rust
+# crate's version: the Python binding's surface is a narrower, slower-moving
+# subset of the Rust API (see `quadraui-py/src/lib.rs`), so a crate version
+# bump does not force a PyPI release and vice versa. This line is currently
+# kept aligned with the crate version (0.6.0) by choice, not necessity.
+# Tagged and published by `.github/workflows/quadraui-py-release.yml` off a
 # `py-v<version>` tag, which asserts this field matches the tag before
 # building anything.
-version = "0.1.0"
+version = "0.6.0"
 description = "Python bindings for quadraui: insert descriptors and render them headlessly."
 readme = "README.md"
 requires-python = ">=3.8"
