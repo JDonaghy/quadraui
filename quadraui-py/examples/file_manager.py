@@ -1,21 +1,29 @@
-"""Cross-backend file manager: a folder tree over a contents grid, built from
-one set of `quadraui` descriptors that run unchanged on TUI, GTK, macOS, and
-Windows -- only the final run call differs per platform.
+"""Cross-backend file manager: a resizable two-pane app built from one set of
+`quadraui` descriptors that run unchanged on TUI, GTK, macOS, and Windows --
+only the final run call differs per platform.
 
-The UI is *live* via the `render` callback: a plain Python `state` dict holds
-what changes (the selection cursor), the event handler mutates it on Up/Down,
-and `render()` rebuilds the `tree` + `data_table` descriptors from it every
-frame. Neither callback ever touches `QuiApp` -- the handler only mutates
-`state`, the render callback only reads it and returns descriptors -- which is
-how the binding avoids the reentrant borrow that a mid-loop `insert_*` would
-hit (the `render(state)` seam from the bindings, data flowing *out* of Python).
+Layout (the `render` callback returns a *layout tree*, new in the bindings):
 
-The folder tree is still pre-expanded at build time down to `MAX_DEPTH`;
-expand-on-demand (re-scan when a collapsed folder is opened) is a later step.
+    split (resizable divider, draggable)
+    ├─ first  : a FOLDERS-ONLY tree (navigation)
+    └─ second : the details area -- tabs, one per opened folder, each tab a
+                data_table of that folder's contents (files + subfolders)
+
+The UI is *live*: a plain Python `state` dict holds what changes (the tree
+cursor, the split ratio, which folders are open as tabs, the active tab), the
+event handler mutates it, and `render()` rebuilds the whole layout tree from it
+every frame. Neither callback touches `QuiApp` -- the handler only mutates
+`state`, the render callback only reads it and returns descriptors -- the
+`render(state)` seam the bindings use to avoid a reentrant borrow.
+
+Keys: Up/Down move the folder cursor; Enter opens the cursored folder as a
+details tab (or focuses it if already open); drag the divider to resize; click
+a tab to switch. `q`/Escape quit the real run loops.
 
     python quadraui-py/examples/file_manager.py [PATH]            # headless demo
     python quadraui-py/examples/file_manager.py [PATH] --tui      # real terminal
     python quadraui-py/examples/file_manager.py [PATH] --native   # OS window
+    python quadraui-py/examples/file_manager.py [PATH] --dump      # descriptor dump
 """
 
 from __future__ import annotations
@@ -39,7 +47,7 @@ class Node:
     `children is None` means "not loaded" -- either a file, or a directory we
     chose not to open (one sitting at `MAX_DEPTH`). `expanded` is True only for
     directories we actually recursed into, so it lines up with the tree's
-    chevron state later.
+    chevron state.
     """
 
     name: str
@@ -88,8 +96,8 @@ def _safe_size(path: Path) -> int | None:
 
 @dataclass
 class Model:
-    """The scanned tree. `root.children` is the top folder's contents, which
-    the grid pane will list; the whole `root` feeds the tree pane."""
+    """The scanned tree. `root` feeds both panes: the folders-only tree walks
+    its directory nodes; the details tabs list a chosen folder's children."""
 
     root: Node = field(default=None)  # type: ignore[assignment]
 
@@ -98,16 +106,15 @@ def build_model(root_path: Path) -> Model:
     return Model(root=scan(root_path))
 
 
-# --- Step 2: model -> tree descriptor ---------------------------------------
+# --- model -> folders-only tree descriptor ----------------------------------
 #
-# `insert_tree` wants a *flat* list of rows, not our recursive `Node`, so we
-# walk the model depth-first in display order and tag each row with its `path`
-# -- the route from the root as a list of child indices (a `TreePath`, which
-# the Rust side reads as `Vec<u16>`). The backend uses `path` to know which row
-# a click/selection landed on and to nest rows under their parent; `indent` is
-# the matching visual depth. Only directories we actually recursed into carry
-# branches (folders) carry `is_expanded=Some(bool)`; files are leaves and carry
-# `is_expanded=None`, so only folders draw a chevron.
+# The tree pane shows *only directories* -- files live in the details tabs. We
+# walk the model depth-first in display order, emitting a row per directory and
+# tagging it with its `path`: the route from the root as a list of child
+# indices among *folders* (a `TreePath`, read on the Rust side as `Vec<u16>`).
+# A folder's path stays a valid prefix of its subfolders' paths, so nesting and
+# selection still line up even though files are omitted. `indent` is folder
+# depth.
 
 TREE_STYLE = {
     "indent": 2,  # columns of indent per depth level
@@ -126,76 +133,72 @@ FILE_ICON = {"glyph": "\U0001f4c4", "fallback": " ", "color": None}  # page
 
 
 def _styled_text(text: str) -> dict:
-    """One `StyledText` with a single uncolored span -- the shape both tree
-    `text` and data-table cells use; the backend theme picks the colors."""
+    """One `StyledText` with a single uncolored span -- the shape tree `text`,
+    data-table cells, and text_display lines all use; the theme picks colors."""
     return {"spans": [{"text": text, "fg": None, "bg": None}]}
 
 
-def _flatten(
+def _flatten_folders(
     node: Node,
     path: list[int],
     indent: int,
     rows: list[dict],
     nodes: list[Node],
 ) -> None:
-    """Append `node` as one tree row (and the `Node` behind it), then recurse
-    into its loaded children. `rows` and `nodes` stay index-aligned."""
+    """Append `node` (a directory) as one tree row, then recurse into its
+    subdirectories only. `rows` and `nodes` stay index-aligned; `path` numbers
+    by folder-sibling index so it addresses the folders-only tree."""
     rows.append(
         {
             "path": path,
             "indent": indent,
-            "icon": FOLDER_ICON if node.is_dir else FILE_ICON,
+            "icon": FOLDER_ICON,
             "text": _styled_text(node.name),
-            "badge": None,  # reserved: child count / size could land here
-            # Folders are branches (Some(expanded)); files are leaves (None).
-            "is_expanded": node.expanded if node.is_dir else None,
+            "badge": None,
+            # Every row is a folder, so every row is a branch.
+            "is_expanded": node.expanded,
         }
     )
     nodes.append(node)
-    for i, child in enumerate(node.children or ()):
-        _flatten(child, path + [i], indent + 1, rows, nodes)
+    subdirs = [c for c in (node.children or ()) if c.is_dir]
+    for i, child in enumerate(subdirs):
+        _flatten_folders(child, path + [i], indent + 1, rows, nodes)
 
 
-def flatten(model: Model) -> tuple[list[dict], list[Node], dict[tuple[int, ...], Node]]:
+def folder_rows(model: Model) -> tuple[list[dict], list[Node], dict[tuple[int, ...], Node]]:
     """Walk the model once into index-aligned `(rows, nodes)` plus a
-    `path -> Node` map. The snapshot is static, so callers flatten once and
-    reuse these across every frame, only varying `selected_path`."""
+    `path -> Node` map, directories only. The snapshot is static, so callers
+    flatten once and reuse these across frames, varying only `selected_path`."""
     rows: list[dict] = []
     nodes: list[Node] = []
-    _flatten(model.root, path=[], indent=0, rows=rows, nodes=nodes)
+    _flatten_folders(model.root, path=[], indent=0, rows=rows, nodes=nodes)
     by_path = {tuple(r["path"]): n for r, n in zip(rows, nodes)}
     return rows, nodes, by_path
 
 
-def tree_from_rows(rows: list[dict], *, selected_path: list[int] | None = None) -> dict:
-    """Wrap pre-flattened `rows` into an `insert_tree` descriptor, varying only
-    the selection -- the live render path's hot loop."""
+def tree_leaf(rows: list[dict], *, selected_path: list[int]) -> dict:
+    """A layout-tree *leaf* wrapping the folders-only tree descriptor. A leaf is
+    `{"id", "<kind>": <descriptor>}`; the id is unique across the whole tree."""
     return {
         "id": "fm:tree",
-        "rows": rows,
-        "selection_mode": "Single",
-        "selected_path": selected_path if selected_path is not None else [],
-        "scroll_offset": 0,
-        "has_focus": True,
-        "style": TREE_STYLE,
+        "tree": {
+            "id": "fm:tree",
+            "rows": rows,
+            "selection_mode": "Single",
+            "selected_path": selected_path,
+            "scroll_offset": 0,
+            "has_focus": True,
+            "style": TREE_STYLE,
+        },
     }
 
 
-def tree_descriptor(model: Model, *, selected_path: list[int] | None = None) -> dict:
-    """Flatten `model` and build its tree descriptor in one call (used by the
-    step-by-step dumps; the live app flattens once and calls `tree_from_rows`)."""
-    rows, _nodes, _by_path = flatten(model)
-    return tree_from_rows(rows, selected_path=selected_path)
-
-
-# --- Step 3: model -> data_table descriptor ---------------------------------
+# --- folder -> details data_table --------------------------------------------
 #
-# The grid lists the immediate children of ONE folder (the scanned root, in
-# this static snapshot). `insert_data_table` wants `columns` + `rows`, where a
-# row's `cells` are `StyledText` -- the same `{"spans":[{"text","fg","bg"}]}`
-# shape the list descriptor uses. `width` is an externally-tagged enum
-# (`{"Flex": 1.0}` / `{"Fixed": 12.0}` / `{"Content": {"min","max"}}`) and
-# `align` is one of "Left" / "Center" / "Right".
+# Each details tab lists the immediate children (files + subfolders) of one
+# opened folder. `width` is `{"Flex": w}` -- unitless proportional weights that
+# lay out the same on every backend, unlike `{"Fixed": n}` (surface-native
+# units: cells on TUI, *pixels* on native).
 
 _SIZE_UNITS = ("B", "KB", "MB", "GB", "TB")
 
@@ -212,99 +215,147 @@ def _human_size(n: int | None) -> str:
     return f"{int(size)} {_SIZE_UNITS[i]}" if i == 0 else f"{size:.1f} {_SIZE_UNITS[i]}"
 
 
-def _cell(text: str) -> dict:
-    """One `StyledText` table cell -- same shape as a tree row's `text`."""
-    return _styled_text(text)
-
-
-def grid_descriptor(model: Model, folder: Node | None = None) -> dict:
-    """Build the `insert_data_table` descriptor for one folder's contents."""
-    folder = folder or model.root  # static snapshot: the root folder's contents
-    children = folder.children or ()  # already dirs-first, name-sorted by `scan`
-
-    # `Flex` weights share the width proportionally and are unitless, so they
-    # lay out the same on every backend. `Fixed` would NOT: it is in
-    # surface-native units (cells on TUI, *pixels* on native), so a `Fixed(12)`
-    # that is 12 cells wide on the terminal is only 12 pixels -- a couple of
-    # characters -- in a native window. Name takes the lion's share; Size and
-    # Kind each get a quarter.
+def details_table(folder: Node, index: int) -> dict:
+    """The data_table descriptor for one opened folder's contents, as the
+    content subtree of tab `index`. Unique id per tab so each instance is
+    independently addressable."""
+    table_id = f"fm:grid:{index}"
     columns = [
         {"title": "Name", "width": {"Flex": 2.0}, "align": "Left"},
         {"title": "Size", "width": {"Flex": 1.0}, "align": "Right"},
         {"title": "Kind", "width": {"Flex": 1.0}, "align": "Left"},
     ]
 
-    rows = []
-    for child in children:
-        kind = "folder" if child.is_dir else "file"
-        size = "" if child.is_dir else _human_size(child.size_bytes)
-        rows.append({"cells": [_cell(child.name), _cell(size), _cell(kind)]})
+    children = folder.children
+    if children is None:
+        # A folder beyond the scan depth: we know it is a folder but never
+        # loaded its contents (expand-on-demand is a later step).
+        rows = [{"cells": [_styled_text("(not scanned -- beyond depth limit)"),
+                           _styled_text(""), _styled_text("")]}]
+    else:
+        rows = []
+        for child in children:
+            kind = "folder" if child.is_dir else "file"
+            size = "" if child.is_dir else _human_size(child.size_bytes)
+            rows.append({"cells": [_styled_text(child.name),
+                                   _styled_text(size), _styled_text(kind)]})
 
-    return {"id": "fm:grid", "columns": columns, "rows": rows}
+    return {"id": table_id, "columns": columns, "rows": rows}
 
 
-# --- Step 4: assemble the live QuiApp ---------------------------------------
+# --- the live QuiApp ---------------------------------------------------------
 #
-# The `render` callback is the seam that makes the UI live without the handler
-# ever calling back into `QuiApp` (which would be a reentrant borrow). The flow
-# is: event -> handler mutates plain Python `state` -> the runner repaints ->
-# `render()` reads `state` and returns the whole frame's descriptors. Here the
-# only thing that changes is a selection cursor into the flattened tree rows;
-# the grid follows it, showing the selected folder's contents (or, when a file
-# is selected, the folder that contains it).
+# event -> handler mutates plain Python `state` -> the runner repaints ->
+# `render()` reads `state` and returns the whole frame's layout tree. The
+# things that change: the tree cursor, the split ratio, the list of opened
+# folders (tabs), and the active tab.
 
 UP_KEY = {"Named": "Up"}
 DOWN_KEY = {"Named": "Down"}
+ENTER_KEY = {"Named": "Enter"}
 
 
 class FileManager:
-    """Holds the model, the flattened tree, and the `state` dict the `render`
-    and handler callbacks share. Build one, then call `run_*` for a real
-    backend or drive it headlessly with `push_event`/`step`."""
+    """Holds the model, the flattened folders-only tree, and the `state` dict
+    the `render` and handler callbacks share. Build one, then call `run_*` for
+    a real backend or drive it headlessly with `push_event`/`step`."""
 
     def __init__(self, root_path: Path, width: int = 100, height: int = 30):
         self.model = build_model(root_path)
-        self.rows, self.nodes, self.by_path = flatten(self.model)
-        self.state = {"cursor": 0}  # index into self.rows / self.nodes
+        self.rows, self.nodes, self.by_path = folder_rows(self.model)
+        self.state = {
+            "cursor": 0,       # index into self.rows / self.nodes (folders)
+            "ratio": 0.3,      # tree pane width fraction (first pane of the split)
+            "open": [],        # list of folder Nodes shown as tabs, in tab order
+            "active_tab": 0,   # index into state["open"]
+        }
         self.app = QuiApp(width, height, render=self._render)
         self.app.set_handler(self._handle)
 
-    def _selected_node(self) -> Node:
+    def _cursored_folder(self) -> Node:
         return self.nodes[self.state["cursor"]]
 
-    def _grid_folder(self) -> Node:
-        """Which folder the grid lists: the selected node if it is a folder,
-        else the folder that contains the selected file."""
-        node = self._selected_node()
-        if node.is_dir:
-            return node
-        parent_path = tuple(self.rows[self.state["cursor"]]["path"][:-1])
-        return self.by_path.get(parent_path, self.model.root)
+    def _open_folder(self, node: Node) -> None:
+        """Open `node` as a details tab, or focus its tab if already open."""
+        for i, existing in enumerate(self.state["open"]):
+            if existing.path == node.path:
+                self.state["active_tab"] = i
+                return
+        self.state["open"].append(node)
+        self.state["active_tab"] = len(self.state["open"]) - 1
+
+    def _details_pane(self) -> dict:
+        """The split's second pane: a placeholder until a folder is opened,
+        then a tabs container with one data_table tab per opened folder."""
+        open_folders = self.state["open"]
+        if not open_folders:
+            return {
+                "id": "fm:empty",
+                "text_display": {
+                    "id": "fm:empty",
+                    "lines": [_styled_text("Select a folder and press Enter to open it.")],
+                },
+            }
+        return {
+            "id": "fm:tabs",
+            "tabs": {
+                "id": "fm:tabs",
+                "selected": self.state["active_tab"],
+                "tabs": [
+                    {
+                        "id": f"tab:{i}",
+                        "title": folder.name,
+                        "content": {
+                            "id": f"fm:grid:{i}",
+                            "data_table": details_table(folder, i),
+                        },
+                    }
+                    for i, folder in enumerate(open_folders)
+                ],
+            },
+        }
 
     def _render(self) -> dict:
-        """Per-frame: rebuild both panes from `state`. Reads only; never calls
-        back into `QuiApp`."""
+        """Per-frame: rebuild the whole split from `state`. Reads only; never
+        calls back into `QuiApp`."""
         selected_path = self.rows[self.state["cursor"]]["path"]
         return {
-            "tree": tree_from_rows(self.rows, selected_path=selected_path),
-            "data_table": grid_descriptor(self.model, folder=self._grid_folder()),
+            "split": {
+                "id": "fm:split",
+                "orientation": "horizontal",  # panes side by side, vertical divider
+                "ratio": self.state["ratio"],
+                "first": tree_leaf(self.rows, selected_path=selected_path),
+                "second": self._details_pane(),
+            }
         }
 
     def _handle(self, event) -> None:
-        """Per-event: move the cursor on Up/Down. Mutates `state` only; never
-        calls back into `QuiApp`."""
-        if not (isinstance(event, dict) and "KeyPressed" in event):
+        """Per-event: move the cursor, open folders, resize, switch tabs.
+        Mutates `state` only; never calls back into `QuiApp`."""
+        if not isinstance(event, dict):
             return
-        key = event["KeyPressed"]["key"]
-        last = len(self.rows) - 1
-        if key == DOWN_KEY:
-            self.state["cursor"] = min(last, self.state["cursor"] + 1)
-        elif key == UP_KEY:
-            self.state["cursor"] = max(0, self.state["cursor"] - 1)
+        if "KeyPressed" in event:
+            key = event["KeyPressed"]["key"]
+            last = len(self.rows) - 1
+            if key == DOWN_KEY:
+                self.state["cursor"] = min(last, self.state["cursor"] + 1)
+            elif key == UP_KEY:
+                self.state["cursor"] = max(0, self.state["cursor"] - 1)
+            elif key == ENTER_KEY:
+                self._open_folder(self._cursored_folder())
+        elif "SplitDividerDragged" in event:
+            self.state["ratio"] = event["SplitDividerDragged"]["new_ratio"]
+        elif "TabBar" in event:
+            activation = event["TabBar"][1]
+            if "TabActivated" in activation:
+                self.state["active_tab"] = activation["TabActivated"]["index"]
+
+
+# --- inspection / headless helpers -------------------------------------------
 
 
 def _dump(node: Node, indent: int = 0) -> None:
-    """Human-readable dump of the model, for Step 1 verification."""
+    """Human-readable dump of the model."""
     pad = "  " * indent
     if node.is_dir:
         chevron = "v" if node.expanded else ">"
@@ -316,22 +367,21 @@ def _dump(node: Node, indent: int = 0) -> None:
         print(f"{pad}  {node.name}{size}")
 
 
-def _dump_tree_rows(descriptor: dict) -> None:
-    """Human-readable dump of the flattened tree rows, for Step 2 verification."""
-    for row in descriptor["rows"]:
+def _dump_folder_rows(rows: list[dict]) -> None:
+    """Human-readable dump of the folders-only tree rows."""
+    for row in rows:
         pad = "  " * row["indent"]
-        expanded = row["is_expanded"]  # None=leaf, True/False=branch
-        chevron = "" if expanded is None else ("▾ " if expanded else "▸ ")
+        chevron = "▾ " if row["is_expanded"] else "▸ "
         glyph = row["icon"]["glyph"]
         text = row["text"]["spans"][0]["text"]
         path = ",".join(str(i) for i in row["path"]) or "-"
-        print(f"  path=[{path:<10}] {pad}{chevron}{glyph} {text}")
+        print(f"  path=[{path:<8}] {pad}{chevron}{glyph} {text}")
 
 
 def _dump_grid(descriptor: dict) -> None:
-    """Human-readable dump of the grid rows, for Step 3 verification."""
+    """Human-readable dump of a details table."""
     titles = [c["title"] for c in descriptor["columns"]]
-    widths = [16, 10, 8]
+    widths = [20, 10, 8]
 
     def _row_text(cells_text: list[str]) -> str:
         return "  ".join(f"{t:<{w}}" for t, w in zip(cells_text, widths))
@@ -340,6 +390,16 @@ def _dump_grid(descriptor: dict) -> None:
     for row in descriptor["rows"]:
         cells_text = ["".join(s["text"] for s in cell["spans"]) for cell in row["cells"]]
         print("  " + _row_text(cells_text))
+
+
+def _dump_steps(model: Model) -> None:
+    print("# model")
+    _dump(model.root)
+    print("\n# folders-only tree rows")
+    rows, _nodes, _by_path = folder_rows(model)
+    _dump_folder_rows(rows)
+    print("\n# details table for the root folder")
+    _dump_grid(details_table(model.root, 0))
 
 
 class _Quit(Exception):
@@ -363,25 +423,28 @@ def _wrap_quit(fm: FileManager) -> None:
     fm.app.set_handler(handler)
 
 
-def _run_headless(fm: FileManager, presses: int = 3) -> None:
-    """Drive the app with Python owning the loop: press Down `presses` times,
-    then print the final screen -- runnable with no feature build."""
-    down = {"KeyPressed": {"key": DOWN_KEY, "modifiers": {"shift": False, "ctrl": False, "alt": False, "meta": False}, "repeat": False}}
-    for _ in range(presses):
-        fm.app.push_event(down)
+def _key_event(key: dict) -> dict:
+    return {
+        "KeyPressed": {
+            "key": key,
+            "modifiers": {"shift": False, "ctrl": False, "alt": False, "meta": False},
+            "repeat": False,
+        }
+    }
+
+
+def _run_headless(fm: FileManager) -> None:
+    """Drive the app with Python owning the loop: walk down to a folder, open
+    it as a tab, open a second one, then print the final screen -- runnable
+    with no feature build."""
+    script = [DOWN_KEY, ENTER_KEY, DOWN_KEY, ENTER_KEY]
+    for key in script:
+        fm.app.push_event(_key_event(key))
         fm.app.step()
     print(fm.app.screen())
-    print(f"\ncursor={fm.state['cursor']}  selected={fm._selected_node().name!r}")
-
-
-def _dump_steps(model: Model) -> None:
-    """The step-by-step descriptor dumps (Steps 1-3), kept for inspection."""
-    print("# model (Step 1)")
-    _dump(model.root)
-    print("\n# tree rows (Step 2)")
-    _dump_tree_rows(tree_descriptor(model))
-    print("\n# grid rows (Step 3)")
-    _dump_grid(grid_descriptor(model))
+    open_names = [n.name for n in fm.state["open"]]
+    print(f"\ncursor={fm.state['cursor']}  open_tabs={open_names}  "
+          f"active_tab={fm.state['active_tab']}  ratio={fm.state['ratio']}")
 
 
 if __name__ == "__main__":
