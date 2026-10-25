@@ -3174,6 +3174,30 @@ pub trait Backend: sealed::Sealed {
         None
     }
 
+    /// Set the width, in this backend's native pixel units, of a strip
+    /// every subsequent [`Self::draw_editor`] (and [`Self::editor_layout`])
+    /// reserves between the editor's text area and its vertical
+    /// scrollbar. `None` (the default) reserves nothing — `text_bounds`
+    /// runs flush to the scrollbar exactly as before this method existed.
+    ///
+    /// See [`Editor::layout_with_options_and_reserve`]'s `right_reserve_w`
+    /// doc for the exact geometry: the vertical scrollbar keeps hugging
+    /// the viewport's true right edge regardless of this value, and the
+    /// reserved strip is the gap between the narrowed text area and that
+    /// scrollbar. A host docking a minimap strip next to the editor calls
+    /// this instead of narrowing the `rect` it hands to `draw_editor` —
+    /// narrowing `rect` directly would relocate the scrollbar along with
+    /// the minimap, which is the behaviour this method exists to avoid.
+    fn set_editor_right_reserve_w(&mut self, _px: Option<f32>) {}
+
+    /// The width last set through [`Self::set_editor_right_reserve_w`],
+    /// or `None` when unset or ignored by this backend (the default
+    /// body). [`Self::editor_layout`] reads this so hit-testing agrees
+    /// with what [`Self::draw_editor`] painted.
+    fn editor_right_reserve_w(&self) -> Option<f32> {
+        None
+    }
+
     /// Compute the editor viewport layout (gutter / text / scrollbar
     /// bounds) without painting — the no-paint twin of [`Self::draw_editor`].
     /// Uses this backend's own [`Self::char_width`] /
@@ -3203,12 +3227,13 @@ pub trait Backend: sealed::Sealed {
     /// diverges from `editor.rect` and this method's return value quietly
     /// stops matching what GTK painted.
     fn editor_layout(&self, rect: Rect, editor: &Editor) -> EditorLayout {
-        editor.layout_with_options_and_v_scrollbar_w(
+        editor.layout_with_options_and_reserve(
             rect,
             self.char_width(),
             self.line_height(),
             crate::primitives::editor::EditorPaintOptions::default(),
             self.editor_v_scrollbar_width(),
+            self.editor_right_reserve_w().unwrap_or(0.0),
         )
     }
 

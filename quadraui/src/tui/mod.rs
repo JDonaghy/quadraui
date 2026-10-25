@@ -99,7 +99,7 @@ pub use date_picker::draw_date_picker;
 pub use dialog::{draw_dialog, tui_dialog_layout};
 pub use diff_view::draw_diff_view;
 pub use drop_overlay::draw_drop_overlay;
-pub use editor::{draw_editor, EditorPaintResult};
+pub use editor::{draw_editor, draw_editor_with_reserve, EditorPaintResult};
 pub use find_replace::draw_find_replace;
 pub use float::draw_float;
 pub use focus_ring::draw_focus_ring;

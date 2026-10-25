@@ -858,6 +858,49 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          already just a larger `FixedPitch(px)` literal — `RepeatToFill`'s whole-number-\
          multiple trick solves a cell-quantisation problem that is TUI-only",
     ),
+    // `set_editor_right_reserve_w`/`editor_right_reserve_w` let a host reserve a trailing
+    // strip (e.g. a docked minimap) between the editor's text area and its vertical
+    // scrollbar without moving the scrollbar. Only the TUI rasteriser implements it so
+    // far; on GTK/macOS/Win-GUI the setter is dropped and the getter answers `None`, so
+    // `draw_editor` and `editor_layout` both reserve nothing — painting and hit-testing
+    // stay consistent with each other, the strip is just not carved out yet. Each
+    // pixel backend picks this up in its own per-backend issue.
+    (
+        "gtk",
+        "set_editor_right_reserve_w",
+        "unimplemented on GTK — draw_editor reserves no trailing strip yet; the TUI \
+         rasteriser is the only implementer so far (one backend per issue)",
+    ),
+    (
+        "gtk",
+        "editor_right_reserve_w",
+        "answers `None` because the setter is a no-op here, which keeps editor_layout's \
+         hit-testing in agreement with what draw_editor actually painted",
+    ),
+    (
+        "macos",
+        "set_editor_right_reserve_w",
+        "unimplemented on macOS — draw_editor reserves no trailing strip yet; the TUI \
+         rasteriser is the only implementer so far (one backend per issue)",
+    ),
+    (
+        "macos",
+        "editor_right_reserve_w",
+        "answers `None` because the setter is a no-op here, which keeps editor_layout's \
+         hit-testing in agreement with what draw_editor actually painted",
+    ),
+    (
+        "win",
+        "set_editor_right_reserve_w",
+        "unimplemented on Win-GUI — draw_editor reserves no trailing strip yet; the TUI \
+         rasteriser is the only implementer so far (one backend per issue)",
+    ),
+    (
+        "win",
+        "editor_right_reserve_w",
+        "answers `None` because the setter is a no-op here, which keeps editor_layout's \
+         hit-testing in agreement with what draw_editor actually painted",
+    ),
     // `set_current_line_height`/`set_current_char_width` let a host re-apply a pixel
     // backend's font-derived metrics. TUI is a fixed-cell backend — its line height and
     // character width are `1.0` by construction — so there is no font-derived value for a
