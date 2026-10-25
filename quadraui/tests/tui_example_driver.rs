@@ -3584,6 +3584,39 @@ fn data_table_initial_screen_shows_footer_totals() {
 }
 
 #[test]
+fn data_table_small_plugin_panel_paints_header_above_body_rows() {
+    // Mirrors a consumer embedding `DataTable` in a short results/plugin
+    // panel (e.g. a SQL-results grid docked below an editor) rather than
+    // a full-screen view: wide enough to stay clear of `min_total_width`
+    // so no column is horizontally scrolled off, but only a handful of
+    // rows tall. The header row must still be the very first painted
+    // line, above every body row, regardless of how short the panel is.
+    let driver = TuiDriver::new(DataTableApp::new(), 90, 7);
+    let screen = driver.screen();
+
+    let header = screen.lines().next().expect("header row");
+    assert!(
+        header.contains("Name"),
+        "header row must paint the Name column title in a narrow panel:\n{screen}"
+    );
+    assert!(
+        header.contains("Status"),
+        "header row must paint the Status column title in a narrow panel:\n{screen}"
+    );
+
+    let (_, header_y) = driver
+        .find("Name")
+        .unwrap_or_else(|| panic!("Name header not painted:\n{screen}"));
+    let (_, row_y) = driver
+        .find("api-gateway")
+        .unwrap_or_else(|| panic!("first body row not painted:\n{screen}"));
+    assert!(
+        header_y < row_y,
+        "header row must paint above the first body row, got header_y={header_y}, row_y={row_y}:\n{screen}"
+    );
+}
+
+#[test]
 fn data_table_footer_stays_pinned_while_body_scrolls() {
     // A short viewport (12 rows) with 20 pods forces scrolling.
     let mut driver = TuiDriver::new(DataTableApp::new(), 100, 12);
