@@ -59,6 +59,7 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-25
 ### Added
 
 - `Backend::set_editor_right_reserve_w()`/`editor_right_reserve_w()` (both
