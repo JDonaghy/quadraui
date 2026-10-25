@@ -90,8 +90,8 @@ use pyo3::types::{PyDict, PyList};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{StepOutcome, TuiRunner};
 use quadraui::{
-    AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, Reaction, Rect, TabBar,
-    TextDisplay, TreeView, UiEvent,
+    AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, Reaction, Rect, Split,
+    SplitDirection, TabBar, TextDisplay, TreeView, UiEvent, WidgetId,
 };
 
 create_exception!(
@@ -503,8 +503,12 @@ fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>) {
 /// equal shares — one per child, side by side or stacked — and recurses;
 /// equal shares (rather than `draw_bands`'s fixed line-count bands) fill
 /// the whole area regardless of viewport size. A `Leaf` paints its one
-/// descriptor into the whole area its container gave it. Per-child flex
-/// weights are a follow-up; every child gets the same share for now.
+/// descriptor into the whole area its container gave it. A `Split` divides
+/// its area into two unequal panes at `ratio` via `Backend::draw_split`
+/// (the same divider paint/hit-test every backend already shares for the
+/// Rust-side `Split` primitive) and recurses into each with its resolved
+/// bounds. Per-child flex weights on `Row`/`Column` are a follow-up; every
+/// `Row`/`Column` child gets the same share for now.
 fn paint_layout(backend: &mut dyn Backend, area: Rect, node: &LayoutNode) {
     match node {
         LayoutNode::Row(children) => {
@@ -521,6 +525,11 @@ fn paint_layout(backend: &mut dyn Backend, area: Rect, node: &LayoutNode) {
             }
         }
         LayoutNode::Leaf(leaf) => paint_leaf(backend, area, leaf),
+        LayoutNode::Split(split) => {
+            let layout = backend.draw_split(area, &split.split);
+            paint_layout(backend, layout.first_bounds, &split.first);
+            paint_layout(backend, layout.second_bounds, &split.second);
+        }
     }
 }
 
@@ -639,13 +648,24 @@ fn decode_slot_entry<T: serde::de::DeserializeOwned>(
 }
 
 /// One node of a render callback's layout tree: a `Row`/`Column` container
-/// holding child nodes, or a `Leaf` wrapping one id-addressable primitive
-/// descriptor. `Tabs`/`Split` containers are a follow-up — only `Row` and
-/// `Column` are built here.
+/// holding child nodes, a `Leaf` wrapping one id-addressable primitive
+/// descriptor, or a `Split` holding exactly two named child nodes divided
+/// by a draggable ratio. A `Tabs` container is a follow-up.
 enum LayoutNode {
     Row(Vec<LayoutNode>),
     Column(Vec<LayoutNode>),
     Leaf(LayoutLeaf),
+    Split(LayoutSplit),
+}
+
+/// A [`LayoutNode::Split`]'s decoded shape: the `quadraui::Split` descriptor
+/// (its own `id`, `direction`, `ratio`, pane minimums) paired with the two
+/// named child nodes it divides. `first`/`second` are full [`LayoutNode`]s,
+/// not leaf-only slots, so a pane may itself hold a nested row/column/split.
+struct LayoutSplit {
+    split: Split,
+    first: Box<LayoutNode>,
+    second: Box<LayoutNode>,
 }
 
 /// One id-addressable primitive inside a layout tree, decoded from a
@@ -682,7 +702,8 @@ const LEAF_KIND_KEYS: [&str; 6] = [
 ];
 
 /// Decodes one layout tree node from a render callback's returned `dict`:
-/// a `"row"` or `"column"` key holds the container's children; any other
+/// a `"row"` or `"column"` key holds the container's children, a `"split"`
+/// key holds a two-pane divider ([`layout_split_from_dict`]); any other
 /// shape is decoded as a leaf via [`layout_leaf_from_dict`].
 fn layout_node_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutNode> {
     if let Some(value) = dict.get_item("row")? {
@@ -697,7 +718,129 @@ fn layout_node_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<Layou
             )?));
         }
     }
+    if let Some(value) = dict.get_item("split")? {
+        if !value.is_none() {
+            let split_dict = value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!("{what}: \"split\" must be a dict"))
+            })?;
+            return Ok(LayoutNode::Split(layout_split_from_dict(what, split_dict)?));
+        }
+    }
     Ok(LayoutNode::Leaf(layout_leaf_from_dict(what, dict)?))
+}
+
+/// The orientation strings a `"split"` node's `"orientation"` field accepts
+/// — lowercase, Python-idiomatic spellings, independent of
+/// `quadraui::SplitDirection`'s own (PascalCase, serde-default) wire form.
+const SPLIT_ORIENTATIONS: [&str; 2] = ["horizontal", "vertical"];
+
+/// Decodes a `"split"` node: `{"id", "orientation", "ratio", "first",
+/// "second"}`, with `"first_min"`/`"second_min"` optional (defaulting to
+/// `0.0`, same as `quadraui::Split`). `"first"`/`"second"` are full child
+/// node dicts, recursively decoded by [`layout_node_from_dict`].
+fn layout_split_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutSplit> {
+    let id: String = match dict.get_item("id")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!("{what}: split \"id\" must be a string"))
+        })?,
+        _ => {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: split is missing required \"id\""
+            )));
+        }
+    };
+
+    let orientation: String = match dict.get_item("orientation")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: split {id:?} \"orientation\" must be a string"
+            ))
+        })?,
+        _ => {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: split {id:?} is missing required \"orientation\""
+            )));
+        }
+    };
+    let direction = match orientation.as_str() {
+        "horizontal" => SplitDirection::Horizontal,
+        "vertical" => SplitDirection::Vertical,
+        _ => {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: split {id:?} \"orientation\" must be one of {SPLIT_ORIENTATIONS:?}, \
+                 got {orientation:?}"
+            )));
+        }
+    };
+
+    let ratio: f32 = match dict.get_item("ratio")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: split {id:?} \"ratio\" must be a number"
+            ))
+        })?,
+        _ => {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: split {id:?} is missing required \"ratio\""
+            )));
+        }
+    };
+
+    let first_min: f32 = match dict.get_item("first_min")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: split {id:?} \"first_min\" must be a number"
+            ))
+        })?,
+        _ => 0.0,
+    };
+    let second_min: f32 = match dict.get_item("second_min")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: split {id:?} \"second_min\" must be a number"
+            ))
+        })?,
+        _ => 0.0,
+    };
+
+    let first = layout_child_node_from_value(what, &id, "first", dict)?;
+    let second = layout_child_node_from_value(what, &id, "second", dict)?;
+
+    Ok(LayoutSplit {
+        split: Split {
+            id: WidgetId::new(id),
+            direction,
+            ratio,
+            first_min,
+            second_min,
+        },
+        first: Box::new(first),
+        second: Box::new(second),
+    })
+}
+
+/// Reads a `"split"` node's required `"first"`/`"second"` child dict and
+/// recursively decodes it via [`layout_node_from_dict`].
+fn layout_child_node_from_value(
+    what: &str,
+    split_id: &str,
+    key: &str,
+    dict: &Bound<'_, PyDict>,
+) -> PyResult<LayoutNode> {
+    let value = dict
+        .get_item(key)?
+        .filter(|v| !v.is_none())
+        .ok_or_else(|| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: split {split_id:?} is missing required {key:?}"
+            ))
+        })?;
+    let child_dict = value.cast::<PyDict>().map_err(|_| {
+        InvalidDescriptorError::new_err(format!(
+            "{what}: split {split_id:?} {key:?} must be a dict"
+        ))
+    })?;
+    layout_node_from_dict(what, child_dict)
 }
 
 /// Decodes a `"row"`/`"column"` container's children: a `list` of child
@@ -769,9 +912,11 @@ fn layout_leaf_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<Layou
     Ok(LayoutLeaf { id, descriptor })
 }
 
-/// Walks `node` collecting every leaf `id`, raising `InvalidDescriptorError`
-/// on the first repeat. A unique id per leaf lets host code address one
-/// instance unambiguously even when a kind appears more than once.
+/// Walks `node` collecting every leaf and split `id` into one namespace,
+/// raising `InvalidDescriptorError` on the first repeat. A unique id per
+/// leaf/split lets host code address one instance unambiguously even when a
+/// kind appears more than once, and keeps a split's id from silently
+/// shadowing a leaf's.
 fn validate_unique_leaf_ids(node: &LayoutNode) -> PyResult<()> {
     fn walk(node: &LayoutNode, seen: &mut HashSet<String>) -> PyResult<()> {
         match node {
@@ -790,6 +935,16 @@ fn validate_unique_leaf_ids(node: &LayoutNode) -> PyResult<()> {
                 }
                 Ok(())
             }
+            LayoutNode::Split(split) => {
+                let id = split.split.id.as_str().to_owned();
+                if !seen.insert(id.clone()) {
+                    return Err(InvalidDescriptorError::new_err(format!(
+                        "render: duplicate leaf id {id:?}"
+                    )));
+                }
+                walk(&split.first, seen)?;
+                walk(&split.second, seen)
+            }
         }
     }
     let mut seen = HashSet::new();
@@ -798,17 +953,18 @@ fn validate_unique_leaf_ids(node: &LayoutNode) -> PyResult<()> {
 
 /// The decoded shape of a render callback's return value: either the flat
 /// per-slot `dict` ([`RenderFrame`], the pre-layout-tree shape) or a
-/// `Row`/`Column` layout tree ([`LayoutNode`]).
+/// layout tree ([`LayoutNode`]).
 enum RenderOutput {
     Flat(Box<RenderFrame>),
     Tree(LayoutNode),
 }
 
 /// Invokes a registered render callback with no arguments and decodes its
-/// returned `dict` into a [`RenderOutput`]. A `dict` carrying a `"row"` or
-/// `"column"` key is parsed as a layout tree; any other `dict` is parsed as
-/// the flat per-slot shape, so a render callback written against the flat
-/// shape keeps working unchanged. On any failure — the callback raising,
+/// returned `dict` into a [`RenderOutput`]. A `dict` carrying a `"row"`,
+/// `"column"`, or `"split"` key is parsed as a layout tree; any other
+/// `dict` is parsed as the flat per-slot shape, so a render callback
+/// written against the flat shape keeps working unchanged. On any failure
+/// — the callback raising,
 /// returning something other than a `dict`, or an entry with the wrong
 /// shape — records the error in `pending_error` and returns `None`, leaving
 /// the caller to skip drawing this frame rather than paint a half-decoded
@@ -846,7 +1002,8 @@ fn render_output_from_callback(
         };
 
         let is_tree = matches!(dict.get_item("row"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("column"), Ok(Some(ref value)) if !value.is_none());
+            || matches!(dict.get_item("column"), Ok(Some(ref value)) if !value.is_none())
+            || matches!(dict.get_item("split"), Ok(Some(ref value)) if !value.is_none());
         if is_tree {
             let parsed = layout_node_from_dict(RENDER_CALLBACK_WHAT, dict)
                 .and_then(|node| validate_unique_leaf_ids(&node).map(|()| node));
@@ -2377,6 +2534,105 @@ mod tests {
                 app.screen_contains("RightCell")
                     .expect("render must not raise"),
                 "the second data_table instance must render"
+            );
+        });
+    }
+
+    /// A render callback returning `{"split": {...}}` divides its area into
+    /// two unequal panes at `ratio`; pushing a `SplitDividerDragged` event
+    /// to a handler that writes the new ratio into the same Python state the
+    /// render callback reads moves the divider on the very next frame — the
+    /// state -> `render(state)` loop, applied to a `Split` instead of a flat
+    /// slot. The new boundary is found via `find_bounds`, never a hardcoded
+    /// column, so this only passes if the divider actually moved to ~70% of
+    /// the width rather than merely re-painting at the old position.
+    #[test]
+    fn split_divider_drag_event_moves_the_divider_on_next_frame() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+state = {'ratio': 0.5}
+
+def render():
+    return {'split': {
+        'id': 'main-split',
+        'orientation': 'horizontal',
+        'ratio': state['ratio'],
+        'first': {'id': 'text:left', 'text_display': {
+            'id': 'text:left',
+            'lines': [{'spans': [{'text': 'LEFT', 'fg': None, 'bg': None}]}],
+        }},
+        'second': {'id': 'text:right', 'text_display': {
+            'id': 'text:right',
+            'lines': [{'spans': [{'text': 'RIGHT', 'fg': None, 'bg': None}]}],
+        }},
+    }}
+
+def handle(event):
+    state['ratio'] = event['SplitDividerDragged']['new_ratio']
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let width = 40u16;
+            let mut app =
+                QuiApp::new(width, 20, Some(handle), Some(render)).expect("valid dimensions");
+
+            assert!(
+                app.screen_contains("LEFT").expect("render must not raise"),
+                "left pane must be painted at the initial ratio"
+            );
+            let left_before = app
+                .driver
+                .find_bounds("LEFT")
+                .expect("left pane must be on screen");
+            let right_before = app
+                .driver
+                .find_bounds("RIGHT")
+                .expect("right pane must be on screen");
+            assert!(
+                left_before.x < right_before.x,
+                "the first pane must be left of the second at a 0.5 ratio"
+            );
+
+            let event = py
+                .eval(
+                    c"{'SplitDividerDragged': {'tree': 'main-split', 'split_index': 0, 'new_ratio': 0.7}}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate");
+            let event_dict = event.cast::<PyDict>().expect("dict literal must be a dict");
+            app.push_event(event_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let right_after = app
+                .driver
+                .find_bounds("RIGHT")
+                .expect("right pane must still be on screen");
+            assert!(
+                right_after.x > right_before.x,
+                "dragging the divider to a larger ratio must widen the first pane: \
+                 before={right_before:?} after={right_after:?}"
+            );
+            let fraction = right_after.x / f32::from(width);
+            assert!(
+                (fraction - 0.7).abs() <= 0.05,
+                "the second pane must now start at ~70% of the width, got {fraction} \
+                 (right_after={right_after:?}, width={width})"
             );
         });
     }
