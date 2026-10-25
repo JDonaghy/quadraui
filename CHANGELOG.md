@@ -68,6 +68,17 @@ only a push to `main` runs this workflow.
   selection overlays, cursor (block and secondary), AI ghost text and the
   horizontal-scrollbar track all stop short of the reserved column count,
   while the vertical scrollbar stays pinned to the area's true right edge.
+- `tui::draw_editor_with_reserve()` — the paint-side counterpart to
+  `Editor::layout_with_options_and_reserve`'s `right_reserve_w`, and what
+  `TuiBackend` calls to honour `set_editor_right_reserve_w`. Lets a TUI host
+  reserve a fixed-width strip (a minimap, say) between the editor's text and
+  its vertical scrollbar without narrowing the whole `area` it passes to
+  `draw_editor` — narrowing `area` drags the scrollbar off the viewport's
+  true right edge along with the text, which is what this parameter exists
+  to avoid. `tui::draw_editor()` keeps its existing signature and delegates
+  with `right_reserve_w: 0`, mirroring how
+  `layout_with_options_and_v_scrollbar_w()` delegates to
+  `layout_with_options_and_reserve()`, so no existing call site changes.
 - `MinimapSizing::RepeatToFill(f32)` — a new `Minimap` row-pitch sizing that
   repeat-paints a short sampled-line list across a whole-number multiple of
   the base pitch to visually stretch it across a taller strip, instead of
@@ -95,12 +106,6 @@ only a push to `main` runs this workflow.
   whole-unit remainder is now spread across the first few rows (one extra
   repeat each), so the painted rows sum to the strip's height exactly
   whenever a full-row-count display is possible at all.
-### Changed
-
-- `quadraui::tui::draw_editor` takes a new required `right_reserve: u16`
-  parameter (pass `0` to reproduce the prior unreserved layout); it narrows
-  paint to leave room for the trailing strip `set_editor_right_reserve_w`
-  reserves (see the `### Added` entry above).
 
 ## [0.5.1] - 2026-10-24
 ### Added

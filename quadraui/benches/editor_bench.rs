@@ -142,7 +142,7 @@ mod tui_bench {
         c.bench_function("editor_paint_tui_4k_lines", |b| {
             b.iter(|| {
                 let mut buf = Buffer::empty(area);
-                black_box(draw_editor(&mut buf, area, &editor, &theme, 0));
+                black_box(draw_editor(&mut buf, area, &editor, &theme));
             })
         });
     }
