@@ -3584,6 +3584,39 @@ fn data_table_initial_screen_shows_footer_totals() {
 }
 
 #[test]
+fn data_table_small_plugin_panel_paints_header_above_body_rows() {
+    // Mirrors a consumer embedding `DataTable` in a short results/plugin
+    // panel (e.g. a SQL-results grid docked below an editor) rather than
+    // a full-screen view: wide enough to stay clear of `min_total_width`
+    // so no column is horizontally scrolled off, but only a handful of
+    // rows tall. The header row must still be the very first painted
+    // line, above every body row, regardless of how short the panel is.
+    let driver = TuiDriver::new(DataTableApp::new(), 90, 7);
+    let screen = driver.screen();
+
+    let header = screen.lines().next().expect("header row");
+    assert!(
+        header.contains("Name"),
+        "header row must paint the Name column title in a narrow panel:\n{screen}"
+    );
+    assert!(
+        header.contains("Status"),
+        "header row must paint the Status column title in a narrow panel:\n{screen}"
+    );
+
+    let (_, header_y) = driver
+        .find("Name")
+        .unwrap_or_else(|| panic!("Name header not painted:\n{screen}"));
+    let (_, row_y) = driver
+        .find("api-gateway")
+        .unwrap_or_else(|| panic!("first body row not painted:\n{screen}"));
+    assert!(
+        header_y < row_y,
+        "header row must paint above the first body row, got header_y={header_y}, row_y={row_y}:\n{screen}"
+    );
+}
+
+#[test]
 fn data_table_footer_stays_pinned_while_body_scrolls() {
     // A short viewport (12 rows) with 20 pods forces scrolling.
     let mut driver = TuiDriver::new(DataTableApp::new(), 100, 12);
@@ -7526,11 +7559,45 @@ fn pressing_s_toggles_the_minimap_scale_label() {
         "pressing s should flip the scale label to 2 (2x4):\n{}",
         driver.screen()
     );
+}
 
-    driver.type_char('s');
+/// `r` toggles `MinimapSizing::RepeatToFill`, which swaps the minimap's
+/// sampled lines for a short excerpt (see `MinimapApp`'s module doc) and
+/// repeat-paints it across the strip — proved here by the status bar's
+/// sizing label, mirroring `pressing_s_toggles_the_minimap_scale_label`.
+#[test]
+fn pressing_r_toggles_the_minimap_sizing_label() {
+    let mut driver = TuiDriver::new(MinimapApp::new(), 100, 30);
     assert!(
-        driver.screen_contains("scale 1 (1x2)"),
-        "pressing s again should flip the scale label back to 1 (1x2):\n{}",
+        driver.screen_contains("sizing fixed"),
+        "default sizing label should read fixed:\n{}",
+        driver.screen()
+    );
+
+    let has_braille = driver
+        .screen()
+        .chars()
+        .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c));
+    assert!(
+        has_braille,
+        "minimap should still paint braille glyphs before toggling sizing:\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('r');
+    assert!(
+        driver.screen_contains("sizing repeat"),
+        "pressing r should flip the sizing label to repeat:\n{}",
+        driver.screen()
+    );
+
+    let has_braille_after_stretch = driver
+        .screen()
+        .chars()
+        .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c));
+    assert!(
+        has_braille_after_stretch,
+        "minimap should still paint braille glyphs once stretched via RepeatToFill:\n{}",
         driver.screen()
     );
 }

@@ -3174,6 +3174,30 @@ pub trait Backend: sealed::Sealed {
         None
     }
 
+    /// Set the width, in this backend's native pixel units, of a strip
+    /// every subsequent [`Self::draw_editor`] (and [`Self::editor_layout`])
+    /// reserves between the editor's text area and its vertical
+    /// scrollbar. `None` (the default) reserves nothing — `text_bounds`
+    /// runs flush to the scrollbar exactly as before this method existed.
+    ///
+    /// See [`Editor::layout_with_options_and_reserve`]'s `right_reserve_w`
+    /// doc for the exact geometry: the vertical scrollbar keeps hugging
+    /// the viewport's true right edge regardless of this value, and the
+    /// reserved strip is the gap between the narrowed text area and that
+    /// scrollbar. A host docking a minimap strip next to the editor calls
+    /// this instead of narrowing the `rect` it hands to `draw_editor` —
+    /// narrowing `rect` directly would relocate the scrollbar along with
+    /// the minimap, which is the behaviour this method exists to avoid.
+    fn set_editor_right_reserve_w(&mut self, _px: Option<f32>) {}
+
+    /// The width last set through [`Self::set_editor_right_reserve_w`],
+    /// or `None` when unset or ignored by this backend (the default
+    /// body). [`Self::editor_layout`] reads this so hit-testing agrees
+    /// with what [`Self::draw_editor`] painted.
+    fn editor_right_reserve_w(&self) -> Option<f32> {
+        None
+    }
+
     /// Compute the editor viewport layout (gutter / text / scrollbar
     /// bounds) without painting — the no-paint twin of [`Self::draw_editor`].
     /// Uses this backend's own [`Self::char_width`] /
@@ -3203,12 +3227,13 @@ pub trait Backend: sealed::Sealed {
     /// diverges from `editor.rect` and this method's return value quietly
     /// stops matching what GTK painted.
     fn editor_layout(&self, rect: Rect, editor: &Editor) -> EditorLayout {
-        editor.layout_with_options_and_v_scrollbar_w(
+        editor.layout_with_options_and_reserve(
             rect,
             self.char_width(),
             self.line_height(),
             crate::primitives::editor::EditorPaintOptions::default(),
             self.editor_v_scrollbar_width(),
+            self.editor_right_reserve_w().unwrap_or(0.0),
         )
     }
 
@@ -3761,6 +3786,27 @@ pub trait Backend: sealed::Sealed {
     /// VS Code's own default (`MinimapScale::Two`) once, at startup, the
     /// same way it configures `dpi_scale` or the editor font.
     fn set_minimap_scale(&mut self, _scale: MinimapScale) {}
+
+    /// The [`crate::MinimapSizing`] a later [`Self::draw_minimap`]/
+    /// [`Self::minimap_layout`] call resolves its row pitch *strategy*
+    /// from — orthogonal to [`Self::minimap_scale`], which only picks the
+    /// pixel/cell size of one row. Default-provided, returning `None`,
+    /// meaning "use this rasteriser's own hardcoded default sizing"
+    /// (TUI: [`crate::MinimapSizing::FixedPitch`]`(1.0)`) — a host that
+    /// never calls [`Self::set_minimap_sizing`] sees exactly the behaviour
+    /// it always has. `Some(sizing)` overrides that default, e.g. with
+    /// [`crate::MinimapSizing::RepeatToFill`] to stretch a short file
+    /// across a tall strip.
+    fn minimap_sizing(&self) -> Option<crate::primitives::minimap::MinimapSizing> {
+        None
+    }
+
+    /// Set the [`crate::MinimapSizing`] [`Self::draw_minimap`]/
+    /// [`Self::minimap_layout`] resolve their row-pitch strategy from.
+    /// Default no-op, mirroring [`Self::set_minimap_scale`]: a backend
+    /// that never overrides [`Self::minimap_sizing`] has nowhere to store
+    /// this and nothing reads it back.
+    fn set_minimap_sizing(&mut self, _sizing: Option<crate::primitives::minimap::MinimapSizing>) {}
 
     /// Compute [`Minimap`] layout without painting — mirrors
     /// [`Backend::chart_layout`] / [`Backend::tree_layout`]. Apps call

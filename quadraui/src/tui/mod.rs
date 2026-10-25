@@ -99,7 +99,7 @@ pub use date_picker::draw_date_picker;
 pub use dialog::{draw_dialog, tui_dialog_layout};
 pub use diff_view::draw_diff_view;
 pub use drop_overlay::draw_drop_overlay;
-pub use editor::{draw_editor, EditorPaintResult};
+pub use editor::{draw_editor, draw_editor_with_reserve, EditorPaintResult};
 pub use find_replace::draw_find_replace;
 pub use float::draw_float;
 pub use focus_ring::draw_focus_ring;
@@ -109,7 +109,8 @@ pub use list::{draw_list, tui_list_layout};
 pub use menu_bar::{draw_menu_bar, tui_menu_bar_layout};
 pub use message_list::draw_message_list;
 pub use minimap::{
-    draw_minimap, draw_minimap_with_scale, tui_minimap_layout, COLS_PER_CELL, LINES_PER_ROW,
+    draw_minimap, draw_minimap_with_scale, draw_minimap_with_sizing, tui_minimap_layout,
+    tui_minimap_layout_with_sizing, COLS_PER_CELL, LINES_PER_ROW,
 };
 pub use multi_section_view::{draw_multi_section_view, tui_msv_layout};
 pub use number_input::draw_number_input;

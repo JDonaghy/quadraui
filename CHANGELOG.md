@@ -59,6 +59,62 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-25
+### Added
+
+- `Backend::set_editor_right_reserve_w()`/`editor_right_reserve_w()` (both
+  default-provided, no-op/`None`) let a host reserve trailing width in an
+  `Editor` area — e.g. a minimap strip — without relocating the vertical
+  scrollbar. `TuiBackend` overrides both: the background fill, text,
+  selection overlays, cursor (block and secondary), AI ghost text and the
+  horizontal-scrollbar track all stop short of the reserved column count,
+  while the vertical scrollbar stays pinned to the area's true right edge.
+- `tui::draw_editor_with_reserve()` — the paint-side counterpart to
+  `Editor::layout_with_options_and_reserve`'s `right_reserve_w`, and what
+  `TuiBackend` calls to honour `set_editor_right_reserve_w`. Lets a TUI host
+  reserve a fixed-width strip (a minimap, say) between the editor's text and
+  its vertical scrollbar without narrowing the whole `area` it passes to
+  `draw_editor` — narrowing `area` drags the scrollbar off the viewport's
+  true right edge along with the text, which is what this parameter exists
+  to avoid. `tui::draw_editor()` keeps its existing signature and delegates
+  with `right_reserve_w: 0`, mirroring how
+  `layout_with_options_and_v_scrollbar_w()` delegates to
+  `layout_with_options_and_reserve()`, so no existing call site changes.
+- `MinimapSizing::RepeatToFill(f32)` — a new `Minimap` row-pitch sizing that
+  repeat-paints a short sampled-line list across a whole-number multiple of
+  the base pitch to visually stretch it across a taller strip, instead of
+  `FixedPitch`'s top-align-with-blank-space-below behaviour. `Backend` gains
+  `minimap_sizing()`/`set_minimap_sizing()` (both default-provided, mirroring
+  `minimap_scale()`/`set_minimap_scale()`) so a host can opt a `Minimap` into
+  it without changing any existing call site. `TuiBackend` is the first and
+  currently only backend to honour it, via `tui::draw_minimap_with_sizing`/
+  `tui::tui_minimap_layout_with_sizing`, since it is the one rasteriser that
+  quantises row pitch to whole terminal cells and so is the one that needs a
+  whole-number-multiple trick to avoid a fractional, unaddressable pitch.
+- `quadraui-py`: `QuiApp.__new__` takes an optional `render` keyword argument,
+  and a new `QuiApp.set_render(fn)` method sets one after construction. The
+  callback takes no arguments, runs once per frame, and returns a `dict`
+  mapping slot names to descriptor dicts (or `None` to clear a slot) — the
+  per-frame way for a `set_handler` callback to drive what the next frame
+  shows without re-entering `QuiApp` from inside the runner's borrow of it.
+  Existing `insert_*`/`run_*` call sites are unaffected.
+
+### Fixed
+
+- `quadraui-py`: a Python app's descriptor bands now lay out correctly in a
+  native window. `draw_bands` sized each band in character-cell counts while
+  `Backend::viewport()` reports device pixels on the native backends, so every
+  app collapsed into a ~17px strip at the top of its macOS/GTK/Win window. Band
+  heights are now scaled by `Backend::line_height()` (1.0 on TUI, the font's
+  pixel line height on native), so a band is N text lines tall on every
+  backend; the TUI/headless path is byte-for-byte unchanged.
+- `MinimapSizing::RepeatToFill` no longer leaves a blank gap below the last
+  row when the strip height isn't an exact multiple of `base_pitch *
+  row_count`: instead of every row sharing one floor-ed repeat count, the
+  whole-unit remainder is now spread across the first few rows (one extra
+  repeat each), so the painted rows sum to the strip's height exactly
+  whenever a full-row-count display is possible at all.
+
 ## [0.5.1] - 2026-10-24
 ### Added
 

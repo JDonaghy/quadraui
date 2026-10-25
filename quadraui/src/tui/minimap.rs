@@ -66,19 +66,43 @@ pub const COLS_PER_CELL: usize = 2;
 /// Compute the TUI cell-unit layout for a [`Minimap`] without painting.
 ///
 /// TUI uses [`MinimapSizing::FixedPitch`] at exactly `1.0` cell row per
-/// minimap row. `draw_minimap` below paints exactly one cell row
-/// per [`VisibleMinimapLine`], so the layout's row pitch and the
-/// rasteriser's paint granularity must agree — under the previous
-/// [`MinimapSizing::Fill`], a short file's pitch could stretch up to
-/// [`crate::primitives::minimap::MAX_ROW_PITCH`] cell rows, but
-/// `draw_minimap` still only painted the first cell row of each band,
-/// leaving `pitch - 1` blank cell rows between every painted row — a gap
-/// that grew as the file got shorter. `FixedPitch(1.0)` pins the pitch to
-/// the rasteriser's actual per-row paint cost, so rows tile contiguously
-/// regardless of strip height, and long files fall back to the same
-/// sliding-window behaviour GTK already relies on (see the module docs
-/// on [`crate::primitives::minimap::Minimap::layout_with_sizing`]).
+/// minimap row, so `draw_minimap`'s paint loop repeats each row across
+/// exactly one cell row — the layout's row pitch and the rasteriser's
+/// paint granularity agree. Under the previous [`MinimapSizing::Fill`], a
+/// short file's pitch could stretch up to
+/// [`crate::primitives::minimap::MAX_ROW_PITCH`] cell rows, but the paint
+/// loop at the time only painted the first cell row of each band, leaving
+/// `pitch - 1` blank cell rows between every painted row — a gap that grew
+/// as the file got shorter. `FixedPitch(1.0)` pins the pitch to the
+/// rasteriser's one-row paint cost, so rows tile contiguously regardless of
+/// strip height, and long files fall back to the same sliding-window
+/// behaviour GTK already relies on (see the module docs on
+/// [`crate::primitives::minimap::Minimap::layout_with_sizing`]). A caller
+/// that wants a short file to instead *stretch* across a tall strip reaches
+/// for [`tui_minimap_layout_with_sizing`] with
+/// [`MinimapSizing::RepeatToFill`] — paired with
+/// [`draw_minimap_with_sizing`], whose paint loop now repeats each row
+/// across its full resolved pitch instead of hardcoding one cell row.
 pub fn tui_minimap_layout(minimap: &Minimap, area: Rect) -> MinimapLayout {
+    tui_minimap_layout_with_sizing(minimap, area, MinimapSizing::FixedPitch(1.0))
+}
+
+/// [`tui_minimap_layout`], but with the row-pitch strategy as an explicit
+/// parameter instead of the hardcoded [`MinimapSizing::FixedPitch`]`(1.0)`
+/// default.
+///
+/// [`MinimapSizing::RepeatToFill`] is the sizing a host reaches for when it
+/// wants a short file to visually fill a tall strip: each row repeat-paints
+/// across a whole number of cell rows rather than top-aligning with blank
+/// strip below it, with no risk of the fractional-pitch gaps
+/// [`MinimapSizing::Fill`] produces on a cell-native rasteriser (see
+/// [`MinimapSizing::Fill`]'s own doc). [`draw_minimap_with_sizing`]
+/// is the paint-side counterpart that actually repeats the content.
+pub fn tui_minimap_layout_with_sizing(
+    minimap: &Minimap,
+    area: Rect,
+    sizing: MinimapSizing,
+) -> MinimapLayout {
     let mut layout = minimap.layout_with_sizing(
         crate::event::Rect::new(
             area.x as f32,
@@ -87,7 +111,7 @@ pub fn tui_minimap_layout(minimap: &Minimap, area: Rect) -> MinimapLayout {
             area.height as f32,
         ),
         LINES_PER_ROW,
-        MinimapSizing::FixedPitch(1.0),
+        sizing,
     );
     // `layout_with_sizing` sets the default scale; TUI is the one
     // rasteriser whose strip is narrow enough that a fixed scale clips most
@@ -174,8 +198,47 @@ pub fn draw_minimap_with_scale(
     theme: &Theme,
     cols_per_cell: usize,
 ) -> MinimapLayout {
+    let layout = tui_minimap_layout(minimap, area);
+    paint_minimap_rows(buf, area, minimap, theme, cols_per_cell, layout)
+}
+
+/// [`draw_minimap_with_scale`], but with the row-pitch strategy as an
+/// explicit [`MinimapSizing`] parameter instead of the hardcoded
+/// [`MinimapSizing::FixedPitch`]`(1.0)` default — the paint-side counterpart
+/// of [`tui_minimap_layout_with_sizing`].
+///
+/// Under [`MinimapSizing::RepeatToFill`], each visible row's
+/// `vline.bounds.height` resolves to a whole-number multiple of the base
+/// cell-row pitch; this function repeat-paints that row's identical
+/// content across every one of those cell rows, so a short file visually
+/// stretches to fill a tall strip with no blank rows between repeats.
+pub fn draw_minimap_with_sizing(
+    buf: &mut Buffer,
+    area: Rect,
+    minimap: &Minimap,
+    theme: &Theme,
+    cols_per_cell: usize,
+    sizing: MinimapSizing,
+) -> MinimapLayout {
+    let layout = tui_minimap_layout_with_sizing(minimap, area, sizing);
+    paint_minimap_rows(buf, area, minimap, theme, cols_per_cell, layout)
+}
+
+/// Shared paint loop behind [`draw_minimap_with_scale`] and
+/// [`draw_minimap_with_sizing`]: rasterises `layout`'s visible rows,
+/// repeat-painting each row's identical content across every whole cell row
+/// its resolved `bounds.height` spans (exactly `1` for every existing
+/// caller's [`MinimapSizing::FixedPitch`]`(1.0)` default, so this is a
+/// strict generalisation with no behaviour change for them).
+fn paint_minimap_rows(
+    buf: &mut Buffer,
+    area: Rect,
+    minimap: &Minimap,
+    theme: &Theme,
+    cols_per_cell: usize,
+    mut layout: MinimapLayout,
+) -> MinimapLayout {
     let cols_per_cell = cols_per_cell.max(1);
-    let mut layout = tui_minimap_layout(minimap, area);
     layout.cols_per_cell = cols_per_cell;
 
     if area.width == 0 || area.height == 0 {
@@ -198,21 +261,21 @@ pub fn draw_minimap_with_scale(
     let width_cells = area.width as usize;
 
     for vline in &layout.visible_lines {
-        let row_y = vline.bounds.y.round();
-        if row_y < 0.0 {
-            continue;
-        }
-        let row_y = row_y as u16;
-        if row_y < area.y || row_y >= area.y + area.height {
-            continue;
-        }
+        let row_y0 = vline.bounds.y.round();
+        // How many whole cell rows this row's resolved pitch spans — `1`
+        // for every fixed-pitch caller, `k` for `RepeatToFill`'s
+        // whole-number stretch (see that variant's doc on why it's always
+        // a whole number, never a fractional remainder to leave blank).
+        let repeat_rows = vline.bounds.height.round().max(1.0) as u16;
 
         let row_mid = vline.bounds.y + vline.bounds.height * 0.5;
         let in_highlight = hl.height > 0.0 && row_mid >= hl.y && row_mid < hl.y + hl.height;
         let row_bg = if in_highlight { highlight_bg } else { bg };
 
         // The (up to) 4 buffer lines this row's braille dots come from,
-        // pre-split into chars once per row rather than once per dot.
+        // pre-split into chars once per row rather than once per dot —
+        // shared across every repeated cell row, since they all paint the
+        // same content.
         let row_lines: Vec<Option<Vec<char>>> = (0..LINES_PER_ROW)
             .map(|dr| {
                 minimap
@@ -222,17 +285,28 @@ pub fn draw_minimap_with_scale(
             })
             .collect();
 
-        for col in 0..width_cells {
-            let ch = braille_char_for_cell(&row_lines, col, cols_per_cell);
-            let fg = cell_color(
-                minimap,
-                vline.start_line_idx,
-                col,
-                default_fg,
-                theme,
-                cols_per_cell,
-            );
-            set_cell(buf, area.x + col as u16, row_y, ch, fg, row_bg);
+        for repeat in 0..repeat_rows {
+            let row_y = row_y0 + repeat as f32;
+            if row_y < 0.0 {
+                continue;
+            }
+            let row_y = row_y as u16;
+            if row_y < area.y || row_y >= area.y + area.height {
+                continue;
+            }
+
+            for col in 0..width_cells {
+                let ch = braille_char_for_cell(&row_lines, col, cols_per_cell);
+                let fg = cell_color(
+                    minimap,
+                    vline.start_line_idx,
+                    col,
+                    default_fg,
+                    theme,
+                    cols_per_cell,
+                );
+                set_cell(buf, area.x + col as u16, row_y, ch, fg, row_bg);
+            }
         }
     }
 
@@ -1264,5 +1338,57 @@ mod tests {
 
         assert_eq!(no_paint_layout.cols_per_cell, painted_layout.cols_per_cell);
         assert_eq!(painted_layout.cols_per_cell, 10);
+    }
+
+    /// [`draw_minimap_with_sizing`] under [`MinimapSizing::RepeatToFill`]
+    /// must repeat-paint a short file's one sampled row across every cell
+    /// row [`tui_minimap_layout_with_sizing`] assigns it — a 4-line file in
+    /// a 20-row-tall strip resolves `k = 20` (one braille dot-group repeated
+    /// 20 times), so every one of the 20 cell rows must carry the identical
+    /// braille glyph, with no blank gap anywhere in the strip.
+    #[test]
+    fn draw_minimap_with_sizing_repeat_to_fill_paints_identical_content_across_every_repeated_row()
+    {
+        let mm = minimap_from(vec!["X   ", "  X ", " X  ", "   X"], 4);
+        let area = Rect::new(0, 0, 2, 20);
+        let mut buf = Buffer::empty(area);
+
+        let layout = draw_minimap_with_sizing(
+            &mut buf,
+            area,
+            &mm,
+            &Theme::default(),
+            2,
+            MinimapSizing::RepeatToFill(1.0),
+        );
+
+        assert_eq!(
+            layout.visible_lines.len(),
+            1,
+            "a 4-line file samples to exactly one braille row group"
+        );
+        assert_eq!(
+            layout.visible_lines[0].bounds.height, 20.0,
+            "the repeat factor must stretch the single row across the whole 20-row strip"
+        );
+
+        let expected_left = cell_char(&buf, 0, 0);
+        let expected_right = cell_char(&buf, 1, 0);
+        assert_ne!(
+            expected_left, '\u{2800}',
+            "the sampled row must actually paint content, not a blank braille glyph"
+        );
+        for y in 0..20u16 {
+            assert_eq!(
+                cell_char(&buf, 0, y),
+                expected_left,
+                "row {y} must repeat the same left-cell glyph as every other repeated row"
+            );
+            assert_eq!(
+                cell_char(&buf, 1, y),
+                expected_right,
+                "row {y} must repeat the same right-cell glyph as every other repeated row"
+            );
+        }
     }
 }

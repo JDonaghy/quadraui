@@ -13,12 +13,27 @@
 //! dict, or synthesized from a key code); `step`/`run` drain that queue
 //! through [`PyAppLogic::handle`], releasing the GIL for the run loop itself
 //! and re-acquiring it only for the duration of each registered Python
-//! callback (`set_handler`/`set_tick_handler`). An exception raised inside a
-//! callback is captured and re-raised out of `step`/`run` rather than lost.
-//! A callback can also request exit without raising, by returning `False`
-//! (see [`reaction_from_return`]) — useful for a handler that wants to stop
-//! the loop as part of its normal control flow rather than via an
-//! exception.
+//! callback (`set_handler`/`set_tick_handler`/`set_render`). An exception
+//! raised inside a callback is captured and re-raised out of `step`/`run`
+//! rather than lost. A callback can also request exit without raising, by
+//! returning `False` (see [`reaction_from_return`]) — useful for a handler
+//! that wants to stop the loop as part of its normal control flow rather
+//! than via an exception.
+//!
+//! A registered event handler runs while the run loop holds the one
+//! mutable borrow of this app's [`PyAppLogic`] for the whole step, so it
+//! cannot call back into `QuiApp.insert_*`/`slot_clear` on the same
+//! instance — PyO3's runtime borrow guard rejects that second borrow. The
+//! `render` callback (`QuiApp(..., render=...)` or `set_render`) is the way
+//! around that: it takes no arguments and returns a `dict` mapping slot
+//! names (`"button"`, `"text_display"`, `"list"`, `"tree"`, `"data_table"`,
+//! `"tab_bar"`) to a descriptor `dict` (or `None`/omitted to draw nothing in
+//! that slot this frame). [`PyAppLogic::render`] calls it once per frame —
+//! the same frame the runner already repaints after every dispatched event
+//! or tick — so an app keeps its live state in a plain Python object the
+//! event handler mutates directly and the render callback reads back out,
+//! instead of mutating `QuiApp` itself. The render callback must not call
+//! back into `QuiApp` either; like the event handler, it only returns data.
 //!
 //! Every error this binding can raise itself (as opposed to one a
 //! registered Python callback raised, which passes through unchanged) is a
@@ -61,7 +76,7 @@ use std::any::Any;
 #[cfg(all(feature = "macos", not(feature = "gtk")))]
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
@@ -70,13 +85,13 @@ use std::time::Duration;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{StepOutcome, TuiRunner};
 use quadraui::{
-    AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, Reaction, Rect, TabBar,
-    TextDisplay, TreeView, UiEvent,
+    AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, Reaction, Rect, Split,
+    SplitDirection, TabBar, TabItem, TextDisplay, TreeView, UiEvent, WidgetId,
 };
 
 create_exception!(
@@ -212,8 +227,10 @@ const SLOT_DATA_TABLE: i64 = 4;
 /// Slot id of the app's `TabBar` descriptor.
 const SLOT_TAB_BAR: i64 = 5;
 
-/// The [`AppLogic`] a [`QuiApp`] drives: a bag of optional descriptors,
-/// one per core primitive, painted top-to-bottom in fixed-height bands.
+/// The [`AppLogic`] a [`QuiApp`] drives: a bag of optional descriptors, one
+/// per core primitive, painted top-to-bottom in fixed-height bands — unless
+/// `render_callback` is registered, in which case each frame asks it for a
+/// fresh set of descriptors instead of reading these static fields.
 #[derive(Default)]
 struct PyAppLogic {
     button: Option<Button>,
@@ -229,6 +246,16 @@ struct PyAppLogic {
     /// Registered via `QuiApp::set_tick_handler`; called with no arguments
     /// whenever the runner advances with no event queued.
     on_tick: Option<Py<PyAny>>,
+    /// Registered via `QuiApp::set_render` / the `render` constructor
+    /// argument; called with no arguments once per frame and expected to
+    /// return a `dict` mapping slot names to a descriptor `dict` (or
+    /// `None`/omitted to draw nothing in that slot). When set, this
+    /// overrides the static `button`/`text_display`/.../`tab_bar` fields
+    /// above for every render — it is the one way an app's displayed state
+    /// can change after the runner has taken over the event loop, since the
+    /// event handler that mutates that state cannot itself re-borrow this
+    /// `QuiApp` to call `insert_*`.
+    render_callback: Option<Py<PyAny>>,
     /// Set by `handle`/`tick` when the Python callback they invoke raises.
     /// `step_once` takes this and re-raises it out of `step`/`run` instead
     /// of letting it vanish at the `AppLogic` boundary.
@@ -295,52 +322,70 @@ fn reaction_from_return(value: &Bound<'_, PyAny>) -> Reaction {
     }
 }
 
+/// Wraps [`reaction_from_return`], promoting an ordinary `Continue` to
+/// `Redraw` whenever `render_callback_present` — i.e. a render callback is
+/// registered on this app.
+///
+/// A render callback only runs when the runner decides a frame needs
+/// repainting (`AppLogic::render` is reached only after an
+/// `EventOutcome::Redraw`/`RedrawAfter`-driven repaint — see
+/// `quadraui::tui::run::TuiRunner::pump` and the GTK/macOS/Windows
+/// equivalents). `PyAppLogic::handle`/`tick` have no way to tell whether a
+/// Python handler's mutation of its own plain-Python state changed
+/// anything visible, so once a render callback is registered every
+/// non-exit dispatch is treated as one that might have — the same
+/// "redraw every frame, let the render callback decide what that looks
+/// like" contract a React/Electron-style `render(state)` callback expects.
+/// Without this, a handler returning `None` (the common case: no explicit
+/// `return`) maps to `Reaction::Continue`, the runner never calls
+/// `AppLogic::render` again, and the render callback never re-runs — the
+/// screen stays frozen at whatever the last repaint drew.
+fn reaction_for_callback(value: &Bound<'_, PyAny>, render_callback_present: bool) -> Reaction {
+    match reaction_from_return(value) {
+        Reaction::Continue if render_callback_present => Reaction::Redraw,
+        other => other,
+    }
+}
+
+/// Records `err` into `pending_error`, but only if no earlier error in the
+/// same dispatch already claimed the slot. Without this, a handler raise
+/// (recorded first) followed by the render callback also raising while
+/// painting the same frame would have the render error silently clobber
+/// the handler's — the one a caller actually wants to see, since it is
+/// closer to the root cause.
+fn record_error(pending_error: &Rc<RefCell<Option<PyErr>>>, err: PyErr) {
+    let mut slot = pending_error.borrow_mut();
+    if slot.is_none() {
+        *slot = Some(err);
+    }
+}
+
 impl AppLogic for PyAppLogic {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let viewport = backend.viewport();
-        let mut y = 0.0_f32;
-        let mut next_band = |height: f32| -> Option<Rect> {
-            let remaining = viewport.height - y;
-            if remaining <= 0.0 {
-                return None;
-            }
-            let band_height = height.min(remaining);
-            let rect = Rect::new(0.0, y, viewport.width, band_height);
-            y += band_height;
-            Some(rect)
+        let Some(callback) = self.render_callback.as_ref() else {
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: self.button.as_ref(),
+                    text_display: self.text_display.as_ref(),
+                    list: self.list.as_ref(),
+                    tree: self.tree.as_ref(),
+                    data_table: self.data_table.as_ref(),
+                    tab_bar: self.tab_bar.as_ref(),
+                },
+            );
+            return;
         };
-
-        if let Some(button) = &self.button {
-            if let Some(rect) = next_band(3.0) {
-                backend.draw_button(rect, button);
+        match render_output_from_callback(callback, &self.pending_error) {
+            Some(RenderOutput::Flat(frame)) => draw_bands(backend, frame.as_refs()),
+            Some(RenderOutput::Tree(node)) => {
+                let viewport = backend.viewport();
+                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                paint_layout(backend, area, &node);
             }
-        }
-        if let Some(text_display) = &self.text_display {
-            if let Some(rect) = next_band(3.0) {
-                backend.draw_text_display(rect, text_display);
-            }
-        }
-        if let Some(list) = &self.list {
-            if let Some(rect) = next_band(4.0) {
-                backend.draw_list(rect, list);
-            }
-        }
-        if let Some(tree) = &self.tree {
-            if let Some(rect) = next_band(4.0) {
-                backend.draw_tree(rect, tree);
-            }
-        }
-        if let Some(data_table) = &self.data_table {
-            if let Some(rect) = next_band(4.0) {
-                backend.draw_data_table(rect, data_table, None);
-            }
-        }
-        if let Some(tab_bar) = &self.tab_bar {
-            if let Some(rect) = next_band(3.0) {
-                backend.draw_tab_bar_layout(rect, tab_bar, None);
-            }
+            None => {}
         }
     }
 
@@ -348,20 +393,22 @@ impl AppLogic for PyAppLogic {
         let Some(handler) = self.handler.as_ref() else {
             return Reaction::Continue;
         };
+        let render_callback_present = self.render_callback.is_some();
         Python::attach(|py| {
             let payload = match pythonize::pythonize(py, &event) {
                 Ok(value) => value,
                 Err(err) => {
-                    *self.pending_error.borrow_mut() = Some(InternalError::new_err(format!(
-                        "failed to pythonize event: {err}"
-                    )));
+                    record_error(
+                        &self.pending_error,
+                        InternalError::new_err(format!("failed to pythonize event: {err}")),
+                    );
                     return Reaction::Exit;
                 }
             };
             match handler.call1(py, (payload,)) {
-                Ok(result) => reaction_from_return(result.bind(py)),
+                Ok(result) => reaction_for_callback(result.bind(py), render_callback_present),
                 Err(err) => {
-                    *self.pending_error.borrow_mut() = Some(err);
+                    record_error(&self.pending_error, err);
                     Reaction::Exit
                 }
             }
@@ -372,14 +419,802 @@ impl AppLogic for PyAppLogic {
         let Some(on_tick) = self.on_tick.as_ref() else {
             return Reaction::Continue;
         };
+        let render_callback_present = self.render_callback.is_some();
         Python::attach(|py| match on_tick.call0(py) {
-            Ok(result) => reaction_from_return(result.bind(py)),
+            Ok(result) => reaction_for_callback(result.bind(py), render_callback_present),
             Err(err) => {
-                *self.pending_error.borrow_mut() = Some(err);
+                record_error(&self.pending_error, err);
                 Reaction::Exit
             }
         })
     }
+}
+
+/// One descriptor reference per slot, borrowed either from `PyAppLogic`'s
+/// static fields or from a [`RenderFrame`] just decoded from a render
+/// callback's return value — the one shape [`draw_bands`] paints from,
+/// regardless of which path produced it.
+struct RenderRefs<'a> {
+    button: Option<&'a Button>,
+    text_display: Option<&'a TextDisplay>,
+    list: Option<&'a ListView>,
+    tree: Option<&'a TreeView>,
+    data_table: Option<&'a DataTable>,
+    tab_bar: Option<&'a TabBar>,
+}
+
+/// Paints each present slot top-to-bottom in a fixed-height band, skipping
+/// any slot once the viewport runs out of room.
+fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>) {
+    let viewport = backend.viewport();
+    // Band heights below are given in text LINES, not raw viewport units: a
+    // button is 3 lines tall, a tree 4. `viewport` and `line_height` share
+    // the backend's own unit (cells on TUI, where `line_height` is 1.0;
+    // device pixels on the native backends, where it is the font's pixel line
+    // height), so scaling the line count by `line_height` lays the bands out
+    // correctly on every backend instead of collapsing them to a few pixels
+    // tall on native.
+    let line_height = backend.line_height();
+    let mut y = 0.0_f32;
+    let mut next_band = |lines: f32| -> Option<Rect> {
+        let remaining = viewport.height - y;
+        if remaining <= 0.0 {
+            return None;
+        }
+        let band_height = (lines * line_height).min(remaining);
+        let rect = Rect::new(0.0, y, viewport.width, band_height);
+        y += band_height;
+        Some(rect)
+    };
+
+    if let Some(button) = refs.button {
+        if let Some(rect) = next_band(3.0) {
+            backend.draw_button(rect, button);
+        }
+    }
+    if let Some(text_display) = refs.text_display {
+        if let Some(rect) = next_band(3.0) {
+            backend.draw_text_display(rect, text_display);
+        }
+    }
+    if let Some(list) = refs.list {
+        if let Some(rect) = next_band(4.0) {
+            backend.draw_list(rect, list);
+        }
+    }
+    if let Some(tree) = refs.tree {
+        if let Some(rect) = next_band(4.0) {
+            backend.draw_tree(rect, tree);
+        }
+    }
+    if let Some(data_table) = refs.data_table {
+        if let Some(rect) = next_band(4.0) {
+            backend.draw_data_table(rect, data_table, None);
+        }
+    }
+    if let Some(tab_bar) = refs.tab_bar {
+        if let Some(rect) = next_band(3.0) {
+            backend.draw_tab_bar_layout(rect, tab_bar, None);
+        }
+    }
+}
+
+/// Paints a layout tree into `area`. A `Row`/`Column` divides its area into
+/// equal shares — one per child, side by side or stacked — and recurses;
+/// equal shares (rather than `draw_bands`'s fixed line-count bands) fill
+/// the whole area regardless of viewport size. A `Leaf` paints its one
+/// descriptor into the whole area its container gave it. A `Split` divides
+/// its area into two unequal panes at `ratio` via `Backend::draw_split`
+/// (the same divider paint/hit-test every backend already shares for the
+/// Rust-side `Split` primitive) and recurses into each with its resolved
+/// bounds. A `Tabs` reserves a top band for its tab strip (painted via
+/// `Backend::draw_tab_bar_layout`, the same strip every backend already
+/// shares for the Rust-side `TabBar` primitive) and recurses into the
+/// remaining area with the selected tab's content, so a tab group is just a
+/// `Split` whose panes are each a `Tabs`. Per-child flex weights on
+/// `Row`/`Column` are a follow-up; every `Row`/`Column` child gets the same
+/// share for now.
+fn paint_layout(backend: &mut dyn Backend, area: Rect, node: &LayoutNode) {
+    match node {
+        LayoutNode::Row(children) => {
+            for (child, rect) in children.iter().zip(split_rects(area, children.len(), true)) {
+                paint_layout(backend, rect, child);
+            }
+        }
+        LayoutNode::Column(children) => {
+            for (child, rect) in children
+                .iter()
+                .zip(split_rects(area, children.len(), false))
+            {
+                paint_layout(backend, rect, child);
+            }
+        }
+        LayoutNode::Leaf(leaf) => paint_leaf(backend, area, leaf),
+        LayoutNode::Split(split) => {
+            let layout = backend.draw_split(area, &split.split);
+            paint_layout(backend, layout.first_bounds, &split.first);
+            paint_layout(backend, layout.second_bounds, &split.second);
+        }
+        LayoutNode::Tabs(tabs) => {
+            let strip_height = (3.0 * backend.line_height()).min(area.height);
+            let strip_rect = Rect::new(area.x, area.y, area.width, strip_height);
+            backend.draw_tab_bar_layout(strip_rect, &tabs.tab_bar, None);
+            let content_rect = Rect::new(
+                area.x,
+                area.y + strip_height,
+                area.width,
+                (area.height - strip_height).max(0.0),
+            );
+            if let Some(selected) = tabs.entries.get(tabs.selected) {
+                paint_layout(backend, content_rect, &selected.content);
+            }
+        }
+    }
+}
+
+/// Divides `area` into `n` equal shares, side by side when `horizontal` or
+/// stacked top-to-bottom otherwise. Returns an empty `Vec` for `n == 0`.
+fn split_rects(area: Rect, n: usize, horizontal: bool) -> Vec<Rect> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let n_f = n as f32;
+    (0..n)
+        .map(|i| {
+            let i_f = i as f32;
+            if horizontal {
+                let share = area.width / n_f;
+                Rect::new(area.x + share * i_f, area.y, share, area.height)
+            } else {
+                let share = area.height / n_f;
+                Rect::new(area.x, area.y + share * i_f, area.width, share)
+            }
+        })
+        .collect()
+}
+
+/// Paints one leaf's descriptor into the whole `area` its container gave
+/// it.
+fn paint_leaf(backend: &mut dyn Backend, area: Rect, leaf: &LayoutLeaf) {
+    match &leaf.descriptor {
+        LeafDescriptor::Button(button) => {
+            backend.draw_button(area, button);
+        }
+        LeafDescriptor::TextDisplay(text_display) => {
+            backend.draw_text_display(area, text_display);
+        }
+        LeafDescriptor::List(list) => backend.draw_list(area, list),
+        LeafDescriptor::Tree(tree) => backend.draw_tree(area, tree),
+        LeafDescriptor::DataTable(data_table) => {
+            backend.draw_data_table(area, data_table, None);
+        }
+        LeafDescriptor::TabBar(tab_bar) => {
+            backend.draw_tab_bar_layout(area, tab_bar, None);
+        }
+    }
+}
+
+/// Owned decode of a render callback's returned `dict` — one optional
+/// descriptor per slot, keyed by `"button"`, `"text_display"`, `"list"`,
+/// `"tree"`, `"data_table"`, and `"tab_bar"`.
+#[derive(Default)]
+struct RenderFrame {
+    button: Option<Button>,
+    text_display: Option<TextDisplay>,
+    list: Option<ListView>,
+    tree: Option<TreeView>,
+    data_table: Option<DataTable>,
+    tab_bar: Option<TabBar>,
+}
+
+impl RenderFrame {
+    fn as_refs(&self) -> RenderRefs<'_> {
+        RenderRefs {
+            button: self.button.as_ref(),
+            text_display: self.text_display.as_ref(),
+            list: self.list.as_ref(),
+            tree: self.tree.as_ref(),
+            data_table: self.data_table.as_ref(),
+            tab_bar: self.tab_bar.as_ref(),
+        }
+    }
+
+    /// Decodes a render callback's returned `dict`, raising
+    /// `InvalidDescriptorError` if it isn't a `dict`, if an entry isn't a
+    /// `dict`/`None`, or if an entry's shape doesn't match its slot's
+    /// descriptor type. The exact recognized key set is `"button"`,
+    /// `"text_display"`, `"list"`, `"tree"`, `"data_table"`, `"tab_bar"` —
+    /// one per fixed slot, same names `insert_*`'s Rust-side `what` argument
+    /// uses. Any other key (including a near-miss typo like `"tabbar"`) is
+    /// ignored rather than rejected, so a render callback built against a
+    /// future slot set stays forward-compatible with this one.
+    fn from_dict(dict: &Bound<'_, PyDict>) -> PyResult<Self> {
+        Ok(RenderFrame {
+            button: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "button")?,
+            text_display: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "text_display")?,
+            list: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "list")?,
+            tree: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "tree")?,
+            data_table: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "data_table")?,
+            tab_bar: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "tab_bar")?,
+        })
+    }
+}
+
+/// The `what` label passed to [`decode_slot_entry`] for every slot of a
+/// render callback's returned `dict` — identifies the source of a decode
+/// error as "render" (vs. an `insert_*` call) in the raised
+/// `InvalidDescriptorError`'s message.
+const RENDER_CALLBACK_WHAT: &str = "render";
+
+/// Reads and decodes one optional slot entry from a render callback's
+/// returned `dict`: a missing key or a `None` value both mean "draw nothing
+/// in this slot this frame"; anything else must be a `dict` decodable into
+/// `T`.
+fn decode_slot_entry<T: serde::de::DeserializeOwned>(
+    what: &str,
+    dict: &Bound<'_, PyDict>,
+    key: &str,
+) -> PyResult<Option<T>> {
+    match dict.get_item(key)? {
+        Some(value) if !value.is_none() => {
+            let value_dict = value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!("{what}: {key:?} must be a dict or None"))
+            })?;
+            Ok(Some(decode(what, value_dict)?))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// One node of a render callback's layout tree: a `Row`/`Column` container
+/// holding child nodes, a `Leaf` wrapping one id-addressable primitive
+/// descriptor, a `Split` holding exactly two named child nodes divided by a
+/// draggable ratio, or a `Tabs` holding a tab strip plus one content subtree
+/// per tab, of which only the selected one paints.
+enum LayoutNode {
+    Row(Vec<LayoutNode>),
+    Column(Vec<LayoutNode>),
+    Leaf(LayoutLeaf),
+    Split(LayoutSplit),
+    Tabs(LayoutTabs),
+}
+
+/// A [`LayoutNode::Split`]'s decoded shape: the `quadraui::Split` descriptor
+/// (its own `id`, `direction`, `ratio`, pane minimums) paired with the two
+/// named child nodes it divides. `first`/`second` are full [`LayoutNode`]s,
+/// not leaf-only slots, so a pane may itself hold a nested row/column/split.
+struct LayoutSplit {
+    split: Split,
+    first: Box<LayoutNode>,
+    second: Box<LayoutNode>,
+}
+
+/// A [`LayoutNode::Tabs`]'s decoded shape: a `quadraui::TabBar` descriptor
+/// built from each tab's title (with `selected`'s item marked active) for
+/// painting the strip, paired with `entries` holding the full content
+/// subtree behind each tab. A tab group is a `Split` whose `first`/`second`
+/// are each a `Tabs` — no separate "group" concept.
+struct LayoutTabs {
+    tab_bar: TabBar,
+    entries: Vec<LayoutTabEntry>,
+    selected: usize,
+}
+
+/// One tab inside a [`LayoutTabs`]: the id that addresses it, and the full
+/// [`LayoutNode`] subtree painted beneath the strip while it is selected.
+struct LayoutTabEntry {
+    id: String,
+    content: Box<LayoutNode>,
+}
+
+/// One id-addressable primitive inside a layout tree, decoded from a
+/// `{"id": ..., "<kind>": <descriptor>}` dict. `id` is unique across the
+/// whole tree ([`validate_unique_leaf_ids`]), so a kind may appear more
+/// than once (e.g. two `data_table`s side by side) with each instance
+/// still addressable on its own.
+struct LayoutLeaf {
+    id: String,
+    descriptor: LeafDescriptor,
+}
+
+/// The decoded descriptor carried by a [`LayoutLeaf`] — one variant per
+/// primitive kind a layout tree leaf may wrap.
+enum LeafDescriptor {
+    Button(Button),
+    TextDisplay(TextDisplay),
+    List(ListView),
+    Tree(TreeView),
+    DataTable(DataTable),
+    TabBar(TabBar),
+}
+
+/// The descriptor keys a layout tree leaf dict may carry, one per
+/// [`LeafDescriptor`] variant — the same names [`RenderFrame::from_dict`]
+/// uses for its flat slots.
+const LEAF_KIND_KEYS: [&str; 6] = [
+    "button",
+    "text_display",
+    "list",
+    "tree",
+    "data_table",
+    "tab_bar",
+];
+
+/// Decodes one layout tree node from a render callback's returned `dict`:
+/// a `"row"` or `"column"` key holds the container's children, a `"split"`
+/// key holds a two-pane divider ([`layout_split_from_dict`]), a `"tabs"`
+/// key holds a tab strip plus per-tab content ([`layout_tabs_from_dict`]);
+/// any other shape is decoded as a leaf via [`layout_leaf_from_dict`].
+fn layout_node_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutNode> {
+    if let Some(value) = dict.get_item("row")? {
+        if !value.is_none() {
+            return Ok(LayoutNode::Row(layout_children_from_value(what, &value)?));
+        }
+    }
+    if let Some(value) = dict.get_item("column")? {
+        if !value.is_none() {
+            return Ok(LayoutNode::Column(layout_children_from_value(
+                what, &value,
+            )?));
+        }
+    }
+    if let Some(value) = dict.get_item("split")? {
+        if !value.is_none() {
+            let split_dict = value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!("{what}: \"split\" must be a dict"))
+            })?;
+            return Ok(LayoutNode::Split(layout_split_from_dict(what, split_dict)?));
+        }
+    }
+    if let Some(value) = dict.get_item("tabs")? {
+        if !value.is_none() {
+            let tabs_dict = value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!("{what}: \"tabs\" must be a dict"))
+            })?;
+            return Ok(LayoutNode::Tabs(layout_tabs_from_dict(what, tabs_dict)?));
+        }
+    }
+    Ok(LayoutNode::Leaf(layout_leaf_from_dict(what, dict)?))
+}
+
+/// The orientation strings a `"split"` node's `"orientation"` field accepts
+/// — lowercase, Python-idiomatic spellings, independent of
+/// `quadraui::SplitDirection`'s own (PascalCase, serde-default) wire form.
+const SPLIT_ORIENTATIONS: [&str; 2] = ["horizontal", "vertical"];
+
+/// Decodes a `"split"` node: `{"id", "orientation", "ratio", "first",
+/// "second"}`, with `"first_min"`/`"second_min"` optional (defaulting to
+/// `0.0`, same as `quadraui::Split`). `"first"`/`"second"` are full child
+/// node dicts, recursively decoded by [`layout_node_from_dict`].
+fn layout_split_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutSplit> {
+    let id: String = match dict.get_item("id")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!("{what}: split \"id\" must be a string"))
+        })?,
+        _ => {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: split is missing required \"id\""
+            )));
+        }
+    };
+
+    let orientation: String = match dict.get_item("orientation")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: split {id:?} \"orientation\" must be a string"
+            ))
+        })?,
+        _ => {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: split {id:?} is missing required \"orientation\""
+            )));
+        }
+    };
+    let direction = match orientation.as_str() {
+        "horizontal" => SplitDirection::Horizontal,
+        "vertical" => SplitDirection::Vertical,
+        _ => {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: split {id:?} \"orientation\" must be one of {SPLIT_ORIENTATIONS:?}, \
+                 got {orientation:?}"
+            )));
+        }
+    };
+
+    let ratio: f32 = match dict.get_item("ratio")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: split {id:?} \"ratio\" must be a number"
+            ))
+        })?,
+        _ => {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: split {id:?} is missing required \"ratio\""
+            )));
+        }
+    };
+
+    let first_min: f32 = match dict.get_item("first_min")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: split {id:?} \"first_min\" must be a number"
+            ))
+        })?,
+        _ => 0.0,
+    };
+    let second_min: f32 = match dict.get_item("second_min")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: split {id:?} \"second_min\" must be a number"
+            ))
+        })?,
+        _ => 0.0,
+    };
+
+    let first = layout_child_node_from_value(what, &id, "first", dict)?;
+    let second = layout_child_node_from_value(what, &id, "second", dict)?;
+
+    Ok(LayoutSplit {
+        split: Split {
+            id: WidgetId::new(id),
+            direction,
+            ratio,
+            first_min,
+            second_min,
+        },
+        first: Box::new(first),
+        second: Box::new(second),
+    })
+}
+
+/// Reads a `"split"` node's required `"first"`/`"second"` child dict and
+/// recursively decodes it via [`layout_node_from_dict`].
+fn layout_child_node_from_value(
+    what: &str,
+    split_id: &str,
+    key: &str,
+    dict: &Bound<'_, PyDict>,
+) -> PyResult<LayoutNode> {
+    let value = dict
+        .get_item(key)?
+        .filter(|v| !v.is_none())
+        .ok_or_else(|| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: split {split_id:?} is missing required {key:?}"
+            ))
+        })?;
+    let child_dict = value.cast::<PyDict>().map_err(|_| {
+        InvalidDescriptorError::new_err(format!(
+            "{what}: split {split_id:?} {key:?} must be a dict"
+        ))
+    })?;
+    layout_node_from_dict(what, child_dict)
+}
+
+/// Decodes a `"row"`/`"column"` container's children: a `list` of child
+/// dicts, each recursively decoded by [`layout_node_from_dict`].
+fn layout_children_from_value(what: &str, value: &Bound<'_, PyAny>) -> PyResult<Vec<LayoutNode>> {
+    let list = value.cast::<PyList>().map_err(|_| {
+        InvalidDescriptorError::new_err(format!("{what}: row/column children must be a list"))
+    })?;
+    list.iter()
+        .map(|child| {
+            let child_dict = child.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: each row/column child must be a dict"
+                ))
+            })?;
+            layout_node_from_dict(what, child_dict)
+        })
+        .collect()
+}
+
+/// Decodes a `"tabs"` node: `{"id", "tabs", "selected"}`, where `"tabs"`
+/// is a non-empty `list` of `{"id", "title", "content"}` entries and
+/// `"selected"` is the index of the entry whose `"content"` paints beneath
+/// the strip this frame. `"content"` is a full child node dict, recursively
+/// decoded by [`layout_node_from_dict`], so a tab may hold any primitive or
+/// nested row/column/split — giving a per-tab instance by construction
+/// rather than a single shared slot.
+fn layout_tabs_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutTabs> {
+    let id: String = match dict.get_item("id")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!("{what}: tabs \"id\" must be a string"))
+        })?,
+        _ => {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: tabs is missing required \"id\""
+            )));
+        }
+    };
+
+    let tabs_value = dict
+        .get_item("tabs")?
+        .filter(|v| !v.is_none())
+        .ok_or_else(|| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: tabs {id:?} is missing required \"tabs\""
+            ))
+        })?;
+    let tabs_list = tabs_value.cast::<PyList>().map_err(|_| {
+        InvalidDescriptorError::new_err(format!("{what}: tabs {id:?} \"tabs\" must be a list"))
+    })?;
+    if tabs_list.is_empty() {
+        return Err(InvalidDescriptorError::new_err(format!(
+            "{what}: tabs {id:?} \"tabs\" must not be empty"
+        )));
+    }
+
+    let mut items = Vec::with_capacity(tabs_list.len());
+    let mut entries = Vec::with_capacity(tabs_list.len());
+    for entry in tabs_list.iter() {
+        let entry_dict = entry.cast::<PyDict>().map_err(|_| {
+            InvalidDescriptorError::new_err(format!("{what}: tabs {id:?} each tab must be a dict"))
+        })?;
+
+        let tab_id: String = match entry_dict.get_item("id")? {
+            Some(value) if !value.is_none() => value.extract().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} tab \"id\" must be a string"
+                ))
+            })?,
+            _ => {
+                return Err(InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} tab is missing required \"id\""
+                )));
+            }
+        };
+        let title: String = match entry_dict.get_item("title")? {
+            Some(value) if !value.is_none() => value.extract().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} tab {tab_id:?} \"title\" must be a string"
+                ))
+            })?,
+            _ => {
+                return Err(InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} tab {tab_id:?} is missing required \"title\""
+                )));
+            }
+        };
+        let content_value = entry_dict
+            .get_item("content")?
+            .filter(|v| !v.is_none())
+            .ok_or_else(|| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} tab {tab_id:?} is missing required \"content\""
+                ))
+            })?;
+        let content_dict = content_value.cast::<PyDict>().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: tabs {id:?} tab {tab_id:?} \"content\" must be a dict"
+            ))
+        })?;
+        let content = layout_node_from_dict(what, content_dict)?;
+
+        items.push(TabItem {
+            label: title,
+            ..Default::default()
+        });
+        entries.push(LayoutTabEntry {
+            id: tab_id,
+            content: Box::new(content),
+        });
+    }
+
+    let selected: usize = match dict.get_item("selected")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: tabs {id:?} \"selected\" must be an integer"
+            ))
+        })?,
+        _ => 0,
+    };
+    if selected >= items.len() {
+        return Err(InvalidDescriptorError::new_err(format!(
+            "{what}: tabs {id:?} \"selected\" index {selected} is out of range for \
+             {len} tab(s)",
+            len = items.len()
+        )));
+    }
+    items[selected].is_active = true;
+
+    Ok(LayoutTabs {
+        tab_bar: TabBar {
+            id: WidgetId::new(id),
+            tabs: items,
+            scroll_offset: 0,
+            right_segments: Vec::new(),
+            active_accent: None,
+            show_tab_close: false,
+            compact: false,
+        },
+        entries,
+        selected,
+    })
+}
+
+/// Decodes one `{"id": ..., "<kind>": <descriptor>}` leaf dict. `"id"`
+/// must be present and a string; exactly one of [`LEAF_KIND_KEYS`] must be
+/// present and hold a `dict`.
+fn layout_leaf_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutLeaf> {
+    let id: String = match dict.get_item("id")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!("{what}: leaf \"id\" must be a string"))
+        })?,
+        _ => {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: leaf is missing required \"id\""
+            )));
+        }
+    };
+
+    let mut found: Option<LeafDescriptor> = None;
+    for key in LEAF_KIND_KEYS {
+        let Some(value) = dict.get_item(key)? else {
+            continue;
+        };
+        if value.is_none() {
+            continue;
+        }
+        let value_dict = value.cast::<PyDict>().map_err(|_| {
+            InvalidDescriptorError::new_err(format!("{what}: leaf {id:?} {key:?} must be a dict"))
+        })?;
+        if found.is_some() {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: leaf {id:?} has more than one descriptor kind"
+            )));
+        }
+        found = Some(match key {
+            "button" => LeafDescriptor::Button(decode(what, value_dict)?),
+            "text_display" => LeafDescriptor::TextDisplay(decode(what, value_dict)?),
+            "list" => LeafDescriptor::List(decode(what, value_dict)?),
+            "tree" => LeafDescriptor::Tree(decode(what, value_dict)?),
+            "data_table" => LeafDescriptor::DataTable(decode(what, value_dict)?),
+            "tab_bar" => LeafDescriptor::TabBar(decode(what, value_dict)?),
+            _ => unreachable!("LEAF_KIND_KEYS is exhaustive"),
+        });
+    }
+
+    let descriptor = found.ok_or_else(|| {
+        InvalidDescriptorError::new_err(format!(
+            "{what}: leaf {id:?} is missing a descriptor (one of {LEAF_KIND_KEYS:?})"
+        ))
+    })?;
+
+    Ok(LayoutLeaf { id, descriptor })
+}
+
+/// Walks `node` collecting every leaf and split `id` into one namespace,
+/// raising `InvalidDescriptorError` on the first repeat. A unique id per
+/// leaf/split lets host code address one instance unambiguously even when a
+/// kind appears more than once, and keeps a split's id from silently
+/// shadowing a leaf's.
+fn validate_unique_leaf_ids(node: &LayoutNode) -> PyResult<()> {
+    fn walk(node: &LayoutNode, seen: &mut HashSet<String>) -> PyResult<()> {
+        match node {
+            LayoutNode::Row(children) | LayoutNode::Column(children) => {
+                for child in children {
+                    walk(child, seen)?;
+                }
+                Ok(())
+            }
+            LayoutNode::Leaf(leaf) => {
+                if !seen.insert(leaf.id.clone()) {
+                    return Err(InvalidDescriptorError::new_err(format!(
+                        "render: duplicate leaf id {:?}",
+                        leaf.id
+                    )));
+                }
+                Ok(())
+            }
+            LayoutNode::Split(split) => {
+                let id = split.split.id.as_str().to_owned();
+                if !seen.insert(id.clone()) {
+                    return Err(InvalidDescriptorError::new_err(format!(
+                        "render: duplicate leaf id {id:?}"
+                    )));
+                }
+                walk(&split.first, seen)?;
+                walk(&split.second, seen)
+            }
+            LayoutNode::Tabs(tabs) => {
+                let id = tabs.tab_bar.id.as_str().to_owned();
+                if !seen.insert(id.clone()) {
+                    return Err(InvalidDescriptorError::new_err(format!(
+                        "render: duplicate leaf id {id:?}"
+                    )));
+                }
+                for entry in &tabs.entries {
+                    if !seen.insert(entry.id.clone()) {
+                        return Err(InvalidDescriptorError::new_err(format!(
+                            "render: duplicate leaf id {:?}",
+                            entry.id
+                        )));
+                    }
+                    walk(&entry.content, seen)?;
+                }
+                Ok(())
+            }
+        }
+    }
+    let mut seen = HashSet::new();
+    walk(node, &mut seen)
+}
+
+/// The decoded shape of a render callback's return value: either the flat
+/// per-slot `dict` ([`RenderFrame`], the pre-layout-tree shape) or a
+/// layout tree ([`LayoutNode`]).
+enum RenderOutput {
+    Flat(Box<RenderFrame>),
+    Tree(LayoutNode),
+}
+
+/// Invokes a registered render callback with no arguments and decodes its
+/// returned `dict` into a [`RenderOutput`]. A `dict` carrying a `"row"`,
+/// `"column"`, `"split"`, or `"tabs"` key is parsed as a layout tree; any
+/// other `dict` is parsed as the flat per-slot shape, so a render callback
+/// written against the flat shape keeps working unchanged. On any failure
+/// — the callback raising,
+/// returning something other than a `dict`, or an entry with the wrong
+/// shape — records the error in `pending_error` and returns `None`, leaving
+/// the caller to skip drawing this frame rather than paint a half-decoded
+/// one.
+///
+/// Every call site that can trigger a render — `step`/`run`, `screen`,
+/// `screen_contains`, `insert_*`, and `slot_clear` — drains `pending_error`
+/// after rendering and re-raises it, so a render-callback failure surfaces
+/// the same way a `handle`/`tick` callback failure does no matter which of
+/// those triggered the repaint. `run_tui`/`run_native` additionally break
+/// their loop as soon as `pending_error` is set, since nothing else is
+/// polling it on the Python side while the GIL is detached.
+fn render_output_from_callback(
+    callback: &Py<PyAny>,
+    pending_error: &Rc<RefCell<Option<PyErr>>>,
+) -> Option<RenderOutput> {
+    Python::attach(|py| {
+        let result = match callback.call0(py) {
+            Ok(result) => result,
+            Err(err) => {
+                record_error(pending_error, err);
+                return None;
+            }
+        };
+        let bound = result.bind(py);
+        let dict = match bound.cast::<PyDict>() {
+            Ok(dict) => dict,
+            Err(_) => {
+                record_error(
+                    pending_error,
+                    InvalidDescriptorError::new_err("render callback must return a dict"),
+                );
+                return None;
+            }
+        };
+
+        let is_tree = matches!(dict.get_item("row"), Ok(Some(ref value)) if !value.is_none())
+            || matches!(dict.get_item("column"), Ok(Some(ref value)) if !value.is_none())
+            || matches!(dict.get_item("split"), Ok(Some(ref value)) if !value.is_none())
+            || matches!(dict.get_item("tabs"), Ok(Some(ref value)) if !value.is_none());
+        if is_tree {
+            let parsed = layout_node_from_dict(RENDER_CALLBACK_WHAT, dict)
+                .and_then(|node| validate_unique_leaf_ids(&node).map(|()| node));
+            return match parsed {
+                Ok(node) => Some(RenderOutput::Tree(node)),
+                Err(err) => {
+                    record_error(pending_error, err);
+                    None
+                }
+            };
+        }
+
+        match RenderFrame::from_dict(dict) {
+            Ok(frame) => Some(RenderOutput::Flat(Box::new(frame))),
+            Err(err) => {
+                record_error(pending_error, err);
+                None
+            }
+        }
+    })
 }
 
 /// Wraps [`PyAppLogic`] for `run_native`'s native runner loop (`GtkRunner`
@@ -576,10 +1411,17 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 impl QuiApp {
     /// Creates a new headless app on a `width`x`height` cell grid.
     /// `on_event`, if given, is registered as the event handler — equivalent
-    /// to calling `set_handler` right after construction.
+    /// to calling `set_handler` right after construction. `render`, if
+    /// given, is registered as the render callback — equivalent to calling
+    /// `set_render` right after construction.
     #[new]
-    #[pyo3(signature = (width, height, on_event=None))]
-    fn new(width: u16, height: u16, on_event: Option<Py<PyAny>>) -> PyResult<Self> {
+    #[pyo3(signature = (width, height, on_event=None, render=None))]
+    fn new(
+        width: u16,
+        height: u16,
+        on_event: Option<Py<PyAny>>,
+        render: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
         if width == 0 || height == 0 {
             return Err(InvalidDimensionsError::new_err(
                 "width and height must both be non-zero",
@@ -587,6 +1429,7 @@ impl QuiApp {
         }
         let app_logic = PyAppLogic {
             handler: on_event,
+            render_callback: render,
             ..PyAppLogic::default()
         };
         Ok(QuiApp {
@@ -610,6 +1453,19 @@ impl QuiApp {
     /// previously registered tick handler.
     fn set_tick_handler(&mut self, handler: Py<PyAny>) {
         self.driver.app_mut().on_tick = Some(handler);
+    }
+
+    /// Registers `callback` as the no-argument render callback invoked once
+    /// per frame. It must return a `dict` mapping slot names ("button",
+    /// "text_display", "list", "tree", "data_table", "tab_bar") to a
+    /// descriptor `dict` (or `None`/omitted to draw nothing in that slot),
+    /// and must not call back into this `QuiApp` — it only returns data.
+    /// Replaces any previously registered render callback, and overrides
+    /// whatever `insert_*` put in the static slots for every frame from
+    /// here on; `slot_clear`/`insert_*` still work but their effect on what
+    /// is drawn is masked while a render callback is registered.
+    fn set_render(&mut self, callback: Py<PyAny>) {
+        self.driver.app_mut().render_callback = Some(callback);
     }
 
     /// Decodes `descriptor` into a `UiEvent` and queues it for the next
@@ -913,6 +1769,16 @@ impl QuiApp {
                         if runner.pump(poll_interval) == quadraui::gtk::StepOutcome::Exited {
                             break;
                         }
+                        // A render callback invoked by this `pump` may have
+                        // recorded an unrecoverable error; nothing else is
+                        // polling `loop_error` while the GIL is detached, so
+                        // stop driving the window now instead of looping on
+                        // a broken app until some other exit condition fires.
+                        if loop_error.borrow().is_some() {
+                            runner.request_exit();
+                            runner.step();
+                            break;
+                        }
                         // Re-acquiring the GIL here, even briefly, is what lets
                         // CPython's pending-signal check run — with no
                         // handler/tick ever called (e.g. a window just sitting
@@ -921,7 +1787,7 @@ impl QuiApp {
                         // and a Ctrl-C would go unnoticed until the window
                         // closes some other way.
                         if let Err(err) = Python::attach(|py| py.check_signals()) {
-                            *loop_error.borrow_mut() = Some(err);
+                            record_error(&loop_error, err);
                             runner.request_exit();
                             // `request_exit` only calls `window.destroy()`; one
                             // more non-blocking pass lets the main context
@@ -988,6 +1854,12 @@ impl QuiApp {
                         if exit_requested.get() {
                             break;
                         }
+                        // A render callback invoked by this `pump` may have
+                        // recorded an unrecoverable error; stop pumping now
+                        // rather than looping on a broken app.
+                        if loop_error.borrow().is_some() {
+                            break;
+                        }
                         // Same signal-check discipline as the `gtk` loop
                         // above. `MacRunner` has no `request_exit()`
                         // equivalent to tear the window down on a Ctrl-C
@@ -997,7 +1869,7 @@ impl QuiApp {
                         // record-and-break pattern below rather than the
                         // `gtk` branch's teardown-then-step pattern.
                         if let Err(err) = Python::attach(|py| py.check_signals()) {
-                            *loop_error.borrow_mut() = Some(err);
+                            record_error(&loop_error, err);
                             break;
                         }
                     }
@@ -1081,6 +1953,12 @@ impl QuiApp {
                         if outcome == quadraui::win::StepOutcome::Exited {
                             break;
                         }
+                        // A render callback invoked by this `pump` may have
+                        // recorded an unrecoverable error; stop pumping now
+                        // rather than looping on a broken app.
+                        if loop_error.borrow().is_some() {
+                            break;
+                        }
                         // Same signal-check discipline as the `gtk`/`macos`
                         // loops above. `WinRunner` has no `request_exit()`
                         // equivalent, but its `Drop` calls `DestroyWindow`
@@ -1088,7 +1966,7 @@ impl QuiApp {
                         // just stops pumping and lets `runner` drop, same
                         // as the `macos` branch.
                         if let Err(err) = Python::attach(|py| py.check_signals()) {
-                            *loop_error.borrow_mut() = Some(err);
+                            record_error(&loop_error, err);
                             break;
                         }
                     }
@@ -1184,6 +2062,12 @@ impl QuiApp {
                     if runner.pump(poll_interval)? == StepOutcome::Exited {
                         break;
                     }
+                    // A render callback invoked by this `pump` may have
+                    // recorded an unrecoverable error; stop pumping now
+                    // rather than looping on a broken app.
+                    if loop_error.borrow().is_some() {
+                        break;
+                    }
                     // Re-acquiring the GIL here, even briefly, is what lets
                     // CPython's pending-signal check run: with no
                     // handler/tick ever called, control otherwise never
@@ -1191,7 +2075,7 @@ impl QuiApp {
                     // Ctrl-C would go unnoticed until the app exits some
                     // other way.
                     if let Err(err) = Python::attach(|py| py.check_signals()) {
-                        *loop_error.borrow_mut() = Some(err);
+                        record_error(&loop_error, err);
                         break;
                     }
                 }
@@ -1302,6 +2186,7 @@ impl QuiApp {
             let cleared = app.driver.app_mut().clear_slot(slot);
             if cleared {
                 app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
             }
             Ok(cleared)
         })
@@ -1312,6 +2197,7 @@ impl QuiApp {
     fn screen(&mut self) -> PyResult<String> {
         self.guarded(|app| {
             app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
             Ok(app.driver.screen())
         })
     }
@@ -1320,9 +2206,23 @@ impl QuiApp {
     fn screen_contains(&mut self, needle: &str) -> PyResult<bool> {
         self.guarded(|app| {
             app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
             Ok(app.driver.screen_contains(needle))
         })
     }
+}
+
+/// Takes and re-raises any error a render callback recorded during the
+/// `render()` call that just ran, mirroring `step_once`'s handling of a
+/// `handle`/`tick` callback failure. Every `QuiApp` method that can trigger
+/// a render outside of `step`/`run` — `screen`, `screen_contains`,
+/// `insert_*`, `slot_clear` — calls this right after rendering so a render
+/// callback's exception is never silently swallowed.
+fn take_pending_error(app: &mut PyAppLogic) -> PyResult<()> {
+    if let Some(err) = app.pending_error.borrow_mut().take() {
+        return Err(err);
+    }
+    Ok(())
 }
 
 impl QuiApp {
@@ -1365,6 +2265,7 @@ impl QuiApp {
         self.guarded(|app| {
             store(app.driver.app_mut(), value);
             app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
             Ok(slot)
         })
     }
@@ -1384,9 +2285,7 @@ impl QuiApp {
                 self.driver.tick();
             }
         }
-        if let Some(err) = self.driver.app_mut().pending_error.borrow_mut().take() {
-            return Err(err);
-        }
+        take_pending_error(self.driver.app_mut())?;
         Ok(!self.driver.exited())
     }
 }
@@ -1454,7 +2353,7 @@ mod tests {
     #[test]
     fn guarded_catches_panic_then_poisons() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(10, 10, None).expect("valid dimensions");
+            let mut app = QuiApp::new(10, 10, None, None).expect("valid dimensions");
 
             let panicked: PyResult<()> = app.guarded(|_| panic!("boom"));
             let err = panicked.expect_err("a caught panic must surface as an error");
@@ -1492,13 +2391,44 @@ mod tests {
         });
     }
 
+    /// `reaction_for_callback` promotes an ordinary `Continue` to `Redraw`
+    /// only when a render callback is registered — the mechanism that lets
+    /// `run_tui`/`run_native` actually repaint after a handler/tick mutates
+    /// plain Python state, instead of leaving the screen frozen at the last
+    /// frame a `Reaction::Redraw` happened to trigger for some other reason.
+    /// `Exit` passes through unchanged either way, since nothing should
+    /// repaint after an explicit exit request.
+    #[test]
+    fn reaction_for_callback_promotes_continue_only_when_render_callback_present() {
+        Python::attach(|py| {
+            let none_val = py.None().into_bound(py);
+            assert_eq!(
+                reaction_for_callback(&none_val, false),
+                Reaction::Continue,
+                "no render callback registered: Continue must stay Continue"
+            );
+            assert_eq!(
+                reaction_for_callback(&none_val, true),
+                Reaction::Redraw,
+                "a render callback is registered: Continue must promote to Redraw"
+            );
+
+            let false_val = false.into_pyobject(py).expect("bool");
+            assert_eq!(
+                reaction_for_callback(&false_val, true),
+                Reaction::Exit,
+                "an explicit False exit request must not be overridden by Redraw"
+            );
+        });
+    }
+
     /// A tick handler that returns `False` exits the driver loop on its own
     /// step, with no exception raised — `step()` returns `Ok(false)` and
     /// `pending_error` stays unset, unlike the raise-to-exit path.
     #[test]
     fn tick_handler_returning_false_exits_without_raising() {
         Python::attach(|py| {
-            let mut app = QuiApp::new(10, 10, None).expect("valid dimensions");
+            let mut app = QuiApp::new(10, 10, None, None).expect("valid dimensions");
             let on_tick = py
                 .eval(c"lambda: False", None, None)
                 .expect("lambda literal")
@@ -1512,6 +2442,28 @@ mod tests {
                 !running,
                 "returning False from the tick handler must stop the loop"
             );
+        });
+    }
+
+    /// `record_error` keeps the first error recorded in a dispatch and
+    /// ignores a later one — a render-callback failure painting the same
+    /// frame a handler already failed on must not clobber the handler's
+    /// error, which is closer to the root cause.
+    #[test]
+    fn record_error_preserves_the_first_error() {
+        Python::attach(|py| {
+            let pending_error: Rc<RefCell<Option<PyErr>>> = Rc::new(RefCell::new(None));
+            record_error(&pending_error, InternalError::new_err("first"));
+            record_error(&pending_error, InternalError::new_err("second"));
+            let recorded = pending_error
+                .borrow_mut()
+                .take()
+                .expect("an error must be recorded");
+            assert_eq!(
+                recorded.to_string(),
+                InternalError::new_err("first").to_string()
+            );
+            let _ = py;
         });
     }
 
@@ -1658,6 +2610,395 @@ mod tests {
             assert!(
                 !exit_requested.get(),
                 "WindowClose exits through the normal path, not the flag"
+            );
+        });
+    }
+
+    /// A render callback returning `{"row": [...]}` lays its children out
+    /// side by side rather than stacked: a `tree` leaf and a `data_table`
+    /// leaf share the same top row, with the tree's columns entirely to
+    /// the left of the table's.
+    #[test]
+    fn render_callback_row_places_children_side_by_side() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(40, 20, None, None).expect("valid dimensions");
+            let callback = py
+                .eval(
+                    c"lambda: {\"row\": [\
+                        {\"id\": \"tree:1\", \"tree\": {\
+                            \"id\": \"tree:1\", \
+                            \"rows\": [{\
+                                \"path\": [0], \"indent\": 0, \"icon\": None, \
+                                \"text\": {\"spans\": [{\"text\": \"Alpha\", \"fg\": None, \"bg\": None}]}, \
+                                \"badge\": None, \"is_expanded\": None\
+                            }], \
+                            \"selection_mode\": \"Single\", \"selected_path\": None, \
+                            \"style\": {\
+                                \"indent\": 2, \"show_chevrons\": True, \
+                                \"chevron_expanded\": \"v\", \"chevron_collapsed\": \">\"\
+                            }\
+                        }}, \
+                        {\"id\": \"table:1\", \"data_table\": {\
+                            \"id\": \"table:1\", \
+                            \"columns\": [{\"title\": \"Name\"}], \
+                            \"rows\": [{\"cells\": [{\"spans\": [{\"text\": \"Row1\", \"fg\": None, \"bg\": None}]}]}]\
+                        }}\
+                    ]}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate")
+                .unbind();
+            app.set_render(callback);
+
+            let screen = app.screen().expect("render must not raise");
+            assert!(screen.contains("Alpha"), "tree content must be painted");
+            assert!(screen.contains("Name"), "table header must be painted");
+            assert!(screen.contains("Row1"), "table content must be painted");
+
+            let tree_bounds = app
+                .driver
+                .find_bounds("Alpha")
+                .expect("tree content must be on screen");
+            // The table's own header row ("Name") shares the leaf's top row
+            // with the tree's first row ("Alpha"); the table's data row
+            // ("Row1") is one row further down *inside the table's own
+            // leaf*, not stacked below the tree's leaf.
+            let header_bounds = app
+                .driver
+                .find_bounds("Name")
+                .expect("table header must be on screen");
+            let table_bounds = app
+                .driver
+                .find_bounds("Row1")
+                .expect("table content must be on screen");
+
+            assert_eq!(
+                tree_bounds.y, header_bounds.y,
+                "a Row's children must share the same top row, not stack vertically"
+            );
+            assert!(
+                tree_bounds.x + tree_bounds.width <= header_bounds.x,
+                "the tree's columns must be entirely left of the table's: tree={tree_bounds:?} header={header_bounds:?}"
+            );
+            assert!(
+                tree_bounds.x + tree_bounds.width <= table_bounds.x,
+                "the tree's columns must be entirely left of the table's: tree={tree_bounds:?} table={table_bounds:?}"
+            );
+        });
+    }
+
+    /// A render callback may place more than one instance of the same
+    /// primitive kind in a layout tree -- two `data_table`s in a `Row` both
+    /// render, each addressable by its own leaf `id`.
+    #[test]
+    fn render_callback_row_supports_multiple_instances_of_the_same_kind() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(60, 20, None, None).expect("valid dimensions");
+            let callback = py
+                .eval(
+                    c"lambda: {\"row\": [\
+                        {\"id\": \"table:left\", \"data_table\": {\
+                            \"id\": \"table:left\", \
+                            \"columns\": [{\"title\": \"Name\"}], \
+                            \"rows\": [{\"cells\": [{\"spans\": [{\"text\": \"LeftCell\", \"fg\": None, \"bg\": None}]}]}]\
+                        }}, \
+                        {\"id\": \"table:right\", \"data_table\": {\
+                            \"id\": \"table:right\", \
+                            \"columns\": [{\"title\": \"Name\"}], \
+                            \"rows\": [{\"cells\": [{\"spans\": [{\"text\": \"RightCell\", \"fg\": None, \"bg\": None}]}]}]\
+                        }}\
+                    ]}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate")
+                .unbind();
+            app.set_render(callback);
+
+            assert!(
+                app.screen_contains("LeftCell")
+                    .expect("render must not raise"),
+                "the first data_table instance must render"
+            );
+            assert!(
+                app.screen_contains("RightCell")
+                    .expect("render must not raise"),
+                "the second data_table instance must render"
+            );
+        });
+    }
+
+    /// A render callback returning `{"split": {...}}` divides its area into
+    /// two unequal panes at `ratio`; pushing a `SplitDividerDragged` event
+    /// to a handler that writes the new ratio into the same Python state the
+    /// render callback reads moves the divider on the very next frame — the
+    /// state -> `render(state)` loop, applied to a `Split` instead of a flat
+    /// slot. The new boundary is found via `find_bounds`, never a hardcoded
+    /// column, so this only passes if the divider actually moved to ~70% of
+    /// the width rather than merely re-painting at the old position.
+    #[test]
+    fn split_divider_drag_event_moves_the_divider_on_next_frame() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+state = {'ratio': 0.5}
+
+def render():
+    return {'split': {
+        'id': 'main-split',
+        'orientation': 'horizontal',
+        'ratio': state['ratio'],
+        'first': {'id': 'text:left', 'text_display': {
+            'id': 'text:left',
+            'lines': [{'spans': [{'text': 'LEFT', 'fg': None, 'bg': None}]}],
+        }},
+        'second': {'id': 'text:right', 'text_display': {
+            'id': 'text:right',
+            'lines': [{'spans': [{'text': 'RIGHT', 'fg': None, 'bg': None}]}],
+        }},
+    }}
+
+def handle(event):
+    state['ratio'] = event['SplitDividerDragged']['new_ratio']
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let width = 40u16;
+            let mut app =
+                QuiApp::new(width, 20, Some(handle), Some(render)).expect("valid dimensions");
+
+            assert!(
+                app.screen_contains("LEFT").expect("render must not raise"),
+                "left pane must be painted at the initial ratio"
+            );
+            let left_before = app
+                .driver
+                .find_bounds("LEFT")
+                .expect("left pane must be on screen");
+            let right_before = app
+                .driver
+                .find_bounds("RIGHT")
+                .expect("right pane must be on screen");
+            assert!(
+                left_before.x < right_before.x,
+                "the first pane must be left of the second at a 0.5 ratio"
+            );
+
+            let event = py
+                .eval(
+                    c"{'SplitDividerDragged': {'tree': 'main-split', 'split_index': 0, 'new_ratio': 0.7}}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate");
+            let event_dict = event.cast::<PyDict>().expect("dict literal must be a dict");
+            app.push_event(event_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let right_after = app
+                .driver
+                .find_bounds("RIGHT")
+                .expect("right pane must still be on screen");
+            assert!(
+                right_after.x > right_before.x,
+                "dragging the divider to a larger ratio must widen the first pane: \
+                 before={right_before:?} after={right_after:?}"
+            );
+            let fraction = right_after.x / f32::from(width);
+            assert!(
+                (fraction - 0.7).abs() <= 0.05,
+                "the second pane must now start at ~70% of the width, got {fraction} \
+                 (right_after={right_after:?}, width={width})"
+            );
+        });
+    }
+
+    /// A render callback returning `{"tabs": {...}}` paints the strip plus
+    /// the `selected` tab's `content`; pushing a `TabBar`/`TabActivated`
+    /// event to a handler that writes the new index into the same Python
+    /// state the render callback reads switches which tab's content paints
+    /// on the very next frame, each tab's content being an ordinary
+    /// `data_table` subtree distinct from the other tab's.
+    #[test]
+    fn tabs_container_shows_selected_tabs_content_and_switches_on_select_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+state = {'selected': 0}
+
+def render():
+    return {'tabs': {
+        'id': 'tabs:main',
+        'selected': state['selected'],
+        'tabs': [
+            {'id': 'tab:alpha', 'title': 'Alpha', 'content': {'id': 'table:alpha', 'data_table': {
+                'id': 'table:alpha',
+                'columns': [{'title': 'Name'}],
+                'rows': [{'cells': [{'spans': [{'text': 'AlphaRow', 'fg': None, 'bg': None}]}]}],
+            }}},
+            {'id': 'tab:beta', 'title': 'Beta', 'content': {'id': 'table:beta', 'data_table': {
+                'id': 'table:beta',
+                'columns': [{'title': 'Name'}],
+                'rows': [{'cells': [{'spans': [{'text': 'BetaRow', 'fg': None, 'bg': None}]}]}],
+            }}},
+        ],
+    }}
+
+def handle(event):
+    state['selected'] = event['TabBar'][1]['TabActivated']['index']
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+
+            assert!(
+                app.screen_contains("Alpha").expect("render must not raise"),
+                "the first tab's title must render in the strip"
+            );
+            assert!(
+                app.screen_contains("Beta").expect("render must not raise"),
+                "the second tab's title must render in the strip even while unselected"
+            );
+            assert!(
+                app.screen_contains("AlphaRow")
+                    .expect("render must not raise"),
+                "the first (selected) tab's content must render"
+            );
+            assert!(
+                !app.screen_contains("BetaRow")
+                    .expect("render must not raise"),
+                "the second (unselected) tab's content must not render"
+            );
+
+            let event = py
+                .eval(
+                    c"{'TabBar': ['tabs:main', {'TabActivated': {'index': 1}}]}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate");
+            let event_dict = event.cast::<PyDict>().expect("dict literal must be a dict");
+            app.push_event(event_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            assert!(
+                app.screen_contains("BetaRow")
+                    .expect("render must not raise"),
+                "selecting the second tab must paint its content"
+            );
+            assert!(
+                !app.screen_contains("AlphaRow")
+                    .expect("render must not raise"),
+                "the first tab's content must no longer render once deselected"
+            );
+        });
+    }
+
+    /// A tab group is just a `Split` whose panes are each a `Tabs` -- no
+    /// separate "group" concept. Nesting two `Tabs` under `first`/`second`
+    /// renders both strips side by side, each with its own tab painting its
+    /// own content independently of the other.
+    #[test]
+    fn tabs_nested_in_split_form_a_tab_group_rendered_side_by_side() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(60, 20, None, None).expect("valid dimensions");
+            let callback = py
+                .eval(
+                    c"lambda: {'split': {\
+                        'id': 'main-split', \
+                        'orientation': 'horizontal', \
+                        'ratio': 0.5, \
+                        'first': {'tabs': {\
+                            'id': 'tabs:left', \
+                            'selected': 0, \
+                            'tabs': [{'id': 'left:a', 'title': 'LeftTab', 'content': {\
+                                'id': 'text:left', 'text_display': {\
+                                    'id': 'text:left', \
+                                    'lines': [{'spans': [{'text': 'LEFTCONTENT', 'fg': None, 'bg': None}]}], \
+                                }\
+                            }}], \
+                        }}, \
+                        'second': {'tabs': {\
+                            'id': 'tabs:right', \
+                            'selected': 0, \
+                            'tabs': [{'id': 'right:a', 'title': 'RightTab', 'content': {\
+                                'id': 'text:right', 'text_display': {\
+                                    'id': 'text:right', \
+                                    'lines': [{'spans': [{'text': 'RIGHTCONTENT', 'fg': None, 'bg': None}]}], \
+                                }\
+                            }}], \
+                        }}, \
+                    }}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate")
+                .unbind();
+            app.set_render(callback);
+
+            assert!(
+                app.screen_contains("LeftTab")
+                    .expect("render must not raise"),
+                "the left tab group's strip must render"
+            );
+            assert!(
+                app.screen_contains("RightTab")
+                    .expect("render must not raise"),
+                "the right tab group's strip must render"
+            );
+            assert!(
+                app.screen_contains("LEFTCONTENT")
+                    .expect("render must not raise"),
+                "the left tab group's selected content must render"
+            );
+            assert!(
+                app.screen_contains("RIGHTCONTENT")
+                    .expect("render must not raise"),
+                "the right tab group's selected content must render"
+            );
+
+            let left_bounds = app
+                .driver
+                .find_bounds("LeftTab")
+                .expect("left strip must be on screen");
+            let right_bounds = app
+                .driver
+                .find_bounds("RightTab")
+                .expect("right strip must be on screen");
+            assert!(
+                left_bounds.x < right_bounds.x,
+                "the two tab groups must render side by side, left before right: \
+                 left={left_bounds:?} right={right_bounds:?}"
             );
         });
     }

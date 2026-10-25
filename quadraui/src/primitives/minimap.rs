@@ -82,6 +82,12 @@
 //!   length: the same buffer, painted into the same strip, always
 //!   resolves to the same `vline.bounds.height` no matter how many lines
 //!   it has.
+//! - [`MinimapSizing::RepeatToFill`] — like `FixedPitch`, but a short file
+//!   repeat-paints each row across a whole-number multiple of the base
+//!   pitch to fill the strip instead of top-aligning with blank space
+//!   below. Opt in to this from a rasteriser that wants `Fill`'s
+//!   "stretch a short file to fill a tall strip" look without `Fill`'s
+//!   fractional-pitch gaps (see `Fill`'s doc above).
 //!
 //! Each [`VisibleMinimapLine::bounds`] carries the *resolved* row height
 //! and position, so a rasteriser reads its pitch straight off the layout
@@ -299,6 +305,34 @@ pub enum MinimapSizing {
     /// map — see the module docs — instead of shrinking the pitch to
     /// compress everything in.
     FixedPitch(f32),
+    /// Tile rows top-down at a whole-number multiple of `base_pitch` (in
+    /// `bounds`'s own coordinate units), chosen so the rows fill as much
+    /// of `bounds.height` as a whole multiple allows.
+    ///
+    /// [`Self::Fill`] stretches the pitch to a fractional value, which is
+    /// fine for a font-scaling rasteriser but reads as blank gaps on a
+    /// cell-native one (see [`Self::Fill`]'s doc above). This variant
+    /// gets the same "a short file fills a tall strip" outcome without a
+    /// fractional pitch: every row is repeat-painted some whole number of
+    /// times its own `base_pitch` tall, so a rasteriser that paints one
+    /// cell/glyph per `base_pitch` can repeat-paint that same content
+    /// with no fractional remainder to leave blank. Rows need not all
+    /// repeat the same number of times — `total_k = floor(bounds.height /
+    /// base_pitch)` whole units are split as evenly as possible across
+    /// `row_count` rows (the first `total_k % row_count` rows get one
+    /// extra repeat), so the painted total sums to as close to
+    /// `bounds.height` as a whole-multiple-of-`base_pitch` total can get,
+    /// instead of every row sharing one floor-ed repeat count and leaving
+    /// a gap below the last row whenever `bounds.height` isn't an exact
+    /// multiple of `base_pitch * row_count`.
+    ///
+    /// When the file has more rows than even one repeat each can fit
+    /// (`base_pitch * row_count > bounds.height`), this degrades to
+    /// exactly [`Self::FixedPitch`]`(base_pitch)`'s sliding-window
+    /// behaviour: every row repeats once and a window of
+    /// `bounds.height / base_pitch` rows slides to track the editor's
+    /// viewport.
+    RepeatToFill(f32),
     /// VS Code-parity minimap **width** policy — orthogonal
     /// to `Fill` / `FixedPitch`, which size row *pitch* (vertical). This
     /// variant sizes the strip's overall width (horizontal) and is
@@ -415,21 +449,63 @@ impl Minimap {
 
         let row_count = self.lines.len().div_ceil(lines_per_row);
 
-        let (row_h, window_start_row, rows_shown) = match sizing {
+        // `row_heights[i]` is row `i`'s own pitch; every sizing other than
+        // `RepeatToFill` fills this with one repeated value, but
+        // `RepeatToFill` can vary it row-to-row (see below) so the whole
+        // strip fills exactly instead of floor-ing one shared multiple and
+        // leaving a remainder blank.
+        let (row_heights, window_start_row, rows_shown): (Vec<f32>, usize, usize) = match sizing {
             MinimapSizing::Fill => {
                 // Bounded, not stretch-to-fill: see MAX_ROW_PITCH's doc
                 // for why a short file must not blow its pitch up to fill
                 // the whole strip. No sliding window: every row is
                 // always visible.
                 let row_h = (bounds.height / row_count as f32).min(MAX_ROW_PITCH);
-                (row_h, 0usize, row_count)
+                (vec![row_h; row_count], 0usize, row_count)
             }
             MinimapSizing::FixedPitch(px) => {
                 let row_h = px.max(f32::MIN_POSITIVE);
                 let rows_that_fit = (bounds.height / row_h).floor() as usize;
                 let rows_shown = rows_that_fit.min(row_count);
                 let window_start_row = self.slide_window_start_row(row_count, rows_shown);
-                (row_h, window_start_row, rows_shown)
+                (vec![row_h; rows_shown], window_start_row, rows_shown)
+            }
+            MinimapSizing::RepeatToFill(base_pitch) => {
+                let base_pitch = base_pitch.max(f32::MIN_POSITIVE);
+                if row_count == 0 || base_pitch * row_count as f32 > bounds.height {
+                    // Not even one whole repeat fits every row: degrade to
+                    // exactly `FixedPitch(base_pitch)`'s own sliding
+                    // window rather than stretching below a legible
+                    // multiple.
+                    let row_h = base_pitch;
+                    let rows_that_fit = (bounds.height / row_h).floor() as usize;
+                    let rows_shown = rows_that_fit.min(row_count);
+                    let window_start_row = self.slide_window_start_row(row_count, rows_shown);
+                    (vec![row_h; rows_shown], window_start_row, rows_shown)
+                } else {
+                    // Every row gets a whole-number multiple of
+                    // `base_pitch`, and the multiples are chosen so the
+                    // *sum* fills `bounds.height` exactly rather than
+                    // every row sharing one floor-ed multiple with the
+                    // remainder left blank below the last row: `total_k`
+                    // whole `base_pitch` units split across `row_count`
+                    // rows get `base_k` each, with the first `remainder`
+                    // rows getting one extra unit so the split sums to
+                    // `total_k` exactly. No sliding window: `total_k >=
+                    // row_count` here (the branch above guards the
+                    // opposite case), so every row gets at least one
+                    // whole unit and is always visible.
+                    let total_k = (bounds.height / base_pitch).floor() as usize;
+                    let base_k = total_k / row_count;
+                    let remainder = total_k % row_count;
+                    let row_heights: Vec<f32> = (0..row_count)
+                        .map(|i| {
+                            let k = if i < remainder { base_k + 1 } else { base_k };
+                            base_pitch * k.max(1) as f32
+                        })
+                        .collect();
+                    (row_heights, 0usize, row_count)
+                }
             }
             // `VsCodeParity` sizes the strip's *width*, an orthogonal axis
             // to row pitch — see its doc and `resolve_width`. No caller
@@ -439,16 +515,33 @@ impl Minimap {
             // meaningful pitch of its own.
             MinimapSizing::VsCodeParity { .. } => {
                 let row_h = (bounds.height / row_count as f32).min(MAX_ROW_PITCH);
-                (row_h, 0usize, row_count)
+                (vec![row_h; row_count], 0usize, row_count)
             }
         };
+
+        // Prefix sums of `row_heights`, so a row's own on-strip offset is
+        // exact even when rows don't share one pitch (`RepeatToFill`'s
+        // uneven split above) — `row_offsets[rows_shown]` is the total
+        // painted height.
+        let mut row_offsets = Vec::with_capacity(rows_shown + 1);
+        let mut acc = 0.0f32;
+        row_offsets.push(acc);
+        for h in &row_heights {
+            acc += *h;
+            row_offsets.push(acc);
+        }
 
         let visible_lines: Vec<VisibleMinimapLine> = (0..rows_shown)
             .map(|i| {
                 let r = window_start_row + i;
                 VisibleMinimapLine {
                     start_line_idx: r * lines_per_row,
-                    bounds: Rect::new(bounds.x, bounds.y + row_h * i as f32, bounds.width, row_h),
+                    bounds: Rect::new(
+                        bounds.x,
+                        bounds.y + row_offsets[i],
+                        bounds.width,
+                        row_heights[i],
+                    ),
                 }
             })
             .collect();
@@ -474,14 +567,22 @@ impl Minimap {
         // cover the whole strip in a solid block instead of indicating a
         // position within it, so there is nothing to draw.
         let whole_file_visible = start_row_abs <= 0.0 && end_row_abs >= row_count as f32;
+        // `clipped_start`/`clipped_end` are whole-number row boundaries
+        // relative to `window_lo`; index straight into `row_offsets`
+        // instead of multiplying by one shared pitch, since
+        // `RepeatToFill`'s uneven split (above) means rows don't
+        // necessarily share one.
+        let last_offset = row_offsets.len() - 1;
+        let start_idx = ((clipped_start - window_lo).round() as usize).min(last_offset);
+        let end_idx = ((clipped_end - window_lo).round() as usize).min(last_offset);
         let highlight_h = if whole_file_visible {
             0.0
         } else {
-            (clipped_end - clipped_start).max(0.0) * row_h
+            (row_offsets[end_idx] - row_offsets[start_idx]).max(0.0)
         };
         let viewport_highlight = Rect::new(
             bounds.x,
-            bounds.y + (clipped_start - window_lo) * row_h,
+            bounds.y + row_offsets[start_idx],
             bounds.width,
             highlight_h,
         );
@@ -1702,6 +1803,95 @@ mod tests {
         let layout = mm.layout_with_sizing(bounds, 1, MinimapSizing::FixedPitch(2.0));
         assert_eq!(layout.visible_lines.len(), 100);
         assert_eq!(layout.visible_lines[0].start_line_idx, 0);
+    }
+
+    // ── MinimapSizing::RepeatToFill ──────────────────────────────────
+
+    #[test]
+    fn repeat_to_fill_stretches_a_short_file_at_a_whole_number_pitch() {
+        // 4 rows, base pitch 1.0, strip 20 tall: the largest whole k with
+        // k * 1.0 * 4 <= 20 is k = 5, so every row repeat-paints across
+        // exactly 5 cell rows -- filling all 20, never a fractional pitch.
+        let mm = minimap(4, 0, 4);
+        let bounds = Rect::new(0.0, 0.0, 2.0, 20.0);
+        let layout = mm.layout_with_sizing(bounds, 1, MinimapSizing::RepeatToFill(1.0));
+        assert_eq!(layout.visible_lines.len(), 4);
+        for vline in &layout.visible_lines {
+            assert_eq!(
+                vline.bounds.height, 5.0,
+                "row pitch must be a whole multiple of the base pitch"
+            );
+        }
+        let last = layout.visible_lines.last().unwrap();
+        assert_eq!(
+            last.bounds.y + last.bounds.height,
+            bounds.height,
+            "a whole-number repeat factor fills the strip exactly, with no leftover gap"
+        );
+    }
+
+    #[test]
+    fn repeat_to_fill_falls_back_to_fixed_pitch_when_the_file_does_not_fit() {
+        // 1000 rows at base pitch 1.0 need far more than a 200px strip:
+        // k clamps to 1 and the result is identical to plain
+        // `FixedPitch(1.0)`, including its sliding window.
+        let bounds = Rect::new(0.0, 0.0, 2.0, 200.0);
+        let n = 1000;
+        let mm = minimap(n, 500, 1);
+
+        let repeat_layout = mm.layout_with_sizing(bounds, 1, MinimapSizing::RepeatToFill(1.0));
+        let fixed_layout = mm.layout_with_sizing(bounds, 1, MinimapSizing::FixedPitch(1.0));
+
+        assert_eq!(
+            repeat_layout.visible_lines.len(),
+            fixed_layout.visible_lines.len()
+        );
+        assert_eq!(
+            repeat_layout.visible_lines[0].bounds.height,
+            fixed_layout.visible_lines[0].bounds.height
+        );
+        assert_eq!(
+            repeat_layout.visible_lines[0].start_line_idx,
+            fixed_layout.visible_lines[0].start_line_idx
+        );
+    }
+
+    #[test]
+    fn repeat_to_fill_whole_file_needs_no_slide_even_when_stretched() {
+        // Every row of a short file stays visible once repeat-painted --
+        // there is no window to slide, same as `Fill`'s "no sliding
+        // window" guarantee, just without the fractional-pitch gaps.
+        let mm = minimap(3, 0, 3);
+        let bounds = Rect::new(0.0, 0.0, 2.0, 30.0);
+        let layout = mm.layout_with_sizing(bounds, 1, MinimapSizing::RepeatToFill(1.0));
+        assert_eq!(layout.visible_lines.len(), 3);
+        assert_eq!(layout.visible_lines[0].start_line_idx, 0);
+    }
+
+    #[test]
+    fn repeat_to_fill_splits_the_remainder_instead_of_leaving_a_gap() {
+        // 5 rows, base pitch 1.0, strip 12 tall: 12 is not a whole
+        // multiple of 5, so one shared floor-ed pitch (k = 2, painting
+        // only 10 of the 12) would leave a 2-cell gap below the last row.
+        // Splitting the 12 whole units across the 5 rows instead -- 2
+        // rows get 3, 3 rows get 2 -- paints every row and fills the
+        // strip exactly.
+        let mm = minimap(5, 0, 5);
+        let bounds = Rect::new(0.0, 0.0, 2.0, 12.0);
+        let layout = mm.layout_with_sizing(bounds, 1, MinimapSizing::RepeatToFill(1.0));
+        assert_eq!(layout.visible_lines.len(), 5);
+        let heights: Vec<f32> = layout
+            .visible_lines
+            .iter()
+            .map(|v| v.bounds.height)
+            .collect();
+        assert_eq!(heights, vec![3.0, 3.0, 2.0, 2.0, 2.0]);
+        let last = layout.visible_lines.last().unwrap();
+        assert_eq!(
+            last.bounds.y + last.bounds.height,
+            bounds.height,
+            "splitting the remainder across rows fills the strip exactly, with no leftover gap"
+        );
     }
 
     // ── hit_test ─────────────────────────────────────────────────────
