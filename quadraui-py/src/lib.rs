@@ -91,7 +91,7 @@ use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{StepOutcome, TuiRunner};
 use quadraui::{
     AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, Reaction, Rect, Split,
-    SplitDirection, TabBar, TextDisplay, TreeView, UiEvent, WidgetId,
+    SplitDirection, TabBar, TabItem, TextDisplay, TreeView, UiEvent, WidgetId,
 };
 
 create_exception!(
@@ -507,8 +507,13 @@ fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>) {
 /// its area into two unequal panes at `ratio` via `Backend::draw_split`
 /// (the same divider paint/hit-test every backend already shares for the
 /// Rust-side `Split` primitive) and recurses into each with its resolved
-/// bounds. Per-child flex weights on `Row`/`Column` are a follow-up; every
-/// `Row`/`Column` child gets the same share for now.
+/// bounds. A `Tabs` reserves a top band for its tab strip (painted via
+/// `Backend::draw_tab_bar_layout`, the same strip every backend already
+/// shares for the Rust-side `TabBar` primitive) and recurses into the
+/// remaining area with the selected tab's content, so a tab group is just a
+/// `Split` whose panes are each a `Tabs`. Per-child flex weights on
+/// `Row`/`Column` are a follow-up; every `Row`/`Column` child gets the same
+/// share for now.
 fn paint_layout(backend: &mut dyn Backend, area: Rect, node: &LayoutNode) {
     match node {
         LayoutNode::Row(children) => {
@@ -529,6 +534,20 @@ fn paint_layout(backend: &mut dyn Backend, area: Rect, node: &LayoutNode) {
             let layout = backend.draw_split(area, &split.split);
             paint_layout(backend, layout.first_bounds, &split.first);
             paint_layout(backend, layout.second_bounds, &split.second);
+        }
+        LayoutNode::Tabs(tabs) => {
+            let strip_height = (3.0 * backend.line_height()).min(area.height);
+            let strip_rect = Rect::new(area.x, area.y, area.width, strip_height);
+            backend.draw_tab_bar_layout(strip_rect, &tabs.tab_bar, None);
+            let content_rect = Rect::new(
+                area.x,
+                area.y + strip_height,
+                area.width,
+                (area.height - strip_height).max(0.0),
+            );
+            if let Some(selected) = tabs.entries.get(tabs.selected) {
+                paint_layout(backend, content_rect, &selected.content);
+            }
         }
     }
 }
@@ -649,13 +668,15 @@ fn decode_slot_entry<T: serde::de::DeserializeOwned>(
 
 /// One node of a render callback's layout tree: a `Row`/`Column` container
 /// holding child nodes, a `Leaf` wrapping one id-addressable primitive
-/// descriptor, or a `Split` holding exactly two named child nodes divided
-/// by a draggable ratio. A `Tabs` container is a follow-up.
+/// descriptor, a `Split` holding exactly two named child nodes divided by a
+/// draggable ratio, or a `Tabs` holding a tab strip plus one content subtree
+/// per tab, of which only the selected one paints.
 enum LayoutNode {
     Row(Vec<LayoutNode>),
     Column(Vec<LayoutNode>),
     Leaf(LayoutLeaf),
     Split(LayoutSplit),
+    Tabs(LayoutTabs),
 }
 
 /// A [`LayoutNode::Split`]'s decoded shape: the `quadraui::Split` descriptor
@@ -666,6 +687,24 @@ struct LayoutSplit {
     split: Split,
     first: Box<LayoutNode>,
     second: Box<LayoutNode>,
+}
+
+/// A [`LayoutNode::Tabs`]'s decoded shape: a `quadraui::TabBar` descriptor
+/// built from each tab's title (with `selected`'s item marked active) for
+/// painting the strip, paired with `entries` holding the full content
+/// subtree behind each tab. A tab group is a `Split` whose `first`/`second`
+/// are each a `Tabs` — no separate "group" concept.
+struct LayoutTabs {
+    tab_bar: TabBar,
+    entries: Vec<LayoutTabEntry>,
+    selected: usize,
+}
+
+/// One tab inside a [`LayoutTabs`]: the id that addresses it, and the full
+/// [`LayoutNode`] subtree painted beneath the strip while it is selected.
+struct LayoutTabEntry {
+    id: String,
+    content: Box<LayoutNode>,
 }
 
 /// One id-addressable primitive inside a layout tree, decoded from a
@@ -703,8 +742,9 @@ const LEAF_KIND_KEYS: [&str; 6] = [
 
 /// Decodes one layout tree node from a render callback's returned `dict`:
 /// a `"row"` or `"column"` key holds the container's children, a `"split"`
-/// key holds a two-pane divider ([`layout_split_from_dict`]); any other
-/// shape is decoded as a leaf via [`layout_leaf_from_dict`].
+/// key holds a two-pane divider ([`layout_split_from_dict`]), a `"tabs"`
+/// key holds a tab strip plus per-tab content ([`layout_tabs_from_dict`]);
+/// any other shape is decoded as a leaf via [`layout_leaf_from_dict`].
 fn layout_node_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutNode> {
     if let Some(value) = dict.get_item("row")? {
         if !value.is_none() {
@@ -724,6 +764,14 @@ fn layout_node_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<Layou
                 InvalidDescriptorError::new_err(format!("{what}: \"split\" must be a dict"))
             })?;
             return Ok(LayoutNode::Split(layout_split_from_dict(what, split_dict)?));
+        }
+    }
+    if let Some(value) = dict.get_item("tabs")? {
+        if !value.is_none() {
+            let tabs_dict = value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!("{what}: \"tabs\" must be a dict"))
+            })?;
+            return Ok(LayoutNode::Tabs(layout_tabs_from_dict(what, tabs_dict)?));
         }
     }
     Ok(LayoutNode::Leaf(layout_leaf_from_dict(what, dict)?))
@@ -861,6 +909,130 @@ fn layout_children_from_value(what: &str, value: &Bound<'_, PyAny>) -> PyResult<
         .collect()
 }
 
+/// Decodes a `"tabs"` node: `{"id", "tabs", "selected"}`, where `"tabs"`
+/// is a non-empty `list` of `{"id", "title", "content"}` entries and
+/// `"selected"` is the index of the entry whose `"content"` paints beneath
+/// the strip this frame. `"content"` is a full child node dict, recursively
+/// decoded by [`layout_node_from_dict`], so a tab may hold any primitive or
+/// nested row/column/split — giving a per-tab instance by construction
+/// rather than a single shared slot.
+fn layout_tabs_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutTabs> {
+    let id: String = match dict.get_item("id")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!("{what}: tabs \"id\" must be a string"))
+        })?,
+        _ => {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: tabs is missing required \"id\""
+            )));
+        }
+    };
+
+    let tabs_value = dict
+        .get_item("tabs")?
+        .filter(|v| !v.is_none())
+        .ok_or_else(|| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: tabs {id:?} is missing required \"tabs\""
+            ))
+        })?;
+    let tabs_list = tabs_value.cast::<PyList>().map_err(|_| {
+        InvalidDescriptorError::new_err(format!("{what}: tabs {id:?} \"tabs\" must be a list"))
+    })?;
+    if tabs_list.is_empty() {
+        return Err(InvalidDescriptorError::new_err(format!(
+            "{what}: tabs {id:?} \"tabs\" must not be empty"
+        )));
+    }
+
+    let mut items = Vec::with_capacity(tabs_list.len());
+    let mut entries = Vec::with_capacity(tabs_list.len());
+    for entry in tabs_list.iter() {
+        let entry_dict = entry.cast::<PyDict>().map_err(|_| {
+            InvalidDescriptorError::new_err(format!("{what}: tabs {id:?} each tab must be a dict"))
+        })?;
+
+        let tab_id: String = match entry_dict.get_item("id")? {
+            Some(value) if !value.is_none() => value.extract().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} tab \"id\" must be a string"
+                ))
+            })?,
+            _ => {
+                return Err(InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} tab is missing required \"id\""
+                )));
+            }
+        };
+        let title: String = match entry_dict.get_item("title")? {
+            Some(value) if !value.is_none() => value.extract().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} tab {tab_id:?} \"title\" must be a string"
+                ))
+            })?,
+            _ => {
+                return Err(InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} tab {tab_id:?} is missing required \"title\""
+                )));
+            }
+        };
+        let content_value = entry_dict
+            .get_item("content")?
+            .filter(|v| !v.is_none())
+            .ok_or_else(|| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} tab {tab_id:?} is missing required \"content\""
+                ))
+            })?;
+        let content_dict = content_value.cast::<PyDict>().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: tabs {id:?} tab {tab_id:?} \"content\" must be a dict"
+            ))
+        })?;
+        let content = layout_node_from_dict(what, content_dict)?;
+
+        items.push(TabItem {
+            label: title,
+            ..Default::default()
+        });
+        entries.push(LayoutTabEntry {
+            id: tab_id,
+            content: Box::new(content),
+        });
+    }
+
+    let selected: usize = match dict.get_item("selected")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: tabs {id:?} \"selected\" must be an integer"
+            ))
+        })?,
+        _ => 0,
+    };
+    if selected >= items.len() {
+        return Err(InvalidDescriptorError::new_err(format!(
+            "{what}: tabs {id:?} \"selected\" index {selected} is out of range for \
+             {len} tab(s)",
+            len = items.len()
+        )));
+    }
+    items[selected].is_active = true;
+
+    Ok(LayoutTabs {
+        tab_bar: TabBar {
+            id: WidgetId::new(id),
+            tabs: items,
+            scroll_offset: 0,
+            right_segments: Vec::new(),
+            active_accent: None,
+            show_tab_close: false,
+            compact: false,
+        },
+        entries,
+        selected,
+    })
+}
+
 /// Decodes one `{"id": ..., "<kind>": <descriptor>}` leaf dict. `"id"`
 /// must be present and a string; exactly one of [`LEAF_KIND_KEYS`] must be
 /// present and hold a `dict`.
@@ -945,6 +1117,24 @@ fn validate_unique_leaf_ids(node: &LayoutNode) -> PyResult<()> {
                 walk(&split.first, seen)?;
                 walk(&split.second, seen)
             }
+            LayoutNode::Tabs(tabs) => {
+                let id = tabs.tab_bar.id.as_str().to_owned();
+                if !seen.insert(id.clone()) {
+                    return Err(InvalidDescriptorError::new_err(format!(
+                        "render: duplicate leaf id {id:?}"
+                    )));
+                }
+                for entry in &tabs.entries {
+                    if !seen.insert(entry.id.clone()) {
+                        return Err(InvalidDescriptorError::new_err(format!(
+                            "render: duplicate leaf id {:?}",
+                            entry.id
+                        )));
+                    }
+                    walk(&entry.content, seen)?;
+                }
+                Ok(())
+            }
         }
     }
     let mut seen = HashSet::new();
@@ -961,8 +1151,8 @@ enum RenderOutput {
 
 /// Invokes a registered render callback with no arguments and decodes its
 /// returned `dict` into a [`RenderOutput`]. A `dict` carrying a `"row"`,
-/// `"column"`, or `"split"` key is parsed as a layout tree; any other
-/// `dict` is parsed as the flat per-slot shape, so a render callback
+/// `"column"`, `"split"`, or `"tabs"` key is parsed as a layout tree; any
+/// other `dict` is parsed as the flat per-slot shape, so a render callback
 /// written against the flat shape keeps working unchanged. On any failure
 /// — the callback raising,
 /// returning something other than a `dict`, or an entry with the wrong
@@ -1003,7 +1193,8 @@ fn render_output_from_callback(
 
         let is_tree = matches!(dict.get_item("row"), Ok(Some(ref value)) if !value.is_none())
             || matches!(dict.get_item("column"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("split"), Ok(Some(ref value)) if !value.is_none());
+            || matches!(dict.get_item("split"), Ok(Some(ref value)) if !value.is_none())
+            || matches!(dict.get_item("tabs"), Ok(Some(ref value)) if !value.is_none());
         if is_tree {
             let parsed = layout_node_from_dict(RENDER_CALLBACK_WHAT, dict)
                 .and_then(|node| validate_unique_leaf_ids(&node).map(|()| node));
@@ -2633,6 +2824,181 @@ def handle(event):
                 (fraction - 0.7).abs() <= 0.05,
                 "the second pane must now start at ~70% of the width, got {fraction} \
                  (right_after={right_after:?}, width={width})"
+            );
+        });
+    }
+
+    /// A render callback returning `{"tabs": {...}}` paints the strip plus
+    /// the `selected` tab's `content`; pushing a `TabBar`/`TabActivated`
+    /// event to a handler that writes the new index into the same Python
+    /// state the render callback reads switches which tab's content paints
+    /// on the very next frame, each tab's content being an ordinary
+    /// `data_table` subtree distinct from the other tab's.
+    #[test]
+    fn tabs_container_shows_selected_tabs_content_and_switches_on_select_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+state = {'selected': 0}
+
+def render():
+    return {'tabs': {
+        'id': 'tabs:main',
+        'selected': state['selected'],
+        'tabs': [
+            {'id': 'tab:alpha', 'title': 'Alpha', 'content': {'id': 'table:alpha', 'data_table': {
+                'id': 'table:alpha',
+                'columns': [{'title': 'Name'}],
+                'rows': [{'cells': [{'spans': [{'text': 'AlphaRow', 'fg': None, 'bg': None}]}]}],
+            }}},
+            {'id': 'tab:beta', 'title': 'Beta', 'content': {'id': 'table:beta', 'data_table': {
+                'id': 'table:beta',
+                'columns': [{'title': 'Name'}],
+                'rows': [{'cells': [{'spans': [{'text': 'BetaRow', 'fg': None, 'bg': None}]}]}],
+            }}},
+        ],
+    }}
+
+def handle(event):
+    state['selected'] = event['TabBar'][1]['TabActivated']['index']
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+
+            assert!(
+                app.screen_contains("Alpha").expect("render must not raise"),
+                "the first tab's title must render in the strip"
+            );
+            assert!(
+                app.screen_contains("Beta").expect("render must not raise"),
+                "the second tab's title must render in the strip even while unselected"
+            );
+            assert!(
+                app.screen_contains("AlphaRow")
+                    .expect("render must not raise"),
+                "the first (selected) tab's content must render"
+            );
+            assert!(
+                !app.screen_contains("BetaRow")
+                    .expect("render must not raise"),
+                "the second (unselected) tab's content must not render"
+            );
+
+            let event = py
+                .eval(
+                    c"{'TabBar': ['tabs:main', {'TabActivated': {'index': 1}}]}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate");
+            let event_dict = event.cast::<PyDict>().expect("dict literal must be a dict");
+            app.push_event(event_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            assert!(
+                app.screen_contains("BetaRow")
+                    .expect("render must not raise"),
+                "selecting the second tab must paint its content"
+            );
+            assert!(
+                !app.screen_contains("AlphaRow")
+                    .expect("render must not raise"),
+                "the first tab's content must no longer render once deselected"
+            );
+        });
+    }
+
+    /// A tab group is just a `Split` whose panes are each a `Tabs` -- no
+    /// separate "group" concept. Nesting two `Tabs` under `first`/`second`
+    /// renders both strips side by side, each with its own tab painting its
+    /// own content independently of the other.
+    #[test]
+    fn tabs_nested_in_split_form_a_tab_group_rendered_side_by_side() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(60, 20, None, None).expect("valid dimensions");
+            let callback = py
+                .eval(
+                    c"lambda: {'split': {\
+                        'id': 'main-split', \
+                        'orientation': 'horizontal', \
+                        'ratio': 0.5, \
+                        'first': {'tabs': {\
+                            'id': 'tabs:left', \
+                            'selected': 0, \
+                            'tabs': [{'id': 'left:a', 'title': 'LeftTab', 'content': {\
+                                'id': 'text:left', 'text_display': {\
+                                    'id': 'text:left', \
+                                    'lines': [{'spans': [{'text': 'LEFTCONTENT', 'fg': None, 'bg': None}]}], \
+                                }\
+                            }}], \
+                        }}, \
+                        'second': {'tabs': {\
+                            'id': 'tabs:right', \
+                            'selected': 0, \
+                            'tabs': [{'id': 'right:a', 'title': 'RightTab', 'content': {\
+                                'id': 'text:right', 'text_display': {\
+                                    'id': 'text:right', \
+                                    'lines': [{'spans': [{'text': 'RIGHTCONTENT', 'fg': None, 'bg': None}]}], \
+                                }\
+                            }}], \
+                        }}, \
+                    }}",
+                    None,
+                    None,
+                )
+                .expect("dict literal must evaluate")
+                .unbind();
+            app.set_render(callback);
+
+            assert!(
+                app.screen_contains("LeftTab")
+                    .expect("render must not raise"),
+                "the left tab group's strip must render"
+            );
+            assert!(
+                app.screen_contains("RightTab")
+                    .expect("render must not raise"),
+                "the right tab group's strip must render"
+            );
+            assert!(
+                app.screen_contains("LEFTCONTENT")
+                    .expect("render must not raise"),
+                "the left tab group's selected content must render"
+            );
+            assert!(
+                app.screen_contains("RIGHTCONTENT")
+                    .expect("render must not raise"),
+                "the right tab group's selected content must render"
+            );
+
+            let left_bounds = app
+                .driver
+                .find_bounds("LeftTab")
+                .expect("left strip must be on screen");
+            let right_bounds = app
+                .driver
+                .find_bounds("RightTab")
+                .expect("right strip must be on screen");
+            assert!(
+                left_bounds.x < right_bounds.x,
+                "the two tab groups must render side by side, left before right: \
+                 left={left_bounds:?} right={right_bounds:?}"
             );
         });
     }
