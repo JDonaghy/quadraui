@@ -90,7 +90,7 @@ use pyo3::types::PyTuple;
 use pyo3::types::{PyDict, PyList};
 
 use quadraui::tui::testing::TuiDriver;
-use quadraui::tui::{StepOutcome, TuiRunner};
+use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
 use quadraui::{
     AppLogic, Backend, Button, ButtonHit, ButtonLayout, DataTable, DataTableEvent, DataTableHit,
     DataTableLayout, Key, ListView, ListViewEvent, ListViewHit, ListViewLayout, Modifiers,
@@ -1994,6 +1994,15 @@ struct QuiApp {
     /// [`QuiApp::guarded`]. Every method on a poisoned app raises
     /// `PoisonedError` instead of touching the driver again.
     poisoned: bool,
+    /// Lazily constructed on the first `clipboard_read_text`/
+    /// `clipboard_write_text` call and then kept alive for this `QuiApp`'s
+    /// whole lifetime, independent of whether `run_tui` is (or has ever
+    /// been) running. `TuiBackend`'s wrapped `TuiClipboard` holds an
+    /// `arboard::Clipboard` handle that must stay alive for its Linux
+    /// X11/Wayland clipboard-serving thread to keep running: constructing
+    /// and dropping a fresh `TuiBackend` per call would risk the clipboard
+    /// being silently cleared again right after a write.
+    clipboard: Option<TuiBackend>,
     /// Set once `run_native` has moved this app's [`PyAppLogic`] into a
     /// native window. A later `run_native` call on the same `QuiApp` raises
     /// `NativeAlreadyRunError` instead of silently opening a window backed
@@ -2073,6 +2082,7 @@ impl QuiApp {
             driver: TuiDriver::new(app_logic, width, height),
             pending_events: VecDeque::new(),
             poisoned: false,
+            clipboard: None,
             #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
             native_consumed: false,
         })
@@ -2680,7 +2690,17 @@ impl QuiApp {
     /// exception a registered handler/tick callback raised, or a
     /// `KeyboardInterrupt` from an externally delivered signal the pump loop
     /// observed.
-    fn run_tui(&mut self, py: Python<'_>) -> PyResult<()> {
+    ///
+    /// `mouse=False` skips negotiating `EnableMouseCapture` with the
+    /// terminal (`quadraui::tui::RunConfig::no_mouse`), the same opt-out
+    /// `examples/tui_no_mouse.rs` demonstrates at the Rust level. With the
+    /// default `mouse=True`, mouse reporting is enabled as before and the
+    /// terminal's native click-drag text selection stays suppressed for the
+    /// app's whole run; an app that never reads mouse events itself should
+    /// pass `mouse=False` so a user can select and copy text with the
+    /// terminal's own mouse handling instead.
+    #[pyo3(signature = (mouse=true))]
+    fn run_tui(&mut self, py: Python<'_>, mouse: bool) -> PyResult<()> {
         self.guarded(|app| {
             let app_logic = std::mem::take(app.driver.app_mut());
             // Same double-clone rationale as `run_native`: `tui_error` stays
@@ -2690,10 +2710,15 @@ impl QuiApp {
             let tui_error = app_logic.pending_error.clone();
             let loop_error = app_logic.pending_error.clone();
             let wrapped = AssertUngil((app_logic, loop_error));
+            let config = if mouse {
+                RunConfig::default()
+            } else {
+                RunConfig::no_mouse()
+            };
             let setup_result: io::Result<()> = py.detach(move || {
                 let wrapped = wrapped;
                 let (app_logic, loop_error) = wrapped.0;
-                let mut runner = TuiRunner::new(app_logic)?;
+                let mut runner = TuiRunner::new_with(app_logic, config)?;
                 let poll_interval = Duration::from_millis(50);
                 loop {
                     if runner.pump(poll_interval)? == StepOutcome::Exited {
@@ -2723,6 +2748,31 @@ impl QuiApp {
             }
             setup_result.map_err(|err| InternalError::new_err(format!("run_tui: {err}")))
         })
+    }
+
+    /// Writes `text` to the system clipboard, via the same
+    /// `quadraui::tui::services::TuiClipboard` fallback chain (arboard, then
+    /// OSC 52 sent to stdout and `/dev/tty`, then a native CLI tool such as
+    /// `wl-copy`/`xclip`/`xsel`) a real terminal backend uses internally —
+    /// usable whether or not `run_tui` is (or has ever been) running on
+    /// this `QuiApp`, e.g. from a tick/event handler while headlessly
+    /// stepping, so a Python app can copy text programmatically instead of
+    /// relying on the terminal's own mouse-drag selection. Pair with
+    /// `run_tui(mouse=False)` to leave that native selection usable too.
+    fn clipboard_write_text(&mut self, text: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            app.clipboard_backend()
+                .services()
+                .clipboard()
+                .write_text(text);
+            Ok(())
+        })
+    }
+
+    /// Reads the system clipboard's current plain-text contents, or `None`
+    /// on an empty / non-text clipboard, or a platform error reading it.
+    fn clipboard_read_text(&mut self) -> PyResult<Option<String>> {
+        self.guarded(|app| Ok(app.clipboard_backend().services().clipboard().read_text()))
     }
 
     /// Inserts a `Button` descriptor from a Python dict, returning its slot
@@ -2882,6 +2932,13 @@ impl QuiApp {
                 Err(PanicError::new_err(panic_message(&*payload)))
             }
         }
+    }
+
+    /// Returns this app's lazily constructed, lifetime-persistent
+    /// clipboard backend — see the `clipboard` field's doc comment for why
+    /// it must not be constructed fresh per call.
+    fn clipboard_backend(&mut self) -> &TuiBackend {
+        self.clipboard.get_or_insert_with(TuiBackend::new)
     }
 
     /// Shared body of every `insert_*` method: reject an occupied slot,
