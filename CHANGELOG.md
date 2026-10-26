@@ -59,6 +59,45 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-26
+### Added
+
+- `Style::backdrop_opacity` (default `1.0`, fully opaque) lets `Palette`
+  render a translucent backdrop independent of the shared `Theme.surface_bg`
+  every other overlay (`Toast`/`Tooltip`/`ContextMenu`/`Dialog`/`Spinner`/
+  `ProgressBar`) reads — only `Palette`'s own paint path consults it, so no
+  other overlay is affected. Pixel backends (GTK/macOS/Win) apply it via
+  `Color::with_alpha` on the existing backdrop fill; the TUI backend has no
+  compositing primitive, so it pre-blends
+  `theme.background.blend(theme.surface_bg, backdrop_opacity)` on the CPU
+  before writing opaque cells, the same technique already used for the
+  minimap's translucent highlight tint.
+
+### Fixed
+
+- Pixel backends' translucent `Palette` backdrop (`backdrop_opacity < 1.0`)
+  no longer double-composites: `native_surface_paint::paint` filled the
+  backdrop twice (once square, once rounded) over the same area, so two
+  sequential alpha blends at `a` compounded to an effective `1 - (1-a)²`
+  instead of `a`. The square pre-fill is now skipped whenever the backdrop
+  is translucent; it still runs at the opaque default so corner pixels
+  outside the rounded fill stay covered.
+- `tui::draw_palette`'s public signature stays style-less (D-020): the live
+  `&Style` (including `backdrop_opacity`) now reaches the paint through a
+  `pub(crate) draw_palette_with_style` sibling `Backend::draw_palette`
+  calls, the same shim shape `win::dialog::draw_dialog_with_style` already
+  uses, instead of widening the public free function's argument list.
+- `tui::draw_solid_fill` now honours `color.a`: a translucent colour
+  (`a < 255`) alpha-blends over each cell's existing background and leaves
+  its glyph and foreground untouched, instead of blanking the cell to a
+  solid opaque colour. This matches the pixel backends' `surface_fill_rect`,
+  which already honour `a` — a translucent modal scrim (e.g. the fuzzy
+  finder backdrop) now dims the TUI content behind it instead of blacking
+  it out. `a == 255` keeps the prior blank-fill behaviour. A cell whose
+  existing background isn't a literal RGB colour (e.g. a buffer cell this
+  crate never painted) has no base to blend against, so it's left
+  unblended.
+
 ## [0.6.0] - 2026-10-25
 ### Added
 

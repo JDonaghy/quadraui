@@ -1046,11 +1046,10 @@ pub trait Backend: sealed::Sealed {
     /// that type's module doc for why it's a separate struct). Same
     /// call-once-or-per-pane contract as [`Self::set_theme`].
     ///
-    /// Default: no-op. Backends that carry a `current_style` field (GTK,
-    /// macOS, Win-GUI) override this to store the value so subsequent
-    /// `draw_*` calls consume it. TUI takes the default: every current
-    /// `Style` token's TUI story is "no-op" (see `Style`'s module doc),
-    /// so there is nothing yet for a TUI backend to store.
+    /// Default: no-op. Backends that carry a `current_style` field (TUI,
+    /// GTK, macOS, Win-GUI) override this to store the value so subsequent
+    /// `draw_*` calls consume it — see `Style`'s module doc for each
+    /// token's TUI story (no-op, cell-quantised or pre-blended).
     fn set_style(&mut self, _style: crate::Style) {}
 
     /// Read back the backend's currently active [`crate::Style`] — the

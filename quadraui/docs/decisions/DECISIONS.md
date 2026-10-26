@@ -2435,6 +2435,22 @@ icon) — every one is a pixel-only refinement with a well-defined
 coarsest-cell fallback, so the two tiers above cover the whole token
 set by construction.
 
+**Amendment (issue #1755): a third TUI tier, pre-blend, for tokens a
+cell grid cannot represent natively.** `Style::backdrop_opacity`
+breaks the "every token is no-op or cell-quantised" claim above: a
+ratatui `Buffer` cell has no alpha channel to quantise into, so there
+is no coarsest-cell fallback in the no-op/cell-quantised sense. TUI's
+story for this token is instead to pre-blend the backdrop colour
+against `Theme.background` on the CPU, once, before writing the opaque
+result into the cell — same visible effect as the pixel backends'
+native alpha blend, computed ahead of time rather than by the
+rasteriser. This is also the first token `TuiBackend` actually stores:
+`Backend::set_style`/`style` now have a real `TuiBackend` override
+(a `current_style` field) rather than taking the trait's no-op
+default, so point 2's "`TuiBackend` takes the trait default and stores
+nothing" no longer holds for every token — it holds for every token
+through `focus_ring_width`, and stops holding at `backdrop_opacity`.
+
 **First token shipped in this PR: `Style::focus_ring_width`
 (`f32`, default `2.0`).** Picked first because it was the one hardcoded
 geometry literal every pixel backend already agreed on byte-for-byte

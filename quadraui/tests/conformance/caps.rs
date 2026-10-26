@@ -945,23 +945,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "menu_style().resolve(&backend_caps()) — derived purely from two already-overridden/\
          required methods, nothing backend-specific to add (#1187)",
     ),
-    // `Style` carries non-colour geometry tokens. TUI takes the trait's no-op default
-    // on purpose, not as unfinished work: every `Style` token so far has a TUI story of
-    // "no-op" because the TUI rasterisers never read sub-cell geometry at all. There is
-    // nothing for a TUI `current_style` field to do yet; the day a cell-quantised token
-    // lands, TUI gains a real override.
-    (
-        "tui",
-        "set_style",
-        "every Style token so far maps to a TUI no-op (Style's own module doc) — nothing for a \
-         TUI-side current_style field to store yet (#1133)",
-    ),
-    (
-        "tui",
-        "style",
-        "mirrors set_style above — default Style::default() is correct since TUI never stores \
-         an override (#1133)",
-    ),
     // ── TUI: `paint_surface` exposes the public
     // `PaintSurface` pixel-paint-verb seam — `Rect`/`Point`-taking fills,
     // strokes, rounded rects, text runs. TUI paints a cell grid, not a

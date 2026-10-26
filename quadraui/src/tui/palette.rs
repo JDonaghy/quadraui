@@ -32,6 +32,7 @@ use ratatui::layout::Rect;
 
 use super::{ratatui_color, set_cell};
 use crate::primitives::palette::{Palette, PaletteItemMeasure, PaletteLayout, PaletteMode};
+use crate::style::Style;
 use crate::theme::Theme;
 
 /// Compute the TUI [`Palette`] layout — the shared geometry this
@@ -74,11 +75,19 @@ pub fn tui_palette_layout(area: Rect, palette: &Palette) -> PaletteLayout {
     })
 }
 
-/// Draw a [`Palette`] modal into `area` on `buf`.
+/// Draw a [`Palette`] modal into `area` on `buf`, painting with
+/// [`Style::default`].
 ///
 /// `nerd_fonts_enabled` selects between item icons' Nerd-Font glyph
 /// and ASCII fallback. Caller is responsible for sizing / centring
 /// the popup within the editor area.
+///
+/// Callers that need a live, caller-supplied [`Style`] (backdrop
+/// opacity included) go through [`draw_palette_with_style`] instead —
+/// this free function's signature is part of the crate's public API and
+/// stays fixed so downstream consumers calling it directly don't break;
+/// `Backend::draw_palette` implementations call the `_with_style`
+/// sibling with their own live style.
 pub fn draw_palette(
     buf: &mut Buffer,
     area: Rect,
@@ -86,11 +95,47 @@ pub fn draw_palette(
     theme: &Theme,
     nerd_fonts_enabled: bool,
 ) {
+    draw_palette_with_style(
+        buf,
+        area,
+        palette,
+        theme,
+        &Style::default(),
+        nerd_fonts_enabled,
+    );
+}
+
+/// Draw a [`Palette`] modal into `area` on `buf` with an explicit
+/// [`Style`] — the live-style counterpart to [`draw_palette`], used by
+/// `Backend::draw_palette` implementations.
+///
+/// `style.backdrop_opacity` controls how translucent the popup's
+/// backdrop looks — ratatui's `Buffer` has no compositing primitive, so
+/// this pre-blends `theme.background.blend(theme.surface_bg,
+/// backdrop_opacity)` on the CPU before writing opaque cells, the same
+/// technique [`super::draw_minimap`] already uses to simulate a
+/// translucent highlight tint. At the default `1.0` this reproduces
+/// `theme.surface_bg` exactly. The blend is against `theme.background`
+/// — a static theme token, not whatever content the buffer already
+/// holds at those cells — so this is a simulated backdrop tint, not a
+/// true read-back-and-composite over live screen content.
+pub(crate) fn draw_palette_with_style(
+    buf: &mut Buffer,
+    area: Rect,
+    palette: &Palette,
+    theme: &Theme,
+    style: &Style,
+    nerd_fonts_enabled: bool,
+) {
     if area.width < 4 || area.height < 4 {
         return;
     }
 
-    let bg = ratatui_color(theme.surface_bg);
+    let bg = ratatui_color(
+        theme
+            .background
+            .blend(theme.surface_bg, style.backdrop_opacity as f64),
+    );
     let fg = ratatui_color(theme.surface_fg);
     let query_fg = ratatui_color(theme.query_fg);
     let border_fg = ratatui_color(theme.border_fg);
@@ -565,6 +610,31 @@ mod tests {
         assert_eq!(cell_char(&buf, 19, 0), '╮');
         assert_eq!(cell_char(&buf, 0, 9), '╰');
         assert_eq!(cell_char(&buf, 19, 9), '╯');
+    }
+
+    #[test]
+    fn backdrop_opacity_blends_background_and_surface_bg() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 10));
+        let p = make_palette();
+        let theme = Theme::default();
+        let style = Style::default().with_backdrop_opacity(0.5);
+        draw_palette_with_style(&mut buf, Rect::new(0, 0, 20, 10), &p, &theme, &style, false);
+
+        let expected_bg = ratatui_color(theme.background.blend(theme.surface_bg, 0.5));
+        // (1, 1) sits inside the border, below the title row and above any
+        // query/list content — a cell only ever painted with the blended
+        // backdrop fill, never overwritten by a more specific element.
+        assert_eq!(buf[(1, 1)].bg, expected_bg);
+    }
+
+    #[test]
+    fn default_backdrop_opacity_reproduces_surface_bg_exactly() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 10));
+        let p = make_palette();
+        let theme = Theme::default();
+        draw_palette(&mut buf, Rect::new(0, 0, 20, 10), &p, &theme, false);
+
+        assert_eq!(buf[(1, 1)].bg, ratatui_color(theme.surface_bg));
     }
 
     #[test]

@@ -38,12 +38,19 @@
 //!   `LayoutMetrics::cell_quantum` already quantises hit-test geometry
 //!   (`docs/decisions/DECISIONS.md` D-016's "Paint/click drift" note).
 //!   No token is shaped that way yet — see *Scope* below.
+//! - **Pre-blend** — a token whose pixel-backend refinement is alpha
+//!   compositing, which ratatui's `Buffer` has no primitive for.
+//!   [`Self::backdrop_opacity`] is this: [`crate::tui::draw_palette`]
+//!   pre-mixes the backdrop colour on the CPU via [`crate::Color::blend`]
+//!   before writing opaque cells, the same technique
+//!   [`crate::tui::draw_minimap`] already uses to simulate a translucent
+//!   highlight tint.
 //!
 //! No [`Style`] token is physically absent on TUI the way a tray icon
 //! or dock badge is (D-014's **N/A** tier) — every one of them is a
-//! pixel-only *refinement* with a well-defined "coarsest cell" fallback,
-//! so **no-op**/**cell-quantised** cover the whole token set by
-//! construction, not by accident.
+//! pixel-only *refinement* with a well-defined cell-grid fallback, so
+//! **no-op**/**cell-quantised**/**pre-blend** cover the whole token set
+//! by construction, not by accident.
 //!
 //! # Scope — the fixed VS Code token set
 //!
@@ -51,12 +58,16 @@
 //! catalogue `CLAUDE.md` wants — padding, corner radius, border width,
 //! shadow elevation and control height — as one fixed, VS-Code-shaped
 //! set rather than a per-widget style sheet: every overlay primitive
-//! reads the *same* five tokens, the same way every one of them reads
-//! the same five-ish [`crate::Theme`] colours, instead of each carrying
-//! its own bespoke radius/padding constant. [`Self::default`]'s values
-//! are chosen to match VS Code's own chrome metrics (hover cards, the
-//! quick-pick/command-palette widget, notifications, menus) — see each
-//! field's own doc for the specific VS Code surface it mirrors.
+//! reads the same five shared tokens, the same way every one of them
+//! reads the same five-ish [`crate::Theme`] colours, instead of each
+//! carrying its own bespoke radius/padding constant.
+//! [`Self::backdrop_opacity`] is the one exception — only
+//! [`crate::Palette`] reads it, because it is the one overlay whose
+//! backdrop ever needs to be anything but fully opaque; see that field's
+//! own doc. [`Self::default`]'s values are chosen to match VS Code's own
+//! chrome metrics (hover cards, the quick-pick/command-palette widget,
+//! notifications, menus) — see each field's own doc for the specific VS
+//! Code surface it mirrors.
 //!
 //! Each further token lands as its own additive field, the same shape
 //! [`Self::focus_ring_width`] already has — `docs/decisions/DECISIONS.md`
@@ -190,6 +201,35 @@ pub struct Style {
     /// Default `26.0` — VS Code's own standard control height (input
     /// boxes, compact buttons, list rows).
     pub control_height: f32,
+
+    /// Opacity, `0.0`–`1.0`, [`crate::Palette`]'s own popup backdrop is
+    /// painted at — independent of every other overlay's own (always
+    /// fully opaque) [`crate::Theme::surface_bg`] fill, since this is
+    /// the one token only [`crate::primitives::palette`]'s `paint`
+    /// reads; `Toast`/`Tooltip`/`ContextMenu`/`Dialog`/`Spinner`/
+    /// `ProgressBar` are unaffected.
+    ///
+    /// **TUI story: pre-blend.** See the module doc's *Where each token
+    /// maps on TUI* section. Concretely,
+    /// [`crate::tui::palette::draw_palette_with_style`] blends
+    /// [`crate::Theme::background`] with [`crate::Theme::surface_bg`] at
+    /// this opacity — a static theme token, not whatever content the
+    /// ratatui `Buffer` already holds at those cells — since `Buffer` has
+    /// no read-back-and-composite primitive to blend against live screen
+    /// content with.
+    ///
+    /// Default `1.0` — fully opaque, reproducing
+    /// [`crate::Theme::surface_bg`] exactly, so every existing caller's
+    /// popup looks identical to before this field existed.
+    #[serde(default = "default_backdrop_opacity")]
+    pub backdrop_opacity: f32,
+}
+
+/// `#[serde(default)]` value for [`Style::backdrop_opacity`] — a struct
+/// serialized before this field existed deserializes as fully opaque,
+/// matching [`Style::default`].
+fn default_backdrop_opacity() -> f32 {
+    1.0
 }
 
 impl Default for Style {
@@ -201,6 +241,7 @@ impl Default for Style {
             border_width: 1.0,
             shadow_elevation: 1,
             control_height: 26.0,
+            backdrop_opacity: 1.0,
         }
     }
 }
@@ -253,6 +294,16 @@ impl Style {
     #[must_use]
     pub fn with_control_height(mut self, control_height: f32) -> Self {
         self.control_height = control_height;
+        self
+    }
+
+    /// Set [`Self::backdrop_opacity`]. Not clamped here — both
+    /// consuming sides clamp on their own: [`crate::Color::with_alpha`]
+    /// clamps to `0.0..=1.0` before scaling, and
+    /// [`crate::Color::blend`] clamps its own fraction the same way.
+    #[must_use]
+    pub fn with_backdrop_opacity(mut self, backdrop_opacity: f32) -> Self {
+        self.backdrop_opacity = backdrop_opacity;
         self
     }
 }
@@ -320,5 +371,45 @@ mod tests {
         let control_height = defaults.with_control_height(32.0);
         assert_eq!(control_height.control_height, 32.0);
         assert_eq!(control_height.focus_ring_width, defaults.focus_ring_width);
+
+        let backdrop_opacity = defaults.with_backdrop_opacity(0.5);
+        assert_eq!(backdrop_opacity.backdrop_opacity, 0.5);
+        assert_eq!(backdrop_opacity.padding, defaults.padding);
+    }
+
+    /// Pins the fully-opaque default so every existing `Palette` caller's
+    /// popup keeps looking identical to before this field existed.
+    #[test]
+    fn default_backdrop_opacity_is_fully_opaque() {
+        assert_eq!(Style::default().backdrop_opacity, 1.0);
+    }
+
+    /// Same proof as `with_focus_ring_width_builder_overrides_only_that_field`,
+    /// for the one token added after the original fixed VS-Code batch.
+    #[test]
+    fn with_backdrop_opacity_builder_overrides_only_that_field() {
+        let style = Style::default().with_backdrop_opacity(0.3);
+        assert_eq!(style.backdrop_opacity, 0.3);
+        assert_eq!(style.shadow_elevation, Style::default().shadow_elevation);
+    }
+
+    /// A JSON payload serialized before `backdrop_opacity` existed has no
+    /// such key; `#[serde(default = "default_backdrop_opacity")]` must
+    /// deserialize it as fully opaque rather than erroring, so a
+    /// consumer's persisted config from an earlier `quadraui` version
+    /// keeps loading.
+    #[test]
+    fn deserializing_without_backdrop_opacity_field_defaults_to_fully_opaque() {
+        let json = r#"{
+            "focus_ring_width": 2.0,
+            "padding": 8.0,
+            "corner_radius": 6.0,
+            "border_width": 1.0,
+            "shadow_elevation": 1,
+            "control_height": 26.0
+        }"#;
+        let style: Style =
+            serde_json::from_str(json).expect("deserialize without backdrop_opacity");
+        assert_eq!(style.backdrop_opacity, 1.0);
     }
 }
