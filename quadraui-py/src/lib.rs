@@ -85,15 +85,18 @@ use std::time::Duration;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
+#[cfg(test)]
+use pyo3::types::PyTuple;
 use pyo3::types::{PyDict, PyList};
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{StepOutcome, TuiRunner};
 use quadraui::{
-    AppLogic, Backend, Button, ButtonHit, ButtonLayout, DataTable, DataTableHit, DataTableLayout,
-    Key, ListView, ListViewHit, ListViewLayout, Modifiers, Point, Reaction, Rect, Split,
-    SplitDirection, SplitHit, SplitLayout, TabBar, TabBarHit, TabBarLayout, TabItem, TextDisplay,
-    TreeView, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    AppLogic, Backend, Button, ButtonHit, ButtonLayout, DataTable, DataTableEvent, DataTableHit,
+    DataTableLayout, Key, ListView, ListViewHit, ListViewLayout, Modifiers, Point, Reaction, Rect,
+    Split, SplitDirection, SplitHit, SplitLayout, TabBar, TabBarEvent, TabBarHit, TabBarLayout,
+    TabItem, TextDisplay, TreeEvent, TreePath, TreeView, TreeViewHit, TreeViewLayout, UiEvent,
+    WidgetId,
 };
 
 create_exception!(
@@ -282,6 +285,13 @@ struct PyAppLogic {
     /// mutating this during paint needs interior mutability even though
     /// `handle`/`tick` otherwise only ever need `&mut self`.
     hit_map: RefCell<Vec<PaintedHit>>,
+    /// Armed by a `MouseDown` landing on a split divider (per [`hit_map`]'s
+    /// [`PaintedHit::Split`] hit-testing) and cleared on the matching
+    /// `MouseUp`. While armed, [`handle`] turns every `MouseMoved` into a
+    /// synthesized `UiEvent::SplitDividerDragged` instead of forwarding the
+    /// raw move, so a Python handler never has to recompute split geometry
+    /// itself to support divider dragging.
+    active_drag: RefCell<Option<ActiveDrag>>,
 }
 
 impl PyAppLogic {
@@ -414,11 +424,57 @@ impl AppLogic for PyAppLogic {
             return Reaction::Continue;
         };
         let render_callback_present = self.render_callback.is_some();
+
+        // A move while a divider drag is armed becomes the drag itself —
+        // checked before the hit-test below, since `MouseMoved` has no
+        // `widget` field for `event_position`/`set_event_widget` to touch.
+        if let UiEvent::MouseMoved { position, .. } = &event {
+            if let Some(drag) = self.active_drag.borrow().as_ref() {
+                let new_ratio = drag.ratio_at(*position);
+                event = UiEvent::SplitDividerDragged {
+                    tree: drag.tree,
+                    split_index: 0,
+                    new_ratio,
+                };
+            }
+        }
+        if matches!(event, UiEvent::MouseUp { .. }) {
+            *self.active_drag.borrow_mut() = None;
+        }
+
         let hit = event_position(&event)
             .and_then(|position| hit_test_painted(&self.hit_map.borrow(), position));
         if let Some((id, _)) = hit {
             set_event_widget(&mut event, id);
         }
+
+        // A `MouseDown` either arms a divider drag or, for a tab/tree-row/
+        // data-table-row hit, is replaced outright by the semantic event it
+        // stands for — in which case the raw `MouseDown` (and its `"hit"`
+        // dict) never reaches Python at all.
+        let mut attach_hit = hit.is_some();
+        if let Some((id, detail)) = &hit {
+            if let UiEvent::MouseDown {
+                position,
+                modifiers,
+                ..
+            } = &event
+            {
+                let position = *position;
+                let modifiers = *modifiers;
+                if matches!(detail, HitDetail::SplitDivider) {
+                    if let Some(layout) = find_split_layout(&self.hit_map.borrow(), position, *id) {
+                        *self.active_drag.borrow_mut() = Some(ActiveDrag { tree: *id, layout });
+                    }
+                } else if let Some(semantic) =
+                    semantic_event_for_hit(*id, detail, modifiers, &self.hit_map.borrow())
+                {
+                    event = semantic;
+                    attach_hit = false;
+                }
+            }
+        }
+
         Python::attach(|py| {
             let payload = match pythonize::pythonize(py, &event) {
                 Ok(value) => value,
@@ -430,21 +486,33 @@ impl AppLogic for PyAppLogic {
                     return Reaction::Exit;
                 }
             };
-            if let Some((_, detail)) = &hit {
-                if let Ok(dict) = payload.cast::<PyDict>() {
-                    match pythonize::pythonize(py, detail) {
-                        Ok(detail_value) => {
-                            if let Err(err) = dict.set_item("hit", detail_value) {
-                                record_error(&self.pending_error, err);
+            if attach_hit {
+                if let Some((_, detail)) = &hit {
+                    match payload.cast::<PyDict>() {
+                        Ok(dict) => match pythonize::pythonize(py, detail) {
+                            Ok(detail_value) => {
+                                if let Err(err) = dict.set_item("hit", detail_value) {
+                                    record_error(&self.pending_error, err);
+                                    return Reaction::Exit;
+                                }
+                            }
+                            Err(err) => {
+                                record_error(
+                                    &self.pending_error,
+                                    InternalError::new_err(format!(
+                                        "failed to pythonize hit detail: {err}"
+                                    )),
+                                );
                                 return Reaction::Exit;
                             }
-                        }
-                        Err(err) => {
+                        },
+                        Err(_) => {
                             record_error(
                                 &self.pending_error,
-                                InternalError::new_err(format!(
-                                    "failed to pythonize hit detail: {err}"
-                                )),
+                                InternalError::new_err(
+                                    "failed to attach hit detail: pythonized event payload was not a dict"
+                                        .to_string(),
+                                ),
                             );
                             return Reaction::Exit;
                         }
@@ -492,10 +560,16 @@ enum PaintedHit {
     /// layout (like `List`/`DataTable`/`TabBar`'s) is in the LOCAL
     /// coordinate frame, relative to `area`'s origin, so a hit-test
     /// against it must first translate the click into that frame.
+    /// `row_paths[i]` is the `TreePath` of the row at visual index `i`
+    /// (i.e. `TreeView::rows[i].path`), kept alongside the layout so a
+    /// `TreeViewHit::Row(i)` can be turned into a semantic
+    /// `UiEvent::Tree(RowClicked)` without re-borrowing the `TreeView`
+    /// itself.
     Tree {
         id: WidgetId,
         area: Rect,
         layout: TreeViewLayout,
+        row_paths: Vec<TreePath>,
     },
     List {
         id: WidgetId,
@@ -564,7 +638,9 @@ fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetId, H
                     return Some((*id, HitDetail::ButtonBody));
                 }
             }
-            PaintedHit::Tree { id, area, layout } => {
+            PaintedHit::Tree {
+                id, area, layout, ..
+            } => {
                 if !area.contains(point) {
                     continue;
                 }
@@ -669,6 +745,102 @@ fn set_event_widget(event: &mut UiEvent, id: WidgetId) {
     }
 }
 
+/// A divider drag in progress: armed by [`PyAppLogic::handle`] on a
+/// `MouseDown` landing on `HitDetail::SplitDivider`, and cleared on the
+/// matching `MouseUp`. `layout` is the `Split`'s own layout as painted the
+/// frame the drag started, snapshotted rather than re-read each move so a
+/// drag stays anchored to the geometry the user actually grabbed even if a
+/// handler-driven re-render shifts the divider under the cursor mid-drag.
+struct ActiveDrag {
+    tree: WidgetId,
+    layout: SplitLayout,
+}
+
+impl ActiveDrag {
+    /// The ratio `point` (in the same absolute frame as `layout`) implies
+    /// along this split's axis, clamped to `[0.0, 1.0]`. Falls back to the
+    /// layout's own already-resolved ratio when the split has no room to
+    /// drag in (e.g. a pane collapsed to zero by its own `first_min`/
+    /// `second_min`), rather than dividing by zero.
+    fn ratio_at(&self, point: Point) -> f32 {
+        let divider = self.layout.divider_bounds;
+        let bounds = self.layout.bounds;
+        let vertical_divider = divider.width < divider.height;
+        let (total, offset, divider_thickness) = if vertical_divider {
+            (bounds.width, point.x - bounds.x, divider.width)
+        } else {
+            (bounds.height, point.y - bounds.y, divider.height)
+        };
+        let available = (total - divider_thickness).max(0.0);
+        if available <= 0.0 {
+            return self.layout.resolved_ratio;
+        }
+        (offset / available).clamp(0.0, 1.0)
+    }
+}
+
+/// Re-finds the [`SplitLayout`] whose divider `id` claims at `point`, so a
+/// `MouseDown` landing on `HitDetail::SplitDivider` can snapshot it into an
+/// [`ActiveDrag`]. Re-runs the hit-test (rather than trusting
+/// [`hit_test_painted`]'s already-discarded match) because `PaintedHit::Split`
+/// never stores its own id — only `SplitHit`'s variants carry one — so the id
+/// has to be recovered the same way `hit_test_painted` found it the first time.
+fn find_split_layout(hit_map: &[PaintedHit], point: Point, id: WidgetId) -> Option<SplitLayout> {
+    hit_map.iter().rev().find_map(|hit| match hit {
+        PaintedHit::Split { layout } => {
+            matches!(layout.hit_test(point.x, point.y), SplitHit::Divider(hit_id) if hit_id == id)
+                .then(|| layout.clone())
+        }
+        _ => None,
+    })
+}
+
+/// The [`TreePath`] of the row at visual index `row` within the `Tree` hit
+/// painted under id `id` this frame, or `None` if that tree isn't in the
+/// current hit map (e.g. the frame that produced this hit test is stale).
+fn tree_row_path(hit_map: &[PaintedHit], id: WidgetId, row: usize) -> Option<TreePath> {
+    hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::Tree {
+            id: hit_id,
+            row_paths,
+            ..
+        } if *hit_id == id => row_paths.get(row).cloned(),
+        _ => None,
+    })
+}
+
+/// The semantic [`UiEvent`] a click on `detail` (within primitive `id`)
+/// stands for, if any — the minimum set [`PyAppLogic::handle`] synthesizes so
+/// a tab click, tree-row click, or data-table-row click reaches a Python
+/// handler as the same shape it would get by pushing that event directly
+/// (`UiEvent::TabBar`/`UiEvent::Tree`/`UiEvent::DataTable`), rather than only
+/// as a raw `MouseDown` plus a `"hit"` dict the handler would have to
+/// re-interpret itself. `None` for every other `HitDetail` (e.g. a chevron,
+/// a header, a divider — the divider is handled separately, via
+/// [`ActiveDrag`], since it spans a drag rather than a single click).
+fn semantic_event_for_hit(
+    id: WidgetId,
+    detail: &HitDetail,
+    modifiers: Modifiers,
+    hit_map: &[PaintedHit],
+) -> Option<UiEvent> {
+    match detail {
+        HitDetail::TabBarTab { tab } => Some(UiEvent::TabBar(
+            id,
+            TabBarEvent::TabActivated { index: *tab },
+        )),
+        HitDetail::TreeRow { row } => {
+            let path = tree_row_path(hit_map, id, *row)?;
+            Some(UiEvent::Tree(id, TreeEvent::RowClicked { path, modifiers }))
+        }
+        HitDetail::DataTableRow { row } => Some(UiEvent::DataTable(
+            id,
+            DataTableEvent::RowActivated { idx: *row },
+        )),
+        _ => None,
+    }
+}
+
 /// One descriptor reference per slot, borrowed either from `PyAppLogic`'s
 /// static fields or from a [`RenderFrame`] just decoded from a render
 /// callback's return value — the one shape [`draw_bands`] paints from,
@@ -741,6 +913,7 @@ fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Vec<Pa
                 id: tree.id,
                 area: rect,
                 layout,
+                row_paths: tree.rows.iter().map(|row| row.path.clone()).collect(),
             });
         }
     }
@@ -887,7 +1060,12 @@ fn paint_leaf(
         LeafDescriptor::Tree(tree) => {
             backend.draw_tree(area, tree);
             let layout = backend.tree_layout(area, tree);
-            hits.push(PaintedHit::Tree { id, area, layout });
+            hits.push(PaintedHit::Tree {
+                id,
+                area,
+                layout,
+                row_paths: tree.rows.iter().map(|row| row.path.clone()).collect(),
+            });
         }
         LeafDescriptor::DataTable(data_table) => {
             let layout = backend.draw_data_table(area, data_table, None);
@@ -3533,6 +3711,304 @@ def handle(event):
             assert_eq!(
                 kind, "button_body",
                 "the hit detail must resolve to the button, not split_first_pane"
+            );
+        });
+    }
+
+    /// A `tree` leaf nested in a `Split`'s `second` pane paints at a
+    /// non-zero origin, so its `PaintedHit::Tree` entry's `area` is offset
+    /// from `(0, 0)` and `hit_test_painted` must translate the click into
+    /// the tree's own LOCAL frame (`point - area.origin`) before consulting
+    /// `TreeViewLayout::hit_test`. A `MouseDown` landing on a non-first row
+    /// must be replaced outright by the semantic `UiEvent::Tree(RowClicked)`
+    /// it stands for, carrying that row's own `TreePath` — not row 0's, and
+    /// not left as a raw `MouseDown` with a `"hit"` dict.
+    #[test]
+    fn mouse_down_over_a_tree_row_nested_in_a_split_pane_emits_a_semantic_row_clicked_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'split': {
+        'id': 'main-split',
+        'orientation': 'horizontal',
+        'ratio': 0.3,
+        'first': {'id': 'text:left', 'text_display': {
+            'id': 'text:left',
+            'lines': [{'spans': [{'text': 'LEFT', 'fg': None, 'bg': None}]}],
+        }},
+        'second': {'id': 'tree:main', 'tree': {
+            'id': 'tree:main',
+            'rows': [
+                {
+                    'path': [0],
+                    'indent': 0,
+                    'icon': None,
+                    'text': {'spans': [{'text': 'AlphaRow', 'fg': None, 'bg': None}]},
+                    'badge': None,
+                    'is_expanded': None,
+                },
+                {
+                    'path': [1],
+                    'indent': 0,
+                    'icon': None,
+                    'text': {'spans': [{'text': 'BetaRow', 'fg': None, 'bg': None}]},
+                    'badge': None,
+                    'is_expanded': None,
+                },
+            ],
+            'selection_mode': 'Single',
+            'selected_path': [0],
+            'scroll_offset': 0,
+            'has_focus': True,
+            'style': {
+                'indent': 2,
+                'show_chevrons': True,
+                'chevron_expanded': '▾',
+                'chevron_collapsed': '▸',
+                'row_height': 22,
+            },
+        }},
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("BetaRow")
+                    .expect("render must not raise"),
+                "the second row must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("BetaRow")
+                .expect("second row's label must be on screen");
+            assert!(
+                bounds.x > 0.0,
+                "the tree pane must be offset from the screen origin (nested in a split's \
+                 second pane): bounds={bounds:?}"
+            );
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(received_list.len(), 1, "handle must run exactly once");
+            let event_dict = received_list
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let tree_payload = event_dict
+                .get_item("Tree")
+                .expect("dict lookup")
+                .expect("a row click must dispatch a Tree key, not a raw MouseDown")
+                .cast_into::<PyTuple>()
+                .expect("Tree must pythonize to a (id, event) tuple");
+            assert_eq!(tree_payload.len(), 2, "Tree must carry (id, event)");
+            let widget: String = tree_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the tree's own id must be a string");
+            assert_eq!(widget, "tree:main", "the widget id must be the tree's own");
+            let inner = tree_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner TreeEvent must pythonize to a dict");
+            let row_clicked = inner
+                .get_item("RowClicked")
+                .expect("dict lookup")
+                .expect("a row click must carry a RowClicked key")
+                .cast_into::<PyDict>()
+                .expect("RowClicked payload must be a dict");
+            let path: Vec<u16> = row_clicked
+                .get_item("path")
+                .expect("dict lookup")
+                .expect("path key must be present")
+                .extract()
+                .expect("path must be a list of ints");
+            assert_eq!(
+                path,
+                vec![1],
+                "the clicked row's own path (the second row) must be reported, not row 0's"
+            );
+        });
+    }
+
+    /// A `tabs` leaf nested in a `Split`'s `second` pane paints its strip at
+    /// a non-zero origin, exercising the same LOCAL-frame translation in
+    /// `hit_test_painted`'s `PaintedHit::TabBar` arm as the tree test above.
+    /// A `MouseDown` landing on a non-first tab must be replaced by the
+    /// semantic `UiEvent::TabBar(TabActivated)` it stands for, carrying that
+    /// tab's own index.
+    #[test]
+    fn mouse_down_over_a_tab_nested_in_a_split_pane_emits_a_semantic_tab_activated_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'split': {
+        'id': 'main-split',
+        'orientation': 'horizontal',
+        'ratio': 0.3,
+        'first': {'id': 'text:left', 'text_display': {
+            'id': 'text:left',
+            'lines': [{'spans': [{'text': 'LEFT', 'fg': None, 'bg': None}]}],
+        }},
+        'second': {'tabs': {
+            'id': 'tabs:main',
+            'selected': 0,
+            'tabs': [
+                {'id': 'tab:a', 'title': 'AlphaTab', 'content': {
+                    'id': 'text:a', 'text_display': {
+                        'id': 'text:a',
+                        'lines': [{'spans': [{'text': 'ALPHACONTENT', 'fg': None, 'bg': None}]}],
+                    },
+                }},
+                {'id': 'tab:b', 'title': 'BetaTab', 'content': {
+                    'id': 'text:b', 'text_display': {
+                        'id': 'text:b',
+                        'lines': [{'spans': [{'text': 'BETACONTENT', 'fg': None, 'bg': None}]}],
+                    },
+                }},
+            ],
+        }},
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("BetaTab")
+                    .expect("render must not raise"),
+                "the second tab's strip label must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("BetaTab")
+                .expect("second tab's label must be on screen");
+            assert!(
+                bounds.x > 0.0,
+                "the tab strip must be offset from the screen origin (nested in a split's \
+                 second pane): bounds={bounds:?}"
+            );
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(received_list.len(), 1, "handle must run exactly once");
+            let event_dict = received_list
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let tab_bar_payload = event_dict
+                .get_item("TabBar")
+                .expect("dict lookup")
+                .expect("a tab click must dispatch a TabBar key, not a raw MouseDown")
+                .cast_into::<PyTuple>()
+                .expect("TabBar must pythonize to a (id, event) tuple");
+            assert_eq!(tab_bar_payload.len(), 2, "TabBar must carry (id, event)");
+            let widget: String = tab_bar_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the tab bar's own id must be a string");
+            assert_eq!(
+                widget, "tabs:main",
+                "the widget id must be the tab bar's own"
+            );
+            let inner = tab_bar_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner TabBarEvent must pythonize to a dict");
+            let activated = inner
+                .get_item("TabActivated")
+                .expect("dict lookup")
+                .expect("a tab click must carry a TabActivated key")
+                .cast_into::<PyDict>()
+                .expect("TabActivated payload must be a dict");
+            let index: usize = activated
+                .get_item("index")
+                .expect("dict lookup")
+                .expect("index key must be present")
+                .extract()
+                .expect("index must be an int");
+            assert_eq!(
+                index, 1,
+                "the clicked tab's own index (the second tab) must be reported, not tab 0's"
             );
         });
     }
