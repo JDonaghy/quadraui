@@ -71,6 +71,21 @@ only a push to `main` runs this workflow.
   before writing opaque cells, the same technique already used for the
   minimap's translucent highlight tint.
 
+### Fixed
+
+- Pixel backends' translucent `Palette` backdrop (`backdrop_opacity < 1.0`)
+  no longer double-composites: `native_surface_paint::paint` filled the
+  backdrop twice (once square, once rounded) over the same area, so two
+  sequential alpha blends at `a` compounded to an effective `1 - (1-a)²`
+  instead of `a`. The square pre-fill is now skipped whenever the backdrop
+  is translucent; it still runs at the opaque default so corner pixels
+  outside the rounded fill stay covered.
+- `tui::draw_palette`'s public signature stays style-less (D-020): the live
+  `&Style` (including `backdrop_opacity`) now reaches the paint through a
+  `pub(crate) draw_palette_with_style` sibling `Backend::draw_palette`
+  calls, the same shim shape `win::dialog::draw_dialog_with_style` already
+  uses, instead of widening the public free function's argument list.
+
 ## [0.6.0] - 2026-10-25
 ### Added
 

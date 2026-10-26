@@ -75,11 +75,39 @@ pub fn tui_palette_layout(area: Rect, palette: &Palette) -> PaletteLayout {
     })
 }
 
-/// Draw a [`Palette`] modal into `area` on `buf`.
+/// Draw a [`Palette`] modal into `area` on `buf`, painting with
+/// [`Style::default`].
 ///
 /// `nerd_fonts_enabled` selects between item icons' Nerd-Font glyph
 /// and ASCII fallback. Caller is responsible for sizing / centring
 /// the popup within the editor area.
+///
+/// Callers that need a live, caller-supplied [`Style`] (backdrop
+/// opacity included) go through [`draw_palette_with_style`] instead —
+/// this free function's signature is part of the crate's public API and
+/// stays fixed so downstream consumers calling it directly don't break;
+/// `Backend::draw_palette` implementations call the `_with_style`
+/// sibling with their own live style.
+pub fn draw_palette(
+    buf: &mut Buffer,
+    area: Rect,
+    palette: &Palette,
+    theme: &Theme,
+    nerd_fonts_enabled: bool,
+) {
+    draw_palette_with_style(
+        buf,
+        area,
+        palette,
+        theme,
+        &Style::default(),
+        nerd_fonts_enabled,
+    );
+}
+
+/// Draw a [`Palette`] modal into `area` on `buf` with an explicit
+/// [`Style`] — the live-style counterpart to [`draw_palette`], used by
+/// `Backend::draw_palette` implementations.
 ///
 /// `style.backdrop_opacity` controls how translucent the popup's
 /// backdrop looks — ratatui's `Buffer` has no compositing primitive, so
@@ -87,8 +115,11 @@ pub fn tui_palette_layout(area: Rect, palette: &Palette) -> PaletteLayout {
 /// backdrop_opacity)` on the CPU before writing opaque cells, the same
 /// technique [`super::draw_minimap`] already uses to simulate a
 /// translucent highlight tint. At the default `1.0` this reproduces
-/// `theme.surface_bg` exactly.
-pub fn draw_palette(
+/// `theme.surface_bg` exactly. The blend is against `theme.background`
+/// — a static theme token, not whatever content the buffer already
+/// holds at those cells — so this is a simulated backdrop tint, not a
+/// true read-back-and-composite over live screen content.
+pub(crate) fn draw_palette_with_style(
     buf: &mut Buffer,
     area: Rect,
     palette: &Palette,
@@ -573,7 +604,6 @@ mod tests {
             Rect::new(0, 0, 20, 10),
             &p,
             &Theme::default(),
-            &Style::default(),
             false,
         );
         assert_eq!(cell_char(&buf, 0, 0), '╭');
@@ -588,7 +618,7 @@ mod tests {
         let p = make_palette();
         let theme = Theme::default();
         let style = Style::default().with_backdrop_opacity(0.5);
-        draw_palette(&mut buf, Rect::new(0, 0, 20, 10), &p, &theme, &style, false);
+        draw_palette_with_style(&mut buf, Rect::new(0, 0, 20, 10), &p, &theme, &style, false);
 
         let expected_bg = ratatui_color(theme.background.blend(theme.surface_bg, 0.5));
         // (1, 1) sits inside the border, below the title row and above any
@@ -602,14 +632,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 10));
         let p = make_palette();
         let theme = Theme::default();
-        draw_palette(
-            &mut buf,
-            Rect::new(0, 0, 20, 10),
-            &p,
-            &theme,
-            &Style::default(),
-            false,
-        );
+        draw_palette(&mut buf, Rect::new(0, 0, 20, 10), &p, &theme, false);
 
         assert_eq!(buf[(1, 1)].bg, ratatui_color(theme.surface_bg));
     }
@@ -623,7 +646,6 @@ mod tests {
             Rect::new(0, 0, 20, 10),
             &p,
             &Theme::default(),
-            &Style::default(),
             false,
         );
         // Query row is y=1; prompt "> " starts at col 1, query "fo" follows.
@@ -641,14 +663,7 @@ mod tests {
             match_fg: Color::rgb(99, 99, 99),
             ..Theme::default()
         };
-        draw_palette(
-            &mut buf,
-            Rect::new(0, 0, 20, 10),
-            &p,
-            &theme,
-            &Style::default(),
-            false,
-        );
+        draw_palette(&mut buf, Rect::new(0, 0, 20, 10), &p, &theme, false);
         // Items start at row 3. Scan the row's cells for the first 'f' to
         // get the column index in cells (NOT byte offsets — `▶` takes 1
         // cell but 3 bytes when collected into a String).
@@ -683,7 +698,6 @@ mod tests {
             Rect::new(0, 0, 40, 12),
             &p,
             &Theme::default(),
-            &Style::default(),
             false,
         );
         let list_w = ((40.0_f32) * 0.4).round() as u16; // 16
@@ -727,7 +741,6 @@ mod tests {
             Rect::new(0, 0, 40, 12),
             &p,
             &Theme::default(),
-            &Style::default(),
             false,
         );
         let list_w = ((40.0_f32) * 0.4).round() as u16;
@@ -747,7 +760,6 @@ mod tests {
             Rect::new(0, 0, 20, 10),
             &p,
             &Theme::default(),
-            &Style::default(),
             false,
         );
         // Row 1 should be items, not the query prompt.
@@ -771,7 +783,6 @@ mod tests {
             Rect::new(0, 0, 30, 10),
             &p,
             &Theme::default(),
-            &Style::default(),
             false,
         );
         // Create row is pinned at items_row_end (y_end - 1 - 1 = row 8).
@@ -797,7 +808,6 @@ mod tests {
             Rect::new(0, 0, 20, 8),
             &p,
             &Theme::default(),
-            &Style::default(),
             false,
         );
         // List-mode badge "[L]" should appear at columns 16, 17, 18 of row 0.
@@ -814,7 +824,6 @@ mod tests {
             Rect::new(0, 0, 20, 8),
             &p2,
             &Theme::default(),
-            &Style::default(),
             false,
         );
         assert_eq!(cell_char(&buf2, 16, 0), '[', "input badge '[' at col 16");
@@ -836,7 +845,6 @@ mod tests {
             Rect::new(0, 0, 20, 8),
             &p,
             &Theme::default(),
-            &Style::default(),
             false,
         );
         // Row 2 must not carry the ├ separator glyph.
@@ -867,14 +875,7 @@ mod tests {
         let area = Rect::new(0, 0, 20, 10);
         let p = make_palette();
         let mut buf = Buffer::empty(area);
-        draw_palette(
-            &mut buf,
-            area,
-            &p,
-            &Theme::default(),
-            &Style::default(),
-            false,
-        );
+        draw_palette(&mut buf, area, &p, &Theme::default(), false);
         // Title text painted at row 0 (verified by existing border test).
         let layout = tui_palette_layout(area, &p);
         assert_eq!(
@@ -888,14 +889,7 @@ mod tests {
         let area = Rect::new(0, 0, 20, 10);
         let p = make_palette();
         let mut buf = Buffer::empty(area);
-        draw_palette(
-            &mut buf,
-            area,
-            &p,
-            &Theme::default(),
-            &Style::default(),
-            false,
-        );
+        draw_palette(&mut buf, area, &p, &Theme::default(), false);
         // Query prompt "> " painted at row 1 (see `paints_query_with_prompt`).
         assert_eq!(cell_char(&buf, 1, 1), '>');
         let layout = tui_palette_layout(area, &p);
@@ -910,14 +904,7 @@ mod tests {
         let area = Rect::new(0, 0, 20, 10);
         let p = make_palette();
         let mut buf = Buffer::empty(area);
-        draw_palette(
-            &mut buf,
-            area,
-            &p,
-            &Theme::default(),
-            &Style::default(),
-            false,
-        );
+        draw_palette(&mut buf, area, &p, &Theme::default(), false);
         // First item ("foo") painted at row 3 (items_row0 = y0+3 when
         // show_query and not Input mode).
         assert!((0..20).any(|x| cell_char(&buf, x, 3) == 'f'));
@@ -965,7 +952,6 @@ mod tests {
             Rect::new(0, 0, 3, 3),
             &p,
             &Theme::default(),
-            &Style::default(),
             false,
         );
         // No corner glyphs anywhere — function returned early.

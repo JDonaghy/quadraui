@@ -2511,7 +2511,7 @@ impl Backend for TuiBackend {
             );
             return;
         };
-        crate::tui::draw_palette(
+        crate::tui::draw_palette_with_style(
             frame.buffer_mut(),
             area,
             palette,
@@ -5558,6 +5558,39 @@ mod tests {
         // monomorphisation proves the trait constraint is satisfied
         // for every backend impl.
         let _: fn(&mut TuiBackend, &Palette, &ListView) = paint_overlays::<TuiBackend>;
+    }
+
+    /// `Backend::set_style` → `TuiBackend::current_style` →
+    /// `TuiBackend::draw_palette` must carry a caller-set
+    /// `backdrop_opacity` all the way to the painted buffer — proving
+    /// the live-style wiring, not just the free `draw_palette_with_style`
+    /// function called directly with an explicit `&Style` (as the
+    /// `tui::palette` module's own tests do).
+    #[test]
+    fn draw_palette_paints_with_backend_live_style() {
+        use ratatui::backend::TestBackend;
+
+        let mut backend = TuiBackend::new();
+        backend.set_style(crate::Style::default().with_backdrop_opacity(0.5));
+        let palette = sample_palette();
+        let rect = QRect::new(0.0, 0.0, 20.0, 10.0);
+
+        let mut terminal =
+            ratatui::Terminal::new(TestBackend::new(20, 10)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    b.draw_palette(rect, &palette);
+                });
+            })
+            .expect("draw");
+
+        let theme = crate::Theme::default();
+        let expected_bg = crate::tui::ratatui_color(theme.background.blend(theme.surface_bg, 0.5));
+        // (1, 1) sits inside the border, below the title row — a cell
+        // only ever painted with the blended backdrop fill.
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf[(1, 1)].bg, expected_bg);
     }
 
     #[test]
