@@ -776,7 +776,7 @@ pub(crate) mod native_surface_paint {
         // alpha-blends against whatever is already on the target, so painting
         // `backdrop` twice over the same `area` would compose to an effective
         // alpha of `1 - (1 - a)²` instead of `a` once `backdrop_opacity < 1.0`.
-        // The plain rect pre-fill above exists only to cover the four corner
+        // The plain rect pre-fill below exists only to cover the four corner
         // triangles between each arc and `area`'s own corner when the fill is
         // opaque; at full opacity a second opaque pass over the body is a
         // no-op, so it is safe to keep. Once translucent, those corners are

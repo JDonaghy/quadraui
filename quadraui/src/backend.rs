@@ -1048,9 +1048,8 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Default: no-op. Backends that carry a `current_style` field (TUI,
     /// GTK, macOS, Win-GUI) override this to store the value so subsequent
-    /// `draw_*` calls consume it — see `Style`'s module doc for which
-    /// tokens each backend's TUI story (no-op, cell-quantised or
-    /// pre-blended) actually reads.
+    /// `draw_*` calls consume it — see `Style`'s module doc for each
+    /// token's TUI story (no-op, cell-quantised or pre-blended).
     fn set_style(&mut self, _style: crate::Style) {}
 
     /// Read back the backend's currently active [`crate::Style`] — the
