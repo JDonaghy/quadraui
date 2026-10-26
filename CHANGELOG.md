@@ -58,6 +58,18 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Added
+
+- `Style::backdrop_opacity` (default `1.0`, fully opaque) lets `Palette`
+  render a translucent backdrop independent of the shared `Theme.surface_bg`
+  every other overlay (`Toast`/`Tooltip`/`ContextMenu`/`Dialog`/`Spinner`/
+  `ProgressBar`) reads — only `Palette`'s own paint path consults it, so no
+  other overlay is affected. Pixel backends (GTK/macOS/Win) apply it via
+  `Color::with_alpha` on the existing backdrop fill; the TUI backend has no
+  compositing primitive, so it pre-blends
+  `theme.background.blend(theme.surface_bg, backdrop_opacity)` on the CPU
+  before writing opaque cells, the same technique already used for the
+  minimap's translucent highlight tint.
 
 ## [0.6.0] - 2026-10-25
 ### Added

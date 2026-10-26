@@ -112,6 +112,10 @@ pub struct TuiBackend {
     /// [`Self::set_current_theme`] call. Defaults to
     /// `crate::Theme::default()` until set.
     current_theme: crate::Theme,
+    /// Style captured by the most recent
+    /// [`Self::set_current_style`] call. Defaults to
+    /// `crate::Style::default()` until set.
+    current_style: crate::Style,
     /// Whether the rasterisers should use Nerd Font glyphs (`true`)
     /// or ASCII fallbacks (`false`). Apps set this from their own
     /// settings via [`Self::set_nerd_fonts`]; defaults to `false`.
@@ -353,6 +357,7 @@ impl TuiBackend {
             services: TuiPlatformServices::new(),
             current_frame_ptr: Cell::new(std::ptr::null_mut()),
             current_theme: crate::Theme::default(),
+            current_style: crate::Style::default(),
             nerd_fonts_enabled: false,
             double_click: super::events::DoubleClickDetector::new(),
             double_click_folding: true,
@@ -670,6 +675,15 @@ impl TuiBackend {
     /// `draw_*` invocations consume the stored theme.
     pub fn set_current_theme(&mut self, theme: crate::Theme) {
         self.current_theme = theme;
+    }
+
+    /// Update the cached quadraui style. Call once per frame from
+    /// `paint`, before any `backend.draw_*` calls. Subsequent
+    /// `draw_*` invocations consume the stored style — currently only
+    /// [`Self::draw_palette`] reads it, via
+    /// [`crate::Style::backdrop_opacity`].
+    pub fn set_current_style(&mut self, style: crate::Style) {
+        self.current_style = style;
     }
 
     /// Widget zones registered via [`crate::Backend::register_zone`] during
@@ -1921,6 +1935,14 @@ impl Backend for TuiBackend {
         self.current_theme
     }
 
+    fn set_style(&mut self, style: crate::Style) {
+        self.set_current_style(style);
+    }
+
+    fn style(&self) -> crate::Style {
+        self.current_style
+    }
+
     fn set_nerd_fonts(&mut self, enabled: bool) {
         self.nerd_fonts_enabled = enabled;
     }
@@ -2480,6 +2502,7 @@ impl Backend for TuiBackend {
         self.modal_stack.borrow_mut().mark_painted(&palette.id);
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
+        let style = self.current_style;
         let nerd_fonts = self.nerd_fonts_enabled;
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
@@ -2488,7 +2511,14 @@ impl Backend for TuiBackend {
             );
             return;
         };
-        crate::tui::draw_palette(frame.buffer_mut(), area, palette, &theme, nerd_fonts);
+        crate::tui::draw_palette(
+            frame.buffer_mut(),
+            area,
+            palette,
+            &theme,
+            &style,
+            nerd_fonts,
+        );
     }
 
     fn palette_layout(&self, rect: QRect, palette: &Palette) -> crate::PaletteLayout {
