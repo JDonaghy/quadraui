@@ -58,6 +58,8 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+
+## [0.6.1] - 2026-10-26
 ### Added
 
 - `Style::backdrop_opacity` (default `1.0`, fully opaque) lets `Palette`
