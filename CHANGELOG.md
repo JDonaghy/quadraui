@@ -85,6 +85,16 @@ only a push to `main` runs this workflow.
   `pub(crate) draw_palette_with_style` sibling `Backend::draw_palette`
   calls, the same shim shape `win::dialog::draw_dialog_with_style` already
   uses, instead of widening the public free function's argument list.
+- `tui::draw_solid_fill` now honours `color.a`: a translucent colour
+  (`a < 255`) alpha-blends over each cell's existing background and leaves
+  its glyph and foreground untouched, instead of blanking the cell to a
+  solid opaque colour. This matches the pixel backends' `surface_fill_rect`,
+  which already honour `a` — a translucent modal scrim (e.g. the fuzzy
+  finder backdrop) now dims the TUI content behind it instead of blacking
+  it out. `a == 255` keeps the prior blank-fill behaviour. A cell whose
+  existing background isn't a literal RGB colour (e.g. a buffer cell this
+  crate never painted) has no base to blend against, so it's left
+  unblended.
 
 ## [0.6.0] - 2026-10-25
 ### Added
