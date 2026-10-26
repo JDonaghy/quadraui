@@ -811,8 +811,9 @@ fn tree_row_path(hit_map: &[PaintedHit], id: WidgetId, row: usize) -> Option<Tre
 
 /// The semantic [`UiEvent`] a click on `detail` (within primitive `id`)
 /// stands for, if any — the minimum set [`PyAppLogic::handle`] synthesizes so
-/// a tab click, tree-row click, or data-table-row click reaches a Python
-/// handler as the same shape it would get by pushing that event directly
+/// a tab click, tab close-button click, tree-row click, or data-table-row
+/// click reaches a Python handler as the same shape it would get by pushing
+/// that event directly
 /// (`UiEvent::TabBar`/`UiEvent::Tree`/`UiEvent::DataTable`), rather than only
 /// as a raw `MouseDown` plus a `"hit"` dict the handler would have to
 /// re-interpret itself. `None` for every other `HitDetail` (e.g. a chevron,
@@ -829,6 +830,9 @@ fn semantic_event_for_hit(
             id,
             TabBarEvent::TabActivated { index: *tab },
         )),
+        HitDetail::TabBarTabClose { tab } => {
+            Some(UiEvent::TabBar(id, TabBarEvent::TabClosed { index: *tab }))
+        }
         HitDetail::TreeRow { row } => {
             let path = tree_row_path(hit_map, id, *row)?;
             Some(UiEvent::Tree(id, TreeEvent::RowClicked { path, modifiers }))
@@ -1399,13 +1403,22 @@ fn layout_children_from_value(what: &str, value: &Bound<'_, PyAny>) -> PyResult<
         .collect()
 }
 
-/// Decodes a `"tabs"` node: `{"id", "tabs", "selected"}`, where `"tabs"`
-/// is a non-empty `list` of `{"id", "title", "content"}` entries and
-/// `"selected"` is the index of the entry whose `"content"` paints beneath
-/// the strip this frame. `"content"` is a full child node dict, recursively
-/// decoded by [`layout_node_from_dict`], so a tab may hold any primitive or
-/// nested row/column/split — giving a per-tab instance by construction
-/// rather than a single shared slot.
+/// Decodes a `"tabs"` node: `{"id", "tabs", "selected", "closable"}`, where
+/// `"tabs"` is a non-empty `list` of `{"id", "title", "content", "closable"}`
+/// entries and `"selected"` is the index of the entry whose `"content"`
+/// paints beneath the strip this frame. `"content"` is a full child node
+/// dict, recursively decoded by [`layout_node_from_dict`], so a tab may hold
+/// any primitive or nested row/column/split — giving a per-tab instance by
+/// construction rather than a single shared slot.
+///
+/// The strip-level `"closable"` (default `true`) gates whether *any* tab in
+/// this strip draws a close `×` at all — maps to [`TabBar::show_tab_close`].
+/// A per-tab `"closable"` (default `true`) then opts that one tab out even
+/// when the strip allows it — maps to [`TabItem::is_closable`]. Clicking a
+/// drawn close button reaches the handler as
+/// `UiEvent::TabBar(id, TabBarEvent::TabClosed { index })`, synthesized by
+/// [`semantic_event_for_hit`] the same way a tab click becomes
+/// `TabActivated`.
 fn layout_tabs_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutTabs> {
     let id: String = match dict.get_item("id")? {
         Some(value) if !value.is_none() => value.extract().map_err(|_| {
@@ -1481,8 +1494,18 @@ fn layout_tabs_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<Layou
         })?;
         let content = layout_node_from_dict(what, content_dict)?;
 
+        let is_closable: bool = match entry_dict.get_item("closable")? {
+            Some(value) if !value.is_none() => value.extract().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} tab {tab_id:?} \"closable\" must be a bool"
+                ))
+            })?,
+            _ => true,
+        };
+
         items.push(TabItem {
             label: title,
+            is_closable,
             ..Default::default()
         });
         entries.push(LayoutTabEntry {
@@ -1508,6 +1531,15 @@ fn layout_tabs_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<Layou
     }
     items[selected].is_active = true;
 
+    let show_tab_close: bool = match dict.get_item("closable")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: tabs {id:?} \"closable\" must be a bool"
+            ))
+        })?,
+        _ => true,
+    };
+
     Ok(LayoutTabs {
         tab_bar: TabBar {
             id: WidgetId::new(id),
@@ -1515,7 +1547,7 @@ fn layout_tabs_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<Layou
             scroll_offset: 0,
             right_segments: Vec::new(),
             active_accent: None,
-            show_tab_close: false,
+            show_tab_close,
             compact: false,
         },
         entries,
@@ -3411,6 +3443,89 @@ def handle(event):
                 !app.screen_contains("AlphaRow")
                     .expect("render must not raise"),
                 "the first tab's content must no longer render once deselected"
+            );
+        });
+    }
+
+    /// A click on a tab's close `×` reaches the handler as
+    /// `UiEvent::TabBar(id, TabBarEvent::TabClosed { index })`, distinct
+    /// from a click on the tab body (`TabActivated`) — so a Python handler
+    /// can drop the entry from its own `state["open"]` list and re-render
+    /// without that tab's title or content.
+    #[test]
+    fn tabs_container_close_button_click_dispatches_tab_closed_with_its_index() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+state = {'open': ['Alpha', 'Beta'], 'selected': 0}
+
+def render():
+    return {'tabs': {
+        'id': 'tabs:main',
+        'selected': state['selected'],
+        'tabs': [
+            {'id': f'tab:{name}', 'title': name, 'content': {'id': f'text:{name}', 'text_display': {
+                'id': f'text:{name}',
+                'lines': [{'spans': [{'text': name, 'fg': None, 'bg': None}]}],
+            }}}
+            for name in state['open']
+        ],
+    }}
+
+def handle(event):
+    index = event['TabBar'][1]['TabClosed']['index']
+    del state['open'][index]
+    if state['selected'] >= len(state['open']):
+        state['selected'] = max(0, len(state['open']) - 1)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Beta").expect("render must not raise"),
+                "the second tab's title must render before it is closed"
+            );
+
+            let bar_id = WidgetId::new("tabs:main");
+            let (cx, cy) = app
+                .driver
+                .tab_close_center(&bar_id, 1)
+                .expect("the second tab must draw a close button by default");
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(cx, cy),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            assert!(
+                !app.screen_contains("Beta").expect("render must not raise"),
+                "closing the second tab must drop its title from the strip"
+            );
+            assert!(
+                app.screen_contains("Alpha").expect("render must not raise"),
+                "the first tab must remain after closing the second"
             );
         });
     }
