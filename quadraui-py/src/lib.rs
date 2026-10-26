@@ -4397,7 +4397,11 @@ def handle(event):
                 repeat: false,
             });
             let received_list = extract_received(&locals);
-            assert_eq!(received_list.len(), 3, "the second Tab must emit one more event");
+            assert_eq!(
+                received_list.len(),
+                3,
+                "the second Tab must emit one more event"
+            );
             let event_dict = received_list
                 .get_item(2)
                 .expect("third item")
