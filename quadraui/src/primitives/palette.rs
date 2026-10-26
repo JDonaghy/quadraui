@@ -771,8 +771,22 @@ pub(crate) mod native_surface_paint {
         // `theme.surface_bg` — every other overlay keeps using
         // `theme.surface_bg` directly, so this is the one knob that
         // only `Palette`'s own backdrop responds to.
+        //
+        // Every pixel backend's `surface_fill_rect`/`surface_fill_rounded_rect`
+        // alpha-blends against whatever is already on the target, so painting
+        // `backdrop` twice over the same `area` would compose to an effective
+        // alpha of `1 - (1 - a)²` instead of `a` once `backdrop_opacity < 1.0`.
+        // The plain rect pre-fill above exists only to cover the four corner
+        // triangles between each arc and `area`'s own corner when the fill is
+        // opaque; at full opacity a second opaque pass over the body is a
+        // no-op, so it is safe to keep. Once translucent, those corners are
+        // meant to show through rather than take a second, uncomposited
+        // backdrop blend, so skip the pre-fill and let the rounded fill be
+        // the single compositing pass over the popup body.
         let backdrop = theme.surface_bg.with_alpha(style.backdrop_opacity as f64);
-        surface.surface_fill_rect(area, backdrop);
+        if style.backdrop_opacity >= 1.0 {
+            surface.surface_fill_rect(area, backdrop);
+        }
         surface.surface_fill_rounded_rect(area, style.corner_radius, backdrop);
         surface.surface_stroke_rounded_rect(
             area,
@@ -1098,6 +1112,19 @@ pub(crate) mod native_surface_paint {
         use crate::types::{Color, StyledText, WidgetId};
         use crate::Image;
 
+        /// Distinguishes a plain rect fill from a rounded-rect fill in
+        /// [`RecordingSurface::fill_kinds`] — both land in the same
+        /// `fills` vec (same paint-order guarantee every other test
+        /// relies on), but
+        /// [`backdrop_fill_composites_exactly_once_when_translucent`]
+        /// needs to tell them apart to assert the compositing *structure*,
+        /// not just the color each call was handed.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum FillKind {
+            Rect,
+            Rounded,
+        }
+
         /// Records every fill + text-run call — mirrors
         /// `primitives::tree::native_surface_paint`'s `RecordingSurface`
         /// test double, scoped to the verbs this primitive uses, so these
@@ -1110,6 +1137,7 @@ pub(crate) mod native_surface_paint {
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
+            fill_kinds: Vec<FillKind>,
             texts: Vec<(Rect, String, Color)>,
         }
 
@@ -1130,9 +1158,11 @@ pub(crate) mod native_surface_paint {
             }
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
+                self.fill_kinds.push(FillKind::Rect);
             }
             fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
                 self.fills.push((rect, color));
+                self.fill_kinds.push(FillKind::Rounded);
             }
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
             fn surface_stroke_rounded_rect(
@@ -1303,18 +1333,31 @@ pub(crate) mod native_surface_paint {
                 Some(&(AREA, theme.surface_bg)),
                 "first fill must be an opaque, full-bounds background fill"
             );
+            assert_eq!(surface.fill_kinds.first(), Some(&FillKind::Rect));
             assert_eq!(
                 surface.fills.get(1),
                 Some(&(AREA, theme.surface_bg)),
                 "the rounded-corner fill must follow the full-bounds fill, not replace it"
             );
+            assert_eq!(surface.fill_kinds.get(1), Some(&FillKind::Rounded));
         }
 
-        /// `Style::backdrop_opacity` scales only the backdrop fills'
-        /// alpha channel, leaving `theme.surface_bg`'s own rgb untouched
-        /// — the knob the issue asked for, scoped to `Palette` alone.
+        /// `Style::backdrop_opacity` scales the backdrop fill's alpha
+        /// channel, leaving `theme.surface_bg`'s own rgb untouched — the
+        /// knob the issue asked for, scoped to `Palette` alone.
+        ///
+        /// Once translucent, the backdrop must composite over the popup
+        /// body **exactly once**: two source-over passes at alpha `a`
+        /// would land at an effective `1 - (1 - a)²`, not `a`, on every
+        /// pixel backend (`PaintSurface::surface_fill_rect`/
+        /// `surface_fill_rounded_rect` both alpha-blend against the
+        /// existing target). So the plain, full-bounds rect pre-fill
+        /// (which exists only to cover the four corner triangles outside
+        /// the rounded fill's arcs when the backdrop is opaque) must be
+        /// skipped, leaving the rounded fill as the sole backdrop
+        /// compositing pass.
         #[test]
-        fn backdrop_opacity_scales_alpha_of_both_backdrop_fills() {
+        fn backdrop_fill_composites_exactly_once_when_translucent() {
             let p = sample();
             let (palette_layout, rows_h) = layout(AREA.width, AREA.height, &p, LINE_HEIGHT);
             let mut surface = RecordingSurface::default();
@@ -1333,8 +1376,21 @@ pub(crate) mod native_surface_paint {
             );
 
             let expected = theme.surface_bg.with_alpha(0.4);
-            assert_eq!(surface.fills.first(), Some(&(AREA, expected)));
-            assert_eq!(surface.fills.get(1), Some(&(AREA, expected)));
+            let backdrop_fills: Vec<&FillKind> = surface
+                .fills
+                .iter()
+                .zip(surface.fill_kinds.iter())
+                .filter(|((rect, color), _)| *rect == AREA && *color == expected)
+                .map(|(_, kind)| kind)
+                .collect();
+
+            assert_eq!(
+                backdrop_fills,
+                vec![&FillKind::Rounded],
+                "a translucent backdrop must paint `area` with the backdrop color exactly \
+                 once, via the rounded fill — the plain rect pre-fill must be skipped so \
+                 the two passes don't double-composite"
+            );
         }
 
         /// `PaletteMode::Input` hides the item list, so there is nothing

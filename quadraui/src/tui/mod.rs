@@ -114,6 +114,7 @@ pub use minimap::{
 };
 pub use multi_section_view::{draw_multi_section_view, tui_msv_layout};
 pub use number_input::draw_number_input;
+pub(crate) use palette::draw_palette_with_style;
 pub use palette::{draw_palette, tui_palette_layout};
 pub use panel::{draw_panel, tui_panel_layout};
 pub use pipeline_view::{draw_pipeline_view, tui_pipeline_view_layout};
