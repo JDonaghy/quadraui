@@ -89,6 +89,31 @@ def test_run_tui_raises_internal_error_without_a_real_tty(tmp_path):
     assert "RUN_TUI_RAISED_INTERNAL:run_tui:" in result.stdout, result.stdout
 
 
+def test_run_tui_accepts_mouse_false(tmp_path):
+    # `mouse=False` selects `quadraui::tui::RunConfig::no_mouse()` instead
+    # of the default config, which only changes what gets negotiated with
+    # the terminal *after* `enable_raw_mode()` already succeeded -- so
+    # without a real tty this still fails at the same first step, with the
+    # same `InternalError`. That is enough to prove the keyword argument is
+    # accepted and plumbed through to `TuiRunner::new_with` without
+    # panicking or raising `TypeError` on the call itself.
+    body = (
+        "from quadraui import QuiApp, InternalError\n"
+        "app = QuiApp(40, 20)\n"
+        "try:\n"
+        "    app.run_tui(mouse=False)\n"
+        '    print("RUN_TUI_DID_NOT_RAISE")\n'
+        "except InternalError as exc:\n"
+        '    print(f"RUN_TUI_RAISED_INTERNAL:{exc}")\n'
+    )
+    result = _run_script(tmp_path, "run_tui_no_mouse.py", body)
+
+    assert result.returncode == 0, (
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "RUN_TUI_RAISED_INTERNAL:run_tui:" in result.stdout, result.stdout
+
+
 def test_run_tui_does_not_consume_the_headless_app_on_failure(tmp_path):
     # `run_tui` moves this app's `PyAppLogic` out of the headless driver (the
     # same `mem::take` `run_native` uses) before attempting the takeover, so
