@@ -93,10 +93,10 @@ use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{StepOutcome, TuiRunner};
 use quadraui::{
     AppLogic, Backend, Button, ButtonHit, ButtonLayout, DataTable, DataTableEvent, DataTableHit,
-    DataTableLayout, Key, ListView, ListViewHit, ListViewLayout, Modifiers, Point, Reaction, Rect,
-    Split, SplitDirection, SplitHit, SplitLayout, TabBar, TabBarEvent, TabBarHit, TabBarLayout,
-    TabItem, TextDisplay, TreeEvent, TreePath, TreeView, TreeViewHit, TreeViewLayout, UiEvent,
-    WidgetId,
+    DataTableLayout, Key, ListView, ListViewEvent, ListViewHit, ListViewLayout, Modifiers,
+    NamedKey, Point, Reaction, Rect, Split, SplitDirection, SplitHit, SplitLayout, TabBar,
+    TabBarEvent, TabBarHit, TabBarLayout, TabItem, TextDisplay, TreeEvent, TreePath, TreeView,
+    TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
 create_exception!(
@@ -419,7 +419,26 @@ impl AppLogic for PyAppLogic {
         *self.hit_map.borrow_mut() = hits;
     }
 
-    fn handle(&mut self, mut event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+    /// Derives this frame's tab stops directly from the hit map `render`
+    /// just painted, in paint order. `Split` carries no `WidgetId` and is
+    /// not a focusable leaf, so it is skipped; every other variant yields
+    /// its id and bounding `Rect`.
+    fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        self.hit_map
+            .borrow()
+            .iter()
+            .filter_map(|hit| match hit {
+                PaintedHit::Button { id, layout } => Some((*id, layout.bounds)),
+                PaintedHit::Tree { id, area, .. }
+                | PaintedHit::List { id, area, .. }
+                | PaintedHit::DataTable { id, area, .. }
+                | PaintedHit::TabBar { id, area, .. } => Some((*id, *area)),
+                PaintedHit::Split { .. } => None,
+            })
+            .collect()
+    }
+
+    fn handle(&mut self, mut event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         let Some(handler) = self.handler.as_ref() else {
             return Reaction::Continue;
         };
@@ -440,6 +459,17 @@ impl AppLogic for PyAppLogic {
         }
         if matches!(event, UiEvent::MouseUp { .. }) {
             *self.active_drag.borrow_mut() = None;
+        }
+
+        // A plain `KeyPressed` (Tab/Shift+Tab already claimed upstream by
+        // `preprocess_event` once `tab_stops` is non-empty) is routed to
+        // whichever leaf currently holds focus, wrapped into that leaf's
+        // own `KeyPressed` variant so Python sees a focus-scoped event
+        // instead of a backend-global one.
+        if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
+            if let Some(focused) = backend.focus_manager().focused().copied() {
+                event = focus_scoped_key_event(focused, key, *modifiers, &self.hit_map.borrow());
+            }
         }
 
         let hit = event_position(&event)
@@ -843,6 +873,87 @@ fn semantic_event_for_hit(
         )),
         _ => None,
     }
+}
+
+/// Stringifies a raw key the same way every quadraui backend does, so a
+/// `*Event::KeyPressed` variant built here carries the identical `key`
+/// string an app would see from the TUI, GTK or macOS backend directly.
+fn key_to_focus_string(key: &Key) -> String {
+    match key {
+        Key::Char(c) => c.to_string(),
+        Key::Named(named) => {
+            let s = match named {
+                NamedKey::Escape => "Escape".to_string(),
+                NamedKey::Tab => "Tab".to_string(),
+                NamedKey::BackTab => "BackTab".to_string(),
+                NamedKey::Enter => "Enter".to_string(),
+                NamedKey::Backspace => "Backspace".to_string(),
+                NamedKey::Delete => "Delete".to_string(),
+                NamedKey::Insert => "Insert".to_string(),
+                NamedKey::Home => "Home".to_string(),
+                NamedKey::End => "End".to_string(),
+                NamedKey::PageUp => "PageUp".to_string(),
+                NamedKey::PageDown => "PageDown".to_string(),
+                NamedKey::Up => "Up".to_string(),
+                NamedKey::Down => "Down".to_string(),
+                NamedKey::Left => "Left".to_string(),
+                NamedKey::Right => "Right".to_string(),
+                NamedKey::F(n) => format!("F{n}"),
+                NamedKey::CapsLock => "CapsLock".to_string(),
+                NamedKey::NumLock => "NumLock".to_string(),
+                NamedKey::ScrollLock => "ScrollLock".to_string(),
+                NamedKey::Menu => "Menu".to_string(),
+            };
+            s
+        }
+    }
+}
+
+/// Routes a raw `KeyPressed` to whichever leaf the `FocusManager` names as
+/// focused, wrapping it into that leaf's own semantic `KeyPressed` variant.
+/// `DataTable` and `Button` have no such variant, so a key focused on one
+/// of them passes through as the original `UiEvent::KeyPressed` unchanged;
+/// the same happens when `focused` names a leaf no longer present in this
+/// frame's hit map (for example a tree that scrolled out of the render).
+fn focus_scoped_key_event(
+    focused: WidgetId,
+    key: &Key,
+    modifiers: Modifiers,
+    hit_map: &[PaintedHit],
+) -> UiEvent {
+    let fallback = UiEvent::KeyPressed {
+        key: key.clone(),
+        modifiers,
+        repeat: false,
+    };
+    let key = key_to_focus_string(key);
+    hit_map
+        .iter()
+        .find_map(|hit| match hit {
+            PaintedHit::Tree { id, .. } if *id == focused => Some(UiEvent::Tree(
+                *id,
+                TreeEvent::KeyPressed {
+                    key: key.clone(),
+                    modifiers,
+                },
+            )),
+            PaintedHit::List { id, .. } if *id == focused => Some(UiEvent::List(
+                *id,
+                ListViewEvent::KeyPressed {
+                    key: key.clone(),
+                    modifiers,
+                },
+            )),
+            PaintedHit::TabBar { id, .. } if *id == focused => Some(UiEvent::TabBar(
+                *id,
+                TabBarEvent::KeyPressed {
+                    key: key.clone(),
+                    modifiers,
+                },
+            )),
+            _ => None,
+        })
+        .unwrap_or(fallback)
 }
 
 /// One descriptor reference per slot, borrowed either from `PyAppLogic`'s
@@ -1829,6 +1940,10 @@ impl AppLogic for NativeAppLogic {
 
     fn render(&self, backend: &mut dyn Backend, area: ()) {
         self.inner.render(backend, area);
+    }
+
+    fn tab_stops(&self, area: ()) -> Vec<(WidgetId, Rect)> {
+        self.inner.tab_stops(area)
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
@@ -4124,6 +4239,197 @@ def handle(event):
             assert_eq!(
                 index, 1,
                 "the clicked tab's own index (the second tab) must be reported, not tab 0's"
+            );
+        });
+    }
+
+    /// Two `tree` leaves side by side in a `Row`: `Tab` cycles focus between
+    /// them (via core's shared `preprocess_event`/`FocusManager` pipeline,
+    /// driven by `PyAppLogic::tab_stops`), and a plain key then routes to
+    /// whichever leaf is focused as that leaf's own semantic
+    /// `Tree(KeyPressed)` event, not a raw global `KeyPressed`.
+    #[test]
+    fn tab_cycles_focus_between_two_leaves_and_a_key_routes_to_the_focused_one() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    def leaf(id, label):
+        return {'id': id, 'tree': {
+            'id': id,
+            'rows': [{
+                'path': [0], 'indent': 0, 'icon': None,
+                'text': {'spans': [{'text': label, 'fg': None, 'bg': None}]},
+                'badge': None, 'is_expanded': None,
+            }],
+            'selection_mode': 'Single', 'selected_path': None,
+            'style': {
+                'indent': 2, 'show_chevrons': True,
+                'chevron_expanded': 'v', 'chevron_collapsed': '>',
+            },
+        }}
+    return {'row': [leaf('tree:1', 'Alpha'), leaf('tree:2', 'Beta')]}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 20, Some(handle), Some(render)).expect("valid dimensions");
+            // Force the first render so `hit_map`/`tab_stops` are populated
+            // before any key is dispatched.
+            let screen = app.screen().expect("render must not raise");
+            assert!(screen.contains("Alpha"), "first leaf must be painted");
+            assert!(screen.contains("Beta"), "second leaf must be painted");
+
+            fn extract_received<'py>(locals: &Bound<'py, PyDict>) -> Bound<'py, PyList> {
+                locals
+                    .get_item("received")
+                    .expect("dict lookup")
+                    .expect("received must be defined")
+                    .cast_into::<PyList>()
+                    .expect("received must be a list")
+            }
+
+            fn focused_id(event_dict: &Bound<'_, PyDict>) -> Option<String> {
+                event_dict
+                    .get_item("FocusChanged")
+                    .expect("dict lookup")
+                    .and_then(|value| value.extract::<String>().ok())
+            }
+
+            fn tree_key_event(event_dict: &Bound<'_, PyDict>) -> (String, String) {
+                let payload = event_dict
+                    .get_item("Tree")
+                    .expect("dict lookup")
+                    .expect("a focused key must dispatch a Tree event, not a raw KeyPressed")
+                    .cast_into::<PyTuple>()
+                    .expect("Tree must pythonize to a (id, event) tuple");
+                let widget: String = payload
+                    .get_item(0)
+                    .expect("first element")
+                    .extract()
+                    .expect("the tree's own id must be a string");
+                let inner = payload
+                    .get_item(1)
+                    .expect("second element")
+                    .cast_into::<PyDict>()
+                    .expect("the inner TreeEvent must pythonize to a dict");
+                let key_payload = inner
+                    .get_item("KeyPressed")
+                    .expect("dict lookup")
+                    .expect("a key on a focused tree must carry a KeyPressed key")
+                    .cast_into::<PyDict>()
+                    .expect("KeyPressed payload must be a dict");
+                let key: String = key_payload
+                    .get_item("key")
+                    .expect("dict lookup")
+                    .expect("key field must be present")
+                    .extract()
+                    .expect("key must be a string");
+                (widget, key)
+            }
+
+            // First Tab: nothing focused yet, so focus lands on the first
+            // tab stop in paint order -- "tree:1".
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Tab),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            let received_list = extract_received(&locals);
+            assert_eq!(received_list.len(), 1, "Tab must emit exactly one event");
+            let event_dict = received_list
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert_eq!(
+                focused_id(&event_dict),
+                Some("tree:1".to_string()),
+                "the first Tab must focus the first leaf in paint order"
+            );
+
+            // A plain key now routes to "tree:1", the focused leaf.
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Char('j'),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            let received_list = extract_received(&locals);
+            assert_eq!(
+                received_list.len(),
+                2,
+                "the focus-scoped key must emit exactly one more event"
+            );
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert_eq!(
+                tree_key_event(&event_dict),
+                ("tree:1".to_string(), "j".to_string()),
+                "the key must dispatch as the focused leaf's own semantic Tree(KeyPressed)"
+            );
+
+            // Second Tab: focus advances to the other leaf, "tree:2".
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Tab),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            let received_list = extract_received(&locals);
+            assert_eq!(received_list.len(), 3, "the second Tab must emit one more event");
+            let event_dict = received_list
+                .get_item(2)
+                .expect("third item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert_eq!(
+                focused_id(&event_dict),
+                Some("tree:2".to_string()),
+                "the second Tab must move focus to the other leaf"
+            );
+
+            // A plain key now routes to "tree:2", the newly focused leaf.
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Char('k'),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            let received_list = extract_received(&locals);
+            assert_eq!(
+                received_list.len(),
+                4,
+                "the focus-scoped key must emit exactly one more event"
+            );
+            let event_dict = received_list
+                .get_item(3)
+                .expect("fourth item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert_eq!(
+                tree_key_event(&event_dict),
+                ("tree:2".to_string(), "k".to_string()),
+                "the key must dispatch as the newly focused leaf's own semantic Tree(KeyPressed)"
             );
         });
     }
