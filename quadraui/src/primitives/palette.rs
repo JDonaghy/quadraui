@@ -763,11 +763,17 @@ pub(crate) mod native_surface_paint {
         // whatever was painted immediately before this popup in the same
         // frame (e.g. a sidebar tree underneath an overlapping popup)
         // would otherwise show through at those four corners. A plain
-        // rect fill first guarantees the popup's full bounds are opaque
-        // before the rounded fill/stroke draw the visible silhouette on
-        // top of it.
-        surface.surface_fill_rect(area, theme.surface_bg);
-        surface.surface_fill_rounded_rect(area, style.corner_radius, theme.surface_bg);
+        // rect fill first guarantees the popup's full bounds are covered
+        // by the backdrop fill before the rounded fill/stroke draw the
+        // visible silhouette on top of it.
+        //
+        // `backdrop` applies `style.backdrop_opacity` to
+        // `theme.surface_bg` — every other overlay keeps using
+        // `theme.surface_bg` directly, so this is the one knob that
+        // only `Palette`'s own backdrop responds to.
+        let backdrop = theme.surface_bg.with_alpha(style.backdrop_opacity as f64);
+        surface.surface_fill_rect(area, backdrop);
+        surface.surface_fill_rounded_rect(area, style.corner_radius, backdrop);
         surface.surface_stroke_rounded_rect(
             area,
             style.corner_radius,
@@ -1302,6 +1308,33 @@ pub(crate) mod native_surface_paint {
                 Some(&(AREA, theme.surface_bg)),
                 "the rounded-corner fill must follow the full-bounds fill, not replace it"
             );
+        }
+
+        /// `Style::backdrop_opacity` scales only the backdrop fills'
+        /// alpha channel, leaving `theme.surface_bg`'s own rgb untouched
+        /// — the knob the issue asked for, scoped to `Palette` alone.
+        #[test]
+        fn backdrop_opacity_scales_alpha_of_both_backdrop_fills() {
+            let p = sample();
+            let (palette_layout, rows_h) = layout(AREA.width, AREA.height, &p, LINE_HEIGHT);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            let style = Style::default().with_backdrop_opacity(0.4);
+            paint(
+                &p,
+                AREA,
+                &palette_layout,
+                rows_h,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+                &style,
+            );
+
+            let expected = theme.surface_bg.with_alpha(0.4);
+            assert_eq!(surface.fills.first(), Some(&(AREA, expected)));
+            assert_eq!(surface.fills.get(1), Some(&(AREA, expected)));
         }
 
         /// `PaletteMode::Input` hides the item list, so there is nothing
