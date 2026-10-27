@@ -230,6 +230,15 @@ pub mod theme;
 pub mod transition;
 pub mod types;
 pub mod undo;
+// Not under `primitives/`, same reasoning as `expr` above: declarative
+// form-validation rules are not a widget — no `Layout`, no `hit_test`, no
+// `Backend::draw_*` method of its own; they compute the `ValidationState`
+// that `primitives::form::FormField::validation` already renders — so this
+// must not inflate the primitive count `readme_truth.rs` derives from
+// `primitives/mod.rs`'s `pub mod` list. Built on `expr::Expr` for
+// cross-field rules, so it stays binding-neutral the same way: plain
+// serializable data, not a Rust callback.
+pub mod validation;
 
 // ── Terminal engine (PTY + vt100 + scrollback) ───────────────────────────────
 // Gated behind the `terminal` feature so non-terminal consumers don't pull in

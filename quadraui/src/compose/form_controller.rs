@@ -87,6 +87,18 @@
 //!   ever overlaid onto the field that is still focused, so a click that
 //!   moves focus elsewhere can't leave a stale scrub position visible on
 //!   the field it left.
+//!
+//! ## Declarative validation
+//!
+//! [`FormController::set_rules`] attaches a [`crate::validation::FormRules`]
+//! to the controller. From then on, every [`FormController::set_form`] call
+//! evaluates those rules against the pushed `Form` via
+//! [`crate::validation::validate`] before storing it — so the app gets
+//! `required`/`pattern`/cross-field `Error`/`Warning` state on
+//! `FormField::validation` for free, with no per-keystroke validation logic
+//! of its own. A controller with no rules set (`FormRules::default()`,
+//! the starting state) behaves exactly as before: `set_form` stores the
+//! `Form` unchanged.
 
 use crate::primitives::date_picker::{CalendarDate, DatePickerEvent};
 use crate::primitives::form::{
@@ -95,6 +107,7 @@ use crate::primitives::form::{
 use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
 use crate::primitives::text_input::{EditOp, TextEditor, TextInput};
 use crate::text_util::snap_to_char_boundary;
+use crate::validation::{validate, FormRules};
 use crate::{
     Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar, UiEvent,
     WidgetId,
@@ -146,6 +159,7 @@ pub struct FormController {
     cached_lh: Option<f32>,
     text_edit: Option<TextEditState>,
     date_edit: Option<DateEditState>,
+    rules: FormRules,
 }
 
 impl FormController {
@@ -159,13 +173,30 @@ impl FormController {
             cached_lh: None,
             text_edit: None,
             date_edit: None,
+            rules: FormRules::default(),
         }
     }
 
     // ── Per-frame data ────────────────────────────────────────────────
 
-    pub fn set_form(&mut self, form: Form) {
+    /// Store `form`, applying [`Self::set_rules`]'s declarative validation
+    /// first — see this module's "Declarative validation" doc section.
+    pub fn set_form(&mut self, mut form: Form) {
+        validate(&mut form, &self.rules);
         self.form = Some(form);
+    }
+
+    /// Set the declarative rules [`Self::set_form`] evaluates against every
+    /// `Form` pushed from then on. Pass `FormRules::default()` to clear
+    /// them (equivalent to never having called this).
+    pub fn set_rules(&mut self, rules: FormRules) {
+        self.rules = rules;
+    }
+
+    /// The rules most recently set via [`Self::set_rules`] (empty/default
+    /// if never called).
+    pub fn rules(&self) -> &FormRules {
+        &self.rules
     }
 
     // ── State accessors ───────────────────────────────────────────────
@@ -1226,6 +1257,66 @@ mod tests {
         fc.set_form(make_form(5));
         assert!(fc.form().is_some());
         assert_eq!(fc.field_count(), 5);
+    }
+
+    #[test]
+    fn set_rules_validates_on_every_set_form_call() {
+        use crate::validation::{Rule, Severity, Validator};
+
+        let mut fc = FormController::new("fc".into());
+        let mut rules = FormRules::default();
+        rules.fields.insert(
+            "field-0".to_string(),
+            vec![Rule {
+                check: Validator::Required,
+                message: "Required".to_string(),
+                severity: Severity::Error,
+            }],
+        );
+        fc.set_rules(rules);
+        assert_eq!(fc.rules().fields.len(), 1);
+
+        // Empty text field fails `Required`.
+        let mut form = make_form(1);
+        form.fields[0].kind = FieldKind::TextInput {
+            value: String::new(),
+            placeholder: String::new(),
+            cursor: None,
+            selection_anchor: None,
+        };
+        fc.set_form(form);
+        assert_eq!(
+            fc.form().unwrap().fields[0].validation,
+            Some(crate::primitives::form::ValidationState::Error(
+                "Required".to_string()
+            ))
+        );
+
+        // Filling it in and pushing the next frame clears the error with no
+        // host-side validation call.
+        let mut form = make_form(1);
+        form.fields[0].kind = FieldKind::TextInput {
+            value: "Ada".to_string(),
+            placeholder: String::new(),
+            cursor: Some(3),
+            selection_anchor: None,
+        };
+        fc.set_form(form);
+        assert_eq!(fc.form().unwrap().fields[0].validation, None);
+
+        // A field with no declared rules is left untouched even when the
+        // controller has other rules set.
+        let mut form = make_form(2);
+        form.fields[1].validation = Some(crate::primitives::form::ValidationState::Warning(
+            "host-set".to_string(),
+        ));
+        fc.set_form(form);
+        assert_eq!(
+            fc.form().unwrap().fields[1].validation,
+            Some(crate::primitives::form::ValidationState::Warning(
+                "host-set".to_string()
+            ))
+        );
     }
 
     #[test]
