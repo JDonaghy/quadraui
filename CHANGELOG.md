@@ -122,6 +122,15 @@ only a push to `main` runs this workflow.
   field hides/shows or enables/disables declaratively with no per-keystroke
   host round-trip; fields with no declared rule are left untouched.
 
+### Fixed
+
+- `FormController::handle_cached`'s backend-free fallback layout (used when
+  no live `Backend` is attached) now gives `FieldKind::Toolbar` fields the
+  same per-button hit regions the pixel backends and TUI already compute: it
+  was missing a `Toolbar` arm entirely, so every click anywhere in a toolbar
+  row resolved to the field's own id (`FormEvent::FocusChanged`) instead of
+  the specific button clicked (`FormEvent::ToolbarButtonClicked`).
+
 ## [0.6.1] - 2026-10-26
 ### Added
 
@@ -138,12 +147,6 @@ only a push to `main` runs this workflow.
 
 ### Fixed
 
-- `FormController::handle_cached`'s backend-free fallback layout (used when
-  no live `Backend` is attached) now gives `FieldKind::Toolbar` fields the
-  same per-button hit regions the pixel backends and TUI already compute: it
-  was missing a `Toolbar` arm entirely, so every click anywhere in a toolbar
-  row resolved to the field's own id (`FormEvent::FocusChanged`) instead of
-  the specific button clicked (`FormEvent::ToolbarButtonClicked`).
 - Pixel backends' translucent `Palette` backdrop (`backdrop_opacity < 1.0`)
   no longer double-composites: `native_surface_paint::paint` filled the
   backdrop twice (once square, once rounded) over the same area, so two
