@@ -58,6 +58,19 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Added
+
+- `quadraui::expr`: a serializable, binding-neutral expression AST (`Expr`,
+  `Value`, `Context`) for form rules (conditional visibility, validation).
+  Field references, string/number/bool/null literals, comparisons
+  (`==`/`!=`/`<`/`<=`/`>`/`>=`), membership (`in`), `present`/`empty`,
+  boolean combinators (`and`/`or`/`not`), and a regex `matches` test — no
+  function calls, loops, or side effects. `Expr::eval`/`eval_bool` are
+  total (never panic or error); a dangling field reference or malformed
+  regex degrades to a safe default instead of failing. The `Expr`/`Value`
+  enums serialize with serde's default representation unmodified, so that
+  *is* the wire shape every language binding (Lua, Python, a future
+  C-ABI) emits.
 
 ## [0.6.1] - 2026-10-26
 ### Added
