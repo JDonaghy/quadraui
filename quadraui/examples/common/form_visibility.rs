@@ -31,7 +31,8 @@
 //!   enabled; ignored (and logged as ignored) while disabled
 //! - `Tab` / `Shift+Tab`    → move focus between the currently visible
 //!   fields only
-//! - `q` / `Esc`            → quit
+//! - `q` / `Esc`            → quit (unless "Shipping address" has
+//!   keyboard focus, in which case `q` is typed into it)
 
 use quadraui::{
     expr::{Expr, Value},
@@ -208,6 +209,9 @@ impl AppLogic for FormVisibilityApp {
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+        // `q` quits — unless the address field has keyboard focus, in
+        // which case it's a character the user is typing into it.
+        let editing_address = self.focused.as_ref().map(WidgetId::as_str) == Some("address");
         match &event {
             UiEvent::KeyPressed {
                 key: quadraui::Key::Named(quadraui::NamedKey::Escape),
@@ -216,7 +220,7 @@ impl AppLogic for FormVisibilityApp {
             UiEvent::KeyPressed {
                 key: quadraui::Key::Char('q'),
                 ..
-            } => return Reaction::Exit,
+            } if !editing_address => return Reaction::Exit,
             UiEvent::WindowResized { .. } => return Reaction::Redraw,
             _ => {}
         }

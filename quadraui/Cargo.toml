@@ -1849,3 +1849,18 @@ required-features = ["gtk"]
 name = "win_controls"
 path = "examples/win_controls.rs"
 required-features = ["win"]
+
+# Declarative `visible_when`/`enabled_when` field conditions demo. Both
+# entries are mandatory (see the note above): without an explicit
+# `[[example]]`, `gtk_form_visibility.rs` gets autodiscovered with no
+# `required-features` and fails `cargo test --features tui` on
+# `quadraui::gtk` being configured out.
+[[example]]
+name = "tui_form_visibility"
+path = "examples/tui_form_visibility.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_form_visibility"
+path = "examples/gtk_form_visibility.rs"
+required-features = ["gtk"]
