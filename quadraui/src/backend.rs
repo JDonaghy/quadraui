@@ -41,6 +41,7 @@ use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::focus::FocusManager;
 use crate::interaction::InteractionState;
 use crate::modal_stack::ModalStack;
+use crate::power::{BlockerId, PowerSaveKind, ThermalState};
 use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::button::{Button, ButtonLayout};
@@ -4403,6 +4404,57 @@ pub trait PlatformServices {
     fn update_service(&self) -> &dyn UpdateService {
         static SERVICE: crate::update::NoUpdateService = crate::update::NoUpdateService;
         &SERVICE
+    }
+
+    /// Whether the machine is currently running on battery power, as
+    /// opposed to mains/AC. See [`crate::power`]'s module doc for which
+    /// backends are expected to supply a real answer.
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend queries
+    /// this yet (IOKit's power-source API on macOS,
+    /// `GetSystemPowerStatus` on Win-GUI, `org.freedesktop.UPower` on
+    /// GTK/Linux are separate, backend-specific follow-ons).
+    fn on_battery(&self) -> ServiceResult<bool> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// The OS's current thermal-pressure classification. See
+    /// [`crate::power`]'s module doc for which backends are expected to
+    /// supply a real answer.
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend queries
+    /// this yet. Optional: a backend with no thermal signal of its own
+    /// (every in-tree backend as of this method landing) is expected to
+    /// leave this at its default rather than guess.
+    fn thermal_state(&self) -> ServiceResult<ThermalState> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Start a sleep/suspend inhibitor of the given `kind`, returning a
+    /// [`BlockerId`] to later pass to [`Self::end_power_save_block`]. See
+    /// [`crate::power`]'s module doc for which backends are expected to
+    /// supply a real inhibitor.
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend has a
+    /// real inhibitor yet (`IOPMAssertionCreateWithName` on macOS,
+    /// `SetThreadExecutionState` on Win-GUI, `org.freedesktop.login1`'s
+    /// `Inhibit` call on GTK/Linux are separate, backend-specific
+    /// follow-ons). TUI overrides this with an honest no-op blocker — see
+    /// [`crate::tui::services::TuiPlatformServices::begin_power_save_block`].
+    fn begin_power_save_block(&self, kind: PowerSaveKind) -> ServiceResult<BlockerId> {
+        let _ = kind;
+        Err(BackendError::Unsupported)
+    }
+
+    /// End a sleep/suspend inhibitor previously started by
+    /// [`Self::begin_power_save_block`].
+    ///
+    /// Default: [`BackendError::Unsupported`] — mirrors
+    /// [`Self::begin_power_save_block`]'s default; a backend that doesn't
+    /// override one is expected to not override the other either.
+    fn end_power_save_block(&self, id: BlockerId) -> ServiceResult<()> {
+        let _ = id;
+        Err(BackendError::Unsupported)
     }
 
     /// Platform identifier — matches the `BackendNative.backend` field.

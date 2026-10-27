@@ -38,6 +38,7 @@
 //! | `OpenRequested` | Broadcast (no target) |
 //! | `SystemThemeChanged` | Broadcast (no target) |
 //! | `DisplaysChanged` | Broadcast (no target) |
+//! | `PowerStateChanged` | Broadcast (no target) |
 //!
 //! The consequence apps rely on: **scroll wheel events dispatch to the
 //! widget under the cursor, regardless of which widget has keyboard focus.**
@@ -116,6 +117,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::backend::SystemTheme;
+use crate::power::PowerEventKind;
 use crate::types::{Modifiers, WidgetId};
 use crate::{
     ActivityBarEvent, ChartEvent, DataTableEvent, FormEvent, ListViewEvent, PaletteEvent,
@@ -749,6 +751,69 @@ pub enum UiEvent {
     /// arm. Adding `DisplaysChanged` compiles clean with no consumer
     /// changes required.
     DisplaysChanged,
+
+    // ── Power state change ──────────────────────────────────────────────
+    /// A power-state transition occurred: the system is suspending or
+    /// resumed, switched between battery and AC, or the screen locked or
+    /// unlocked. Payload names which one — see
+    /// [`PowerEventKind`][crate::PowerEventKind]. The live counterpart to
+    /// [`PlatformServices::on_battery`][crate::PlatformServices::on_battery]/
+    /// [`PlatformServices::thermal_state`][crate::PlatformServices::thermal_state]'s
+    /// poll-on-demand queries.
+    ///
+    /// **No backend emits this yet.** Same "declare the gap, don't fake
+    /// it" posture as [`Self::SystemThemeChanged`]/[`Self::DisplaysChanged`]
+    /// (also zero producers today): the variant exists so app code and the
+    /// event vocabulary are ready before a backend wires the native
+    /// notification (macOS's `NSWorkspace` sleep/wake/battery
+    /// notifications and `CGSessionDidLock`/`DidUnlock`, Win's
+    /// `WM_POWERBROADCAST`/`WTSRegisterSessionNotification`, GTK/Linux's
+    /// `org.freedesktop.login1` `PrepareForSleep` signal and
+    /// `org.freedesktop.UPower`'s `OnBattery` property) into it. TUI has
+    /// no equivalent OS notification to forward — a terminal process isn't
+    /// told when the host suspends, resumes, or changes power source — so
+    /// it will never emit this variant; see [`crate::power`]'s module doc.
+    ///
+    /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`].
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
+    /// exhaustively `match`es every variant with no wildcard arm would
+    /// fail to compile the moment this variant landed. Blast-radius grep,
+    /// per CLAUDE.md's mandatory rule 1 (this covers the new
+    /// `PlatformServices::on_battery`/`thermal_state`/
+    /// `begin_power_save_block`/`end_power_save_block` methods and the
+    /// `PowerSaveKind`/`BlockerId`/`ThermalState`/`PowerEventKind` types as
+    /// well as this variant — all landed together):
+    ///
+    /// ```text
+    /// $ grep -rn 'PowerStateChanged\|PowerSaveKind\|PowerEventKind\|BlockerId\|ThermalState\|on_battery\|power_save_block\|thermal_state' \
+    ///     ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both)
+    /// ```
+    ///
+    /// Zero hits means neither consumer references any of the new items
+    /// yet, but the real question for a *new enum variant* is whether
+    /// either consumer's existing `match`es over `UiEvent` are exhaustive
+    /// (no wildcard arm):
+    ///
+    /// - `vimcode`'s `src/app/dispatch.rs` top-level `UiEvent` dispatch
+    ///   (`dispatch.rs:630`–`1067`) already ends in a wildcard `_ => {}`
+    ///   arm (`dispatch.rs:1067`).
+    /// - `coord-tui`'s `src/app/events.rs` has two top-level `UiEvent`
+    ///   dispatches: the keyboard/window one (`events.rs:1391`–`4007`)
+    ///   ends in a wildcard `_ => {}` arm (`events.rs:4007`), and
+    ///   `handle_mouse`'s (`events.rs:4031`–`5003`) ends in a wildcard
+    ///   `_ => false` arm (`events.rs:5003`).
+    ///
+    /// Every other `UiEvent` match in both consumers is either an `if
+    /// let` on one specific variant or itself wildcard-terminated. Adding
+    /// `PowerStateChanged` compiles clean against both `develop`-tip
+    /// checkouts with no consumer changes required.
+    PowerStateChanged {
+        kind: PowerEventKind,
+    },
 
     // ── Cross-primitive scroll event ──────────────────────────────────
     /// A scrollbar drag or click resolved to a new offset. Generic

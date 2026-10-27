@@ -72,6 +72,18 @@ only a push to `main` runs this workflow.
   stage. `UpdateInfo::builder` offers a named-field alternative to `new`'s
   four same-typed positional arguments. Sparkle/WinSparkle/AppImage
   implementations are separate follow-ons.
+- `PlatformServices::on_battery`/`thermal_state` and
+  `begin_power_save_block`/`end_power_save_block` — a power-monitor and
+  sleep-blocker seam, plus the new `UiEvent::PowerStateChanged` event (not
+  yet emitted by any backend) and the `power` module's `PowerSaveKind`/
+  `ThermalState`/`BlockerId`/`PowerEventKind` types. All four methods
+  default to `BackendError::Unsupported`. The TUI backend overrides the
+  blocker pair with an honest no-op implementation — it mints and tracks a
+  real `BlockerId` so a begin/end lifecycle behaves consistently, it just
+  never asks the OS to stay awake — while leaving `on_battery`/
+  `thermal_state` at the default, since a terminal has no battery/thermal
+  signal of its own. IOKit/Win32/`org.freedesktop.login1` implementations
+  are separate, backend-specific follow-ons.
 - `FieldKind::Dropdown` TUI popup: the TUI backend now paints an in-canvas
   option list under a focused `Dropdown` field, instead of leaving the
   selected value and the rest of the options invisible between Enter

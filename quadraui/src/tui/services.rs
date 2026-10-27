@@ -276,7 +276,7 @@
 //! too: a terminal has no package format of its own to install into.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -290,6 +290,7 @@ use crate::compose::{
 };
 use crate::diagnostics;
 use crate::event::{Point, Rect, UiEvent};
+use crate::power::{BlockerId, PowerSaveKind};
 use crate::tui::backend::TuiBackend;
 use crate::update::{StagedUpdate, UpdateInfo, UpdateService};
 use crate::{Key, Modifiers, NamedKey};
@@ -1491,6 +1492,11 @@ pub struct TuiPlatformServices {
     /// empty queue — means "test mode, never touch the real terminal".
     /// Set via [`Self::queue_dialog_events`].
     scripted_dialog_events: RefCell<Option<VecDeque<UiEvent>>>,
+    /// Ids minted by [`Self::begin_power_save_block`] and not yet passed
+    /// to [`Self::end_power_save_block`] — see `power`'s module doc for
+    /// why TUI tracks this honestly instead of leaving the pair
+    /// `Unsupported`.
+    power_save_blocks: RefCell<HashSet<BlockerId>>,
 }
 
 impl TuiPlatformServices {
@@ -1499,6 +1505,7 @@ impl TuiPlatformServices {
             clipboard: TuiClipboard::new(),
             dialog_surface: RefCell::new(None),
             scripted_dialog_events: RefCell::new(None),
+            power_save_blocks: RefCell::new(HashSet::new()),
         }
     }
 
@@ -1928,6 +1935,32 @@ impl PlatformServices for TuiPlatformServices {
         &SERVICE
     }
 
+    /// An honest no-op blocker, not `Unsupported`: a terminal has no
+    /// sleep-inhibitor API to call into, but it can still mint and track
+    /// a real [`BlockerId`] so a TUI app's begin/end lifecycle behaves
+    /// consistently rather than failing on the very first call. See
+    /// `power`'s module doc.
+    fn begin_power_save_block(&self, kind: PowerSaveKind) -> ServiceResult<BlockerId> {
+        let _ = kind;
+        let id = BlockerId::next();
+        self.power_save_blocks.borrow_mut().insert(id);
+        Ok(id)
+    }
+
+    /// Ends a blocker previously started by [`Self::begin_power_save_block`].
+    /// Errors on an unknown or already-ended id rather than silently
+    /// succeeding — the bookkeeping is the whole point of the no-op
+    /// degrade, so it stays honest about what it actually tracked.
+    fn end_power_save_block(&self, id: BlockerId) -> ServiceResult<()> {
+        if self.power_save_blocks.borrow_mut().remove(&id) {
+            Ok(())
+        } else {
+            Err(BackendError::PlatformFailure {
+                context: "end_power_save_block: unknown or already-ended blocker id".to_string(),
+            })
+        }
+    }
+
     fn platform_name(&self) -> &'static str {
         "tui"
     }
@@ -1995,6 +2028,54 @@ mod update_service_tests {
             ["update available: 1.2.3"]
         );
         diagnostics::clear_sink();
+    }
+}
+
+#[cfg(test)]
+mod power_save_block_tests {
+    use super::*;
+
+    #[test]
+    fn begin_mints_distinct_ids() {
+        let service = TuiPlatformServices::new();
+        let a = service
+            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
+            .unwrap();
+        let b = service
+            .begin_power_save_block(PowerSaveKind::PreventAppSuspension)
+            .unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn end_succeeds_on_a_just_begun_id() {
+        let service = TuiPlatformServices::new();
+        let id = service
+            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
+            .unwrap();
+        assert_eq!(service.end_power_save_block(id), Ok(()));
+    }
+
+    #[test]
+    fn end_fails_on_an_unknown_or_already_ended_id() {
+        let service = TuiPlatformServices::new();
+        let id = service
+            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
+            .unwrap();
+        assert_eq!(service.end_power_save_block(id), Ok(()));
+        assert_eq!(
+            service.end_power_save_block(id),
+            Err(BackendError::PlatformFailure {
+                context: "end_power_save_block: unknown or already-ended blocker id".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn on_battery_and_thermal_state_stay_unsupported() {
+        let service = TuiPlatformServices::new();
+        assert_eq!(service.on_battery(), Err(BackendError::Unsupported));
+        assert_eq!(service.thermal_state(), Err(BackendError::Unsupported));
     }
 }
 
