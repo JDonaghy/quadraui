@@ -239,6 +239,15 @@ pub mod undo;
 // cross-field rules, so it stays binding-neutral the same way: plain
 // serializable data, not a Rust callback.
 pub mod validation;
+// Not under `primitives/`, same reasoning as `validation` above: declarative
+// show/hide and enable/disable rules are not a widget — no `Layout`, no
+// `hit_test`, no `Backend::draw_*` method of its own; they decide which
+// `primitives::form::FormField`s `compose::FormController` keeps in its
+// rendered `Form` and whether each is `disabled` — so this must not inflate
+// the primitive count `readme_truth.rs` derives from `primitives/mod.rs`'s
+// `pub mod` list. Built on `expr::Expr`, so it stays binding-neutral the
+// same way: plain serializable data, not a Rust callback.
+pub mod visibility;
 
 // ── Terminal engine (PTY + vt100 + scrollback) ───────────────────────────────
 // Gated behind the `terminal` feature so non-terminal consumers don't pull in

@@ -84,6 +84,21 @@ only a push to `main` runs this workflow.
   `FormController::set_form` evaluates automatically on every pushed
   `Form`; fields with no declared rules are left untouched, so the
   existing imperative `ValidationState` escape hatch still works unchanged.
+- `quadraui::visibility`: declarative `visible_when`/`enabled_when`
+  conditions per field, evaluated with `quadraui::expr` against the same
+  `Context` `quadraui::validation` builds. `FieldVisibility` holds each
+  field's optional `visible_when` (removes the field from the rendered
+  `Form` when false) and `enabled_when` (drives `FormField::disabled`),
+  grouped per field into a serializable `FormVisibility`
+  (`BTreeMap<String, FieldVisibility>` keyed by `WidgetId::as_str()`) and
+  applied with `apply_visibility(&mut Form, &FormVisibility)`. Binding-
+  neutral for the same reason as `quadraui::expr`/`quadraui::validation`:
+  conditions are plain serializable data, not a host callback.
+  `FormController::set_visibility` attaches a `FormVisibility` that
+  `FormController::set_form` evaluates automatically on every pushed
+  `Form`, after validation and before the field list is rendered, so a
+  field hides/shows or enables/disables declaratively with no per-keystroke
+  host round-trip; fields with no declared rule are left untouched.
 
 ## [0.6.1] - 2026-10-26
 ### Added
