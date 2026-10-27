@@ -1180,6 +1180,15 @@ fn build_scrollbar_lh(
     sb
 }
 
+/// Backend-free item layout for [`FormController::handle_cached`]'s
+/// fallback path (used when no live [`Backend`] is available to hit-test
+/// against, e.g. vimcode's TUI mouse handler). Approximates the pixel
+/// backends' `GtkBackend::form_layout` / `primitives::layout_metrics`
+/// geometry proportionally to `char_w`/`row_h` — it is not cell-accurate
+/// for the TUI grid's own `line_height() == 1.0` regime, where a
+/// [`FieldKind::Toolbar`]'s pixel-unit button padding (`ACTION_H_PAD`,
+/// `SEPARATOR_PX`) measures far wider than the cells `tui::toolbar`
+/// actually paints.
 fn form_field_measure(
     field: &crate::primitives::form::FormField,
     row_h: f32,
@@ -1253,14 +1262,18 @@ fn form_field_measure(
             use crate::primitives::toolbar::{measure_button, ToolbarButton};
             let measure = CharWidthMeasure(char_w);
             let label_w = field.label.visible_width() as f32 * char_w;
-            // Mirrors `tui_form_layout`/`GtkBackend::form_layout`'s
-            // `Toolbar` special case: pack flush left (no gap) when the
-            // field has no label, instead of the `char_w` left margin
-            // every other row item kind reserves.
+            // Mirrors the pixel backends' `items_start_x` (see
+            // `primitives::layout_metrics::items_start_x`): a labelled
+            // row reserves `label_w + 2 * char_w`, same as the sibling
+            // arms above; an unlabelled toolbar still reserves the
+            // backends' fixed 6px row inset — approximated here as
+            // `char_w` (== 6.0 at this fallback's `lh = 10.0` convention),
+            // the same approximation the sibling arms use for their own
+            // no-label case.
             let start_x = if label_w > 0.0 {
                 label_w + char_w * 2.0
             } else {
-                0.0
+                char_w
             };
             let items = toolbar
                 .buttons
@@ -1819,11 +1832,36 @@ mod tests {
             });
             form
         });
-        // lh=10.0 → row_h=14.0, char_w=6.0 → "A" button is
-        // 1*6.0 + 2*8.0 = 22.0 wide, spanning x in [0, 22); the "BB"
-        // button follows immediately (no label, no item gap), spanning
-        // x in [22, 50). x=30 lands inside the second button.
+        // lh=10.0 → row_h=14.0, char_w=6.0. An unlabelled toolbar still
+        // reserves `char_w` (6.0) for the row inset, so items_start_x =
+        // 6.0, not 0.0 (see `form_field_measure`'s `FieldKind::Toolbar`
+        // arm): "A" button is 1*6.0 + 2*8.0 = 22.0 wide, spanning x in
+        // [6, 28); the "BB" button follows immediately (no item gap),
+        // spanning x in [28, 56). x=30 lands inside the second button.
         fc.set_backend_info(10.0);
+
+        // A click left of items_start_x must miss both buttons and fall
+        // through to the row's own hit region (FocusChanged on the
+        // field), pinning that items_start_x is 6.0 and not 0.0 -
+        // GtkBackend::form_layout's pixel-unit row inset, not
+        // tui_form_layout's flush-left TUI cell convention.
+        let miss = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 3.0, y: 5.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            miss,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("field-0"),
+            }),
+            "a click left of items_start_x must miss both buttons"
+        );
+
         let ev = fc.handle_cached(
             &UiEvent::MouseDown {
                 widget: None,
