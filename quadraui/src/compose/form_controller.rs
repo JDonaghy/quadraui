@@ -470,6 +470,9 @@ impl FormController {
                 focused_field: None,
                 scroll_offset: self.scroll_offset,
                 has_focus: self.has_focus,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                label_width: None,
             },
         }
     }
@@ -636,12 +639,19 @@ impl FormController {
         let Some(form) = &self.form else {
             return FormControllerEvent::Ignored;
         };
-        let stops: Vec<&WidgetId> = form
+        // Explicit `tab_index` wins; a field that leaves it `None` keeps
+        // its natural position in `fields` as its sort key, so a form
+        // where nobody sets `tab_index` still traverses in plain `Vec`
+        // order (see `FormField::tab_index`'s doc).
+        let mut ordered: Vec<(i32, usize, &WidgetId)> = form
             .fields
             .iter()
-            .filter(|f| field_is_focusable(f))
-            .map(|f| &f.id)
+            .enumerate()
+            .filter(|(_, f)| field_is_focusable(f))
+            .map(|(i, f)| (f.tab_index.unwrap_or(i as i32), i, &f.id))
             .collect();
+        ordered.sort_by_key(|&(tab_index, i, _)| (tab_index, i));
+        let stops: Vec<&WidgetId> = ordered.into_iter().map(|(_, _, id)| id).collect();
         if stops.is_empty() {
             return FormControllerEvent::Ignored;
         }
@@ -1261,6 +1271,10 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             })
             .collect()
     }
@@ -1272,6 +1286,9 @@ mod tests {
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 
@@ -1783,6 +1800,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -1794,6 +1815,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -1805,6 +1830,10 @@ mod tests {
             hint: StyledText::default(),
             disabled,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -1819,6 +1848,10 @@ mod tests {
             hint: StyledText::default(),
             disabled,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -1830,6 +1863,9 @@ mod tests {
             focused_field: focused.map(WidgetId::new),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         });
         // The controller's own `has_focus` gates `KeyPressed`/`CharTyped`/
         // `ClipboardPaste` (not `Form.has_focus` above, which only
@@ -1940,6 +1976,30 @@ mod tests {
     }
 
     #[test]
+    fn tab_follows_explicit_tab_index_over_declaration_order() {
+        // Declared "a", "b", "c" but `tab_index` reorders the visit to
+        // "c", "a", "b" — tabbing from "c" must land on "a", not "b".
+        let mut a = text_field("a", "", None);
+        a.tab_index = Some(1);
+        let mut b = text_field("b", "", None);
+        b.tab_index = Some(2);
+        let mut c = text_field("c", "", None);
+        c.tab_index = Some(0);
+        let mut fc = controller_with(vec![a, b, c], Some("c"));
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("a")
+            }),
+            "tab_index should override declaration order"
+        );
+    }
+
+    #[test]
     fn typing_char_appends_and_updates_value() {
         let mut fc = controller_with(vec![text_field("name", "ab", Some(2))], Some("name"));
         let ev = fc.handle_cached(&key_event(Key::Char('c'), Modifiers::default()), RECT);
@@ -1972,6 +2032,9 @@ mod tests {
             focused_field: Some(WidgetId::new("name")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         });
 
         let ev2 = fc.handle_cached(&key_event(Key::Char('d'), Modifiers::default()), RECT);
@@ -2046,6 +2109,10 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: true,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             Some("name"),
         );
@@ -2099,6 +2166,9 @@ mod tests {
             focused_field: Some(WidgetId::new("name")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         });
 
         let rendered = fc.build_form(RECT);
@@ -2133,6 +2203,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let mut fc = controller_with(vec![field], Some("notes"));
         let ev = fc.handle_cached(&key_event(Key::Char('X'), Modifiers::default()), RECT);
@@ -2206,6 +2280,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let mut fc = controller_with(vec![field], Some("name"));
         // Must not panic. `EditOp::MoveRight` with `extend: false` drops
@@ -2261,6 +2339,9 @@ mod tests {
             focused_field: Some(WidgetId::new("d")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         });
 
         let ev2 = fc.handle_cached(
@@ -2375,6 +2456,9 @@ mod tests {
             focused_field: Some(WidgetId::new("d2")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         });
 
         let ev = fc.handle_cached(
@@ -2494,6 +2578,9 @@ mod tests {
             focused_field: Some(WidgetId::new("d2")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         });
 
         let form = fc.build_form(RECT);

@@ -92,6 +92,8 @@ mod form_all_fields;
 mod form_date_picker;
 #[path = "../examples/common/form_groups.rs"]
 mod form_groups;
+#[path = "../examples/common/form_label_placement.rs"]
+mod form_label_placement;
 #[path = "../examples/common/form_scroll.rs"]
 mod form_scroll;
 #[path = "../examples/common/form_visibility.rs"]
@@ -209,6 +211,7 @@ use folder_picker_app::FolderPickerApp;
 use form_all_fields::FormAllFieldsApp;
 use form_date_picker::FormDatePickerApp;
 use form_groups::FormGroupsApp;
+use form_label_placement::FormLabelPlacementApp;
 use form_scroll::FormScrollApp;
 use form_visibility::FormVisibilityApp;
 use frame_demo::FrameDemo;
@@ -9260,6 +9263,88 @@ fn submenu_app_nested_level_keeps_its_border_and_activates_leaf() {
     assert!(
         !driver.screen_contains("Cut"),
         "activating a leaf must close every level:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_label_placement_top_label_sits_above_its_value() {
+    let driver = TuiDriver::new(FormLabelPlacementApp::new(), 100, 20);
+
+    // `label_position: Top` on "Role": the label and its value share a
+    // column but sit on consecutive rows, label first.
+    let label = driver.find_bounds("Role").expect("'Role' label is painted");
+    let value = driver
+        .find_bounds("Operator")
+        .expect("'Operator' value is painted");
+    assert_eq!(
+        label.x,
+        value.x,
+        "a Top label and its value should share a column:\n{}",
+        driver.screen()
+    );
+    assert_eq!(
+        value.y,
+        label.y + 1.0,
+        "a Top label's value should render on the row directly below it:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_label_placement_hidden_label_omits_text_but_keeps_the_value() {
+    let driver = TuiDriver::new(FormLabelPlacementApp::new(), 100, 20);
+
+    // `label_position: Hidden` on "Internal key": the label text never
+    // appears, but its value still renders.
+    assert!(
+        !driver.screen_contains("Internal key"),
+        "a Hidden label's text must not be painted:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("xk-9f21"),
+        "a Hidden label's value must still be painted:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_label_placement_aligned_label_column_shares_a_right_edge() {
+    let driver = TuiDriver::new(FormLabelPlacementApp::new(), 100, 20);
+
+    // "ID" and "Owner" both use the form-level default `label_position:
+    // Left` + `label_align: End` + `label_width: Some(14.0)`: their label
+    // text should end flush against the same right edge, even though "ID"
+    // and "Owner" are different lengths.
+    let id_label = driver.find_bounds("ID").expect("'ID' label is painted");
+    let owner_label = driver
+        .find_bounds("Owner")
+        .expect("'Owner' label is painted");
+    assert_eq!(
+        id_label.x + id_label.width,
+        owner_label.x + owner_label.width,
+        "End-aligned labels sharing a label_width column should end at the \
+         same x:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_label_placement_tab_order_follows_tab_index_not_declaration_order() {
+    let mut driver = TuiDriver::new(FormLabelPlacementApp::new(), 100, 20);
+
+    // Declaration order is "Role, ID, Owner, Notes, Internal key", but
+    // `tab_index` makes it "ID"(0) → "Owner"(1) → "Role"(2) → "Notes"(3) →
+    // "Internal key"(4). Initial focus is "ID" (tab_index 0); one `Tab`
+    // press must land on "Owner" (tab_index 1), not "Role" (declared right
+    // after "ID").
+    driver.press_named(quadraui::NamedKey::Tab);
+
+    assert!(
+        driver.screen_contains("focus → owner"),
+        "Tab from the tab_index-0 field should move to the tab_index-1 \
+         field (\"owner\"), not the next-declared field (\"role\"):\n{}",
         driver.screen()
     );
 }

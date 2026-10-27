@@ -76,10 +76,17 @@ use serde::{Deserialize, Serialize};
 ///         hint: StyledText::plain(""),
 ///         disabled: false,
 ///         validation: None,
+///         label_position: None,
+///         label_align: None,
+///         label_width: None,
+///         tab_index: None,
 ///     }],
 ///     focused_field: None,
 ///     scroll_offset: 0,
 ///     has_focus: true,
+///     label_position: Default::default(),
+///     label_align: Default::default(),
+///     label_width: None,
 /// };
 ///
 /// let layout = form.layout(40.0, 10.0, |_| FormFieldMeasure::new(1.0));
@@ -102,6 +109,64 @@ pub struct Form {
     pub scroll_offset: usize,
     #[serde(default)]
     pub has_focus: bool,
+    /// Form-wide default for where a field's label renders. A
+    /// [`FormField::label_position`] override, when set, wins over this.
+    /// `Left` reproduces today's only behaviour (label beside the
+    /// input); `Top` is Ant Design's "vertical" form layout; `Inline`
+    /// is its "inline" layout; `Hidden` suppresses labels form-wide.
+    /// Use [`Form::resolved_label_position`] rather than reading this
+    /// field directly so a per-field override is honored.
+    #[serde(default)]
+    pub label_position: LabelPosition,
+    /// Form-wide default alignment for `Left`-positioned labels inside
+    /// their label column. A [`FormField::label_align`] override, when
+    /// set, wins over this. Use [`Form::resolved_label_align`] rather
+    /// than reading this field directly.
+    #[serde(default)]
+    pub label_align: LabelAlign,
+    /// Form-wide fixed width (cells for TUI, device pixels for GTK /
+    /// macOS / Win) reserved for the label column when a field resolves
+    /// to `Left` positioning. `None` lets the backend size the column to
+    /// the widest label, as it does today. A [`FormField::label_width`]
+    /// override, when set, wins over this. Use
+    /// [`Form::resolved_label_width`] rather than reading this field
+    /// directly.
+    #[serde(default)]
+    pub label_width: Option<f32>,
+}
+
+/// Where a field's label renders relative to its input. Set on
+/// [`Form::label_position`] as the form-wide default, or on
+/// [`FormField::label_position`] to override a single field. Modeled on
+/// Ant Design's `Form` `layout` prop (`horizontal` / `vertical` /
+/// `inline`), with `Hidden` added for label-less rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LabelPosition {
+    /// Label beside the input, on the same row. Ant's "horizontal"
+    /// layout; quadraui's only behaviour before this field existed.
+    #[default]
+    Left,
+    /// Label on its own row above the input. Ant's "vertical" layout.
+    Top,
+    /// Label and input share a line with no reserved label column —
+    /// for standalone `Button`/`Toggle` rows or compact single-line
+    /// forms. Ant's "inline" layout.
+    Inline,
+    /// The label is not rendered; the input takes the full row.
+    Hidden,
+}
+
+/// Horizontal alignment of a `Left`-positioned label inside its label
+/// column. Only meaningful when the resolved [`LabelPosition`] is
+/// `Left` and a label column width is established (either an explicit
+/// [`Form::label_width`]/[`FormField::label_width`] or the backend's
+/// own widest-label measurement).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LabelAlign {
+    #[default]
+    Start,
+    Center,
+    End,
 }
 
 /// Validation state rendered as a colored indicator + message.
@@ -130,6 +195,29 @@ pub struct FormField {
     /// Overrides `hint` visually when present.
     #[serde(default)]
     pub validation: Option<ValidationState>,
+    /// Overrides the form-wide [`Form::label_position`] for this field
+    /// only. `None` defers to the form's default — read through
+    /// [`Form::resolved_label_position`], never this field directly.
+    #[serde(default)]
+    pub label_position: Option<LabelPosition>,
+    /// Overrides the form-wide [`Form::label_align`] for this field
+    /// only. `None` defers to the form's default — read through
+    /// [`Form::resolved_label_align`].
+    #[serde(default)]
+    pub label_align: Option<LabelAlign>,
+    /// Overrides the form-wide [`Form::label_width`] for this field
+    /// only. `None` defers to the form's default — read through
+    /// [`Form::resolved_label_width`].
+    #[serde(default)]
+    pub label_width: Option<f32>,
+    /// Explicit position in the Tab/Shift-Tab focus cycle. Fields are
+    /// visited in ascending `tab_index` order, ties and `None` broken
+    /// by `fields` order (so the Vec order is still the default when no
+    /// field sets this). Consulted by
+    /// [`crate::compose::form_controller::FormController`]'s focus
+    /// traversal; the plain `Form` primitive does not use it itself.
+    #[serde(default)]
+    pub tab_index: Option<i32>,
 }
 
 /// The input variant carried by a `FormField`.
@@ -423,6 +511,28 @@ impl FormLayout {
 }
 
 impl Form {
+    /// The effective label position for `field`: its own
+    /// [`FormField::label_position`] override if set, else this form's
+    /// [`Form::label_position`] default.
+    pub fn resolved_label_position(&self, field: &FormField) -> LabelPosition {
+        field.label_position.unwrap_or(self.label_position)
+    }
+
+    /// The effective label alignment for `field`: its own
+    /// [`FormField::label_align`] override if set, else this form's
+    /// [`Form::label_align`] default.
+    pub fn resolved_label_align(&self, field: &FormField) -> LabelAlign {
+        field.label_align.unwrap_or(self.label_align)
+    }
+
+    /// The effective label column width for `field`: its own
+    /// [`FormField::label_width`] override if set, else this form's
+    /// [`Form::label_width`] default, else `None` (backend sizes the
+    /// column to the widest label).
+    pub fn resolved_label_width(&self, field: &FormField) -> Option<f32> {
+        field.label_width.or(self.label_width)
+    }
+
     /// Compute the full rendering + hit-test layout for this form.
     ///
     /// # Arguments
@@ -1357,10 +1467,17 @@ mod native_surface_paint {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 }],
                 focused_field: None,
                 scroll_offset: 0,
                 has_focus: false,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                label_width: None,
             }
         }
 
@@ -1725,6 +1842,10 @@ mod tests {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("line-numbers"),
@@ -1733,6 +1854,10 @@ mod tests {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("tabstop"),
@@ -1746,6 +1871,10 @@ mod tests {
                     hint: StyledText::plain("Number of spaces per tab"),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("save"),
@@ -1754,11 +1883,18 @@ mod tests {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
             ],
             focused_field: Some(WidgetId::new("line-numbers")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let json = serde_json::to_string(&form).unwrap();
         let back: Form = serde_json::from_str(&json).unwrap();
@@ -1812,6 +1948,10 @@ mod tests {
             hint: StyledText::plain("Editor font size in px"),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -1829,6 +1969,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -1851,6 +1995,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -1895,6 +2043,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -1925,6 +2077,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -1941,6 +2097,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -1951,6 +2111,9 @@ mod tests {
             focused_field: None,
             scroll_offset: scroll,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 
@@ -2062,6 +2225,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();

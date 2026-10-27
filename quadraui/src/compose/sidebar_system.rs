@@ -994,6 +994,9 @@ impl SidebarSystem {
                         focused_field: None,
                         scroll_offset: 0,
                         has_focus: form_focus,
+                        label_position: Default::default(),
+                        label_align: Default::default(),
+                        label_width: None,
                     });
                     SectionBody::Form(Form {
                         has_focus: form_focus,
@@ -1954,6 +1957,10 @@ mod tests {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("case-sensitive"),
@@ -1962,11 +1969,18 @@ mod tests {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
             ],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 
@@ -2198,10 +2212,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let ev = form_click_event(&form, &WidgetId::new("submit"));
         assert_eq!(
@@ -2237,10 +2258,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let ev = form_click_event(&form, &WidgetId::new("regex"));
         assert_eq!(
@@ -2271,10 +2299,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let ev = form_click_event(&form, &WidgetId::new("replace-all"));
         assert_eq!(
@@ -2783,6 +2818,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let m = form_field_measure(&field, 20.0, 10.0);
         assert_eq!(m.item_measures.len(), 2);
@@ -2816,6 +2855,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let m = form_field_measure(&field, 20.0, 10.0);
         assert_eq!(m.item_measures.len(), 2);
@@ -2848,10 +2891,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let lh: f32 = 16.0;
         let row_h = (lh * 1.4).round();
@@ -2888,10 +2938,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let ev = form_click_event(&form, &WidgetId::new("case"));
         assert_eq!(

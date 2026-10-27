@@ -59,6 +59,10 @@ impl SearchReplaceState {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("toggles"),
@@ -85,6 +89,10 @@ impl SearchReplaceState {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("replace"),
@@ -98,6 +106,10 @@ impl SearchReplaceState {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("buttons"),
@@ -127,11 +139,18 @@ impl SearchReplaceState {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
             ],
             focused_field: self.focus.current().cloned(),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 
@@ -183,6 +202,10 @@ fn scroll_form_from_toggles(toggles: &[bool]) -> Form {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         })
         .collect();
     Form {
@@ -191,6 +214,9 @@ fn scroll_form_from_toggles(toggles: &[bool]) -> Form {
         focused_field: None,
         scroll_offset: 0,
         has_focus: true,
+        label_position: Default::default(),
+        label_align: Default::default(),
+        label_width: None,
     }
 }
 
@@ -229,6 +255,10 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("line-numbers"),
@@ -237,6 +267,10 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("name"),
@@ -250,6 +284,10 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("save"),
@@ -258,6 +296,10 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("version"),
@@ -268,6 +310,10 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("font-size"),
@@ -281,6 +327,10 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("accent"),
@@ -291,6 +341,10 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("theme"),
@@ -305,6 +359,10 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("notes"),
@@ -318,6 +376,10 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("password"),
@@ -331,6 +393,10 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("scope"),
@@ -342,6 +408,10 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("flags"),
@@ -356,6 +426,10 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("actions"),
@@ -371,6 +445,10 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("toolbar"),
@@ -391,6 +469,10 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("due-date"),
@@ -402,11 +484,18 @@ fn build_all_fields_form() -> Form {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
         ],
         focused_field: None,
         scroll_offset: 0,
         has_focus: true,
+        label_position: Default::default(),
+        label_align: Default::default(),
+        label_width: None,
     }
 }
 

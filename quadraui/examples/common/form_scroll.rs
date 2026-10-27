@@ -69,6 +69,10 @@ impl FormScrollApp {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }];
         fields.extend(self.toggles.iter().enumerate().map(|(i, &val)| FormField {
             id: WidgetId::new(format!("toggle-{i}")),
@@ -77,6 +81,10 @@ impl FormScrollApp {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }));
 
         Form {
@@ -85,6 +93,9 @@ impl FormScrollApp {
             focused_field: self.focused,
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 

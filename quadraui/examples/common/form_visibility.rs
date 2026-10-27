@@ -109,6 +109,10 @@ impl FormVisibilityApp {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("address"),
@@ -122,6 +126,10 @@ impl FormVisibilityApp {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("agree"),
@@ -130,6 +138,10 @@ impl FormVisibilityApp {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("submit"),
@@ -141,6 +153,10 @@ impl FormVisibilityApp {
                 // the real value from `enabled_when`.
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
         ];
 
@@ -150,6 +166,9 @@ impl FormVisibilityApp {
             focused_field: self.focused,
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 
