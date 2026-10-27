@@ -54,7 +54,7 @@ impl FormDropdownApp {
                 id: WidgetId::new("theme"),
                 label: StyledText::plain("Theme"),
                 kind: FieldKind::Dropdown {
-                    options: self.options.iter().map(|o| StyledText::plain(o)).collect(),
+                    options: self.options.iter().map(StyledText::plain).collect(),
                     selected_idx: self.selected_idx,
                 },
                 hint: StyledText::default(),
