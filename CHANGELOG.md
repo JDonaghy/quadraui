@@ -71,6 +71,19 @@ only a push to `main` runs this workflow.
   enums serialize with serde's default representation unmodified, so that
   *is* the wire shape every language binding (Lua, Python, a future
   C-ABI) emits.
+- `quadraui::validation`: declarative field/form validation rules —
+  `Validator` built-ins (`Required`, `Pattern`, `Min`/`Max`,
+  `MinLength`/`MaxLength`, `OneOf`) plus cross-field rules via
+  `Validator::Expr(quadraui::expr::Expr)`, grouped per field into a
+  serializable `FormRules` (`BTreeMap<String, Vec<Rule>>` keyed by
+  `WidgetId::as_str()`) and applied with `validate(&mut Form, &FormRules)`.
+  Same binding-neutral rationale as `quadraui::expr`: rules are data, so
+  every language binding gets identical `Error`/`Warning`
+  `FormField::validation` state with no host-side validation logic.
+  `FormController::set_rules` attaches a `FormRules` that
+  `FormController::set_form` evaluates automatically on every pushed
+  `Form`; fields with no declared rules are left untouched, so the
+  existing imperative `ValidationState` escape hatch still works unchanged.
 
 ## [0.6.1] - 2026-10-26
 ### Added

@@ -123,13 +123,20 @@ impl Value {
     /// `true` for anything except `Null` — the field has *a* value, not
     /// necessarily a non-empty one. Pairs with [`Value::is_empty`], which
     /// additionally treats the empty string as absent.
-    fn is_present(&self) -> bool {
+    ///
+    /// `pub(crate)` so [`crate::validation`] can reuse the same "is this
+    /// field filled in" notion `Expr::Present` uses, rather than
+    /// duplicating it.
+    pub(crate) fn is_present(&self) -> bool {
         !matches!(self, Value::Null)
     }
 
     /// `true` for `Null` and the empty string — the two shapes a
     /// `TextInput`/optional field takes before the user has filled it in.
-    fn is_empty(&self) -> bool {
+    ///
+    /// `pub(crate)` so [`crate::validation`]'s `Validator::Required` check
+    /// matches [`Expr::Empty`]'s notion of "blank" exactly.
+    pub(crate) fn is_empty(&self) -> bool {
         matches!(self, Value::Null) || matches!(self, Value::String(s) if s.is_empty())
     }
 }
