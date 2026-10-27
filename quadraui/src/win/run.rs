@@ -773,13 +773,14 @@ mod win32 {
         PeekMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetForegroundWindow,
         SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW,
         CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, HTCAPTION, HTCLIENT, ICON_BIG,
-        ICON_SMALL, IDC_ARROW, MSG, NCCALCSIZE_PARAMS, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE,
-        SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_COPYDATA,
-        WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
-        WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-        WM_NCCALCSIZE, WM_NCCREATE, WM_NCHITTEST, WM_PAINT, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-        WM_SETCURSOR, WM_SETFOCUS, WM_SETICON, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER,
-        WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+        ICON_SMALL, IDC_ARROW, MSG, NCCALCSIZE_PARAMS, PM_REMOVE, QS_ALLINPUT, SIZE_MAXIMIZED,
+        SIZE_MINIMIZED, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE,
+        WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DROPFILES,
+        WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+        WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCCREATE, WM_NCHITTEST,
+        WM_PAINT, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETICON,
+        WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN,
+        WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
     };
     // `WM_DROPFILES` decode (`HDROP`, `DragAcceptFiles`/
     // `DragQueryFileW`/`DragQueryPoint`/`DragFinish`) — all real Shell32
@@ -806,9 +807,9 @@ mod win32 {
     // be unit-tested off Windows (pure functions over already-decoded
     // ints/floats/bools) — see that module's docs.
     use crate::win::events::{
-        win_button_down, win_button_up, win_files_dropped, win_focus_to_uievent, win_modifiers,
-        win_mouse_button_for_message, win_mouse_moved, win_wheel_to_uievent, wm_char_to_uievent,
-        wm_keydown_to_uievent,
+        is_theme_setting_change, win_button_down, win_button_up, win_files_dropped,
+        win_focus_to_uievent, win_modifiers, win_mouse_button_for_message, win_mouse_moved,
+        win_wheel_to_uievent, wm_char_to_uievent, wm_keydown_to_uievent,
     };
     // Payload decoding lives in `super::msg` so it can be unit-tested off
     // Windows — see that module's docs for why the shifts aren't inlined
@@ -958,6 +959,15 @@ mod win32 {
         /// ordering a posted `WM_APP` message would give for free, without
         /// needing one.
         pending_resize_resync: Cell<bool>,
+        /// Last `(maximized, fullscreen, minimized)` tri-state dispatched
+        /// via [`UiEvent::WindowStateChanged`]. `WM_SIZE` fires on every
+        /// resize, including an ordinary drag that leaves all three flags
+        /// at `SIZE_RESTORED`/unmaximized/non-fullscreen — comparing
+        /// against this field before dispatching keeps the event to actual
+        /// maximize/restore/minimize/fullscreen transitions, matching the
+        /// "OS toggled one of the window's tri-state chrome flags" framing
+        /// in the variant's own doc.
+        window_tristate: Cell<(bool, bool, bool)>,
     }
 
     /// Encode a Rust `&str` (already `\0`-terminated by its caller) as
@@ -1307,6 +1317,7 @@ mod win32 {
             smoke_failed: smoke_failed.clone(),
             resize_debouncer: RefCell::new(ResizeDebouncer::new()),
             pending_resize_resync: Cell::new(false),
+            window_tristate: Cell::new((false, false, false)),
         }));
 
         // SAFETY: `class_name`/`window_title` are `Vec<u16>`s that outlive
@@ -2127,6 +2138,81 @@ mod win32 {
         apply_resize(ws, hwnd, width, height);
     }
 
+    /// Dispatches [`UiEvent::WindowStateChanged`] when a `WM_SIZE`
+    /// notification crossed a maximized/fullscreen/minimized boundary the
+    /// app hasn't already seen (tracked in `ws.window_tristate`) —
+    /// skipping the dispatch for an ordinary resize drag that leaves all
+    /// three flags unchanged.
+    ///
+    /// Called only from the top-level `WM_SIZE` match arm below, never
+    /// from [`apply_resize`]/[`resync_pending_resize`]: a `WM_SIZE` that
+    /// `WinBackend::toggle_window_maximize`/`WindowControl::set_fullscreen`
+    /// themselves trigger re-entrantly arrives while `pump_depth` is
+    /// pumping, gets deferred via `WindowState::pending_resize_resync`,
+    /// and is replayed only through `apply_resize` — so it never reaches
+    /// this function. That keeps the dispatch to OS/WM-initiated
+    /// transitions only, matching the variant's own doc ("other than
+    /// through `toggle_window_maximize`/`set_fullscreen` themselves").
+    fn dispatch_window_state_change<A: AppLogic>(
+        ws: &WindowState<A>,
+        hwnd: HWND,
+        size_wparam: u32,
+    ) {
+        let maximized = size_wparam == SIZE_MAXIMIZED;
+        let minimized = size_wparam == SIZE_MINIMIZED;
+        // `window()` takes `&mut self`, so this borrow must be dropped
+        // (the block ends here) before `dispatch` below takes its own.
+        let fullscreen = {
+            let mut s = ws.state.borrow_mut();
+            s.backend
+                .window()
+                .and_then(|w| w.is_fullscreen().ok())
+                .unwrap_or(false)
+        };
+        let tristate = (maximized, fullscreen, minimized);
+        if ws.window_tristate.get() == tristate {
+            return;
+        }
+        ws.window_tristate.set(tristate);
+        dispatch(
+            ws,
+            hwnd,
+            UiEvent::WindowStateChanged {
+                maximized,
+                fullscreen,
+                minimized,
+            },
+        );
+    }
+
+    /// Decodes `WM_SETTINGCHANGE`'s `lParam` — a pointer to a
+    /// nul-terminated UTF-16 string naming the `SystemParametersInfo`
+    /// area that changed — into an owned `String`. Returns an empty
+    /// string for a null pointer (some `WM_SETTINGCHANGE` sends carry no
+    /// name at all).
+    ///
+    /// # Safety
+    ///
+    /// `ptr`, if non-null, must point at a nul-terminated UTF-16 string
+    /// valid for reads up to and including its terminating `0` — exactly
+    /// the contract `WM_SETTINGCHANGE`'s `lParam` documents.
+    unsafe fn decode_setting_name(ptr: *const u16) -> String {
+        if ptr.is_null() {
+            return String::new();
+        }
+        let mut len = 0usize;
+        // SAFETY: caller's contract guarantees a nul terminator exists
+        // within bounds; this walks forward only as far as that
+        // terminator, never past it.
+        while unsafe { *ptr.add(len) } != 0 {
+            len += 1;
+        }
+        // SAFETY: `len` is the distance to the nul terminator just found,
+        // so `[ptr, ptr + len)` is in-bounds per the same caller contract.
+        let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+        String::from_utf16_lossy(slice)
+    }
+
     /// The Win32 window procedure. Monomorphized once per concrete `A`
     /// (see module docs) so `RegisterClassExW` gets a real function
     /// pointer despite `run` being generic.
@@ -2238,6 +2324,7 @@ mod win32 {
                 // in pixels — the standard `WM_SIZE` payload shape.
                 let (width, height) = size_from_lparam(lparam.0);
                 apply_resize(ws, hwnd, width, height);
+                dispatch_window_state_change(ws, hwnd, wparam.0 as u32);
                 LRESULT(0)
             }
             WM_DPICHANGED => {
@@ -2901,6 +2988,37 @@ mod win32 {
                     PostQuitMessage(0);
                 }
                 LRESULT(0)
+            }
+            WM_SETTINGCHANGE => {
+                // `lParam` points to the (possibly null) nul-terminated
+                // UTF-16 name of the `SystemParametersInfo` area that
+                // changed; Windows sends this for dozens of unrelated
+                // settings (fonts, metrics, `Environment`, ...), so
+                // `is_theme_setting_change` filters it down to the one
+                // name — `ImmersiveColorSet` — that means a light/dark or
+                // accent-color flip, keeping `SystemThemeChanged` from
+                // firing on every other settings change too.
+                //
+                // SAFETY: `lparam.0` is the raw `WM_SETTINGCHANGE` payload
+                // Windows just delivered to this `wndproc` call; per that
+                // message's documented contract it is either null or a
+                // valid pointer to a nul-terminated UTF-16 string, which
+                // is exactly `decode_setting_name`'s precondition.
+                let name = unsafe { decode_setting_name(lparam.0 as *const u16) };
+                if is_theme_setting_change(&name) {
+                    let theme = ws.state.borrow().backend.services().system_theme().ok();
+                    if let Some(theme) = theme {
+                        dispatch(ws, hwnd, UiEvent::SystemThemeChanged(theme));
+                    }
+                }
+                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+            }
+            WM_DISPLAYCHANGE => {
+                // Fired on monitor connect/disconnect and on a resolution
+                // or scale change; no payload to decode — an app that
+                // cares re-reads `PlatformServices::displays()`.
+                dispatch(ws, hwnd, UiEvent::DisplaysChanged);
+                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
             }
             // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW` (top of
             // this function) — forwarded unchanged; this is the final
@@ -3688,6 +3806,197 @@ mod win32 {
                         SendMessageW(hwnd, WM_KEYDOWN, Some(WPARAM(VK_ESCAPE)), Some(LPARAM(0)));
                     }
                 },
+            );
+        }
+    }
+
+    /// Proves the OS-change producers wired for quadraui#1785 actually
+    /// fire through a real `wndproc`, not just through `dispatch`'s own
+    /// plumbing: `WindowStateChanged` off a real `WM_SIZE`
+    /// maximize/restore transition, `SystemThemeChanged` off a real
+    /// `WM_SETTINGCHANGE` carrying `"ImmersiveColorSet"`, and
+    /// `DisplaysChanged` off a real `WM_DISPLAYCHANGE`. `WinDriver` can't
+    /// cover any of this — it calls `dispatch_event` directly and never
+    /// visits these `wndproc` match arms (see that module's docs) — so,
+    /// same posture as `live_window_nchittest_tests`/
+    /// `idle_poll_fallback_tests`/`mouse_and_key_exit_tests` above, this
+    /// needs a real message loop.
+    #[cfg(test)]
+    mod os_change_event_tests {
+        use super::*;
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        /// Records every `UiEvent` `wndproc` dispatches to it, and exits
+        /// on `WindowClose` so the probe's own `WM_CLOSE` teardown (same
+        /// pattern as `mouse_and_key_exit_tests::ExitOnInputApp`) can
+        /// destroy the window regardless of which assertion runs.
+        struct RecordingApp {
+            events: Arc<Mutex<Vec<UiEvent>>>,
+        }
+
+        impl AppLogic for RecordingApp {
+            type AreaId = ();
+
+            fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+            fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                if event == UiEvent::WindowClose {
+                    return Reaction::Exit;
+                }
+                self.events.lock().unwrap().push(event);
+                Reaction::Continue
+            }
+        }
+
+        /// Spins up a real window running `RecordingApp`, waits for it to
+        /// become findable (self-guarding — stderr diagnostic + early
+        /// return, same posture as this module's siblings above — if
+        /// there's no interactive window station on this host), calls
+        /// `drive` with the live `HWND`, tears the window down via
+        /// `WM_CLOSE`, then hands back whatever got recorded for the
+        /// caller to assert on.
+        #[allow(clippy::print_stderr)]
+        fn probe_os_change_event(
+            test_name: &str,
+            drive: impl FnOnce(HWND),
+        ) -> Option<Vec<UiEvent>> {
+            let title = format!(
+                "quadraui-os-change-probe-{test_name}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            );
+            let config = crate::win::run::RunConfig::new(title.clone());
+            let events: Arc<Mutex<Vec<UiEvent>>> = Arc::new(Mutex::new(Vec::new()));
+            let app = RecordingApp {
+                events: events.clone(),
+            };
+
+            let runner = std::thread::spawn(move || run(app, config));
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let class_name = window_class_name(&title);
+            let hwnd = loop {
+                // SAFETY: `class_name` is a live `Vec<u16>` for the
+                // duration of this call.
+                let found = unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) };
+                if let Ok(hwnd) = found {
+                    break Some(hwnd);
+                }
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let Some(hwnd) = hwnd else {
+                eprintln!(
+                    "quadraui: skipping {test_name} — the test window never \
+                     became findable within 10s (no interactive window \
+                     station on this host?)"
+                );
+                return None;
+            };
+
+            drive(hwnd);
+
+            // SAFETY: `hwnd` is the live test window found above;
+            // `WM_CLOSE` is its normal close path, and `RecordingApp`
+            // exits on the `WindowClose` it produces.
+            unsafe {
+                SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+            }
+            let _ = runner.join();
+
+            let recorded = events.lock().unwrap().clone();
+            Some(recorded)
+        }
+
+        #[test]
+        fn maximize_dispatches_window_state_changed() {
+            let test_name = "maximize_dispatches_window_state_changed";
+            let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
+                // SAFETY: `hwnd` is the live test window from the
+                // caller's `FindWindowW` poll; `SendMessageW` blocks
+                // until `wndproc` returns.
+                unsafe {
+                    SendMessageW(
+                        hwnd,
+                        WM_SIZE,
+                        Some(WPARAM(SIZE_MAXIMIZED as usize)),
+                        Some(LPARAM(0)),
+                    );
+                }
+            }) else {
+                return;
+            };
+
+            assert!(
+                recorded.iter().any(|e| matches!(
+                    e,
+                    UiEvent::WindowStateChanged {
+                        maximized: true,
+                        minimized: false,
+                        ..
+                    }
+                )),
+                "{test_name}: a real WM_SIZE(SIZE_MAXIMIZED) never produced \
+                 a UiEvent::WindowStateChanged{{maximized: true, ..}} \
+                 (quadraui#1785)"
+            );
+        }
+
+        #[test]
+        fn theme_setting_change_dispatches_system_theme_changed() {
+            let test_name = "theme_setting_change_dispatches_system_theme_changed";
+            let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
+                // `WM_SETTINGCHANGE`'s `lParam` is a pointer to a
+                // nul-terminated UTF-16 string naming the
+                // `SystemParametersInfo` area that changed —
+                // `"ImmersiveColorSet"` is the one name
+                // `is_theme_setting_change` recognises as a light/dark or
+                // accent-color flip.
+                let mut name: Vec<u16> = "ImmersiveColorSet".encode_utf16().collect();
+                name.push(0);
+                let lparam = LPARAM(name.as_ptr() as isize);
+                // SAFETY: `name` is a live `Vec<u16>` for the duration of
+                // this call; `SendMessageW` blocks until `wndproc`
+                // returns, so `name` outlives the read `wndproc`'s
+                // `decode_setting_name` call performs inside it.
+                unsafe {
+                    SendMessageW(hwnd, WM_SETTINGCHANGE, Some(WPARAM(0)), Some(lparam));
+                }
+            }) else {
+                return;
+            };
+
+            assert!(
+                recorded
+                    .iter()
+                    .any(|e| matches!(e, UiEvent::SystemThemeChanged(_))),
+                "{test_name}: a real WM_SETTINGCHANGE(\"ImmersiveColorSet\") \
+                 never produced a UiEvent::SystemThemeChanged \
+                 (quadraui#1785)"
+            );
+        }
+
+        #[test]
+        fn display_change_dispatches_displays_changed() {
+            let test_name = "display_change_dispatches_displays_changed";
+            let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
+                // SAFETY: `WM_DISPLAYCHANGE` carries no pointer payload —
+                // both `wparam`/`lparam` are plain integers (new bit
+                // depth / packed width+height), unused by this arm.
+                unsafe {
+                    SendMessageW(hwnd, WM_DISPLAYCHANGE, Some(WPARAM(0)), Some(LPARAM(0)));
+                }
+            }) else {
+                return;
+            };
+
+            assert!(
+                recorded.iter().any(|e| *e == UiEvent::DisplaysChanged),
+                "{test_name}: a real WM_DISPLAYCHANGE never produced a \
+                 UiEvent::DisplaysChanged (quadraui#1785)"
             );
         }
     }

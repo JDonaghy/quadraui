@@ -60,6 +60,18 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `WindowControl::is_fullscreen` — queries the window's current fullscreen
+  state, alongside the existing `is_maximized`, so a backend-neutral caller
+  can read both chrome flags without tracking its own shadow state.
+- Windows event producers for `UiEvent::WindowStateChanged`,
+  `UiEvent::SystemThemeChanged` and `UiEvent::DisplaysChanged` — previously
+  declared variants with zero producers on any backend. `win::run`'s
+  `wndproc` now dispatches `WindowStateChanged` off `WM_SIZE`'s
+  `SIZE_MAXIMIZED`/`SIZE_MINIMIZED` transitions (deduplicated against the
+  window's previous tri-state so an ordinary resize drag doesn't re-fire
+  it), `SystemThemeChanged` off `WM_SETTINGCHANGE` filtered to the
+  `ImmersiveColorSet` setting name, and `DisplaysChanged` off
+  `WM_DISPLAYCHANGE`. GTK and macOS producers are tracked separately.
 - `PlatformServices::update_service` — an auto-update seam. The new
   `UpdateService` trait (`check_for_update`, `download_and_stage`,
   `apply_on_quit`) plus its `UpdateFeed`/`UpdateInfo`/`StagedUpdate` types

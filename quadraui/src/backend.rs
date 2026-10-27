@@ -217,6 +217,16 @@ pub trait WindowControl {
         Err(BackendError::Unsupported)
     }
 
+    /// Whether the window is currently fullscreen. Read-only and
+    /// side-effect-free — same "poll it from a paint path" rationale as
+    /// [`Self::is_maximized`]. A backend whose fullscreen is a manual
+    /// style/rect flip rather than a single reversible OS call (Win-GUI)
+    /// answers from whatever it saved when [`Self::set_fullscreen`] last
+    /// ran, not a live OS query.
+    fn is_fullscreen(&self) -> ServiceResult<bool> {
+        Err(BackendError::Unsupported)
+    }
+
     /// Pin (`true`) or unpin (`false`) the window above all others.
     ///
     /// Not available on GTK4/Wayland: Wayland's window-stacking model has
@@ -4290,10 +4300,12 @@ pub trait PlatformServices {
     /// - **Win-GUI** — `UISettings::GetColorValue` (`Background`/`Accent`
     ///   `UIColorType`s).
     ///
-    /// No backend pushes [`crate::UiEvent::SystemThemeChanged`] on a live OS
-    /// theme change yet (same "declare the gap, don't fake it" posture as
-    /// [`crate::UiEvent::WindowStateChanged`], which also has zero producers
-    /// today) — this method is a poll-on-demand query, not a subscription.
+    /// Win-GUI additionally pushes [`crate::UiEvent::SystemThemeChanged`]
+    /// on a live `WM_SETTINGCHANGE("ImmersiveColorSet")`; macOS and GTK
+    /// have no producer yet (same "declare the gap, don't fake it" posture
+    /// as [`crate::UiEvent::WindowStateChanged`] there) — on those two
+    /// backends this method remains a poll-on-demand query, not a
+    /// subscription.
     fn system_theme(&self) -> ServiceResult<SystemTheme> {
         Err(BackendError::Unsupported)
     }

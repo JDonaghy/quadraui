@@ -548,6 +548,11 @@ pub enum UiEvent {
     /// changed outside the app's own controls. Not applicable to TUI: a
     /// terminal has no OS-level maximize/fullscreen/minimize state
     /// distinct from the alt-screen it already occupies.
+    ///
+    /// Win wires this off `WM_SIZE`'s `SIZE_MAXIMIZED`/`SIZE_MINIMIZED`
+    /// transitions plus [`WindowControl::is_fullscreen`][crate::backend::WindowControl::is_fullscreen],
+    /// deduplicated against the previous tri-state so an ordinary resize
+    /// drag doesn't re-fire it. GTK and macOS have no producer yet.
     WindowStateChanged {
         maximized: bool,
         fullscreen: bool,
@@ -659,15 +664,17 @@ pub enum UiEvent {
     /// theme at startup call `system_theme()` once instead of waiting for
     /// this to fire.
     ///
-    /// **No backend emits this yet.** Same "declare the gap, don't fake
-    /// it" posture as [`Self::WindowStateChanged`] (also zero producers
-    /// today): the variant exists so app code and the event vocabulary are
-    /// ready before a backend wires the native change notification (GTK's
-    /// `Settings::connect_gtk_application_prefer_dark_theme_notify`,
-    /// macOS KVO on `effectiveAppearance`, Win's
-    /// `WM_SETTINGCHANGE("ImmersiveColorSet")`) into it. TUI has no
-    /// equivalent OS notification at all — a terminal can't push, only
-    /// answer a query — so it will never emit this variant.
+    /// Win wires this off `WM_SETTINGCHANGE`, filtered to the
+    /// `ImmersiveColorSet` setting name so it doesn't fire on every other
+    /// unrelated settings change Windows bundles into that message. GTK
+    /// and macOS have no producer yet — same "declare the gap, don't fake
+    /// it" posture as [`Self::WindowStateChanged`]: the variant exists so
+    /// app code and the event vocabulary are ready before each backend
+    /// wires its own native change notification (GTK's
+    /// `Settings::connect_gtk_application_prefer_dark_theme_notify`, macOS
+    /// KVO on `effectiveAppearance`). TUI has no equivalent OS notification
+    /// at all — a terminal can't push, only answer a query — so it will
+    /// never emit this variant.
     ///
     /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`].
     ///
@@ -716,16 +723,18 @@ pub enum UiEvent {
     /// cover (a monitor unplugged behind the window, say, with the
     /// window's own scale unaffected).
     ///
-    /// **No backend emits this yet.** Same "declare the gap, don't fake
-    /// it" posture as [`Self::SystemThemeChanged`]/[`Self::WindowStateChanged`]
-    /// (also zero producers today): the variant exists so app code and the
-    /// event vocabulary are ready before a backend wires the native
-    /// change notification (GTK's `gdk::Display::monitors`
-    /// `items-changed` signal on the returned `gio::ListModel`, macOS's
-    /// `NSApplicationDidChangeScreenParametersNotification`, Win's
-    /// `WM_DISPLAYCHANGE`) into it. TUI has no equivalent OS notification
-    /// — a terminal resize arrives as [`Self::WindowResized`], not a
-    /// display-topology change — so it will never emit this variant.
+    /// Win wires this off `WM_DISPLAYCHANGE` — no payload to decode, so
+    /// every receipt just pokes apps to re-read `displays()`. GTK and
+    /// macOS have no producer yet — same "declare the gap, don't fake it"
+    /// posture as [`Self::SystemThemeChanged`]/[`Self::WindowStateChanged`]:
+    /// the variant exists so app code and the event vocabulary are ready
+    /// before each backend wires its own native change notification
+    /// (GTK's `gdk::Display::monitors` `items-changed` signal on the
+    /// returned `gio::ListModel`, macOS's
+    /// `NSApplicationDidChangeScreenParametersNotification`). TUI has no
+    /// equivalent OS notification — a terminal resize arrives as
+    /// [`Self::WindowResized`], not a display-topology change — so it will
+    /// never emit this variant.
     ///
     /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`].
     ///
