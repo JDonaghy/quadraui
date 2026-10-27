@@ -1864,3 +1864,12 @@ required-features = ["tui"]
 name = "gtk_form_visibility"
 path = "examples/gtk_form_visibility.rs"
 required-features = ["gtk"]
+
+# Label placement/alignment/width demo. TUI-only for now (see the module
+# doc in examples/common/form_label_placement.rs for the GTK/macOS/Win
+# follow-up); the explicit `required-features` keeps this file out of
+# non-`tui` example builds the way the note above describes.
+[[example]]
+name = "tui_form_label_placement"
+path = "examples/tui_form_label_placement.rs"
+required-features = ["tui"]

@@ -217,6 +217,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -233,6 +237,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -244,6 +252,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -258,6 +270,9 @@ mod tests {
             focused_field: Some(WidgetId::new("name")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 
@@ -395,6 +410,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -426,6 +445,9 @@ mod tests {
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 
@@ -580,10 +602,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let (surface, layout) = paint_via_backend(&form);
         let theme = Theme::default();
@@ -635,10 +664,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let (_surface, layout) = paint_via_backend(&form);
         let vis = &layout.visible_fields[0];
@@ -688,10 +724,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: Some(WidgetId::new("pw")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let (surface, layout) = paint_via_backend(&form);
         // Locate the field bounds.
@@ -746,10 +789,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: Some(WidgetId::new("name")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
 
         // Must not panic.
@@ -776,10 +826,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: Some(WidgetId::new("pw")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
 
         // Must not panic.

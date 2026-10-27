@@ -74,8 +74,14 @@ only a push to `main` runs this workflow.
   the widest label (or an explicit `label_width` override), `Top` paints
   the label on its own row above the input, `Hidden` suppresses the label
   entirely, and `Inline` keeps each row's own per-label width unshared.
-  All fields are additive with `serde` defaults, so existing forms are
-  unaffected.
+  All fields are additive with `serde` defaults, so a form that never sets
+  them deserializes and reads exactly as before. The TUI paint path does
+  shift: every field that resolves to the default `Left` position now
+  shares one label column sized to the widest such label, so an existing
+  multi-field form's inputs (including `ToggleGroup`/`ButtonRow`/
+  `Toolbar`/`SegmentedControl` item columns) can move right to line up
+  with that shared column. `GTK`/`macOS`/`Win` compile against the new
+  fields but don't yet have their own rasteriser support for them.
 - `quadraui::expr`: a serializable, binding-neutral expression AST (`Expr`,
   `Value`, `Context`) for form rules (conditional visibility, validation).
   Field references, string/number/bool/null literals, comparisons

@@ -18,9 +18,10 @@
 //! - "Notes" (`TextInput`)  — `label_position: Inline`, tab_index 3
 //! - "Internal key" (`ReadOnly`) — `label_position: Hidden`, tab_index 4
 //!
-//! Tabbing from "Role" cycles ID → Owner → Role → Notes → Internal key →
-//! ID, i.e. declared order "Role, ID, Owner, Notes, Internal key" but
-//! visited in `tab_index` order "ID, Owner, Role, Notes, Internal key".
+//! "ID" and "Internal key" are `ReadOnly`, so `FormController` skips them
+//! in the focus cycle; tabbing from "Role" cycles Owner → Role → Notes →
+//! Owner, i.e. declared order "Role, Owner, Notes" but visited in
+//! `tab_index` order "Owner, Role, Notes".
 //!
 //! Controls:
 //! - `Tab` / `Shift+Tab`    → move focus in `tab_index` order
