@@ -274,8 +274,10 @@ use crate::compose::{
     FilePickerController, FilePickerEvent, FilePickerMode, MessageDialogController,
     MessageDialogEvent,
 };
+use crate::diagnostics;
 use crate::event::{Point, Rect, UiEvent};
 use crate::tui::backend::TuiBackend;
+use crate::update::{StagedUpdate, UpdateInfo, UpdateService};
 use crate::{Key, Modifiers, NamedKey};
 
 // ── Nested dialog loop ──────────────────────────────────────────────────────────
@@ -1900,8 +1902,85 @@ impl PlatformServices for TuiPlatformServices {
         Err(BackendError::Unsupported)
     }
 
+    /// A truthful degrade, not a silent `Unsupported`: a terminal app has
+    /// no package format this backend controls, so it can't actually
+    /// download or stage anything, but it can still tell a host an
+    /// update exists. [`TuiUpdateService::download_and_stage`] emits an
+    /// "update available: …" diagnostic through [`crate::diagnostics`]
+    /// before returning the same `Unsupported` every other backend's
+    /// default does.
+    fn update_service(&self) -> &dyn UpdateService {
+        static SERVICE: TuiUpdateService = TuiUpdateService;
+        &SERVICE
+    }
+
     fn platform_name(&self) -> &'static str {
         "tui"
+    }
+}
+
+/// [`UpdateService`] for the TUI backend. Every method falls back to the
+/// trait's own `Unsupported` default except [`Self::download_and_stage`],
+/// which first surfaces the update as a diagnostic — see this type's
+/// use in [`TuiPlatformServices::update_service`].
+struct TuiUpdateService;
+
+impl UpdateService for TuiUpdateService {
+    fn download_and_stage(&self, info: &UpdateInfo) -> ServiceResult<StagedUpdate> {
+        diagnostics::emit(format!("update available: {}", info.version));
+        Err(BackendError::Unsupported)
+    }
+}
+
+#[cfg(test)]
+mod update_service_tests {
+    use super::*;
+    use crate::update::UpdateFeed;
+    use std::sync::{Arc, Mutex};
+
+    // Shares the process-global diagnostics sink slot with every other
+    // test that calls `set_sink`/`clear_sink` — see
+    // `diagnostics::test_guard`'s doc.
+    fn guard() -> std::sync::MutexGuard<'static, ()> {
+        diagnostics::test_guard()
+    }
+
+    #[test]
+    fn check_for_update_and_apply_on_quit_stay_unsupported() {
+        let service = TuiPlatformServices::new();
+        let feed = UpdateFeed::new("https://example.com/appcast.xml");
+        assert_eq!(
+            service.update_service().check_for_update(&feed),
+            Err(BackendError::Unsupported)
+        );
+
+        let info = UpdateInfo::new("1.2.3", "notes", "https://example.com/v1.2.3", "sig");
+        let staged = StagedUpdate::new(info);
+        assert_eq!(
+            service.update_service().apply_on_quit(staged),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn download_and_stage_emits_the_available_version_then_degrades() {
+        let _g = guard();
+        let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let received_in_sink = Arc::clone(&received);
+        diagnostics::set_sink(move |msg: &str| {
+            received_in_sink.lock().unwrap().push(msg.to_string());
+        });
+
+        let service = TuiPlatformServices::new();
+        let info = UpdateInfo::new("1.2.3", "notes", "https://example.com/v1.2.3", "sig");
+        let result = service.update_service().download_and_stage(&info);
+
+        assert_eq!(result, Err(BackendError::Unsupported));
+        assert_eq!(
+            received.lock().unwrap().as_slice(),
+            ["update available: 1.2.3"]
+        );
+        diagnostics::clear_sink();
     }
 }
 

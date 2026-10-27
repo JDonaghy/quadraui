@@ -81,6 +81,7 @@ use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::switch::{Switch, SwitchLayout};
+use crate::update::UpdateService;
 // `TabBarHits` is `#[deprecated]` — this trait still returns it from six
 // methods below, so the import itself needs the same allow every use site
 // does.
@@ -4384,6 +4385,24 @@ pub trait PlatformServices {
     /// override with a real answer.
     fn cursor_screen_point(&self) -> ServiceResult<Point> {
         Err(BackendError::Unsupported)
+    }
+
+    /// The auto-update seam — check a feed, download and stage a new
+    /// build, apply it on the next quit. See [`UpdateService`]'s own doc
+    /// for the three-method contract and [`crate::update`]'s module doc
+    /// for which backends are expected to override which piece.
+    ///
+    /// Default: an [`UpdateService`] whose every method returns
+    /// [`BackendError::Unsupported`] — no in-tree backend has a real
+    /// updater yet (Sparkle/WinSparkle/AppImage integrations are
+    /// separate, backend-specific follow-ons). TUI overrides
+    /// [`UpdateService::download_and_stage`] with a truthful degrade
+    /// that surfaces an "update available" diagnostic rather than
+    /// staying silent — see
+    /// [`crate::tui::services::TuiPlatformServices::update_service`].
+    fn update_service(&self) -> &dyn UpdateService {
+        static SERVICE: crate::update::NoUpdateService = crate::update::NoUpdateService;
+        &SERVICE
     }
 
     /// Platform identifier — matches the `BackendNative.backend` field.
