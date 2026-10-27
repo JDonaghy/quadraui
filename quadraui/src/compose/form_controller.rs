@@ -102,11 +102,15 @@
 //! - Unlike `DatePicker`'s `date_picker_key_name` pre-filter,
 //!   `handle_combo_box_key` must see every key — digits/letters and
 //!   `Backspace` edit `text`, not just navigation — so it returns
-//!   `Option` instead of an unconditional event: `None` (Tab/BackTab,
+//!   `Option` instead of an unconditional event: a `None` (Tab/BackTab,
 //!   `Escape` while closed, `Up`/`Down` over an empty filtered list)
-//!   falls through to the generic dispatch below it, the same way a
-//!   disabled focused field's keys do, keeping `Tab`/`Shift+Tab` focus
-//!   traversal off a `ComboBox` field working normally.
+//!   falls through to the generic dispatch below it. For Tab/BackTab that
+//!   dispatch has a dedicated arm (focus traversal keeps working off a
+//!   `ComboBox` field normally); for `Escape`/`Up`/`Down` there is no such
+//!   arm, so they fall all the way through to `EditOp::from_key`, which
+//!   doesn't recognize them either, and resolve to
+//!   `FormControllerEvent::Ignored` — the same outcome as a disabled
+//!   focused field's keys, not a second layer of dedicated handling.
 //! - The compact field row (live `text` plus a chevron) is the only
 //!   thing `Form`/`FormController` paint; the open dropdown is the app's
 //!   own popup overlay, mirroring `ColorPicker`'s contract — see
@@ -537,8 +541,12 @@ impl FormController {
             // Char/Backspace too, not just navigation keys — so
             // `handle_combo_box_key` returns `Option` instead and a
             // `None` here (Tab/BackTab, Escape while closed, Up/Down
-            // over an empty filtered list) falls through to the generic
-            // dispatch below rather than being swallowed outright.
+            // over an empty filtered list) falls through to the match
+            // below rather than being swallowed outright. Tab/BackTab have
+            // a dedicated arm there; Escape and Up/Down don't, so those
+            // fall all the way to `EditOp::from_key` and resolve to
+            // `FormControllerEvent::Ignored`, not a second round of
+            // combo-box-specific handling.
             if self.focused_field_is_enabled_combo_box() {
                 if let Some(result) = self.handle_combo_box_key(key, modifiers) {
                     return result;
@@ -718,18 +726,32 @@ impl FormController {
         let mut combo = combo.clone();
         combo.focused = true;
 
+        // `FormEvent::ComboBox*` carries the *field's* id (`focused_id`),
+        // not the embedded `ComboBox`'s own id from `ComboBoxEvent` —
+        // mirroring `FormEvent::DateChanged`'s `id: focused_id` shape so
+        // a consumer can always resolve the event back to a `FormField`
+        // with `form.fields.iter().find(|f| f.id == id)`.
         match combo.handle_key(key, modifiers)? {
-            ComboBoxEvent::TextChanged { id, text } => Some(FormControllerEvent::FormAction(
-                FormEvent::ComboBoxTextChanged { id, value: text },
+            ComboBoxEvent::TextChanged { text, .. } => Some(FormControllerEvent::FormAction(
+                FormEvent::ComboBoxTextChanged {
+                    id: focused_id,
+                    value: text,
+                },
             )),
-            ComboBoxEvent::HighlightChanged { id, index } => Some(FormControllerEvent::FormAction(
-                FormEvent::ComboBoxHighlightChanged { id, index },
+            ComboBoxEvent::HighlightChanged { index, .. } => Some(FormControllerEvent::FormAction(
+                FormEvent::ComboBoxHighlightChanged {
+                    id: focused_id,
+                    index,
+                },
             )),
-            ComboBoxEvent::Committed { id, value } => Some(FormControllerEvent::FormAction(
-                FormEvent::ComboBoxCommitted { id, value },
+            ComboBoxEvent::Committed { value, .. } => Some(FormControllerEvent::FormAction(
+                FormEvent::ComboBoxCommitted {
+                    id: focused_id,
+                    value,
+                },
             )),
-            ComboBoxEvent::Cancelled { id } => Some(FormControllerEvent::FormAction(
-                FormEvent::ComboBoxCancelled { id },
+            ComboBoxEvent::Cancelled { .. } => Some(FormControllerEvent::FormAction(
+                FormEvent::ComboBoxCancelled { id: focused_id },
             )),
         }
     }
@@ -2241,14 +2263,28 @@ mod tests {
         open: bool,
         disabled: bool,
     ) -> FormField {
+        combo_field_with_ids(id, id, options, text, open, disabled)
+    }
+
+    /// Like [`combo_field`], but lets the `FormField`'s id and the
+    /// embedded `ComboBox`'s own id differ, so a test can assert which
+    /// one a `FormEvent::ComboBox*` variant actually carries.
+    fn combo_field_with_ids(
+        field_id: &str,
+        combo_id: &str,
+        options: &[&str],
+        text: &str,
+        open: bool,
+        disabled: bool,
+    ) -> FormField {
         let mut combo = ComboBox::new(
-            WidgetId::new(id),
+            WidgetId::new(combo_id),
             options.iter().map(|s| s.to_string()).collect(),
         );
         combo.text = text.to_string();
         combo.open = open;
         FormField {
-            id: WidgetId::new(id),
+            id: WidgetId::new(field_id),
             label: StyledText::plain("Combo"),
             kind: FieldKind::ComboBox(combo),
             hint: StyledText::default(),
@@ -3176,5 +3212,104 @@ mod tests {
             }
             other => panic!("expected ComboBox, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn combo_box_events_carry_the_field_id_not_the_embedded_combo_box_id() {
+        // The `FormField` and its embedded `ComboBox` are given distinct
+        // ids here, mirroring `examples/common/form_all_fields.rs`'s
+        // "fruit" field / "fruit-combo" primitive split. Every
+        // `FormEvent::ComboBox*` below must carry the *field* id
+        // ("field"), not the primitive's own id ("combo") — otherwise a
+        // consumer resolving the event back to its `FormField` via
+        // `form.fields.iter().find(|f| f.id == id)` would silently find
+        // nothing.
+        let mut fc = controller_with(
+            vec![combo_field_with_ids(
+                "field",
+                "combo",
+                &["Apple", "Banana", "Cherry"],
+                "Ban",
+                false,
+                false,
+            )],
+            Some("field"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Char('b'), Modifiers::default()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxTextChanged {
+                id: WidgetId::new("field"),
+                value: "Banb".to_string(),
+            })
+        );
+
+        let mut fc = controller_with(
+            vec![combo_field_with_ids(
+                "field",
+                "combo",
+                &["Apple", "Banana", "Cherry"],
+                "",
+                true,
+                false,
+            )],
+            Some("field"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxHighlightChanged {
+                id: WidgetId::new("field"),
+                index: 0,
+            })
+        );
+
+        let mut fc = controller_with(
+            vec![combo_field_with_ids(
+                "field",
+                "combo",
+                &["Apple", "Banana", "Cherry"],
+                "Ban",
+                false,
+                false,
+            )],
+            Some("field"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxCommitted {
+                id: WidgetId::new("field"),
+                value: "Ban".to_string(),
+            })
+        );
+
+        let mut fc = controller_with(
+            vec![combo_field_with_ids(
+                "field",
+                "combo",
+                &["Apple", "Banana"],
+                "a",
+                true,
+                false,
+            )],
+            Some("field"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Escape), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxCancelled {
+                id: WidgetId::new("field"),
+            })
+        );
     }
 }

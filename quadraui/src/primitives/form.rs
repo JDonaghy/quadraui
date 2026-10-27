@@ -1893,17 +1893,37 @@ pub enum FormEvent {
     /// A `ComboBox` field's text buffer changed (typing filters the
     /// dropdown). Fires on every keystroke that modifies the buffer,
     /// mirroring `TextInputChanged`'s "fires every keystroke" shape.
+    /// `id` is the **`FormField`'s** id, not the embedded `ComboBox`
+    /// primitive's own id — the same `id: focused_id` shape
+    /// `FormEvent::DateChanged` uses — so a consumer can always resolve
+    /// this back to a field via `form.fields.iter().find(|f| f.id ==
+    /// id)`. Applying this event must also set `open = true` on the
+    /// `ComboBox`, per [`crate::primitives::combo_box::ComboBox`]'s
+    /// apply contract: the host owns opening the dropdown on the first
+    /// keystroke, `FormController` does not do it for you.
     ComboBoxTextChanged { id: WidgetId, value: String },
     /// A `ComboBox` field's highlighted dropdown item changed (arrow-key
-    /// navigation while the dropdown is open).
+    /// navigation while the dropdown is open). `id` is the `FormField`'s
+    /// id, as with [`Self::ComboBoxTextChanged`]. `index` is into the
+    /// *filtered* list (`ComboBox::filtered_indices`), not the field's
+    /// raw `options` — index it against the currently-visible dropdown
+    /// items, not the full option list.
     ComboBoxHighlightChanged { id: WidgetId, index: usize },
-    /// A `ComboBox` field confirmed a value (Enter, or clicking a
-    /// dropdown item). Mirrors `TextInputCommitted`'s "fires once, on
-    /// confirm" shape rather than `ComboBoxTextChanged`'s "fires every
-    /// keystroke" shape.
+    /// A `ComboBox` field confirmed a value (Enter). Mirrors
+    /// `TextInputCommitted`'s "fires once, on confirm" shape rather than
+    /// `ComboBoxTextChanged`'s "fires every keystroke" shape. `id` is
+    /// the `FormField`'s id, as with [`Self::ComboBoxTextChanged`].
+    /// `Form`/`FormController` route this only from a key press
+    /// (`form_click_event` has no `ComboBox` arm); an app that wants a
+    /// click on a dropdown item to also commit must call
+    /// [`crate::primitives::combo_box::ComboBox::click`] itself and
+    /// apply the resulting event the same way.
     ComboBoxCommitted { id: WidgetId, value: String },
     /// A `ComboBox` field's in-progress edit was cancelled (Escape),
-    /// reverting the live `text` buffer back to `committed`.
+    /// reverting the live `text` buffer back to `committed`. `id` is the
+    /// `FormField`'s id, as with [`Self::ComboBoxTextChanged`]. Applying
+    /// this event means setting `text = committed.clone()` and `open =
+    /// false` on the `ComboBox`.
     ComboBoxCancelled { id: WidgetId },
 }
 

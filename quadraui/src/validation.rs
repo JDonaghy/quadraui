@@ -125,10 +125,13 @@ impl Severity {
 ///
 /// Only [`FieldKind`] variants that carry a plain scalar value feed one of
 /// these: `Toggle` (bool), `TextInput`/`TextArea`/`PasswordInput` (string),
-/// `Slider` (number), and `Dropdown`/`SegmentedControl` (number, the
-/// selected index). Every other kind (`Label`, `Button`, `ReadOnly`,
-/// `ColorPicker`, `ToggleGroup`, `ButtonRow`, `Toolbar`, `DatePicker`) has
-/// no value [`validate`] can extract, so it always evaluates as
+/// `Slider` (number), `Dropdown`/`SegmentedControl` (number, the selected
+/// index), and `ComboBox` (string, the *committed* value — not the
+/// in-progress `text` buffer, so a field mid-edit still validates against
+/// its last confirmed value). Every other kind (`Label`, `Button`,
+/// `ReadOnly`, `ColorPicker`, `ToggleGroup`, `ButtonRow`, `Toolbar`,
+/// `DatePicker`) has no value [`validate`] can extract, so it always
+/// evaluates as
 /// [`crate::expr::Value::Null`] — fine for [`Validator::Expr`] (which can
 /// still read every *other* field), but [`Validator::Required`] against one
 /// of those kinds always fails and should not be declared.
@@ -243,6 +246,7 @@ fn field_value(kind: &FieldKind) -> Value {
         FieldKind::Slider { value, .. } => Value::Number(*value as f64),
         FieldKind::Dropdown { selected_idx, .. }
         | FieldKind::SegmentedControl { selected_idx, .. } => Value::Number(*selected_idx as f64),
+        FieldKind::ComboBox(combo) => Value::String(combo.committed.clone()),
         _ => Value::Null,
     }
 }
@@ -293,6 +297,31 @@ mod tests {
                 cursor: None,
                 selection_anchor: None,
             },
+            hint: StyledText::plain(""),
+            disabled: false,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+        }
+    }
+
+    fn combo_field(id: &str, committed: &str) -> FormField {
+        let mut combo = crate::primitives::combo_box::ComboBox::new(
+            WidgetId::new(id),
+            vec![
+                "Apple".to_string(),
+                "Banana".to_string(),
+                "Cherry".to_string(),
+            ],
+        );
+        combo.committed = committed.to_string();
+        combo.text = committed.to_string();
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::plain(id),
+            kind: FieldKind::ComboBox(combo),
             hint: StyledText::plain(""),
             disabled: false,
             validation: None,
@@ -544,6 +573,31 @@ mod tests {
             form.fields[0].validation,
             Some(ValidationState::Error("pre-existing".to_string()))
         );
+    }
+
+    #[test]
+    fn combo_box_field_validates_against_its_committed_value() {
+        let mut form = form_with(vec![combo_field("f:fruit", "")]);
+        let mut rules = FormRules::default();
+        rules.fields.insert(
+            "f:fruit".to_string(),
+            vec![rule(Validator::Required, "Pick a fruit")],
+        );
+
+        validate(&mut form, &rules);
+        assert_eq!(
+            form.fields[0].validation,
+            Some(ValidationState::Error("Pick a fruit".to_string()))
+        );
+
+        // Committing a value clears the error, even though `text` is what
+        // the host mutates live while the user types.
+        let FieldKind::ComboBox(combo) = &mut form.fields[0].kind else {
+            unreachable!()
+        };
+        combo.committed = "Banana".to_string();
+        validate(&mut form, &rules);
+        assert_eq!(form.fields[0].validation, None);
     }
 
     #[test]

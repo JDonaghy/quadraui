@@ -88,6 +88,8 @@ mod focus_demo;
 mod folder_picker_app;
 #[path = "../examples/common/form_all_fields.rs"]
 mod form_all_fields;
+#[path = "../examples/common/form_combo_box.rs"]
+mod form_combo_box;
 #[path = "../examples/common/form_date_picker.rs"]
 mod form_date_picker;
 #[path = "../examples/common/form_groups.rs"]
@@ -209,6 +211,7 @@ use float_app::FloatApp;
 use focus_demo::{FocusDemo, LEFT_ID, RIGHT_ID, STATUS_ID};
 use folder_picker_app::FolderPickerApp;
 use form_all_fields::FormAllFieldsApp;
+use form_combo_box::FormComboBoxApp;
 use form_date_picker::FormDatePickerApp;
 use form_groups::FormGroupsApp;
 use form_label_placement::FormLabelPlacementApp;
@@ -5393,6 +5396,199 @@ fn form_all_fields_paints_every_field_kind_value() {
             "expected {needle:?} painted somewhere on screen:\n{screen}"
         );
     }
+}
+
+// ─── FormComboBoxApp: FieldKind::ComboBox routed through FormController ──────
+//
+// `FormController` forwards every key straight into the embedded
+// `ComboBox` and translates its `ComboBoxEvent` into one of the four
+// `FormEvent::ComboBox*` events (see `compose::form_controller`'s
+// "ComboBox fields" doc section). The app only *applies* those events —
+// these tests exercise that routing, and the app's own dropdown-overlay
+// paint, end to end through the real example and the TUI renderer.
+//
+// The demo starts with an empty, uncommitted combo box (no seeded text),
+// so the status bar's `fruit=` echo stays blank until a value is
+// committed — `screen_contains` assertions below never collide with it.
+
+#[test]
+fn form_combo_box_starts_closed_with_nothing_committed() {
+    let driver = TuiDriver::new(FormComboBoxApp::new(), 60, 14);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("fruit= |"),
+        "nothing is committed until Enter is pressed:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Apple"),
+        "the dropdown must stay closed (and painting no options) until a \
+         key opens it:\n{screen}"
+    );
+}
+
+#[test]
+fn form_combo_box_typing_narrows_the_filtered_dropdown() {
+    let mut driver = TuiDriver::new(FormComboBoxApp::new(), 60, 14);
+    driver.type_char('c');
+    let after_c = driver.screen();
+    for needle in ["Apricot", "Cherry", "Cranberry"] {
+        assert!(
+            after_c.contains(needle),
+            "typing 'c' should open the dropdown filtered to every option \
+             whose name contains a 'c':\n{after_c}"
+        );
+    }
+
+    driver.type_char('h');
+    let after_ch = driver.screen();
+    assert!(
+        after_ch.contains("Cherry"),
+        "typing 'ch' should keep 'Cherry' in the narrowed list:\n{after_ch}"
+    );
+    for needle in ["Apricot", "Cranberry"] {
+        assert!(
+            !after_ch.contains(needle),
+            "typing 'ch' should filter {needle:?} out of the dropdown, \
+             since it doesn't contain that substring:\n{after_ch}"
+        );
+    }
+}
+
+#[test]
+fn form_combo_box_arrow_keys_move_the_highlight_between_filtered_rows() {
+    let mut driver = TuiDriver::new(FormComboBoxApp::new(), 60, 14);
+    driver.type_char('a');
+    driver.type_char('n');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Banana") && screen.contains("Cranberry"),
+        "typing 'an' should filter the dropdown down to exactly 'Banana' \
+         and 'Cranberry':\n{screen}"
+    );
+
+    let banana_pos = driver.find_bounds("Banana").expect("Banana row painted");
+    let baseline_banana = driver
+        .style_at(banana_pos.x as u16, banana_pos.y as u16)
+        .expect("Banana row has a style");
+
+    driver.press_named(quadraui::NamedKey::Down);
+    let banana_pos = driver.find_bounds("Banana").expect("Banana row painted");
+    let cranberry_pos = driver
+        .find_bounds("Cranberry")
+        .expect("Cranberry row painted");
+    let highlighted_banana = driver
+        .style_at(banana_pos.x as u16, banana_pos.y as u16)
+        .expect("Banana row has a style");
+    let unhighlighted_cranberry = driver
+        .style_at(cranberry_pos.x as u16, cranberry_pos.y as u16)
+        .expect("Cranberry row has a style");
+    assert_ne!(
+        highlighted_banana, baseline_banana,
+        "the first Down press should highlight 'Banana', the first \
+         filtered row, changing its row style"
+    );
+
+    driver.press_named(quadraui::NamedKey::Down);
+    let banana_pos = driver.find_bounds("Banana").expect("Banana row painted");
+    let cranberry_pos = driver
+        .find_bounds("Cranberry")
+        .expect("Cranberry row painted");
+    let banana_after_second_down = driver
+        .style_at(banana_pos.x as u16, banana_pos.y as u16)
+        .expect("Banana row has a style");
+    let cranberry_after_second_down = driver
+        .style_at(cranberry_pos.x as u16, cranberry_pos.y as u16)
+        .expect("Cranberry row has a style");
+    assert_eq!(
+        banana_after_second_down, baseline_banana,
+        "the second Down press should move the highlight off 'Banana', \
+         restoring its unhighlighted row style"
+    );
+    assert_ne!(
+        cranberry_after_second_down, unhighlighted_cranberry,
+        "the second Down press should move the highlight onto \
+         'Cranberry', changing its row style"
+    );
+}
+
+#[test]
+fn form_combo_box_enter_commits_the_highlighted_option_and_closes_the_dropdown() {
+    let mut driver = TuiDriver::new(FormComboBoxApp::new(), 60, 14);
+    driver.type_char('a');
+    driver.type_char('n');
+    driver.press_named(quadraui::NamedKey::Down);
+    driver.press_named(quadraui::NamedKey::Down);
+    driver.press_named(quadraui::NamedKey::Enter);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("fruit=Cranberry"),
+        "Enter should commit the highlighted option ('Cranberry', the \
+         second Down's target) and the app should persist + echo it:\n{after}"
+    );
+    assert!(
+        !after.contains("Apple"),
+        "committing should close the dropdown, so no option rows paint \
+         any more:\n{after}"
+    );
+}
+
+#[test]
+fn form_combo_box_escape_cancels_back_to_the_committed_value() {
+    let mut driver = TuiDriver::new(FormComboBoxApp::new(), 60, 14);
+    driver.type_char('a');
+    driver.type_char('n');
+    let mid = driver.screen();
+    assert!(
+        mid.contains("Banana") && mid.contains("Cranberry"),
+        "setup: typing 'an' should open the dropdown filtered to 'Banana' \
+         and 'Cranberry':\n{mid}"
+    );
+
+    driver.press_named(quadraui::NamedKey::Escape);
+    let after = driver.screen();
+    assert!(
+        after.contains("fruit= |"),
+        "Escape should cancel the in-flight edit, reverting the field to \
+         its (still-empty) committed value:\n{after}"
+    );
+    assert!(
+        !after.contains("Banana") && !after.contains("Cranberry"),
+        "Escape should close the dropdown, so filtered rows stop \
+         painting:\n{after}"
+    );
+}
+
+#[test]
+fn form_combo_box_q_quits_only_when_the_dropdown_is_closed() {
+    let mut driver = TuiDriver::new(FormComboBoxApp::new(), 60, 14);
+    driver.type_char('c');
+    assert!(
+        !driver.exited(),
+        "typing 'c' opens the dropdown and must not quit"
+    );
+
+    driver.type_char('q');
+    assert!(
+        !driver.exited(),
+        "'q' while the dropdown is open should type into the combo box's \
+         filter text, not quit — the field consumes it just like any \
+         other character"
+    );
+
+    driver.press_named(quadraui::NamedKey::Escape);
+    assert!(
+        !driver.exited(),
+        "Escape while the dropdown is open should cancel the edit, not \
+         quit"
+    );
+
+    driver.type_char('q');
+    assert!(
+        driver.exited(),
+        "'q' should quit once the dropdown is closed and nothing is being \
+         edited"
+    );
 }
 
 // ─── FormDatePickerApp: FieldKind::DatePicker routed through FormController ──

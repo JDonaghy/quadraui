@@ -1293,6 +1293,13 @@ mod tests {
                     crate::primitives::date_picker::CalendarDate::new(2024, 3, 15),
                 )),
             ),
+            (
+                "combo-box",
+                FieldKind::ComboBox(crate::primitives::combo_box::ComboBox::new(
+                    WidgetId::new("cb"),
+                    vec!["Apple".into(), "Banana".into(), "Cherry".into()],
+                )),
+            ),
         ];
 
         for (name, kind) in kinds {
