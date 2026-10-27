@@ -5274,6 +5274,10 @@ fn form_visibility_toggling_ship_shows_and_hides_the_address_field() {
 #[test]
 fn form_visibility_agree_toggle_enables_submit_render_and_click_action() {
     let mut driver = TuiDriver::new(FormVisibilityApp::new(), 100, 24);
+    // The agree-toggle click and the later Submit click land one row
+    // apart; without disabling folding a second close click could be
+    // read as a DoubleClick, which `handle_inner` ignores.
+    driver.set_double_click_folding(false);
 
     let (sx, sy) = driver
         .find("Submit")
@@ -5323,6 +5327,35 @@ fn form_visibility_agree_toggle_enables_submit_render_and_click_action() {
     assert!(
         after_enabled_click.contains("submits=1") && after_enabled_click.contains("submitted"),
         "clicking Submit while 'agree' is on should count as a submit:\n{after_enabled_click}"
+    );
+}
+
+#[test]
+fn form_visibility_typing_q_while_editing_address_does_not_quit() {
+    let mut driver = TuiDriver::new(FormVisibilityApp::new(), 100, 24);
+
+    // Reveal the address field, then Tab from "ship" onto it.
+    let (x, y) = driver
+        .find("Ship to a different address")
+        .unwrap_or_else(|| panic!("ship toggle not painted:\n{}", driver.screen()));
+    driver.click(x, y);
+    driver.press_named(quadraui::NamedKey::Tab);
+
+    let focused = driver.screen();
+    assert!(
+        focused.contains("focus → address"),
+        "Tab from 'ship' should land on the now-visible address field:\n{focused}"
+    );
+
+    driver.type_char('q');
+    assert!(
+        !driver.exited(),
+        "'q' while the address field is focused should type a 'q', not quit"
+    );
+    let after = driver.screen();
+    assert!(
+        after.contains("address = \"q\""),
+        "the typed 'q' should land in the address field:\n{after}"
     );
 }
 

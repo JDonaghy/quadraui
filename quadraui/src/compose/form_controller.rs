@@ -112,6 +112,14 @@
 //! `enabled_when`. A controller with no visibility rules set
 //! (`FormVisibility::default()`, the starting state) behaves exactly as
 //! before: `set_form` stores the `Form` unchanged beyond validation.
+//!
+//! `apply_visibility` clears `Form::focused_field` when the field it named
+//! is hidden, but `self.text_edit` / `self.date_edit` are left pointing at
+//! that field's in-flight edit state. This is deliberate: `build_form`
+//! looks the edit state up by id via `.find()`, so it is simply inert
+//! while the field stays hidden, and if the field reappears with the same
+//! id the cached cursor/scrub position resuming is the desired behaviour
+//! rather than a reset.
 
 use crate::primitives::date_picker::{CalendarDate, DatePickerEvent};
 use crate::primitives::form::{

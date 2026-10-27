@@ -40,10 +40,10 @@
 //!
 //! - `visible_when` gates membership in [`Form::fields`] itself: a field
 //!   whose `visible_when` evaluates to `false` is removed from the list
-//!   entirely (mirroring the issue's own imperative baseline of "rebuilding
-//!   the field list"), not just skipped during painting — so it does not
-//!   occupy layout space, is not a Tab stop, and the `WidgetId` space it
-//!   would have claimed in a click hit-test is free. A field with no
+//!   entirely (mirroring the imperative baseline of rebuilding the field
+//!   list), not just skipped during painting — so it does not occupy
+//!   layout space, is not a Tab stop, and the `WidgetId` space it would
+//!   have claimed in a click hit-test is free. A field with no
 //!   `visible_when` declared is always a member.
 //! - `enabled_when` writes `FormField::disabled`: `true` when the
 //!   condition evaluates to `false`, `false` when it evaluates to `true`.
@@ -51,7 +51,13 @@
 //!   field unconditionally on every [`apply_visibility`] call, the same
 //!   posture [`crate::validation::validate`] takes for `validation`. A
 //!   field with no `enabled_when` declared keeps whatever `disabled` the
-//!   caller (or the imperative path) set.
+//!   caller (or the imperative path) set. `enabled_when` is visual and
+//!   Tab-order only: [`crate::compose::FormController`]'s click routing
+//!   still emits `FormEvent::ButtonClicked` / `ToggleChanged` for a
+//!   `disabled` field exactly as it does for an imperatively disabled one
+//!   (the same posture a disabled toolbar button takes), so a host that
+//!   needs pointer input actually blocked must re-check the condition
+//!   itself before honoring the event.
 //! - Both conditions are evaluated against the same cross-field
 //!   [`crate::validation::form_context`] `validate` uses, built from the
 //!   form's values *before* any field is removed by `visible_when` — so a
@@ -59,7 +65,18 @@
 //! - If `Form::focused_field` names a field that `visible_when` just
 //!   removed, it is cleared to `None` rather than left dangling; the next
 //!   Tab press (or a fresh click) picks a new focus the same way it would
-//!   after the last field is removed by any other means.
+//!   after the last field is removed by any other means. No
+//!   `FormEvent::FocusChanged` is emitted for this drop — a host that
+//!   mirrors `focused_field` in its own state (rather than reading it back
+//!   off `Form`) keeps a dangling id until the next event moves focus.
+//! - [`crate::compose::FormController`]'s own `scroll_offset` is not
+//!   re-clamped when `visible_when` shrinks the field list; it is only
+//!   re-clamped on the next scroll event. A form scrolled near the bottom
+//!   that then hides most of its fields can render blank until then.
+//! - `FormVisibility` keys only a top-level `FormField::id`, the same
+//!   limitation [`crate::validation::FormRules`] has: a condition cannot
+//!   target a `ToggleGroupItem`, `ButtonRowItem` or `ToolbarButton` nested
+//!   inside a field.
 //!
 //! # Wire shape
 //!
@@ -335,6 +352,35 @@ mod tests {
         );
         apply_visibility(&mut form, &rules);
         assert_eq!(form.focused_field, Some(WidgetId::new("shipping_name")));
+    }
+
+    #[test]
+    fn hidden_field_still_gets_its_disabled_write_before_being_removed() {
+        // Both conditions declared on the same field, `visible_when`
+        // false: the `enabled_when` write happens before the `retain`
+        // drops the field, which is harmless since the field is gone by
+        // the time `apply_visibility` returns either way.
+        let mut form = form_with(vec![
+            toggle_field("needs_shipping", false),
+            toggle_field("locked", true),
+            toggle_field("shipping_name", true),
+        ]);
+        let mut rules = FormVisibility::default();
+        rules.fields.insert(
+            "shipping_name".to_string(),
+            FieldVisibility {
+                visible_when: Some(Expr::Field("needs_shipping".into())),
+                enabled_when: Some(Expr::Not(Box::new(Expr::Field("locked".into())))),
+            },
+        );
+        apply_visibility(&mut form, &rules);
+        assert!(
+            !form
+                .fields
+                .iter()
+                .any(|f| f.id == WidgetId::new("shipping_name")),
+            "visible_when false should remove the field regardless of enabled_when"
+        );
     }
 
     #[test]
