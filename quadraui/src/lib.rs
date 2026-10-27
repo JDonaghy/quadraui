@@ -185,6 +185,14 @@ pub mod caret_blink;
 pub mod descriptor_store;
 pub mod diagnostics;
 pub mod diff;
+// Not under `primitives/`, same reasoning as `font_role`/`generic_font`
+// below: a serializable rule AST is not a widget — no `Layout`, no
+// `hit_test`, no `Backend::draw_*` method of its own — so it must not
+// inflate the primitive count `readme_truth.rs` derives from
+// `primitives/mod.rs`'s `pub mod` list. Binding-neutral by design: see the
+// module doc for why the `Expr`/`Value` types, not a Rust closure, are the
+// thing every Lua/Python/C-ABI binding emits.
+pub mod expr;
 pub mod focus;
 // Not under `primitives/`, for the same reason `a11y` isn't (see the
 // comment above `mod a11y`): `font_role` classifies *which font* each

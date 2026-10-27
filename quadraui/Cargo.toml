@@ -461,6 +461,15 @@ taffy = { version = "0.14.0", default-features = false, features = ["taffy_tree"
 # pulls in exactly that.
 accesskit = { version = "0.25", optional = true }
 
+# Unconditional (not feature-gated), same reasoning as `serde_json` above:
+# `quadraui::expr::Expr::Matches` needs a real regex engine for every
+# backend feature, not just `tui`/`gtk` — the expression AST is
+# binding-neutral core, evaluated the same way regardless of which
+# rasteriser (if any) is compiled in. Pure Rust, no system library, no
+# `pkg-config` probe, so it adds no platform-specific build step on top of
+# what this crate already requires everywhere.
+regex = "1"
+
 [build-dependencies]
 # `build.rs`'s `pangoft2` probe (`gtk` feature only): the hand-declared
 # `pango_fc_font_map_config_changed` symbol
