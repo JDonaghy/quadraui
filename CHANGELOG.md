@@ -60,6 +60,19 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `FieldKind::Dropdown` TUI popup: the TUI backend now paints an in-canvas
+  option list under a focused `Dropdown` field, instead of leaving the
+  selected value and the rest of the options invisible between Enter
+  presses. No new fields on `FieldKind::Dropdown` — `focused` (derived from
+  the existing `Form::focused_field`/`Form::has_focus`) is the sole
+  visibility signal, matching the GUI backends' existing popup. `Up`/`Down`
+  live-commit `selected_idx` on every keystroke via `FormEvent::DropdownChanged`,
+  with no separate open/close step; `FormController::handle_dropdown_key`
+  routes them, falling back to the generic Tab/BackTab handling other fields
+  share once the first/last option is reached. Covered by `tui::form`'s
+  paint tests, `compose::form_controller`'s routing tests, and a dedicated
+  `examples/tui_form_dropdown.rs` demo (`examples/common/form_dropdown.rs`)
+  with `TuiDriver` end-to-end tests.
 - `FieldKind::ComboBox`: a searchable / type-to-filter combobox form field,
   wrapping the existing `ComboBox` primitive. `FormEvent::ComboBoxTextChanged`
   / `ComboBoxHighlightChanged` / `ComboBoxCommitted` / `ComboBoxCancelled`

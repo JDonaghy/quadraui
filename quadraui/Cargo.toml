@@ -1008,6 +1008,11 @@ path = "examples/tui_form_combo_box.rs"
 required-features = ["tui"]
 
 [[example]]
+name = "tui_form_dropdown"
+path = "examples/tui_form_dropdown.rs"
+required-features = ["tui"]
+
+[[example]]
 name = "tui_form_date_picker"
 path = "examples/tui_form_date_picker.rs"
 required-features = ["tui"]
