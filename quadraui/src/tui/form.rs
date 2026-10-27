@@ -9,21 +9,77 @@ use ratatui::layout::Rect;
 
 use super::{draw_styled_text, ratatui_color, set_cell};
 use crate::primitives::form::{
-    FieldKind, Form, FormFieldMeasure, FormItemMeasure, ValidationState,
+    FieldKind, Form, FormField, FormFieldMeasure, FormItemMeasure, LabelAlign, LabelPosition,
+    ValidationState,
 };
 use crate::primitives::toolbar::ToolbarButton;
 use crate::theme::Theme;
 use crate::types::{Decoration, WidgetId};
 
+/// Shared label-column width (in cells) for every `Left`-positioned
+/// field in `form`. An explicit [`Form::resolved_label_width`] on any
+/// such field counts toward the max, so one wide override still pulls
+/// the whole column wider; fields that leave it unset fall back to
+/// their own label's width. Fields resolved to `Top`/`Inline`/`Hidden`
+/// don't share this column and are excluded.
+fn left_label_column_width(form: &Form) -> usize {
+    form.fields
+        .iter()
+        .filter(|f| {
+            form.resolved_label_position(f) == LabelPosition::Left && f.label.visible_width() > 0
+        })
+        .map(|f| {
+            form.resolved_label_width(f)
+                .map(|w| w.round().max(0.0) as usize)
+                .unwrap_or_else(|| f.label.visible_width())
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Whether `field` renders its label on its own row above the input
+/// (only meaningful for fields with an actual input row — a bare
+/// `FieldKind::Label` header has no separate input to split from).
+fn is_top_label(form: &Form, field: &FormField) -> bool {
+    !matches!(field.kind, FieldKind::Label)
+        && form.resolved_label_position(field) == LabelPosition::Top
+        && field.label.visible_width() > 0
+}
+
+/// X offset where a field's input/items start, after its resolved
+/// label column (or 0/1 when there's no reserved column to clear).
+/// `no_label_fallback` is the start column when the field has no
+/// label to reserve space for (`0` for `Toolbar`, which packs flush
+/// left; `1` for everything else, to leave room for the row's left
+/// border decoration).
+fn field_items_start_x(
+    form: &Form,
+    field: &FormField,
+    left_label_width: usize,
+    no_label_fallback: usize,
+) -> f32 {
+    let label_w = field.label.visible_width();
+    if label_w == 0 {
+        return no_label_fallback as f32;
+    }
+    match form.resolved_label_position(field) {
+        LabelPosition::Hidden | LabelPosition::Top => no_label_fallback as f32,
+        LabelPosition::Left => (left_label_width + 2) as f32,
+        LabelPosition::Inline => (label_w + 2) as f32,
+    }
+}
+
 /// Compute the form layout using TUI cell metrics (1 cell per row,
-/// char-count item widths).
+/// char-count item widths). A field whose label resolves to
+/// [`LabelPosition::Top`] measures one extra row for the label line.
 pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::FormLayout {
+    let left_label_width = left_label_column_width(form);
     form.layout(area.width as f32, area.height as f32, |i| {
         let field = &form.fields[i];
+        let extra_row = if is_top_label(form, field) { 1.0 } else { 0.0 };
         match &field.kind {
             FieldKind::ToggleGroup { toggles } => {
-                let label_w = field.label.visible_width();
-                let start_x = if label_w > 0 { label_w + 2 } else { 1 };
+                let start_x = field_items_start_x(form, field, left_label_width, 1);
                 let items = toggles
                     .iter()
                     .map(|t| FormItemMeasure {
@@ -31,11 +87,10 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
                         width: t.label.chars().count() as f32,
                     })
                     .collect();
-                FormFieldMeasure::with_items(1.0, start_x as f32, 1.0, items)
+                FormFieldMeasure::with_items(1.0 + extra_row, start_x, 1.0, items)
             }
             FieldKind::ButtonRow { buttons } => {
-                let label_w = field.label.visible_width();
-                let start_x = if label_w > 0 { label_w + 2 } else { 1 };
+                let start_x = field_items_start_x(form, field, left_label_width, 1);
                 let items = buttons
                     .iter()
                     .map(|b| {
@@ -57,13 +112,14 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
                         }
                     })
                     .collect();
-                FormFieldMeasure::with_items(1.0, start_x as f32, 1.0, items)
+                FormFieldMeasure::with_items(1.0 + extra_row, start_x, 1.0, items)
             }
-            FieldKind::TextArea { visible_rows, .. } => FormFieldMeasure::new(*visible_rows as f32),
+            FieldKind::TextArea { visible_rows, .. } => {
+                FormFieldMeasure::new(*visible_rows as f32 + extra_row)
+            }
             FieldKind::Toolbar(toolbar) => {
                 use super::toolbar::tui_item_width;
-                let label_w = field.label.visible_width();
-                let start_x = if label_w > 0 { label_w + 2 } else { 0 };
+                let start_x = field_items_start_x(form, field, left_label_width, 0);
                 // Include ALL toolbar items (actions, separators, labels) in
                 // item_measures so the sequential layout matches `draw_toolbar`'s
                 // left-to-right packing. Separators and labels get the field's
@@ -84,11 +140,10 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
                     .collect();
                 // item_gap = 0: toolbar buttons pack edge-to-edge, same as
                 // how `Toolbar::layout` places items.
-                FormFieldMeasure::with_items(1.0, start_x as f32, 0.0, items)
+                FormFieldMeasure::with_items(1.0 + extra_row, start_x, 0.0, items)
             }
             FieldKind::SegmentedControl { options, .. } => {
-                let label_w = field.label.visible_width();
-                let start_x = if label_w > 0 { label_w + 2 } else { 1 };
+                let start_x = field_items_start_x(form, field, left_label_width, 1);
                 let items = options
                     .iter()
                     .enumerate()
@@ -97,9 +152,9 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
                         width: opt.chars().count() as f32,
                     })
                     .collect();
-                FormFieldMeasure::with_items(1.0, start_x as f32, 1.0, items)
+                FormFieldMeasure::with_items(1.0 + extra_row, start_x, 1.0, items)
             }
-            _ => FormFieldMeasure::new(1.0),
+            _ => FormFieldMeasure::new(1.0 + extra_row),
         }
     })
 }
@@ -128,12 +183,28 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
     }
 
     let colors = FormColors::from_theme(theme);
+    let left_label_width = left_label_column_width(form);
     let layout = tui_form_layout(form, area);
 
     for visible_field in &layout.visible_fields {
         let field = &form.fields[visible_field.field_idx];
-        let y = area.y + visible_field.bounds.y.round() as u16;
-        let ctx = build_row_ctx(buf, area, y, form, field, theme, &colors);
+        let base_y = area.y + visible_field.bounds.y.round() as u16;
+        let (label_y, input_y) = if is_top_label(form, field) {
+            (base_y, base_y + 1)
+        } else {
+            (base_y, base_y)
+        };
+        let ctx = build_row_ctx(
+            buf,
+            area,
+            label_y,
+            input_y,
+            form,
+            field,
+            theme,
+            &colors,
+            left_label_width,
+        );
 
         match &field.kind {
             FieldKind::Label => {
@@ -182,7 +253,7 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
             } => draw_field_segmented_control(buf, &ctx, visible_field, options, *selected_idx),
         }
 
-        paint_validation_indicator(buf, area, y, ctx.row_bg, field, theme);
+        paint_validation_indicator(buf, area, input_y, ctx.row_bg, field, theme);
     }
 }
 
@@ -216,14 +287,22 @@ impl FormColors {
 /// Paints one field row's background + label, and builds the [`RowCtx`]
 /// the `draw_field_*` dispatch table below consumes. This is the
 /// per-row "prelude" every `FieldKind` arm shares before its own paint.
+///
+/// `label_y`/`input_y` are the same row unless the field resolves to
+/// [`LabelPosition::Top`], in which case the label is painted on
+/// `label_y` and every `draw_field_*` helper paints the input itself
+/// on `input_y` (one row below) via [`RowCtx::y`].
+#[allow(clippy::too_many_arguments)]
 fn build_row_ctx<'a>(
     buf: &mut Buffer,
     area: Rect,
-    y: u16,
+    label_y: u16,
+    input_y: u16,
     form: &Form,
     field: &crate::primitives::form::FormField,
     theme: &'a Theme,
     colors: &FormColors,
+    left_label_width: usize,
 ) -> RowCtx<'a> {
     let is_focused = form.has_focus
         && form
@@ -246,7 +325,12 @@ fn build_row_ctx<'a>(
     };
 
     for x in area.x..area.x + area.width {
-        set_cell(buf, x, y, ' ', default_fg, row_bg);
+        set_cell(buf, x, input_y, ' ', default_fg, row_bg);
+    }
+    if label_y != input_y {
+        for x in area.x..area.x + area.width {
+            set_cell(buf, x, label_y, ' ', default_fg, row_bg);
+        }
     }
 
     let field_fg = if field.disabled {
@@ -255,23 +339,77 @@ fn build_row_ctx<'a>(
         default_fg
     };
 
-    let label_col = 1usize;
-    let label_end = draw_styled_text(
-        buf,
-        area,
-        y,
-        label_col,
-        &field.label,
-        field_fg,
-        row_bg,
-        Decoration::Normal,
-        colors.dim_fg,
-    );
-    let no_label = field.label.visible_width() == 0;
+    // A bare header row (`FieldKind::Label`, no separate input) always
+    // paints like `Inline`: there's no input to split the label from.
+    let position = if is_header {
+        LabelPosition::Inline
+    } else {
+        form.resolved_label_position(field)
+    };
+    let label_w = field.label.visible_width();
+
+    let (label_end, no_label) = if label_w == 0 {
+        (0usize, true)
+    } else {
+        match position {
+            LabelPosition::Hidden => (0usize, true),
+            LabelPosition::Top => {
+                draw_styled_text(
+                    buf,
+                    area,
+                    label_y,
+                    1,
+                    &field.label,
+                    field_fg,
+                    row_bg,
+                    Decoration::Normal,
+                    colors.dim_fg,
+                );
+                // The input row has no reserved label column of its own.
+                (0usize, true)
+            }
+            LabelPosition::Left => {
+                let col_width = left_label_width.max(label_w);
+                let offset = match form.resolved_label_align(field) {
+                    LabelAlign::Start => 0,
+                    LabelAlign::Center => col_width.saturating_sub(label_w) / 2,
+                    LabelAlign::End => col_width.saturating_sub(label_w),
+                };
+                draw_styled_text(
+                    buf,
+                    area,
+                    input_y,
+                    1 + offset,
+                    &field.label,
+                    field_fg,
+                    row_bg,
+                    Decoration::Normal,
+                    colors.dim_fg,
+                );
+                // The reserved column's end, not the painted text's end,
+                // so every row in the column leaves the same input start.
+                (1 + col_width, false)
+            }
+            LabelPosition::Inline => {
+                let end = draw_styled_text(
+                    buf,
+                    area,
+                    input_y,
+                    1,
+                    &field.label,
+                    field_fg,
+                    row_bg,
+                    Decoration::Normal,
+                    colors.dim_fg,
+                );
+                (end, false)
+            }
+        }
+    };
 
     RowCtx {
         area,
-        y,
+        y: input_y,
         default_fg,
         row_bg,
         field_fg,
@@ -1132,6 +1270,10 @@ mod tests {
                     disabled: false,
                     validation: None,
                     hint: label(""),
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("wrap"),
@@ -1140,11 +1282,18 @@ mod tests {
                     disabled: false,
                     validation: None,
                     hint: label(""),
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
             ],
             focused_field: Some(WidgetId::new("wrap")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 
@@ -1214,10 +1363,17 @@ mod tests {
                 disabled: false,
                 validation: None,
                 hint: label(""),
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: Some(WidgetId::new("note")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         // `Theme::default()` sets `header_fg == foreground` (both the
         // neutral dark `fg` literal), which would make this test pass
@@ -1306,10 +1462,17 @@ mod tests {
                 disabled: false,
                 validation: None,
                 hint: label(""),
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 3));
         draw_form(&mut buf, Rect::new(0, 0, 30, 3), &f, &Theme::default());
@@ -1355,10 +1518,17 @@ mod tests {
                 disabled: false,
                 validation: None,
                 hint: label(""),
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 
@@ -1499,10 +1669,17 @@ mod tests {
                 disabled: false,
                 validation: None,
                 hint: label(""),
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 
@@ -1676,10 +1853,17 @@ mod tests {
                 hint: label(""),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
@@ -1710,10 +1894,17 @@ mod tests {
                 hint: label(""),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
@@ -1740,10 +1931,17 @@ mod tests {
                 hint: label(""),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
@@ -1767,10 +1965,17 @@ mod tests {
                 hint: label(""),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 3));
         let vis = &layout.visible_fields[0];
@@ -1803,10 +2008,17 @@ mod tests {
                 hint: label(""),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 6), &form, &Theme::default());
         let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 6));
@@ -1835,10 +2047,17 @@ mod tests {
                 hint: label(""),
                 disabled: false,
                 validation: Some(ValidationState::Error("Required".into())),
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let col0 = cell_char(&buf, 0, 0);
@@ -1862,10 +2081,17 @@ mod tests {
                 hint: label(""),
                 disabled: false,
                 validation: Some(ValidationState::Warning("Too short".into())),
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let col0 = cell_char(&buf, 0, 0);
@@ -1914,10 +2140,17 @@ mod tests {
                 hint: label(""),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 
@@ -2062,10 +2295,17 @@ mod tests {
                 disabled: false,
                 validation: None,
                 hint: label(""),
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
@@ -2128,10 +2368,17 @@ mod tests {
                 disabled: false,
                 validation: None,
                 hint: label(""),
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
@@ -2156,5 +2403,180 @@ mod tests {
             .find(|&x| cell_char(&buf, x, 0) == 'A')
             .expect("toggle item 'A' must be painted");
         assert_eq!(a_col, 1 + label_visible_width as u16 + 1);
+    }
+
+    fn field(id: &str, label_text: &str, kind: FieldKind) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: label(label_text),
+            kind,
+            disabled: false,
+            validation: None,
+            hint: label(""),
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+        }
+    }
+
+    #[test]
+    fn top_label_position_paints_label_above_input_row() {
+        let mut top_field = field("name", "Name", FieldKind::Toggle { value: true });
+        top_field.label_position = Some(LabelPosition::Top);
+        let after = field("after", "After", FieldKind::Toggle { value: false });
+        let f = Form {
+            id: WidgetId::new("f"),
+            fields: vec![top_field, after],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+        };
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buf = Buffer::empty(area);
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        // Row 0: the label on its own line.
+        let row0: String = (1..5).map(|x| cell_char(&buf, x, 0)).collect();
+        assert_eq!(row0, "Name");
+
+        // Row 1: the input, starting flush left (no reserved label
+        // column) rather than beside the label.
+        let found_x = (1..30).any(|x| cell_char(&buf, x, 1) == 'x');
+        assert!(
+            found_x,
+            "expected the toggle glyph on the row below the label"
+        );
+
+        // The second field starts two rows down, proving `Top` reserved
+        // an extra row for the first field rather than overlapping it.
+        let row2: String = (1..6).map(|x| cell_char(&buf, x, 2)).collect();
+        assert_eq!(row2, "After");
+    }
+
+    #[test]
+    fn left_label_width_and_align_aligns_label_column() {
+        let mut form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![
+                field("short", "ID", FieldKind::ReadOnly { value: label("1") }),
+                field(
+                    "long",
+                    "Description",
+                    FieldKind::ReadOnly { value: label("x") },
+                ),
+            ],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: LabelPosition::Left,
+            label_align: LabelAlign::End,
+            label_width: None,
+        };
+        // Force an explicit column width wider than either label so
+        // `End` alignment has room to shift "ID" rightward within it.
+        form.label_width = Some(15.0);
+
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        draw_form(&mut buf, area, &form, &Theme::default());
+
+        // "Description" (11 cells) right-aligned in a 15-wide column
+        // starts at column 1 + (15 - 11) = 5.
+        let desc: String = (5..16).map(|x| cell_char(&buf, x, 1)).collect();
+        assert_eq!(desc, "Description");
+
+        // "ID" (2 cells) right-aligned in the same 15-wide column
+        // starts at column 1 + (15 - 2) = 14, not column 1 — proving
+        // both rows share one aligned column rather than each sizing
+        // its own.
+        assert_eq!(cell_char(&buf, 14, 0), 'I');
+        assert_eq!(cell_char(&buf, 15, 0), 'D');
+        assert_eq!(cell_char(&buf, 1, 0), ' ');
+    }
+
+    #[test]
+    fn hidden_label_position_suppresses_label_text() {
+        let mut f = field(
+            "secret",
+            "Secret",
+            FieldKind::ReadOnly { value: label("v") },
+        );
+        f.label_position = Some(LabelPosition::Hidden);
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![f],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+        };
+        let area = Rect::new(0, 0, 30, 2);
+        let mut buf = Buffer::empty(area);
+        draw_form(&mut buf, area, &form, &Theme::default());
+
+        let row0: String = (0..30).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(
+            !row0.contains('S') && !row0.contains('e'),
+            "hidden label text must not be painted: {row0:?}"
+        );
+    }
+
+    #[test]
+    fn inline_label_position_does_not_share_a_column() {
+        // Unlike `Left`, `Inline` sizes each row's label column to its
+        // own label text — two fields with very different label lengths
+        // don't line up their items into one shared column.
+        let toggles = || {
+            vec![ToggleGroupItem {
+                id: WidgetId::new("on"),
+                label: "On".into(),
+                value: true,
+            }]
+        };
+        let mut short = field("a", "A", FieldKind::ToggleGroup { toggles: toggles() });
+        short.label_position = Some(LabelPosition::Inline);
+        let mut long = field(
+            "b",
+            "A much longer label",
+            FieldKind::ToggleGroup { toggles: toggles() },
+        );
+        long.label_position = Some(LabelPosition::Inline);
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![short, long],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+        };
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        draw_form(&mut buf, area, &form, &Theme::default());
+
+        // Short label's item starts right after its own 1-cell label
+        // ("A"), not pushed out to match the long label's width.
+        let short_item_col = (1..40)
+            .find(|&x| cell_char(&buf, x, 0) == 'O')
+            .expect("'On' item must be painted on the short-label row");
+        assert_eq!(short_item_col, 1 /* "A" */ + 2 /* gap */);
+
+        // Long label's item starts well past where a shared `Left`
+        // column would have placed it, proving each row sized its own
+        // column rather than agreeing on one.
+        let long_item_col = (1..40)
+            .find(|&x| cell_char(&buf, x, 1) == 'O')
+            .expect("'On' item must be painted on the long-label row");
+        assert!(
+            long_item_col > short_item_col,
+            "expected the long-label row's item further right than the short-label row's"
+        );
     }
 }

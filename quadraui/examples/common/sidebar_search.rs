@@ -247,6 +247,10 @@ impl SidebarSearchApp {
                     } else {
                         None
                     },
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("toggles"),
@@ -273,6 +277,10 @@ impl SidebarSearchApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("scope"),
@@ -284,6 +292,10 @@ impl SidebarSearchApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("password"),
@@ -302,6 +314,10 @@ impl SidebarSearchApp {
                     } else {
                         None
                     },
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
             ],
             focused_field: self
@@ -310,6 +326,9 @@ impl SidebarSearchApp {
                 .map(|f| WidgetId::new(f.clone())),
             scroll_offset: 0,
             has_focus: self.sidebar.active_section() == Some(0),
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         self.sidebar.set_form(0, form);
     }

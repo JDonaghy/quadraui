@@ -1018,6 +1018,10 @@ mod tests {
             hint: crate::types::StyledText::plain(""),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 

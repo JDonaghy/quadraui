@@ -60,6 +60,22 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `Form`/`FormField` label placement and explicit tab order: a new
+  `LabelPosition` (`Left`/`Top`/`Inline`/`Hidden`) and `LabelAlign`
+  (`Start`/`Center`/`End`) enum, settable per-form (`Form::label_position`,
+  `Form::label_align`, `Form::label_width`) and overridden per-field
+  (`FormField::label_position`, `FormField::label_align`,
+  `FormField::label_width`), resolved via `Form::resolved_label_position` /
+  `resolved_label_align` / `resolved_label_width`. `FormField::tab_index`
+  lets a form declare a custom tab order, consulted by
+  `FormController::move_focus`; fields that leave it unset keep their
+  declaration order. The TUI backend renders all four label positions:
+  `Left` aligns every such field's label into one shared column sized to
+  the widest label (or an explicit `label_width` override), `Top` paints
+  the label on its own row above the input, `Hidden` suppresses the label
+  entirely, and `Inline` keeps each row's own per-label width unshared.
+  All fields are additive with `serde` defaults, so existing forms are
+  unaffected.
 - `quadraui::expr`: a serializable, binding-neutral expression AST (`Expr`,
   `Value`, `Context`) for form rules (conditional visibility, validation).
   Field references, string/number/bool/null literals, comparisons
