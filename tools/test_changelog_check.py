@@ -140,13 +140,13 @@ class TempGitRepo:
         return run_git(["rev-parse", "HEAD"], self.root).stdout.strip()
 
     def write_changelog(self, body: str) -> None:
-        (self.root / "CHANGELOG.md").write_text(body)
+        (self.root / "CHANGELOG.md").write_text(body, encoding="utf-8")
 
     def write_src(self, name: str, body: str) -> None:
-        (self.src_dir / name).write_text(body)
+        (self.src_dir / name).write_text(body, encoding="utf-8")
 
     def write_manifest(self, body: str) -> None:
-        (self.root / "quadraui" / "Cargo.toml").write_text(body)
+        (self.root / "quadraui" / "Cargo.toml").write_text(body, encoding="utf-8")
 
 
 class RequiresChangelogEntryTest(unittest.TestCase):
@@ -388,6 +388,36 @@ class ReleasePromotionVersionTest(unittest.TestCase):
             )
             repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
             head = repo.commit("promotion shape, but [Unreleased] isn't empty")
+
+            self.assertIsNone(
+                changelog_check.release_promotion_version(base, head, repo.root)
+            )
+
+    def test_stale_branch_forked_after_a_bump_is_not_exempt(self):
+        """A feature branch forked right after a promotion commit never
+        touches the manifest or `CHANGELOG.md` itself, so it inherits an
+        empty `[Unreleased]` and a non-empty `## [X.Y.Z]` section for the
+        version it was forked at. If `develop` bumps the version again
+        while that branch is still open, `base`'s version now differs
+        from `head`'s -- but `head`'s own diff never bumped anything, so
+        this must not match the promotion shape."""
+        with TempGitRepo() as repo:
+            repo.write_changelog(PROMOTION_CHANGELOG)
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+            repo.commit("Release v0.2.0 (version bump + CHANGELOG)")
+
+            run_git(["checkout", "-b", "feature"], repo.root)
+            repo.write_src(
+                "lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n'
+            )
+            head = repo.commit(
+                "stale branch: ordinary src change, no manifest/changelog touch"
+            )
+
+            run_git(["checkout", "main"], repo.root)
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.3.0"'))
+            repo.write_changelog(PROMOTION_CHANGELOG.replace("## [0.2.0]", "## [0.3.0]"))
+            base = repo.commit("Release v0.3.0 (version bump + CHANGELOG)")
 
             self.assertIsNone(
                 changelog_check.release_promotion_version(base, head, repo.root)
