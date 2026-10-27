@@ -61,7 +61,13 @@ pub struct UpdateInfo {
 }
 
 impl UpdateInfo {
-    /// Build an [`UpdateInfo`] from its four fields.
+    /// Build an [`UpdateInfo`] from its four fields, in `version, notes,
+    /// url, signature` order.
+    ///
+    /// All four parameters share the same type, so a transposed pair of
+    /// arguments still compiles — [`UpdateInfoBuilder`] (via
+    /// [`Self::builder`]) names each field at the call site instead, for a
+    /// caller that would rather not rely on getting the order right.
     pub fn new(
         version: impl Into<String>,
         notes: impl Into<String>,
@@ -73,6 +79,75 @@ impl UpdateInfo {
             notes: notes.into(),
             url: url.into(),
             signature: signature.into(),
+        }
+    }
+
+    /// Start building an [`UpdateInfo`] one named field at a time. See
+    /// [`UpdateInfoBuilder`].
+    pub fn builder(version: impl Into<String>) -> UpdateInfoBuilder {
+        UpdateInfoBuilder::new(version)
+    }
+}
+
+/// Named-field alternative to [`UpdateInfo::new`]'s four same-typed
+/// positional arguments, reached via [`UpdateInfo::builder`]. `version` is
+/// required up front — an `UpdateInfo` with no version string is never
+/// meaningful — while `notes`, `url` and `signature` default to empty and
+/// can be set in any order:
+///
+/// ```
+/// use quadraui::UpdateInfo;
+///
+/// let info = UpdateInfo::builder("1.2.3")
+///     .url("https://example.invalid/update.bin")
+///     .signature("deadbeef")
+///     .notes("bug fixes")
+///     .build();
+/// assert_eq!(info.version, "1.2.3");
+/// ```
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub struct UpdateInfoBuilder {
+    version: String,
+    notes: String,
+    url: String,
+    signature: String,
+}
+
+impl UpdateInfoBuilder {
+    /// Start a builder with `version` set; every other field starts empty.
+    pub fn new(version: impl Into<String>) -> Self {
+        Self {
+            version: version.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Set the release notes.
+    pub fn notes(mut self, notes: impl Into<String>) -> Self {
+        self.notes = notes.into();
+        self
+    }
+
+    /// Set the update artifact's URL.
+    pub fn url(mut self, url: impl Into<String>) -> Self {
+        self.url = url.into();
+        self
+    }
+
+    /// Set the artifact's signature.
+    pub fn signature(mut self, signature: impl Into<String>) -> Self {
+        self.signature = signature.into();
+        self
+    }
+
+    /// Consume the builder, producing the finished [`UpdateInfo`].
+    pub fn build(self) -> UpdateInfo {
+        UpdateInfo {
+            version: self.version,
+            notes: self.notes,
+            url: self.url,
+            signature: self.signature,
         }
     }
 }
@@ -124,6 +199,14 @@ pub trait UpdateService {
     /// Arrange for `staged` to be installed the next time the app quits
     /// (or immediately, if the backend's update mechanism relaunches on
     /// its own — the exact timing is implementation-defined).
+    ///
+    /// **Invariant:** `staged` must be a [`StagedUpdate`] this same
+    /// service instance produced from its own [`Self::download_and_stage`]
+    /// — the artifact it points at has already been downloaded and
+    /// signature-verified by that call. An implementation is free to
+    /// install whatever `staged.info` describes without re-verifying it;
+    /// a caller that hand-builds a `StagedUpdate` (via its public
+    /// constructor) and passes it here is bypassing that verification.
     fn apply_on_quit(&self, staged: StagedUpdate) -> ServiceResult<()> {
         let _ = staged;
         Err(BackendError::Unsupported)
@@ -156,6 +239,25 @@ mod tests {
         assert_eq!(info.notes, "bug fixes");
         assert_eq!(info.url, "https://example.com/v1.2.3");
         assert_eq!(info.signature, "sig");
+    }
+
+    #[test]
+    fn update_info_builder_fills_in_each_named_field() {
+        let info = UpdateInfo::builder("1.2.3")
+            .url("https://example.com/v1.2.3")
+            .signature("sig")
+            .notes("bug fixes")
+            .build();
+        assert_eq!(
+            info,
+            UpdateInfo::new("1.2.3", "bug fixes", "https://example.com/v1.2.3", "sig")
+        );
+    }
+
+    #[test]
+    fn update_info_builder_defaults_unset_fields_to_empty() {
+        let info = UpdateInfo::builder("1.2.3").build();
+        assert_eq!(info, UpdateInfo::new("1.2.3", "", "", ""));
     }
 
     #[test]

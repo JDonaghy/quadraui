@@ -69,8 +69,9 @@ only a push to `main` runs this workflow.
   `download_and_stage` to emit an `"update available: <version>"`
   diagnostic through `quadraui::diagnostics` before degrading to the same
   `Unsupported`, since a terminal app has no package format of its own to
-  stage. Sparkle/WinSparkle/AppImage implementations are separate
-  follow-ons.
+  stage. `UpdateInfo::builder` offers a named-field alternative to `new`'s
+  four same-typed positional arguments. Sparkle/WinSparkle/AppImage
+  implementations are separate follow-ons.
 - `FieldKind::Dropdown` TUI popup: the TUI backend now paints an in-canvas
   option list under a focused `Dropdown` field, instead of leaving the
   selected value and the rest of the options invisible between Enter

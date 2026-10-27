@@ -1145,6 +1145,12 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
     // there is no separate `BackendCaps` flag or `_result` twin to check.
     ("displays", ServiceHonesty::AlwaysReal),
     ("cursor_screen_point", ServiceHonesty::AlwaysReal),
+    // `update_service` vends a `&dyn UpdateService` rather than answering
+    // anything itself — same shape as `clipboard`/`secret_store` above, so
+    // the honesty story lives on the vended trait's own methods, each of
+    // which returns `ServiceResult<...>` (including the default
+    // always-`Unsupported` service).
+    ("update_service", ServiceHonesty::Delegates("UpdateService")),
     ("platform_name", ServiceHonesty::AlwaysReal),
 ];
 

@@ -260,6 +260,20 @@
 //! has no synchronous cursor-position query at all. See
 //! [`TuiPlatformServices::displays`]/
 //! [`TuiPlatformServices::cursor_screen_point`]'s own docs.
+//!
+//! ## Auto-update
+//!
+//! `check_for_update` keeps the [`crate::update::UpdateService`] trait's
+//! own `Unsupported` default: a terminal has no HTTP client or feed-polling
+//! loop of its own, so this backend cannot discover an update itself.
+//! [`TuiUpdateService::download_and_stage`] is the actual degrade: a host
+//! that discovers an [`crate::update::UpdateInfo`] through its own feed
+//! check (an update channel this seam deliberately leaves to the host —
+//! see `update`'s module doc) and reports it through this backend's
+//! `update_service().download_and_stage(&info)` gets an "update available:
+//! …" line on [`crate::diagnostics`] before the same `Unsupported` every
+//! other backend's default returns. `apply_on_quit` stays `Unsupported`
+//! too: a terminal has no package format of its own to install into.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
