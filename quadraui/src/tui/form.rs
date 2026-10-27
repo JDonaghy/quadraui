@@ -26,7 +26,9 @@ fn left_label_column_width(form: &Form) -> usize {
     form.fields
         .iter()
         .filter(|f| {
-            form.resolved_label_position(f) == LabelPosition::Left && f.label.visible_width() > 0
+            !matches!(f.kind, FieldKind::Label)
+                && form.resolved_label_position(f) == LabelPosition::Left
+                && f.label.visible_width() > 0
         })
         .map(|f| {
             form.resolved_label_width(f)
@@ -64,7 +66,7 @@ fn field_items_start_x(
     }
     match form.resolved_label_position(field) {
         LabelPosition::Hidden | LabelPosition::Top => no_label_fallback as f32,
-        LabelPosition::Left => (left_label_width + 2) as f32,
+        LabelPosition::Left => (left_label_width.max(label_w) + 2) as f32,
         LabelPosition::Inline => (label_w + 2) as f32,
     }
 }
@@ -73,7 +75,17 @@ fn field_items_start_x(
 /// char-count item widths). A field whose label resolves to
 /// [`LabelPosition::Top`] measures one extra row for the label line.
 pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::FormLayout {
-    let left_label_width = left_label_column_width(form);
+    tui_form_layout_with_label_width(form, area, left_label_column_width(form))
+}
+
+/// Same as [`tui_form_layout`], but takes an already-computed
+/// `left_label_width` so a caller that also needs that value (like
+/// [`draw_form`]) only runs [`left_label_column_width`] once per frame.
+fn tui_form_layout_with_label_width(
+    form: &Form,
+    area: Rect,
+    left_label_width: usize,
+) -> crate::primitives::form::FormLayout {
     form.layout(area.width as f32, area.height as f32, |i| {
         let field = &form.fields[i];
         let extra_row = if is_top_label(form, field) { 1.0 } else { 0.0 };
@@ -184,27 +196,42 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
 
     let colors = FormColors::from_theme(theme);
     let left_label_width = left_label_column_width(form);
-    let layout = tui_form_layout(form, area);
+    let layout = tui_form_layout_with_label_width(form, area, left_label_width);
 
+    let area_bottom = area.y + area.height;
     for visible_field in &layout.visible_fields {
         let field = &form.fields[visible_field.field_idx];
         let base_y = area.y + visible_field.bounds.y.round() as u16;
+        if base_y >= area_bottom {
+            // Not even the label row fits in `area` — nothing to paint.
+            continue;
+        }
         let (label_y, input_y) = if is_top_label(form, field) {
             (base_y, base_y + 1)
         } else {
             (base_y, base_y)
         };
+        // A `Top`-labeled field's input row can land one row past
+        // `area`'s bottom edge even though its label row fit. Clamp the
+        // row `build_row_ctx` clears/draws into to `label_y` in that
+        // case so it never writes past `area`, and skip the per-kind
+        // input paint below entirely.
+        let input_fits = input_y < area_bottom;
         let ctx = build_row_ctx(
             buf,
             area,
             label_y,
-            input_y,
+            if input_fits { input_y } else { label_y },
             form,
             field,
             theme,
             &colors,
             left_label_width,
         );
+
+        if !input_fits {
+            continue;
+        }
 
         match &field.kind {
             FieldKind::Label => {

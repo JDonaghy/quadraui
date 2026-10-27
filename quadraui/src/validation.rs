@@ -55,10 +55,17 @@
 //!         hint: StyledText::plain(""),
 //!         disabled: false,
 //!         validation: None,
+//!         label_position: None,
+//!         label_align: None,
+//!         label_width: None,
+//!         tab_index: None,
 //!     }],
 //!     focused_field: None,
 //!     scroll_offset: 0,
 //!     has_focus: true,
+//!     label_position: Default::default(),
+//!     label_align: Default::default(),
+//!     label_width: None,
 //! };
 //!
 //! let mut rules = FormRules::default();

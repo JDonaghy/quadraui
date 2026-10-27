@@ -6584,6 +6584,10 @@ mod tests {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("enabled"),
@@ -6592,11 +6596,18 @@ mod tests {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
             ],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
 
         let rect = QRect::new(0.0, 0.0, 400.0, 200.0);
@@ -6676,10 +6687,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
 
         let rect = QRect::new(0.0, 0.0, 400.0, 80.0);
@@ -9177,10 +9195,17 @@ mod tests {
                 hint: StyledText::plain(""),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
 
         let backend = GtkBackend::new();

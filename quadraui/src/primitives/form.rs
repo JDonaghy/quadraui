@@ -205,9 +205,13 @@ pub struct FormField {
     /// [`Form::resolved_label_align`].
     #[serde(default)]
     pub label_align: Option<LabelAlign>,
-    /// Overrides the form-wide [`Form::label_width`] for this field
-    /// only. `None` defers to the form's default — read through
-    /// [`Form::resolved_label_width`].
+    /// Overrides the form-wide [`Form::label_width`] for this field.
+    /// `None` defers to the form's default — read through
+    /// [`Form::resolved_label_width`]. Only meaningful when the field's
+    /// resolved label position is [`LabelPosition::Left`]: a backend
+    /// sharing one label column across `Left` fields (as the TUI
+    /// backend does) folds this value into that column's width rather
+    /// than sizing this field's label in isolation.
     #[serde(default)]
     pub label_width: Option<f32>,
     /// Explicit position in the Tab/Shift-Tab focus cycle. Fields are
@@ -473,7 +477,13 @@ pub struct VisibleFormField {
     pub bounds: Rect,
     /// Resolved per-item rects for `ToggleGroup` / `ButtonRow` fields.
     /// Empty for other field kinds. Rasterisers consume these to paint
-    /// items at the layout-determined positions.
+    /// items at the layout-determined positions. Each rect's height
+    /// matches `bounds`' height, so a field whose label resolves to
+    /// [`LabelPosition::Top`] (which reserves an extra row above the
+    /// items) gets item rects spanning both the label row and the item
+    /// row rather than the item row alone; a hit-test against the top
+    /// of such a rect lands on the item even though that row paints the
+    /// label text.
     pub item_bounds: Vec<(WidgetId, Rect)>,
 }
 
@@ -1956,6 +1966,40 @@ mod tests {
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
         assert_eq!(field, back);
+    }
+
+    #[test]
+    fn form_field_legacy_deserialize_without_label_placement_fields() {
+        // JSON written before `label_position`/`label_align`/
+        // `label_width`/`tab_index` existed must still deserialize, with
+        // every new field defaulting to `None`.
+        let json = r#"{
+            "id": "name",
+            "label": {"spans":[{"text":"Name","fg":null,"bg":null}]},
+            "kind": {"TextInput": {"value": "", "cursor": 0, "selection_anchor": null, "placeholder": ""}}
+        }"#;
+        let field: FormField = serde_json::from_str(json).unwrap();
+        assert_eq!(field.label_position, None);
+        assert_eq!(field.label_align, None);
+        assert_eq!(field.label_width, None);
+        assert_eq!(field.tab_index, None);
+    }
+
+    #[test]
+    fn form_legacy_deserialize_without_label_placement_fields() {
+        // JSON written before `label_position`/`label_align`/
+        // `label_width` existed must still deserialize, with every new
+        // field defaulting to its form-wide default (`Left`/`Start`/
+        // `None`) — the same layout an old client always got.
+        let json = r#"{
+            "id": "settings",
+            "fields": [],
+            "focused_field": null
+        }"#;
+        let form: Form = serde_json::from_str(json).unwrap();
+        assert_eq!(form.label_position, LabelPosition::Left);
+        assert_eq!(form.label_align, LabelAlign::Start);
+        assert_eq!(form.label_width, None);
     }
 
     #[test]

@@ -123,7 +123,7 @@ pub fn draw_settings_chrome(
 mod tests {
     use super::*;
     use crate::gtk::toolbar::PangoMeasure;
-    use crate::primitives::form::{FieldKind, Form, FormField};
+    use crate::primitives::form::{FieldKind, Form, FormField, LabelAlign, LabelPosition};
     use crate::types::{StyledText, WidgetId};
     use pangocairo::cairo::{Context, Format, ImageSurface};
 
@@ -186,6 +186,10 @@ mod tests {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("enabled"),
@@ -194,6 +198,10 @@ mod tests {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
             ],
             // Focused so the resolved field paints `selected_bg` —
@@ -203,6 +211,9 @@ mod tests {
             focused_field: Some(WidgetId::new("enabled")),
             scroll_offset: 50, // far past `fields.len()` == 2
             has_focus: true,
+            label_position: LabelPosition::Left,
+            label_align: LabelAlign::Start,
+            label_width: None,
         };
 
         let mut surface =
@@ -278,10 +289,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: Some(WidgetId::new("name")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: LabelPosition::Left,
+            label_align: LabelAlign::Start,
+            label_width: None,
         };
 
         // Must not panic.
@@ -308,10 +326,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: Some(WidgetId::new("pw")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: LabelPosition::Left,
+            label_align: LabelAlign::Start,
+            label_width: None,
         };
 
         // Must not panic.
@@ -339,10 +364,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: Some(WidgetId::new("notes")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: LabelPosition::Left,
+            label_align: LabelAlign::Start,
+            label_width: None,
         };
 
         // Must not panic.
