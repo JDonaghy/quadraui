@@ -40,6 +40,14 @@
 //!   other field); a consumer going through `FormController` gets
 //!   arrow/page-key day/month navigation and Enter-to-confirm for free,
 //!   emitting `FormEvent::DateChanged` on confirm.
+//! - `ComboBox` — render the live `text` buffer plus a chevron as a
+//!   compact single-line field (the row stays one `row_h` tall); a
+//!   consumer going through `FormController` gets type-to-filter and
+//!   Enter-to-commit for free, emitting `FormEvent::ComboBoxTextChanged`
+//!   per keystroke and `ComboBoxCommitted` on confirm. The *app* is
+//!   responsible for painting the open dropdown overlay itself, mirroring
+//!   `ColorPicker`'s popup contract, since `Form` doesn't grow the row to
+//!   show it.
 //!
 //! Tab / Shift-Tab move `focused_field` forward/backward through
 //! interactive fields (skip `Label`, skip disabled fields); emit
@@ -375,6 +383,32 @@ pub enum FieldKind {
     /// only moves focus to it (`FormEvent::FocusChanged`) — day-cell
     /// hit-testing is the keyboard path's job here, not the pointer's.
     DatePicker(crate::primitives::date_picker::DatePicker),
+    /// A searchable / type-to-filter [`crate::primitives::combo_box::ComboBox`]
+    /// embedded as a single field row: a text input backed by a fixed list
+    /// of options, where typing filters the list instead of requiring an
+    /// exact match. The field's row stays the same height as every other
+    /// field — see [`crate::primitives::layout_metrics::form_field_measure`]'s
+    /// doc for why no `FieldKind` grows the row — so only the live `text`
+    /// buffer plus a chevron render in the value column; the open dropdown
+    /// list is not part of this compact row.
+    ///
+    /// A consumer going through
+    /// [`crate::compose::form_controller::FormController`] gets keystroke
+    /// routing (typing filters, arrows move the highlight, Enter commits,
+    /// Escape cancels) for free: the controller calls the embedded combo
+    /// box's own [`crate::primitives::combo_box::ComboBox::handle_key`] and
+    /// translates the result into `FormEvent::ComboBoxTextChanged`,
+    /// `ComboBoxHighlightChanged`, `ComboBoxCommitted`, or
+    /// `ComboBoxCancelled`. Painting and hit-testing the open dropdown
+    /// itself is, like [`FieldKind::ColorPicker`]'s popup, the *app*'s job
+    /// — `Form` doesn't render it — using the combo box's own
+    /// [`crate::primitives::combo_box::ComboBox::layout`] and
+    /// [`crate::primitives::combo_box::ComboBox::click`].
+    ///
+    /// Use for anything picked from a long, fixed-but-searchable list:
+    /// language-server choice, font family, git branch, command palette
+    /// style pickers.
+    ComboBox(crate::primitives::combo_box::ComboBox),
 }
 
 /// One toggle in a [`FieldKind::ToggleGroup`].
@@ -1208,6 +1242,29 @@ mod native_surface_paint {
                         surface.surface_draw_text_run(Rect::new(ix, ty, tw, th), &text, field_fg);
                     }
                 }
+                FieldKind::ComboBox(combo) => {
+                    // Compact row only — `text` is the live, possibly
+                    // mid-filter buffer; the open dropdown (if any) is
+                    // painted by the app after this fn returns, per this
+                    // field's doc.
+                    let (tw, th) = surface.surface_measure_text(&combo.text);
+                    let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
+                    let total = tw + 4.0 + chev_w;
+                    let ix = input_right - total;
+                    if ix > label_right + 8.0 {
+                        let ty = row_rect.y + (row_h - th) / 2.0;
+                        surface.surface_draw_text_run(
+                            Rect::new(ix, ty, tw, th),
+                            &combo.text,
+                            field_fg,
+                        );
+                        surface.surface_draw_text_run(
+                            Rect::new(ix + tw + 4.0, ty, chev_w, th),
+                            "\u{25BE}",
+                            theme.muted_fg,
+                        );
+                    }
+                }
             }
 
             if let Some((color, msg)) = validation_info {
@@ -1833,6 +1890,21 @@ pub enum FormEvent {
     /// A key was pressed while the form had focus and the primitive did
     /// not consume it. The app may interpret it (e.g. `?` opens help).
     KeyPressed { key: String, modifiers: Modifiers },
+    /// A `ComboBox` field's text buffer changed (typing filters the
+    /// dropdown). Fires on every keystroke that modifies the buffer,
+    /// mirroring `TextInputChanged`'s "fires every keystroke" shape.
+    ComboBoxTextChanged { id: WidgetId, value: String },
+    /// A `ComboBox` field's highlighted dropdown item changed (arrow-key
+    /// navigation while the dropdown is open).
+    ComboBoxHighlightChanged { id: WidgetId, index: usize },
+    /// A `ComboBox` field confirmed a value (Enter, or clicking a
+    /// dropdown item). Mirrors `TextInputCommitted`'s "fires once, on
+    /// confirm" shape rather than `ComboBoxTextChanged`'s "fires every
+    /// keystroke" shape.
+    ComboBoxCommitted { id: WidgetId, value: String },
+    /// A `ComboBox` field's in-progress edit was cancelled (Escape),
+    /// reverting the live `text` buffer back to `committed`.
+    ComboBoxCancelled { id: WidgetId },
 }
 
 #[cfg(test)]
@@ -1898,6 +1970,21 @@ mod tests {
                     label_width: None,
                     tab_index: None,
                 },
+                FormField {
+                    id: WidgetId::new("language"),
+                    label: StyledText::plain("Language server"),
+                    kind: FieldKind::ComboBox(crate::primitives::combo_box::ComboBox::new(
+                        WidgetId::new("language-combo"),
+                        vec!["rust-analyzer".into(), "pyright".into(), "gopls".into()],
+                    )),
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
+                },
             ],
             focused_field: Some(WidgetId::new("line-numbers")),
             scroll_offset: 0,
@@ -1935,6 +2022,21 @@ mod tests {
             FormEvent::KeyPressed {
                 key: "Escape".to_string(),
                 modifiers: Modifiers::default(),
+            },
+            FormEvent::ComboBoxTextChanged {
+                id: WidgetId::new("language"),
+                value: "rust".to_string(),
+            },
+            FormEvent::ComboBoxHighlightChanged {
+                id: WidgetId::new("language"),
+                index: 0,
+            },
+            FormEvent::ComboBoxCommitted {
+                id: WidgetId::new("language"),
+                value: "rust-analyzer".to_string(),
+            },
+            FormEvent::ComboBoxCancelled {
+                id: WidgetId::new("language"),
             },
         ];
         for event in &events {

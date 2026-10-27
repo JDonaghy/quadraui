@@ -262,6 +262,7 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
             }
             FieldKind::Toolbar(toolbar) => draw_field_toolbar(buf, &ctx, visible_field, toolbar),
             FieldKind::DatePicker(picker) => draw_field_date_picker(buf, &ctx, picker),
+            FieldKind::ComboBox(combo) => draw_field_combo_box(buf, &ctx, combo),
             FieldKind::TextArea {
                 value,
                 placeholder,
@@ -934,6 +935,52 @@ fn draw_field_date_picker(
                 break;
             }
             set_cell(buf, area.x + col as u16, y, ch, field_fg, row_bg);
+        }
+    }
+}
+
+/// Renders the embedded [`crate::primitives::combo_box::ComboBox`]'s live
+/// `text` buffer plus a chevron as a single right-aligned line — the row
+/// stays one cell tall like every other field, so the open dropdown list
+/// never appears here. Type-to-filter keystrokes still work; they're just
+/// not visualized inline (see `FormController`, which drives the combo
+/// box's own `handle_key` and emits `FormEvent::ComboBoxTextChanged` /
+/// `ComboBoxCommitted`). Painting the open dropdown itself is the app's
+/// job, mirroring `FieldKind::ColorPicker`'s popup contract.
+fn draw_field_combo_box(
+    buf: &mut Buffer,
+    ctx: &RowCtx,
+    combo: &crate::primitives::combo_box::ComboBox,
+) {
+    let RowCtx {
+        area,
+        y,
+        row_bg,
+        field_fg,
+        dim_fg,
+        label_end,
+        no_label,
+        ..
+    } = *ctx;
+
+    let total = combo.text.chars().count() + 2;
+    let start_col = if no_label {
+        1
+    } else {
+        (area.width as usize).saturating_sub(total + 2)
+    };
+    if start_col > label_end + 1 || no_label {
+        let mut col = start_col;
+        for ch in combo.text.chars() {
+            if col >= area.width as usize {
+                break;
+            }
+            set_cell(buf, area.x + col as u16, y, ch, field_fg, row_bg);
+            col += 1;
+        }
+        col += 1;
+        if col < area.width as usize {
+            set_cell(buf, area.x + col as u16, y, '\u{25BE}', dim_fg, row_bg);
         }
     }
 }
@@ -2293,6 +2340,86 @@ mod tests {
         let ev = FormEvent::ToolbarButtonClicked {
             field_id: WidgetId::new("actions"),
             button_id: WidgetId::new("reset"),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: FormEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ev, back);
+    }
+
+    // ── FieldKind::ComboBox paint round-trip ──────────────────────────────
+
+    use crate::primitives::combo_box::ComboBox;
+
+    fn make_combo_box_form(text: &str) -> Form {
+        let mut combo = ComboBox::new(
+            WidgetId::new("lang-combo"),
+            vec!["rust-analyzer".into(), "pyright".into(), "gopls".into()],
+        );
+        combo.text = text.to_string();
+        Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("language"),
+                label: label("Language"),
+                kind: FieldKind::ComboBox(combo),
+                hint: label(""),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+        }
+    }
+
+    #[test]
+    fn combo_box_field_paints_text_and_chevron() {
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        let f = make_combo_box_form("rust");
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(
+            row.contains("rust"),
+            "combo box live text should be painted; row: {row:?}"
+        );
+        assert!(
+            row.contains('\u{25BE}'),
+            "combo box chevron should be painted; row: {row:?}"
+        );
+        // The open dropdown list itself is never painted by `Form` — only
+        // the compact row — so none of the other options should appear.
+        assert!(
+            !row.contains("pyright"),
+            "closed dropdown options must not appear in the compact row; row: {row:?}"
+        );
+    }
+
+    // ── Serde round-trip for FieldKind::ComboBox ──────────────────────────
+
+    #[test]
+    fn serde_roundtrip_field_kind_combo_box() {
+        use crate::primitives::form::FormEvent;
+        let kind = FieldKind::ComboBox(ComboBox::new(
+            WidgetId::new("lang-combo"),
+            vec!["rust-analyzer".into(), "pyright".into()],
+        ));
+        let json = serde_json::to_string(&kind).unwrap();
+        let back: FieldKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, back);
+
+        // FormEvent::ComboBoxCommitted round-trip.
+        let ev = FormEvent::ComboBoxCommitted {
+            id: WidgetId::new("language"),
+            value: "rust-analyzer".to_string(),
         };
         let json = serde_json::to_string(&ev).unwrap();
         let back: FormEvent = serde_json::from_str(&json).unwrap();

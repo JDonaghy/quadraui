@@ -5386,6 +5386,7 @@ fn form_all_fields_paints_every_field_kind_value() {
         "Runaction",
         "Buildaction",
         "2024-03-15",
+        "Banana",
     ] {
         assert!(
             screen.contains(needle),
