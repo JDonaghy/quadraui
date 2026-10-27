@@ -5494,6 +5494,21 @@ impl WindowControl for WinBackend {
         }
     }
 
+    /// Whether the window is currently fullscreen. Win-GUI has no live OS
+    /// query distinct from the toggle itself, so this answers from
+    /// `Self::fullscreen_saved` — the same rect/style snapshot
+    /// [`Self::set_fullscreen`] stashes on entry and clears on exit.
+    fn is_fullscreen(&self) -> ServiceResult<bool> {
+        #[cfg(target_os = "windows")]
+        {
+            Ok(self.fullscreen_saved.is_some())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+
     /// `SetWindowPos(HWND_TOPMOST/HWND_NOTOPMOST)` — the one always-on-top
     /// mechanism among the four in-tree backends that actually works
     /// (contrast [`crate::gtk::backend::GtkBackend`]'s `Unsupported` on

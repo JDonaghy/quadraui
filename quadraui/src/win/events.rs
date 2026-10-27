@@ -362,6 +362,23 @@ pub fn win_focus_to_uievent(focused: bool) -> UiEvent {
     UiEvent::WindowFocused(focused)
 }
 
+/// Whether a `WM_SETTINGCHANGE` notification's `lParam` setting name names
+/// the system-appearance setting.
+///
+/// `WM_SETTINGCHANGE` fires for dozens of unrelated `SystemParametersInfo`
+/// settings (fonts, metrics, `Environment`, ...); this is the filter that
+/// keeps [`UiEvent::SystemThemeChanged`](crate::event::UiEvent::SystemThemeChanged)
+/// from firing on every one of them instead of only on a light/dark or
+/// accent-color flip.
+///
+/// `#[cfg_attr(not(target_os = "windows"), allow(dead_code))]`: this
+/// predicate's only caller lives in `win::run`'s `#[cfg(target_os =
+/// "windows")]`-gated `wndproc`, so every other host sees it as unused.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn is_theme_setting_change(name: &str) -> bool {
+    name == "ImmersiveColorSet"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -957,5 +974,19 @@ mod tests {
     fn focus_translation() {
         assert_eq!(win_focus_to_uievent(true), UiEvent::WindowFocused(true));
         assert_eq!(win_focus_to_uievent(false), UiEvent::WindowFocused(false));
+    }
+
+    // ── Settings change (system theme) ─────────────────────────────────
+
+    #[test]
+    fn setting_change_immersive_color_set_is_theme_change() {
+        assert!(is_theme_setting_change("ImmersiveColorSet"));
+    }
+
+    #[test]
+    fn setting_change_unrelated_setting_is_not_theme_change() {
+        assert!(!is_theme_setting_change("Environment"));
+        assert!(!is_theme_setting_change(""));
+        assert!(!is_theme_setting_change("intl"));
     }
 }
