@@ -52,6 +52,34 @@ pub fn greet() -> &'static str {
 }
 """
 
+BASE_MANIFEST = """\
+[package]
+name = "quadraui"
+version = "0.1.0"
+edition = "2021"
+"""
+
+# The shape `scripts/release.py prepare` leaves a develop -> main
+# promotion PR in: `[Unreleased]` empty, its former contents moved into a
+# `## [X.Y.Z]` section matching the bumped `quadraui/Cargo.toml` version.
+PROMOTION_CHANGELOG = """\
+# Changelog
+
+## [Unreleased]
+
+## [0.2.0] - 2026-02-02
+
+### Added
+
+- placeholder entry so the section isn't empty at base.
+
+## [0.1.0] - 2026-01-01
+
+### Added
+
+- initial release.
+"""
+
 # Mirrors the real shape of `quadraui/src/gtk/backend.rs` /
 # `quadraui/src/tui/backend.rs` that #1500's review flagged: an early,
 # lone `#[cfg(test)]`-gated `use` import, then real production code, then
@@ -98,6 +126,7 @@ class TempGitRepo:
         run_git(["config", "user.name", "Test"], self.root)
         self.write_changelog(BASE_CHANGELOG)
         self.write_src("lib.rs", BASE_SRC)
+        self.write_manifest(BASE_MANIFEST)
 
     def __enter__(self) -> "TempGitRepo":
         return self
@@ -115,6 +144,9 @@ class TempGitRepo:
 
     def write_src(self, name: str, body: str) -> None:
         (self.src_dir / name).write_text(body)
+
+    def write_manifest(self, body: str) -> None:
+        (self.root / "quadraui" / "Cargo.toml").write_text(body)
 
 
 class RequiresChangelogEntryTest(unittest.TestCase):
@@ -290,6 +322,78 @@ class HasUnreleasedEntryTest(unittest.TestCase):
             self.assertFalse(changelog_check.has_unreleased_entry(base, head, repo.root))
 
 
+class ReleasePromotionVersionTest(unittest.TestCase):
+    """#1761: a develop -> main promotion PR legitimately leaves
+    `[Unreleased]` empty, so it must not need a `[Unreleased]` entry."""
+
+    def test_promotion_shape_returns_the_bumped_version(self):
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
+            repo.write_changelog(PROMOTION_CHANGELOG)
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+            head = repo.commit("Release v0.2.0 (version bump + CHANGELOG)")
+
+            self.assertEqual(
+                changelog_check.release_promotion_version(base, head, repo.root),
+                "0.2.0",
+            )
+
+    def test_unchanged_version_with_empty_unreleased_is_not_exempt(self):
+        """`[Unreleased]` empty but the manifest version didn't change --
+        e.g. left empty by mistake on an ordinary PR -- must not match the
+        *previous* release's still-present, non-empty section."""
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
+            repo.write_changelog(
+                BASE_CHANGELOG.replace(
+                    "- placeholder entry so the section isn't empty at base.\n\n", ""
+                )
+            )
+            head = repo.commit("empty [Unreleased], but no version bump happened")
+
+            self.assertIsNone(
+                changelog_check.release_promotion_version(base, head, repo.root)
+            )
+
+    def test_non_promotion_shape_with_empty_unreleased_is_not_exempt(self):
+        """Version bumped, `[Unreleased]` empty, but no versioned section
+        matches the new version -- e.g. a typo'd heading -- must not be
+        mistaken for a promotion."""
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
+            repo.write_changelog(
+                PROMOTION_CHANGELOG.replace("## [0.2.0]", "## [9.9.9]")
+            )
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+            head = repo.commit("empty [Unreleased], but no matching version section")
+
+            self.assertIsNone(
+                changelog_check.release_promotion_version(base, head, repo.root)
+            )
+
+    def test_unreleased_still_has_content_is_not_exempt(self):
+        """A promotion PR that also picked up a genuine `[Unreleased]`
+        addition afterwards still needs the ordinary entry check."""
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
+            repo.write_changelog(
+                PROMOTION_CHANGELOG.replace(
+                    "## [Unreleased]\n",
+                    "## [Unreleased]\n\n- a late, unrelated addition.\n",
+                )
+            )
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+            head = repo.commit("promotion shape, but [Unreleased] isn't empty")
+
+            self.assertIsNone(
+                changelog_check.release_promotion_version(base, head, repo.root)
+            )
+
+
 class MainCliTest(unittest.TestCase):
     """End-to-end `main()` exercises, matching the issue's five fixtures."""
 
@@ -338,6 +442,17 @@ class MainCliTest(unittest.TestCase):
             base = repo.commit("base")
             repo.write_src("lib.rs", BASE_SRC + "// just a trailing comment\n")
             head = repo.commit("comment-only change, no changelog entry")
+
+            exit_code = self._run_main(repo.root, base, head, labels="")
+            self.assertEqual(exit_code, 0)
+
+    def test_release_promotion_shape_passes_without_label_or_entry(self):
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
+            repo.write_changelog(PROMOTION_CHANGELOG)
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+            head = repo.commit("Release v0.2.0 (version bump + CHANGELOG)")
 
             exit_code = self._run_main(repo.root, base, head, labels="")
             self.assertEqual(exit_code, 0)

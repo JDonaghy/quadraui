@@ -37,7 +37,12 @@ A changed `quadraui/src/**` file is exempt from needing an entry when:
     under any `tests/` directory.
 
 The PR as a whole is exempt, regardless of its diff, when it carries the
-`no-changelog` label.
+`no-changelog` label, or when HEAD's `CHANGELOG.md` is already in the shape
+`scripts/release.py prepare` leaves a develop -> main release-promotion PR
+in: `[Unreleased]` empty and a `## [X.Y.Z]` section matching
+`quadraui/Cargo.toml`'s version already holding that content (#1761). A
+promotion PR legitimately moves every entry out of `[Unreleased]` instead of
+adding one, so without this the gate fired red on every release.
 
 Usage: tools/changelog_check.py [--labels L1,L2,...] [BASE] [HEAD]
        (default: no labels, origin/develop, HEAD)
@@ -56,7 +61,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import comment_only_check  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+import release_decide  # noqa: E402
+
 CHANGELOG_PATH = "CHANGELOG.md"
+MANIFEST_PATH = "quadraui/Cargo.toml"
 
 NO_CHANGELOG_LABEL = "no-changelog"
 
@@ -283,6 +292,54 @@ def has_unreleased_entry(base: str, head: str, repo_root: Path) -> bool:
     return False
 
 
+def release_promotion_version(base: str, head: str, repo_root: Path) -> str | None:
+    """`quadraui/Cargo.toml`'s version at `head`, if this diff has the
+    release-promotion shape `scripts/release.py prepare` leaves a develop
+    -> main PR in: the manifest version actually changed between `base`
+    and `head`, HEAD's `[Unreleased]` body is empty (every line blank or
+    the section absent entirely), and a `## [<version>]` section matching
+    the new version already holds non-blank content.
+
+    The version-changed check matters: `CHANGELOG.md` always keeps every
+    past release's `## [<version>]` section around with real content, so
+    without it, any ordinary PR that merely left `[Unreleased]` empty by
+    mistake -- version unchanged -- would wrongly match the *previous*
+    release's still-present section and skip the entry gate entirely.
+
+    Returns None for any other shape, including a promotion PR that also
+    picked up an unrelated `[Unreleased]` addition after `prepare` ran --
+    that case still needs the ordinary entry check.
+    """
+    head_manifest_src = show(head, MANIFEST_PATH, repo_root)
+    changelog_src = show(head, CHANGELOG_PATH, repo_root)
+    if head_manifest_src is None or changelog_src is None:
+        return None
+
+    version = release_decide.manifest_version(head_manifest_src)
+    if not version:
+        return None
+
+    base_manifest_src = show(base, MANIFEST_PATH, repo_root)
+    base_version = (
+        release_decide.manifest_version(base_manifest_src)
+        if base_manifest_src is not None
+        else None
+    )
+    if version == base_version:
+        return None
+
+    bounds = unreleased_section_bounds(changelog_src)
+    if bounds is not None:
+        start, end = bounds
+        unreleased_lines = changelog_src.splitlines()[start - 1 : end - 1]
+        if any(line.strip() for line in unreleased_lines):
+            return None
+
+    if not release_decide.changelog_section(changelog_src, version).strip():
+        return None
+    return version
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     labels: set[str] = set()
@@ -302,6 +359,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if NO_CHANGELOG_LABEL in labels:
         print(f"exempt: PR carries the '{NO_CHANGELOG_LABEL}' label")
+        return 0
+
+    promotion_version = release_promotion_version(base, head, REPO_ROOT)
+    if promotion_version is not None:
+        print(
+            f"exempt: CHANGELOG.md's [Unreleased] section is empty and its "
+            f"[{promotion_version}] section already holds that content -- "
+            "release-promotion PR shape (#1761)"
+        )
         return 0
 
     required = requires_changelog_entry(base, head, REPO_ROOT)
