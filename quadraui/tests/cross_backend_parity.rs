@@ -197,6 +197,7 @@ const FORM_ALL_FIELDS_NEEDLES: &[&str] = &[
     "Casesens",           // ToggleGroup
     "Runaction",          // ButtonRow
     "Buildaction",        // Toolbar
+    "Banana",             // ComboBox
 ];
 
 fn assert_form_all_fields_painted<D: ConformanceDriver>(d: &D, backend_name: &str) {

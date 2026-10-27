@@ -88,6 +88,32 @@
 //!   moves focus elsewhere can't leave a stale scrub position visible on
 //!   the field it left.
 //!
+//! ## ComboBox fields
+//!
+//! `FieldKind::ComboBox` needs no shadow-state struct the way
+//! `DatePicker` needs `DateEditState`: its `text`/`open`/`highlighted`
+//! fields are already the live state, supplied fresh by the app each
+//! frame, with no separate cursor/position concept to cache across
+//! keystrokes. `handle_combo_box_key` clones the focused field's
+//! `ComboBox`, forces its `focused` flag to match `Form::focused_field`
+//! (the app isn't expected to mirror that onto the embedded primitive
+//! itself), and calls its own `handle_key` directly.
+//!
+//! - Unlike `DatePicker`'s `date_picker_key_name` pre-filter,
+//!   `handle_combo_box_key` must see every key — digits/letters and
+//!   `Backspace` edit `text`, not just navigation — so it returns
+//!   `Option` instead of an unconditional event: `None` (Tab/BackTab,
+//!   `Escape` while closed, `Up`/`Down` over an empty filtered list)
+//!   falls through to the generic dispatch below it, the same way a
+//!   disabled focused field's keys do, keeping `Tab`/`Shift+Tab` focus
+//!   traversal off a `ComboBox` field working normally.
+//! - The compact field row (live `text` plus a chevron) is the only
+//!   thing `Form`/`FormController` paint; the open dropdown is the app's
+//!   own popup overlay, mirroring `ColorPicker`'s contract — see
+//!   `FieldKind::ComboBox`'s doc.
+//! - A disabled focused `ComboBox` does not intercept its keys at all,
+//!   the same as a disabled `DatePicker`.
+//!
 //! ## Declarative validation
 //!
 //! [`FormController::set_rules`] attaches a [`crate::validation::FormRules`]
@@ -121,6 +147,7 @@
 //! id the cached cursor/scrub position resuming is the desired behaviour
 //! rather than a reset.
 
+use crate::primitives::combo_box::ComboBoxEvent;
 use crate::primitives::date_picker::{CalendarDate, DatePickerEvent};
 use crate::primitives::form::{
     FieldKind, Form, FormEvent, FormFieldMeasure, FormHit, FormItemMeasure,
@@ -505,6 +532,18 @@ impl FormController {
                     return self.handle_date_picker_key(key_name);
                 }
             }
+            // `ComboBox` has no pre-filtered key set the way
+            // `date_picker_key_name` gives `DatePicker` above — it needs
+            // Char/Backspace too, not just navigation keys — so
+            // `handle_combo_box_key` returns `Option` instead and a
+            // `None` here (Tab/BackTab, Escape while closed, Up/Down
+            // over an empty filtered list) falls through to the generic
+            // dispatch below rather than being swallowed outright.
+            if self.focused_field_is_enabled_combo_box() {
+                if let Some(result) = self.handle_combo_box_key(key, modifiers) {
+                    return result;
+                }
+            }
         }
         match key {
             Key::Named(NamedKey::Tab) if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd => {
@@ -627,6 +666,71 @@ impl FormController {
                 })
             }
             None => FormControllerEvent::Ignored,
+        }
+    }
+
+    /// Whether the currently-focused field is a non-disabled `ComboBox`
+    /// — gates `handle_key`'s combo-box-key interception. Mirrors
+    /// [`Self::focused_field_is_enabled_date_picker`].
+    fn focused_field_is_enabled_combo_box(&self) -> bool {
+        let Some(form) = &self.form else {
+            return false;
+        };
+        let Some(focused_id) = &form.focused_field else {
+            return false;
+        };
+        form.fields
+            .iter()
+            .find(|f| &f.id == focused_id)
+            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::ComboBox(_)))
+    }
+
+    /// Route `key`/`modifiers` into the focused `ComboBox`'s own
+    /// [`crate::primitives::combo_box::ComboBox::handle_key`] and
+    /// translate the result into a `FormEvent::ComboBox*` variant.
+    /// Unlike [`Self::handle_date_picker_key`], this returns `Option`
+    /// rather than an unconditional [`FormControllerEvent`]: there is no
+    /// `DateEditState`-style shadow cache to maintain here (the field's
+    /// own `text`/`open`/`highlighted` are already the live state, fed
+    /// back fresh by the app each frame), so a plain `None` is enough to
+    /// tell `handle_key` to fall through to its generic dispatch for any
+    /// key the combo box doesn't recognise.
+    fn handle_combo_box_key(
+        &mut self,
+        key: &Key,
+        modifiers: &Modifiers,
+    ) -> Option<FormControllerEvent> {
+        let form = self.form.as_ref()?;
+        let focused_id = form.focused_field?;
+        let field = form.fields.iter().find(|f| f.id == focused_id)?;
+        if field.disabled {
+            return None;
+        }
+        let FieldKind::ComboBox(combo) = &field.kind else {
+            return None;
+        };
+
+        // `ComboBox::focused` is documented as "set by the host's
+        // focus-traversal logic" — `Form::focused_field` already
+        // singled this field out above, so force it here rather than
+        // depending on the app to have mirrored that onto the embedded
+        // primitive itself.
+        let mut combo = combo.clone();
+        combo.focused = true;
+
+        match combo.handle_key(key, modifiers)? {
+            ComboBoxEvent::TextChanged { id, text } => Some(FormControllerEvent::FormAction(
+                FormEvent::ComboBoxTextChanged { id, value: text },
+            )),
+            ComboBoxEvent::HighlightChanged { id, index } => Some(FormControllerEvent::FormAction(
+                FormEvent::ComboBoxHighlightChanged { id, index },
+            )),
+            ComboBoxEvent::Committed { id, value } => Some(FormControllerEvent::FormAction(
+                FormEvent::ComboBoxCommitted { id, value },
+            )),
+            ComboBoxEvent::Cancelled { id } => Some(FormControllerEvent::FormAction(
+                FormEvent::ComboBoxCancelled { id },
+            )),
         }
     }
 
@@ -1317,6 +1421,7 @@ impl crate::primitives::layout_metrics::TextMeasure for CharWidthMeasure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::combo_box::ComboBox;
     use crate::primitives::form::{FieldKind, FormField};
     use crate::types::StyledText;
 
@@ -2129,6 +2234,33 @@ mod tests {
         }
     }
 
+    fn combo_field(
+        id: &str,
+        options: &[&str],
+        text: &str,
+        open: bool,
+        disabled: bool,
+    ) -> FormField {
+        let mut combo = ComboBox::new(
+            WidgetId::new(id),
+            options.iter().map(|s| s.to_string()).collect(),
+        );
+        combo.text = text.to_string();
+        combo.open = open;
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::plain("Combo"),
+            kind: FieldKind::ComboBox(combo),
+            hint: StyledText::default(),
+            disabled,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+        }
+    }
+
     fn controller_with(fields: Vec<FormField>, focused: Option<&str>) -> FormController {
         let mut fc = FormController::new("f".into());
         fc.set_form(Form {
@@ -2865,6 +2997,184 @@ mod tests {
                  once focus has moved to \"d2\""
             ),
             other => panic!("expected DatePicker, got {other:?}"),
+        }
+    }
+
+    // ── ComboBox routing ──────────────────────────────────────────
+
+    #[test]
+    fn typed_char_on_a_focused_combo_box_updates_its_text() {
+        let mut fc = controller_with(
+            vec![combo_field(
+                "c",
+                &["Apple", "Banana", "Cherry"],
+                "",
+                false,
+                false,
+            )],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Char('b'), Modifiers::default()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxTextChanged {
+                id: WidgetId::new("c"),
+                value: "b".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn down_arrow_moves_combo_box_highlight() {
+        let mut fc = controller_with(
+            vec![combo_field(
+                "c",
+                &["Apple", "Banana", "Cherry"],
+                "",
+                true,
+                false,
+            )],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxHighlightChanged {
+                id: WidgetId::new("c"),
+                index: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn down_arrow_over_an_empty_filtered_list_falls_through_instead_of_navigating() {
+        // "xyz" matches none of these options, so `move_highlight` returns
+        // `None` and `handle_combo_box_key` must fall through to the
+        // generic dispatch (which has nothing else to do with a bare Down
+        // either, so this resolves as `Ignored`) rather than returning
+        // some synthetic event.
+        let mut fc = controller_with(
+            vec![combo_field("c", &["Apple", "Banana"], "xyz", true, false)],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn enter_commits_the_focused_combo_box_text() {
+        let mut fc = controller_with(
+            vec![combo_field(
+                "c",
+                &["Apple", "Banana", "Cherry"],
+                "Ban",
+                false,
+                false,
+            )],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxCommitted {
+                id: WidgetId::new("c"),
+                value: "Ban".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn escape_while_open_cancels_the_combo_box() {
+        let mut fc = controller_with(
+            vec![combo_field("c", &["Apple", "Banana"], "a", true, false)],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Escape), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxCancelled {
+                id: WidgetId::new("c"),
+            })
+        );
+    }
+
+    #[test]
+    fn escape_while_closed_falls_through_instead_of_cancelling() {
+        let mut fc = controller_with(
+            vec![combo_field("c", &["Apple", "Banana"], "a", false, false)],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Escape), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn disabled_combo_box_field_ignores_its_keys() {
+        let mut fc = controller_with(
+            vec![combo_field("c", &["Apple", "Banana"], "", false, true)],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Char('a'), Modifiers::default()), RECT);
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn tab_moves_focus_away_from_a_focused_combo_box_field_normally() {
+        let mut fc = controller_with(
+            vec![
+                combo_field("c", &["Apple", "Banana"], "", false, false),
+                toggle_field("t", false),
+            ],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("t")
+            }),
+            "Tab isn't one of ComboBox's claimed keys, so focus traversal \
+             off a focused ComboBox field still works"
+        );
+    }
+
+    #[test]
+    fn ctrl_modified_combo_box_key_falls_through_instead_of_editing() {
+        let mut fc = controller_with(
+            vec![combo_field("c", &["Apple", "Banana"], "ab", false, false)],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Char('a'), ctrl()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::Ignored,
+            "Ctrl+A is a host accelerator candidate, not combo-box text \
+             entry, so it must not be swallowed by the ComboBox"
+        );
+        let form = fc.build_form(RECT);
+        match &form.fields[0].kind {
+            FieldKind::ComboBox(combo) => {
+                assert_eq!(combo.text, "ab", "the text must not have changed")
+            }
+            other => panic!("expected ComboBox, got {other:?}"),
         }
     }
 }

@@ -60,6 +60,19 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `FieldKind::ComboBox`: a searchable / type-to-filter combobox form field,
+  wrapping the existing `ComboBox` primitive. `FormEvent::ComboBoxTextChanged`
+  / `ComboBoxHighlightChanged` / `ComboBoxCommitted` / `ComboBoxCancelled`
+  surface its edits through the same `FormController`/`FormEvent` dispatch
+  every other field kind uses; `FormController::handle_combo_box_key` routes
+  typed characters, arrow-key highlight movement, and commit/cancel to the
+  focused field's embedded `ComboBox::handle_key`, falling back to the
+  generic Tab/BackTab/Escape handling other fields already share. TUI paints
+  the compact field row (live filter text + chevron) via a new
+  `src/tui/form.rs` arm; GTK renders it through the existing
+  backend-generic `primitives::form::paint` path with no GTK-specific code
+  needed. Both backends are covered by `examples/common/form_all_fields.rs`
+  and its cross-backend parity/driver tests.
 - `Form`/`FormField` label placement and explicit tab order: a new
   `LabelPosition` (`Left`/`Top`/`Inline`/`Hidden`) and `LabelAlign`
   (`Start`/`Center`/`End`) enum, settable per-form (`Form::label_position`,
