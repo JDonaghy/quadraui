@@ -323,8 +323,10 @@ class HasUnreleasedEntryTest(unittest.TestCase):
 
 
 class ReleasePromotionVersionTest(unittest.TestCase):
-    """#1761: a develop -> main promotion PR legitimately leaves
-    `[Unreleased]` empty, so it must not need a `[Unreleased]` entry."""
+    """A develop -> main promotion PR (or a release-X.Y.Z -> develop bump
+    PR) legitimately leaves `[Unreleased]` empty, so it must not need a
+    `[Unreleased]` entry -- but only when its own diff actually bumped the
+    version."""
 
     def test_promotion_shape_returns_the_bumped_version(self):
         with TempGitRepo() as repo:
@@ -418,6 +420,24 @@ class ReleasePromotionVersionTest(unittest.TestCase):
             repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.3.0"'))
             repo.write_changelog(PROMOTION_CHANGELOG.replace("## [0.2.0]", "## [0.3.0]"))
             base = repo.commit("Release v0.3.0 (version bump + CHANGELOG)")
+
+            self.assertIsNone(
+                changelog_check.release_promotion_version(base, head, repo.root)
+            )
+
+    def test_downgraded_version_is_not_exempt(self):
+        """A manifest edit that lowers the version -- e.g. a reverted bump
+        -- must not match just because the versions differ and the rest
+        of the promotion shape happens to line up."""
+        with TempGitRepo() as repo:
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.3.0"'))
+            repo.write_changelog(PROMOTION_CHANGELOG.replace("## [0.2.0]", "## [0.3.0]"))
+            base = repo.commit("base, at 0.3.0")
+
+            repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
+            repo.write_changelog(PROMOTION_CHANGELOG)
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+            head = repo.commit("revert the bump back down to 0.2.0")
 
             self.assertIsNone(
                 changelog_check.release_promotion_version(base, head, repo.root)
