@@ -72,7 +72,13 @@ only a push to `main` runs this workflow.
   `src/tui/form.rs` arm; GTK renders it through the existing
   backend-generic `primitives::form::paint` path with no GTK-specific code
   needed. Both backends are covered by `examples/common/form_all_fields.rs`
-  and its cross-backend parity/driver tests.
+  and its cross-backend parity/driver tests. A dedicated
+  `examples/tui_form_combo_box.rs` demo (`examples/common/form_combo_box.rs`)
+  shows the full apply contract end to end — the field row paints only the
+  compact filter text, the app itself paints the open dropdown overlay via
+  `Backend::draw_combo_box`, mirroring `FieldKind::ColorPicker`'s popup
+  contract — covered by `TuiDriver` tests exercising type-to-filter,
+  highlight navigation, commit, cancel, and quit routing.
 - `Form`/`FormField` label placement and explicit tab order: a new
   `LabelPosition` (`Left`/`Top`/`Inline`/`Hidden`) and `LabelAlign`
   (`Start`/`Center`/`End`) enum, settable per-form (`Form::label_position`,

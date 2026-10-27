@@ -273,6 +273,7 @@ impl FormAllFieldsApp {
                             vec!["Apple".into(), "Banana".into(), "Cherry".into()],
                         );
                         combo.text = "Banana".into();
+                        combo.committed = "Banana".into();
                         combo
                     }),
                     hint: StyledText::default(),
