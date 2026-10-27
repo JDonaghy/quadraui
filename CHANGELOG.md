@@ -60,6 +60,17 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `PlatformServices::update_service` — an auto-update seam. The new
+  `UpdateService` trait (`check_for_update`, `download_and_stage`,
+  `apply_on_quit`) plus its `UpdateFeed`/`UpdateInfo`/`StagedUpdate` types
+  give every backend a contract to implement an updater against, without
+  requiring one yet: the default `UpdateService` returns
+  `BackendError::Unsupported` from every method. The TUI backend overrides
+  `download_and_stage` to emit an `"update available: <version>"`
+  diagnostic through `quadraui::diagnostics` before degrading to the same
+  `Unsupported`, since a terminal app has no package format of its own to
+  stage. Sparkle/WinSparkle/AppImage implementations are separate
+  follow-ons.
 - `FieldKind::Dropdown` TUI popup: the TUI backend now paints an in-canvas
   option list under a focused `Dropdown` field, instead of leaving the
   selected value and the rest of the options invisible between Enter

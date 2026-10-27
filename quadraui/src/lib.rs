@@ -338,6 +338,13 @@ pub mod accelerator;
 pub mod backend;
 pub mod event;
 
+// Auto-update seam: `UpdateService` + the feed/info/staged types it
+// trades in, reached off `PlatformServices::update_service` the same way
+// `PlatformServices::secret_store` exposes `SecretStore`. Compiled
+// unconditionally — the contract and its `Unsupported` default need no
+// backend feature; see `update`'s module doc.
+pub mod update;
+
 // ── PaintSurface ────────────────────────────────────────────────────────
 // The ~15-verb drawing trait underneath the three pixel backends —
 // extracted from helpers each of GtkBackend/MacBackend/WinBackend already
@@ -630,6 +637,7 @@ pub use event::{
     mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,
     MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent, UserPayload, Viewport,
 };
+pub use update::{StagedUpdate, UpdateFeed, UpdateInfo, UpdateService};
 // The public paint-verb seam — see `paint_surface`'s module doc.
 pub use frame::{
     check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,
