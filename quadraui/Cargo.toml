@@ -1003,6 +1003,11 @@ path = "examples/gtk_form_all_fields.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_form_combo_box"
+path = "examples/tui_form_combo_box.rs"
+required-features = ["tui"]
+
+[[example]]
 name = "tui_form_date_picker"
 path = "examples/tui_form_date_picker.rs"
 required-features = ["tui"]
