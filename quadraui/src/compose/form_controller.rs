@@ -1249,10 +1249,55 @@ fn form_field_measure(
                 .collect();
             FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
         }
+        FieldKind::Toolbar(toolbar) => {
+            use crate::primitives::toolbar::{measure_button, ToolbarButton};
+            let measure = CharWidthMeasure(char_w);
+            let label_w = field.label.visible_width() as f32 * char_w;
+            // Mirrors `tui_form_layout`/`GtkBackend::form_layout`'s
+            // `Toolbar` special case: pack flush left (no gap) when the
+            // field has no label, instead of the `char_w` left margin
+            // every other row item kind reserves.
+            let start_x = if label_w > 0.0 {
+                label_w + char_w * 2.0
+            } else {
+                0.0
+            };
+            let items = toolbar
+                .buttons
+                .iter()
+                .map(|btn| {
+                    let id = match btn {
+                        ToolbarButton::Action { id, .. } => *id,
+                        _ => field.id,
+                    };
+                    FormItemMeasure {
+                        id,
+                        width: measure_button(&measure, btn),
+                    }
+                })
+                .collect();
+            // item_gap = 0: buttons pack edge-to-edge, same as
+            // `Toolbar::layout`'s own placement.
+            FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
+        }
         FieldKind::TextArea { visible_rows, .. } => {
             FormFieldMeasure::new(row_h * *visible_rows as f32)
         }
         _ => FormFieldMeasure::new(row_h),
+    }
+}
+
+/// [`crate::primitives::layout_metrics::TextMeasure`] adapter used only by
+/// [`form_field_measure`]'s backend-free fallback: approximates every
+/// glyph as `char_w` wide (the same `lh * 0.6` estimate `click_inner`
+/// already uses for the other row-item kinds) so it can call
+/// [`crate::primitives::toolbar::measure_button`] — the same formula
+/// every pixel backend's real `TextMeasure` feeds — without a live font.
+struct CharWidthMeasure(f32);
+
+impl crate::primitives::layout_metrics::TextMeasure for CharWidthMeasure {
+    fn width_of(&self, text: &str) -> f32 {
+        text.chars().count() as f32 * self.0
     }
 }
 
@@ -1737,6 +1782,66 @@ mod tests {
             }
             other => panic!("expected FormAction(ToggleChanged), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handle_cached_click_on_second_toolbar_button_resolves_that_button() {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+
+        let mut fc = test_controller(1);
+        fc.set_form({
+            let mut form = make_form(1);
+            form.fields[0].label = StyledText::default();
+            form.fields[0].kind = FieldKind::Toolbar(Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![
+                    ToolbarButton::Action {
+                        id: WidgetId::new("btn-a"),
+                        label: "A".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    },
+                    ToolbarButton::Action {
+                        id: WidgetId::new("btn-b"),
+                        label: "BB".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    },
+                ],
+                bg: None,
+                focused_index: None,
+            });
+            form
+        });
+        // lh=10.0 → row_h=14.0, char_w=6.0 → "A" button is
+        // 1*6.0 + 2*8.0 = 22.0 wide, spanning x in [0, 22); the "BB"
+        // button follows immediately (no label, no item gap), spanning
+        // x in [22, 50). x=30 lands inside the second button.
+        fc.set_backend_info(10.0);
+        let ev = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 30.0, y: 5.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ToolbarButtonClicked {
+                field_id: WidgetId::new("field-0"),
+                button_id: WidgetId::new("btn-b"),
+            }),
+            "click on the second toolbar button must resolve to its own id, \
+             not fall back to the field's generic FocusChanged"
+        );
     }
 
     // ── Pure helper tests ───────────────────────────────────────────
