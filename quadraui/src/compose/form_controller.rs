@@ -1882,6 +1882,137 @@ mod tests {
         );
     }
 
+    #[test]
+    fn handle_cached_click_on_toolbar_separator_falls_back_to_field_focus() {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+
+        let mut fc = test_controller(1);
+        fc.set_form({
+            let mut form = make_form(1);
+            form.fields[0].label = StyledText::default();
+            form.fields[0].kind = FieldKind::Toolbar(Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![
+                    ToolbarButton::Action {
+                        id: WidgetId::new("btn-a"),
+                        label: "A".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    },
+                    ToolbarButton::Separator,
+                    ToolbarButton::Action {
+                        id: WidgetId::new("btn-b"),
+                        label: "B".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    },
+                ],
+                bg: None,
+                focused_index: None,
+            });
+            form
+        });
+        // lh=10.0 → row_h=14.0, char_w=6.0, items_start_x=6.0. "A" is
+        // 1*6.0 + 2*8.0 = 22.0 wide, spanning [6, 28); the separator is a
+        // fixed SEPARATOR_PX=12.0 regardless of char_w, spanning [28, 40);
+        // "B" follows at [40, 62). A `Separator` has no id of its own, so
+        // `form_field_measure` falls back to `field.id` for its item - a
+        // click inside the separator's zone must resolve the same way a
+        // click outside every item does: FocusChanged on the field, not a
+        // ToolbarButtonClicked for either neighbouring button.
+        fc.set_backend_info(10.0);
+
+        let ev = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 34.0, y: 5.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("field-0"),
+            }),
+            "a click on a separator's hit-zone must fall back to the field's \
+             generic FocusChanged, not resolve to either neighbouring button"
+        );
+    }
+
+    #[test]
+    fn handle_cached_toolbar_items_start_x_accounts_for_the_label() {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+
+        let mut fc = test_controller(1);
+        fc.set_form({
+            let mut form = make_form(1);
+            form.fields[0].label = StyledText::plain("Lbl"); // 3 chars
+            form.fields[0].kind = FieldKind::Toolbar(Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![ToolbarButton::Action {
+                    id: WidgetId::new("btn-a"),
+                    label: "A".into(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                }],
+                bg: None,
+                focused_index: None,
+            });
+            form
+        });
+        // lh=10.0 → row_h=14.0, char_w=6.0. A labelled toolbar row uses the
+        // same `label_w + 2 * char_w` reservation as every sibling arm:
+        // label_w = 3*6.0 = 18.0, so items_start_x = 18.0 + 12.0 = 30.0,
+        // and "A" (1*6.0 + 2*8.0 = 22.0 wide) spans [30, 52).
+        fc.set_backend_info(10.0);
+
+        let miss = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 20.0, y: 5.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            miss,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("field-0"),
+            }),
+            "a click inside the label's reserved space must miss the button"
+        );
+
+        let hit = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 40.0, y: 5.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            hit,
+            FormControllerEvent::FormAction(FormEvent::ToolbarButtonClicked {
+                field_id: WidgetId::new("field-0"),
+                button_id: WidgetId::new("btn-a"),
+            }),
+            "a click past the label's reserved space must resolve to the button"
+        );
+    }
+
     // ── Pure helper tests ───────────────────────────────────────────
 
     #[test]
