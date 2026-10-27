@@ -4588,8 +4588,8 @@ pub struct Display {
 ///
 /// Deliberately flat and small, mirroring [`Notification`]'s shape: this is
 /// a snapshot an app reads once per query (or once per
-/// [`crate::UiEvent::SystemThemeChanged`], once some backend emits it), not
-/// a live-updating handle. `Serialize`/`Deserialize` (unlike the other
+/// [`crate::UiEvent::SystemThemeChanged`]), not a live-updating handle.
+/// `Serialize`/`Deserialize` (unlike the other
 /// `PlatformServices` option/config structs in this module) because it also
 /// travels inside [`crate::UiEvent::SystemThemeChanged`], and every
 /// `UiEvent` payload satisfies that bound — see `event.rs`'s module doc.

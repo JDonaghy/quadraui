@@ -5498,9 +5498,13 @@ impl WindowControl for WinBackend {
     /// query distinct from the toggle itself, so this answers from
     /// `Self::fullscreen_saved` — the same rect/style snapshot
     /// [`Self::set_fullscreen`] stashes on entry and clears on exit.
+    /// Guards on `self.hwnd` the same way [`Self::is_maximized`] does, so
+    /// an unattached backend gets `Unsupported` rather than a misleading
+    /// `Ok(false)`.
     fn is_fullscreen(&self) -> ServiceResult<bool> {
         #[cfg(target_os = "windows")]
         {
+            let _hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
             Ok(self.fullscreen_saved.is_some())
         }
         #[cfg(not(target_os = "windows"))]
