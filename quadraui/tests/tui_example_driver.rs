@@ -94,6 +94,8 @@ mod form_date_picker;
 mod form_groups;
 #[path = "../examples/common/form_scroll.rs"]
 mod form_scroll;
+#[path = "../examples/common/form_visibility.rs"]
+mod form_visibility;
 #[path = "../examples/common/frame_demo.rs"]
 mod frame_demo;
 #[path = "../examples/common/full_chrome_demo.rs"]
@@ -208,6 +210,7 @@ use form_all_fields::FormAllFieldsApp;
 use form_date_picker::FormDatePickerApp;
 use form_groups::FormGroupsApp;
 use form_scroll::FormScrollApp;
+use form_visibility::FormVisibilityApp;
 use frame_demo::FrameDemo;
 use full_chrome_demo::FullChromeDemo;
 use help_layer_demo::HelpLayerDemo;
@@ -5225,6 +5228,101 @@ fn form_scroll_typing_q_while_editing_name_does_not_quit() {
     assert!(
         after.contains("name = \"q\""),
         "the typed 'q' should land in the name field:\n{after}"
+    );
+}
+
+// ─── FormVisibilityApp: declarative visible_when / enabled_when ───────────
+//
+// `FormVisibilityApp` declares its `FormVisibility` rules exactly once, in
+// `new()`; every assertion below exercises `FormController::set_form`
+// re-evaluating those same rules against the latest `ship`/`agree` values
+// on each event — there is no app-side rebuild of the field list per
+// keystroke (see `quadraui::visibility`'s module doc).
+
+#[test]
+fn form_visibility_toggling_ship_shows_and_hides_the_address_field() {
+    let mut driver = TuiDriver::new(FormVisibilityApp::new(), 100, 24);
+    // Two deliberate single clicks on the same cell, not a double-click.
+    driver.set_double_click_folding(false);
+    let before = driver.screen();
+    assert!(
+        !before.contains("Shipping address"),
+        "the address field's visible_when (ship == true) should keep it out \
+         of Form::fields while 'ship' starts off:\n{before}"
+    );
+
+    let (x, y) = driver
+        .find("Ship to a different address")
+        .unwrap_or_else(|| panic!("ship toggle not painted:\n{before}"));
+    driver.click(x, y);
+
+    let after_on = driver.screen();
+    assert!(
+        after_on.contains("Shipping address"),
+        "turning 'ship' on should reveal the address field via \
+         apply_visibility, with no app-side field-list rebuild:\n{after_on}"
+    );
+
+    driver.click(x, y);
+    let after_off = driver.screen();
+    assert!(
+        !after_off.contains("Shipping address"),
+        "turning 'ship' back off should hide the address field again:\n{after_off}"
+    );
+}
+
+#[test]
+fn form_visibility_agree_toggle_enables_submit_render_and_click_action() {
+    let mut driver = TuiDriver::new(FormVisibilityApp::new(), 100, 24);
+
+    let (sx, sy) = driver
+        .find("Submit")
+        .unwrap_or_else(|| panic!("submit button not painted:\n{}", driver.screen()));
+    let disabled_fg = driver
+        .style_at(sx as u16, sy as u16)
+        .expect("Submit cell should be inside the screen")
+        .fg;
+
+    // FormController's click routing emits FormEvent::ButtonClicked
+    // regardless of `disabled` (the same posture a disabled toolbar
+    // button takes) — this pins that the *app* declines to honor it
+    // while enabled_when (agree == true) is false.
+    driver.click(sx, sy);
+    let after_disabled_click = driver.screen();
+    assert!(
+        after_disabled_click.contains("submits=0")
+            && after_disabled_click.contains("submit ignored (disabled)"),
+        "clicking Submit while 'agree' is off must not count as a submit:\n{after_disabled_click}"
+    );
+
+    let (ax, ay) = driver
+        .find("I agree to the terms")
+        .unwrap_or_else(|| panic!("agree toggle not painted:\n{}", driver.screen()));
+    driver.click(ax, ay);
+
+    let (sx2, sy2) = driver.find("Submit").unwrap_or_else(|| {
+        panic!(
+            "submit button not painted after agree flip:\n{}",
+            driver.screen()
+        )
+    });
+    let enabled_fg = driver
+        .style_at(sx2 as u16, sy2 as u16)
+        .expect("Submit cell should be inside the screen")
+        .fg;
+    assert_ne!(
+        enabled_fg,
+        disabled_fg,
+        "enabled_when flipping true should repaint Submit out of its muted \
+         disabled colour:\n{}",
+        driver.screen()
+    );
+
+    driver.click(sx2, sy2);
+    let after_enabled_click = driver.screen();
+    assert!(
+        after_enabled_click.contains("submits=1") && after_enabled_click.contains("submitted"),
+        "clicking Submit while 'agree' is on should count as a submit:\n{after_enabled_click}"
     );
 }
 

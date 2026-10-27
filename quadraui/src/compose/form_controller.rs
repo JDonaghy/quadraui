@@ -99,6 +99,19 @@
 //! of its own. A controller with no rules set (`FormRules::default()`,
 //! the starting state) behaves exactly as before: `set_form` stores the
 //! `Form` unchanged.
+//!
+//! ## Declarative visibility
+//!
+//! [`FormController::set_visibility`] attaches a
+//! [`crate::visibility::FormVisibility`] to the controller. From then on,
+//! every [`FormController::set_form`] call evaluates those rules against
+//! the pushed `Form` via [`crate::visibility::apply_visibility`] — *after*
+//! [`Self::set_rules`]'s validation, so cross-field validation still sees
+//! every field's value before any of them are hidden — removing fields
+//! whose `visible_when` is false and setting `disabled` for fields with an
+//! `enabled_when`. A controller with no visibility rules set
+//! (`FormVisibility::default()`, the starting state) behaves exactly as
+//! before: `set_form` stores the `Form` unchanged beyond validation.
 
 use crate::primitives::date_picker::{CalendarDate, DatePickerEvent};
 use crate::primitives::form::{
@@ -108,6 +121,7 @@ use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone
 use crate::primitives::text_input::{EditOp, TextEditor, TextInput};
 use crate::text_util::snap_to_char_boundary;
 use crate::validation::{validate, FormRules};
+use crate::visibility::{apply_visibility, FormVisibility};
 use crate::{
     Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar, UiEvent,
     WidgetId,
@@ -160,6 +174,7 @@ pub struct FormController {
     text_edit: Option<TextEditState>,
     date_edit: Option<DateEditState>,
     rules: FormRules,
+    visibility: FormVisibility,
 }
 
 impl FormController {
@@ -174,15 +189,19 @@ impl FormController {
             text_edit: None,
             date_edit: None,
             rules: FormRules::default(),
+            visibility: FormVisibility::default(),
         }
     }
 
     // ── Per-frame data ────────────────────────────────────────────────
 
     /// Store `form`, applying [`Self::set_rules`]'s declarative validation
-    /// first — see this module's "Declarative validation" doc section.
+    /// and then [`Self::set_visibility`]'s declarative visibility/
+    /// enablement — see this module's "Declarative validation" and
+    /// "Declarative visibility" doc sections.
     pub fn set_form(&mut self, mut form: Form) {
         validate(&mut form, &self.rules);
+        apply_visibility(&mut form, &self.visibility);
         self.form = Some(form);
     }
 
@@ -197,6 +216,20 @@ impl FormController {
     /// if never called).
     pub fn rules(&self) -> &FormRules {
         &self.rules
+    }
+
+    /// Set the declarative visibility/enablement rules [`Self::set_form`]
+    /// evaluates against every `Form` pushed from then on. Pass
+    /// `FormVisibility::default()` to clear them (equivalent to never
+    /// having called this).
+    pub fn set_visibility(&mut self, visibility: FormVisibility) {
+        self.visibility = visibility;
+    }
+
+    /// The visibility rules most recently set via [`Self::set_visibility`]
+    /// (empty/default if never called).
+    pub fn visibility(&self) -> &FormVisibility {
+        &self.visibility
     }
 
     // ── State accessors ───────────────────────────────────────────────
@@ -1317,6 +1350,39 @@ mod tests {
                 "host-set".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn set_visibility_applies_on_every_set_form_call() {
+        use crate::expr::{Expr, Value};
+        use crate::visibility::{FieldVisibility, FormVisibility};
+
+        let mut fc = FormController::new("fc".into());
+        let mut visibility = FormVisibility::default();
+        visibility.fields.insert(
+            "field-1".to_string(),
+            FieldVisibility {
+                visible_when: Some(Expr::Eq(
+                    Box::new(Expr::Field("field-0".into())),
+                    Box::new(Expr::Lit(Value::Bool(true))),
+                )),
+                enabled_when: None,
+            },
+        );
+        fc.set_visibility(visibility);
+        assert_eq!(fc.visibility().fields.len(), 1);
+
+        // `field-0` toggled off hides `field-1` from the pushed form.
+        let form = make_form(2);
+        fc.set_form(form);
+        assert_eq!(fc.field_count(), 1);
+
+        // Flipping `field-0` back on and pushing the next frame restores
+        // `field-1` with no host-side rebuild of the field list.
+        let mut form = make_form(2);
+        form.fields[0].kind = FieldKind::Toggle { value: true };
+        fc.set_form(form);
+        assert_eq!(fc.field_count(), 2);
     }
 
     #[test]
