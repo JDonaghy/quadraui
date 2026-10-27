@@ -9159,9 +9159,12 @@ fn form_fields_stack_and_group_items_pack() {
 
     // Items inside a `ToggleGroup` / `ButtonRow` pack left-to-right with
     // the field's own gap, which is the other half of `Form`'s packing.
+    // "Scope" sits in the shared `Left` label column, sized to the
+    // widest label in the form ("Replace"), so it is padded out before
+    // the toolbar items begin.
     assert_eq!(
         row_containing(&screen, "Workspace").trim(),
-        "Scope [ Workspace ][ File ][ Selection ]"
+        "Scope   [ Workspace ][ File ][ Selection ]"
     );
     assert_eq!(
         row_containing(&screen, "Find Next").trim(),
