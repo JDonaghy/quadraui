@@ -134,12 +134,13 @@ pub fn clear_sink() {
 /// profile-independent like `terminal`, `win` and macOS-on-macOS: a host
 /// should learn about an available update in a release build too, not
 /// only in `cargo bench`'s debug-assertions-off profile. Hence a bare
-/// `feature = "tui"` disjunct alongside
-/// `all(debug_assertions, any(feature = "tui", feature = "gtk"))` rather
-/// than folding `tui` entirely into the debug-only clause.
+/// `feature = "tui"` disjunct alongside `all(debug_assertions, feature =
+/// "gtk")` — `tui`'s own debug-only callers (the modal-paint check) are
+/// already covered by the bare `feature = "tui"` disjunct, so the debug-only
+/// clause only needs to carry `gtk`.
 #[cfg_attr(
     not(any(
-        all(debug_assertions, any(feature = "tui", feature = "gtk")),
+        all(debug_assertions, feature = "gtk"),
         feature = "tui",
         feature = "terminal",
         feature = "win",

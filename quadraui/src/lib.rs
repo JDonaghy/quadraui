@@ -633,11 +633,14 @@ pub use backend::{
     PointerShape, ResizeEdge, ResolvedMenuStyle, RgbaImage, SecretStore, ServiceResult,
     SystemTheme, WindowControl,
 };
+// `PlatformServices::update_service`'s vended trait and types — same
+// service-seam shape as `Clipboard`/`SecretStore` above; see `update`'s
+// module doc.
 pub use event::{
     mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,
     MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent, UserPayload, Viewport,
 };
-pub use update::{StagedUpdate, UpdateFeed, UpdateInfo, UpdateService};
+pub use update::{StagedUpdate, UpdateFeed, UpdateInfo, UpdateInfoBuilder, UpdateService};
 // The public paint-verb seam — see `paint_surface`'s module doc.
 pub use frame::{
     check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,

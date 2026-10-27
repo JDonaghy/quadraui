@@ -7,7 +7,7 @@
 #![cfg(feature = "tui")]
 
 use quadraui::tui::testing::TuiDriver;
-use quadraui::{AppLogic, Backend, Reaction, Rect, UiEvent, WidgetId};
+use quadraui::{AppLogic, Backend, Reaction, Rect, UiEvent, UpdateInfo, WidgetId};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// [`quadraui::diagnostics`]'s sink is process-global, and `cargo test`
@@ -85,6 +85,47 @@ fn unpainted_modal_diagnostic_still_reaches_an_installed_sink() {
         "the #455 diagnostic should still be generated and delivered to an \
          installed sink, just never printed directly: {messages:?}\nscreen:\n{}",
         driver.screen()
+    );
+    drop(messages);
+
+    quadraui::diagnostics::clear_sink();
+}
+
+/// The TUI backend's [`quadraui::UpdateService::download_and_stage`] degrade
+/// surfaces an "update available" diagnostic through the same sink,
+/// reachable only via `Backend::services` — a host that has discovered an
+/// update through its own feed check and reports it via
+/// `download_and_stage` learns the result the same way the unpainted-modal
+/// diagnostic above does.
+#[test]
+fn tui_update_service_download_and_stage_reaches_an_installed_sink() {
+    let _guard = sink_test_guard();
+    let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let received_in_sink = Arc::clone(&received);
+    quadraui::diagnostics::set_sink(move |msg: &str| {
+        received_in_sink.lock().unwrap().push(msg.to_string());
+    });
+
+    let driver = TuiDriver::new(UnpaintedModalApp, 40, 10);
+    let info = UpdateInfo::builder("9.9.9").build();
+    let result = driver
+        .backend()
+        .services()
+        .update_service()
+        .download_and_stage(&info);
+
+    // The TUI backend has no package format to stage into, so the call
+    // still reports `Unsupported` — the diagnostic is the only observable
+    // effect of the degrade.
+    assert!(result.is_err());
+
+    let messages = received.lock().unwrap();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("update available: 9.9.9")),
+        "download_and_stage's TUI degrade should surface the available \
+         version through the installed sink: {messages:?}"
     );
     drop(messages);
 
