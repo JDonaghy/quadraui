@@ -756,7 +756,7 @@ pub enum UiEvent {
     /// A power-state transition occurred: the system is suspending or
     /// resumed, switched between battery and AC, or the screen locked or
     /// unlocked. Payload names which one — see
-    /// [`PowerEventKind`][crate::PowerEventKind]. The live counterpart to
+    /// [`PowerEventKind`]. The live counterpart to
     /// [`PlatformServices::on_battery`][crate::PlatformServices::on_battery]/
     /// [`PlatformServices::thermal_state`][crate::PlatformServices::thermal_state]'s
     /// poll-on-demand queries.
