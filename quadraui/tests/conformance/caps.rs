@@ -1151,6 +1151,14 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
     // which returns `ServiceResult<...>` (including the default
     // always-`Unsupported` service).
     ("update_service", ServiceHonesty::Delegates("UpdateService")),
+    // `on_battery`/`thermal_state`/`begin_power_save_block`/
+    // `end_power_save_block` all return `ServiceResult<...>` and default to
+    // `Err(BackendError::Unsupported)` — same always-real-`Result` shape as
+    // `displays`/`cursor_screen_point`/`system_theme` above.
+    ("on_battery", ServiceHonesty::AlwaysReal),
+    ("thermal_state", ServiceHonesty::AlwaysReal),
+    ("begin_power_save_block", ServiceHonesty::AlwaysReal),
+    ("end_power_save_block", ServiceHonesty::AlwaysReal),
     ("platform_name", ServiceHonesty::AlwaysReal),
 ];
 
