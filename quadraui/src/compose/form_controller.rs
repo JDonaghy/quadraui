@@ -552,6 +552,18 @@ impl FormController {
                     return result;
                 }
             }
+            // `Dropdown` has no open/close step to track (unlike
+            // `ComboBox`'s `open`/`highlighted`) — Up/Down move and commit
+            // `selected_idx` in the same keystroke, so `handle_dropdown_key`
+            // only ever claims those two keys and returns `None` for
+            // everything else (Tab/BackTab, Enter), which falls through to
+            // the generic dispatch below exactly like an unclaimed
+            // combo-box key does.
+            if self.focused_field_is_enabled_dropdown() {
+                if let Some(result) = self.handle_dropdown_key(key) {
+                    return result;
+                }
+            }
         }
         match key {
             Key::Named(NamedKey::Tab) if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd => {
@@ -754,6 +766,68 @@ impl FormController {
                 FormEvent::ComboBoxCancelled { id: focused_id },
             )),
         }
+    }
+
+    /// Whether the currently-focused field is a non-disabled, non-empty
+    /// `Dropdown` — gates `handle_key`'s Up/Down interception. Mirrors
+    /// [`Self::focused_field_is_enabled_combo_box`]; an empty `options`
+    /// list excludes itself so Up/Down fall through to the generic
+    /// dispatch rather than being swallowed with nothing to move between.
+    fn focused_field_is_enabled_dropdown(&self) -> bool {
+        let Some(form) = &self.form else {
+            return false;
+        };
+        let Some(focused_id) = &form.focused_field else {
+            return false;
+        };
+        form.fields
+            .iter()
+            .find(|f| &f.id == focused_id)
+            .is_some_and(|f| {
+                !f.disabled
+                    && matches!(&f.kind, FieldKind::Dropdown { options, .. } if !options.is_empty())
+            })
+    }
+
+    /// Up/Down moves the focused `Dropdown`'s `selected_idx` by one,
+    /// clamped (not wrapping) to `[0, options.len() - 1]`, and emits
+    /// [`FormEvent::DropdownChanged`] immediately — there's no separate
+    /// open/highlight/commit sequence the way `ComboBox` has, so unlike
+    /// [`Self::handle_combo_box_key`] there's no `FormControllerEvent`
+    /// variant for an in-progress-but-uncommitted move. Any other key
+    /// (including Up/Down already at an end of the list) returns `None`,
+    /// which `handle_key` falls through to its generic dispatch — a
+    /// no-op there, since a `Dropdown` has no text to edit.
+    fn handle_dropdown_key(&mut self, key: &Key) -> Option<FormControllerEvent> {
+        let form = self.form.as_ref()?;
+        let focused_id = form.focused_field?;
+        let field = form.fields.iter().find(|f| f.id == focused_id)?;
+        if field.disabled {
+            return None;
+        }
+        let FieldKind::Dropdown {
+            options,
+            selected_idx,
+        } = &field.kind
+        else {
+            return None;
+        };
+        let delta: i32 = match key {
+            Key::Named(NamedKey::Up) => -1,
+            Key::Named(NamedKey::Down) => 1,
+            _ => return None,
+        };
+        let max_idx = options.len().saturating_sub(1) as i32;
+        let new_idx = (*selected_idx as i32 + delta).clamp(0, max_idx) as usize;
+        if new_idx == *selected_idx {
+            return None;
+        }
+        Some(FormControllerEvent::FormAction(
+            FormEvent::DropdownChanged {
+                id: focused_id,
+                selected_idx: new_idx,
+            },
+        ))
     }
 
     /// Move focus to the next/previous non-`Label`, non-`ReadOnly`,
@@ -2297,6 +2371,29 @@ mod tests {
         }
     }
 
+    fn dropdown_field(
+        id: &str,
+        options: &[&str],
+        selected_idx: usize,
+        disabled: bool,
+    ) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::plain("Dropdown"),
+            kind: FieldKind::Dropdown {
+                options: options.iter().map(|s| StyledText::plain(*s)).collect(),
+                selected_idx,
+            },
+            hint: StyledText::default(),
+            disabled,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+        }
+    }
+
     fn controller_with(fields: Vec<FormField>, focused: Option<&str>) -> FormController {
         let mut fc = FormController::new("f".into());
         fc.set_form(Form {
@@ -3311,5 +3408,141 @@ mod tests {
                 id: WidgetId::new("field"),
             })
         );
+    }
+
+    // ── Dropdown routing ───────────────────────────────────────────
+
+    #[test]
+    fn down_arrow_moves_and_commits_dropdown_selection() {
+        let mut fc = controller_with(
+            vec![dropdown_field(
+                "d",
+                &["Apple", "Banana", "Cherry"],
+                0,
+                false,
+            )],
+            Some("d"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::DropdownChanged {
+                id: WidgetId::new("d"),
+                selected_idx: 1,
+            }),
+            "Down must move AND commit in the same keystroke — Dropdown \
+             has no separate open/highlight step"
+        );
+    }
+
+    #[test]
+    fn up_arrow_moves_dropdown_selection_back() {
+        let mut fc = controller_with(
+            vec![dropdown_field(
+                "d",
+                &["Apple", "Banana", "Cherry"],
+                2,
+                false,
+            )],
+            Some("d"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Up), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::DropdownChanged {
+                id: WidgetId::new("d"),
+                selected_idx: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn up_arrow_at_first_option_falls_through_instead_of_wrapping() {
+        let mut fc = controller_with(
+            vec![dropdown_field("d", &["Apple", "Banana"], 0, false)],
+            Some("d"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Up), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn down_arrow_at_last_option_falls_through_instead_of_wrapping() {
+        let mut fc = controller_with(
+            vec![dropdown_field("d", &["Apple", "Banana"], 1, false)],
+            Some("d"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn disabled_dropdown_field_ignores_arrow_keys() {
+        let mut fc = controller_with(
+            vec![dropdown_field("d", &["Apple", "Banana"], 0, true)],
+            Some("d"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn tab_moves_focus_away_from_a_focused_dropdown_field_normally() {
+        let mut fc = controller_with(
+            vec![
+                dropdown_field("d", &["Apple", "Banana"], 0, false),
+                toggle_field("t", false),
+            ],
+            Some("d"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("t")
+            }),
+            "Tab isn't one of Dropdown's claimed keys, so focus traversal \
+             off a focused Dropdown field still works"
+        );
+    }
+
+    #[test]
+    fn ctrl_modified_dropdown_key_falls_through_instead_of_navigating() {
+        let mut fc = controller_with(
+            vec![dropdown_field("d", &["Apple", "Banana"], 0, false)],
+            Some("d"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Named(NamedKey::Down), ctrl()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::Ignored,
+            "Ctrl+Down is a host accelerator candidate, not dropdown \
+             navigation, so it must not be swallowed"
+        );
+        let form = fc.build_form(RECT);
+        match &form.fields[0].kind {
+            FieldKind::Dropdown { selected_idx, .. } => {
+                assert_eq!(*selected_idx, 0, "selection must not have changed")
+            }
+            other => panic!("expected Dropdown, got {other:?}"),
+        }
     }
 }

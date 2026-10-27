@@ -300,9 +300,12 @@ pub enum FieldKind {
     /// colour assignments.
     ColorPicker { value: crate::Color },
     /// Single-choice selection from a fixed list. `options` is the
-    /// display list; `selected_idx` is the current choice.
-    /// Click / Enter opens the dropdown; arrows select; Enter confirms.
-    /// Emits `FormEvent::DropdownChanged` on commit.
+    /// display list; `selected_idx` is the current choice. While the
+    /// field is focused, backends show the full option list open below
+    /// the compact row (see e.g. `crate::tui::form::draw_form`); Up/Down
+    /// move the selection and commit it immediately, emitting
+    /// `FormEvent::DropdownChanged` on every move — there's no separate
+    /// open/confirm step.
     ///
     /// Use for enum-style settings (theme selection, cursor style,
     /// line-ending preference, language server choice).

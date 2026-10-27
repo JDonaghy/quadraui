@@ -48,6 +48,18 @@ fn is_top_label(form: &Form, field: &FormField) -> bool {
         && field.label.visible_width() > 0
 }
 
+/// Whether `field` is the form's current keyboard focus. Shared by the
+/// measure closure (to grow a focused `Dropdown`'s row count) and
+/// [`build_row_ctx`] (to pick focused-row colours), so both agree on
+/// exactly when a `Dropdown`'s popup list is visible.
+fn field_is_focused(form: &Form, field: &FormField) -> bool {
+    form.has_focus
+        && form
+            .focused_field
+            .as_ref()
+            .is_some_and(|id| id == &field.id)
+}
+
 /// X offset where a field's input/items start, after its resolved
 /// label column (or 0/1 when there's no reserved column to clear).
 /// `no_label_fallback` is the start column when the field has no
@@ -128,6 +140,14 @@ fn tui_form_layout_with_label_width(
             }
             FieldKind::TextArea { visible_rows, .. } => {
                 FormFieldMeasure::new(*visible_rows as f32 + extra_row)
+            }
+            // A focused `Dropdown` grows to fit its open option list (one
+            // row per option) below the compact row; unfocused, it's the
+            // same single row as every other field.
+            FieldKind::Dropdown { options, .. }
+                if field_is_focused(form, field) && !options.is_empty() =>
+            {
+                FormFieldMeasure::new(options.len() as f32 + 1.0 + extra_row)
             }
             FieldKind::Toolbar(toolbar) => {
                 use super::toolbar::tui_item_width;
@@ -332,11 +352,7 @@ fn build_row_ctx<'a>(
     colors: &FormColors,
     left_label_width: usize,
 ) -> RowCtx<'a> {
-    let is_focused = form.has_focus
-        && form
-            .focused_field
-            .as_ref()
-            .is_some_and(|id| id == &field.id);
+    let is_focused = field_is_focused(form, field);
     let is_header = matches!(field.kind, FieldKind::Label);
 
     let (default_fg, row_bg) = match (is_header, is_focused) {
@@ -767,6 +783,8 @@ fn draw_field_dropdown(
         field_fg,
         dim_fg,
         label_end,
+        is_focused,
+        theme,
         ..
     } = *ctx;
 
@@ -790,6 +808,69 @@ fn draw_field_dropdown(
         if chev_col < area.width as usize {
             set_cell(buf, area.x + chev_col as u16, y, '\u{25BE}', dim_fg, row_bg);
         }
+    }
+
+    if is_focused && !options.is_empty() {
+        draw_dropdown_popup(buf, area, y, options, selected_idx, theme);
+    }
+}
+
+/// Paints a focused [`FieldKind::Dropdown`]'s open option list, one row
+/// per option, directly below its compact row — this is the in-canvas
+/// popup the TUI backend shows instead of the GUI backends' app-drawn
+/// one (`FieldKind::Dropdown`'s doc comment). Uses the same
+/// `completion_*` theme tokens as
+/// [`crate::tui::combo_box::draw_combo_box`]'s popup, since both are a
+/// list of rows with one highlighted. There's no separate "open" or
+/// "highlighted-but-uncommitted" state: `selected_idx` itself is both
+/// what's shown and what Up/Down move (see
+/// `compose::form_controller::FormController::handle_key`'s Dropdown
+/// block), so the highlighted row is always exactly `selected_idx`.
+fn draw_dropdown_popup(
+    buf: &mut Buffer,
+    area: Rect,
+    y: u16,
+    options: &[crate::types::StyledText],
+    selected_idx: usize,
+    theme: &Theme,
+) {
+    if area.width < 3 {
+        return;
+    }
+    let pop_bg = ratatui_color(theme.completion_bg);
+    let sel_bg = ratatui_color(theme.completion_selected_bg);
+    let pop_fg = ratatui_color(theme.completion_fg);
+    let border = ratatui_color(theme.completion_border);
+
+    for (idx, option) in options.iter().enumerate() {
+        let row_y = y + 1 + idx as u16;
+        if row_y >= area.y + area.height {
+            break;
+        }
+        let row_bg = if idx == selected_idx { sel_bg } else { pop_bg };
+        for col in area.x..area.x + area.width {
+            set_cell(buf, col, row_y, ' ', pop_fg, row_bg);
+        }
+        set_cell(buf, area.x, row_y, '\u{2502}', border, row_bg);
+        set_cell(
+            buf,
+            area.x + area.width - 1,
+            row_y,
+            '\u{2502}',
+            border,
+            row_bg,
+        );
+        draw_styled_text(
+            buf,
+            area,
+            row_y,
+            2,
+            option,
+            pop_fg,
+            row_bg,
+            Decoration::Normal,
+            pop_fg,
+        );
     }
 }
 
@@ -1410,6 +1491,99 @@ mod tests {
         // Row 1 ("wrap", focused) bg should be (99, 0, 0).
         let bg = buf[(0u16, 1u16)].bg;
         assert_eq!(bg, ratatui::style::Color::Rgb(99, 0, 0));
+    }
+
+    fn make_dropdown_form(focused: bool) -> Form {
+        Form {
+            id: WidgetId::new("settings"),
+            fields: vec![
+                FormField {
+                    id: WidgetId::new("hdr"),
+                    label: label("Editor"),
+                    kind: FieldKind::Label,
+                    disabled: false,
+                    validation: None,
+                    hint: label(""),
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
+                },
+                FormField {
+                    id: WidgetId::new("dd"),
+                    label: label(""),
+                    kind: FieldKind::Dropdown {
+                        options: vec![label("alpha"), label("beta"), label("gamma")],
+                        selected_idx: 1,
+                    },
+                    disabled: false,
+                    validation: None,
+                    hint: label(""),
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
+                },
+            ],
+            focused_field: if focused {
+                Some(WidgetId::new("dd"))
+            } else {
+                None
+            },
+            scroll_offset: 0,
+            has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+        }
+    }
+
+    #[test]
+    fn focused_dropdown_paints_its_open_option_list() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 6));
+        let f = make_dropdown_form(true);
+        let theme = Theme::default();
+        draw_form(&mut buf, Rect::new(0, 0, 30, 6), &f, &theme);
+
+        // Compact row (y=1) still shows the selected option ("beta")
+        // right-aligned, same as an unfocused Dropdown.
+        let row1: String = (18..30).map(|x| cell_char(&buf, x, 1)).collect();
+        assert!(row1.contains("beta"), "row1={row1:?}");
+
+        // Popup rows start directly below the compact row: one row per
+        // option, each spanning the field's full width with a left/right
+        // border.
+        assert_eq!(cell_char(&buf, 0, 2), '\u{2502}');
+        assert_eq!(cell_char(&buf, 2, 2), 'a'); // "alpha" row
+        assert_eq!(cell_char(&buf, 2, 3), 'b'); // "beta" row (selected)
+        assert_eq!(cell_char(&buf, 2, 4), 'g'); // "gamma" row
+
+        // The selected row (idx 1, "beta") uses completion_selected_bg;
+        // the others use plain completion_bg.
+        let selected_bg = buf[(0u16, 3u16)].bg;
+        let plain_bg = buf[(0u16, 2u16)].bg;
+        assert_eq!(
+            selected_bg,
+            crate::tui::ratatui_color(theme.completion_selected_bg)
+        );
+        assert_eq!(plain_bg, crate::tui::ratatui_color(theme.completion_bg));
+        assert_ne!(selected_bg, plain_bg);
+    }
+
+    #[test]
+    fn unfocused_dropdown_paints_no_popup() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 6));
+        let f = make_dropdown_form(false);
+        draw_form(&mut buf, Rect::new(0, 0, 30, 6), &f, &Theme::default());
+
+        // Compact row still shows the selected option.
+        let row1: String = (18..30).map(|x| cell_char(&buf, x, 1)).collect();
+        assert!(row1.contains("beta"), "row1={row1:?}");
+
+        // No popup rows are painted below the compact row — they stay
+        // whatever `Buffer::empty` default-fills them with (blank).
+        assert_eq!(cell_char(&buf, 2, 2), ' ');
+        assert_eq!(cell_char(&buf, 2, 3), ' ');
     }
 
     /// A focused row painted its label in `theme.foreground`

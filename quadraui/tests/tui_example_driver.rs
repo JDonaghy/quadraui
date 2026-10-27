@@ -92,6 +92,8 @@ mod form_all_fields;
 mod form_combo_box;
 #[path = "../examples/common/form_date_picker.rs"]
 mod form_date_picker;
+#[path = "../examples/common/form_dropdown.rs"]
+mod form_dropdown;
 #[path = "../examples/common/form_groups.rs"]
 mod form_groups;
 #[path = "../examples/common/form_label_placement.rs"]
@@ -213,6 +215,7 @@ use folder_picker_app::FolderPickerApp;
 use form_all_fields::FormAllFieldsApp;
 use form_combo_box::FormComboBoxApp;
 use form_date_picker::FormDatePickerApp;
+use form_dropdown::FormDropdownApp;
 use form_groups::FormGroupsApp;
 use form_label_placement::FormLabelPlacementApp;
 use form_scroll::FormScrollApp;
@@ -5588,6 +5591,86 @@ fn form_combo_box_q_quits_only_when_the_dropdown_is_closed() {
         driver.exited(),
         "'q' should quit once the dropdown is closed and nothing is being \
          edited"
+    );
+}
+
+// ─── FormDropdownApp: FieldKind::Dropdown routed through FormController ─────
+//
+// Unlike `FieldKind::ComboBox`, a `Dropdown`'s popup is drawn by the TUI
+// backend itself (`draw_form`) the instant the field is focused — there's
+// no app-owned overlay-draw call, and no open/close toggle: `focused` is
+// the only visibility signal, and `Up`/`Down` live-commit `selected_idx`
+// via `FormEvent::DropdownChanged` on every keystroke (see
+// `compose::form_controller`'s "Dropdown fields" doc section).
+
+#[test]
+fn form_dropdown_shows_the_popup_for_the_initially_focused_field() {
+    let driver = TuiDriver::new(FormDropdownApp::new(), 60, 14);
+    let screen = driver.screen();
+    for needle in ["One Dark", "Solarized Light", "Gruvbox"] {
+        assert!(
+            screen.contains(needle),
+            "the dropdown field starts focused, so its popup listing every \
+             option should already be painted:\n{screen}"
+        );
+    }
+    assert!(
+        screen.contains("theme=One Dark"),
+        "the status bar should echo the initially-selected option:\n{screen}"
+    );
+}
+
+#[test]
+fn form_dropdown_down_arrow_live_commits_the_next_option() {
+    let mut driver = TuiDriver::new(FormDropdownApp::new(), 60, 14);
+    let solarized_pos = driver
+        .find_bounds("Solarized Light")
+        .expect("Solarized Light row painted");
+    let baseline_solarized = driver
+        .style_at(solarized_pos.x as u16, solarized_pos.y as u16)
+        .expect("Solarized Light row has a style");
+
+    driver.press_named(quadraui::NamedKey::Down);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("theme=Solarized Light"),
+        "Down should immediately commit the next option — no separate \
+         open/close step — and the status bar should reflect it:\n{screen}"
+    );
+
+    let solarized_pos = driver
+        .find_bounds("Solarized Light")
+        .expect("Solarized Light row still painted");
+    let highlighted_solarized = driver
+        .style_at(solarized_pos.x as u16, solarized_pos.y as u16)
+        .expect("Solarized Light row has a style");
+    assert_ne!(
+        highlighted_solarized, baseline_solarized,
+        "the newly-selected row's style should change to the popup's \
+         selected-row highlight"
+    );
+}
+
+#[test]
+fn form_dropdown_up_arrow_at_the_first_option_does_not_wrap() {
+    let mut driver = TuiDriver::new(FormDropdownApp::new(), 60, 14);
+    driver.press_named(quadraui::NamedKey::Up);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("theme=One Dark"),
+        "Up at the first option must not wrap around to the last one:\n{screen}"
+    );
+}
+
+#[test]
+fn form_dropdown_q_quits() {
+    let mut driver = TuiDriver::new(FormDropdownApp::new(), 60, 14);
+    assert!(!driver.exited());
+    driver.type_char('q');
+    assert!(
+        driver.exited(),
+        "'q' should quit — a Dropdown field has no text to type into, \
+         unlike ComboBox's filter box"
     );
 }
 
