@@ -66,11 +66,11 @@ only a push to `main` runs this workflow.
 - Windows event producers for `UiEvent::WindowStateChanged`,
   `UiEvent::SystemThemeChanged` and `UiEvent::DisplaysChanged` — previously
   declared variants with zero producers on any backend. `win::run`'s
-  `wndproc` now dispatches `WindowStateChanged` off `WM_SIZE`'s
-  `SIZE_MAXIMIZED`/`SIZE_MINIMIZED` transitions (deduplicated against the
-  window's previous tri-state so an ordinary resize drag doesn't re-fire
-  it), `SystemThemeChanged` off `WM_SETTINGCHANGE` filtered to the
-  `ImmersiveColorSet` setting name, and `DisplaysChanged` off
+  `wndproc` now dispatches `WindowStateChanged` off `WM_SIZE`'s live
+  `IsZoomed`/`IsIconic` state (deduplicated against the window's previous
+  tri-state so an ordinary resize drag doesn't re-fire it), `SystemThemeChanged`
+  off `WM_SETTINGCHANGE` filtered to the `ImmersiveColorSet` setting name or
+  the `SPI_SETHIGHCONTRAST` action code, and `DisplaysChanged` off
   `WM_DISPLAYCHANGE`. GTK and macOS producers are tracked separately.
 - `PlatformServices::update_service` — an auto-update seam. The new
   `UpdateService` trait (`check_for_update`, `download_and_stage`,
@@ -192,6 +192,20 @@ only a push to `main` runs this workflow.
 
 ### Fixed
 
+- Windows `WindowStateChanged` dedup cache (`WindowState::window_tristate`)
+  now refreshes on the deferred resize-replay path (`resync_pending_resize`),
+  not only on a live `WM_SIZE`. A reentrant `WM_SIZE` ceded to
+  `DefWindowProcW` while a `guarded_call` was on the stack (e.g. a
+  `toggle_window_maximize` triggered from inside `AppLogic::handle`) left the
+  cache stale, so the next live `WM_SIZE` restore compared against the old
+  state and was silently swallowed instead of dispatching
+  `WindowStateChanged`. The classification itself also moved off `WM_SIZE`'s
+  `wParam` (which conflates this window's own `SIZE_MAXIMIZED`/
+  `SIZE_MINIMIZED` with another window's `SIZE_MAXSHOW`/`SIZE_MAXHIDE`) to
+  live `IsZoomed`/`IsIconic` queries.
+- `WinBackend::is_fullscreen` now guards on an attached `self.hwnd`, the same
+  way `is_maximized` already does, instead of answering `Ok(false)` for a
+  backend with no window at all.
 - `FormController::handle_cached`'s backend-free fallback layout (used when
   no live `Backend` is attached) now gives `FieldKind::Toolbar` fields the
   same per-button hit regions the pixel backends and TUI already compute: it

@@ -769,19 +769,26 @@ mod win32 {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW,
-        GetClientRect, GetWindowLongPtrW, KillTimer, LoadCursorW, MsgWaitForMultipleObjects,
-        PeekMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetForegroundWindow,
-        SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW,
-        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, HTCAPTION, HTCLIENT, ICON_BIG,
-        ICON_SMALL, IDC_ARROW, MSG, NCCALCSIZE_PARAMS, PM_REMOVE, QS_ALLINPUT, SIZE_MAXIMIZED,
-        SIZE_MINIMIZED, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE,
-        WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DROPFILES,
+        GetClientRect, GetWindowLongPtrW, IsIconic, IsZoomed, KillTimer, LoadCursorW,
+        MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage, RegisterClassExW, SendMessageW,
+        SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+        TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA,
+        HTCAPTION, HTCLIENT, ICON_BIG, ICON_SMALL, IDC_ARROW, MSG, NCCALCSIZE_PARAMS, PM_REMOVE,
+        QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR,
+        WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DROPFILES,
         WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
         WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCCREATE, WM_NCHITTEST,
         WM_PAINT, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETICON,
         WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN,
         WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
     };
+    // `SIZE_MAXIMIZED`/`SIZE_MINIMIZED`/`WM_NULL` are only referenced from
+    // `os_change_event_tests` below (production `WM_SIZE` handling
+    // classifies via `IsZoomed`/`IsIconic`, not the wparam), so they're
+    // imported only for `#[cfg(test)]` builds to avoid an unused-import
+    // warning on a normal (non-test) build.
+    #[cfg(test)]
+    use windows::Win32::UI::WindowsAndMessaging::{SIZE_MAXIMIZED, SIZE_MINIMIZED, WM_NULL};
     // `WM_DROPFILES` decode (`HDROP`, `DragAcceptFiles`/
     // `DragQueryFileW`/`DragQueryPoint`/`DragFinish`) — all real Shell32
     // calls against a live drag session, so (unlike `super::events`'
@@ -2136,32 +2143,40 @@ mod win32 {
             )
         };
         apply_resize(ws, hwnd, width, height);
+        // The `WM_SIZE`/`WM_DPICHANGED` this is replaying was itself the
+        // one ceded while re-entrant (see this function's doc) — so
+        // `ws.window_tristate` is still whatever it was *before* that
+        // app-initiated transition (e.g. a `toggle_window_maximize` call).
+        // Refresh it silently (no dispatch: this path only ever follows
+        // an app-initiated call, which already owns telling the app its
+        // own result) so the next *live* `WM_SIZE` — e.g. the
+        // `SIZE_RESTORED` a user's subsequent double-click sends — compares
+        // against the real current state instead of the stale pre-call
+        // one and dispatches correctly instead of being silently
+        // swallowed as a false no-op.
+        refresh_window_tristate(ws, hwnd);
     }
 
-    /// Dispatches [`UiEvent::WindowStateChanged`] when a `WM_SIZE`
-    /// notification crossed a maximized/fullscreen/minimized boundary the
-    /// app hasn't already seen (tracked in `ws.window_tristate`) —
-    /// skipping the dispatch for an ordinary resize drag that leaves all
-    /// three flags unchanged.
+    /// Re-queries the window's current `(maximized, fullscreen, minimized)`
+    /// tri-state directly from Win32 — `IsZoomed`/`IsIconic`, not `WM_SIZE`'s
+    /// `wParam` — and stores it in `ws.window_tristate` unconditionally.
+    /// Returns the new tri-state so [`dispatch_window_state_change`] can
+    /// compare it against the prior value without a second read.
     ///
-    /// Called only from the top-level `WM_SIZE` match arm below, never
-    /// from [`apply_resize`]/[`resync_pending_resize`]: a `WM_SIZE` that
-    /// `WinBackend::toggle_window_maximize`/`WindowControl::set_fullscreen`
-    /// themselves trigger re-entrantly arrives while `pump_depth` is
-    /// pumping, gets deferred via `WindowState::pending_resize_resync`,
-    /// and is replayed only through `apply_resize` — so it never reaches
-    /// this function. That keeps the dispatch to OS/WM-initiated
-    /// transitions only, matching the variant's own doc ("other than
-    /// through `toggle_window_maximize`/`set_fullscreen` themselves").
-    fn dispatch_window_state_change<A: AppLogic>(
-        ws: &WindowState<A>,
-        hwnd: HWND,
-        size_wparam: u32,
-    ) {
-        let maximized = size_wparam == SIZE_MAXIMIZED;
-        let minimized = size_wparam == SIZE_MINIMIZED;
+    /// `IsZoomed`/`IsIconic` rather than `wParam`: `WM_SIZE` also delivers
+    /// `SIZE_MAXSHOW`/`SIZE_MAXHIDE` (an *other* window's maximize/restore
+    /// affecting this one's visibility) alongside `SIZE_MAXIMIZED`/
+    /// `SIZE_MINIMIZED`/`SIZE_RESTORED`; treating those as "not maximized,
+    /// not minimized" via a live state query is correct for all five cases
+    /// a plain wparam-equality check would not be.
+    fn refresh_window_tristate<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND) -> (bool, bool, bool) {
+        // SAFETY: `hwnd` is this dispatch's own window; `IsZoomed`/
+        // `IsIconic` take only a handle.
+        let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
+        let minimized = unsafe { IsIconic(hwnd) }.as_bool();
         // `window()` takes `&mut self`, so this borrow must be dropped
-        // (the block ends here) before `dispatch` below takes its own.
+        // (the block ends here) before any later borrow (e.g. `dispatch`'s
+        // `app.handle`) is taken.
         let fullscreen = {
             let mut s = ws.state.borrow_mut();
             s.backend
@@ -2170,10 +2185,34 @@ mod win32 {
                 .unwrap_or(false)
         };
         let tristate = (maximized, fullscreen, minimized);
-        if ws.window_tristate.get() == tristate {
+        ws.window_tristate.set(tristate);
+        tristate
+    }
+
+    /// Dispatches [`UiEvent::WindowStateChanged`] when the window's live
+    /// `(maximized, fullscreen, minimized)` tri-state (see
+    /// [`refresh_window_tristate`]) crossed a boundary the app hasn't
+    /// already seen — skipping the dispatch for an ordinary resize drag
+    /// that leaves all three flags unchanged.
+    ///
+    /// Called only from the top-level `WM_SIZE` match arm below. A
+    /// `WM_SIZE` that `WinBackend::toggle_window_maximize`/
+    /// `WindowControl::set_fullscreen` themselves trigger re-entrantly
+    /// arrives while `pump_depth` is pumping, gets deferred via
+    /// `WindowState::pending_resize_resync`, and is replayed only through
+    /// [`resync_pending_resize`] — so it never reaches this function. That
+    /// keeps the dispatch to OS/WM-initiated transitions only, matching
+    /// the variant's own doc ("other than through
+    /// `toggle_window_maximize`/`set_fullscreen` themselves"); the replay
+    /// path still keeps `ws.window_tristate` current via
+    /// `refresh_window_tristate` so this comparison stays correct.
+    fn dispatch_window_state_change<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND) {
+        let previous = ws.window_tristate.get();
+        let tristate = refresh_window_tristate(ws, hwnd);
+        if previous == tristate {
             return;
         }
-        ws.window_tristate.set(tristate);
+        let (maximized, fullscreen, minimized) = tristate;
         dispatch(
             ws,
             hwnd,
@@ -2185,30 +2224,45 @@ mod win32 {
         );
     }
 
+    /// Longest setting name this decodes before giving up. Every real
+    /// `SystemParametersInfo` area name (`"ImmersiveColorSet"`,
+    /// `"Environment"`, `"intl"`, ...) is a handful of ASCII characters;
+    /// this exists only to bound how far a forged, non-OS-originated
+    /// `WM_SETTINGCHANGE` (any process in this session can `SendMessageW`
+    /// one) can walk looking for a terminator it may never provide.
+    const MAX_SETTING_NAME_LEN: usize = 256;
+
     /// Decodes `WM_SETTINGCHANGE`'s `lParam` — a pointer to a
     /// nul-terminated UTF-16 string naming the `SystemParametersInfo`
     /// area that changed — into an owned `String`. Returns an empty
     /// string for a null pointer (some `WM_SETTINGCHANGE` sends carry no
-    /// name at all).
+    /// name at all) or once [`MAX_SETTING_NAME_LEN`] `u16`s have been read
+    /// without finding a terminator.
     ///
     /// # Safety
     ///
-    /// `ptr`, if non-null, must point at a nul-terminated UTF-16 string
-    /// valid for reads up to and including its terminating `0` — exactly
-    /// the contract `WM_SETTINGCHANGE`'s `lParam` documents.
+    /// `ptr`, if non-null, must be valid for reads of at least
+    /// `min(MAX_SETTING_NAME_LEN, distance to its nul terminator)` `u16`s
+    /// — the contract a genuine `WM_SETTINGCHANGE`'s `lParam` satisfies
+    /// (OS-originated setting names are short and always terminated), and
+    /// the one a forged same-session `SendMessageW` can still violate by
+    /// pointing at fewer than `MAX_SETTING_NAME_LEN` readable `u16`s with
+    /// no nul among them; the cap bounds how far such a message can read,
+    /// it does not make an arbitrary pointer safe.
     unsafe fn decode_setting_name(ptr: *const u16) -> String {
         if ptr.is_null() {
             return String::new();
         }
         let mut len = 0usize;
-        // SAFETY: caller's contract guarantees a nul terminator exists
-        // within bounds; this walks forward only as far as that
-        // terminator, never past it.
-        while unsafe { *ptr.add(len) } != 0 {
+        // SAFETY: per this function's contract, within `MAX_SETTING_NAME_LEN`
+        // `u16`s this either hits the nul terminator the contract
+        // guarantees or the loop bound below stops the walk first.
+        while len < MAX_SETTING_NAME_LEN && unsafe { *ptr.add(len) } != 0 {
             len += 1;
         }
-        // SAFETY: `len` is the distance to the nul terminator just found,
-        // so `[ptr, ptr + len)` is in-bounds per the same caller contract.
+        // SAFETY: `len` is at most `MAX_SETTING_NAME_LEN` and is either the
+        // distance to the nul terminator just found or the loop bound
+        // above, so `[ptr, ptr + len)` is in-bounds per the same contract.
         let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
         String::from_utf16_lossy(slice)
     }
@@ -2324,7 +2378,7 @@ mod win32 {
                 // in pixels — the standard `WM_SIZE` payload shape.
                 let (width, height) = size_from_lparam(lparam.0);
                 apply_resize(ws, hwnd, width, height);
-                dispatch_window_state_change(ws, hwnd, wparam.0 as u32);
+                dispatch_window_state_change(ws, hwnd);
                 LRESULT(0)
             }
             WM_DPICHANGED => {
@@ -2992,11 +3046,13 @@ mod win32 {
             WM_SETTINGCHANGE => {
                 // `lParam` points to the (possibly null) nul-terminated
                 // UTF-16 name of the `SystemParametersInfo` area that
-                // changed; Windows sends this for dozens of unrelated
-                // settings (fonts, metrics, `Environment`, ...), so
-                // `is_theme_setting_change` filters it down to the one
-                // name — `ImmersiveColorSet` — that means a light/dark or
-                // accent-color flip, keeping `SystemThemeChanged` from
+                // changed, and `wParam` carries the raw `SPI_*` action
+                // code for settings (high-contrast, chiefly) that change
+                // with no name at all; Windows sends this for dozens of
+                // unrelated settings (fonts, metrics, `Environment`,
+                // ...), so `is_theme_setting_change` filters it down to
+                // the ones that mean a light/dark, accent-color, or
+                // high-contrast flip, keeping `SystemThemeChanged` from
                 // firing on every other settings change too.
                 //
                 // SAFETY: `lparam.0` is the raw `WM_SETTINGCHANGE` payload
@@ -3005,20 +3061,26 @@ mod win32 {
                 // valid pointer to a nul-terminated UTF-16 string, which
                 // is exactly `decode_setting_name`'s precondition.
                 let name = unsafe { decode_setting_name(lparam.0 as *const u16) };
-                if is_theme_setting_change(&name) {
+                if is_theme_setting_change(wparam.0, &name) {
                     let theme = ws.state.borrow().backend.services().system_theme().ok();
                     if let Some(theme) = theme {
                         dispatch(ws, hwnd, UiEvent::SystemThemeChanged(theme));
                     }
                 }
-                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+                // Per `WM_SETTINGCHANGE`'s own docs: an application that
+                // processes this message should return zero — matching
+                // `WM_DPICHANGED`'s handling above rather than forwarding
+                // to `DefWindowProcW`.
+                LRESULT(0)
             }
             WM_DISPLAYCHANGE => {
                 // Fired on monitor connect/disconnect and on a resolution
                 // or scale change; no payload to decode — an app that
                 // cares re-reads `PlatformServices::displays()`.
                 dispatch(ws, hwnd, UiEvent::DisplaysChanged);
-                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+                // Per `WM_DISPLAYCHANGE`'s own docs: an application that
+                // processes this message should return zero.
+                LRESULT(0)
             }
             // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW` (top of
             // this function) — forwarded unchanged; this is the final
@@ -3861,6 +3923,22 @@ mod win32 {
             test_name: &str,
             drive: impl FnOnce(HWND),
         ) -> Option<Vec<UiEvent>> {
+            probe_os_change_event_with(test_name, |events| RecordingApp { events }, drive)
+        }
+
+        /// [`probe_os_change_event`]'s generalisation: builds the probe's
+        /// app via `make_app` (handed the same `events` sink
+        /// `RecordingApp` itself records into) instead of always using
+        /// `RecordingApp` directly — lets a test exercise custom
+        /// `handle` logic (e.g. reentrantly calling
+        /// `Backend::toggle_window_maximize`) while still getting every
+        /// dispatched `UiEvent` back to assert on.
+        #[allow(clippy::print_stderr)]
+        fn probe_os_change_event_with<A: AppLogic + Send + 'static>(
+            test_name: &str,
+            make_app: impl FnOnce(Arc<Mutex<Vec<UiEvent>>>) -> A,
+            drive: impl FnOnce(HWND),
+        ) -> Option<Vec<UiEvent>> {
             let title = format!(
                 "quadraui-os-change-probe-{test_name}-{}-{:?}",
                 std::process::id(),
@@ -3868,9 +3946,7 @@ mod win32 {
             );
             let config = crate::win::run::RunConfig::new(title.clone());
             let events: Arc<Mutex<Vec<UiEvent>>> = Arc::new(Mutex::new(Vec::new()));
-            let app = RecordingApp {
-                events: events.clone(),
-            };
+            let app = make_app(events.clone());
 
             let runner = std::thread::spawn(move || run(app, config));
 
@@ -3997,6 +4073,240 @@ mod win32 {
                 recorded.iter().any(|e| *e == UiEvent::DisplaysChanged),
                 "{test_name}: a real WM_DISPLAYCHANGE never produced a \
                  UiEvent::DisplaysChanged (quadraui#1785)"
+            );
+        }
+
+        #[test]
+        fn minimize_dispatches_window_state_changed() {
+            let test_name = "minimize_dispatches_window_state_changed";
+            let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
+                // SAFETY: same as `maximize_dispatches_window_state_changed`
+                // above.
+                unsafe {
+                    SendMessageW(
+                        hwnd,
+                        WM_SIZE,
+                        Some(WPARAM(SIZE_MINIMIZED as usize)),
+                        Some(LPARAM(0)),
+                    );
+                }
+            }) else {
+                return;
+            };
+
+            assert!(
+                recorded.iter().any(|e| matches!(
+                    e,
+                    UiEvent::WindowStateChanged {
+                        minimized: true,
+                        maximized: false,
+                        ..
+                    }
+                )),
+                "{test_name}: a real WM_SIZE(SIZE_MINIMIZED) never produced \
+                 a UiEvent::WindowStateChanged{{minimized: true, ..}}"
+            );
+        }
+
+        #[test]
+        fn repeated_maximize_dispatches_window_state_changed_once() {
+            let test_name = "repeated_maximize_dispatches_window_state_changed_once";
+            let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
+                // Two consecutive `WM_SIZE(SIZE_MAXIMIZED)`s report the same
+                // live state both times; `dispatch_window_state_change`'s
+                // dedup cache (`WindowState::window_tristate`) must only
+                // let the first one through.
+                for _ in 0..2 {
+                    // SAFETY: same as
+                    // `maximize_dispatches_window_state_changed` above.
+                    unsafe {
+                        SendMessageW(
+                            hwnd,
+                            WM_SIZE,
+                            Some(WPARAM(SIZE_MAXIMIZED as usize)),
+                            Some(LPARAM(0)),
+                        );
+                    }
+                }
+            }) else {
+                return;
+            };
+
+            let maximized_events = recorded
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e,
+                        UiEvent::WindowStateChanged {
+                            maximized: true,
+                            ..
+                        }
+                    )
+                })
+                .count();
+            assert_eq!(
+                maximized_events, 1,
+                "{test_name}: two identical WM_SIZE(SIZE_MAXIMIZED)s should \
+                 dispatch WindowStateChanged{{maximized: true, ..}} exactly \
+                 once, not {maximized_events}"
+            );
+        }
+
+        #[test]
+        fn restore_on_a_never_maximized_window_dispatches_nothing() {
+            let test_name = "restore_on_a_never_maximized_window_dispatches_nothing";
+            let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
+                // A fresh window is already `SIZE_RESTORED`; reporting the
+                // same restored state again must not look like a change.
+                unsafe {
+                    SendMessageW(hwnd, WM_SIZE, Some(WPARAM(0)), Some(LPARAM(0)));
+                }
+            }) else {
+                return;
+            };
+
+            assert!(
+                !recorded
+                    .iter()
+                    .any(|e| matches!(e, UiEvent::WindowStateChanged { .. })),
+                "{test_name}: a no-op WM_SIZE(SIZE_RESTORED) on an \
+                 already-restored window must not dispatch \
+                 WindowStateChanged, but got {recorded:?}"
+            );
+        }
+
+        #[test]
+        fn high_contrast_setting_change_dispatches_system_theme_changed() {
+            let test_name = "high_contrast_setting_change_dispatches_system_theme_changed";
+            let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
+                // `SPI_SETHIGHCONTRAST` (67) arrives as a raw `wParam`
+                // action code with no setting name at all in `lParam` —
+                // unlike `"ImmersiveColorSet"`, which is a named setting.
+                const SPI_SETHIGHCONTRAST: usize = 67;
+                // SAFETY: `lParam` is `0` (no setting-name pointer), so
+                // there's no pointee lifetime to uphold.
+                unsafe {
+                    SendMessageW(
+                        hwnd,
+                        WM_SETTINGCHANGE,
+                        Some(WPARAM(SPI_SETHIGHCONTRAST)),
+                        Some(LPARAM(0)),
+                    );
+                }
+            }) else {
+                return;
+            };
+
+            assert!(
+                recorded
+                    .iter()
+                    .any(|e| matches!(e, UiEvent::SystemThemeChanged(_))),
+                "{test_name}: a real WM_SETTINGCHANGE(SPI_SETHIGHCONTRAST) \
+                 never produced a UiEvent::SystemThemeChanged"
+            );
+        }
+
+        /// Toggles the window's maximized state via
+        /// `Backend::toggle_window_maximize` on the first `KeyPressed` it
+        /// sees, then just records everything else — lets a test drive a
+        /// *reentrant* `WM_SIZE` (the synchronous `ShowWindow` inside
+        /// `toggle_window_maximize`, called from inside this very
+        /// `handle`, which is itself already running inside the
+        /// `guarded_call` `dispatch_with` wraps it in) instead of only
+        /// ever seeing resizes injected from outside `wndproc`.
+        struct ToggleOnKeyApp {
+            events: Arc<Mutex<Vec<UiEvent>>>,
+        }
+
+        impl AppLogic for ToggleOnKeyApp {
+            type AreaId = ();
+
+            fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+            fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+                if event == UiEvent::WindowClose {
+                    return Reaction::Exit;
+                }
+                if matches!(event, UiEvent::KeyPressed { .. }) {
+                    backend.toggle_window_maximize();
+                }
+                self.events.lock().unwrap().push(event);
+                Reaction::Continue
+            }
+        }
+
+        #[test]
+        fn reentrant_maximize_then_live_restore_dispatches_the_restore() {
+            let test_name = "reentrant_maximize_then_live_restore_dispatches_the_restore";
+            let Some(recorded) = probe_os_change_event_with(
+                test_name,
+                |events| ToggleOnKeyApp { events },
+                |hwnd| {
+                    const VK_ESCAPE: usize = 0x1B;
+                    // Step 1: `WM_KEYDOWN` dispatches through
+                    // `dispatch_with`'s `guarded_call`, and
+                    // `ToggleOnKeyApp::handle` reentrantly calls
+                    // `toggle_window_maximize` from *inside* that
+                    // `guarded_call` — its synchronous `ShowWindow`
+                    // produces a `WM_SIZE` that `pump_depth.is_pumping()`
+                    // catches and cedes to `DefWindowProcW`, setting
+                    // `pending_resize_resync` instead of dispatching or
+                    // refreshing `window_tristate`.
+                    //
+                    // SAFETY: `hwnd` is the live test window; `SendMessageW`
+                    // blocks until `wndproc` (and everything reentrant it
+                    // triggers) returns.
+                    unsafe {
+                        SendMessageW(hwnd, WM_KEYDOWN, Some(WPARAM(VK_ESCAPE)), Some(LPARAM(0)));
+                    }
+
+                    // Step 2: any further non-reentrant message makes
+                    // `resync_pending_resize` run at the top of the next
+                    // `wndproc` call, replaying the ceded resize — which,
+                    // with the fix, also refreshes `window_tristate` to
+                    // reflect the maximize, silently (no dispatch).
+                    // `WM_NULL` carries no payload and every arm here
+                    // ignores it, so it exercises exactly that resync path
+                    // with no side effect of its own.
+                    unsafe {
+                        SendMessageW(hwnd, WM_NULL, Some(WPARAM(0)), Some(LPARAM(0)));
+                    }
+
+                    // Step 3: a genuine restore, issued directly (not
+                    // through `SendMessageW`) so it's a first-class,
+                    // non-reentrant call on this test thread; Win32
+                    // marshals it across to the window's owning thread the
+                    // same way `SendMessageW` does. This produces a real
+                    // `WM_SIZE(SIZE_RESTORED)`, which must compare against
+                    // the maximize `window_tristate` was just silently
+                    // refreshed to in step 2 — not the stale "never
+                    // maximized" state from window creation — to dispatch
+                    // the restore. Before the fix, the stale comparison
+                    // would see no change here and swallow it.
+                    //
+                    // SAFETY: `hwnd` is the live test window.
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_RESTORE);
+                    }
+                },
+            ) else {
+                return;
+            };
+
+            assert!(
+                recorded.iter().any(|e| matches!(
+                    e,
+                    UiEvent::WindowStateChanged {
+                        maximized: false,
+                        minimized: false,
+                        ..
+                    }
+                )),
+                "{test_name}: a live restore following a reentrant \
+                 maximize (ceded to a deferred resync) never produced a \
+                 UiEvent::WindowStateChanged{{maximized: false, ..}} — the \
+                 window_tristate dedup cache was not refreshed on the \
+                 resync path, so the restore looked like no change"
             );
         }
     }
