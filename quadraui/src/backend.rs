@@ -4199,11 +4199,11 @@ pub trait PlatformServices {
     ///
     /// A click on the notification (its body, or one of `n`'s declared
     /// actions) should push [`UiEvent::NotificationActivated`] where the
-    /// backend has a native channel for it — today only GTK does (see
-    /// `gtk::services`'s module doc); macOS's unbundled `osascript`
-    /// fallback and Win's `Shell_NotifyIconW` balloon fallback have no
-    /// click-through of their own to report through, and honestly do not
-    /// emit the event rather than faking it (each backend's
+    /// backend has a native channel for it — GTK (see `gtk::services`'s
+    /// module doc) and Win's WinRT toast path (see `win::services`'s
+    /// module doc) both do; macOS's unbundled `osascript` fallback has no
+    /// click-through of its own to report through, and honestly does not
+    /// emit the event rather than faking it (`macos::services`'s
     /// `send_notification` doc explains why, and what a real
     /// implementation there would need).
     fn send_notification(&self, n: Notification);

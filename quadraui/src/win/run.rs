@@ -1383,6 +1383,15 @@ mod win32 {
         // see the real window size yet, matching the other two runners'
         // same limitation.
         let mut backend = WinBackend::new();
+        // Needs no `HWND` (unlike `attach_surface` below), so this can — and
+        // must — run before `app.setup`: a `send_notification` call from
+        // inside `AppLogic::setup` needs the AUMID already set, or it falls
+        // straight through to the balloon fallback. Same string
+        // `win32::run` separately registers process-wide via
+        // `SetCurrentProcessExplicitAppUserModelID`; recomputed here rather
+        // than threaded through `RunConfig` since `aumid_string` is pure
+        // and cheap.
+        backend.set_aumid(aumid_string(title));
         app.setup(&mut backend);
 
         // `None` (zero runtime cost — no timer ever armed below)
@@ -1487,21 +1496,6 @@ mod win32 {
             // it was never handed to another thread.
             drop(unsafe { Box::from_raw(state_ptr) });
             return Err(e);
-        }
-
-        // Hands this title's AUMID (same string `win32::run` registered
-        // process-wide via `SetCurrentProcessExplicitAppUserModelID`,
-        // recomputed here rather than threaded through `RunConfig` since
-        // `aumid_string` is pure and cheap) to the backend so
-        // `WinPlatformServices::send_notification` can pass it to
-        // `ToastNotificationManager::CreateToastNotifierWithId`.
-        //
-        // SAFETY: `state_ptr` is valid here for the same reason it was
-        // valid for the `attach_surface` call just above — nothing freed
-        // or aliased it in between.
-        {
-            let ws: &WindowState<A> = unsafe { &*state_ptr };
-            ws.state.borrow_mut().backend.set_aumid(aumid_string(title));
         }
 
         // Opt the window into `WM_DROPFILES` — off by default for
@@ -2999,8 +2993,12 @@ mod win32 {
                 // (`ws`, `hwnd`), so this drains both queues and
                 // dispatches directly, the same `dispatch` helper every
                 // other message in this match uses.
-                let mut events = ws.state.borrow_mut().backend.drain_user_events();
-                events.extend(ws.state.borrow_mut().backend.drain_notification_events());
+                let events = {
+                    let mut state = ws.state.borrow_mut();
+                    let mut events = state.backend.drain_user_events();
+                    events.extend(state.backend.drain_notification_events());
+                    events
+                };
                 for event in events {
                     // `dispatch` acts on `Reaction::Exit` itself (see
                     // `dispatch_with`'s doc); this `break` just stops

@@ -785,7 +785,7 @@ impl WinBackend {
     /// `WM_QUADRAUI_USER_EVENT` handler can drain-and-dispatch this queue
     /// the same way.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    pub(crate) fn drain_notification_events(&mut self) -> Vec<UiEvent> {
+    pub(crate) fn drain_notification_events(&self) -> Vec<UiEvent> {
         self.services.drain_notification_events()
     }
 

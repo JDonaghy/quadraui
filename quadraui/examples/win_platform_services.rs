@@ -51,7 +51,20 @@ use quadraui::{
 // file itself rather than `examples/common/` (see module docs above), so the
 // test hook is this visibility rather than a `pub mod` in `common/`.
 #[cfg(target_os = "windows")]
-pub struct PlatformServicesDemo;
+#[derive(Default)]
+pub struct PlatformServicesDemo {
+    /// Last `UiEvent::NotificationActivated` payload, exposed via
+    /// `last_activation()` so `tests/win_example_driver.rs` can assert on
+    /// it without scraping stderr — the only other record of this event.
+    last_activation: Option<(Option<String>, Option<WidgetId>)>,
+}
+
+#[cfg(target_os = "windows")]
+impl PlatformServicesDemo {
+    pub fn last_activation(&self) -> Option<&(Option<String>, Option<WidgetId>)> {
+        self.last_activation.as_ref()
+    }
+}
 
 /// Write a throwaway temp file for `f`/`p`/`x` to act on, so this demo
 /// never touches anything the user actually cares about.
@@ -145,6 +158,7 @@ impl AppLogic for PlatformServicesDemo {
             }
             UiEvent::NotificationActivated { tag, action } => {
                 eprintln!("NotificationActivated: tag={tag:?} action={action:?}");
+                self.last_activation = Some((tag, action));
                 Reaction::Continue
             }
             UiEvent::KeyPressed {
@@ -268,7 +282,7 @@ impl AppLogic for PlatformServicesDemo {
 
 #[cfg(target_os = "windows")]
 fn main() -> std::process::ExitCode {
-    quadraui::win::run(PlatformServicesDemo)
+    quadraui::win::run(PlatformServicesDemo::default())
 }
 
 #[cfg(not(target_os = "windows"))]

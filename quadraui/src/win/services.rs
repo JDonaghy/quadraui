@@ -31,12 +31,14 @@
 //!   one), and shows it through a `ToastNotifier`. `tag()` maps onto the
 //!   toast's own `Tag` property, so Windows itself replaces a prior toast
 //!   that shares a tag rather than stacking a new one in Action Center.
-//!   `icon`/`silent` have no straightforward WinRT toast equivalent on
-//!   this API surface (an icon needs a file URI the toast renderer can
-//!   read back out-of-process, which `ImageSource::Bytes` doesn't carry)
-//!   and are dropped, same as `macos::services`'s `osascript` path.
-//!   Clicking the toast or one of its action buttons fires the WinRT
-//!   `Activated` event on an arbitrary COM thread; the handler decodes
+//!   `silent` maps onto `ToastGeneric`'s own `<audio silent="true"/>`
+//!   element (see [`build_toast_xml`]). `icon` has no straightforward
+//!   WinRT toast equivalent on this API surface (an icon needs a file URI
+//!   the toast renderer can read back out-of-process, which
+//!   `ImageSource::Bytes` doesn't carry) and is dropped, same as
+//!   `macos::services`'s `osascript` path. Clicking the toast or one of
+//!   its action buttons fires the WinRT `Activated` event on an arbitrary
+//!   COM thread; the handler decodes
 //!   the clicked action from the toast XML's per-button `arguments` and
 //!   pushes a [`crate::event::UiEvent::NotificationActivated`] onto
 //!   [`WinPlatformServices`]'s own notification queue, then wakes the UI
@@ -131,9 +133,9 @@ use crate::types::WidgetId;
 #[cfg(target_os = "windows")]
 use std::cell::{Cell, RefCell};
 #[cfg(target_os = "windows")]
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 #[cfg(target_os = "windows")]
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 #[cfg(target_os = "windows")]
 use std::sync::{Arc, Mutex};
 
@@ -202,7 +204,8 @@ use windows::UI::ViewManagement::{AccessibilitySettings, UIColorType, UISettings
 // argument casts to for the clicked action's `arguments` string.
 #[cfg(target_os = "windows")]
 use windows::UI::Notifications::{
-    ToastActivatedEventArgs, ToastNotification, ToastNotificationManager,
+    ToastActivatedEventArgs, ToastDismissedEventArgs, ToastFailedEventArgs, ToastNotification,
+    ToastNotificationManager, ToastNotifier,
 };
 
 /// System clipboard via raw Win32 calls. Stateless — every
@@ -347,6 +350,18 @@ pub struct WinPlatformServices {
     /// borrowing `self`.
     #[cfg(target_os = "windows")]
     notification_events: Arc<Mutex<VecDeque<UiEvent>>>,
+    /// Live toasts shown by [`win_send_notification_toast`], keyed by a
+    /// monotonic id private to this map (see [`NEXT_TOAST_ID`]). A toast's
+    /// `ToastNotifier`/`ToastNotification` are ordinary refcounted COM
+    /// wrappers: dropping them unregisters the `Activated`/`Dismissed`/
+    /// `Failed` handlers that were just wired up, which would silently
+    /// break click-through the instant `send_notification` returns. Each
+    /// entry is removed by its own `Dismissed`/`Failed` handler once the
+    /// toast leaves the screen, and any earlier entry sharing the new
+    /// toast's `tag` is pruned before the new one is inserted — same
+    /// "replace, don't stack" rule `Tag` itself gives Action Center.
+    #[cfg(target_os = "windows")]
+    active_toasts: Arc<Mutex<HashMap<u64, (Option<String>, ToastNotifier, ToastNotification)>>>,
 }
 
 impl WinPlatformServices {
@@ -359,6 +374,8 @@ impl WinPlatformServices {
             aumid: RefCell::new(None),
             #[cfg(target_os = "windows")]
             notification_events: Arc::new(Mutex::new(VecDeque::new())),
+            #[cfg(target_os = "windows")]
+            active_toasts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -488,6 +505,7 @@ impl PlatformServices for WinPlatformServices {
                     self.window.get(),
                     &aumid,
                     Arc::clone(&self.notification_events),
+                    Arc::clone(&self.active_toasts),
                     &n,
                 )
                 .is_ok(),
@@ -1740,7 +1758,10 @@ const NOTIFICATION_ICON_LIFETIME: std::time::Duration = std::time::Duration::fro
 /// Escape the five XML-significant characters so `n.title`/`n.body`/an
 /// action's label can't break a `<text>`/`arguments` attribute they're
 /// interpolated into in [`build_toast_xml`] — `XmlDocument::LoadXml` would
-/// otherwise reject (or misparse) a title containing e.g. `&` or `<`.
+/// otherwise reject (or misparse) a title containing e.g. `&` or `<`. Also
+/// drops C0 control characters other than tab/`\n`/`\r` (none of which are
+/// legal in well-formed XML 1.0, escaped or not) rather than let one poison
+/// `LoadXml` and demote the whole call to the balloon fallback.
 ///
 /// Host-independent (no Windows types involved) — unit-tested off Windows,
 /// same as [`decode_dib`]/[`encode_dibv5`].
@@ -1754,6 +1775,8 @@ fn xml_escape(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
+            '\u{9}' | '\u{a}' | '\u{d}' => out.push(c),
+            c if c.is_control() => {}
             _ => out.push(c),
         }
     }
@@ -1768,31 +1791,57 @@ fn xml_escape(s: &str) -> String {
 /// `None` is the same convention `gtk::services::decode_notification_target`
 /// uses for its `(ss)` variant, so the `Activated` handler below can tell
 /// "body click" and "button click" apart with one `is_empty` check on
-/// whatever `ToastActivatedEventArgs::Arguments` returns.
+/// whatever `ToastActivatedEventArgs::Arguments` returns. `is_silent()`
+/// becomes a `<audio silent="true"/>` sibling of `<visual>`/`<actions>` —
+/// `ToastGeneric`'s documented way to suppress the notification sound,
+/// the toast-path equivalent of the balloon fallback's `NIIF_NOSOUND`.
 ///
 /// Host-independent (no Windows types involved) — unit-tested off Windows,
 /// same as [`decode_dib`]/[`encode_dibv5`].
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn build_toast_xml(n: &Notification) -> String {
+    use std::fmt::Write as _;
+
     let mut actions = String::new();
     for (id, label) in n.actions() {
-        actions.push_str(&format!(
+        let _ = write!(
+            actions,
             "<action content=\"{}\" arguments=\"{}\" activationType=\"foreground\"/>",
             xml_escape(label),
             xml_escape(id.as_str()),
-        ));
+        );
     }
     let actions_block = if actions.is_empty() {
         String::new()
     } else {
         format!("<actions>{actions}</actions>")
     };
+    let audio_block = if n.is_silent() {
+        "<audio silent=\"true\"/>"
+    } else {
+        ""
+    };
     format!(
-        "<toast launch=\"\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual>{actions_block}</toast>",
+        "<toast launch=\"\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual>{actions_block}{audio_block}</toast>",
         xml_escape(&n.title),
         xml_escape(&n.body),
     )
 }
+
+/// Id [`WinPlatformServices::active_toasts`] is keyed on — private to this
+/// module, since a toast's own `Tag` is caller-supplied and optional and
+/// so can't serve as the map key by itself.
+#[cfg(target_os = "windows")]
+static NEXT_TOAST_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Longest `Tag` string `ToastNotification::SetTag` accepts (Windows 10
+/// version 1709+; older releases cap at 16). `SetTag` errors outright
+/// above this, which would otherwise demote the whole call to the
+/// balloon fallback — losing action buttons and click-through — just
+/// because a caller passed a longer tag than Windows' own `Tag` property
+/// can hold.
+#[cfg(target_os = "windows")]
+const TOAST_TAG_MAX_LEN: usize = 64;
 
 /// Primary path for [`WinPlatformServices::send_notification`]: build a
 /// `ToastGeneric` toast from `n` (see [`build_toast_xml`]), show it
@@ -1801,6 +1850,16 @@ fn build_toast_xml(n: &Notification) -> String {
 /// thread with the same `WM_QUADRAUI_USER_EVENT` nudge
 /// [`crate::backend::Backend::waker`] uses — `Activated` fires on an
 /// arbitrary COM thread, not the window's own.
+///
+/// The notifier and toast are inserted into `active_toasts` *before*
+/// `Show` is called, and removed again by this toast's own `Dismissed`/
+/// `Failed` handler once it leaves the screen — see that field's own doc
+/// for why: dropping either COM object immediately unregisters the
+/// `Activated` handler just wired up below, which would otherwise break
+/// click-through the instant this function returns. Any earlier entry
+/// sharing the new toast's `tag` is pruned first, mirroring the same
+/// "replace, don't stack" behavior Windows itself gives `Tag` in Action
+/// Center.
 ///
 /// Errors (the caller falls back to [`win_send_notification_balloon`] on
 /// any of them) if WinRT toast notifications aren't available on this
@@ -1812,61 +1871,113 @@ fn win_send_notification_toast(
     owner: Option<HWND>,
     aumid: &str,
     queue: Arc<Mutex<VecDeque<UiEvent>>>,
+    active_toasts: Arc<Mutex<HashMap<u64, (Option<String>, ToastNotifier, ToastNotification)>>>,
     n: &Notification,
 ) -> windows::core::Result<()> {
+    // WinRT activation (`RoActivateInstance`, underneath every call below)
+    // needs COM initialized on this thread first, or it fails outright
+    // with `CO_E_NOTINITIALIZED`.
+    ensure_com_initialized();
+
     let doc = XmlDocument::new()?;
     doc.LoadXml(&HSTRING::from(build_toast_xml(n)))?;
     let toast = ToastNotification::CreateToastNotification(&doc)?;
 
-    let tag = n.tag().map(str::to_owned);
+    let tag = n
+        .tag()
+        .map(|t| t.chars().take(TOAST_TAG_MAX_LEN).collect::<String>());
     if let Some(tag) = &tag {
         toast.SetTag(&HSTRING::from(tag.as_str()))?;
     }
 
-    // `HWND` isn't `Send`; carry its raw value into the closure below and
+    let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(aumid))?;
+    let id = NEXT_TOAST_ID.fetch_add(1, Ordering::Relaxed);
+
+    // `HWND` isn't `Send`; carry its raw value into the closures below and
     // reconstruct it there, same as the balloon-removal thread does.
     let hwnd_value = owner.map(|h| h.0 as isize);
-    let handler = TypedEventHandler::<ToastNotification, windows::core::IInspectable>::new(
-        move |_sender, args| -> windows::core::Result<()> {
-            let Some(args) = args.as_ref() else {
-                return Ok(());
-            };
-            let Ok(args) = args.cast::<ToastActivatedEventArgs>() else {
-                return Ok(());
-            };
-            let arguments = args.Arguments().unwrap_or_default().to_string();
-            let action = if arguments.is_empty() {
-                None
-            } else {
-                Some(WidgetId::new(arguments))
-            };
-            queue
+
+    let activated_tag = tag.clone();
+    let activated_handler =
+        TypedEventHandler::<ToastNotification, windows::core::IInspectable>::new(
+            move |_sender, args| -> windows::core::Result<()> {
+                let Some(args) = args.as_ref() else {
+                    return Ok(());
+                };
+                let Ok(args) = args.cast::<ToastActivatedEventArgs>() else {
+                    return Ok(());
+                };
+                let arguments = args.Arguments().unwrap_or_default().to_string();
+                let action = if arguments.is_empty() {
+                    None
+                } else {
+                    Some(WidgetId::new(arguments))
+                };
+                queue
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push_back(UiEvent::NotificationActivated {
+                        tag: activated_tag.clone(),
+                        action,
+                    });
+                if let Some(hwnd_value) = hwnd_value {
+                    // SAFETY: `hwnd_value` is a raw `HWND` value captured by
+                    // value before the toast was shown; `PostMessageW` only
+                    // enqueues a message for the window identified by that
+                    // handle, it never dereferences anything beyond it.
+                    unsafe {
+                        let _ = PostMessageW(
+                            Some(HWND(hwnd_value as *mut core::ffi::c_void)),
+                            crate::win::backend::WM_QUADRAUI_USER_EVENT,
+                            WPARAM(0),
+                            LPARAM(0),
+                        );
+                    }
+                }
+                Ok(())
+            },
+        );
+    toast.Activated(&activated_handler)?;
+
+    // `Dismissed`/`Failed` are this toast's only other lifecycle events;
+    // either one means it has finished showing, so `active_toasts`'
+    // retained `ToastNotifier`/`ToastNotification` pair for `id` can be
+    // dropped.
+    let dismissed_toasts = Arc::clone(&active_toasts);
+    let dismissed_handler = TypedEventHandler::<ToastNotification, ToastDismissedEventArgs>::new(
+        move |_sender, _args| -> windows::core::Result<()> {
+            dismissed_toasts
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .push_back(UiEvent::NotificationActivated {
-                    tag: tag.clone(),
-                    action,
-                });
-            if let Some(hwnd_value) = hwnd_value {
-                // SAFETY: `hwnd_value` is a raw `HWND` value captured by
-                // value before the toast was shown; `PostMessageW` only
-                // enqueues a message for the window identified by that
-                // handle, it never dereferences anything beyond it.
-                unsafe {
-                    let _ = PostMessageW(
-                        Some(HWND(hwnd_value as *mut core::ffi::c_void)),
-                        crate::win::backend::WM_QUADRAUI_USER_EVENT,
-                        WPARAM(0),
-                        LPARAM(0),
-                    );
-                }
-            }
+                .remove(&id);
             Ok(())
         },
     );
-    toast.Activated(&handler)?;
+    toast.Dismissed(&dismissed_handler)?;
 
-    ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(aumid))?.Show(&toast)?;
+    let failed_toasts = Arc::clone(&active_toasts);
+    let failed_handler = TypedEventHandler::<ToastNotification, ToastFailedEventArgs>::new(
+        move |_sender, _args| -> windows::core::Result<()> {
+            failed_toasts
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&id);
+            Ok(())
+        },
+    );
+    toast.Failed(&failed_handler)?;
+
+    {
+        let mut toasts = active_toasts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(tag) = &tag {
+            toasts.retain(|_, (existing_tag, ..)| existing_tag.as_deref() != Some(tag.as_str()));
+        }
+        toasts.insert(id, (tag.clone(), notifier.clone(), toast.clone()));
+    }
+
+    notifier.Show(&toast)?;
     Ok(())
 }
 
@@ -2700,12 +2811,29 @@ mod tests {
     }
 
     #[test]
+    fn xml_escape_drops_c0_control_characters_but_keeps_tab_and_newlines() {
+        assert_eq!(xml_escape("a\u{0}b\u{7}\tc\nd\re"), "ab\tc\nd\re");
+    }
+
+    #[test]
     fn build_toast_xml_has_no_actions_block_without_actions() {
         let n = Notification::new("Title", "Body");
         let xml = build_toast_xml(&n);
         assert!(xml.contains("<text>Title</text>"));
         assert!(xml.contains("<text>Body</text>"));
         assert!(!xml.contains("<actions>"));
+    }
+
+    #[test]
+    fn build_toast_xml_has_no_audio_element_by_default() {
+        let n = Notification::new("Title", "Body");
+        assert!(!build_toast_xml(&n).contains("<audio"));
+    }
+
+    #[test]
+    fn build_toast_xml_adds_silent_audio_element_when_requested() {
+        let n = Notification::new("Title", "Body").with_silent(true);
+        assert!(build_toast_xml(&n).contains("<audio silent=\"true\"/>"));
     }
 
     #[test]
