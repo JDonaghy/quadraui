@@ -1132,7 +1132,10 @@ pub unsafe extern "C" fn qui_screen(app: *const QuiApp) -> *mut c_char {
 /// Returns a caller-owned, null-terminated UTF-8 string the caller must
 /// free with [`qui_free`], or null on failure — [`QUI_ERR_UNSUPPORTED`] for
 /// a `kind` outside the `QUI_PATH_*` set, or one this platform or build
-/// cannot resolve — with [`qui_last_error`] set to why.
+/// cannot resolve; [`QUI_ERR_INTERNAL`] if the resolved path is not valid
+/// UTF-8 (possible on Unix, where paths are arbitrary bytes) rather than
+/// silently mangling it with `to_string_lossy` — with [`qui_last_error`]
+/// set to why.
 #[no_mangle]
 pub extern "C" fn qui_app_path(kind: i32) -> *mut c_char {
     const NAME: &str = "qui_app_path";
@@ -1156,7 +1159,16 @@ pub extern "C" fn qui_app_path(kind: i32) -> *mut c_char {
             }
         };
         match paths::resolve(mapped) {
-            Ok(path) => into_owned_c_string(NAME, path.to_string_lossy().into_owned()),
+            Ok(path) => match path.to_str() {
+                Some(s) => into_owned_c_string(NAME, s.to_owned()),
+                None => {
+                    fail(
+                        QUI_ERR_INTERNAL,
+                        format!("{NAME}: {mapped:?} resolved to a non-UTF-8 path"),
+                    );
+                    std::ptr::null_mut()
+                }
+            },
             Err(_) => {
                 fail(
                     QUI_ERR_UNSUPPORTED,
