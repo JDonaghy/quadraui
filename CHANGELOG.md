@@ -89,11 +89,10 @@ only a push to `main` runs this workflow.
   Win-GUI, `gtk4::DragSource` on GTK) is a separate follow-on.
   `DragOutPayload::to_uri_list` renders each path through the shared,
   now-uncfg'd `desktop::path_to_file_uri` — percent-encoded per RFC 3986,
-  correct for Windows drive-letter and UNC paths (not just POSIX ones),
-  lossless for non-UTF-8 Unix paths, and CRLF-terminated on every line
-  including the last per RFC 2483 — rather than a lossy raw `format!`
-  concatenation; a path it can't resolve to a well-defined `file://` URI
-  (relative, or non-UTF-8 on Unix) is skipped.
+  correct for Windows drive-letter, UNC and verbatim (`\\?\`) paths (not
+  just POSIX ones), lossless for non-UTF-8 Unix paths, and CRLF-terminated
+  on every line including the last per RFC 2483. A relative path, the one
+  shape with no well-defined `file://` URI, is skipped.
 - `PlatformServices::register_global_shortcut`/`unregister_global_shortcut`/
   `unregister_all_global_shortcuts`, `GlobalShortcutId`,
   `GlobalShortcutRegistry` and `UiEvent::GlobalShortcut` — the seam for an
@@ -240,6 +239,13 @@ only a push to `main` runs this workflow.
 
 ### Fixed
 
+- `PlatformServices::reveal_in_file_manager` on Linux/BSD no longer reports a
+  false success for a path with no `file://` URI. A relative path (the method
+  is public and forwards the consumer's `&Path` verbatim) used to be sent to
+  `org.freedesktop.FileManager1.ShowItems` as a one-element array holding the
+  empty string, which a session with a real `FileManager1` listener answers
+  with a success exit. The D-Bus leg now declines such a path outright so the
+  `xdg-open`-the-parent fallback still gets its shot.
 - Windows `WindowStateChanged` now also fires from the deferred resize-replay
   path (`resync_pending_resize`), not only from a live `WM_SIZE`. A reentrant
   `WM_SIZE` ceded to `DefWindowProcW` while a `guarded_call` was on the stack

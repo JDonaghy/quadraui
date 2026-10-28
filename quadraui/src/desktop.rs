@@ -1126,13 +1126,21 @@ fn windows_explorer_select_parameters(path: &std::path::Path) -> String {
 /// through a linked `gio::DBusConnection::call_sync`, at the CLI-tool
 /// level instead — see [`reveal_in_file_manager`]'s doc for why TUI can't
 /// link `gio` directly.
+///
+/// `None` when `path` has no well-defined `file://` URI — see
+/// [`path_to_file_uri`] — because `ShowItems` takes URIs and there is no
+/// honest invocation to build without one.
 #[cfg(all(unix, not(target_os = "macos"), feature = "tui"))]
-fn linux_show_items_via_dbus_command(path: &std::path::Path) -> std::process::Command {
-    // `reveal_in_file_manager`'s only caller always resolves to an
-    // absolute path before reaching here, so `path_to_file_uri` returning
-    // `None` (a relative path) is not expected in practice; fall back to
-    // an empty URI rather than panicking if it somehow does.
-    let uri = path_to_file_uri(path).unwrap_or_default();
+fn linux_show_items_via_dbus_command(path: &std::path::Path) -> Option<std::process::Command> {
+    // `PlatformServices::reveal_in_file_manager` is public and forwards
+    // the consumer's `&Path` verbatim, so a relative path reaches here.
+    // Bail out rather than substituting an empty URI: `array:string:`
+    // with an empty value is a one-element array holding the empty
+    // string, which a session that *does* have a `FileManager1` listener
+    // answers with a success exit — a false `Ok(())` for a reveal that
+    // never happened. Reporting `None` lets the caller fall through to
+    // the `xdg-open`-the-parent leg instead.
+    let uri = path_to_file_uri(path)?;
     let mut cmd = std::process::Command::new("dbus-send");
     cmd.args([
         "--session",
@@ -1145,7 +1153,7 @@ fn linux_show_items_via_dbus_command(path: &std::path::Path) -> std::process::Co
     .arg("string:")
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null());
-    cmd
+    Some(cmd)
 }
 
 /// Run [`linux_show_items_via_dbus_command`], reporting whether
@@ -1154,10 +1162,14 @@ fn linux_show_items_via_dbus_command(path: &std::path::Path) -> std::process::Co
 /// `FileManager1` listener) exactly the way a failed native
 /// `gio::DBusConnection::call_sync` would, so an exit-status check is
 /// enough; there is no reply payload this call needs to read back.
+///
+/// `false` when there is no command to run at all (an un-URI-able path),
+/// which reads the same way to the caller as a failed D-Bus call: this
+/// leg didn't reveal anything, try the next one.
 #[cfg(all(unix, not(target_os = "macos"), feature = "tui"))]
 fn linux_show_items_via_dbus(path: &std::path::Path) -> bool {
     linux_show_items_via_dbus_command(path)
-        .status()
+        .and_then(|mut cmd| cmd.status().ok())
         .map(|status| status.success())
         .unwrap_or(false)
 }
@@ -1181,7 +1193,9 @@ fn linux_show_items_via_dbus(path: &std::path::Path) -> bool {
 /// Returns `None` for a path with no well-defined `file://` form: a
 /// relative path (no leading `/` on Unix, no drive letter or UNC prefix
 /// on Windows) would otherwise render with its first path segment read
-/// back as the URI *authority* instead of as part of the path.
+/// back as the URI *authority* instead of as part of the path. A host
+/// that is neither Unix nor Windows has no native path flavor this crate
+/// knows how to render and gets `None` for everything.
 ///
 /// [`gtk::services::GtkPlatformServices::reveal_in_file_manager`] gets
 /// the Unix encoding for free from `gio::File::for_path(path).uri()`;
@@ -1193,7 +1207,7 @@ pub(crate) fn path_to_file_uri(path: &std::path::Path) -> Option<String> {
     {
         file_uri_from_windows_path_str(&path.to_string_lossy())
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
 
@@ -1206,6 +1220,11 @@ pub(crate) fn path_to_file_uri(path: &std::path::Path) -> Option<String> {
             percent_encode_byte(&mut out, *byte, true);
         }
         Some(out)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = path;
+        None
     }
 }
 
@@ -1246,13 +1265,36 @@ fn encode_windows_segment(out: &mut String, segment: &str) {
 ///   authority.
 /// - A drive letter (`C:\a\b.txt`, or `C:/a/b.txt`) becomes
 ///   `file:///C:/a/b.txt` — empty authority, drive letter as the first
-///   path segment. The colon is kept literal (RFC 8089 Appendix A
-///   convention) rather than percent-encoded.
+///   path segment, and a bare drive root (`C:\`) keeps its trailing
+///   slash (`file:///C:/`). The colon is kept literal (RFC 8089
+///   Appendix A convention) rather than percent-encoded.
+/// - A verbatim prefix (`\\?\C:\a`, `\\?\UNC\server\share\f`) is
+///   stripped first and the remainder classified as the drive-letter or
+///   UNC form it names. This is the shape `std::fs::canonicalize`
+///   returns on Windows, and therefore the obvious way a caller
+///   satisfies this function's absolute-path requirement.
 /// - Anything else (no drive letter, no UNC prefix — a relative path)
 ///   returns `None`; see [`path_to_file_uri`]'s doc for why.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn file_uri_from_windows_path_str(raw: &str) -> Option<String> {
-    if let Some(unc) = raw.strip_prefix(r"\\").or_else(|| raw.strip_prefix("//")) {
+    // `\\?\UNC\` names a UNC path whose body no longer carries the
+    // leading `\\`, so remember that the UNC branch still applies;
+    // without this pre-pass both verbatim forms take the UNC branch
+    // below with `?` read back as the server name.
+    let (raw, verbatim_unc) = if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        (rest, true)
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        (rest, false)
+    } else {
+        (raw, false)
+    };
+
+    let unc = if verbatim_unc {
+        Some(raw)
+    } else {
+        raw.strip_prefix(r"\\").or_else(|| raw.strip_prefix("//"))
+    };
+    if let Some(unc) = unc {
         let mut parts = unc.splitn(2, ['\\', '/']);
         let server = parts.next().filter(|s| !s.is_empty())?;
         let share_and_path = parts.next().unwrap_or("");
@@ -1272,12 +1314,105 @@ fn file_uri_from_windows_path_str(raw: &str) -> Option<String> {
         return None;
     }
 
-    let mut out = format!("file:///{drive}:");
-    for segment in raw[2..].split(['\\', '/']).filter(|s| !s.is_empty()) {
-        out.push('/');
+    let mut out = format!("file:///{drive}:/");
+    for (i, segment) in raw[2..]
+        .split(['\\', '/'])
+        .filter(|s| !s.is_empty())
+        .enumerate()
+    {
+        if i > 0 {
+            out.push('/');
+        }
         encode_windows_segment(&mut out, segment);
     }
     Some(out)
+}
+
+/// Covers [`path_to_file_uri`] and its Windows string-level half. Not
+/// gated on `feature = "tui"` — unlike
+/// [`reveal_in_file_manager_tests`], whose subjects are TUI-only — so
+/// these also run under the real-Windows command
+/// (`tools/win-test.sh`, `--features win`), the host they describe.
+#[cfg(test)]
+mod file_uri_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn path_to_file_uri_percent_encodes_spaces_and_commas() {
+        assert_eq!(
+            path_to_file_uri(std::path::Path::new("/tmp/a,b c/d.txt")),
+            Some("file:///tmp/a%2Cb%20c/d.txt".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_to_file_uri_is_none_for_a_relative_path() {
+        // A relative path has no well-defined `file://` form: rendering
+        // it anyway would read its first segment back as the URI
+        // authority instead of as part of the path.
+        assert_eq!(path_to_file_uri(std::path::Path::new("a.txt")), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_to_file_uri_renders_a_windows_drive_letter_path() {
+        assert_eq!(
+            path_to_file_uri(std::path::Path::new(r"C:\dir\a b.txt")),
+            Some("file:///C:/dir/a%20b.txt".to_string())
+        );
+        assert_eq!(path_to_file_uri(std::path::Path::new(r"dir\a.txt")), None);
+    }
+
+    /// Pure string-level logic, no WinAPI — runs on every host, same
+    /// posture as
+    /// [`reveal_in_file_manager_tests::windows_explorer_select_parameters_quotes_the_path`].
+    #[test]
+    fn file_uri_from_windows_path_str_handles_a_drive_letter() {
+        assert_eq!(
+            file_uri_from_windows_path_str(r"C:\dir\a b.txt"),
+            Some("file:///C:/dir/a%20b.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn file_uri_from_windows_path_str_keeps_a_bare_drive_root_slash() {
+        assert_eq!(
+            file_uri_from_windows_path_str(r"C:\"),
+            Some("file:///C:/".to_string())
+        );
+        assert_eq!(
+            file_uri_from_windows_path_str("C:"),
+            Some("file:///C:/".to_string())
+        );
+    }
+
+    #[test]
+    fn file_uri_from_windows_path_str_handles_a_unc_share() {
+        assert_eq!(
+            file_uri_from_windows_path_str(r"\\server\share\a b.txt"),
+            Some("file://server/share/a%20b.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn file_uri_from_windows_path_str_strips_a_verbatim_prefix() {
+        // `std::fs::canonicalize` hands back these forms on Windows.
+        assert_eq!(
+            file_uri_from_windows_path_str(r"\\?\C:\dir\a b.txt"),
+            Some("file:///C:/dir/a%20b.txt".to_string())
+        );
+        assert_eq!(
+            file_uri_from_windows_path_str(r"\\?\UNC\server\share\f.txt"),
+            Some("file://server/share/f.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn file_uri_from_windows_path_str_is_none_for_a_relative_path() {
+        assert_eq!(file_uri_from_windows_path_str(r"dir\a.txt"), None);
+    }
 }
 
 #[cfg(all(test, feature = "tui"))]
@@ -1328,7 +1463,8 @@ mod reveal_in_file_manager_tests {
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn linux_show_items_via_dbus_command_targets_file_manager1() {
-        let cmd = linux_show_items_via_dbus_command(std::path::Path::new("/tmp/quadraui 1092"));
+        let cmd = linux_show_items_via_dbus_command(std::path::Path::new("/tmp/quadraui 1092"))
+            .expect("an absolute path has a file:// URI to show");
         assert_eq!(cmd.get_program(), "dbus-send");
         assert_eq!(
             cmd.get_args().collect::<Vec<_>>(),
@@ -1344,45 +1480,14 @@ mod reveal_in_file_manager_tests {
         );
     }
 
+    /// A relative path has no `file://` URI, so there is no `ShowItems`
+    /// invocation to build; the caller reads that as "this leg found
+    /// nothing" and falls through to the `xdg-open`-the-parent leg
+    /// rather than sending a one-element array holding the empty string.
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
-    fn path_to_file_uri_percent_encodes_spaces_and_commas() {
-        assert_eq!(
-            path_to_file_uri(std::path::Path::new("/tmp/a,b c/d.txt")),
-            Some("file:///tmp/a%2Cb%20c/d.txt".to_string())
-        );
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    #[test]
-    fn path_to_file_uri_is_none_for_a_relative_path() {
-        // A relative path has no well-defined `file://` form: rendering
-        // it anyway would read its first segment back as the URI
-        // authority instead of as part of the path.
-        assert_eq!(path_to_file_uri(std::path::Path::new("a.txt")), None);
-    }
-
-    /// Pure string-level logic, no WinAPI — runs on every host, same
-    /// posture as [`windows_explorer_select_parameters_quotes_the_path`].
-    #[test]
-    fn file_uri_from_windows_path_str_handles_a_drive_letter() {
-        assert_eq!(
-            file_uri_from_windows_path_str(r"C:\dir\a b.txt"),
-            Some("file:///C:/dir/a%20b.txt".to_string())
-        );
-    }
-
-    #[test]
-    fn file_uri_from_windows_path_str_handles_a_unc_share() {
-        assert_eq!(
-            file_uri_from_windows_path_str(r"\\server\share\a b.txt"),
-            Some("file://server/share/a%20b.txt".to_string())
-        );
-    }
-
-    #[test]
-    fn file_uri_from_windows_path_str_is_none_for_a_relative_path() {
-        assert_eq!(file_uri_from_windows_path_str(r"dir\a.txt"), None);
+    fn linux_show_items_via_dbus_command_is_none_for_a_relative_path() {
+        assert!(linux_show_items_via_dbus_command(std::path::Path::new("a.txt")).is_none());
     }
 
     /// Acceptance bar: when neither the D-Bus leg nor the
