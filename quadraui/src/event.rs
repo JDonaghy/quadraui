@@ -30,6 +30,7 @@
 //! | Mouse (`MouseDown`, `MouseUp`, `MouseMoved`, `MouseEntered`, `MouseLeft`, `DoubleClick`, `Scroll`) | Hit-test at cursor position |
 //! | Keyboard (`KeyPressed`, `CharTyped`) | Focus |
 //! | Accelerator | [`AcceleratorScope`][crate::AcceleratorScope] |
+//! | `GlobalShortcut` | Broadcast (no target) — the OS delivered it outside focus entirely |
 //! | Window (`WindowResized`, `WindowClose`, `WindowFocused`, `DpiChanged`) | Application-global |
 //! | `FilesDropped` | Hit-test at drop position |
 //! | `ClipboardPaste` | Focus |
@@ -444,6 +445,62 @@ pub enum UiEvent {
     /// [`KeyBinding`][crate::KeyBinding] to one of the app's registered
     /// accelerators and is reporting the ID.
     Accelerator(crate::AcceleratorId, Modifiers),
+
+    /// The OS delivered a global shortcut — a key combination registered
+    /// through
+    /// [`PlatformServices::register_global_shortcut`][crate::PlatformServices::register_global_shortcut]
+    /// that fires regardless of whether this app's window has focus. The
+    /// payload is the [`GlobalShortcutId`][crate::GlobalShortcutId]
+    /// returned at registration time; unlike [`Self::Accelerator`] there is
+    /// no [`Modifiers`] snapshot, since the OS-level hotkey APIs this wraps
+    /// (Win32 `RegisterHotKey`, Carbon/Cocoa `RegisterEventHotKey`, the
+    /// `org.freedesktop.portal.GlobalShortcuts` XDG portal) report only
+    /// that the registered combination fired, not a live modifier state.
+    ///
+    /// **No backend emits this yet.** Same "declare the gap, don't fake
+    /// it" posture as [`Self::PowerStateChanged`]: per-backend
+    /// registration is a separate, backend-specific follow-on; see
+    /// [`crate::accelerator`]'s module doc for what this seam does and
+    /// doesn't cover. TUI has no OS-wide hotkey mechanism to register
+    /// against — an OS global shortcut is physically absent on a
+    /// terminal, the same way a tray icon or dock badge is — so it will
+    /// never emit this variant.
+    ///
+    /// Routing: broadcast, like [`Self::PowerStateChanged`] — the OS
+    /// delivered it outside the normal focus/hit-test path entirely.
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
+    /// exhaustively `match`es every variant with no wildcard arm would
+    /// fail to compile the moment this variant landed. Blast-radius grep,
+    /// per CLAUDE.md's mandatory rule 1 (this covers the new
+    /// `PlatformServices::register_global_shortcut`/
+    /// `unregister_global_shortcut`/`unregister_all_global_shortcuts`
+    /// methods and the `GlobalShortcutId`/`GlobalShortcutRegistry` types
+    /// as well as this variant — all landed together):
+    ///
+    /// ```text
+    /// $ grep -rn 'GlobalShortcut\|register_global_shortcut\|unregister_global_shortcut\|unregister_all_global_shortcuts' \
+    ///     ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both)
+    /// ```
+    ///
+    /// Zero hits means neither consumer references any of the new items
+    /// yet, but the real question for a *new enum variant* is whether
+    /// either consumer's existing `match`es over `UiEvent` are exhaustive
+    /// (no wildcard arm) — same two dispatch sites checked for
+    /// [`Self::PowerStateChanged`]:
+    ///
+    /// - `vimcode`'s `src/app/dispatch.rs` top-level `UiEvent` dispatch
+    ///   ends in a wildcard `_ => {}` arm (`dispatch.rs:1067`).
+    /// - `coord-tui`'s `src/app/events.rs` has two top-level `UiEvent`
+    ///   dispatches, both wildcard-terminated (`events.rs:6326` and
+    ///   `events.rs:6386`, each `_ => false`).
+    ///
+    /// Adding `GlobalShortcut` compiles clean against both `develop`-tip
+    /// checkouts with no consumer changes required.
+    GlobalShortcut(crate::GlobalShortcutId),
 
     /// A raw key was pressed. Routes to the focused widget. Apps that only
     /// want keybindings should prefer `Accelerator` — the backend handles
