@@ -2077,6 +2077,32 @@ mod power_save_block_tests {
         assert_eq!(service.on_battery(), Err(BackendError::Unsupported));
         assert_eq!(service.thermal_state(), Err(BackendError::Unsupported));
     }
+
+    #[test]
+    fn global_shortcuts_stay_unsupported() {
+        use crate::accelerator::KeyBinding;
+        use crate::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, GlobalShortcutId};
+
+        let service = TuiPlatformServices::new();
+        let accel = Accelerator {
+            id: AcceleratorId::new("app.summon"),
+            binding: KeyBinding::Literal("<C-S-space>".to_string()),
+            scope: AcceleratorScope::Global,
+            label: None,
+        };
+        assert_eq!(
+            service.register_global_shortcut(accel),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(
+            service.unregister_global_shortcut(GlobalShortcutId::next()),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(
+            service.unregister_all_global_shortcuts(),
+            Err(BackendError::Unsupported)
+        );
+    }
 }
 
 #[cfg(test)]
