@@ -87,6 +87,13 @@ only a push to `main` runs this workflow.
   in-tree backend overriding it yet — the per-backend OS drag session
   (`NSView::beginDraggingSession` on macOS, `IDropSource`/`DoDragDrop` on
   Win-GUI, `gtk4::DragSource` on GTK) is a separate follow-on.
+  `DragOutPayload::to_uri_list` renders each path through the shared,
+  now-uncfg'd `desktop::path_to_file_uri` — percent-encoded per RFC 3986,
+  correct for Windows drive-letter and UNC paths (not just POSIX ones),
+  lossless for non-UTF-8 Unix paths, and CRLF-terminated on every line
+  including the last per RFC 2483 — rather than a lossy raw `format!`
+  concatenation; a path it can't resolve to a well-defined `file://` URI
+  (relative, or non-UTF-8 on Unix) is skipped.
 - `PlatformServices::register_global_shortcut`/`unregister_global_shortcut`/
   `unregister_all_global_shortcuts`, `GlobalShortcutId`,
   `GlobalShortcutRegistry` and `UiEvent::GlobalShortcut` — the seam for an

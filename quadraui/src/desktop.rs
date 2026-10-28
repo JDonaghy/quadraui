@@ -1128,7 +1128,11 @@ fn windows_explorer_select_parameters(path: &std::path::Path) -> String {
 /// link `gio` directly.
 #[cfg(all(unix, not(target_os = "macos"), feature = "tui"))]
 fn linux_show_items_via_dbus_command(path: &std::path::Path) -> std::process::Command {
-    let uri = path_to_file_uri(path);
+    // `reveal_in_file_manager`'s only caller always resolves to an
+    // absolute path before reaching here, so `path_to_file_uri` returning
+    // `None` (a relative path) is not expected in practice; fall back to
+    // an empty URI rather than panicking if it somehow does.
+    let uri = path_to_file_uri(path).unwrap_or_default();
     let mut cmd = std::process::Command::new("dbus-send");
     cmd.args([
         "--session",
@@ -1158,33 +1162,122 @@ fn linux_show_items_via_dbus(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Percent-encode `path` into a `file://` URI: every byte outside RFC
-/// 3986's unreserved set (`ALPHA` / `DIGIT` / `-._~`) plus the path
-/// separator `/` is escaped as `%XX`. Good enough for
-/// `ShowItems`'s `as` (array-of-strings) argument — not a full RFC 3986
-/// implementation — but in particular escapes `,` (which would otherwise
-/// be misread as a `dbus-send` `array:string:` element separator) and
-/// whitespace, both of which a real filesystem path can easily contain.
+/// Percent-encode `path` into a `file://` URI (RFC 8089), honoring the
+/// host's native path flavor rather than assuming POSIX:
+///
+/// - **Unix** (including macOS): every byte outside RFC 3986's
+///   unreserved set (`ALPHA` / `DIGIT` / `-._~`) plus the path separator
+///   `/` is escaped as `%XX`. Operates on the path's raw `OsStr` bytes,
+///   not a lossy `&str` conversion, so it is lossless for a path with no
+///   valid UTF-8 representation. In particular escapes `,` (which would
+///   otherwise be misread as a `dbus-send` `array:string:` element
+///   separator — [`linux_show_items_via_dbus_command`]'s use) and
+///   whitespace, both of which a real filesystem path can easily carry.
+/// - **Windows**: routed through [`file_uri_from_windows_path_str`] for
+///   drive-letter (`C:\a\b.txt` -> `file:///C:/a/b.txt`) and UNC
+///   (`\\server\share\f` -> `file://server/share/f`) handling — a raw
+///   `file://{backslash-path}` concatenation is not a parseable URI.
+///
+/// Returns `None` for a path with no well-defined `file://` form: a
+/// relative path (no leading `/` on Unix, no drive letter or UNC prefix
+/// on Windows) would otherwise render with its first path segment read
+/// back as the URI *authority* instead of as part of the path.
+///
 /// [`gtk::services::GtkPlatformServices::reveal_in_file_manager`] gets
-/// the same encoding for free from `gio::File::for_path(path).uri()`;
-/// TUI has no `gio` to call, so this is the minimal hand-rolled
-/// equivalent.
-#[cfg(all(unix, not(target_os = "macos"), feature = "tui"))]
-fn path_to_file_uri(path: &std::path::Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
-
-    let mut out = String::from("file://");
-    for byte in path.as_os_str().as_bytes() {
-        let b = *byte;
-        let is_unreserved =
-            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/');
-        if is_unreserved {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
+/// the Unix encoding for free from `gio::File::for_path(path).uri()`;
+/// TUI has no `gio` to call, so this is the hand-rolled equivalent, also
+/// reused unconditionally by [`crate::drag::DragOutPayload::to_uri_list`]
+/// — which is why this function itself carries no backend/feature `cfg`.
+pub(crate) fn path_to_file_uri(path: &std::path::Path) -> Option<String> {
+    #[cfg(windows)]
+    {
+        file_uri_from_windows_path_str(&path.to_string_lossy())
     }
-    out
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::ffi::OsStrExt;
+
+        let bytes = path.as_os_str().as_bytes();
+        if !bytes.starts_with(b"/") {
+            return None;
+        }
+        let mut out = String::from("file://");
+        for byte in bytes {
+            percent_encode_byte(&mut out, *byte, true);
+        }
+        Some(out)
+    }
+}
+
+/// Percent-encode one byte into `out` per RFC 3986's unreserved set
+/// (`ALPHA` / `DIGIT` / `-._~`); `keep_slash` additionally passes `/`
+/// through literally, for a caller encoding a whole `/`-separated path
+/// body in one pass rather than per-segment.
+fn percent_encode_byte(out: &mut String, b: u8, keep_slash: bool) {
+    let is_unreserved = b.is_ascii_alphanumeric()
+        || matches!(b, b'-' | b'.' | b'_' | b'~')
+        || (keep_slash && b == b'/');
+    if is_unreserved {
+        out.push(b as char);
+    } else {
+        out.push_str(&format!("%{b:02X}"));
+    }
+}
+
+/// Percent-encode a single Windows path segment (no `/` passthrough —
+/// the caller has already split on separators).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn encode_windows_segment(out: &mut String, segment: &str) {
+    for b in segment.bytes() {
+        percent_encode_byte(out, b, false);
+    }
+}
+
+/// Pure string-level translation of a Windows-flavored path string into
+/// its `file://` form — factored out of [`path_to_file_uri`] (rather
+/// than operating on a host `&Path`) so the drive-letter and UNC shapes
+/// can be pinned by a test on any host, not only a real Windows one:
+/// `Path`'s own component parsing is host-dependent (a Linux host treats
+/// a backslash as an ordinary filename byte, not a separator), so
+/// driving this logic through `Path` there would silently test nothing.
+///
+/// - A UNC prefix (`\\server\share\path`, or `//server/share/path`)
+///   becomes `file://server/share/path` — the server name is the URI
+///   authority.
+/// - A drive letter (`C:\a\b.txt`, or `C:/a/b.txt`) becomes
+///   `file:///C:/a/b.txt` — empty authority, drive letter as the first
+///   path segment. The colon is kept literal (RFC 8089 Appendix A
+///   convention) rather than percent-encoded.
+/// - Anything else (no drive letter, no UNC prefix — a relative path)
+///   returns `None`; see [`path_to_file_uri`]'s doc for why.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn file_uri_from_windows_path_str(raw: &str) -> Option<String> {
+    if let Some(unc) = raw.strip_prefix(r"\\").or_else(|| raw.strip_prefix("//")) {
+        let mut parts = unc.splitn(2, ['\\', '/']);
+        let server = parts.next().filter(|s| !s.is_empty())?;
+        let share_and_path = parts.next().unwrap_or("");
+
+        let mut out = String::from("file://");
+        encode_windows_segment(&mut out, server);
+        for segment in share_and_path.split(['\\', '/']).filter(|s| !s.is_empty()) {
+            out.push('/');
+            encode_windows_segment(&mut out, segment);
+        }
+        return Some(out);
+    }
+
+    let mut chars = raw.chars();
+    let drive = chars.next().filter(char::is_ascii_alphabetic)?;
+    if chars.next() != Some(':') {
+        return None;
+    }
+
+    let mut out = format!("file:///{drive}:");
+    for segment in raw[2..].split(['\\', '/']).filter(|s| !s.is_empty()) {
+        out.push('/');
+        encode_windows_segment(&mut out, segment);
+    }
+    Some(out)
 }
 
 #[cfg(all(test, feature = "tui"))]
@@ -1256,8 +1349,40 @@ mod reveal_in_file_manager_tests {
     fn path_to_file_uri_percent_encodes_spaces_and_commas() {
         assert_eq!(
             path_to_file_uri(std::path::Path::new("/tmp/a,b c/d.txt")),
-            "file:///tmp/a%2Cb%20c/d.txt"
+            Some("file:///tmp/a%2Cb%20c/d.txt".to_string())
         );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn path_to_file_uri_is_none_for_a_relative_path() {
+        // A relative path has no well-defined `file://` form: rendering
+        // it anyway would read its first segment back as the URI
+        // authority instead of as part of the path.
+        assert_eq!(path_to_file_uri(std::path::Path::new("a.txt")), None);
+    }
+
+    /// Pure string-level logic, no WinAPI — runs on every host, same
+    /// posture as [`windows_explorer_select_parameters_quotes_the_path`].
+    #[test]
+    fn file_uri_from_windows_path_str_handles_a_drive_letter() {
+        assert_eq!(
+            file_uri_from_windows_path_str(r"C:\dir\a b.txt"),
+            Some("file:///C:/dir/a%20b.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn file_uri_from_windows_path_str_handles_a_unc_share() {
+        assert_eq!(
+            file_uri_from_windows_path_str(r"\\server\share\a b.txt"),
+            Some("file://server/share/a%20b.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn file_uri_from_windows_path_str_is_none_for_a_relative_path() {
+        assert_eq!(file_uri_from_windows_path_str(r"dir\a.txt"), None);
     }
 
     /// Acceptance bar: when neither the D-Bus leg nor the
