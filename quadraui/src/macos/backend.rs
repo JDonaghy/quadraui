@@ -674,9 +674,26 @@ impl MacBackend {
         // is `Mutex`-backed and nudges this same `wake_callback` via GCD
         // — see `Self::waker`'s doc for that mechanism.
         let services = MacPlatformServices::new();
+        let notify_wake_callback = Arc::clone(&wake_callback);
+        let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            // Mirrors `Self::waker`'s own GCD hop (see its doc for the
+            // full rationale): the delegate callback this feeds can land
+            // on any thread AppKit chooses, so the redraw it triggers via
+            // `wake_callback` must first be bounced onto the main thread.
+            let wake_callback = Arc::clone(&notify_wake_callback);
+            DispatchQueue::main().exec_async(move || {
+                if let Some(bound) = wake_callback.get() {
+                    // SAFETY: see `Self::waker`'s matching `exec_async`
+                    // closure — GCD's own contract guarantees this runs
+                    // on the real main thread.
+                    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                    (bound.get(mtm))();
+                }
+            });
+        });
         services.set_notification_sink(super::services::NotificationEventSink::new(
             Arc::clone(&notification_events),
-            Arc::clone(&wake_callback),
+            notify,
         ));
         Self {
             viewport: Viewport::new(0.0, 0.0, 1.0),

@@ -84,6 +84,22 @@ only a push to `main` runs this workflow.
   paste targets. Reads accept both `BI_BITFIELDS` mask layouts — the four
   in-header masks of a `BITMAPV4HEADER`/`BITMAPV5HEADER` and the three
   colour-table masks of a 40-byte `BITMAPINFOHEADER`.
+- macOS `PlatformServices` sends real system notifications through
+  `UNUserNotificationCenter` instead of the earlier delegate-only stub.
+  Icon, action buttons and "silent" (no system sound) all forward to the
+  framework; a notification carrying a `tag` is delivered under that tag as
+  its `UNNotificationRequest` identifier, so a second send with the same
+  tag replaces the first instead of stacking a duplicate banner, while an
+  untagged notification gets a synthetic per-call identifier. Clicking the
+  body, clicking an action button, or dismissing all surface as the
+  existing `UiEvent::NotificationActivated { tag, action }`, with `action`
+  set to the clicked button's `WidgetId` (`None` for the default
+  click-to-open and explicit dismiss identifiers). The backend requests
+  notification authorization once per process via `UNUserNotificationCenter`'s
+  delegate, and the delegate hop is bounced back onto the main thread
+  through the same GCD `DispatchQueue::main().exec_async` pattern
+  `MacBackend::waker` already uses, since AppKit can invoke the delegate on
+  an arbitrary thread.
 - GTK backend implements `TrayService` (`Backend::tray`, `backend_caps().tray`
   now `true`) via the `org.kde.StatusNotifierItem` / `com.canonical.dbusmenu`
   D-Bus protocol (`gtk::tray`, behind the existing `gtk` feature's new
