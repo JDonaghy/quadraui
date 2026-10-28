@@ -4566,6 +4566,12 @@ pub trait PlatformServices {
     /// carries and [`crate::drag`]'s module doc for why this is a seam
     /// rather than a full implementation.
     ///
+    /// `items.is_empty()` is a caller bug — nothing to drag — pinned here
+    /// so the three per-backend follow-ons don't each guess differently:
+    /// a real session-starting implementation returns
+    /// [`BackendError::PlatformFailure`] for it rather than silently
+    /// no-opping `Ok(())` or starting a session with nothing attached.
+    ///
     /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
     /// real OS drag-out session yet (`NSView::beginDraggingSession` on
     /// macOS, `IDropSource`/`DoDragDrop` on Win-GUI, `gtk4::DragSource`
@@ -5642,9 +5648,10 @@ mod begin_drag_out_default_tests {
     //! doc.
     use super::*;
 
-    struct FakeTextOnlyClipboard;
+    #[derive(Default)]
+    struct FakeNoopClipboard;
 
-    impl Clipboard for FakeTextOnlyClipboard {
+    impl Clipboard for FakeNoopClipboard {
         fn read_text(&self) -> Option<String> {
             None
         }
@@ -5654,13 +5661,7 @@ mod begin_drag_out_default_tests {
 
     #[derive(Default)]
     struct FakePlatformServices {
-        clipboard: FakeTextOnlyClipboard,
-    }
-
-    impl Default for FakeTextOnlyClipboard {
-        fn default() -> Self {
-            FakeTextOnlyClipboard
-        }
+        clipboard: FakeNoopClipboard,
     }
 
     impl PlatformServices for FakePlatformServices {

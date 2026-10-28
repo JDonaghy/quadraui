@@ -50,7 +50,9 @@ impl DragOutPayload {
         Self::default()
     }
 
-    /// Attach one or more file paths to drag out.
+    /// Set the file paths to drag out, *replacing* any set by a previous
+    /// call — this is not an appender. Chain a single call with every
+    /// path the drag should carry.
     #[must_use]
     pub fn with_files(mut self, files: impl IntoIterator<Item = PathBuf>) -> Self {
         self.files = files.into_iter().collect();
@@ -66,35 +68,53 @@ impl DragOutPayload {
     }
 
     /// The file paths attached via [`Self::with_files`].
+    #[must_use]
     pub fn files(&self) -> &[PathBuf] {
         &self.files
     }
 
     /// The free-text attached via [`Self::with_text`], if any.
+    #[must_use]
     pub fn text(&self) -> Option<&str> {
         self.text.as_deref()
     }
 
     /// Whether this payload carries neither files nor text — nothing for
     /// a backend to drag out.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.files.is_empty() && self.text.is_none()
     }
 
     /// Render [`Self::files`] as a `text/uri-list` (RFC 2483) body — one
-    /// `file://` URI per line, CRLF-joined per the spec. A backend with
-    /// only a generic "offer this text" drag surface and no dedicated
-    /// file-drag API can hand a target this instead of the raw paths. A
-    /// path with no valid UTF-8 representation is silently skipped
-    /// (`text/uri-list` has no escape for raw bytes); call
-    /// [`Self::files`] directly for the lossless list.
+    /// percent-encoded `file://` URI per line, CRLF-terminated (including
+    /// the last line) per the spec. Each path is rendered via
+    /// [`crate::desktop::path_to_file_uri`], so this is correct on every
+    /// backend's host, not just a POSIX one: a drive-letter or UNC
+    /// Windows path renders as its RFC 8089 form rather than a raw
+    /// backslash concatenation, and a space/`#`/`%`/`,` in a filename is
+    /// percent-encoded rather than left to break the receiving app's
+    /// parse. A backend with only a generic "offer this text" drag
+    /// surface and no dedicated file-drag API can hand a target this
+    /// instead of the raw paths.
+    ///
+    /// A path this crate cannot render a well-defined `file://` URI for
+    /// — relative (no filesystem-root anchor to resolve it against), or,
+    /// on Unix, not valid UTF-8 (`text/uri-list` has no escape for raw
+    /// bytes) — is silently skipped; call [`Self::files`] directly for
+    /// the lossless list.
+    #[must_use]
     pub fn to_uri_list(&self) -> String {
-        self.files
+        let mut out = self
+            .files
             .iter()
-            .filter_map(|p| p.to_str())
-            .map(|s| format!("file://{s}"))
+            .filter_map(|p| crate::desktop::path_to_file_uri(p))
             .collect::<Vec<_>>()
-            .join("\r\n")
+            .join("\r\n");
+        if !out.is_empty() {
+            out.push_str("\r\n");
+        }
+        out
     }
 }
 
@@ -144,8 +164,14 @@ mod tests {
             .with_files([PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b.txt")]);
         assert_eq!(
             payload.to_uri_list(),
-            "file:///tmp/a.txt\r\nfile:///tmp/b.txt"
+            "file:///tmp/a.txt\r\nfile:///tmp/b.txt\r\n"
         );
+    }
+
+    #[test]
+    fn to_uri_list_percent_encodes_a_path_with_a_space() {
+        let payload = DragOutPayload::new().with_files([PathBuf::from("/tmp/my dir/a.txt")]);
+        assert_eq!(payload.to_uri_list(), "file:///tmp/my%20dir/a.txt\r\n");
     }
 
     #[test]
