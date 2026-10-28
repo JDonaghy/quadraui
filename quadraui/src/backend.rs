@@ -5120,12 +5120,13 @@ impl Notification {
     }
 
     /// Suppress the notification sound, on backends that have a sound to
-    /// suppress: Win's balloon sets `NIIF_NOSOUND` when this is `true`,
-    /// and macOS's `osascript` fallback only adds a `sound name` clause
-    /// when this is `false` (see `win::services`/`macos::services`'s
-    /// `send_notification` docs). GTK's `gio::Notification` has no sound
-    /// control of its own at all — the desktop shell decides — so this
-    /// has nothing to bind to there.
+    /// suppress: Win's primary WinRT toast path emits `<audio
+    /// silent="true"/>` and its `Shell_NotifyIconW` balloon fallback sets
+    /// `NIIF_NOSOUND` when this is `true`, and macOS's `osascript`
+    /// fallback only adds a `sound name` clause when this is `false` (see
+    /// `win::services`/`macos::services`'s `send_notification` docs).
+    /// GTK's `gio::Notification` has no sound control of its own at all —
+    /// the desktop shell decides — so this has nothing to bind to there.
     #[must_use]
     pub fn with_silent(mut self, silent: bool) -> Self {
         self.silent = silent;
