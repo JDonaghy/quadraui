@@ -57,27 +57,21 @@
 //! [`Self::show_message_dialog`]'s `opts.severity` having nowhere to go
 //! on `gtk4::AlertDialog`.
 //!
-//! ## Tray / status-bar icon — deliberately not implemented
-//! here
+//! ## Tray / status-bar icon — lives in `gtk::tray`, not here
 //!
-//! `GtkBackend::tray` (see [`crate::backend::Backend::tray`]) is left at
-//! the trait's `None` default rather than gaining a `GtkTrayService` in
-//! this file. Unlike every other gap this module documents, this one
-//! isn't "stubbed pending a trait shape" — it's "no GTK4 API exists at
-//! all": GTK4 itself ships no status-icon widget (`GtkStatusIcon` was
-//! removed in the GTK3→4 transition), so a real implementation needs
-//! StatusNotifierItem over D-Bus (the `ksni` crate, or a hand-rolled
-//! implementation) or `libayatana-appindicator`, and must additionally
-//! report honest `Unsupported`/`None` on desktops with no SNI host
-//! running at all (stock GNOME without an extension, notably) rather
-//! than silently no-oping. That's a materially larger, separate piece of
-//! work than the macOS (`NSStatusBar`) and Win (`Shell_NotifyIconW`)
-//! implementations, which reuse existing in-tree image-decode and
-//! `ContextMenu`-rendering machinery — see `macos::tray`/`win::tray`'s
-//! module docs for those. Tracked as GTK follow-up, not silently
-//! dropped: `Backend::tray` returning `None` here is the honest,
-//! structural "not yet" this crate's docs consistently prefer over a
-//! capability flag nobody set.
+//! `GtkBackend::tray` (see [`crate::backend::Backend::tray`]) does
+//! override the trait's `None` default, but the implementation isn't in
+//! this file: GTK4 itself ships no status-icon widget at all
+//! (`GtkStatusIcon` was removed in the GTK3→4 transition), so there is
+//! no `gio`/`gtk4` call for [`GtkPlatformServices`] to wrap the way it
+//! wraps clipboard, dialogs or notifications above. Instead
+//! `gtk::tray::GtkTrayState` speaks `org.kde.StatusNotifierItem` +
+//! `com.canonical.dbusmenu` directly over the session D-Bus (`zbus`),
+//! and reports honest `Unsupported`/`None` on a desktop with no SNI host
+//! running (stock GNOME without an extension, notably) rather than
+//! silently no-oping — see `gtk::tray`'s module doc for the protocol
+//! detail, and `macos::tray`/`win::tray` for the other two backends'
+//! native equivalents (`NSStatusBar`/`Shell_NotifyIconW`).
 //!
 //! ## Displays
 //!

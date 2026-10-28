@@ -1047,11 +1047,13 @@ fn every_capability_is_required_by_some_scenario_or_named_as_unused() {
         ),
         (
             "tray",
-            "only macOS declares it (issue #953), and macOS has no `ConformanceDriver` yet \
-             (#493) — same gap `native_menu` above already names. Even with one, a tray icon \
-             lives outside any window `FrameInventory` observes (the OS menu bar / \
-             notification area, not the app's own render surface), so there is nothing this \
-             suite's paint-and-click vocabulary could assert on even then",
+            "macOS (issue #953) and GTK/Linux (issue #1786) both declare it, but neither \
+             backend has a `ConformanceDriver` test path that could gate on it: macOS has no \
+             `ConformanceDriver` at all (#493) — same gap `native_menu` above already names — \
+             and GTK's does exist but only observes `FrameInventory` (the app's own Cairo \
+             render surface), while a tray icon lives in the OS menu bar / notification area, \
+             reached over D-Bus/StatusNotifierItem rather than any paint this suite's \
+             paint-and-click vocabulary could assert on",
         ),
     ];
 

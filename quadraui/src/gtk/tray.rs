@@ -13,12 +13,21 @@
 //!
 //! [`GtkTrayState::ensure_connected`] is the single place that decides
 //! whether a tray is possible right now: it tries to reach the session
-//! bus and register with a watcher, and reports failure (no caching) on
-//! any error — unreachable session bus, no watcher running, or the
-//! `RegisterStatusNotifierItem` call itself failing. `GtkBackend::tray`
-//! calls this on every invocation, so a desktop that gains a watcher
-//! after startup (an extension enabled mid-session) is picked up on the
-//! next call rather than being permanently refused.
+//! bus and register with a watcher, and reports failure (no permanent
+//! caching) on any error — unreachable session bus, no watcher running,
+//! or the `RegisterStatusNotifierItem` call itself failing.
+//! `GtkBackend::tray` calls this on every invocation, so a desktop that
+//! gains a watcher after startup (an extension enabled mid-session) is
+//! eventually picked up rather than being permanently refused. "Every
+//! invocation" does not mean "every invocation blocks on the bus",
+//! though: once a connection attempt has failed, further attempts are
+//! throttled to once per [`RECONNECT_INTERVAL`] so a caller that polls
+//! `tray()` every event-loop iteration on a desktop with no watcher at
+//! all (stock GNOME, most CI runners) doesn't pay a blocking D-Bus
+//! round trip on every single one of those iterations. Each attempt
+//! that does go to the bus is itself bounded to [`DBUS_CALL_TIMEOUT`],
+//! so a reachable-but-unresponsive bus address degrades to the same
+//! honest `false` as an unreachable one instead of hanging the caller.
 //!
 //! ## Crossing to the GTK main thread
 //!
@@ -43,15 +52,38 @@
 //! `(u32, Vec<(i32, HashMap<String, OwnedValue>)>)` child list
 //! `com.canonical.dbusmenu`'s `GetLayout` returns. Nested
 //! [`ContextMenuItem::submenu`]s are flattened to one level — a
-//! `submenu` entry becomes a disabled separator-free label row followed
-//! immediately by its children at the same depth — rather than
-//! recursing through nested `Variant`s, since no quadraui consumer
-//! currently builds more than one level of tray menu and dbusmenu's own
-//! recursive-through-`Variant` shape earns the extra complexity only
-//! once one does.
+//! `submenu` entry becomes a non-activatable (but still visible, still
+//! separator-free) label row followed immediately by its children at
+//! the same depth — rather than recursing through nested `Variant`s,
+//! since no quadraui consumer currently builds more than one level of
+//! tray menu and dbusmenu's own recursive-through-`Variant` shape earns
+//! the extra complexity only once one does.
+//!
+//! ## Live updates
+//!
+//! A `TrayService::set_icon`/`set_tooltip`/`set_menu` call takes effect
+//! immediately, not just on the next property read: each one also
+//! emits the matching SNI change signal (`NewIcon`/`NewToolTip`) or, for
+//! the menu, bumps [`TrayShared::menu_revision`] and emits dbusmenu's
+//! `LayoutUpdated` so a host that cached an earlier `GetLayout` knows to
+//! re-fetch it. `Menu` itself is advertised unconditionally as
+//! `/MenuBar` — see [`linux::StatusNotifierItemIface::menu`] — since SNI
+//! has no `NewMenu` signal a host could react to if the path changed
+//! later.
+//!
+//! ## Teardown
+//!
+//! Nothing in this module ever unregisters the `StatusNotifierItem` or
+//! closes the D-Bus connection on its own; the only way the tray item
+//! goes away is `GtkBackend` (and with it, `GtkTrayState`) being
+//! dropped, which drops `zbus::blocking::Connection` and lets the bus
+//! itself notice the peer disappeared. That is intentional — there is
+//! no `TrayService::remove`/`hide` in the trait for any backend to call.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
+use std::time::{Duration, Instant};
 
 use crate::backend::{BackendError, ServiceResult};
 use crate::event::{MouseButton, UiEvent, UserPayload};
@@ -94,6 +126,7 @@ pub(crate) fn drain_tray_wake(events: &mut [UiEvent]) {
 /// State shared between the `GtkBackend`-owned side of this module and
 /// the D-Bus interface objects running on `zbus`'s background thread —
 /// every field here is read or written from both.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Default)]
 struct TrayShared {
     tooltip: String,
@@ -102,13 +135,41 @@ struct TrayShared {
     /// network byte order (big-endian), 4 bytes per pixel, alpha first.
     icon: Vec<(i32, i32, Vec<u8>)>,
     menu: Option<ContextMenu>,
+    /// Bumped by every `set_menu` call and returned as `GetLayout`'s
+    /// revision number, so a host that caches the layout it last fetched
+    /// knows — once it also sees `LayoutUpdated` carrying this value —
+    /// that a re-fetch would return something different.
+    menu_revision: u32,
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 impl TrayShared {
     fn has_menu(&self) -> bool {
         self.menu.is_some()
     }
 }
+
+/// Floor on how often [`GtkTrayState::ensure_connected`] re-attempts a
+/// failed connection — see this module's "Honest degrade" doc section.
+/// Deliberately short: this is a jank guard against polling every
+/// event-loop iteration, not a real backoff, so a watcher that appears
+/// mid-session is still picked up within a couple of seconds.
+#[cfg(target_os = "linux")]
+const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Ceiling on a single D-Bus method call made while probing for or
+/// registering with a watcher (`linux::connect`, `tests::
+/// watcher_is_reachable`). `zbus::blocking::Connection::session()`'s
+/// shortcut constructor leaves this unbounded, so a stale or
+/// half-alive bus address (a socket that accepts a connection but
+/// never answers, which this module has hit on sandboxed/containerized
+/// hosts) would otherwise hang the caller indefinitely rather than
+/// reporting the honest `false` this module promises. Short enough that
+/// a hung peer doesn't visibly stall `GtkBackend::tray`/the test suite,
+/// long enough that it doesn't misreport a merely slow — but live —
+/// watcher as absent.
+#[cfg(target_os = "linux")]
+const DBUS_CALL_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Per-[`super::backend::GtkBackend`] tray state. `connection` is
 /// `None` until [`Self::ensure_connected`] first succeeds; on Linux
@@ -119,6 +180,13 @@ impl TrayShared {
 pub(crate) struct GtkTrayState {
     #[cfg(target_os = "linux")]
     connection: Option<zbus::blocking::Connection>,
+    /// When the last *failed* connection attempt happened, so
+    /// [`Self::ensure_connected`] can throttle retries to
+    /// [`RECONNECT_INTERVAL`] instead of hitting the session bus on
+    /// every call. `None` means "never attempted, or last attempt
+    /// succeeded" — there is nothing to throttle in either case.
+    #[cfg(target_os = "linux")]
+    last_failed_attempt: Option<Instant>,
     shared: Arc<Mutex<TrayShared>>,
 }
 
@@ -126,8 +194,10 @@ impl GtkTrayState {
     /// Attempts to reach the session bus and register a
     /// `StatusNotifierItem`/`dbusmenu` pair with whatever watcher is
     /// running, if not already connected. Returns whether a tray is
-    /// usable right now. Never caches a failure — see this module's
-    /// doc for why a later call after this one may still succeed.
+    /// usable right now. Never caches a failure *permanently* — see
+    /// this module's doc for why a later call after this one may still
+    /// succeed — but does throttle how often a failure is retried; see
+    /// [`RECONNECT_INTERVAL`].
     pub(crate) fn ensure_connected(
         &mut self,
         waker: Arc<dyn Fn(UserPayload) + Send + Sync>,
@@ -137,12 +207,21 @@ impl GtkTrayState {
             if self.connection.is_some() {
                 return true;
             }
+            if let Some(last) = self.last_failed_attempt {
+                if last.elapsed() < RECONNECT_INTERVAL {
+                    return false;
+                }
+            }
             match connect(Arc::clone(&self.shared), waker) {
                 Ok(conn) => {
                     self.connection = Some(conn);
+                    self.last_failed_attempt = None;
                     true
                 }
-                Err(_) => false,
+                Err(_) => {
+                    self.last_failed_attempt = Some(Instant::now());
+                    false
+                }
             }
         }
         #[cfg(not(target_os = "linux"))]
@@ -157,29 +236,41 @@ impl GtkTrayState {
         let pixmap = decode_icon(&icon).ok_or_else(|| BackendError::PlatformFailure {
             context: "GTK tray: failed to decode icon".to_string(),
         })?;
-        let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        shared.icon = vec![pixmap];
+        {
+            let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+            shared.icon = vec![pixmap];
+        }
+        self.emit_item_signal("NewIcon");
         Ok(())
     }
 
     pub(crate) fn set_tooltip(&mut self, tooltip: &str) -> ServiceResult<()> {
         self.require_connected()?;
-        let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        shared.tooltip = tooltip.to_string();
+        {
+            let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+            shared.tooltip = tooltip.to_string();
+        }
+        self.emit_item_signal("NewToolTip");
+        self.emit_item_signal("NewTitle");
         Ok(())
     }
 
     pub(crate) fn set_menu(&mut self, menu: &ContextMenu) -> ServiceResult<()> {
         self.require_connected()?;
-        let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        // An empty `ContextMenu` detaches, same as every other
-        // `TrayService::set_menu` implementation — see that trait's
-        // own doc.
-        shared.menu = if menu.items.is_empty() {
-            None
-        } else {
-            Some(menu.clone())
+        let revision = {
+            let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+            // An empty `ContextMenu` detaches, same as every other
+            // `TrayService::set_menu` implementation — see that trait's
+            // own doc.
+            shared.menu = if menu.items.is_empty() {
+                None
+            } else {
+                Some(menu.clone())
+            };
+            shared.menu_revision = shared.menu_revision.wrapping_add(1);
+            shared.menu_revision
         };
+        self.emit_layout_updated(revision);
         Ok(())
     }
 
@@ -192,21 +283,64 @@ impl GtkTrayState {
         }
         Err(BackendError::Unsupported)
     }
+
+    /// Emits a no-argument `org.kde.StatusNotifierItem` change signal
+    /// (`NewIcon`, `NewToolTip`, `NewTitle`, ...) telling a listening
+    /// host to re-fetch the property it names, rather than relying on
+    /// it polling or happening to `GetAll` again. Best-effort: a failed
+    /// emit (connection dropped mid-call) is not surfaced as an error
+    /// since the property itself is already updated and the next
+    /// successful `Get`/`GetAll` will see it regardless.
+    #[cfg(target_os = "linux")]
+    fn emit_item_signal(&self, member: &str) {
+        if let Some(connection) = &self.connection {
+            let _ = connection.emit_signal(
+                Option::<zbus::names::BusName<'_>>::None,
+                "/StatusNotifierItem",
+                "org.kde.StatusNotifierItem",
+                member,
+                &(),
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn emit_item_signal(&self, _member: &str) {}
+
+    /// Emits `com.canonical.dbusmenu`'s `LayoutUpdated(revision, parent)`
+    /// for the root menu (`parent == 0`) so a host that cached the
+    /// layout from an earlier `GetLayout` knows to call it again.
+    #[cfg(target_os = "linux")]
+    fn emit_layout_updated(&self, revision: u32) {
+        if let Some(connection) = &self.connection {
+            let _ = connection.emit_signal(
+                Option::<zbus::names::BusName<'_>>::None,
+                "/MenuBar",
+                "com.canonical.dbusmenu",
+                "LayoutUpdated",
+                &(revision, 0_i32),
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn emit_layout_updated(&self, _revision: u32) {}
 }
 
 /// Flattens an `ImageSource` to a single ARGB32 pixmap for
-/// `IconPixmap`. Best-effort: a `GtkTrayState` with no decodable icon
-/// simply advertises an empty pixmap list rather than failing the
-/// whole tray — most SNI hosts fall back to `IconName`/a placeholder
-/// when `IconPixmap` is empty.
+/// `IconPixmap`. Returns `None` on anything that fails to decode — a
+/// missing path, unreadable file, or a format `gdk-pixbuf` can't parse
+/// — which [`GtkTrayState::set_icon`] turns into
+/// [`BackendError::PlatformFailure`] rather than silently leaving the
+/// icon blank, matching `macos::tray::set_icon`/`win::tray::set_icon`
+/// and [`crate::backend::TrayService::set_icon`]'s own doc.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn decode_icon(source: &ImageSource) -> Option<(i32, i32, Vec<u8>)> {
     let bytes = match source {
         ImageSource::Bytes(bytes) => bytes.clone(),
         ImageSource::Path(path) => std::fs::read(path).ok()?,
     };
-    let image = image_crate_decode(&bytes)?;
-    Some(image)
+    decode_argb32(&bytes)
 }
 
 /// Decodes raw image bytes into `IconPixmap`'s wire shape without a
@@ -215,7 +349,7 @@ fn decode_icon(source: &ImageSource) -> Option<(i32, i32, Vec<u8>)> {
 /// primitive), so this reuses that rather than adding a second decode
 /// path for the one pixel format this module needs.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn image_crate_decode(bytes: &[u8]) -> Option<(i32, i32, Vec<u8>)> {
+fn decode_argb32(bytes: &[u8]) -> Option<(i32, i32, Vec<u8>)> {
     #[cfg(target_os = "linux")]
     {
         use gtk4::gdk_pixbuf::Pixbuf;
@@ -228,14 +362,22 @@ fn image_crate_decode(bytes: &[u8]) -> Option<(i32, i32, Vec<u8>)> {
         let width = pixbuf.width();
         let height = pixbuf.height();
         let has_alpha = pixbuf.has_alpha();
-        let n_channels = if has_alpha { 4 } else { 3 };
+        let n_channels: i64 = if has_alpha { 4 } else { 3 };
         let rowstride = pixbuf.rowstride();
         let src = pixbuf.pixel_bytes()?;
-        let mut out = Vec::with_capacity((width * height * 4) as usize);
-        for y in 0..height {
-            let row_start = (y * rowstride) as usize;
-            for x in 0..width {
-                let px = row_start + (x * n_channels) as usize;
+        // Widen every dimension to `i64` before multiplying: GTK's own
+        // `i32` width/height/rowstride can overflow a 32-bit multiply on
+        // a sufficiently large decoded pixbuf, which panics in debug
+        // builds instead of just wrapping.
+        let width_i64 = i64::from(width);
+        let height_i64 = i64::from(height);
+        let rowstride_i64 = i64::from(rowstride);
+        let capacity = usize::try_from(width_i64 * height_i64 * 4).unwrap_or(0);
+        let mut out = Vec::with_capacity(capacity);
+        for y in 0..height_i64 {
+            let row_start = usize::try_from(y * rowstride_i64).ok()?;
+            for x in 0..width_i64 {
+                let px = row_start + usize::try_from(x * n_channels).ok()?;
                 let (r, g, b, a) = if has_alpha {
                     (src[px], src[px + 1], src[px + 2], src[px + 3])
                 } else {
@@ -360,11 +502,17 @@ mod linux {
             )
         }
 
+        /// Always `/MenuBar`, whether or not a menu has been set yet.
+        /// SNI has no `NewMenu` signal, so a host that read this
+        /// property once at registration — before the first
+        /// `TrayService::set_menu` call lands — would otherwise never
+        /// learn a menu became available later; [`DbusMenuIface`] is
+        /// already registered at that path unconditionally (see
+        /// [`connect`]) and simply reports an empty `GetLayout` until a
+        /// menu is set, so advertising the path early costs nothing.
         #[zbus(property)]
         fn menu(&self) -> zbus::zvariant::OwnedObjectPath {
-            let shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-            let path = if shared.has_menu() { "/MenuBar" } else { "/" };
-            zbus::zvariant::ObjectPath::try_from(path)
+            zbus::zvariant::ObjectPath::try_from("/MenuBar")
                 .expect("static path is valid")
                 .into()
         }
@@ -443,6 +591,12 @@ mod linux {
             Vec::new()
         }
 
+        /// Ignores `parent_id`/`recursion_depth` and always returns the
+        /// whole flattened tree rooted at `0`: deliberate, since every
+        /// real dbusmenu host calls `GetLayout(0, -1, [])` on first
+        /// fetch and this module never advertises more than the one
+        /// level [`flatten_items`] already expands, so there is no
+        /// partial subtree a host could usefully ask for instead.
         fn get_layout(
             &self,
             parent_id: i32,
@@ -472,7 +626,8 @@ mod linux {
                 "children-display".to_string(),
                 OwnedValue::try_from(Value::from("submenu")).expect("string converts"),
             )]);
-            Ok((0, (0, root_props, children?)))
+            let revision = shared.menu_revision;
+            Ok((revision, (0, root_props, children?)))
         }
 
         fn get_group_properties(
@@ -520,6 +675,15 @@ mod linux {
         }
     }
 
+    /// Builds one dbusmenu row's property map. A `submenu` parent row —
+    /// already flattened in place by [`flatten_items`], immediately
+    /// followed by its own children — is reported `enabled: false`
+    /// regardless of `item.disabled`: [`flatten_items`] gives it no
+    /// `about_to_show`/nested-`Variant` children of its own to open, so
+    /// leaving it activatable would fire
+    /// `UiEvent::ContextMenuItemActivated` for a row that is really just
+    /// a group heading, diverging from `macos::tray`/`win::tray` where a
+    /// submenu parent is never itself clickable.
     fn item_properties(item: &ContextMenuItem) -> HashMap<String, OwnedValue> {
         let mut props = HashMap::new();
         let kind = if item.is_separator() {
@@ -536,9 +700,10 @@ mod linux {
                 "label".to_string(),
                 OwnedValue::try_from(Value::from(plain_label(item))).expect("string converts"),
             );
+            let enabled = !item.disabled && item.submenu.is_none();
             props.insert(
                 "enabled".to_string(),
-                OwnedValue::try_from(Value::from(!item.disabled)).expect("bool converts"),
+                OwnedValue::try_from(Value::from(enabled)).expect("bool converts"),
             );
             if let Some(checked) = item.checked {
                 props.insert(
@@ -557,14 +722,18 @@ mod linux {
 
     /// Registers both interfaces on a fresh session-bus connection and
     /// asks the watcher to pick the item up. Any failure here — no
-    /// session bus, no watcher, registration refused — bubbles up as
-    /// `Err`, which [`super::GtkTrayState::ensure_connected`] turns into
-    /// an honest `false` rather than a half-registered connection.
+    /// session bus, no watcher, registration refused, or a method call
+    /// outliving [`super::DBUS_CALL_TIMEOUT`] — bubbles up as `Err`,
+    /// which [`super::GtkTrayState::ensure_connected`] turns into an
+    /// honest `false` rather than a half-registered connection or an
+    /// indefinite hang.
     pub(super) fn connect(
         shared: Arc<Mutex<TrayShared>>,
         waker: Arc<dyn Fn(UserPayload) + Send + Sync>,
     ) -> zbus::Result<Connection> {
-        let connection = Connection::session()?;
+        let connection = zbus::blocking::connection::Builder::session()?
+            .method_timeout(super::DBUS_CALL_TIMEOUT)
+            .build()?;
         connection.object_server().at(
             "/StatusNotifierItem",
             StatusNotifierItemIface {
@@ -592,13 +761,155 @@ mod linux {
         watcher.call_method("RegisterStatusNotifierItem", &(unique_name,))?;
         Ok(connection)
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::primitives::context_menu::ContextMenuPlacement;
+        use crate::types::StyledText;
+        use crate::ContextMenu;
+
+        fn item(label: &str) -> ContextMenuItem {
+            ContextMenuItem {
+                id: Some(WidgetId::new(label)),
+                label: StyledText::plain(label),
+                detail: None,
+                disabled: false,
+                key_equivalent: None,
+                checked: None,
+                submenu: None,
+            }
+        }
+
+        fn string_prop(props: &HashMap<String, OwnedValue>, key: &str) -> String {
+            String::try_from(props.get(key).expect("property present").clone())
+                .expect("string-valued property")
+        }
+
+        fn bool_prop(props: &HashMap<String, OwnedValue>, key: &str) -> bool {
+            bool::try_from(props.get(key).expect("property present").clone())
+                .expect("bool-valued property")
+        }
+
+        #[test]
+        fn item_properties_reports_separator_without_label_or_enabled() {
+            let separator = ContextMenuItem {
+                id: None,
+                ..item("unused-label")
+            };
+            assert!(separator.is_separator());
+
+            let props = item_properties(&separator);
+
+            assert_eq!(string_prop(&props, "type"), "separator");
+            assert!(!props.contains_key("label"));
+            assert!(!props.contains_key("enabled"));
+        }
+
+        #[test]
+        fn item_properties_reports_plain_item_label_and_enabled_state() {
+            let enabled = item("Copy");
+            let props = item_properties(&enabled);
+            assert_eq!(string_prop(&props, "type"), "standard");
+            assert_eq!(string_prop(&props, "label"), "Copy");
+            assert!(bool_prop(&props, "enabled"));
+
+            let mut disabled = item("Paste");
+            disabled.disabled = true;
+            let props = item_properties(&disabled);
+            assert!(!bool_prop(&props, "enabled"));
+
+            let mut checked = item("Word Wrap");
+            checked.checked = Some(true);
+            let props = item_properties(&checked);
+            assert_eq!(string_prop(&props, "toggle-type"), "checkmark");
+        }
+
+        /// Directly covers the doc rationale on [`item_properties`]: a
+        /// submenu-parent row reports `enabled: false` even when
+        /// `item.disabled` is `false`, matching that it is a group
+        /// heading rather than something a dbusmenu host should treat
+        /// as clickable.
+        #[test]
+        fn item_properties_disables_a_submenu_parent_row_regardless_of_disabled_flag() {
+            let mut parent = item("More");
+            parent.disabled = false;
+            parent.submenu = Some(vec![item("child")]);
+
+            let props = item_properties(&parent);
+
+            assert!(!bool_prop(&props, "enabled"));
+        }
+
+        fn shared_with_menu(menu: Option<ContextMenu>) -> Arc<Mutex<TrayShared>> {
+            let mut shared = TrayShared::default();
+            shared.menu = menu;
+            Arc::new(Mutex::new(shared))
+        }
+
+        fn menu_bar(items: Vec<ContextMenuItem>) -> ContextMenu {
+            ContextMenu {
+                id: WidgetId::new("test:tray-menu"),
+                items,
+                selected_idx: usize::MAX,
+                bg: None,
+                placement: ContextMenuPlacement::AnchorPoint,
+            }
+        }
+
+        #[test]
+        fn get_layout_reflects_the_current_menu_and_revision() {
+            let shared = shared_with_menu(Some(menu_bar(vec![item("one"), item("two")])));
+            {
+                let mut locked = shared.lock().unwrap_or_else(|e| e.into_inner());
+                locked.menu_revision = 7;
+            }
+            let iface = DbusMenuIface {
+                shared: Arc::clone(&shared),
+                waker: Arc::new(|_| {}),
+            };
+
+            let (revision, (root_id, _root_props, children)) = iface
+                .get_layout(0, -1, Vec::new())
+                .expect("get_layout succeeds");
+
+            assert_eq!(revision, 7);
+            assert_eq!(root_id, 0);
+            assert_eq!(children.len(), 2);
+        }
+
+        #[test]
+        fn get_layout_is_empty_when_no_menu_is_set() {
+            let shared = shared_with_menu(None);
+            let iface = DbusMenuIface {
+                shared,
+                waker: Arc::new(|_| {}),
+            };
+
+            let (_revision, (_root_id, _root_props, children)) = iface
+                .get_layout(0, -1, Vec::new())
+                .expect("get_layout succeeds");
+
+            assert!(children.is_empty());
+        }
+
+        #[test]
+        fn status_notifier_item_menu_property_is_always_menu_bar() {
+            let iface = StatusNotifierItemIface {
+                shared: shared_with_menu(None),
+                waker: Arc::new(|_| {}),
+            };
+
+            assert_eq!(iface.menu().as_str(), "/MenuBar");
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
 use linux::connect;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::types::StyledText;
 
@@ -679,12 +990,19 @@ mod tests {
     /// `org.kde.StatusNotifierWatcher`, independent of
     /// [`GtkTrayState::ensure_connected`]. Used as ground truth so the
     /// tests below hold on both a bare host with no watcher (a typical CI
-    /// runner) and a full desktop session with one running.
+    /// runner) and a full desktop session with one running. `pub(crate)`
+    /// so `gtk::backend`'s own tests reuse this instead of keeping a
+    /// second copy.
     #[cfg(target_os = "linux")]
-    fn watcher_is_reachable() -> bool {
-        use zbus::blocking::{fdo::DBusProxy, Connection};
+    pub(crate) fn watcher_is_reachable() -> bool {
+        use zbus::blocking::fdo::DBusProxy;
 
-        let Ok(conn) = Connection::session() else {
+        // Bounded the same way `linux::connect` is — see
+        // `DBUS_CALL_TIMEOUT`'s doc — so this probe can't itself hang on
+        // a stale bus address and make the test it backs flaky.
+        let Ok(conn) = zbus::blocking::connection::Builder::session()
+            .and_then(|b| b.method_timeout(DBUS_CALL_TIMEOUT).build())
+        else {
             return false;
         };
         let Ok(proxy) = DBusProxy::new(&conn) else {
@@ -725,16 +1043,19 @@ mod tests {
     #[test]
     fn ensure_connected_never_regresses_once_established() {
         // Once a connection is established it is cached: a second call
-        // must not drop back to `false` on its own.
+        // must not drop back to `false` on its own. Asserting equality
+        // rather than a one-sided implication also keeps this test
+        // meaningful on a CI runner with no watcher reachable at all
+        // (`first == false`): repeated calls there must stay `false`
+        // too, rather than this test passing vacuously in exactly the
+        // environment it most needs to run in.
         let mut state = GtkTrayState::default();
         let waker: Arc<dyn Fn(UserPayload) + Send + Sync> = Arc::new(|_| {});
         let first = state.ensure_connected(Arc::clone(&waker));
         let second = state.ensure_connected(waker);
-        if first {
-            assert!(
-                second,
-                "a once-established tray connection must stay connected"
-            );
-        }
+        assert_eq!(
+            second, first,
+            "ensure_connected must be stable across repeated calls when nothing in the environment changed"
+        );
     }
 }
