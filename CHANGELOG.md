@@ -86,10 +86,12 @@ only a push to `main` runs this workflow.
   as a generic process name. The call initializes COM
   (`ensure_com_initialized`) before activating the WinRT toast types, and
   retains the live `ToastNotifier`/`ToastNotification` pair in
-  `WinPlatformServices` for as long as Windows may still fire callbacks on
-  it, pruning the entry once `Dismissed`/`Failed` fires or a same-`tag` toast
-  replaces it. Clicking the toast body or an action button now fires
-  `UiEvent::NotificationActivated` through the existing event loop
+  `WinPlatformServices` for as long as the toast can still be activated —
+  including the ordinary popup timeout, which only moves it into Action
+  Center rather than ending it — pruning the entry once the user acts on
+  it, dismisses it outright, `Failed` fires, a same-`tag` toast replaces
+  it, or `Show` itself errors. Clicking the toast body or an action button
+  now fires `UiEvent::NotificationActivated` through the existing event loop
   (`ToastNotification::Activated` posts `WM_QUADRAUI_USER_EVENT` to the
   window, which drains `drain_notification_events()`), matching the GTK
   backend's existing click-through behavior. When WinRT/AUMID registration

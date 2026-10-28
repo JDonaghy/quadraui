@@ -38,9 +38,9 @@
 //!   `ImageSource::Bytes` doesn't carry) and is dropped, same as
 //!   `macos::services`'s `osascript` path. Clicking the toast or one of
 //!   its action buttons fires the WinRT `Activated` event on an arbitrary
-//!   COM thread; the handler decodes
-//!   the clicked action from the toast XML's per-button `arguments` and
-//!   pushes a [`crate::event::UiEvent::NotificationActivated`] onto
+//!   COM thread; the handler decodes the clicked action from the toast
+//!   XML's per-button `arguments` and pushes a
+//!   [`crate::event::UiEvent::NotificationActivated`] onto
 //!   [`WinPlatformServices`]'s own notification queue, then wakes the UI
 //!   thread with the same `WM_QUADRAUI_USER_EVENT` message
 //!   [`crate::backend::Backend::waker`] uses — `win::run`'s `wndproc`
@@ -204,8 +204,8 @@ use windows::UI::ViewManagement::{AccessibilitySettings, UIColorType, UISettings
 // argument casts to for the clicked action's `arguments` string.
 #[cfg(target_os = "windows")]
 use windows::UI::Notifications::{
-    ToastActivatedEventArgs, ToastDismissedEventArgs, ToastFailedEventArgs, ToastNotification,
-    ToastNotificationManager, ToastNotifier,
+    ToastActivatedEventArgs, ToastDismissalReason, ToastDismissedEventArgs, ToastFailedEventArgs,
+    ToastNotification, ToastNotificationManager, ToastNotifier,
 };
 
 /// System clipboard via raw Win32 calls. Stateless — every
@@ -355,11 +355,17 @@ pub struct WinPlatformServices {
     /// `ToastNotifier`/`ToastNotification` are ordinary refcounted COM
     /// wrappers: dropping them unregisters the `Activated`/`Dismissed`/
     /// `Failed` handlers that were just wired up, which would silently
-    /// break click-through the instant `send_notification` returns. Each
-    /// entry is removed by its own `Dismissed`/`Failed` handler once the
-    /// toast leaves the screen, and any earlier entry sharing the new
-    /// toast's `tag` is pruned before the new one is inserted — same
-    /// "replace, don't stack" rule `Tag` itself gives Action Center.
+    /// break click-through the instant `send_notification` returns. An
+    /// entry is removed once the toast can no longer be activated: by the
+    /// `Activated` handler itself once the user has acted on it, by the
+    /// `Dismissed` handler when the dismissal reason is `UserCanceled` or
+    /// `ApplicationHidden` (but *not* `TimedOut` — that just means the
+    /// toast moved from the popup banner into Action Center, where it is
+    /// still live and awaiting activation), by the `Failed` handler, or
+    /// immediately if `Show` itself errors synchronously. Any earlier
+    /// entry sharing the new toast's `tag` is pruned before the new one is
+    /// inserted — same "replace, don't stack" rule `Tag` itself gives
+    /// Action Center.
     #[cfg(target_os = "windows")]
     active_toasts: Arc<Mutex<HashMap<u64, (Option<String>, ToastNotifier, ToastNotification)>>>,
 }
@@ -1776,6 +1782,7 @@ fn xml_escape(s: &str) -> String {
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
             '\u{9}' | '\u{a}' | '\u{d}' => out.push(c),
+            '\u{fffe}' | '\u{ffff}' => {}
             c if c.is_control() => {}
             _ => out.push(c),
         }
@@ -1822,7 +1829,7 @@ fn build_toast_xml(n: &Notification) -> String {
         ""
     };
     format!(
-        "<toast launch=\"\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual>{actions_block}{audio_block}</toast>",
+        "<toast launch=\"\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual>{audio_block}{actions_block}</toast>",
         xml_escape(&n.title),
         xml_escape(&n.body),
     )
@@ -1852,14 +1859,15 @@ const TOAST_TAG_MAX_LEN: usize = 64;
 /// arbitrary COM thread, not the window's own.
 ///
 /// The notifier and toast are inserted into `active_toasts` *before*
-/// `Show` is called, and removed again by this toast's own `Dismissed`/
-/// `Failed` handler once it leaves the screen — see that field's own doc
-/// for why: dropping either COM object immediately unregisters the
-/// `Activated` handler just wired up below, which would otherwise break
-/// click-through the instant this function returns. Any earlier entry
-/// sharing the new toast's `tag` is pruned first, mirroring the same
-/// "replace, don't stack" behavior Windows itself gives `Tag` in Action
-/// Center.
+/// `Show` is called, and removed again once the toast can no longer be
+/// activated — see that field's own doc for the exact rule (it survives
+/// an ordinary popup timeout, since the toast is then still live in
+/// Action Center). Dropping either COM object immediately unregisters
+/// the `Activated` handler just wired up below, which would otherwise
+/// break click-through the instant this function returns. Any earlier
+/// entry sharing the new toast's `tag` is pruned first, mirroring the
+/// same "replace, don't stack" behavior Windows itself gives `Tag` in
+/// Action Center.
 ///
 /// Errors (the caller falls back to [`win_send_notification_balloon`] on
 /// any of them) if WinRT toast notifications aren't available on this
@@ -1883,11 +1891,15 @@ fn win_send_notification_toast(
     doc.LoadXml(&HSTRING::from(build_toast_xml(n)))?;
     let toast = ToastNotification::CreateToastNotification(&doc)?;
 
-    let tag = n
-        .tag()
-        .map(|t| t.chars().take(TOAST_TAG_MAX_LEN).collect::<String>());
+    // `tag` is what `UiEvent::NotificationActivated` must report and what
+    // the same-tag `retain` below matches against — both documented to
+    // round-trip the caller's `Notification::tag()` unchanged. Only the
+    // `SetTag` call itself needs the length-capped copy, since Windows
+    // errors outright above `TOAST_TAG_MAX_LEN`.
+    let tag = n.tag().map(str::to_string);
     if let Some(tag) = &tag {
-        toast.SetTag(&HSTRING::from(tag.as_str()))?;
+        let truncated_tag = tag.chars().take(TOAST_TAG_MAX_LEN).collect::<String>();
+        toast.SetTag(&HSTRING::from(truncated_tag.as_str()))?;
     }
 
     let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(aumid))?;
@@ -1898,9 +1910,18 @@ fn win_send_notification_toast(
     let hwnd_value = owner.map(|h| h.0 as isize);
 
     let activated_tag = tag.clone();
+    let activated_toasts = Arc::clone(&active_toasts);
     let activated_handler =
         TypedEventHandler::<ToastNotification, windows::core::IInspectable>::new(
             move |_sender, args| -> windows::core::Result<()> {
+                // The user has acted on this toast, so it is no longer
+                // live in Action Center either way — safe to release the
+                // retained `ToastNotifier`/`ToastNotification` pair now.
+                activated_toasts
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&id);
+
                 let Some(args) = args.as_ref() else {
                     return Ok(());
                 };
@@ -1939,17 +1960,31 @@ fn win_send_notification_toast(
         );
     toast.Activated(&activated_handler)?;
 
-    // `Dismissed`/`Failed` are this toast's only other lifecycle events;
-    // either one means it has finished showing, so `active_toasts`'
-    // retained `ToastNotifier`/`ToastNotification` pair for `id` can be
-    // dropped.
+    // `Dismissed` fires whenever the toast *leaves the screen*, which
+    // includes the ordinary popup timeout (`ToastDismissalReason::
+    // TimedOut`) as well as the user explicitly closing it
+    // (`UserCanceled`) or the notification platform hiding it
+    // (`ApplicationHidden`). A `TimedOut` dismissal just means the toast
+    // has moved from the popup banner into Action Center — it is still
+    // live there, waiting for a click, so the retained pair must survive
+    // it. Only `UserCanceled`/`ApplicationHidden` mean the toast is truly
+    // gone with no further chance of activation; those are the only
+    // reasons this handler prunes `active_toasts`. The remaining case —
+    // the user activating the toast — is pruned by the `Activated`
+    // handler above instead, so every live toast still ends up bounded.
     let dismissed_toasts = Arc::clone(&active_toasts);
     let dismissed_handler = TypedEventHandler::<ToastNotification, ToastDismissedEventArgs>::new(
-        move |_sender, _args| -> windows::core::Result<()> {
-            dismissed_toasts
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&id);
+        move |_sender, args| -> windows::core::Result<()> {
+            let timed_out = args
+                .as_ref()
+                .and_then(|args| args.Reason().ok())
+                .is_some_and(|reason| reason == ToastDismissalReason::TimedOut);
+            if !timed_out {
+                dismissed_toasts
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&id);
+            }
             Ok(())
         },
     );
@@ -1977,7 +2012,17 @@ fn win_send_notification_toast(
         toasts.insert(id, (tag.clone(), notifier.clone(), toast.clone()));
     }
 
-    notifier.Show(&toast)?;
+    // A toast that never shows will never fire `Dismissed`/`Activated`/
+    // `Failed` either, so on a synchronous `Show` error the entry just
+    // inserted above has to be removed here instead — otherwise it (and
+    // the two COM objects it holds) leaks for the rest of the process.
+    if let Err(e) = notifier.Show(&toast) {
+        active_toasts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&id);
+        return Err(e);
+    }
     Ok(())
 }
 
