@@ -4376,6 +4376,33 @@ pub trait PlatformServices {
         &STORE
     }
 
+    /// A standard, per-app filesystem location — Electron's
+    /// `app.getPath` equivalent. See [`AppPathKind`] for the full set and
+    /// [`crate::paths`]'s module doc for how `UserData`/`AppConfig`/
+    /// `AppCache`/`Logs` are scoped by the app identifier
+    /// [`crate::paths::set_app_identifier`] installs.
+    ///
+    /// This one is **backend-independent**, the same way
+    /// [`Self::secret_store`] is: it's backed by the cross-platform
+    /// `directories` crate plus `std::env::temp_dir`, not by a
+    /// per-backend native implementation, so it needs no override in
+    /// `tui`/`gtk`/`macos`/`win::services` — the same default body serves
+    /// all four. Resolving these needs only a filesystem and environment
+    /// variables, no window, no display server, no desktop session, so
+    /// this is **full support on TUI**, not a degrade.
+    ///
+    /// Default: resolves via [`crate::paths::resolve`] when this crate
+    /// was built with any of the `tui`/`gtk`/`macos`/`win` features (the
+    /// same four that already pull in `keyring` for
+    /// [`Self::secret_store`] — see that dependency's Cargo.toml comment);
+    /// `Err(BackendError::Unsupported)` for every kind when none of them
+    /// are enabled (a bare `cargo check -p quadraui` with no features).
+    /// No in-tree backend overrides this — there is nothing
+    /// backend-specific left to override.
+    fn app_path(&self, kind: crate::paths::AppPathKind) -> ServiceResult<std::path::PathBuf> {
+        crate::paths::resolve(kind)
+    }
+
     /// Enumerate every connected display — bounds, usable work area, DPI
     /// scale, and which one is primary. Needed to restore saved window
     /// bounds after a monitor change, place a new window sensibly, or

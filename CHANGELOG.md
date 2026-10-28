@@ -60,6 +60,17 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `PlatformServices::app_path` resolves standard, per-app filesystem
+  locations — Electron's `app.getPath` parity target (`AppPathKind::
+  UserData`/`AppConfig`/`AppCache`/`Logs`/`Temp`/`Downloads`/`Documents`/
+  `Home`), backed by the `directories` crate and new `quadraui::paths`
+  module. `UserData`/`AppConfig`/`AppCache`/`Logs` are scoped by an app
+  identifier (`paths::set_app_identifier`/`clear_app_identifier`, defaulting
+  to the running binary's name). One cross-platform implementation serves
+  every backend, including TUI, with no degrade. Exposed over the FFI
+  surface as `qui_app_path`/`qui_set_app_identifier` plus the `QUI_PATH_*`
+  constants and a new `QUI_ERR_UNSUPPORTED` error code
+  (`quadraui-ffi/src/lib.rs`).
 - Windows `Clipboard` implements `read_image`/`write_image`/`write_html`
   (`win::services`), matching the macOS/GTK backends instead of returning
   `Unsupported`. Images round-trip through `CF_DIBV5` (classic `CF_DIB` as a
