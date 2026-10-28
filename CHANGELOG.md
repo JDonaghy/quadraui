@@ -86,20 +86,33 @@ only a push to `main` runs this workflow.
   colour-table masks of a 40-byte `BITMAPINFOHEADER`.
 - macOS `PlatformServices` sends real system notifications through
   `UNUserNotificationCenter` instead of the earlier delegate-only stub.
-  Icon, action buttons and "silent" (no system sound) all forward to the
-  framework; a notification carrying a `tag` is delivered under that tag as
-  its `UNNotificationRequest` identifier, so a second send with the same
-  tag replaces the first instead of stacking a duplicate banner, while an
-  untagged notification gets a synthetic per-call identifier. Clicking the
-  body, clicking an action button, or dismissing all surface as the
-  existing `UiEvent::NotificationActivated { tag, action }`, with `action`
-  set to the clicked button's `WidgetId` (`None` for the default
+  Action buttons and "silent" (no system sound) forward to the framework,
+  and `Notification::with_icon` becomes a `UNNotificationAttachment`: the
+  image is copied to a temp file whose extension matches the detected
+  encoding (PNG/JPEG/GIF/TIFF/BMP/WebP/SVG), because the framework
+  attaches *files* and takes ownership of the one it is handed. A
+  notification carrying a `tag` is delivered under that tag as its
+  `UNNotificationRequest` identifier, so a second send with the same tag
+  replaces the first instead of stacking a duplicate banner, while an
+  untagged notification gets a synthetic per-call identifier. Clicking
+  the body, clicking an action button, or dismissing the banner all
+  surface as the existing `UiEvent::NotificationActivated { tag, action }`
+  (dismissal is delivered because the generated category opts into
+  `UNNotificationCategoryOptions::CustomDismissAction`), with `action` set
+  to the clicked button's `WidgetId` (`None` for the default
   click-to-open and explicit dismiss identifiers). The backend requests
-  notification authorization once per process via `UNUserNotificationCenter`'s
-  delegate, and the delegate hop is bounced back onto the main thread
-  through the same GCD `DispatchQueue::main().exec_async` pattern
-  `MacBackend::waker` already uses, since AppKit can invoke the delegate on
-  an arbitrary thread.
+  notification authorization once per process via
+  `requestAuthorizationWithOptions:completionHandler:` and re-dispatches
+  that first request from the completion block, so the very first
+  notification of a fresh install is not dropped while the prompt is up.
+  The delegate is installed when the backend's notification sink is set
+  (not lazily on first send, so a cold-launch activation is not missed)
+  and its callback is bounced back onto the main thread through the same
+  GCD `DispatchQueue::main().exec_async` pattern `MacBackend::waker`
+  already uses, since AppKit can invoke the delegate on an arbitrary
+  thread. `Notification::urgent` has no macOS mapping: the AppKit
+  analogue (`setInterruptionLevel`) is macOS 12+ and objc2 performs no
+  runtime availability check.
 - GTK backend implements `TrayService` (`Backend::tray`, `backend_caps().tray`
   now `true`) via the `org.kde.StatusNotifierItem` / `com.canonical.dbusmenu`
   D-Bus protocol (`gtk::tray`, behind the existing `gtk` feature's new

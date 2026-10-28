@@ -680,6 +680,11 @@ objc2-user-notifications = { version = "0.3", optional = true, default-features 
     "UNNotificationRequest",
     "UNNotificationContent",
     "UNNotificationAction",
+    # `Notification::with_icon`: an icon reaches a `UNUserNotificationCenter`
+    # alert only as a `UNNotificationAttachment`, which is built from a file
+    # URL (`attachmentWithIdentifier:URL:options:error:`) — hence the temp-file
+    # hop in `MacPlatformServices::send_notification_via_notification_center`.
+    "UNNotificationAttachment",
     "UNNotificationCategory",
     "UNNotificationSound",
     "UNNotificationResponse",

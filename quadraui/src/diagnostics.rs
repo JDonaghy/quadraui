@@ -93,7 +93,10 @@ pub fn clear_sink() {
 /// Library-internal call sites only (not `pub`): the small, named set of
 /// places in modal-paint tracking, vt100 panic recovery, the GTK/macOS
 /// siblings of the same modal-paint check, `win/backend.rs`'s `end_frame`
-/// reporting a dropped render target, `desktop.rs`'s
+/// reporting a dropped render target, `macos/services.rs`'s
+/// `UNUserNotificationCenter` path (where a rejected request, a refused
+/// authorization, or an unreadable icon attachment is otherwise
+/// completely silent), `desktop.rs`'s
 /// `report_caught_panic_once` (the dedup wrapper `macos::run`/`win::run`
 /// call after a `catch_unwind` guard catches a panic at their C-ABI
 /// entry points), and `tui/services.rs`'s `TuiUpdateService` — the
@@ -106,9 +109,10 @@ pub fn clear_sink() {
 /// one.
 ///
 /// Every one of those call sites lives in a feature-gated module —
-/// `tui/backend.rs`, `gtk/backend.rs`, `macos/backend.rs` (itself
-/// additionally `target_os = "macos"`-gated in `lib.rs`, so on Linux the
-/// `macos` feature compiles none of it), `win/backend.rs`'s `end_frame`
+/// `tui/backend.rs`, `gtk/backend.rs`, `macos/backend.rs` and
+/// `macos/services.rs` (both additionally `target_os = "macos"`-gated in
+/// `lib.rs`, so on Linux the `macos` feature compiles none of them),
+/// `win/backend.rs`'s `end_frame`
 /// (itself additionally `target_os = "windows"`-gated, so on Linux the
 /// `win` feature compiles none of it either — mirrors the `macos` case
 /// exactly), `desktop.rs`'s `report_caught_panic_once` (live under plain
