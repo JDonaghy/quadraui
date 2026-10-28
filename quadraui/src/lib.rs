@@ -336,6 +336,12 @@ pub mod compose;
 // free-function draw pattern; no migration yet (that's Phase B.2).
 pub mod accelerator;
 pub mod backend;
+
+// Drag-out-to-the-OS seam: the `DragOutPayload` type
+// `PlatformServices::begin_drag_out` trades in. Compiled unconditionally
+// — the contract and its `Unsupported` default need no backend feature;
+// see `drag`'s module doc.
+pub mod drag;
 pub mod event;
 
 // Power monitor + sleep-blocker seam: the `PowerSaveKind`/`BlockerId`/
@@ -654,6 +660,9 @@ pub use update::{StagedUpdate, UpdateFeed, UpdateInfo, UpdateInfoBuilder, Update
 // `end_power_save_block`'s types and `UiEvent::PowerStateChanged`'s
 // payload — see `power`'s module doc.
 pub use power::{BlockerId, PowerEventKind, PowerSaveKind, ThermalState};
+// `PlatformServices::begin_drag_out`'s argument type — see `drag`'s
+// module doc.
+pub use drag::DragOutPayload;
 // The public paint-verb seam — see `paint_surface`'s module doc.
 pub use frame::{
     check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,

@@ -77,6 +77,16 @@ only a push to `main` runs this workflow.
 - `TextInputLayout::pointer_shape` now reports `Text` (not `Default`) over
   the blank band inside `content_bounds` below the last visible line,
   matching how native multi-line editors still show an I-beam there.
+- `PlatformServices::begin_drag_out` and `DragOutPayload` (`drag::DragOutPayload`,
+  also re-exported at the crate root) — the seam for dragging an item *out* of
+  a quadraui window to the OS (Finder / Explorer / another app), Electron's
+  `webContents.startDrag` parity and the counterpart to the existing drag-*in*
+  `UiEvent::FilesDropped`. `DragOutPayload` carries file paths, free-text (a
+  `text/uri-list` fallback, renderable via `DragOutPayload::to_uri_list`), or
+  both. `begin_drag_out` defaults to `BackendError::Unsupported` with no
+  in-tree backend overriding it yet — the per-backend OS drag session
+  (`NSView::beginDraggingSession` on macOS, `IDropSource`/`DoDragDrop` on
+  Win-GUI, `gtk4::DragSource` on GTK) is a separate follow-on.
 - `PlatformServices::register_global_shortcut`/`unregister_global_shortcut`/
   `unregister_all_global_shortcuts`, `GlobalShortcutId`,
   `GlobalShortcutRegistry` and `UiEvent::GlobalShortcut` — the seam for an

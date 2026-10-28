@@ -1169,6 +1169,10 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
         "unregister_all_global_shortcuts",
         ServiceHonesty::AlwaysReal,
     ),
+    // `begin_drag_out` returns `ServiceResult<()>` directly — same
+    // always-real-`Result` shape as the global-shortcut methods just
+    // above.
+    ("begin_drag_out", ServiceHonesty::AlwaysReal),
     ("platform_name", ServiceHonesty::AlwaysReal),
 ];
 
