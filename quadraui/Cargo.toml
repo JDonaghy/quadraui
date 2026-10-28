@@ -290,6 +290,11 @@ gtk = [
     "dep:objc2-app-kit",
     "dep:core-text",
     "dep:core-foundation",
+    # Issue #1786 (tray via StatusNotifierItem): see the
+    # `[target.'cfg(target_os = "linux")'.dependencies]` table's `zbus`
+    # entry below — a no-op off Linux, same as the objc2/core-text pair
+    # above is a no-op off macOS.
+    "dep:zbus",
 ]
 
 # Public Win-GUI rasterisers in `quadraui::win`. `windows` is a
@@ -637,6 +642,20 @@ foreign-types = { version = "0.5", optional = true }
 # (also from this crate) is what lets `waker()`'s `Send + Sync` closure
 # carry a handle to the `!Send` `QuadraView` across that boundary soundly.
 dispatch2 = { version = "0.3", optional = true }
+
+# Linux-only optional dep. Gated on `target_os = "linux"` so the `gtk`
+# feature is a no-op on other platforms (mirrors the macOS block above).
+# Issue #1786 (tray via StatusNotifierItem): `gtk::tray` registers a
+# `org.kde.StatusNotifierItem` + `com.canonical.dbusmenu` object on the
+# session bus — the de-facto Linux desktop tray protocol (KDE, most
+# GNOME setups via an extension, Sway/waybar, etc). `zbus` is already
+# resolved transitively at the same major version via `keyring`'s own
+# Linux Secret Service backend (see that dependency's comment above), so
+# naming it directly here adds no new version to the dependency graph,
+# only a direct name for `gtk::tray` to reach its blocking client/
+# `#[interface]` macros through.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", optional = true }
 
 # Windows-only optional dep. Gated on `target_os = "windows"` so the `win`
 # feature is a no-op on other platforms (mirrors the macOS block above).

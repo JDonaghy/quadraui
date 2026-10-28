@@ -60,6 +60,17 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- GTK backend implements `TrayService` (`Backend::tray`, `backend_caps().tray`
+  now `true`) via the `org.kde.StatusNotifierItem` / `com.canonical.dbusmenu`
+  D-Bus protocol (`gtk::tray`, behind the existing `gtk` feature's new
+  Linux-only `zbus` dependency). `tray()` attempts to register with a running
+  `org.kde.StatusNotifierWatcher` on each call and honestly returns `None`
+  when no watcher is reachable (e.g. stock GNOME without a tray extension),
+  rather than caching that failure or fabricating success. Icon, tooltip and
+  `ContextMenu` set on the tray forward to the SNI/dbusmenu properties; clicks
+  and menu activations surface as the usual `UiEvent::TrayClicked` /
+  `UiEvent::ContextMenuItemActivated` events, matching the macOS and Windows
+  tray backends.
 - `PointerShape` (`backend::PointerShape`, itself `#[non_exhaustive]`) gains
   nine new variants — `Text`, `Pointer`, `Grab`, `Grabbing`, `Crosshair`,
   `Wait`, `NotAllowed`, `ColResize`, `RowResize` — alongside the existing

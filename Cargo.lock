@@ -3186,6 +3186,7 @@ dependencies = [
  "windows",
  "windows-numerics",
  "yeslogic-fontconfig-sys",
+ "zbus",
 ]
 
 [[package]]
