@@ -22,22 +22,38 @@
 //!   `FOS_PICKFOLDERS` set on its options: Windows has no separate
 //!   directory-picker COM object, so this is the documented way to turn
 //!   the file-open dialog into one.
-//! - **Notifications** — a transient `Shell_NotifyIconW` balloon tip:
-//!   add a tray icon with `NIF_INFO` set, then remove it a few seconds
-//!   later from a spawned thread (a balloon has no lifetime of its own
-//!   independent of the icon it's attached to, and this backend has no
-//!   persistent tray icon to hang it off). Issue #955's `silent` field
-//!   maps onto `NIIF_NOSOUND`; `icon`/`actions`/`tag` don't fit a
-//!   balloon's shape and are dropped — see `win_send_notification`'s own
-//!   doc. A real fix is WinRT `ToastNotificationManager` (needs an
-//!   AUMID/shortcut), kept as a documented follow-up rather than
-//!   implemented blind — this module has no Windows host to build/verify
-//!   the WinRT toast XML + activation-token plumbing against beyond
-//!   `cargo check`'s type-check, and a toast's click-through is exactly
-//!   the kind of behavioural correctness `cargo check` can't see (see
-//!   `CLAUDE.md`'s "Win-GUI: building and testing for real" section).
-//!   The balloon stays the fallback either way, per this issue's own
-//!   note.
+//! - **Notifications** — WinRT `ToastNotificationManager`/
+//!   `ToastNotification`: `send_notification` builds a `ToastGeneric` XML
+//!   document from the `Notification`'s title/body/action buttons (see
+//!   [`build_toast_xml`]), registers it under this process's
+//!   AppUserModelID (set once in `win::run` at window creation —
+//!   `ToastNotificationManager::CreateToastNotifierWithId` fails without
+//!   one), and shows it through a `ToastNotifier`. `tag()` maps onto the
+//!   toast's own `Tag` property, so Windows itself replaces a prior toast
+//!   that shares a tag rather than stacking a new one in Action Center.
+//!   `icon`/`silent` have no straightforward WinRT toast equivalent on
+//!   this API surface (an icon needs a file URI the toast renderer can
+//!   read back out-of-process, which `ImageSource::Bytes` doesn't carry)
+//!   and are dropped, same as `macos::services`'s `osascript` path.
+//!   Clicking the toast or one of its action buttons fires the WinRT
+//!   `Activated` event on an arbitrary COM thread; the handler decodes
+//!   the clicked action from the toast XML's per-button `arguments` and
+//!   pushes a [`crate::event::UiEvent::NotificationActivated`] onto
+//!   [`WinPlatformServices`]'s own notification queue, then wakes the UI
+//!   thread with the same `WM_QUADRAUI_USER_EVENT` message
+//!   [`crate::backend::Backend::waker`] uses — `win::run`'s `wndproc`
+//!   drains and dispatches it from there (see
+//!   [`WinPlatformServices::drain_notification_events`]). If
+//!   `CreateToastNotifierWithId`/`Show` fails for any reason (no AUMID
+//!   registered, WinRT unavailable), `send_notification` falls back to
+//!   the legacy transient `Shell_NotifyIconW` balloon tip — add a tray
+//!   icon with `NIF_INFO` set, then remove it a few seconds later from a
+//!   spawned thread (a balloon has no lifetime of its own independent of
+//!   the icon it's attached to, and this backend has no persistent tray
+//!   icon to hang it off). The balloon's `silent` maps onto
+//!   `NIIF_NOSOUND`; its `icon`/`actions`/`tag` don't fit a balloon's
+//!   shape and are dropped — see `win_send_notification_balloon`'s own
+//!   doc.
 //! - **Message dialogs** — `TaskDialogIndirect`, the modern
 //!   common-controls v6 alert (preferred over the legacy `MessageBoxW`
 //!   for its richer, arbitrarily-labelled button row — `MessageDialogOptions`
@@ -105,20 +121,30 @@ use crate::backend::{
     BackendError, Clipboard, Display, FileDialogOptions, MessageDialogChoice, MessageDialogOptions,
     Notification, PlatformServices, RgbaImage, ServiceResult, SystemTheme,
 };
-use crate::event::{Point, Rect};
+use crate::event::{Point, Rect, UiEvent};
 #[cfg(target_os = "windows")]
 use crate::primitives::dialog::DialogSeverity;
 use crate::types::Color;
+#[cfg(target_os = "windows")]
+use crate::types::WidgetId;
 
 #[cfg(target_os = "windows")]
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+#[cfg(target_os = "windows")]
+use std::collections::VecDeque;
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(target_os = "windows")]
+use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "windows")]
-use windows::core::{IUnknown, BOOL, PCWSTR};
+use windows::core::{IUnknown, Interface, BOOL, HSTRING, PCWSTR};
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM, POINT, RECT};
+use windows::Data::Xml::Dom::XmlDocument;
+#[cfg(target_os = "windows")]
+use windows::Foundation::TypedEventHandler;
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM, POINT, RECT, WPARAM};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
@@ -159,8 +185,8 @@ use windows::Win32::UI::Shell::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, LoadIconW, HICON, IDI_ERROR, IDI_INFORMATION, MB_OK, MONITORINFOF_PRIMARY,
-    USER_DEFAULT_SCREEN_DPI,
+    GetCursorPos, LoadIconW, PostMessageW, HICON, IDI_ERROR, IDI_INFORMATION, MB_OK,
+    MONITORINFOF_PRIMARY, USER_DEFAULT_SCREEN_DPI,
 };
 // WinRT (not Win32) — `system_theme`. `UISettings` is the
 // same class the issue names (`UISettings::GetColorValue`); `AccessibilitySettings`
@@ -170,6 +196,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 // `Win32_UI_Accessibility` Cargo feature) needed.
 #[cfg(target_os = "windows")]
 use windows::UI::ViewManagement::{AccessibilitySettings, UIColorType, UISettings};
+// WinRT toast notifications — `ToastNotification`/`ToastNotificationManager`
+// build and show the `ToastGeneric` XML document `build_toast_xml` produces;
+// `ToastActivatedEventArgs` is what `Activated`'s generic `IInspectable`
+// argument casts to for the clicked action's `arguments` string.
+#[cfg(target_os = "windows")]
+use windows::UI::Notifications::{
+    ToastActivatedEventArgs, ToastNotification, ToastNotificationManager,
+};
 
 /// System clipboard via raw Win32 calls. Stateless — every
 /// call opens, does one thing, and closes the clipboard, matching the
@@ -298,6 +332,21 @@ pub struct WinPlatformServices {
     /// `RefCell<Option<_>>`, since `HWND` is `Copy`.
     #[cfg(target_os = "windows")]
     window: Cell<Option<HWND>>,
+    /// This process's AppUserModelID, set once by `win::run` at window
+    /// creation via [`Self::set_aumid`]. `ToastNotificationManager::
+    /// CreateToastNotifierWithId` needs one to attribute a toast to this
+    /// app; `None` means `send_notification` has no choice but the
+    /// `Shell_NotifyIconW` balloon fallback.
+    #[cfg(target_os = "windows")]
+    aumid: RefCell<Option<String>>,
+    /// `UiEvent::NotificationActivated` events queued by a toast's
+    /// `Activated` handler (fired on an arbitrary COM thread) for
+    /// `win::run`'s `wndproc` to drain and dispatch back on the UI thread —
+    /// see [`Self::drain_notification_events`]. `Arc`-wrapped so the
+    /// `Send + 'static` `Activated` closure can hold its own clone without
+    /// borrowing `self`.
+    #[cfg(target_os = "windows")]
+    notification_events: Arc<Mutex<VecDeque<UiEvent>>>,
 }
 
 impl WinPlatformServices {
@@ -306,6 +355,10 @@ impl WinPlatformServices {
             clipboard: WinClipboard,
             #[cfg(target_os = "windows")]
             window: Cell::new(None),
+            #[cfg(target_os = "windows")]
+            aumid: RefCell::new(None),
+            #[cfg(target_os = "windows")]
+            notification_events: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -317,6 +370,42 @@ impl WinPlatformServices {
     #[cfg(target_os = "windows")]
     pub(crate) fn set_window(&self, hwnd: HWND) {
         self.window.set(Some(hwnd));
+    }
+
+    /// Store this process's AppUserModelID, computed by `win::run` at
+    /// window creation from `RunConfig::title`, so `send_notification` can
+    /// pass it to `ToastNotificationManager::CreateToastNotifierWithId`.
+    /// Ungated signature: `WinBackend::set_aumid` calls this unconditionally
+    /// from `wndproc`'s `#[cfg(target_os = "windows")]` block, but the
+    /// delegate itself still needs to type-check on every platform.
+    pub(crate) fn set_aumid(&self, aumid: String) {
+        #[cfg(target_os = "windows")]
+        {
+            *self.aumid.borrow_mut() = Some(aumid);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = aumid;
+        }
+    }
+
+    /// Drain every `UiEvent::NotificationActivated` a toast's `Activated`
+    /// handler has queued since the last drain. Called from `win::run`'s
+    /// `wndproc` on `WM_QUADRAUI_USER_EVENT`, alongside
+    /// `WinBackend::drain_user_events`.
+    pub(crate) fn drain_notification_events(&self) -> Vec<UiEvent> {
+        #[cfg(target_os = "windows")]
+        {
+            let mut queue = self
+                .notification_events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            queue.drain(..).collect()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Vec::new()
+        }
     }
 }
 
@@ -386,10 +475,27 @@ impl PlatformServices for WinPlatformServices {
         }
     }
 
+    /// Try the WinRT toast path first (requires an AUMID, set via
+    /// [`Self::set_aumid`]); fall back to the legacy
+    /// [`win_send_notification_balloon`] on any failure — no AUMID
+    /// registered, or `CreateToastNotifierWithId`/`Show` erroring out.
     fn send_notification(&self, n: Notification) {
         #[cfg(target_os = "windows")]
         {
-            win_send_notification(self.window.get(), &n);
+            let aumid = self.aumid.borrow().clone();
+            let shown = match aumid {
+                Some(aumid) => win_send_notification_toast(
+                    self.window.get(),
+                    &aumid,
+                    Arc::clone(&self.notification_events),
+                    &n,
+                )
+                .is_ok(),
+                None => false,
+            };
+            if !shown {
+                win_send_notification_balloon(self.window.get(), &n);
+            }
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1631,12 +1737,148 @@ static NEXT_NOTIFICATION_ID: AtomicU32 = AtomicU32::new(1);
 #[cfg(target_os = "windows")]
 const NOTIFICATION_ICON_LIFETIME: std::time::Duration = std::time::Duration::from_secs(8);
 
-/// Add a transient tray icon carrying `n`'s title/body as an `NIF_INFO`
-/// balloon, then remove it again after [`NOTIFICATION_ICON_LIFETIME`]
-/// (see that constant's docs). A no-op if no window has attached yet
-/// (`owner` is `None`) — there's no `HWND` to own the tray icon.
+/// Escape the five XML-significant characters so `n.title`/`n.body`/an
+/// action's label can't break a `<text>`/`arguments` attribute they're
+/// interpolated into in [`build_toast_xml`] — `XmlDocument::LoadXml` would
+/// otherwise reject (or misparse) a title containing e.g. `&` or `<`.
+///
+/// Host-independent (no Windows types involved) — unit-tested off Windows,
+/// same as [`decode_dib`]/[`encode_dibv5`].
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Build the `ToastGeneric` XML [`win_send_notification_toast`] loads into
+/// an `XmlDocument`. Each registered action becomes an `<action>` button
+/// whose `arguments` attribute is that action's `WidgetId::as_str()`; the
+/// toast's own `launch` attribute (what `Activated` reports when the body
+/// itself, not a button, is clicked) is left empty. Empty-string-means-
+/// `None` is the same convention `gtk::services::decode_notification_target`
+/// uses for its `(ss)` variant, so the `Activated` handler below can tell
+/// "body click" and "button click" apart with one `is_empty` check on
+/// whatever `ToastActivatedEventArgs::Arguments` returns.
+///
+/// Host-independent (no Windows types involved) — unit-tested off Windows,
+/// same as [`decode_dib`]/[`encode_dibv5`].
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn build_toast_xml(n: &Notification) -> String {
+    let mut actions = String::new();
+    for (id, label) in n.actions() {
+        actions.push_str(&format!(
+            "<action content=\"{}\" arguments=\"{}\" activationType=\"foreground\"/>",
+            xml_escape(label),
+            xml_escape(id.as_str()),
+        ));
+    }
+    let actions_block = if actions.is_empty() {
+        String::new()
+    } else {
+        format!("<actions>{actions}</actions>")
+    };
+    format!(
+        "<toast launch=\"\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual>{actions_block}</toast>",
+        xml_escape(&n.title),
+        xml_escape(&n.body),
+    )
+}
+
+/// Primary path for [`WinPlatformServices::send_notification`]: build a
+/// `ToastGeneric` toast from `n` (see [`build_toast_xml`]), show it
+/// through a notifier scoped to `aumid`, and wire its `Activated` event to
+/// push a [`UiEvent::NotificationActivated`] onto `queue` and wake the UI
+/// thread with the same `WM_QUADRAUI_USER_EVENT` nudge
+/// [`crate::backend::Backend::waker`] uses — `Activated` fires on an
+/// arbitrary COM thread, not the window's own.
+///
+/// Errors (the caller falls back to [`win_send_notification_balloon`] on
+/// any of them) if WinRT toast notifications aren't available on this
+/// system, or if `aumid` isn't a notifier id WinRT recognizes —
+/// `CreateToastNotifierWithId` is the call here most likely to fail that
+/// way.
 #[cfg(target_os = "windows")]
-fn win_send_notification(owner: Option<HWND>, n: &Notification) {
+fn win_send_notification_toast(
+    owner: Option<HWND>,
+    aumid: &str,
+    queue: Arc<Mutex<VecDeque<UiEvent>>>,
+    n: &Notification,
+) -> windows::core::Result<()> {
+    let doc = XmlDocument::new()?;
+    doc.LoadXml(&HSTRING::from(build_toast_xml(n)))?;
+    let toast = ToastNotification::CreateToastNotification(&doc)?;
+
+    let tag = n.tag().map(str::to_owned);
+    if let Some(tag) = &tag {
+        toast.SetTag(&HSTRING::from(tag.as_str()))?;
+    }
+
+    // `HWND` isn't `Send`; carry its raw value into the closure below and
+    // reconstruct it there, same as the balloon-removal thread does.
+    let hwnd_value = owner.map(|h| h.0 as isize);
+    let handler = TypedEventHandler::<ToastNotification, windows::core::IInspectable>::new(
+        move |_sender, args| -> windows::core::Result<()> {
+            let Some(args) = args.as_ref() else {
+                return Ok(());
+            };
+            let Ok(args) = args.cast::<ToastActivatedEventArgs>() else {
+                return Ok(());
+            };
+            let arguments = args.Arguments().unwrap_or_default().to_string();
+            let action = if arguments.is_empty() {
+                None
+            } else {
+                Some(WidgetId::new(arguments))
+            };
+            queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push_back(UiEvent::NotificationActivated {
+                    tag: tag.clone(),
+                    action,
+                });
+            if let Some(hwnd_value) = hwnd_value {
+                // SAFETY: `hwnd_value` is a raw `HWND` value captured by
+                // value before the toast was shown; `PostMessageW` only
+                // enqueues a message for the window identified by that
+                // handle, it never dereferences anything beyond it.
+                unsafe {
+                    let _ = PostMessageW(
+                        Some(HWND(hwnd_value as *mut core::ffi::c_void)),
+                        crate::win::backend::WM_QUADRAUI_USER_EVENT,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
+                }
+            }
+            Ok(())
+        },
+    );
+    toast.Activated(&handler)?;
+
+    ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(aumid))?.Show(&toast)?;
+    Ok(())
+}
+
+/// Fallback path for [`WinPlatformServices::send_notification`]: add a
+/// transient tray icon carrying `n`'s title/body as an `NIF_INFO` balloon,
+/// then remove it again after [`NOTIFICATION_ICON_LIFETIME`] (see that
+/// constant's docs). A no-op if no window has attached yet (`owner` is
+/// `None`) — there's no `HWND` to own the tray icon. Used only when the
+/// WinRT toast path ([`win_send_notification_toast`]) isn't available (no
+/// AUMID registered) or fails.
+#[cfg(target_os = "windows")]
+fn win_send_notification_balloon(owner: Option<HWND>, n: &Notification) {
     let Some(hwnd) = owner else {
         return;
     };
@@ -1660,8 +1902,9 @@ fn win_send_notification(owner: Option<HWND>, n: &Notification) {
         // documented `dwInfoFlags` bit. `icon`, `actions`, and `tag` are
         // dropped: a balloon has no caller-supplied icon slot beyond the
         // severity icon, no button/action UI, and no click-through channel
-        // to report an activation — see this module's doc for what a real
-        // fix (WinRT `ToastNotificationManager`) would need.
+        // to report an activation. `win_send_notification_toast` covers all
+        // three when a toast notifier is available; this path only runs as
+        // its fallback.
         let mut severity_flags = if n.urgent { NIIF_ERROR } else { NIIF_INFO };
         if n.is_silent() {
             severity_flags |= NIIF_NOSOUND;
@@ -2439,5 +2682,51 @@ mod tests {
         // resolve to a distinct id rather than colliding with the first.
         let buttons = [win_button("a", false, true), win_button("b", false, true)];
         assert_eq!(assign_button_ids(&buttons), vec![TASKDIALOG_IDCANCEL, 101]);
+    }
+
+    // ── xml_escape / build_toast_xml ─────────────────────────────────────
+
+    #[test]
+    fn xml_escape_escapes_every_reserved_character() {
+        assert_eq!(
+            xml_escape("<a>&\"'b\""),
+            "&lt;a&gt;&amp;&quot;&apos;b&quot;"
+        );
+    }
+
+    #[test]
+    fn xml_escape_leaves_plain_text_untouched() {
+        assert_eq!(xml_escape("plain text 123"), "plain text 123");
+    }
+
+    #[test]
+    fn build_toast_xml_has_no_actions_block_without_actions() {
+        let n = Notification::new("Title", "Body");
+        let xml = build_toast_xml(&n);
+        assert!(xml.contains("<text>Title</text>"));
+        assert!(xml.contains("<text>Body</text>"));
+        assert!(!xml.contains("<actions>"));
+    }
+
+    #[test]
+    fn build_toast_xml_adds_one_action_per_registered_action() {
+        let n = Notification::new("Title", "Body")
+            .with_action(crate::types::WidgetId::new("snooze"), "Snooze")
+            .with_action(crate::types::WidgetId::new("dismiss"), "Dismiss");
+        let xml = build_toast_xml(&n);
+        assert!(xml.contains("<actions>"));
+        assert!(xml.contains("content=\"Snooze\" arguments=\"snooze\""));
+        assert!(xml.contains("content=\"Dismiss\" arguments=\"dismiss\""));
+    }
+
+    #[test]
+    fn build_toast_xml_escapes_title_body_and_action_label() {
+        let n = Notification::new("<Title>", "Body & more")
+            .with_action(crate::types::WidgetId::new("a&b"), "Snooze <5m>");
+        let xml = build_toast_xml(&n);
+        assert!(xml.contains("<text>&lt;Title&gt;</text>"));
+        assert!(xml.contains("<text>Body &amp; more</text>"));
+        assert!(xml.contains("content=\"Snooze &lt;5m&gt;\""));
+        assert!(xml.contains("arguments=\"a&amp;b\""));
     }
 }

@@ -73,6 +73,23 @@ only a push to `main` runs this workflow.
   surface as `qui_app_path`/`qui_set_app_identifier` plus the `QUI_PATH_*`
   constants and a new `QUI_ERR_UNSUPPORTED` error code
   (`quadraui-ffi/src/lib.rs`).
+- Windows `PlatformServices::send_notification` (`win::services`) now raises a
+  WinRT `ToastNotificationManager`/`ToastNotification` toast instead of a
+  transient `Shell_NotifyIconW` balloon. The toast XML carries the
+  `Notification`'s title, body and `actions` (icon is intentionally dropped,
+  matching the macOS `osascript` fallback); a repeated `tag` replaces the
+  prior toast via `CreateToastNotifierWithId` rather than stacking a new one.
+  `win32::run` registers a per-title AppUserModelID
+  (`SetCurrentProcessExplicitAppUserModelID`) so the toast is attributed to
+  the app in Action Center instead of showing as a generic process name.
+  Clicking the toast body or an action button now fires
+  `UiEvent::NotificationActivated` through the existing event loop
+  (`ToastNotification::Activated` posts `WM_QUADRAUI_USER_EVENT` to the
+  window, which drains `drain_notification_events()`), matching the GTK
+  backend's existing click-through behavior. When WinRT/AUMID registration
+  is unavailable, `send_notification` still falls back to the legacy
+  `Shell_NotifyIconW` balloon, which (like the macOS fallback) has no
+  click-through channel and does not emit `NotificationActivated`.
 - Windows `Clipboard` implements `read_image`/`write_image`/`write_html`
   (`win::services`), matching the macOS/GTK backends instead of returning
   `Unsupported`. Images round-trip through `CF_DIBV5` (classic `CF_DIB` as a
