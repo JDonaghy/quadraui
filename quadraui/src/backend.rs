@@ -123,12 +123,46 @@ pub enum ResizeEdge {
 /// already taken by [`crate::primitives::editor::CursorShape`] (the
 /// text-editor caret shape, re-exported as `EditorCursorShape`), which is an
 /// unrelated concept (text caret vs. OS mouse pointer).
+///
+/// `#[non_exhaustive]`: every variant beyond [`Self::Default`] and
+/// [`Self::Resize`] is additive — a future shape (e.g. a zoom/magnifier
+/// cursor) must not be a breaking change for a downstream consumer matching
+/// on this type. A backend's own `PointerShape` → native-cursor mapping is
+/// free to fall back to [`Self::Default`] for any variant it hasn't wired
+/// up yet (see each backend's `mac_cursor_kind`/`pointer_shape_cursor_name`/
+/// `pointer_shape_to_win32_cursor`) — that fallback, not a hard match-arm
+/// requirement, is what keeps adding a variant here non-breaking in-tree
+/// too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PointerShape {
     /// The platform's normal arrow/default pointer.
     Default,
     /// A directional resize pointer for the given window edge/corner.
     Resize(ResizeEdge),
+    /// I-beam over editable/selectable text (e.g. [`TextInput`]).
+    Text,
+    /// A hand/pointing-hand cursor over a clickable control (buttons,
+    /// links, list/tree rows that activate on click).
+    Pointer,
+    /// An open-hand cursor over something draggable, before the drag
+    /// starts.
+    Grab,
+    /// A closed-hand cursor while a drag is in progress.
+    Grabbing,
+    /// A crosshair, e.g. for a precise-selection/drawing surface.
+    Crosshair,
+    /// A busy/wait cursor for an operation in progress.
+    Wait,
+    /// A "this drop target/action is rejected" cursor.
+    NotAllowed,
+    /// A horizontal (left-right) column-resize cursor, distinct from
+    /// [`Self::Resize`]'s window-edge resize — for in-content dividers
+    /// such as a table column border or a split-pane sash.
+    ColResize,
+    /// A vertical (up-down) row-resize cursor — the row/sash counterpart
+    /// of [`Self::ColResize`].
+    RowResize,
 }
 
 /// Window-state control surface — set/get the title, size, position and

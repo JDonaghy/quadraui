@@ -28,6 +28,7 @@
 //! [`crate::focus::FocusManager`] for the app-wide owner of "what has
 //! focus").
 
+use crate::backend::PointerShape;
 use crate::event::{Key, NamedKey, Point, Rect};
 use crate::types::{Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -181,6 +182,15 @@ impl ButtonLayout {
             ButtonHit::Body
         } else {
             ButtonHit::Outside
+        }
+    }
+
+    /// Pointer glyph a backend should request while the mouse sits at `p` —
+    /// a hand over the clickable body, the default arrow outside it.
+    pub fn pointer_shape(&self, p: Point) -> PointerShape {
+        match self.hit_test(p) {
+            ButtonHit::Body => PointerShape::Pointer,
+            ButtonHit::Outside => PointerShape::Default,
         }
     }
 }
@@ -351,6 +361,20 @@ mod tests {
         let json = serde_json::to_string(&b).unwrap();
         let back: Button = serde_json::from_str(&json).unwrap();
         assert_eq!(b, back);
+    }
+
+    #[test]
+    fn pointer_shape_is_pointer_over_body_and_default_outside() {
+        let b = button();
+        let layout = b.layout(Rect::new(2.0, 2.0, 6.0, 1.0));
+        assert_eq!(
+            layout.pointer_shape(Point::new(3.0, 2.0)),
+            PointerShape::Pointer
+        );
+        assert_eq!(
+            layout.pointer_shape(Point::new(0.0, 0.0)),
+            PointerShape::Default
+        );
     }
 
     #[test]

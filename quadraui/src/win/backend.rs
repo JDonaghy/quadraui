@@ -1622,6 +1622,12 @@ fn pointer_shape_to_win32_cursor(shape: PointerShape) -> windows::core::PCWSTR {
         | PointerShape::Resize(ResizeEdge::SouthWest) => IDC_SIZENESW,
         PointerShape::Resize(ResizeEdge::NorthWest)
         | PointerShape::Resize(ResizeEdge::SouthEast) => IDC_SIZENWSE,
+        // Win32 has native cursors for several of these (`IDC_IBEAM`,
+        // `IDC_HAND`, `IDC_CROSS`, `IDC_WAIT`, `IDC_NO`, `IDC_SIZEWE`/
+        // `IDC_SIZENS` for col/row-resize) but none are wired up yet, so
+        // falling back to the plain arrow is the deliberate no-regression
+        // default.
+        _ => IDC_ARROW,
     }
 }
 
