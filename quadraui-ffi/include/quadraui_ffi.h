@@ -473,7 +473,10 @@ char *qui_screen(const struct QuiApp *app);
  * Returns a caller-owned, null-terminated UTF-8 string the caller must
  * free with [`qui_free`], or null on failure — [`QUI_ERR_UNSUPPORTED`] for
  * a `kind` outside the `QUI_PATH_*` set, or one this platform or build
- * cannot resolve — with [`qui_last_error`] set to why.
+ * cannot resolve; [`QUI_ERR_INTERNAL`] if the resolved path is not valid
+ * UTF-8 (possible on Unix, where paths are arbitrary bytes) rather than
+ * silently mangling it with `to_string_lossy` — with [`qui_last_error`]
+ * set to why.
  */
 char *qui_app_path(int32_t kind);
 
