@@ -4568,9 +4568,24 @@ pub trait PlatformServices {
     ///
     /// `items.is_empty()` is a caller bug — nothing to drag — pinned here
     /// so the three per-backend follow-ons don't each guess differently:
-    /// a real session-starting implementation returns
-    /// [`BackendError::PlatformFailure`] for it rather than silently
-    /// no-opping `Ok(())` or starting a session with nothing attached.
+    /// a real session-starting implementation rejects it rather than
+    /// silently no-opping `Ok(())` or starting a session with nothing
+    /// attached. Concretely, verbatim so all three agree:
+    ///
+    /// ```ignore
+    /// Err(BackendError::PlatformFailure {
+    ///     context: "begin_drag_out: empty payload".into(),
+    /// })
+    /// ```
+    ///
+    /// [`BackendError::PlatformFailure`] is the closest fit rather than
+    /// a perfect one — there is no failing native call for its `context`
+    /// to name here, because the rejection happens before any native
+    /// drag API is reached, and `BackendError` carries no
+    /// argument-validation variant (adding one is a breaking change to
+    /// a public enum, which this seam does not earn). Hence the fixed
+    /// string: it names the rejected call instead of a native API, and
+    /// no follow-on has to invent its own.
     ///
     /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
     /// real OS drag-out session yet (`NSView::beginDraggingSession` on
