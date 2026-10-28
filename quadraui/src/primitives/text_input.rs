@@ -62,6 +62,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::accelerator::KeyBinding;
+use crate::backend::PointerShape;
 use crate::event::{Key, NamedKey, Rect};
 use crate::types::{Modifiers, WidgetId};
 use crate::undo::UndoStack;
@@ -873,6 +874,18 @@ impl TextInputLayout {
         }
         TextInputHit::EmptyArea
     }
+
+    /// Pointer glyph a backend should request while the mouse sits at
+    /// surface-native coordinates `(x, y)` — an I-beam over editable text,
+    /// the default arrow everywhere else (including [`TextInputHit::EmptyArea`]).
+    ///
+    /// Coordinate frame: **ABSOLUTE**, same as [`Self::hit_test`].
+    pub fn pointer_shape(&self, x: f32, y: f32) -> PointerShape {
+        match self.hit_test(x, y) {
+            TextInputHit::Line { .. } => PointerShape::Text,
+            TextInputHit::EmptyArea => PointerShape::Default,
+        }
+    }
 }
 
 /// Per-line measurement supplied by the backend.
@@ -1488,6 +1501,14 @@ mod tests {
         let ti = input(vec!["only"]);
         let l = ti.layout(rect(20.0, 10.0), measure());
         assert_eq!(l.hit_test(-5.0, -5.0), TextInputHit::EmptyArea);
+    }
+
+    #[test]
+    fn pointer_shape_is_text_over_a_line_and_default_over_empty_area() {
+        let ti = input(vec!["a", "b", "c"]);
+        let l = ti.layout(rect(20.0, 10.0), measure());
+        assert_eq!(l.pointer_shape(5.0, 2.0), PointerShape::Text);
+        assert_eq!(l.pointer_shape(-5.0, -5.0), PointerShape::Default);
     }
 
     #[test]

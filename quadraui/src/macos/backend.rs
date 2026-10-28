@@ -600,6 +600,12 @@ fn mac_cursor_kind(shape: PointerShape) -> MacCursorKind {
             | ResizeEdge::SouthEast
             | ResizeEdge::SouthWest,
         ) => MacCursorKind::Arrow,
+        // AppKit has first-class cursors for several of these
+        // (`NSCursor::iBeamCursor`/`pointingHandCursor`/etc.) but none are
+        // wired up yet, so every shape beyond `Default`/`Resize` falls back
+        // to the plain arrow — a deliberate no-regression default, not a
+        // missing case.
+        _ => MacCursorKind::Arrow,
     }
 }
 

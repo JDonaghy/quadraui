@@ -1707,6 +1707,12 @@ fn pointer_shape_cursor_name(shape: PointerShape) -> &'static str {
         PointerShape::Resize(ResizeEdge::NorthWest) => "nw-resize",
         PointerShape::Resize(ResizeEdge::SouthEast) => "se-resize",
         PointerShape::Resize(ResizeEdge::SouthWest) => "sw-resize",
+        // GTK's CSS cursor-name spec already has first-class names for
+        // several of these ("text", "pointer", "grab", "grabbing",
+        // "crosshair", "wait", "not-allowed", "col-resize", "row-resize")
+        // but none are wired up yet, so falling back to "default" is the
+        // deliberate no-regression default.
+        _ => "default",
     }
 }
 
