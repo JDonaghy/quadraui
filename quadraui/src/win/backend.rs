@@ -778,6 +778,27 @@ impl WinBackend {
         out
     }
 
+    /// Drain pending [`UiEvent::NotificationActivated`] events queued by
+    /// [`WinPlatformServices::send_notification`]'s WinRT toast
+    /// `Activated` handler — mirrors
+    /// [`Self::drain_user_events`]'s shape so `win::run`'s
+    /// `WM_QUADRAUI_USER_EVENT` handler can drain-and-dispatch this queue
+    /// the same way.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub(crate) fn drain_notification_events(&mut self) -> Vec<UiEvent> {
+        self.services.drain_notification_events()
+    }
+
+    /// Store this process's AppUserModelID, computed by
+    /// `win32::create_window` from `RunConfig::title`, so
+    /// [`WinPlatformServices::send_notification`] can pass it to
+    /// `ToastNotificationManager::CreateToastNotifierWithId` — mirrors
+    /// [`Self::attach_surface`] calling `self.services.set_window`.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub(crate) fn set_aumid(&self, aumid: String) {
+        self.services.set_aumid(aumid);
+    }
+
     /// Update the cached DirectWrite line height (in DIPs). Mirrors
     /// `GtkBackend::set_current_line_height` — normally set once by
     /// [`Self::attach_surface`] from real font metrics, but exposed

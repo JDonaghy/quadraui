@@ -696,6 +696,49 @@ fn window_class_name_string(title: &str) -> String {
     format!("{CLASS_NAME_PREFIX}-{:016x}", instance_identity(title))
 }
 
+/// Prefix for [`aumid_string`]'s per-title AppUserModelID.
+///
+/// `#[allow(dead_code)]`: same rationale as [`window_class_name_string`]
+/// — its only use (`win32::create_window`, wiring the AUMID into
+/// `SetCurrentProcessExplicitAppUserModelID` and [`WinBackend::set_aumid`])
+/// is Windows-only.
+#[allow(dead_code)]
+const AUMID_PREFIX: &str = "Quadraui.App";
+
+/// AppUserModelID (AUMID) for `title`'s instance family, keyed off the
+/// same [`instance_identity`] the window class name and
+/// single-instance mutex already use — same rationale: Win has no
+/// `app_id` concept the way `gtk::RunConfig` does, so the window title
+/// doubles as this backend's identity everywhere one is needed. Kept
+/// well under the documented 129-character AUMID limit and free of
+/// characters an arbitrary `title` might carry that AUMIDs can't.
+///
+/// `win32::run` registers this once via
+/// `SetCurrentProcessExplicitAppUserModelID` before any window exists —
+/// required for a WinRT toast to be attributed to this process rather
+/// than silently dropped — and `win32::create_window` hands the same
+/// string to [`WinBackend::set_aumid`] so `WinPlatformServices::
+/// send_notification` can pass it to `ToastNotificationManager::
+/// CreateToastNotifierWithId`. Registering the AUMID alone does not
+/// guarantee a toast shows: unpackaged desktop apps also need a Start
+/// Menu shortcut whose `System.AppUserModel.ID` matches, which this
+/// crate cannot create — `send_notification` treats any WinRT failure
+/// as a cue to fall back to the legacy balloon rather than assuming the
+/// happy path always holds.
+///
+/// Pure string formatting, no WinAPI dependency, so it's unit-tested off
+/// Windows below.
+///
+/// `#[allow(dead_code)]`: same rationale as [`window_class_name_string`]
+/// — its only callers (`win32::run`'s
+/// `SetCurrentProcessExplicitAppUserModelID` call and
+/// `win32::create_window`'s [`WinBackend::set_aumid`] call) are
+/// Windows-only.
+#[allow(dead_code)]
+fn aumid_string(title: &str) -> String {
+    format!("{AUMID_PREFIX}.{:016x}", instance_identity(title))
+}
+
 // `ModalPumpDepth`/`ModalPumpGuard`/`RefCell` are only reachable from
 // `guarded_call` and its test module below — both `#[cfg(any(target_os
 // = "windows", test))]`, matching `win32`'s own `target_os = "windows"`
@@ -747,7 +790,7 @@ mod win32 {
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
-    use windows::core::{Error as WinError, PCWSTR};
+    use windows::core::{Error as WinError, HSTRING, PCWSTR};
     use windows::Win32::Foundation::{
         GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
     };
@@ -793,9 +836,12 @@ mod win32 {
     // `DragQueryFileW`/`DragQueryPoint`/`DragFinish`) — all real Shell32
     // calls against a live drag session, so (unlike `super::events`'
     // pure translators) this stays inside `mod win32` rather than a
-    // cross-platform-testable module.
+    // cross-platform-testable module. `SetCurrentProcessExplicitAppUserModelID`
+    // registers this process's AUMID so WinRT toast
+    // notifications are attributed to it rather than silently dropped.
     use windows::Win32::UI::Shell::{
-        DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint, HDROP,
+        DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint,
+        SetCurrentProcessExplicitAppUserModelID, HDROP,
     };
 
     use crate::backend::Backend;
@@ -1185,6 +1231,27 @@ mod win32 {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }
 
+        // Attributes this process to an AppUserModelID so a
+        // WinRT toast notification shows up in Action Center under this
+        // app rather than being silently dropped or attributed to a
+        // generic host. Best-effort, same idiom as the DPI call above: an
+        // unpackaged desktop app without a matching Start Menu shortcut
+        // can still fail to register, and `WinPlatformServices::
+        // send_notification` already falls back to the legacy balloon
+        // tip when the WinRT toast path doesn't pan out, so a failure
+        // here isn't fatal to the app.
+        //
+        // SAFETY: `SetCurrentProcessExplicitAppUserModelID` takes an
+        // owned, null-terminated wide string (via `HSTRING`'s `Param`
+        // impl) and has no precondition beyond "call before creating any
+        // window that wants to be attributed to this AUMID", which this
+        // function does.
+        unsafe {
+            let _ = SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(aumid_string(
+                &config.title,
+            )));
+        }
+
         // Checked *before* any window/backend/`A` setup below — if
         // another instance already holds the single-instance mutex, this
         // process's only job is to forward its own `argv` to that
@@ -1420,6 +1487,21 @@ mod win32 {
             // it was never handed to another thread.
             drop(unsafe { Box::from_raw(state_ptr) });
             return Err(e);
+        }
+
+        // Hands this title's AUMID (same string `win32::run` registered
+        // process-wide via `SetCurrentProcessExplicitAppUserModelID`,
+        // recomputed here rather than threaded through `RunConfig` since
+        // `aumid_string` is pure and cheap) to the backend so
+        // `WinPlatformServices::send_notification` can pass it to
+        // `ToastNotificationManager::CreateToastNotifierWithId`.
+        //
+        // SAFETY: `state_ptr` is valid here for the same reason it was
+        // valid for the `attach_surface` call just above — nothing freed
+        // or aliased it in between.
+        {
+            let ws: &WindowState<A> = unsafe { &*state_ptr };
+            ws.state.borrow_mut().backend.set_aumid(aumid_string(title));
         }
 
         // Opt the window into `WM_DROPFILES` — off by default for
@@ -2909,12 +2991,16 @@ mod win32 {
             }
             WM_QUADRAUI_USER_EVENT => {
                 // Woke by `WinBackend::waker()` after a background
-                // thread queued one or more `UiEvent::User` payloads.
-                // `wndproc` already holds everything a live producer
-                // would need (`ws`, `hwnd`), so this drains and
+                // thread queued one or more `UiEvent::User` payloads, or
+                // by a toast's `Activated` handler
+                // (`win::services::win_send_notification_toast`) after
+                // queueing a `UiEvent::NotificationActivated`. `wndproc`
+                // already holds everything a live producer would need
+                // (`ws`, `hwnd`), so this drains both queues and
                 // dispatches directly, the same `dispatch` helper every
                 // other message in this match uses.
-                let events = ws.state.borrow_mut().backend.drain_user_events();
+                let mut events = ws.state.borrow_mut().backend.drain_user_events();
+                events.extend(ws.state.borrow_mut().backend.drain_notification_events());
                 for event in events {
                     // `dispatch` acts on `Reaction::Exit` itself (see
                     // `dispatch_with`'s doc); this `break` just stops
@@ -5173,6 +5259,34 @@ mod tests {
             window_class_name_string("kubeui"),
             window_class_name_string("vimcode")
         );
+    }
+
+    /// [`aumid_string`] must embed [`instance_identity`] verbatim (as
+    /// lowercase hex), same rationale as [`window_class_name_string`]: the
+    /// AUMID registered once in `win32::run` and the one stored per-backend
+    /// in `win32::create_window` must agree for the same `title`.
+    #[test]
+    fn aumid_string_embeds_instance_identity() {
+        let title = "kubeui";
+        let expected = format!("{AUMID_PREFIX}.{:016x}", instance_identity(title));
+        assert_eq!(aumid_string(title), expected);
+    }
+
+    /// Two different titles must produce two different AUMIDs, or a toast
+    /// from one app family could be attributed to — or collapse a tag
+    /// alongside — another app's notifications.
+    #[test]
+    fn aumid_string_differs_across_titles() {
+        assert_ne!(aumid_string("kubeui"), aumid_string("vimcode"));
+    }
+
+    /// [`aumid_string`] is a pure function of `title`, called independently
+    /// from both `win32::run` (process-wide registration) and
+    /// `win32::create_window` (per-backend storage) — they must agree
+    /// without sharing state.
+    #[test]
+    fn aumid_string_is_deterministic() {
+        assert_eq!(aumid_string("kubeui"), aumid_string("kubeui"));
     }
 
     /// Reproduces the exact hazard `guarded_call` guards against: a

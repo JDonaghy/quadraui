@@ -1,8 +1,9 @@
 //! `cargo run --example win_platform_services --features win` (Windows only)
 //!
 //! Smoke test for `WinPlatformServices`: clipboard round-trip, native file
-//! open/save dialogs, a `Shell_NotifyIconW` balloon notification, `open_url`,
-//! and `TaskDialogIndirect`-backed message dialogs.
+//! open/save dialogs, a WinRT toast notification (with legacy
+//! `Shell_NotifyIconW` balloon fallback), `open_url`, and
+//! `TaskDialogIndirect`-backed message dialogs.
 //!
 //! Draws nothing — every `WinBackend::draw_*` rasteriser is still a `todo!()`
 //! stub (no `draw_status_bar` to report results in-window), so this exercises
@@ -14,7 +15,9 @@
 //!   report whether it round-tripped
 //! - `o` — native file-open dialog (filtered to `*.rs`)
 //! - `s` — native file-save dialog (initial name `untitled.txt`)
-//! - `n` — fire a balloon notification (watch the notification area)
+//! - `n` — fire a tagged toast notification with one action button
+//!   ("Show"); click the toast body or the button in Action Center to see
+//!   the resulting `NotificationActivated` reported here
 //! - `m` — native message dialog (`TaskDialogIndirect`) with
 //!   Save/Don't Save/Cancel buttons; reports which one was chosen
 //! - `u` — `open_url` a fixed address (the default browser should launch)
@@ -129,10 +132,19 @@ impl AppLogic for PlatformServicesDemo {
                 key: Key::Char('n'),
                 ..
             } => {
-                backend
-                    .services()
-                    .send_notification(Notification::new("quadraui", "#23 platform services demo"));
-                eprintln!("notification fired — check the notification area");
+                backend.services().send_notification(
+                    Notification::new("quadraui", "#1789 platform services demo")
+                        .with_tag("win-platform-services-demo")
+                        .with_action(WidgetId::new("show"), "Show"),
+                );
+                eprintln!(
+                    "notification fired — click it (or its \"Show\" button) in Action \
+                     Center to see NotificationActivated reported here"
+                );
+                Reaction::Continue
+            }
+            UiEvent::NotificationActivated { tag, action } => {
+                eprintln!("NotificationActivated: tag={tag:?} action={action:?}");
                 Reaction::Continue
             }
             UiEvent::KeyPressed {

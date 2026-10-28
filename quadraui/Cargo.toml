@@ -777,6 +777,21 @@ windows = { version = "0.62", optional = true, features = [
     # separate `Win32_UI_Accessibility`/SPI feature needed: both classes
     # live in this one WinRT namespace.
     "UI_ViewManagement",
+    # Toast notifications: WinRT `Windows.UI.Notifications`
+    # (`ToastNotification`/`ToastNotificationManager`/`ToastNotifier`) in
+    # `send_notification`, replacing the pre-Win8-style `Shell_NotifyIconW`
+    # balloon as the primary path (the balloon stays as a fallback for when
+    # no AppUserModelID/shortcut is registered).
+    "UI_Notifications",
+    # `windows::Data::Xml::Dom::XmlDocument`: the toast
+    # content is built as a `ToastGeneric` XML document and handed to
+    # `ToastNotification::CreateToastNotification`, which — per the
+    # `windows` crate's own cfg-gating of that method — requires this
+    # feature even though no other `Data::Xml::Dom` type is used directly.
+    "Data_Xml_Dom",
+    # `windows::Foundation::TypedEventHandler`: `ToastNotification::Activated`
+    # takes one to deliver the click-through callback.
+    "Foundation",
 ] }
 # `windows_numerics::Vector2` — the point type `ID2D1RenderTarget::DrawLine`/
 # `DrawEllipse`'s `D2D1_ELLIPSE` take (issue #26's chart line paths and hover
