@@ -6415,7 +6415,10 @@ mod tests {
     #[test]
     fn pointer_shape_cursor_name_maps_every_variant() {
         // Iterates `desktop::all_pointer_shapes()` instead of
-        // hand-listing all 9 `Default` + `Resize(edge)` combinations.
+        // hand-listing all 18 `Default`/`Resize(edge)`/rest combinations.
+        // The non-`Resize` variants beyond `Default` have no GTK cursor
+        // name wired up yet, so they all fall back to "default" — see
+        // `pointer_shape_cursor_name`'s doc.
         let expected = [
             "default",
             "n-resize",
@@ -6426,11 +6429,24 @@ mod tests {
             "nw-resize",
             "se-resize",
             "sw-resize",
+            "default", // Text
+            "default", // Pointer
+            "default", // Grab
+            "default", // Grabbing
+            "default", // Crosshair
+            "default", // Wait
+            "default", // NotAllowed
+            "default", // ColResize
+            "default", // RowResize
         ];
-        for (shape, expected) in crate::desktop::all_pointer_shapes()
-            .iter()
-            .zip(expected.iter())
-        {
+        let shapes = crate::desktop::all_pointer_shapes();
+        assert_eq!(
+            shapes.len(),
+            expected.len(),
+            "every PointerShape must have an expected cursor name — a new variant means a new \
+             row here, not a silently-truncated zip"
+        );
+        for (shape, expected) in shapes.iter().zip(expected.iter()) {
             assert_eq!(pointer_shape_cursor_name(*shape), *expected);
         }
     }

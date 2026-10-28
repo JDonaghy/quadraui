@@ -60,14 +60,23 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
-- `PointerShape` (`backend::PointerShape`) gains nine new `#[non_exhaustive]`
-  variants — `Text`, `Pointer`, `Grab`, `Grabbing`, `Crosshair`, `Wait`,
-  `NotAllowed`, `ColResize`, `RowResize` — alongside the existing `Default`/
-  `Resize`. `TextInputLayout::pointer_shape` and `ButtonLayout::pointer_shape`
-  request `Text`/`Pointer` from hit-test results; each backend's
-  `PointerShape` → native-cursor mapping falls back to its plain arrow/
-  `"default"` for every new variant until that backend wires up a native
-  glyph for it.
+- `PointerShape` (`backend::PointerShape`, itself `#[non_exhaustive]`) gains
+  nine new variants — `Text`, `Pointer`, `Grab`, `Grabbing`, `Crosshair`,
+  `Wait`, `NotAllowed`, `ColResize`, `RowResize` — alongside the existing
+  `Default`/`Resize`. `TextInputLayout::pointer_shape` and
+  `ButtonLayout::pointer_shape` request `Text`/`Pointer` from hit-test
+  results; each backend's `PointerShape` → native-cursor mapping falls back
+  to its plain arrow/`"default"` for every new variant until that backend
+  wires up a native glyph for it. `desktop::all_pointer_shapes()`, the
+  enum-walk scaffold every backend's exhaustive mapping test is built on,
+  now lists all 18 shapes, so each backend's test asserts the fallback for
+  every new variant rather than only the original 9.
+- `ButtonLayout::pointer_shape_for` — like `pointer_shape`, but also takes
+  the `Button` so a disabled button's body reports `Default` instead of a
+  hand cursor.
+- `TextInputLayout::pointer_shape` now reports `Text` (not `Default`) over
+  the blank band inside `content_bounds` below the last visible line,
+  matching how native multi-line editors still show an I-beam there.
 - `PlatformServices::register_global_shortcut`/`unregister_global_shortcut`/
   `unregister_all_global_shortcuts`, `GlobalShortcutId`,
   `GlobalShortcutRegistry` and `UiEvent::GlobalShortcut` — the seam for an
