@@ -669,9 +669,10 @@ pub use power::{BlockerId, PowerEventKind, PowerSaveKind, ThermalState};
 // `PlatformServices::begin_drag_out`'s argument type — see `drag`'s
 // module doc.
 pub use drag::DragOutPayload;
-// `PlatformServices::app_path`'s argument type and the app-identifier
-// setters it's scoped by — see `paths`'s module doc.
-pub use paths::{app_identifier, clear_app_identifier, set_app_identifier, AppPathKind};
+// `PlatformServices::app_path`'s argument type, same precedent as
+// `DragOutPayload` above. The app-identifier getter/setters stay reachable
+// at `quadraui::paths::*` only — call sites there, not here.
+pub use paths::AppPathKind;
 // The public paint-verb seam — see `paint_surface`'s module doc.
 pub use frame::{
     check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,

@@ -42,6 +42,7 @@ use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::focus::FocusManager;
 use crate::interaction::InteractionState;
 use crate::modal_stack::ModalStack;
+use crate::paths::AppPathKind;
 use crate::power::{BlockerId, PowerSaveKind, ThermalState};
 use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
@@ -4378,8 +4379,8 @@ pub trait PlatformServices {
 
     /// A standard, per-app filesystem location — Electron's
     /// `app.getPath` equivalent. See [`AppPathKind`] for the full set and
-    /// [`crate::paths`]'s module doc for how `UserData`/`AppConfig`/
-    /// `AppCache`/`Logs` are scoped by the app identifier
+    /// [`crate::paths`]'s module doc for how `UserData`/
+    /// `AppConfig`/`AppCache`/`Logs` are scoped by the app identifier
     /// [`crate::paths::set_app_identifier`] installs.
     ///
     /// This one is **backend-independent**, the same way
@@ -4399,7 +4400,11 @@ pub trait PlatformServices {
     /// are enabled (a bare `cargo check -p quadraui` with no features).
     /// No in-tree backend overrides this — there is nothing
     /// backend-specific left to override.
-    fn app_path(&self, kind: crate::paths::AppPathKind) -> ServiceResult<std::path::PathBuf> {
+    ///
+    /// The returned directory is not created; callers that need it to
+    /// exist on disk must create it themselves, same as every other
+    /// `AppPathKind`-scoped location below.
+    fn app_path(&self, kind: AppPathKind) -> ServiceResult<PathBuf> {
         crate::paths::resolve(kind)
     }
 

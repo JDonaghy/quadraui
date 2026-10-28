@@ -13,7 +13,7 @@
 //! the trait's default.
 //!
 //! `UserData`/`AppConfig`/`AppCache`/`Logs` are scoped by an app
-//! identifier that defaults to the running binary's file name but can be
+//! identifier that defaults to the running binary's file stem but can be
 //! overridden with [`set_app_identifier`] — call it once during app
 //! startup, before the first [`PlatformServices::app_path`](crate::backend::PlatformServices::app_path)
 //! call, the same way a host installs [`crate::diagnostics::set_sink`]
@@ -53,9 +53,15 @@ pub enum AppPathKind {
     /// The OS-wide temporary directory (`std::env::temp_dir`) — not
     /// app-scoped, same as Electron's `temp`.
     Temp,
-    /// The user's Downloads folder, unscoped by app identity.
+    /// The user's Downloads folder, unscoped by app identity. On Linux this
+    /// is read from the XDG `user-dirs.dirs` file written by a desktop
+    /// session; on a headless host where that file was never written this
+    /// falls back to `<home>/Downloads` rather than reporting
+    /// [`crate::backend::BackendError::Unsupported`] for an ordinary,
+    /// non-degraded capability.
     Downloads,
-    /// The user's Documents folder, unscoped by app identity.
+    /// The user's Documents folder, unscoped by app identity. Same
+    /// XDG-file-then-`<home>/Documents` fallback as [`Self::Downloads`].
     Documents,
     /// The user's home directory, unscoped by app identity.
     Home,
@@ -72,11 +78,32 @@ fn identifier_slot() -> &'static RwLock<Option<String>> {
 /// [`crate::diagnostics::set_sink`] — call it once at startup, before the
 /// first [`PlatformServices::app_path`](crate::backend::PlatformServices::app_path)
 /// call that needs it.
+///
+/// `identifier` must be a single plain directory-name component: non-empty,
+/// containing no path separator (`/` or, on Windows, `\`) and not `.` or
+/// `..`. An identifier that fails this check is ignored — the previously
+/// set (or default) identifier stays in effect — rather than being
+/// interpolated into a traversing path; this matters over FFI
+/// (`qui_set_app_identifier`), where the value may come from host-supplied
+/// config rather than a literal in this process's own source.
 pub fn set_app_identifier(identifier: impl Into<String>) {
+    let identifier = identifier.into();
+    if !is_valid_identifier(&identifier) {
+        return;
+    }
     let mut slot = identifier_slot()
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *slot = Some(identifier.into());
+    *slot = Some(identifier);
+}
+
+/// Whether `identifier` is safe to interpolate as a single path component —
+/// see [`set_app_identifier`]'s doc for the contract.
+fn is_valid_identifier(identifier: &str) -> bool {
+    !identifier.is_empty()
+        && identifier != "."
+        && identifier != ".."
+        && !identifier.chars().any(std::path::is_separator)
 }
 
 /// Clear any identifier set via [`set_app_identifier`], restoring the
@@ -91,9 +118,10 @@ pub fn clear_app_identifier() {
 }
 
 /// The current app identifier: whatever [`set_app_identifier`] last set,
-/// or — if nothing was ever set — the running binary's file name, or the
-/// fixed literal `"quadraui-app"` if even that can't be determined (e.g.
-/// `std::env::current_exe` failing). Never empty.
+/// or — if nothing was ever set — the running binary's file stem (its file
+/// name without extension), or the fixed literal `"quadraui-app"` if even
+/// that can't be determined (e.g. `std::env::current_exe` failing). Never
+/// empty.
 pub fn app_identifier() -> String {
     let slot = identifier_slot()
         .read()
@@ -114,7 +142,21 @@ pub fn app_identifier() -> String {
 /// mutating the same global concurrently would each risk observing (or
 /// clobbering) the other's identifier. Mirrors
 /// [`crate::diagnostics::test_guard`]'s shape exactly.
+///
+/// `pub(crate)`, not private: `tui::services`'s `app_path_tests` module
+/// also sets/clears the identifier (pinning
+/// [`crate::backend::PlatformServices::app_path`]'s default body end to
+/// end through [`crate::tui::services::TuiPlatformServices`]) and must
+/// serialise against this module's own tests through the same lock.
+///
+/// Gated the same as `mod tests` below, in-module its only caller: with
+/// none of the four backend features enabled this function would
+/// otherwise be compiled but unreachable, and `-D warnings` turns that
+/// dead-code lint into a hard build failure. `tui::services`'s caller is
+/// itself gated on `feature = "tui"`, one of these four, so the
+/// reachability story composes.
 #[cfg(test)]
+#[cfg(any(feature = "tui", feature = "gtk", feature = "macos", feature = "win"))]
 pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| std::sync::Mutex::new(()))
@@ -141,12 +183,20 @@ pub fn resolve(kind: AppPathKind) -> ServiceResult<PathBuf> {
         AppPathKind::Home => directories::UserDirs::new()
             .map(|dirs| dirs.home_dir().to_path_buf())
             .ok_or(BackendError::Unsupported),
-        AppPathKind::Documents => directories::UserDirs::new()
-            .and_then(|dirs| dirs.document_dir().map(Into::into))
-            .ok_or(BackendError::Unsupported),
-        AppPathKind::Downloads => directories::UserDirs::new()
-            .and_then(|dirs| dirs.download_dir().map(Into::into))
-            .ok_or(BackendError::Unsupported),
+        AppPathKind::Documents => {
+            let dirs = directories::UserDirs::new().ok_or(BackendError::Unsupported)?;
+            Ok(dirs
+                .document_dir()
+                .map(Into::into)
+                .unwrap_or_else(|| dirs.home_dir().join("Documents")))
+        }
+        AppPathKind::Downloads => {
+            let dirs = directories::UserDirs::new().ok_or(BackendError::Unsupported)?;
+            Ok(dirs
+                .download_dir()
+                .map(Into::into)
+                .unwrap_or_else(|| dirs.home_dir().join("Downloads")))
+        }
         AppPathKind::UserData => project_dirs().map(|dirs| dirs.data_dir().to_path_buf()),
         AppPathKind::AppConfig => project_dirs().map(|dirs| dirs.config_dir().to_path_buf()),
         AppPathKind::AppCache => project_dirs().map(|dirs| dirs.cache_dir().to_path_buf()),
@@ -190,6 +240,13 @@ mod tests {
         clear_app_identifier();
         set_app_identifier("quadraui-paths-test");
 
+        let scoped_by_identifier = [
+            AppPathKind::UserData,
+            AppPathKind::AppConfig,
+            AppPathKind::AppCache,
+            AppPathKind::Logs,
+        ];
+
         for kind in [
             AppPathKind::UserData,
             AppPathKind::AppConfig,
@@ -205,10 +262,17 @@ mod tests {
                 resolved.is_ok(),
                 "{kind:?} should resolve on this platform, got {resolved:?}"
             );
+            let resolved = resolved.unwrap();
             assert!(
-                !resolved.unwrap().as_os_str().is_empty(),
+                !resolved.as_os_str().is_empty(),
                 "{kind:?} resolved to an empty path"
             );
+            if scoped_by_identifier.contains(&kind) {
+                assert!(
+                    resolved.to_string_lossy().contains("quadraui-paths-test"),
+                    "{kind:?} should be scoped by the app identifier, got {resolved:?}"
+                );
+            }
         }
 
         clear_app_identifier();
@@ -240,6 +304,26 @@ mod tests {
         let id = app_identifier();
         assert!(!id.is_empty());
         assert_eq!(id, app_identifier());
+        clear_app_identifier();
+    }
+
+    #[test]
+    fn set_app_identifier_rejects_path_traversal_and_empty_identifiers() {
+        let _g = guard();
+        clear_app_identifier();
+
+        set_app_identifier("quadraui-valid-identifier");
+        assert_eq!(app_identifier(), "quadraui-valid-identifier");
+
+        for rejected in ["", ".", "..", "../escape", "a/b"] {
+            set_app_identifier(rejected);
+            assert_eq!(
+                app_identifier(),
+                "quadraui-valid-identifier",
+                "{rejected:?} should have been rejected, leaving the prior identifier in place"
+            );
+        }
+
         clear_app_identifier();
     }
 }

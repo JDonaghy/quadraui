@@ -2105,6 +2105,42 @@ mod power_save_block_tests {
     }
 }
 
+/// Pins [`crate::backend::PlatformServices::app_path`]'s default body end
+/// to end through [`TuiPlatformServices`], which — like every other
+/// backend — overrides nothing and relies entirely on that default. See
+/// `paths`'s own module doc for why the TUI story is full support, not a
+/// degrade.
+#[cfg(test)]
+mod app_path_tests {
+    use super::*;
+    use crate::backend::PlatformServices;
+    use crate::paths::{self, AppPathKind};
+
+    fn guard() -> std::sync::MutexGuard<'static, ()> {
+        paths::test_guard()
+    }
+
+    #[test]
+    fn resolves_a_user_data_path_scoped_by_the_app_identifier() {
+        let _g = guard();
+        paths::clear_app_identifier();
+        paths::set_app_identifier("quadraui-tui-services-app-path-test");
+
+        let service = TuiPlatformServices::new();
+        let resolved = service
+            .app_path(AppPathKind::UserData)
+            .expect("UserData should resolve on every platform this crate supports");
+        assert!(
+            resolved
+                .to_string_lossy()
+                .contains("quadraui-tui-services-app-path-test"),
+            "{resolved:?} should be scoped by the app identifier"
+        );
+
+        paths::clear_app_identifier();
+    }
+}
+
 #[cfg(test)]
 mod message_dialog_tests {
     use super::*;
