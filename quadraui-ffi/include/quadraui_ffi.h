@@ -78,6 +78,12 @@
 #define QUI_ERR_INTERNAL -12
 
 /**
+ * The `kind` passed to [`qui_app_path`] was not one of the `QUI_PATH_*`
+ * values, or this platform or build could not resolve it.
+ */
+#define QUI_ERR_UNSUPPORTED -13
+
+/**
  * [`qui_step`] advanced the app and it is still running.
  */
 #define QUI_STEP_CONTINUE QUI_OK
@@ -117,6 +123,54 @@
  * Slot id of the app's `TabBar` descriptor.
  */
 #define QUI_SLOT_TAB_BAR 5
+
+/**
+ * `kind` for [`qui_app_path`]: durable, app-scoped data (Electron's
+ * `userData`), scoped by [`qui_set_app_identifier`].
+ */
+#define QUI_PATH_USER_DATA 0
+
+/**
+ * `kind` for [`qui_app_path`]: app-scoped configuration, scoped by
+ * [`qui_set_app_identifier`].
+ */
+#define QUI_PATH_APP_CONFIG 1
+
+/**
+ * `kind` for [`qui_app_path`]: app-scoped cache, scoped by
+ * [`qui_set_app_identifier`].
+ */
+#define QUI_PATH_APP_CACHE 2
+
+/**
+ * `kind` for [`qui_app_path`]: app-scoped log directory, scoped by
+ * [`qui_set_app_identifier`].
+ */
+#define QUI_PATH_LOGS 3
+
+/**
+ * `kind` for [`qui_app_path`]: the OS-wide temporary directory, unscoped
+ * by app identity.
+ */
+#define QUI_PATH_TEMP 4
+
+/**
+ * `kind` for [`qui_app_path`]: the user's Downloads folder, unscoped by
+ * app identity.
+ */
+#define QUI_PATH_DOWNLOADS 5
+
+/**
+ * `kind` for [`qui_app_path`]: the user's Documents folder, unscoped by
+ * app identity.
+ */
+#define QUI_PATH_DOCUMENTS 6
+
+/**
+ * `kind` for [`qui_app_path`]: the user's home directory, unscoped by
+ * app identity.
+ */
+#define QUI_PATH_HOME 7
 
 /**
  * Opaque handle to one running app. Never constructed or inspected by the
@@ -406,6 +460,35 @@ int32_t qui_screen_contains(const struct QuiApp *app, const uint8_t *needle, uin
  * `app` must be a live pointer from [`qui_app_new`].
  */
 char *qui_screen(const struct QuiApp *app);
+
+/**
+ * Resolve a standard, per-app filesystem location —
+ * `quadraui::PlatformServices::app_path` surfaced over FFI. `kind` is one
+ * of the `QUI_PATH_*` constants.
+ *
+ * Needs no [`QuiApp`] handle: resolving a standard path needs no window,
+ * display server or driver, only the filesystem and environment
+ * (`quadraui::paths`'s module doc has the full rationale).
+ *
+ * Returns a caller-owned, null-terminated UTF-8 string the caller must
+ * free with [`qui_free`], or null on failure — [`QUI_ERR_UNSUPPORTED`] for
+ * a `kind` outside the `QUI_PATH_*` set, or one this platform or build
+ * cannot resolve — with [`qui_last_error`] set to why.
+ */
+char *qui_app_path(int32_t kind);
+
+/**
+ * Set the app identifier that scopes [`QUI_PATH_USER_DATA`],
+ * [`QUI_PATH_APP_CONFIG`], [`QUI_PATH_APP_CACHE`] and [`QUI_PATH_LOGS`] —
+ * `quadraui::paths::set_app_identifier` surfaced over FFI.
+ *
+ * Process-global, not per-[`QuiApp`] handle: call this once at startup,
+ * before the first [`qui_app_path`] call that needs it.
+ *
+ * # Safety
+ * `ptr` must be either null or valid for reads of `len` bytes.
+ */
+int32_t qui_set_app_identifier(const uint8_t *ptr, uintptr_t len);
 
 /**
  * Return the error code of the last call on the current thread: [`QUI_OK`]

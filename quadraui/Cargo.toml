@@ -223,7 +223,19 @@ terminal = ["dep:portable-pty", "dep:vt100"]
 # server, and no desktop session).
 # `dep:libc` (quadraui#1048): unix-only, see the `[target.'cfg(unix)'.dependencies]`
 # table below for why — a no-op reference on every other target.
-tui = ["dep:ratatui", "dep:arboard", "dep:trash", "dep:keyring", "dep:libc"]
+# `dep:directories` (issue #1781): `PlatformServices::app_path` — see
+# `paths`'s module doc for why the same cross-platform `directories` crate
+# backs every backend's default, TUI included (same "needs only a
+# filesystem and env vars, not a live desktop session" reasoning as
+# `trash`'s and `keyring`'s own comments above).
+tui = [
+    "dep:ratatui",
+    "dep:arboard",
+    "dep:trash",
+    "dep:keyring",
+    "dep:libc",
+    "dep:directories",
+]
 
 # Public GTK rasterisers in `quadraui::gtk`. Pulls in gtk4 + pangocairo.
 # `arboard/image-data` (issue #954): `GtkClipboard::read_image`/
@@ -286,6 +298,9 @@ gtk = [
     "arboard/image-data",
     "dep:trash",
     "dep:keyring",
+    # `dep:directories` (issue #1781): see `tui`'s own comment above —
+    # same crate, same reasons.
+    "dep:directories",
     "dep:objc2",
     "dep:objc2-app-kit",
     "dep:core-text",
@@ -313,9 +328,16 @@ gtk = [
 # column (`tests/conformance.rs`, quadraui#708/#722) rather than a
 # blocking one while per-primitive paint/click parity with the other
 # backends is still being closed out.
-# `dep:trash` (issue #956) / `dep:keyring` (issue #958): see the `tui`
-# feature's comments above — same crates, same reasons.
-win = ["dep:windows", "dep:windows-numerics", "dep:trash", "dep:keyring"]
+# `dep:trash` (issue #956) / `dep:keyring` (issue #958) / `dep:directories`
+# (issue #1781): see the `tui` feature's comments above — same crates,
+# same reasons.
+win = [
+    "dep:windows",
+    "dep:windows-numerics",
+    "dep:trash",
+    "dep:keyring",
+    "dep:directories",
+]
 
 # Public macOS rasterisers in `quadraui::macos` (AppKit + Core Graphics + Core Text).
 # The objc2-family deps are platform-gated below, but that's not the only
@@ -339,10 +361,12 @@ macos = [
     # matching comment above; same reasoning, same arboard feature.
     "arboard/image-data",
     "dep:dispatch2",
-    # `dep:trash` (issue #956) / `dep:keyring` (issue #958): see the `tui`
-    # feature's comments above — same crates, same reasons.
+    # `dep:trash` (issue #956) / `dep:keyring` (issue #958) / `dep:directories`
+    # (issue #1781): see the `tui` feature's comments above — same crates,
+    # same reasons.
     "dep:trash",
     "dep:keyring",
+    "dep:directories",
 ]
 # Optional flex/grid layout module, `quadraui::flex`. Pulls in `taffy` —
 # unit-agnostic (plain `f32` in, plain `f32` out, same as `event::Rect`),
@@ -443,6 +467,17 @@ trash = { version = "5", optional = true }
 # session, not a live desktop" reasoning as `trash`'s own comment above,
 # which is why this pulls in on TUI too instead of degrading.
 keyring = { version = "4", optional = true }
+# Optional — pulled in by `tui`, `gtk`, `macos`, and `win` (issue #1781):
+# `PlatformServices::app_path`'s one shared implementation across every
+# backend (`paths` module) — see that module's own doc for why no backend
+# needs its own override. Resolves the per-OS user-data/config/cache
+# directories (macOS `~/Library/Application Support`, Linux
+# `$XDG_CONFIG_HOME`/`$XDG_CACHE_HOME`, Windows `%APPDATA%`/`%LOCALAPPDATA%`)
+# from only a filesystem and environment variables, not a live
+# desktop/window-server session — same "genuinely needs no desktop
+# session" reasoning as `trash`'s and `keyring`'s own comments above,
+# which is why this pulls in on TUI too instead of degrading.
+directories = { version = "6", optional = true }
 # Optional — pulled in by the `layout` feature:
 # `quadraui::flex`'s flex/grid layout engine. `default-features = false`
 # drops taffy's own `serde`/`parse`/`profile`/`debug` extras this crate

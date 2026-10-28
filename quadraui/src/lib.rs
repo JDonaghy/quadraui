@@ -214,6 +214,12 @@ pub mod frame;
 pub mod generic_font;
 pub mod interaction;
 pub mod layout;
+// Not under `primitives/`, same reasoning as `font_role`/`generic_font`
+// above: app-identity-scoped filesystem locations are not a widget — no
+// `Layout`, no `hit_test`, no `Backend::draw_*` method of its own — so this
+// must not inflate the primitive count `readme_truth.rs` derives from
+// `primitives/mod.rs`'s `pub mod` list.
+pub mod paths;
 pub mod prelude;
 pub mod primitives;
 pub mod shell;
@@ -663,6 +669,9 @@ pub use power::{BlockerId, PowerEventKind, PowerSaveKind, ThermalState};
 // `PlatformServices::begin_drag_out`'s argument type — see `drag`'s
 // module doc.
 pub use drag::DragOutPayload;
+// `PlatformServices::app_path`'s argument type and the app-identifier
+// setters it's scoped by — see `paths`'s module doc.
+pub use paths::{app_identifier, clear_app_identifier, set_app_identifier, AppPathKind};
 // The public paint-verb seam — see `paint_surface`'s module doc.
 pub use frame::{
     check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,
