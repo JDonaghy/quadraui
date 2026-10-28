@@ -28,12 +28,12 @@
 //! [`GlobalShortcutRegistry`]'s own doc for what wraps it and what doesn't
 //! yet.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::backend::BackendError;
+use crate::backend::{BackendError, ServiceResult};
 use crate::event::{Key, NamedKey};
 use crate::types::{Modifiers, WidgetId};
 
@@ -493,8 +493,12 @@ impl GlobalShortcutId {
 /// [`BackendError::Unsupported`] rather than holding a registry.
 #[derive(Debug, Default)]
 pub struct GlobalShortcutRegistry {
-    bindings: HashMap<GlobalShortcutId, ParsedBinding>,
-    claimed: HashSet<ParsedBinding>,
+    /// The single source of truth: each claimed binding maps to the id
+    /// that holds it. `unregister` does a linear scan to find `id`'s
+    /// binding rather than keeping a second, id-keyed map in sync by
+    /// hand — registries at this cardinality (a handful of app-wide
+    /// hotkeys) don't need the O(1) reverse lookup.
+    claimed: HashMap<ParsedBinding, GlobalShortcutId>,
 }
 
 impl GlobalShortcutRegistry {
@@ -514,7 +518,13 @@ impl GlobalShortcutRegistry {
     /// since [`BackendError`] isn't `#[non_exhaustive]` and a new variant
     /// would be a breaking change for an outcome a native call already
     /// shapes this way.
-    pub fn register(&mut self, accel: &Accelerator) -> Result<GlobalShortcutId, BackendError> {
+    ///
+    /// `accel.scope` is ignored: a global shortcut is OS-wide by
+    /// construction, so an [`AcceleratorScope::Widget`] or
+    /// [`AcceleratorScope::Mode`] value carries no meaning here. Only
+    /// `accel.binding` (parsed into the claimed key combination) and
+    /// `accel.id` (used in error text) are read.
+    pub fn register(&mut self, accel: &Accelerator) -> ServiceResult<GlobalShortcutId> {
         let parsed =
             parse_binding(&accel.binding).ok_or_else(|| BackendError::PlatformFailure {
                 context: format!(
@@ -522,7 +532,7 @@ impl GlobalShortcutRegistry {
                     accel.id.as_str()
                 ),
             })?;
-        if self.claimed.contains(&parsed) {
+        if self.claimed.contains_key(&parsed) {
             return Err(BackendError::PlatformFailure {
                 context: format!(
                     "global shortcut {:?}: key combination already registered",
@@ -531,25 +541,22 @@ impl GlobalShortcutRegistry {
             });
         }
         let id = GlobalShortcutId::next();
-        self.claimed.insert(parsed.clone());
-        self.bindings.insert(id, parsed);
+        self.claimed.insert(parsed, id);
         Ok(id)
     }
 
     /// Release `id`'s claim on its key binding, freeing it for a future
     /// [`Self::register`] call. A no-op if `id` isn't currently registered
-    /// (already unregistered, or never valid for this registry) — matches
-    /// [`crate::PlatformServices::end_power_save_block`]'s "idempotent
-    /// release" idiom rather than erroring on a stale id.
+    /// (already unregistered, or never valid for this registry) — an app
+    /// that unregisters a shortcut it already unregistered (or never
+    /// registered) doesn't need to track the state itself to avoid an
+    /// error.
     pub fn unregister(&mut self, id: GlobalShortcutId) {
-        if let Some(parsed) = self.bindings.remove(&id) {
-            self.claimed.remove(&parsed);
-        }
+        self.claimed.retain(|_, claimed_id| *claimed_id != id);
     }
 
     /// Release every currently registered shortcut.
     pub fn unregister_all(&mut self) {
-        self.bindings.clear();
         self.claimed.clear();
     }
 }

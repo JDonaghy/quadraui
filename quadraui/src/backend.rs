@@ -4498,6 +4498,13 @@ pub trait PlatformServices {
     /// Unregister a global shortcut previously returned by
     /// [`Self::register_global_shortcut`], freeing its key binding.
     ///
+    /// A stale `id` (already unregistered, or never valid) is `Ok(())`,
+    /// not an error — see
+    /// [`crate::accelerator::GlobalShortcutRegistry::unregister`], which
+    /// every per-backend override is expected to wrap. Callers may
+    /// unregister unconditionally (e.g. on shutdown) without tracking
+    /// which ids are still live.
+    ///
     /// Default: [`BackendError::Unsupported`] — mirrors
     /// [`Self::register_global_shortcut`]'s default; a backend that
     /// doesn't override one is expected to not override the other

@@ -1159,6 +1159,16 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
     ("thermal_state", ServiceHonesty::AlwaysReal),
     ("begin_power_save_block", ServiceHonesty::AlwaysReal),
     ("end_power_save_block", ServiceHonesty::AlwaysReal),
+    // `register_global_shortcut`/`unregister_global_shortcut`/
+    // `unregister_all_global_shortcuts` all return `ServiceResult<...>` and
+    // default to `Err(BackendError::Unsupported)` — same always-real-`Result`
+    // shape as the power-seam methods just above.
+    ("register_global_shortcut", ServiceHonesty::AlwaysReal),
+    ("unregister_global_shortcut", ServiceHonesty::AlwaysReal),
+    (
+        "unregister_all_global_shortcuts",
+        ServiceHonesty::AlwaysReal,
+    ),
     ("platform_name", ServiceHonesty::AlwaysReal),
 ];
 
