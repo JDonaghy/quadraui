@@ -369,7 +369,7 @@ pub fn win_focus_to_uievent(focused: bool) -> UiEvent {
 /// Access) delivers `WM_SETTINGCHANGE` with this in `wParam` and no
 /// setting name in `lParam` at all, unlike a light/dark or accent-color
 /// flip, which names `"ImmersiveColorSet"` and leaves `wParam` zero.
-const SPI_SETHIGHCONTRAST: usize = 67;
+pub(crate) const SPI_SETHIGHCONTRAST: usize = 67;
 
 /// Whether a `WM_SETTINGCHANGE` notification is a system-appearance
 /// change: either `wParam` names the high-contrast action

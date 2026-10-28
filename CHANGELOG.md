@@ -71,7 +71,10 @@ only a push to `main` runs this workflow.
   tri-state so an ordinary resize drag doesn't re-fire it), `SystemThemeChanged`
   off `WM_SETTINGCHANGE` filtered to the `ImmersiveColorSet` setting name or
   the `SPI_SETHIGHCONTRAST` action code, and `DisplaysChanged` off
-  `WM_DISPLAYCHANGE`. GTK and macOS producers are tracked separately.
+  `WM_DISPLAYCHANGE`. `WindowStateChanged` is documented as an idempotent
+  state snapshot rather than a delta, including the Win32 detail that
+  minimizing a maximized window reports `maximized` and `minimized` together.
+  GTK and macOS producers are tracked separately.
 - `PlatformServices::update_service` — an auto-update seam. The new
   `UpdateService` trait (`check_for_update`, `download_and_stage`,
   `apply_on_quit`) plus its `UpdateFeed`/`UpdateInfo`/`StagedUpdate` types
@@ -180,17 +183,21 @@ only a push to `main` runs this workflow.
 
 ### Fixed
 
-- Windows `WindowStateChanged` dedup cache (`WindowState::window_tristate`)
-  now refreshes on the deferred resize-replay path (`resync_pending_resize`),
-  not only on a live `WM_SIZE`. A reentrant `WM_SIZE` ceded to
-  `DefWindowProcW` while a `guarded_call` was on the stack (e.g. a
-  `toggle_window_maximize` triggered from inside `AppLogic::handle`) left the
-  cache stale, so the next live `WM_SIZE` restore compared against the old
-  state and was silently swallowed instead of dispatching
-  `WindowStateChanged`. The classification itself also moved off `WM_SIZE`'s
-  `wParam` (which conflates this window's own `SIZE_MAXIMIZED`/
-  `SIZE_MINIMIZED` with another window's `SIZE_MAXSHOW`/`SIZE_MAXHIDE`) to
-  live `IsZoomed`/`IsIconic` queries.
+- Windows `WindowStateChanged` now also fires from the deferred resize-replay
+  path (`resync_pending_resize`), not only from a live `WM_SIZE`. A reentrant
+  `WM_SIZE` ceded to `DefWindowProcW` while a `guarded_call` was on the stack
+  (a `toggle_window_maximize` triggered from inside `AppLogic::handle`, or a
+  user maximizing the window while a modal pump runs) was dropped outright,
+  and left the dedup cache (`WindowState::window_tristate`) stale so that the
+  *next* live `WM_SIZE` compared against the pre-transition state and was
+  swallowed too. The classification itself also moved off `WM_SIZE`'s `wParam`
+  (which conflates this window's own `SIZE_MAXIMIZED`/`SIZE_MINIMIZED` with
+  another window's `SIZE_MAXSHOW`/`SIZE_MAXHIDE`) to live
+  `IsZoomed`/`IsIconic` queries.
+- Windows `WM_SETTINGCHANGE` messages that are not a theme flip are forwarded
+  to `DefWindowProcW` instead of being answered `LRESULT(0)`, so the default
+  handling of the other setting areas (`"Policy"`, `"Environment"`, system
+  metrics, ...) is no longer suppressed by the theme producer.
 - `WinBackend::is_fullscreen` now guards on an attached `self.hwnd`, the same
   way `is_maximized` already does, instead of answering `Ok(false)` for a
   backend with no window at all.

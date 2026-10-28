@@ -5504,7 +5504,9 @@ impl WindowControl for WinBackend {
     fn is_fullscreen(&self) -> ServiceResult<bool> {
         #[cfg(target_os = "windows")]
         {
-            let _hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            if self.hwnd.is_none() {
+                return Err(BackendError::Unsupported);
+            }
             Ok(self.fullscreen_saved.is_some())
         }
         #[cfg(not(target_os = "windows"))]
