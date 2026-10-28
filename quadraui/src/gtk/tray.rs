@@ -80,7 +80,6 @@
 //! itself notice the peer disappeared. That is intentional — there is
 //! no `TrayService::remove`/`hide` in the trait for any backend to call.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
@@ -97,6 +96,7 @@ use crate::types::WidgetId;
 /// `Copy` because both variants' payloads are, which lets
 /// [`drain_tray_wake`] `downcast_ref` + copy instead of needing to
 /// consume the original event to extract it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum TrayWake {
     Clicked(MouseButton),
@@ -433,6 +433,7 @@ fn widget_id_for_dbus_id(flattened: &[ContextMenuItem], dbus_id: i32) -> Option<
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
+    use std::collections::HashMap;
     use zbus::blocking::Connection;
     use zbus::fdo;
     use zbus::zvariant::{OwnedValue, Value};
