@@ -536,23 +536,38 @@ pub enum UiEvent {
     /// re-measure of any DPI-dependent layout) always follows receipt.
     DpiChanged(f32),
 
-    /// Optional capability — the OS toggled one of the window's tri-state
-    /// chrome flags (maximize/restore, fullscreen enter/exit,
-    /// minimize/restore) other than through [`Backend::toggle_window_maximize`]
-    /// or [`WindowControl::set_fullscreen`][crate::backend::WindowControl::set_fullscreen]
-    /// themselves — a window-manager keyboard shortcut, a title-bar
-    /// double-click GTK/macOS handle natively, `Cmd+Ctrl+F`, etc. Backends
-    /// that wire this connect to their native "state changed" signal
-    /// and push this with the window's fresh tri-state snapshot; apps use
-    /// it to keep their own "is maximized" UI in sync with state the user
-    /// changed outside the app's own controls. Not applicable to TUI: a
-    /// terminal has no OS-level maximize/fullscreen/minimize state
-    /// distinct from the alt-screen it already occupies.
+    /// Optional capability — one of the window's tri-state chrome flags
+    /// (maximize/restore, fullscreen enter/exit, minimize/restore)
+    /// changed: a window-manager keyboard shortcut, a title-bar
+    /// double-click GTK/macOS handle natively, `Cmd+Ctrl+F`, or the app's
+    /// own [`Backend::toggle_window_maximize`] /
+    /// [`WindowControl::set_fullscreen`][crate::backend::WindowControl::set_fullscreen]
+    /// call. Backends that wire this connect to their native "state
+    /// changed" signal and push the window's fresh tri-state snapshot;
+    /// apps use it to keep their own "is maximized" UI in sync. Not
+    /// applicable to TUI: a terminal has no OS-level
+    /// maximize/fullscreen/minimize state distinct from the alt-screen it
+    /// already occupies.
     ///
-    /// Win wires this off `WM_SIZE`'s `SIZE_MAXIMIZED`/`SIZE_MINIMIZED`
-    /// transitions plus [`WindowControl::is_fullscreen`][crate::backend::WindowControl::is_fullscreen],
-    /// deduplicated against the previous tri-state so an ordinary resize
-    /// drag doesn't re-fire it. GTK and macOS have no producer yet.
+    /// **This is a state snapshot, not a delta.** Treat it as idempotent:
+    /// all three fields describe the window as it is now, so an app that
+    /// assigns them (rather than toggling on receipt) stays correct even
+    /// when the transition was one it requested itself. Producers
+    /// deduplicate against the previously reported tri-state, so an
+    /// ordinary resize drag — which changes none of the three — emits
+    /// nothing.
+    ///
+    /// Win wires this off `WM_SIZE`, classifying from live `IsZoomed` /
+    /// `IsIconic` queries plus
+    /// [`WindowControl::is_fullscreen`][crate::backend::WindowControl::is_fullscreen]
+    /// rather than from `WM_SIZE`'s `wParam`. One Win32 quirk surfaces
+    /// through that: `IsZoomed` reports the `WS_MAXIMIZE` style, which
+    /// Windows keeps set while a *maximized* window is minimized (so
+    /// restoring it returns it to maximized rather than to its original
+    /// size). Minimizing a maximized window therefore reports
+    /// `maximized: true, minimized: true` together, and an app that
+    /// renders a maximize/restore affordance should check `minimized`
+    /// first. GTK and macOS have no producer yet.
     WindowStateChanged {
         maximized: bool,
         fullscreen: bool,
