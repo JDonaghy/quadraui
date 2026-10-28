@@ -187,11 +187,28 @@ impl ButtonLayout {
 
     /// Pointer glyph a backend should request while the mouse sits at `p` —
     /// a hand over the clickable body, the default arrow outside it.
+    ///
+    /// Always treats the body as clickable, because `ButtonLayout` carries
+    /// only [`Self::bounds`] and has no view of [`Button::disabled`]. A
+    /// caller that knows which [`Button`] produced this layout should use
+    /// [`Self::pointer_shape_for`] instead, which returns the default arrow
+    /// over a disabled button's body rather than a hand over dead space.
     pub fn pointer_shape(&self, p: Point) -> PointerShape {
         match self.hit_test(p) {
             ButtonHit::Body => PointerShape::Pointer,
             ButtonHit::Outside => PointerShape::Default,
         }
+    }
+
+    /// [`Self::pointer_shape`], but honest about a disabled button: the
+    /// body of a disabled `button` isn't clickable (see [`Button::click`]),
+    /// so it gets the default arrow instead of a hand, matching what native
+    /// toolkits show over dead controls.
+    pub fn pointer_shape_for(&self, button: &Button, p: Point) -> PointerShape {
+        if button.disabled {
+            return PointerShape::Default;
+        }
+        self.pointer_shape(p)
     }
 }
 
@@ -375,6 +392,27 @@ mod tests {
             layout.pointer_shape(Point::new(0.0, 0.0)),
             PointerShape::Default
         );
+        // Just outside the bounds' right edge (bounds span x in [2, 8)):
+        // the half-open `Rect::contains` boundary, not just a point far
+        // away from the whole widget.
+        assert_eq!(
+            layout.pointer_shape(Point::new(8.0, 2.0)),
+            PointerShape::Default
+        );
+    }
+
+    #[test]
+    fn pointer_shape_for_is_default_over_a_disabled_button_body() {
+        let mut b = button();
+        let layout = b.layout(Rect::new(2.0, 2.0, 6.0, 1.0));
+        let inside = Point::new(3.0, 2.0);
+
+        // Enabled: same as the bare `pointer_shape` — a hand over the body.
+        assert_eq!(layout.pointer_shape_for(&b, inside), PointerShape::Pointer);
+
+        // Disabled: the body isn't clickable, so no hand over it.
+        b.disabled = true;
+        assert_eq!(layout.pointer_shape_for(&b, inside), PointerShape::Default);
     }
 
     #[test]

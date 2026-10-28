@@ -7903,7 +7903,10 @@ mod tests {
     #[test]
     fn pointer_shape_to_win32_cursor_maps_every_variant() {
         // Uses the shared `desktop::all_pointer_shapes()` scaffold instead of
-        // hand-listing all 9 `Default` + `Resize(edge)` combinations.
+        // hand-listing all 18 `Default`/`Resize(edge)`/rest combinations.
+        // The non-`Resize` variants beyond `Default` have no Win32 cursor
+        // wired up yet, so they all fall back to `IDC_ARROW` — see
+        // `pointer_shape_to_win32_cursor`'s doc.
         let expected = [
             IDC_ARROW,
             IDC_SIZENS,   // North
@@ -7914,11 +7917,24 @@ mod tests {
             IDC_SIZENWSE, // NorthWest
             IDC_SIZENWSE, // SouthEast
             IDC_SIZENESW, // SouthWest
+            IDC_ARROW,    // Text
+            IDC_ARROW,    // Pointer
+            IDC_ARROW,    // Grab
+            IDC_ARROW,    // Grabbing
+            IDC_ARROW,    // Crosshair
+            IDC_ARROW,    // Wait
+            IDC_ARROW,    // NotAllowed
+            IDC_ARROW,    // ColResize
+            IDC_ARROW,    // RowResize
         ];
-        for (shape, expected) in crate::desktop::all_pointer_shapes()
-            .iter()
-            .zip(expected.iter())
-        {
+        let shapes = crate::desktop::all_pointer_shapes();
+        assert_eq!(
+            shapes.len(),
+            expected.len(),
+            "every PointerShape must have an expected Win32 cursor — a new variant means a new \
+             row here, not a silently-truncated zip"
+        );
+        for (shape, expected) in shapes.iter().zip(expected.iter()) {
             assert_eq!(pointer_shape_to_win32_cursor(*shape), *expected);
         }
     }

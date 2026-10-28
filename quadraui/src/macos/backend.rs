@@ -6096,10 +6096,13 @@ mod tests {
     fn mac_cursor_kind_maps_every_variant() {
         // One expected kind per `desktop::all_pointer_shapes()` entry, in
         // the same order (`Default`, then one `Resize(edge)` per
-        // `desktop::ALL_RESIZE_EDGES`: N, S, E, W, NE, NW, SE, SW). The
-        // four corner edges fall back to the plain arrow — see
+        // `desktop::ALL_RESIZE_EDGES`: N, S, E, W, NE, NW, SE, SW, then
+        // `Text`/`Pointer`/`Grab`/`Grabbing`/`Crosshair`/`Wait`/
+        // `NotAllowed`/`ColResize`/`RowResize`). The four corner edges and
+        // every variant past `Resize` fall back to the plain arrow — see
         // `mac_cursor_kind`'s doc for why there's no public
-        // diagonal-resize `NSCursor` to use instead.
+        // diagonal-resize `NSCursor` to use instead, and no AppKit mapping
+        // wired up yet for the new shapes.
         let expected = [
             MacCursorKind::Arrow,
             MacCursorKind::ResizeUpDown,
@@ -6110,6 +6113,15 @@ mod tests {
             MacCursorKind::Arrow,
             MacCursorKind::Arrow,
             MacCursorKind::Arrow,
+            MacCursorKind::Arrow, // Text
+            MacCursorKind::Arrow, // Pointer
+            MacCursorKind::Arrow, // Grab
+            MacCursorKind::Arrow, // Grabbing
+            MacCursorKind::Arrow, // Crosshair
+            MacCursorKind::Arrow, // Wait
+            MacCursorKind::Arrow, // NotAllowed
+            MacCursorKind::Arrow, // ColResize
+            MacCursorKind::Arrow, // RowResize
         ];
         let shapes = crate::desktop::all_pointer_shapes();
         assert_eq!(

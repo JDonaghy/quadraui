@@ -1713,16 +1713,19 @@ pub(crate) const ALL_RESIZE_EDGES: [crate::backend::ResizeEdge; 8] = [
 ];
 
 /// Every [`crate::backend::PointerShape`] variant, in a stable order —
-/// [`crate::backend::PointerShape::Default`] plus one
-/// [`crate::backend::PointerShape::Resize`] per [`ALL_RESIZE_EDGES`]
-/// edge (9 total). Each backend still owns its own `PointerShape` →
-/// native cursor table (cursor names/objects are inherently native —
-/// GTK's are CSS cursor-name strings, AppKit's are `NSCursor` objects,
-/// and AppKit in particular has no public diagonal-resize cursor, so
-/// backends may legitimately map more than one `PointerShape` to the
-/// same native cursor) — this is the enum-walk *scaffold* that was
-/// missing: a canonical list backends' own mapping tests iterate
-/// against instead of hand-duplicating the variant list per backend.
+/// [`crate::backend::PointerShape::Default`], one
+/// [`crate::backend::PointerShape::Resize`] per [`ALL_RESIZE_EDGES`] edge
+/// (8), and one of each remaining non-exhaustive variant (`Text`,
+/// `Pointer`, `Grab`, `Grabbing`, `Crosshair`, `Wait`, `NotAllowed`,
+/// `ColResize`, `RowResize`) — 18 total. Each backend still owns its own
+/// `PointerShape` → native cursor table (cursor names/objects are
+/// inherently native — GTK's are CSS cursor-name strings, AppKit's are
+/// `NSCursor` objects, and AppKit in particular has no public diagonal-
+/// resize cursor, so backends may legitimately map more than one
+/// `PointerShape` to the same native cursor) — this is the enum-walk
+/// *scaffold* that was missing: a canonical list backends' own mapping
+/// tests iterate against instead of hand-duplicating the variant list
+/// per backend.
 #[cfg(all(
     test,
     any(
@@ -1731,7 +1734,7 @@ pub(crate) const ALL_RESIZE_EDGES: [crate::backend::ResizeEdge; 8] = [
         feature = "win"
     )
 ))]
-pub(crate) fn all_pointer_shapes() -> [crate::backend::PointerShape; 9] {
+pub(crate) fn all_pointer_shapes() -> [crate::backend::PointerShape; 18] {
     use crate::backend::PointerShape;
     [
         PointerShape::Default,
@@ -1743,6 +1746,15 @@ pub(crate) fn all_pointer_shapes() -> [crate::backend::PointerShape; 9] {
         PointerShape::Resize(ALL_RESIZE_EDGES[5]),
         PointerShape::Resize(ALL_RESIZE_EDGES[6]),
         PointerShape::Resize(ALL_RESIZE_EDGES[7]),
+        PointerShape::Text,
+        PointerShape::Pointer,
+        PointerShape::Grab,
+        PointerShape::Grabbing,
+        PointerShape::Crosshair,
+        PointerShape::Wait,
+        PointerShape::NotAllowed,
+        PointerShape::ColResize,
+        PointerShape::RowResize,
     ]
 }
 
@@ -2337,12 +2349,24 @@ mod pointer_shape_scaffold_tests {
     }
 
     #[test]
-    fn all_pointer_shapes_is_default_plus_one_resize_per_edge() {
+    fn all_pointer_shapes_is_default_plus_one_resize_per_edge_plus_rest() {
+        const REST: [PointerShape; 9] = [
+            PointerShape::Text,
+            PointerShape::Pointer,
+            PointerShape::Grab,
+            PointerShape::Grabbing,
+            PointerShape::Crosshair,
+            PointerShape::Wait,
+            PointerShape::NotAllowed,
+            PointerShape::ColResize,
+            PointerShape::RowResize,
+        ];
         let shapes = all_pointer_shapes();
-        assert_eq!(shapes.len(), ALL_RESIZE_EDGES.len() + 1);
+        assert_eq!(shapes.len(), ALL_RESIZE_EDGES.len() + 1 + REST.len());
         assert_eq!(shapes[0], PointerShape::Default);
-        for (shape, edge) in shapes[1..].iter().zip(ALL_RESIZE_EDGES.iter()) {
+        for (shape, edge) in shapes[1..9].iter().zip(ALL_RESIZE_EDGES.iter()) {
             assert_eq!(*shape, PointerShape::Resize(*edge));
         }
+        assert_eq!(&shapes[9..], &REST);
     }
 }
