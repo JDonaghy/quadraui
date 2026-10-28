@@ -66,8 +66,11 @@ only a push to `main` runs this workflow.
   read fallback for non-alpha producers) and decode/encode to the same
   `RgbaImage` shape the other backends use; `write_html` publishes the
   `CF_HTML` ("HTML Format") clipboard format with the required
-  `StartHTML`/`EndHTML`/`StartFragment`/`EndFragment` byte offsets, plus a
-  plain-text `CF_UNICODETEXT` fallback for HTML-unaware paste targets.
+  `StartHTML`/`EndHTML`/`StartFragment`/`EndFragment` byte offsets and a
+  trailing NUL, plus a plain-text `CF_UNICODETEXT` fallback for HTML-unaware
+  paste targets. Reads accept both `BI_BITFIELDS` mask layouts — the four
+  in-header masks of a `BITMAPV4HEADER`/`BITMAPV5HEADER` and the three
+  colour-table masks of a 40-byte `BITMAPINFOHEADER`.
 - GTK backend implements `TrayService` (`Backend::tray`, `backend_caps().tray`
   now `true`) via the `org.kde.StatusNotifierItem` / `com.canonical.dbusmenu`
   D-Bus protocol (`gtk::tray`, behind the existing `gtk` feature's new

@@ -807,6 +807,40 @@ fn extract_channel(pixel: u32, mask: u32) -> u8 {
     ((raw * 255 + max_value / 2) / max_value) as u8
 }
 
+/// Locate a `BI_BITFIELDS` DIB's channel masks and the byte offset its
+/// pixel data starts at. The DIB contract puts them in one of two places
+/// depending on the header version, and the two disagree about both the
+/// mask count and where the pixels begin:
+/// - A `BITMAPV4HEADER` (108 bytes) or `BITMAPV5HEADER` (124 bytes)
+///   declares all four R/G/B/A masks as header fields at offsets
+///   40..56, so the pixels start at `header_size`.
+/// - A plain 40-byte `BITMAPINFOHEADER` has no mask fields; it stores
+///   three R/G/B mask `DWORD`s at offsets 40..52, in the space a
+///   paletted DIB would use for its color table, which pushes the pixels
+///   out to offset 52. There is no fourth `DWORD`, so the alpha mask is
+///   reported as `0` — [`decode_32bpp`] reads that as "no alpha channel"
+///   and forces those pixels opaque.
+///
+/// Returns `None` for a buffer too short to hold the masks it claims, or
+/// a header size matching neither shape.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn dib_bitfield_masks(data: &[u8], header_size: u32) -> Option<((u32, u32, u32, u32), usize)> {
+    let mask = |offset: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(
+            data.get(offset..offset + 4)?.try_into().ok()?,
+        ))
+    };
+    if header_size >= 56 {
+        let masks = (mask(40)?, mask(44)?, mask(48)?, mask(52)?);
+        Some((masks, header_size as usize))
+    } else if header_size == 40 {
+        let masks = (mask(40)?, mask(44)?, mask(48)?, 0);
+        Some((masks, 52))
+    } else {
+        None
+    }
+}
+
 /// Decode a `CF_DIB`/`CF_DIBV5` byte buffer (the shared 40-byte
 /// `BITMAPINFOHEADER`-shaped prefix, optionally followed by the
 /// `BITMAPV4HEADER`/`BITMAPV5HEADER` extension, then the pixel data) into
@@ -816,6 +850,11 @@ fn extract_channel(pixel: u32, mask: u32) -> u8 {
 /// layout this module can't verify:
 /// - 32bpp `BI_BITFIELDS` with arbitrary channel masks (this module's own
 ///   [`encode_dibv5`] output, and any well-formed external producer).
+///   Both mask placements the DIB contract allows are read: the four
+///   in-header masks of a `BITMAPV4HEADER`/`BITMAPV5HEADER`, and the
+///   three R/G/B mask `DWORD`s a 40-byte `BITMAPINFOHEADER` stores in
+///   place of its color table (alpha then has no mask at all, so those
+///   pixels decode fully opaque) — see [`dib_bitfield_masks`].
 /// - 32bpp `BI_RGB` — the 4th byte is producer-defined, not real alpha,
 ///   so every pixel decodes fully opaque.
 /// - 24bpp `BI_RGB` — BGR, no alpha, rows padded to a 4-byte stride.
@@ -841,21 +880,17 @@ fn decode_dib(data: &[u8]) -> Option<RgbaImage> {
     let top_down = height < 0;
     let abs_height = height.unsigned_abs();
 
-    // `BI_BITFIELDS` channel masks sit right after the 40-byte shared
-    // prefix, present on both `BITMAPV4HEADER` (one qualifying shape) and
-    // `BITMAPV5HEADER` (this module's own [`encode_dibv5`] output).
-    let masks = if compression == BI_BITFIELDS_VALUE && header_size as usize >= 56 {
-        Some((
-            u32::from_le_bytes(data[40..44].try_into().ok()?),
-            u32::from_le_bytes(data[44..48].try_into().ok()?),
-            u32::from_le_bytes(data[48..52].try_into().ok()?),
-            u32::from_le_bytes(data[52..56].try_into().ok()?),
-        ))
+    let (masks, pixel_offset) = if compression == BI_BITFIELDS_VALUE {
+        let (masks, offset) = dib_bitfield_masks(data, header_size)?;
+        (Some(masks), offset)
     } else {
-        None
+        (None, header_size as usize)
     };
+    if pixel_offset > data.len() {
+        return None;
+    }
 
-    let pixel_data = &data[header_size as usize..];
+    let pixel_data = &data[pixel_offset..];
     let image = match (bit_count, compression, masks) {
         (32, c, Some((r, g, b, a))) if c == BI_BITFIELDS_VALUE => {
             decode_32bpp(pixel_data, width, abs_height, Some((r, g, b, a)))?
@@ -1063,6 +1098,21 @@ fn build_cf_html(html: &str) -> String {
     out
 }
 
+/// The exact `CF_HTML` clipboard block for `html`: [`build_cf_html`]'s
+/// UTF-8 payload plus the trailing NUL every registered text format's
+/// block carries. The header offsets [`build_cf_html`] computes
+/// deliberately exclude that terminator — `EndHTML` is the length of the
+/// payload proper, so a consumer slicing `StartHTML..EndHTML` never sees
+/// it.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn cf_html_block(html: &str) -> Vec<u8> {
+    let payload = build_cf_html(html);
+    let mut block = Vec::with_capacity(payload.len() + 1);
+    block.extend_from_slice(payload.as_bytes());
+    block.push(0);
+    block
+}
+
 /// Read `CF_DIBV5` (preferred) or classic `CF_DIB` off the clipboard and
 /// decode it via [`decode_dib`].
 #[cfg(target_os = "windows")]
@@ -1191,8 +1241,13 @@ fn win_clipboard_write_html(html: &str, alt_text: &str) -> ServiceResult<()> {
         }
         let _ = EmptyClipboard();
         let result = (|| {
-            let html_payload = build_cf_html(html);
-            set_clipboard_bytes(html_format, html_payload.as_bytes())?;
+            // `CF_HTML` is a registered *text* format: its block carries
+            // a trailing NUL, and the header's byte offsets describe the
+            // payload without it. `GlobalAlloc(GMEM_MOVEABLE)` hands back
+            // uninitialized bytes, so the terminator has to be written
+            // explicitly rather than assumed.
+            let html_payload = cf_html_block(html);
+            set_clipboard_bytes(html_format, &html_payload)?;
             let wide = wide_nul_terminated(alt_text);
             let alt_bytes = wide.len() * std::mem::size_of::<u16>();
             set_clipboard_bytes(
@@ -2144,6 +2199,59 @@ mod tests {
         assert_eq!(decode_dib(&[0u8; 10]), None);
     }
 
+    /// Build the other `BI_BITFIELDS` layout a producer may hand over: a
+    /// plain 40-byte `BITMAPINFOHEADER` with three R/G/B mask `DWORD`s in
+    /// place of a color table, so the pixel data starts at offset 52.
+    fn bitfields_40_byte_header_dib(image: &RgbaImage) -> Vec<u8> {
+        let mut buf = vec![0u8; 52];
+        buf[0..4].copy_from_slice(&40u32.to_le_bytes());
+        buf[4..8].copy_from_slice(&(image.width as i32).to_le_bytes());
+        // Negative height: top-down, matching `encode_32bpp_bgra`'s rows.
+        buf[8..12].copy_from_slice(&(-(image.height as i32)).to_le_bytes());
+        buf[12..14].copy_from_slice(&1u16.to_le_bytes());
+        buf[14..16].copy_from_slice(&32u16.to_le_bytes());
+        buf[16..20].copy_from_slice(&BI_BITFIELDS_VALUE.to_le_bytes());
+        buf[40..44].copy_from_slice(&0x00FF_0000u32.to_le_bytes());
+        buf[44..48].copy_from_slice(&0x0000_FF00u32.to_le_bytes());
+        buf[48..52].copy_from_slice(&0x0000_00FFu32.to_le_bytes());
+        buf.extend_from_slice(&encode_32bpp_bgra(image));
+        buf
+    }
+
+    #[test]
+    fn decode_dib_reads_bitfields_masks_from_a_40_byte_header() {
+        // The three-mask layout has no alpha mask at all, so every pixel
+        // must come back opaque regardless of the source alpha byte —
+        // but the colour channels still have to land in the right place,
+        // which only happens if the pixel data is read from offset 52
+        // (past the masks) and not from offset 40.
+        let image = sample_image();
+        let buf = bitfields_40_byte_header_dib(&image);
+        let decoded = decode_dib(&buf).expect("40-byte-header BI_BITFIELDS should decode");
+        assert_eq!(decoded.width, image.width);
+        assert_eq!(decoded.height, image.height);
+        for (decoded_px, source_px) in decoded
+            .pixels
+            .chunks_exact(4)
+            .zip(image.pixels.chunks_exact(4))
+        {
+            assert_eq!(
+                decoded_px,
+                [source_px[0], source_px[1], source_px[2], 255].as_slice()
+            );
+        }
+    }
+
+    #[test]
+    fn decode_dib_rejects_bitfields_header_with_truncated_masks() {
+        // 40-byte header claiming `BI_BITFIELDS` but no room for the
+        // three mask `DWORD`s that layout requires.
+        let image = sample_image();
+        let mut buf = bitfields_40_byte_header_dib(&image);
+        buf.truncate(48);
+        assert_eq!(decode_dib(&buf), None);
+    }
+
     // ── build_cf_html ────────────────────────────────────────────────────
 
     #[test]
@@ -2165,6 +2273,20 @@ mod tests {
         assert_eq!(&out[start_fragment..end_fragment], "<b>hi</b>");
         assert!(out.contains("<!--StartFragment-->"));
         assert!(out.contains("<!--EndFragment-->"));
+    }
+
+    #[test]
+    fn cf_html_block_is_nul_terminated_past_the_declared_end_html() {
+        let block = cf_html_block("<b>hi</b>");
+        let payload = build_cf_html("<b>hi</b>");
+        assert_eq!(block.last(), Some(&0));
+        assert_eq!(&block[..block.len() - 1], payload.as_bytes());
+        // `EndHTML` still measures the payload without the terminator, so
+        // a consumer honouring it never reads the NUL as document bytes.
+        let field = "EndHTML:";
+        let start = payload.find(field).unwrap() + field.len();
+        let end_html: usize = payload[start..start + 10].parse().unwrap();
+        assert_eq!(end_html, block.len() - 1);
     }
 
     #[test]
