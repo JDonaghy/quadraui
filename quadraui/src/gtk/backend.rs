@@ -5112,17 +5112,6 @@ impl Backend for GtkBackend {
     }
 }
 
-/// GTK's `WindowControl` surface. Backed by `gtk4::Window`'s
-/// own methods wherever GTK4 exposes one; everything GTK4 structurally
-/// can't do reports [`BackendError::Unsupported`] honestly rather than
-/// silently no-op'ing — see each method's doc for which bucket it's in.
-///
-/// Every method guards on `self.window.is_some()` the same way
-/// [`Backend::set_cursor`]/[`Backend::toggle_window_maximize`] do, even
-/// though `Backend::window` only ever hands out `&mut dyn WindowControl`
-/// once `self.window` is `Some` — cheap defense against a caller that
-/// stashed the trait object past a window teardown, matching this
-/// backend's existing posture everywhere else it touches `self.window`.
 /// Thin forward to [`super::tray::GtkTrayState`]'s inherent methods —
 /// unlike `MacBackend`'s equivalent block, there's no free-function-plus-
 /// events-argument indirection needed here, since `GtkTrayState` already
@@ -5147,6 +5136,17 @@ impl crate::backend::TrayService for GtkBackend {
     }
 }
 
+/// GTK's `WindowControl` surface. Backed by `gtk4::Window`'s
+/// own methods wherever GTK4 exposes one; everything GTK4 structurally
+/// can't do reports [`BackendError::Unsupported`] honestly rather than
+/// silently no-op'ing — see each method's doc for which bucket it's in.
+///
+/// Every method guards on `self.window.is_some()` the same way
+/// [`Backend::set_cursor`]/[`Backend::toggle_window_maximize`] do, even
+/// though `Backend::window` only ever hands out `&mut dyn WindowControl`
+/// once `self.window` is `Some` — cheap defense against a caller that
+/// stashed the trait object past a window teardown, matching this
+/// backend's existing posture everywhere else it touches `self.window`.
 impl crate::backend::WindowControl for GtkBackend {
     fn set_title(&mut self, title: &str) -> crate::backend::ServiceResult<()> {
         let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
@@ -5926,27 +5926,6 @@ mod tests {
         );
     }
 
-    /// Probes the session bus directly for a running
-    /// `org.kde.StatusNotifierWatcher`, independent of
-    /// `GtkBackend::tray()`. Used as ground truth so the test below holds
-    /// both on a bare host with no watcher (a typical CI runner) and on a
-    /// full desktop session with one running.
-    #[cfg(target_os = "linux")]
-    fn watcher_is_reachable() -> bool {
-        use zbus::blocking::{fdo::DBusProxy, Connection};
-
-        let Ok(conn) = Connection::session() else {
-            return false;
-        };
-        let Ok(proxy) = DBusProxy::new(&conn) else {
-            return false;
-        };
-        let Ok(name) = "org.kde.StatusNotifierWatcher".try_into() else {
-            return false;
-        };
-        proxy.name_has_owner(name).unwrap_or(false)
-    }
-
     /// `GtkBackend` overrides `fn tray`, so `backend_caps().tray` is
     /// `true`: the capability exists regardless of the host. Whether a
     /// given call to `tray()` returns `Some` depends on a real
@@ -5967,7 +5946,7 @@ mod tests {
 
         #[cfg(target_os = "linux")]
         {
-            let expected = watcher_is_reachable();
+            let expected = crate::gtk::tray::tests::watcher_is_reachable();
             assert_eq!(
                 b.tray().is_some(),
                 expected,
