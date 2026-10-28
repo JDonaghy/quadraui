@@ -1,11 +1,18 @@
 //! Win-GUI implementation of [`quadraui::PlatformServices`].
 //!
 //! - **Clipboard** — Win32 `OpenClipboard`/`GetClipboardData`/
-//!   `SetClipboardData` against `CF_UNICODETEXT`, with the payload backed
-//!   by a `GlobalAlloc(GMEM_MOVEABLE)` block per the classic Win32
-//!   clipboard contract (the system takes ownership of the block once
+//!   `SetClipboardData`, with every payload backed by a
+//!   `GlobalAlloc(GMEM_MOVEABLE)` block per the classic Win32 clipboard
+//!   contract (the system takes ownership of the block once
 //!   `SetClipboardData` succeeds — it must never be `GlobalFree`d by the
-//!   caller after that point).
+//!   caller after that point). `read_text`/`write_text` use
+//!   `CF_UNICODETEXT`; `read_image` decodes `CF_DIBV5` (preferred,
+//!   alpha-capable) or classic `CF_DIB` (24bpp, always opaque) and
+//!   `write_image` always encodes `CF_DIBV5` — see `decode_dib`/
+//!   `encode_dibv5`'s own docs for the exact pixel-format subset;
+//!   `write_html` registers and writes `CF_HTML` ("HTML Format")'s
+//!   byte-offset text header (see `build_cf_html`'s own doc) alongside a
+//!   `CF_UNICODETEXT` plain-text fallback in the same open/close session.
 //! - **File dialogs** — the Vista+ common file dialog: `IFileOpenDialog`
 //!   / `IFileSaveDialog` via COM (`CoCreateInstance`), parented to the
 //!   live `HWND` [`WinBackend::attach_surface`][super::backend::WinBackend::attach_surface]
@@ -96,7 +103,7 @@ use std::path::{Path, PathBuf};
 use crate::backend::MessageDialogButton;
 use crate::backend::{
     BackendError, Clipboard, Display, FileDialogOptions, MessageDialogChoice, MessageDialogOptions,
-    Notification, PlatformServices, ServiceResult, SystemTheme,
+    Notification, PlatformServices, RgbaImage, ServiceResult, SystemTheme,
 };
 use crate::event::{Point, Rect};
 #[cfg(target_os = "windows")]
@@ -123,7 +130,7 @@ use windows::Win32::System::Com::{
 #[cfg(target_os = "windows")]
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
-    SetClipboardData,
+    RegisterClipboardFormatW, SetClipboardData,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
@@ -132,7 +139,7 @@ use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
 };
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
+use windows::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Controls::{
     TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TASKDIALOG_BUTTON,
@@ -209,23 +216,10 @@ impl Clipboard for WinClipboard {
         }
     }
 
-    /// `CF_HDROP` file-path list — a Finder/Explorer copy.
-    /// `read_image`/`write_image`/`write_html` stay at the trait's
-    /// `Unsupported` default here: unlike `CF_HDROP` (one well-known
-    /// fixed-layout struct, `DROPFILES` + a `\0`-separated `\0\0`-terminated
-    /// path list, decoded below with no format ambiguity), `CF_DIB`
-    /// (bottom-up, row-padded, BGR-order pixels, no alpha in the classic
-    /// 24bpp case) and `CF_HTML` (a registered format —
-    /// `RegisterClipboardFormatW(L"HTML Format")` — wrapping the payload
-    /// in a byte-offset text header, not a `CF_*` constant at all) are
-    /// real reverse-engineering-adjacent native formats this crate has no
-    /// way to exercise against a live clipboard from this repo's Linux
-    /// CI (`cargo check`/`cargo test --features win` type-check the
-    /// `cfg(target_os = "windows")` arms but never execute them — see
-    /// `CLAUDE.md`'s Win-GUI section) or, in this dispatch, a live
-    /// Windows host either. Landing untested byte-level clipboard parsing
-    /// that only ever *compiles* is worse than an honest `Unsupported`;
-    /// left for a follow-up dispatched to Win-GUI's real-hardware lane.
+    /// `CF_HDROP` file-path list — a Finder/Explorer copy. One
+    /// well-known fixed-layout struct (`DROPFILES` + a `\0`-separated,
+    /// `\0\0`-terminated path list), decoded below with no format
+    /// ambiguity.
     fn read_file_list(&self) -> ServiceResult<Vec<PathBuf>> {
         #[cfg(target_os = "windows")]
         {
@@ -246,6 +240,51 @@ impl Clipboard for WinClipboard {
         #[cfg(not(target_os = "windows"))]
         {
             Ok(())
+        }
+    }
+
+    /// Decoded RGBA pixels from `CF_DIBV5` (preferred, alpha-capable) or
+    /// classic `CF_DIB` (24bpp, always opaque) — see [`decode_dib`]'s own
+    /// doc for the supported pixel-format subset.
+    fn read_image(&self) -> ServiceResult<RgbaImage> {
+        #[cfg(target_os = "windows")]
+        {
+            win_clipboard_read_image()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// Always written as `CF_DIBV5` (32bpp `BI_BITFIELDS`, alpha-capable)
+    /// — see [`encode_dibv5`]'s own doc.
+    fn write_image(&self, image: &RgbaImage) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            win_clipboard_write_image(image)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = image;
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// `RegisterClipboardFormatW(L"HTML Format")` plus the `CF_HTML`
+    /// byte-offset text header — see [`build_cf_html`]'s own doc. Also
+    /// writes `alt_text` as `CF_UNICODETEXT` in the same open/close
+    /// session, the plain-text degrade this trait method's own doc
+    /// requires.
+    fn write_html(&self, html: &str, alt_text: &str) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            win_clipboard_write_html(html, alt_text)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (html, alt_text);
+            Err(BackendError::Unsupported)
         }
     }
 }
@@ -720,6 +759,485 @@ fn win_clipboard_clear() -> ServiceResult<()> {
         });
         let _ = CloseClipboard();
         result
+    }
+}
+
+// `BI_RGB`/`BI_BITFIELDS` as plain `u32`s rather than the `windows` crate's
+// `BI_COMPRESSION` newtype — the DIB codec below works entirely on raw
+// `&[u8]` byte buffers (see its module doc) and never touches a
+// `windows`-crate struct, so pulling in the typed constant would be the
+// only reason to depend on that module at all.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const BI_RGB_VALUE: u32 = 0;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const BI_BITFIELDS_VALUE: u32 = 3;
+// `LCS_sRGB` FourCC and `LCS_GM_IMAGES` — `BITMAPV5HEADER`'s
+// `bV5CSType`/`bV5Intent` fields. No named constant for either exists in
+// the `windows` crate's `Gdi` module; these are the raw values from the
+// Win32 SDK headers.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const LCS_SRGB: u32 = 0x7352_4742;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const LCS_GM_IMAGES: u32 = 4;
+
+/// Byte length of one scanline of a `width`-pixel-wide, `bits_per_pixel`
+/// DIB row, padded up to the next 4-byte boundary — every DIB row,
+/// regardless of bit depth, is stored at this stride.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn dib_stride_bytes(width: u32, bits_per_pixel: u32) -> usize {
+    let bits_per_row = width as usize * bits_per_pixel as usize;
+    bits_per_row.div_ceil(32) * 4
+}
+
+/// Scale a `mask`-selected bitfield out of `pixel` to a full 0..=255
+/// channel value. Widens/narrows proportionally
+/// (`raw * 255 / max_value`, rounded to nearest) rather than assuming an
+/// 8-bit-wide mask, but an 8-bit-wide mask (this module's own
+/// [`encode_dibv5`] output) round-trips through this exactly: `raw` and
+/// the result are numerically identical for every `raw` in `0..=255`.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn extract_channel(pixel: u32, mask: u32) -> u8 {
+    if mask == 0 {
+        return 0;
+    }
+    let shift = mask.trailing_zeros();
+    let width_bits = mask.count_ones();
+    let max_value = (1u64 << width_bits) - 1;
+    let raw = ((pixel & mask) >> shift) as u64;
+    ((raw * 255 + max_value / 2) / max_value) as u8
+}
+
+/// Decode a `CF_DIB`/`CF_DIBV5` byte buffer (the shared 40-byte
+/// `BITMAPINFOHEADER`-shaped prefix, optionally followed by the
+/// `BITMAPV4HEADER`/`BITMAPV5HEADER` extension, then the pixel data) into
+/// an [`RgbaImage`]. Supports exactly three shapes, each decoded with no
+/// format-detection ambiguity, and returns `None` for anything else
+/// (paletted, RLE-compressed, 16bpp, …) rather than guess at a byte
+/// layout this module can't verify:
+/// - 32bpp `BI_BITFIELDS` with arbitrary channel masks (this module's own
+///   [`encode_dibv5`] output, and any well-formed external producer).
+/// - 32bpp `BI_RGB` — the 4th byte is producer-defined, not real alpha,
+///   so every pixel decodes fully opaque.
+/// - 24bpp `BI_RGB` — BGR, no alpha, rows padded to a 4-byte stride.
+///
+/// All three are bottom-up (`height > 0`) or top-down (`height < 0`) per
+/// the standard DIB convention; row order is normalized away here so
+/// every [`RgbaImage`] this function returns is top-to-bottom regardless
+/// of which the source used.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn decode_dib(data: &[u8]) -> Option<RgbaImage> {
+    if data.len() < 40 {
+        return None;
+    }
+    let header_size = u32::from_le_bytes(data[0..4].try_into().ok()?);
+    let width = i32::from_le_bytes(data[4..8].try_into().ok()?);
+    let height = i32::from_le_bytes(data[8..12].try_into().ok()?);
+    let bit_count = u16::from_le_bytes(data[14..16].try_into().ok()?);
+    let compression = u32::from_le_bytes(data[16..20].try_into().ok()?);
+    if width <= 0 || height == 0 || header_size as usize > data.len() {
+        return None;
+    }
+    let width = width as u32;
+    let top_down = height < 0;
+    let abs_height = height.unsigned_abs();
+
+    // `BI_BITFIELDS` channel masks sit right after the 40-byte shared
+    // prefix, present on both `BITMAPV4HEADER` (one qualifying shape) and
+    // `BITMAPV5HEADER` (this module's own [`encode_dibv5`] output).
+    let masks = if compression == BI_BITFIELDS_VALUE && header_size as usize >= 56 {
+        Some((
+            u32::from_le_bytes(data[40..44].try_into().ok()?),
+            u32::from_le_bytes(data[44..48].try_into().ok()?),
+            u32::from_le_bytes(data[48..52].try_into().ok()?),
+            u32::from_le_bytes(data[52..56].try_into().ok()?),
+        ))
+    } else {
+        None
+    };
+
+    let pixel_data = &data[header_size as usize..];
+    let image = match (bit_count, compression, masks) {
+        (32, c, Some((r, g, b, a))) if c == BI_BITFIELDS_VALUE => {
+            decode_32bpp(pixel_data, width, abs_height, Some((r, g, b, a)))?
+        }
+        (32, c, None) if c == BI_RGB_VALUE => decode_32bpp(pixel_data, width, abs_height, None)?,
+        (24, c, _) if c == BI_RGB_VALUE => decode_24bpp(pixel_data, width, abs_height)?,
+        _ => return None,
+    };
+
+    Some(if top_down {
+        image
+    } else {
+        flip_vertical(image)
+    })
+}
+
+/// Decode a bottom-up-stored 32bpp pixel region. `masks` of `Some`
+/// selects `BI_BITFIELDS` channel extraction via [`extract_channel`];
+/// `None` means `BI_RGB` — conventional `BGRX` byte order, alpha forced
+/// fully opaque since the 4th byte carries no defined meaning.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn decode_32bpp(
+    pixel_data: &[u8],
+    width: u32,
+    height: u32,
+    masks: Option<(u32, u32, u32, u32)>,
+) -> Option<RgbaImage> {
+    let stride = dib_stride_bytes(width, 32);
+    if pixel_data.len() < stride * height as usize {
+        return None;
+    }
+    let mut pixels = vec![0u8; width as usize * height as usize * 4];
+    for row in 0..height {
+        let src_row = &pixel_data[row as usize * stride..][..width as usize * 4];
+        for col in 0..width as usize {
+            let px = u32::from_le_bytes(src_row[col * 4..col * 4 + 4].try_into().ok()?);
+            let (r, g, b, a) = match masks {
+                Some((rm, gm, bm, am)) => (
+                    extract_channel(px, rm),
+                    extract_channel(px, gm),
+                    extract_channel(px, bm),
+                    if am == 0 {
+                        255
+                    } else {
+                        extract_channel(px, am)
+                    },
+                ),
+                None => {
+                    let bytes = px.to_le_bytes();
+                    (bytes[2], bytes[1], bytes[0], 255)
+                }
+            };
+            let out = (row as usize * width as usize + col) * 4;
+            pixels[out] = r;
+            pixels[out + 1] = g;
+            pixels[out + 2] = b;
+            pixels[out + 3] = a;
+        }
+    }
+    Some(RgbaImage {
+        width,
+        height,
+        pixels,
+    })
+}
+
+/// Decode a bottom-up-stored 24bpp `BI_RGB` pixel region — BGR triples,
+/// rows padded to a 4-byte stride, always fully opaque.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn decode_24bpp(pixel_data: &[u8], width: u32, height: u32) -> Option<RgbaImage> {
+    let stride = dib_stride_bytes(width, 24);
+    if pixel_data.len() < stride * height as usize {
+        return None;
+    }
+    let mut pixels = vec![0u8; width as usize * height as usize * 4];
+    for row in 0..height {
+        let src_row = &pixel_data[row as usize * stride..][..width as usize * 3];
+        for col in 0..width as usize {
+            let b = src_row[col * 3];
+            let g = src_row[col * 3 + 1];
+            let r = src_row[col * 3 + 2];
+            let out = (row as usize * width as usize + col) * 4;
+            pixels[out] = r;
+            pixels[out + 1] = g;
+            pixels[out + 2] = b;
+            pixels[out + 3] = 255;
+        }
+    }
+    Some(RgbaImage {
+        width,
+        height,
+        pixels,
+    })
+}
+
+/// Flip an [`RgbaImage`]'s rows top-to-bottom — [`decode_dib`]'s one
+/// normalization step for the bottom-up (positive-height) DIB case.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn flip_vertical(image: RgbaImage) -> RgbaImage {
+    let row_bytes = image.width as usize * 4;
+    let mut pixels = vec![0u8; image.pixels.len()];
+    for row in 0..image.height as usize {
+        let src = &image.pixels[row * row_bytes..][..row_bytes];
+        let dst_row = image.height as usize - 1 - row;
+        pixels[dst_row * row_bytes..][..row_bytes].copy_from_slice(src);
+    }
+    RgbaImage {
+        width: image.width,
+        height: image.height,
+        pixels,
+    }
+}
+
+/// Encode an [`RgbaImage`] as a top-down `CF_DIBV5` byte buffer: a
+/// 124-byte `BITMAPV5HEADER` (`BI_BITFIELDS`, standard 8-bit-wide
+/// `0x00FF0000`/`0x0000FF00`/`0x000000FF`/`0xFF000000` R/G/B/A masks,
+/// `LCS_sRGB` color space) followed by 32bpp `BGRA` pixel data, no row
+/// padding needed since 32bpp rows are always a multiple of 4 bytes.
+/// Negative height marks the buffer top-down, matching
+/// [`encode_32bpp_bgra`]'s row order and letting [`decode_dib`] skip the
+/// bottom-up flip on this module's own output.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn encode_dibv5(image: &RgbaImage) -> Vec<u8> {
+    let mut header = vec![0u8; 124];
+    header[0..4].copy_from_slice(&124u32.to_le_bytes());
+    header[4..8].copy_from_slice(&(image.width as i32).to_le_bytes());
+    header[8..12].copy_from_slice(&(-(image.height as i32)).to_le_bytes());
+    header[12..14].copy_from_slice(&1u16.to_le_bytes()); // planes
+    header[14..16].copy_from_slice(&32u16.to_le_bytes()); // bit_count
+    header[16..20].copy_from_slice(&BI_BITFIELDS_VALUE.to_le_bytes());
+    let pixel_bytes = image.width as usize * image.height as usize * 4;
+    header[20..24].copy_from_slice(&(pixel_bytes as u32).to_le_bytes()); // size_image
+    header[40..44].copy_from_slice(&0x00FF_0000u32.to_le_bytes()); // red mask
+    header[44..48].copy_from_slice(&0x0000_FF00u32.to_le_bytes()); // green mask
+    header[48..52].copy_from_slice(&0x0000_00FFu32.to_le_bytes()); // blue mask
+    header[52..56].copy_from_slice(&0xFF00_0000u32.to_le_bytes()); // alpha mask
+    header[56..60].copy_from_slice(&LCS_SRGB.to_le_bytes());
+    header[108..112].copy_from_slice(&LCS_GM_IMAGES.to_le_bytes());
+    let mut out = header;
+    out.extend_from_slice(&encode_32bpp_bgra(image));
+    out
+}
+
+/// Row-major, top-to-bottom 32bpp `BGRA` pixel bytes for `image` — the
+/// pixel-data half of [`encode_dibv5`]'s output, matching the R/G/B/A
+/// masks it writes into the header.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn encode_32bpp_bgra(image: &RgbaImage) -> Vec<u8> {
+    let mut out = Vec::with_capacity(image.pixels.len());
+    for px in image.pixels.chunks_exact(4) {
+        out.push(px[2]); // B
+        out.push(px[1]); // G
+        out.push(px[0]); // R
+        out.push(px[3]); // A
+    }
+    out
+}
+
+/// Build the `CF_HTML` ("HTML Format") payload for `html`: a text header
+/// (`Version:0.9`, then `StartHTML`/`EndHTML`/`StartFragment`/
+/// `EndFragment`, each a `{:010}`-padded decimal byte offset into the
+/// whole buffer, `\r\n`-terminated) followed by
+/// `<html><body><!--StartFragment-->html<!--EndFragment--></body></html>`.
+/// Every offset field is the same fixed width regardless of its value, so
+/// the header's total length never depends on what the real offsets turn
+/// out to be — computed once from a placeholder of that same width, then
+/// reused for the real offsets. (Realistic buffer sizes never reach the
+/// 10-digit field's ~10GB ceiling, so this holds unconditionally here.)
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn build_cf_html(html: &str) -> String {
+    fn header(
+        start_html: usize,
+        end_html: usize,
+        start_fragment: usize,
+        end_fragment: usize,
+    ) -> String {
+        format!(
+            "Version:0.9\r\nStartHTML:{:010}\r\nEndHTML:{:010}\r\nStartFragment:{:010}\r\nEndFragment:{:010}\r\n",
+            start_html, end_html, start_fragment, end_fragment
+        )
+    }
+    let placeholder = header(0, 0, 0, 0);
+    let header_len = placeholder.len();
+    // `{:010}` only pads up to 10 digits — it doesn't truncate wider
+    // values — so the "fixed header length" assumption this function
+    // relies on only holds for offsets that actually fit in 10 digits
+    // (anything under 10 billion, far past any realistic clipboard
+    // payload). `9_999_999_999` is the largest value that still fits.
+    debug_assert_eq!(
+        header_len,
+        header(9_999_999_999, 9_999_999_999, 9_999_999_999, 9_999_999_999).len()
+    );
+
+    let prefix = "<html>\r\n<body>\r\n<!--StartFragment-->";
+    let suffix = "<!--EndFragment-->\r\n</body>\r\n</html>";
+
+    let start_fragment = header_len + prefix.len();
+    let end_fragment = start_fragment + html.len();
+    let end_html = end_fragment + suffix.len();
+
+    let mut out = header(header_len, end_html, start_fragment, end_fragment);
+    out.push_str(prefix);
+    out.push_str(html);
+    out.push_str(suffix);
+    out
+}
+
+/// Read `CF_DIBV5` (preferred) or classic `CF_DIB` off the clipboard and
+/// decode it via [`decode_dib`].
+#[cfg(target_os = "windows")]
+fn win_clipboard_read_image() -> ServiceResult<RgbaImage> {
+    // SAFETY: `OpenClipboard`/`CloseClipboard` are paired on every path —
+    // both early `Err` returns are before `OpenClipboard`; every other
+    // exit falls through the trailing `CloseClipboard()`. `GlobalLock`'s
+    // pointer is checked for null before the slice built through it, and
+    // the slice is bounded by `GlobalSize`.
+    unsafe {
+        let format = if IsClipboardFormatAvailable(CF_DIBV5.0 as u32).is_ok() {
+            CF_DIBV5.0 as u32
+        } else if IsClipboardFormatAvailable(CF_DIB.0 as u32).is_ok() {
+            CF_DIB.0 as u32
+        } else {
+            return Err(BackendError::PlatformFailure {
+                context: "IsClipboardFormatAvailable(CF_DIBV5/CF_DIB)".to_string(),
+            });
+        };
+        if OpenClipboard(None).is_err() {
+            return Err(BackendError::PlatformFailure {
+                context: "OpenClipboard".to_string(),
+            });
+        }
+        let result = (|| {
+            let handle = GetClipboardData(format).map_err(|_| BackendError::PlatformFailure {
+                context: "GetClipboardData(CF_DIB)".to_string(),
+            })?;
+            let hglobal = HGLOBAL(handle.0);
+            let ptr = GlobalLock(hglobal) as *const u8;
+            if ptr.is_null() {
+                return Err(BackendError::PlatformFailure {
+                    context: "GlobalLock".to_string(),
+                });
+            }
+            let len = GlobalSize(hglobal);
+            let slice = std::slice::from_raw_parts(ptr, len);
+            let image = decode_dib(slice);
+            let _ = GlobalUnlock(hglobal);
+            image.ok_or_else(|| BackendError::PlatformFailure {
+                context: "decode_dib: unsupported DIB pixel format".to_string(),
+            })
+        })();
+        let _ = CloseClipboard();
+        result
+    }
+}
+
+/// Encode `image` via [`encode_dibv5`] and write it to the clipboard as
+/// `CF_DIBV5`.
+#[cfg(target_os = "windows")]
+fn win_clipboard_write_image(image: &RgbaImage) -> ServiceResult<()> {
+    // SAFETY: `OpenClipboard`/`CloseClipboard` are paired on every path
+    // (the early `Err` return is before `OpenClipboard`); `GlobalLock`'s
+    // pointer is checked for null before the `copy_nonoverlapping` write,
+    // bounded by `bytes.len()` — the exact size just passed to the paired
+    // `GlobalAlloc`. `hglobal` ownership after `SetClipboardData` follows
+    // the same rule as `win_clipboard_write`.
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return Err(BackendError::PlatformFailure {
+                context: "OpenClipboard".to_string(),
+            });
+        }
+        let _ = EmptyClipboard();
+        let bytes = encode_dibv5(image);
+        let result = match GlobalAlloc(GMEM_MOVEABLE, bytes.len()) {
+            Ok(hglobal) => {
+                let ptr = GlobalLock(hglobal) as *mut u8;
+                if ptr.is_null() {
+                    let _ = GlobalFree(Some(hglobal));
+                    Err(BackendError::PlatformFailure {
+                        context: "GlobalLock".to_string(),
+                    })
+                } else {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+                    let _ = GlobalUnlock(hglobal);
+                    // On success the system now owns `hglobal` — it must NOT
+                    // be `GlobalFree`d here. On failure nothing took
+                    // ownership, so this is the only chance to release it.
+                    if SetClipboardData(CF_DIBV5.0 as u32, Some(HANDLE(hglobal.0))).is_err() {
+                        let _ = GlobalFree(Some(hglobal));
+                        Err(BackendError::PlatformFailure {
+                            context: "SetClipboardData".to_string(),
+                        })
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+            Err(_) => Err(BackendError::PlatformFailure {
+                context: "GlobalAlloc".to_string(),
+            }),
+        };
+        let _ = CloseClipboard();
+        result
+    }
+}
+
+/// Register "HTML Format" and write [`build_cf_html`]'s payload to the
+/// clipboard, plus `alt_text` as a `CF_UNICODETEXT` fallback in the same
+/// open/close session — the plain-text degrade
+/// [`Clipboard::write_html`](crate::backend::Clipboard::write_html)'s own
+/// doc requires for a target with no HTML-aware paste path.
+#[cfg(target_os = "windows")]
+fn win_clipboard_write_html(html: &str, alt_text: &str) -> ServiceResult<()> {
+    // SAFETY: `OpenClipboard`/`CloseClipboard` are paired on every path
+    // (the early `Err` returns are before `OpenClipboard`). Both
+    // `GlobalAlloc`/`GlobalLock`/`SetClipboardData` sequences below follow
+    // the identical null-check/bounded-copy/ownership-transfer pattern as
+    // `win_clipboard_write` and `win_clipboard_write_image`.
+    unsafe {
+        // `RegisterClipboardFormatW` returns `0` on failure rather than a
+        // `Result` — checked explicitly since it isn't a `windows`-crate
+        // typed API.
+        let html_format = RegisterClipboardFormatW(windows::core::w!("HTML Format"));
+        if html_format == 0 {
+            return Err(BackendError::PlatformFailure {
+                context: "RegisterClipboardFormatW(HTML Format)".to_string(),
+            });
+        }
+        if OpenClipboard(None).is_err() {
+            return Err(BackendError::PlatformFailure {
+                context: "OpenClipboard".to_string(),
+            });
+        }
+        let _ = EmptyClipboard();
+        let result = (|| {
+            let html_payload = build_cf_html(html);
+            set_clipboard_bytes(html_format, html_payload.as_bytes())?;
+            let wide = wide_nul_terminated(alt_text);
+            let alt_bytes = wide.len() * std::mem::size_of::<u16>();
+            set_clipboard_bytes(
+                CF_UNICODETEXT.0 as u32,
+                std::slice::from_raw_parts(wide.as_ptr() as *const u8, alt_bytes),
+            )
+        })();
+        let _ = CloseClipboard();
+        result
+    }
+}
+
+/// `GlobalAlloc`/`GlobalLock`/copy/`SetClipboardData` for a raw byte
+/// payload — the shared tail of [`win_clipboard_write_html`]'s two
+/// `SetClipboardData` calls (`CF_HTML`-registered format, then the
+/// `CF_UNICODETEXT` fallback), each needing its own allocation since
+/// `SetClipboardData` takes ownership of exactly one block per call.
+/// Caller must already hold the clipboard open.
+#[cfg(target_os = "windows")]
+unsafe fn set_clipboard_bytes(format: u32, bytes: &[u8]) -> ServiceResult<()> {
+    match GlobalAlloc(GMEM_MOVEABLE, bytes.len()) {
+        Ok(hglobal) => {
+            let ptr = GlobalLock(hglobal) as *mut u8;
+            if ptr.is_null() {
+                let _ = GlobalFree(Some(hglobal));
+                return Err(BackendError::PlatformFailure {
+                    context: "GlobalLock".to_string(),
+                });
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+            let _ = GlobalUnlock(hglobal);
+            // On success the system now owns `hglobal` — it must NOT be
+            // `GlobalFree`d here. On failure nothing took ownership, so
+            // this is the only chance to release it.
+            if SetClipboardData(format, Some(HANDLE(hglobal.0))).is_err() {
+                let _ = GlobalFree(Some(hglobal));
+                return Err(BackendError::PlatformFailure {
+                    context: "SetClipboardData".to_string(),
+                });
+            }
+            Ok(())
+        }
+        Err(_) => Err(BackendError::PlatformFailure {
+            context: "GlobalAlloc".to_string(),
+        }),
     }
 }
 
@@ -1519,6 +2037,142 @@ mod tests {
         copy_wide_truncated(&mut dst, "anything");
     }
 
+    // ── extract_channel ──────────────────────────────────────────────────
+
+    #[test]
+    fn extract_channel_8bit_mask_round_trips_every_byte_value() {
+        // `encode_dibv5`'s own masks are all 8 bits wide — confirm the
+        // scaling formula is an exact identity for that width, not just
+        // approximately right, for every possible byte.
+        for value in 0u32..=255 {
+            let pixel = value << 16; // placed at the red mask's position
+            assert_eq!(extract_channel(pixel, 0x00FF_0000), value as u8);
+        }
+    }
+
+    #[test]
+    fn extract_channel_zero_mask_is_zero() {
+        assert_eq!(extract_channel(0xFFFF_FFFF, 0), 0);
+    }
+
+    // ── decode_dib / encode_dibv5 ────────────────────────────────────────
+
+    fn sample_image() -> RgbaImage {
+        // 2x2, every pixel a distinct RGBA combination so a transposed
+        // row/column or channel swap would be caught.
+        RgbaImage {
+            width: 2,
+            height: 2,
+            pixels: vec![
+                255, 0, 0, 255, // top-left: opaque red
+                0, 255, 0, 128, // top-right: half-alpha green
+                0, 0, 255, 64, // bottom-left: quarter-alpha blue
+                10, 20, 30, 0, // bottom-right: fully transparent
+            ],
+        }
+    }
+
+    #[test]
+    fn encode_dibv5_round_trips_through_decode_dib() {
+        let image = sample_image();
+        let bytes = encode_dibv5(&image);
+        let decoded =
+            decode_dib(&bytes).expect("decode_dib should accept its own encode_dibv5 output");
+        assert_eq!(decoded, image);
+    }
+
+    #[test]
+    fn decode_dib_handles_bottom_up_bi_bitfields() {
+        // `encode_dibv5` always writes top-down (negative height); flip
+        // the sign and reverse the row order by hand to exercise
+        // `decode_dib`'s bottom-up branch too.
+        let image = sample_image();
+        let mut bytes = encode_dibv5(&image);
+        // Height is a little-endian i32 at byte offset 8.
+        let height = i32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        assert!(height < 0);
+        bytes[8..12].copy_from_slice(&(-height).to_le_bytes());
+        let row_bytes = image.width as usize * 4;
+        let pixel_start = 124;
+        let mut rows: Vec<&[u8]> = bytes[pixel_start..].chunks_exact(row_bytes).collect();
+        rows.reverse();
+        let flipped_pixels: Vec<u8> = rows.into_iter().flatten().copied().collect();
+        bytes[pixel_start..].copy_from_slice(&flipped_pixels);
+
+        let decoded = decode_dib(&bytes).expect("bottom-up BI_BITFIELDS should decode");
+        assert_eq!(decoded, image);
+    }
+
+    #[test]
+    fn decode_dib_classic_24bpp_bi_rgb_is_opaque() {
+        // Hand-build a minimal bottom-up 24bpp BI_RGB buffer: a 1x2 image,
+        // bottom row red, top row green — classic Explorer/Paint
+        // image-copy shape.
+        let width = 1u32;
+        let height = 2i32;
+        let stride = dib_stride_bytes(width, 24);
+        let mut buf = vec![0u8; 40 + stride * 2];
+        buf[0..4].copy_from_slice(&40u32.to_le_bytes());
+        buf[4..8].copy_from_slice(&(width as i32).to_le_bytes());
+        buf[8..12].copy_from_slice(&height.to_le_bytes());
+        buf[14..16].copy_from_slice(&24u16.to_le_bytes());
+        buf[16..20].copy_from_slice(&BI_RGB_VALUE.to_le_bytes());
+        // Bottom-up: row 0 in the buffer is the image's bottom row (red,
+        // BGR order), row 1 is the top row (green).
+        buf[40..43].copy_from_slice(&[0, 0, 255]); // bottom row: red
+        buf[40 + stride..40 + stride + 3].copy_from_slice(&[0, 255, 0]); // top row: green
+
+        let decoded = decode_dib(&buf).expect("classic 24bpp BI_RGB should decode");
+        assert_eq!(decoded.width, 1);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(&decoded.pixels[0..4], &[0, 255, 0, 255]); // top row: opaque green
+        assert_eq!(&decoded.pixels[4..8], &[255, 0, 0, 255]); // bottom row: opaque red
+    }
+
+    #[test]
+    fn decode_dib_rejects_unsupported_bit_depth() {
+        let mut buf = vec![0u8; 40];
+        buf[0..4].copy_from_slice(&40u32.to_le_bytes());
+        buf[4..8].copy_from_slice(&1i32.to_le_bytes());
+        buf[8..12].copy_from_slice(&1i32.to_le_bytes());
+        buf[14..16].copy_from_slice(&8u16.to_le_bytes()); // 8bpp paletted
+        assert_eq!(decode_dib(&buf), None);
+    }
+
+    #[test]
+    fn decode_dib_rejects_truncated_buffer() {
+        assert_eq!(decode_dib(&[0u8; 10]), None);
+    }
+
+    // ── build_cf_html ────────────────────────────────────────────────────
+
+    #[test]
+    fn build_cf_html_offsets_point_at_the_right_bytes() {
+        let out = build_cf_html("<b>hi</b>");
+        let get_offset = |field: &str| -> usize {
+            let start = out.find(field).unwrap() + field.len();
+            out[start..start + 10].parse().unwrap()
+        };
+        let start_html = get_offset("StartHTML:");
+        let end_html = get_offset("EndHTML:");
+        let start_fragment = get_offset("StartFragment:");
+        let end_fragment = get_offset("EndFragment:");
+
+        // `StartHTML`/`EndHTML` bound the `<html>...</html>` document,
+        // which sits after the CF_HTML header itself — not at byte 0.
+        assert_eq!(&out[start_html..start_html + 6], "<html>");
+        assert_eq!(end_html, out.len());
+        assert_eq!(&out[start_fragment..end_fragment], "<b>hi</b>");
+        assert!(out.contains("<!--StartFragment-->"));
+        assert!(out.contains("<!--EndFragment-->"));
+    }
+
+    #[test]
+    fn build_cf_html_handles_empty_html() {
+        let out = build_cf_html("");
+        assert!(out.contains("<!--StartFragment--><!--EndFragment-->"));
+    }
+
     /// Off-Windows, every `PlatformServices` method degrades to the
     /// original graceful no-op — mirrors `TuiPlatformServices`'s
     /// unconditional `None`/no-op shape so a plain `cargo test` (no `win`
@@ -1529,12 +2183,23 @@ mod tests {
         let svc = WinPlatformServices::new();
         assert!(svc.clipboard().read_text().is_none());
         svc.clipboard().write_text("ignored");
-        // `read_image`/`write_image`/`write_html` are the trait's
-        // own `Unsupported` default (`WinClipboard` never overrides
-        // them — see `read_file_list`'s doc for why); `read_file_list`
-        // and `clear` are overridden but degrade the same way off
-        // Windows.
+        // Every `WinClipboard` method that returns a `ServiceResult`
+        // degrades to `Unsupported`/`Ok(())` off Windows — `clear` is the
+        // one exception, since it has nothing platform-specific to fail
+        // on when there's no real clipboard to clear.
         assert_eq!(svc.clipboard().read_image(), Err(BackendError::Unsupported));
+        assert_eq!(
+            svc.clipboard().write_image(&RgbaImage {
+                width: 1,
+                height: 1,
+                pixels: vec![0, 0, 0, 255],
+            }),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(
+            svc.clipboard().write_html("<b>hi</b>", "hi"),
+            Err(BackendError::Unsupported)
+        );
         assert_eq!(
             svc.clipboard().read_file_list(),
             Err(BackendError::Unsupported)
