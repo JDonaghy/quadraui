@@ -632,7 +632,8 @@ pub use undo::UndoStack;
 // Phase B.1 re-exports.
 pub use accelerator::{
     parse_key_binding, render_accelerator, render_binding, Accelerator, AcceleratorId,
-    AcceleratorScope, KeyBinding, ParsedBinding, Platform,
+    AcceleratorScope, GlobalShortcutId, GlobalShortcutRegistry, KeyBinding, ParsedBinding,
+    Platform,
 };
 pub use backend::{
     Backend, BackendCaps, BackendError, Clipboard, ClipboardFormat, ColorDepth, Display,

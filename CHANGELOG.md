@@ -60,6 +60,17 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `PlatformServices::register_global_shortcut`/`unregister_global_shortcut`/
+  `unregister_all_global_shortcuts`, `GlobalShortcutId`,
+  `GlobalShortcutRegistry` and `UiEvent::GlobalShortcut` — the seam for an
+  OS-wide hotkey that fires even when the app isn't focused, distinct from
+  the in-window-only `Accelerator`/`register_accelerator`. Backend-neutral
+  bookkeeping (id lifecycle, double-registration rejection) only; the three
+  `PlatformServices` methods default to `BackendError::Unsupported` with no
+  in-tree backend overriding them yet — per-backend OS hotkey registration
+  (Win32 `RegisterHotKey`, Carbon/Cocoa `RegisterEventHotKey`, the
+  `org.freedesktop.portal.GlobalShortcuts` XDG portal) is a separate
+  follow-on.
 - `WindowControl::is_fullscreen` — queries the window's current fullscreen
   state, alongside the existing `is_maximized`, so a backend-neutral caller
   can read both chrome flags without tracking its own shadow state.

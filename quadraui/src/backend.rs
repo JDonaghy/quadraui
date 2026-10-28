@@ -96,8 +96,8 @@ use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::{Color, WidgetId};
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Form, ListView, Palette, PaletteLayout, StatusBar,
-    TabBar, Terminal, TextDisplay, TreeView,
+    Accelerator, AcceleratorId, ActivityBar, Form, GlobalShortcutId, ListView, Palette,
+    PaletteLayout, StatusBar, TabBar, Terminal, TextDisplay, TreeView,
 };
 use serde::{Deserialize, Serialize};
 
@@ -4466,6 +4466,52 @@ pub trait PlatformServices {
     /// override one is expected to not override the other either.
     fn end_power_save_block(&self, id: BlockerId) -> ServiceResult<()> {
         let _ = id;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Register `accel` as an OS-wide global shortcut: unlike
+    /// [`Accelerator`]s registered on [`Backend::register_accelerator`],
+    /// which only fire while this app's window has focus, a global
+    /// shortcut fires regardless of which app is focused — the OS
+    /// delivers it directly. On success, the backend emits
+    /// [`crate::UiEvent::GlobalShortcut`] carrying the returned
+    /// [`GlobalShortcutId`] each time the OS reports the hotkey.
+    ///
+    /// Rejects with [`BackendError::PlatformFailure`] when `accel`'s
+    /// binding is already claimed by another registration — see
+    /// [`crate::accelerator::GlobalShortcutRegistry::register`].
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
+    /// real OS hotkey registration yet (Win32 `RegisterHotKey`,
+    /// Carbon/Cocoa `RegisterEventHotKey`, the
+    /// `org.freedesktop.portal.GlobalShortcuts` XDG portal on GTK/Linux
+    /// are separate, backend-specific follow-ons). TUI has no OS-wide
+    /// hotkey mechanism to register against and is expected to leave
+    /// this at its default rather than fake one — an OS-wide hotkey is
+    /// physically absent on a terminal, the same way a tray icon or dock
+    /// badge is.
+    fn register_global_shortcut(&self, accel: Accelerator) -> ServiceResult<GlobalShortcutId> {
+        let _ = accel;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Unregister a global shortcut previously returned by
+    /// [`Self::register_global_shortcut`], freeing its key binding.
+    ///
+    /// Default: [`BackendError::Unsupported`] — mirrors
+    /// [`Self::register_global_shortcut`]'s default; a backend that
+    /// doesn't override one is expected to not override the other
+    /// either.
+    fn unregister_global_shortcut(&self, id: GlobalShortcutId) -> ServiceResult<()> {
+        let _ = id;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Unregister every global shortcut this backend currently holds.
+    ///
+    /// Default: [`BackendError::Unsupported`] — see
+    /// [`Self::register_global_shortcut`].
+    fn unregister_all_global_shortcuts(&self) -> ServiceResult<()> {
         Err(BackendError::Unsupported)
     }
 

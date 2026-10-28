@@ -14,9 +14,26 @@
 //! vim-style (`<C-S-t>`) and plus-style (`Ctrl+Shift+T`) input.
 //!
 //! See `quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §3 for the full rationale.
+//!
+//! ## Global (OS-wide) shortcuts
+//!
+//! Everything above fires only while the app is focused — a native key
+//! event has to reach the backend's event loop first. [`GlobalShortcutId`]
+//! and [`GlobalShortcutRegistry`] are the seam for the opposite case: a
+//! shortcut the OS delivers even when the app isn't focused, registered
+//! through [`crate::PlatformServices::register_global_shortcut`] and
+//! reported back as [`crate::UiEvent::GlobalShortcut`]. This module ships
+//! the backend-neutral bookkeeping only — minting ids and rejecting a
+//! binding already claimed — never a real OS hotkey call; see
+//! [`GlobalShortcutRegistry`]'s own doc for what wraps it and what doesn't
+//! yet.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+use crate::backend::BackendError;
 use crate::event::{Key, NamedKey};
 use crate::types::{Modifiers, WidgetId};
 
@@ -429,6 +446,114 @@ fn display_key(k: &str) -> String {
     }
 }
 
+// ─── Global shortcuts ───────────────────────────────────────────────────────
+
+/// Opaque handle to a registered OS-wide global shortcut, returned by
+/// [`crate::PlatformServices::register_global_shortcut`], consumed by
+/// [`crate::PlatformServices::unregister_global_shortcut`], and carried by
+/// [`crate::UiEvent::GlobalShortcut`] when the OS delivers the hotkey.
+///
+/// Allocator-issued, not caller-constructed — mirrors the monotonic-id
+/// pattern [`crate::power::BlockerId`] uses: a global-shortcut id has no
+/// meaningful string or numeric form a caller would ever want to pick
+/// itself, only identity. `Serialize`/`Deserialize` (unlike `BlockerId`,
+/// which never leaves a backend) because it travels inside a `UiEvent` —
+/// every `UiEvent` payload satisfies that bound, see `event.rs`'s module
+/// doc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GlobalShortcutId(u64);
+
+impl GlobalShortcutId {
+    /// Mint the next globally unique [`GlobalShortcutId`]. Backend-internal:
+    /// an app never constructs one of these itself, only receives one back
+    /// from [`crate::PlatformServices::register_global_shortcut`] (today via
+    /// [`GlobalShortcutRegistry::register`], which every per-backend
+    /// override is expected to wrap).
+    pub(crate) fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// Backend-shared bookkeeping for OS-wide global shortcuts: mints
+/// [`GlobalShortcutId`]s and rejects a key binding already claimed by
+/// another registration.
+///
+/// This is bookkeeping only — it never calls an OS hotkey API itself and
+/// no in-tree backend owns one yet. A per-backend
+/// [`crate::PlatformServices::register_global_shortcut`] override (Win32
+/// `RegisterHotKey`, Carbon/Cocoa `RegisterEventHotKey`, the
+/// `org.freedesktop.portal.GlobalShortcuts` XDG portal on GTK/Linux) is
+/// expected to wrap its native call around this registry, mirroring the
+/// way `tui::services::TuiPlatformServices::begin_power_save_block` wraps
+/// [`crate::power::BlockerId::next`] in `power.rs` — those are the epic's
+/// backend-specific follow-ons, out of scope here. TUI has no OS-wide
+/// hotkey of its own to register, so it inherits
+/// [`crate::PlatformServices::register_global_shortcut`]'s default
+/// [`BackendError::Unsupported`] rather than holding a registry.
+#[derive(Debug, Default)]
+pub struct GlobalShortcutRegistry {
+    bindings: HashMap<GlobalShortcutId, ParsedBinding>,
+    claimed: HashSet<ParsedBinding>,
+}
+
+impl GlobalShortcutRegistry {
+    /// An empty registry — nothing registered, nothing claimed.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register `accel`'s key binding, minting a fresh [`GlobalShortcutId`]
+    /// on success.
+    ///
+    /// Rejects with [`BackendError::PlatformFailure`] when the binding
+    /// doesn't parse, or when it's already claimed by an earlier
+    /// registration in this registry — the same shape a real OS hotkey API
+    /// reports a taken combination as (e.g. Win32 `RegisterHotKey`'s
+    /// `ERROR_HOTKEY_ALREADY_REGISTERED`), not a dedicated error variant,
+    /// since [`BackendError`] isn't `#[non_exhaustive]` and a new variant
+    /// would be a breaking change for an outcome a native call already
+    /// shapes this way.
+    pub fn register(&mut self, accel: &Accelerator) -> Result<GlobalShortcutId, BackendError> {
+        let parsed =
+            parse_binding(&accel.binding).ok_or_else(|| BackendError::PlatformFailure {
+                context: format!(
+                    "global shortcut {:?}: unparseable key binding",
+                    accel.id.as_str()
+                ),
+            })?;
+        if self.claimed.contains(&parsed) {
+            return Err(BackendError::PlatformFailure {
+                context: format!(
+                    "global shortcut {:?}: key combination already registered",
+                    accel.id.as_str()
+                ),
+            });
+        }
+        let id = GlobalShortcutId::next();
+        self.claimed.insert(parsed.clone());
+        self.bindings.insert(id, parsed);
+        Ok(id)
+    }
+
+    /// Release `id`'s claim on its key binding, freeing it for a future
+    /// [`Self::register`] call. A no-op if `id` isn't currently registered
+    /// (already unregistered, or never valid for this registry) — matches
+    /// [`crate::PlatformServices::end_power_save_block`]'s "idempotent
+    /// release" idiom rather than erroring on a stale id.
+    pub fn unregister(&mut self, id: GlobalShortcutId) {
+        if let Some(parsed) = self.bindings.remove(&id) {
+            self.claimed.remove(&parsed);
+        }
+    }
+
+    /// Release every currently registered shortcut.
+    pub fn unregister_all(&mut self) {
+        self.bindings.clear();
+        self.claimed.clear();
+    }
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -659,5 +784,109 @@ mod tests {
         assert_eq!(key_to_binding_name(&Key::Named(NamedKey::F(5))), "F5");
         let parsed = parse_key_binding("<F5>").unwrap();
         assert_eq!(key_to_binding_name(&Key::Named(NamedKey::F(5))), parsed.key);
+    }
+
+    // ─── Global shortcuts ───────────────────────────────────────────────
+
+    fn test_accel(id: &str, binding: &str) -> Accelerator {
+        Accelerator {
+            id: AcceleratorId::new(id),
+            binding: KeyBinding::Literal(binding.to_string()),
+            scope: AcceleratorScope::Global,
+            label: None,
+        }
+    }
+
+    #[test]
+    fn global_shortcut_id_next_is_monotonically_unique() {
+        let a = GlobalShortcutId::next();
+        let b = GlobalShortcutId::next();
+        let c = GlobalShortcutId::next();
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn global_shortcut_id_round_trips_through_json() {
+        let id = GlobalShortcutId::next();
+        let json = serde_json::to_string(&id).unwrap();
+        let back: GlobalShortcutId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, back);
+    }
+
+    #[test]
+    fn registry_register_mints_distinct_ids() {
+        let mut registry = GlobalShortcutRegistry::new();
+        let a = registry
+            .register(&test_accel("app.summon", "<C-S-space>"))
+            .unwrap();
+        let b = registry
+            .register(&test_accel("app.media.next", "<C-S-Right>"))
+            .unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn registry_rejects_double_registration_of_same_binding() {
+        let mut registry = GlobalShortcutRegistry::new();
+        registry
+            .register(&test_accel("app.summon", "<C-S-space>"))
+            .unwrap();
+        let err = registry
+            .register(&test_accel("app.other", "<C-S-space>"))
+            .unwrap_err();
+        assert!(matches!(err, BackendError::PlatformFailure { .. }));
+    }
+
+    #[test]
+    fn registry_rejects_unparseable_binding() {
+        let mut registry = GlobalShortcutRegistry::new();
+        let err = registry.register(&test_accel("app.bad", "")).unwrap_err();
+        assert!(matches!(err, BackendError::PlatformFailure { .. }));
+    }
+
+    #[test]
+    fn registry_unregister_frees_the_binding_for_reuse() {
+        let mut registry = GlobalShortcutRegistry::new();
+        let id = registry
+            .register(&test_accel("app.summon", "<C-S-space>"))
+            .unwrap();
+        registry.unregister(id);
+        // The same binding can now be claimed again — by any id, not
+        // necessarily reusing the freed one.
+        assert!(registry
+            .register(&test_accel("app.summon.v2", "<C-S-space>"))
+            .is_ok());
+    }
+
+    #[test]
+    fn registry_unregister_is_idempotent_on_unknown_id() {
+        let mut registry = GlobalShortcutRegistry::new();
+        let id = registry
+            .register(&test_accel("app.summon", "<C-S-space>"))
+            .unwrap();
+        registry.unregister(id);
+        // Unregistering an already-freed (or never-valid) id is a no-op,
+        // not a panic or error.
+        registry.unregister(id);
+    }
+
+    #[test]
+    fn registry_unregister_all_frees_every_binding() {
+        let mut registry = GlobalShortcutRegistry::new();
+        registry
+            .register(&test_accel("app.summon", "<C-S-space>"))
+            .unwrap();
+        registry
+            .register(&test_accel("app.media.next", "<C-S-Right>"))
+            .unwrap();
+        registry.unregister_all();
+        assert!(registry
+            .register(&test_accel("app.summon.v2", "<C-S-space>"))
+            .is_ok());
+        assert!(registry
+            .register(&test_accel("app.media.next.v2", "<C-S-Right>"))
+            .is_ok());
     }
 }
