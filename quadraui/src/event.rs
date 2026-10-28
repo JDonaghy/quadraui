@@ -1038,10 +1038,9 @@ pub enum UiEvent {
     /// back to this same silent gap: when no AUMID/WinRT path is
     /// available it degrades to a `Shell_NotifyIconW` balloon, which
     /// (like macOS's fallback) cannot report an activation either. TUI
-    /// (and any other backend with `BackendCaps::notifications ==
-    /// false`) degrades
-    /// notifications to the in-canvas `Toast` primitive instead (see
-    /// `compose::notification::notify_or_toast`); a toast's own action
+    /// (and any other backend with `BackendCaps::notifications == false`)
+    /// degrades notifications to the in-canvas `Toast` primitive instead
+    /// (see `compose::notification::notify_or_toast`); a toast's own action
     /// button click resolves through
     /// [`crate::primitives::toast::ToastStackLayout::hit_test`] /
     /// [`crate::primitives::toast::ToastHit`] from an ordinary

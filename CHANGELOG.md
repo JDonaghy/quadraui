@@ -76,13 +76,19 @@ only a push to `main` runs this workflow.
 - Windows `PlatformServices::send_notification` (`win::services`) now raises a
   WinRT `ToastNotificationManager`/`ToastNotification` toast instead of a
   transient `Shell_NotifyIconW` balloon. The toast XML carries the
-  `Notification`'s title, body and `actions` (icon is intentionally dropped,
-  matching the macOS `osascript` fallback); a repeated `tag` replaces the
-  prior toast via `CreateToastNotifierWithId` rather than stacking a new one.
-  `win32::run` registers a per-title AppUserModelID
-  (`SetCurrentProcessExplicitAppUserModelID`) so the toast is attributed to
-  the app in Action Center instead of showing as a generic process name.
-  Clicking the toast body or an action button now fires
+  `Notification`'s title, body, `actions` and `is_silent` (as `<audio
+  silent="true"/>`; icon is intentionally dropped, matching the macOS
+  `osascript` fallback); a repeated `tag` replaces the prior toast via
+  `CreateToastNotifierWithId` rather than stacking a new one. `win::run`
+  registers a per-title AppUserModelID
+  (`SetCurrentProcessExplicitAppUserModelID`) before the app's `setup` runs,
+  so the toast is attributed to the app in Action Center instead of showing
+  as a generic process name. The call initializes COM
+  (`ensure_com_initialized`) before activating the WinRT toast types, and
+  retains the live `ToastNotifier`/`ToastNotification` pair in
+  `WinPlatformServices` for as long as Windows may still fire callbacks on
+  it, pruning the entry once `Dismissed`/`Failed` fires or a same-`tag` toast
+  replaces it. Clicking the toast body or an action button now fires
   `UiEvent::NotificationActivated` through the existing event loop
   (`ToastNotification::Activated` posts `WM_QUADRAUI_USER_EVENT` to the
   window, which drains `drain_notification_events()`), matching the GTK

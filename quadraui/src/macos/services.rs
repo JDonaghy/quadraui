@@ -15,9 +15,10 @@
 //!   [`Notification`] fields `icon`, `actions`, and `tag` are silently
 //!   dropped: `display notification` has no icon parameter (it's always
 //!   Script Editor's), no button/action parameter, and no click-through
-//!   channel to report an activation back through at all — GTK is the
-//!   only backend [`crate::UiEvent::NotificationActivated`] fires on
-//!   today (see that variant's own doc). [`Notification::is_silent`]
+//!   channel to report an activation back through at all — GTK and Win's
+//!   WinRT toast path are the backends
+//!   [`crate::UiEvent::NotificationActivated`] fires on (see that
+//!   variant's own doc). [`Notification::is_silent`]
 //!   maps to whether the `display notification` command's `sound name`
 //!   clause is present at all (see [`Self::send_notification`]'s own
 //!   doc; counterintuitively, *no* clause means *no* sound, so

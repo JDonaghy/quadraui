@@ -1610,9 +1610,11 @@ fn indicators_clicking_cancel_resets_progress() {
 // or produce desktop side effects (`u`/`f`/`p`/`x`/`t`/`d`/`b`) — none of
 // which a headless `WinDriver` can observe. What is headlessly observable:
 // - the `Reaction`/exit behaviour of the app's own key dispatch (proves
-//   `WinDriver` can drive this example's `AppLogic` at all); and
+//   `WinDriver` can drive this example's `AppLogic` at all);
 // - the clipboard round trip via `WinBackend::services()` directly,
-//   which needs no window/desktop UI at all (`OpenClipboard(None)`).
+//   which needs no window/desktop UI at all (`OpenClipboard(None)`); and
+// - `UiEvent::NotificationActivated` dispatched directly (not raised by a
+//   real toast click), recorded on `PlatformServicesDemo::last_activation`.
 
 const PLATFORM_SERVICES_W: u32 = 400;
 const PLATFORM_SERVICES_H: u32 = 200;
@@ -1620,7 +1622,7 @@ const PLATFORM_SERVICES_H: u32 = 200;
 #[test]
 fn platform_services_q_exits() {
     let mut driver = WinDriver::new(
-        PlatformServicesDemo,
+        PlatformServicesDemo::default(),
         PLATFORM_SERVICES_W,
         PLATFORM_SERVICES_H,
     );
@@ -1633,7 +1635,7 @@ fn platform_services_q_exits() {
 #[test]
 fn platform_services_escape_exits() {
     let mut driver = WinDriver::new(
-        PlatformServicesDemo,
+        PlatformServicesDemo::default(),
         PLATFORM_SERVICES_W,
         PLATFORM_SERVICES_H,
     );
@@ -1644,7 +1646,7 @@ fn platform_services_escape_exits() {
 #[test]
 fn platform_services_unbound_key_continues_and_paints_nothing() {
     let mut driver = WinDriver::new(
-        PlatformServicesDemo,
+        PlatformServicesDemo::default(),
         PLATFORM_SERVICES_W,
         PLATFORM_SERVICES_H,
     );
@@ -1674,7 +1676,7 @@ fn platform_services_unbound_key_continues_and_paints_nothing() {
 #[test]
 fn platform_services_clipboard_round_trips_through_the_real_win32_clipboard() {
     let driver = WinDriver::new(
-        PlatformServicesDemo,
+        PlatformServicesDemo::default(),
         PLATFORM_SERVICES_W,
         PLATFORM_SERVICES_H,
     );
@@ -1689,6 +1691,38 @@ fn platform_services_clipboard_round_trips_through_the_real_win32_clipboard() {
          required) should round-trip the exact text just written — the \
          same `WinPlatformServices::clipboard()` this example's 'c' \
          handler calls"
+    );
+}
+
+// `UiEvent::NotificationActivated` reaches this example the same way it
+// reaches any other `AppLogic` — through `WinDriver::dispatch`, not through
+// a real `ToastNotification::Activated` callback (that needs a live toast
+// shown via a real Action Center, which this headless driver never raises).
+// This proves the example's own match arm records the payload rather than
+// silently falling through to its `_ => Reaction::Continue` catch-all; the
+// `ToastNotification::Activated` → `WM_QUADRAUI_USER_EVENT` →
+// `drain_notification_events` plumbing that produces this event for real is
+// `win::services`/`win::run` internals with no headless surface to drive
+// from this crate.
+#[test]
+fn platform_services_notification_activated_is_recorded() {
+    let mut driver = WinDriver::new(
+        PlatformServicesDemo::default(),
+        PLATFORM_SERVICES_W,
+        PLATFORM_SERVICES_H,
+    );
+    assert_eq!(driver.app().last_activation(), None);
+
+    let action = WidgetId::new("show");
+    let reaction = driver.dispatch(UiEvent::NotificationActivated {
+        tag: Some("win-platform-services-demo".to_string()),
+        action: Some(action),
+    });
+
+    assert_eq!(reaction, Reaction::Continue);
+    assert_eq!(
+        driver.app().last_activation(),
+        Some(&(Some("win-platform-services-demo".to_string()), Some(action)))
     );
 }
 
