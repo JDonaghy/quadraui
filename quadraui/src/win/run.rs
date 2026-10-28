@@ -2173,6 +2173,7 @@ mod win32 {
         // SAFETY: `hwnd` is this dispatch's own window; `IsZoomed`/
         // `IsIconic` take only a handle.
         let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
+        // SAFETY: same as the `IsZoomed` query above.
         let minimized = unsafe { IsIconic(hwnd) }.as_bool();
         // `window()` takes `&mut self`, so this borrow must be dropped
         // (the block ends here) before any later borrow (e.g. `dispatch`'s
@@ -4158,6 +4159,8 @@ mod win32 {
             let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
                 // A fresh window is already `SIZE_RESTORED`; reporting the
                 // same restored state again must not look like a change.
+                // SAFETY: `lParam` is `0` (no pointer payload), so there's
+                // no pointee lifetime to uphold.
                 unsafe {
                     SendMessageW(hwnd, WM_SIZE, Some(WPARAM(0)), Some(LPARAM(0)));
                 }
@@ -4268,6 +4271,8 @@ mod win32 {
                     // `WM_NULL` carries no payload and every arm here
                     // ignores it, so it exercises exactly that resync path
                     // with no side effect of its own.
+                    // SAFETY: `lParam` is `0` (no pointer payload), so there's
+                    // no pointee lifetime to uphold.
                     unsafe {
                         SendMessageW(hwnd, WM_NULL, Some(WPARAM(0)), Some(LPARAM(0)));
                     }
