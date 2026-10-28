@@ -1026,15 +1026,16 @@ pub enum UiEvent {
     /// without inventing its own out-of-band id scheme. `None` when the
     /// firing `Notification` carried no tag.
     ///
-    /// **Not every backend can produce this.** Only GTK has a native
-    /// click-through channel today — `gio::Notification`'s action/
-    /// default-action `GAction`s, wired in `gtk::services` (see that
-    /// module's doc). macOS's unbundled `osascript` fallback and Win's
-    /// `Shell_NotifyIconW` balloon fallback have no click-through
-    /// mechanism to report through and honestly never emit this variant
-    /// — see each backend's `send_notification` doc for what a real
-    /// implementation there (`UNUserNotificationCenter`, WinRT
-    /// `ToastNotificationManager`) would need. TUI (and any other
+    /// **Not every backend can produce this.** GTK (`gio::Notification`'s
+    /// action/default-action `GAction`s, wired in `gtk::services`) and
+    /// macOS's bundled `.app` path (`UNUserNotificationCenter`'s delegate,
+    /// wired in `macos::services`) both have a native click-through channel
+    /// and fire this variant. macOS falls back to `osascript display
+    /// notification` for an unbundled host (no `CFBundleIdentifier` to
+    /// authorize against) and Win's `Shell_NotifyIconW` balloon has no
+    /// click-through mechanism to report through either — see each
+    /// backend's `send_notification` doc for what each path covers. TUI
+    /// (and any other
     /// backend with `BackendCaps::notifications == false`) degrades
     /// notifications to the in-canvas `Toast` primitive instead (see
     /// `compose::notification::notify_or_toast`); a toast's own action

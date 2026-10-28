@@ -652,14 +652,22 @@ impl MacBackend {
             None,
         );
         let chrome_metrics = super::text::font_metrics(&chrome_font);
+
+        let events = Rc::new(std::cell::RefCell::new(VecDeque::new()));
+        // Share the same queue with `MacPlatformServices` so a
+        // notification activation can push `UiEvent::NotificationActivated`
+        // onto it — mirrors `GtkBackend::new`'s identical wiring in
+        // `gtk::services`'s module doc.
+        let services = MacPlatformServices::new();
+        services.set_events_handle(events.clone());
         Self {
             viewport: Viewport::new(0.0, 0.0, 1.0),
             modal_stack: Rc::new(RefCell::new(ModalStack::new())),
             drag_state: Rc::new(RefCell::new(DragState::new())),
             core: crate::backend_core::BackendCore::default(),
             double_click: DoubleClickDetector::with_radius(MAC_DOUBLE_CLICK_RADIUS),
-            events: Rc::new(std::cell::RefCell::new(VecDeque::new())),
-            services: MacPlatformServices::new(),
+            events,
+            services,
             current_cg_ptr: Cell::new(std::ptr::null()),
             current_theme: Theme::default(),
             current_style: crate::Style::default(),
