@@ -69,6 +69,7 @@ mod text_input;
 mod toast;
 mod toolbar;
 mod tooltip;
+mod tray;
 mod tree;
 
 // `TabBarHits` is `#[deprecated]` — this re-export stays (a
