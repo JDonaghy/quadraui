@@ -37,6 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::dispatch::DragState;
+use crate::drag::DragOutPayload;
 use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::focus::FocusManager;
 use crate::interaction::InteractionState;
@@ -4556,6 +4557,28 @@ pub trait PlatformServices {
         Err(BackendError::Unsupported)
     }
 
+    /// Start an OS-level drag of `items` *out* of this app's window —
+    /// Electron's `webContents.startDrag`. The counterpart to
+    /// [`crate::UiEvent::FilesDropped`]'s drag-*in*: this initiates a
+    /// drag session the OS then carries to whatever window — Finder,
+    /// Explorer, another app, or nowhere (the user may cancel) — the
+    /// user drops it on. See [`DragOutPayload`]'s own doc for what it
+    /// carries and [`crate::drag`]'s module doc for why this is a seam
+    /// rather than a full implementation.
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
+    /// real OS drag-out session yet (`NSView::beginDraggingSession` on
+    /// macOS, `IDropSource`/`DoDragDrop` on Win-GUI, `gtk4::DragSource`
+    /// on GTK are separate, backend-specific follow-ons). TUI has no OS
+    /// drag-and-drop surface to initiate a session on and is expected to
+    /// leave this at its default rather than fake one — an OS drag
+    /// session is physically absent on a terminal, the same way a tray
+    /// icon or dock badge is.
+    fn begin_drag_out(&self, items: DragOutPayload) -> ServiceResult<()> {
+        let _ = items;
+        Err(BackendError::Unsupported)
+    }
+
     /// Platform identifier — matches the `BackendNative.backend` field.
     /// One of `"tui"`, `"gtk"`, `"win-gui"`, `"macos"`.
     fn platform_name(&self) -> &'static str;
@@ -5604,5 +5627,79 @@ mod secret_store_unsupported_tests {
             Err(BackendError::Unsupported)
         );
         assert_eq!(store.delete("svc", "acct"), Err(BackendError::Unsupported));
+    }
+}
+
+#[cfg(test)]
+mod begin_drag_out_default_tests {
+    //! Coverage for [`PlatformServices::begin_drag_out`]'s *trait*
+    //! default — a minimal fake that overrides only the methods with no
+    //! default of their own (same "stands in for a backend that hasn't
+    //! touched this surface at all" reasoning
+    //! [`clipboard_default_tests`] already documents for [`Clipboard`]'s
+    //! defaulted methods) stands in for "no in-tree backend overrides
+    //! this yet", which is exactly today's state per this method's own
+    //! doc.
+    use super::*;
+
+    struct FakeTextOnlyClipboard;
+
+    impl Clipboard for FakeTextOnlyClipboard {
+        fn read_text(&self) -> Option<String> {
+            None
+        }
+
+        fn write_text(&self, _text: &str) {}
+    }
+
+    #[derive(Default)]
+    struct FakePlatformServices {
+        clipboard: FakeTextOnlyClipboard,
+    }
+
+    impl Default for FakeTextOnlyClipboard {
+        fn default() -> Self {
+            FakeTextOnlyClipboard
+        }
+    }
+
+    impl PlatformServices for FakePlatformServices {
+        fn clipboard(&self) -> &dyn Clipboard {
+            &self.clipboard
+        }
+
+        fn show_file_open_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
+            None
+        }
+
+        fn show_file_save_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
+            None
+        }
+
+        fn show_folder_open_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
+            None
+        }
+
+        fn show_message_dialog(&self, _opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
+            None
+        }
+
+        fn send_notification(&self, _n: Notification) {}
+
+        fn open_url(&self, _url: &str) {}
+
+        fn platform_name(&self) -> &'static str {
+            "fake"
+        }
+    }
+
+    #[test]
+    fn begin_drag_out_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        let payload = DragOutPayload::new().with_files([PathBuf::from("/tmp/a.txt")]);
+        assert_eq!(
+            services.begin_drag_out(payload),
+            Err(BackendError::Unsupported)
+        );
     }
 }
