@@ -412,7 +412,13 @@ impl FolderPickerController {
     // by calling the state-mutation methods (`push_char`, `move_up`, …)
     // directly instead of routing through `handle()`.
     fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> FolderPickerEvent {
-        let ctrl = modifiers.ctrl;
+        // `cmd` is treated the same as `ctrl` here: every backend delivers
+        // a Cmd-modified letter (the macOS accelerator convention) as a
+        // plain `Key::Char` with the modifier set, not a dedicated key
+        // variant, so it must be excluded alongside `ctrl` or it would be
+        // typed into the query / trigger a vim-style shortcut instead of
+        // falling through `Ignored` for an app-level accelerator.
+        let modified = modifiers.ctrl || modifiers.cmd;
         match key {
             Key::Named(NamedKey::Escape) => FolderPickerEvent::Cancelled,
 
@@ -434,7 +440,7 @@ impl FolderPickerController {
             }
 
             // '-' navigates up to parent (vim netrw convention).
-            Key::Char('-') if !ctrl => {
+            Key::Char('-') if !modified => {
                 self.navigate_up();
                 FolderPickerEvent::Consumed
             }
@@ -444,7 +450,7 @@ impl FolderPickerController {
                 FolderPickerEvent::Consumed
             }
             // 'k' vim-style up (only if no modifier).
-            Key::Char('k') if !ctrl => {
+            Key::Char('k') if !modified => {
                 self.move_up();
                 FolderPickerEvent::Consumed
             }
@@ -454,7 +460,7 @@ impl FolderPickerController {
                 FolderPickerEvent::Consumed
             }
             // 'j' vim-style down (only if no modifier).
-            Key::Char('j') if !ctrl => {
+            Key::Char('j') if !modified => {
                 self.move_down();
                 FolderPickerEvent::Consumed
             }
@@ -464,7 +470,7 @@ impl FolderPickerController {
                 FolderPickerEvent::Consumed
             }
 
-            Key::Char(c) if !ctrl => {
+            Key::Char(c) if !modified => {
                 self.push_char(*c);
                 FolderPickerEvent::Consumed
             }
@@ -970,6 +976,28 @@ mod tests {
         };
         picker.handle(&ev, 10);
         assert_eq!(picker.query(), "s");
+    }
+
+    // macOS delivers a Cmd-modified letter as a plain `Key::Char` with
+    // `modifiers.cmd` set, the same shape Ctrl uses on every other
+    // backend, so it must not be typed into the filter query or trigger
+    // a vim-style navigation shortcut.
+    #[test]
+    fn cmd_char_is_ignored_not_typed_into_query() {
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
+        let mut picker = FolderPickerController::new(tmp, vec![], false);
+        let ev = UiEvent::KeyPressed {
+            key: Key::Char('j'),
+            modifiers: Modifiers {
+                cmd: true,
+                ..Default::default()
+            },
+            repeat: false,
+        };
+        let result = picker.handle(&ev, 10);
+        assert_eq!(result, FolderPickerEvent::Ignored);
+        assert_eq!(picker.query(), "");
     }
 
     #[test]

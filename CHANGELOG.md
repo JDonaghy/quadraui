@@ -347,6 +347,15 @@ only a push to `main` runs this workflow.
   was missing a `Toolbar` arm entirely, so every click anywhere in a toolbar
   row resolved to the field's own id (`FormEvent::FocusChanged`) instead of
   the specific button clicked (`FormEvent::ToolbarButtonClicked`).
+- A Cmd-modified letter key (`Key::Char` with `Modifiers::cmd` set — the shape
+  every backend, including macOS, delivers an accelerator in, rather than a
+  dedicated key variant) is no longer typed as a literal character or
+  interpreted as a vim-style shortcut by `compose::ChatController`,
+  `compose::HelpOverlayController`, `compose::FilePickerController`,
+  `compose::FolderPickerController`, or `compose::DualModePaletteController`.
+  Each now excludes `cmd` alongside `ctrl` the same way `FormController`
+  already did, so the event falls through (`Ignored`/`KeyPressed`) for the
+  app's own Cmd-shortcut dispatch instead of being consumed as input.
 
 ## [0.6.1] - 2026-10-26
 ### Added
