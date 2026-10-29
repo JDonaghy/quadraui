@@ -66,7 +66,7 @@ only a push to `main` runs this workflow.
   `args`) in `quadraui::login_item`. Both default to
   `BackendError::Unsupported`; TUI overrides `login_item_enabled` with an
   honest no-op that always reports `false`. Per-backend registration
-  (`SMAppService`/registry/XDG autostart) are separate follow-ons.
+  (`SMAppService`/registry/XDG autostart) is a separate follow-on.
 - `PlatformServices::app_path` resolves standard, per-app filesystem
   locations — Electron's `app.getPath` parity target (`AppPathKind::
   UserData`/`AppConfig`/`AppCache`/`Logs`/`Temp`/`Downloads`/`Documents`/

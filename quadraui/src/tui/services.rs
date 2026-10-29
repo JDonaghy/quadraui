@@ -274,6 +274,23 @@
 //! …" line on [`crate::diagnostics`] before the same `Unsupported` every
 //! other backend's default returns. `apply_on_quit` stays `Unsupported`
 //! too: a terminal has no package format of its own to install into.
+//!
+//! ## Login items
+//!
+//! `login_item_enabled` overrides the trait default with an honest
+//! no-op that always reports `false`, since a terminal has no OS
+//! login-item registration of its own to query and `set_login_item`
+//! itself stays `Unsupported` on this backend — quadraui itself can
+//! never have created a registration here. This `false` only reflects
+//! that: it says nothing about a registration a host or packaging step
+//! may have created out of band (e.g. a cron/systemd-user entry that
+//! happens to launch this binary), so a settings screen built on this
+//! query can display "off" for an app that does, in fact, start at
+//! login by some other mechanism. `set_login_item` stays at the trait's
+//! `Unsupported` default: there is no honest "success" value for a
+//! mutation with nothing in this backend to mutate. See
+//! [`TuiPlatformServices::login_item_enabled`]'s own doc and
+//! `login_item`'s module doc.
 
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
@@ -1961,11 +1978,14 @@ impl PlatformServices for TuiPlatformServices {
         }
     }
 
-    /// An honest no-op, not `Unsupported`: a terminal app has no OS
-    /// login-item registration to query, but "not registered" is the
-    /// truthful answer on every host, so a caller that only wants to
-    /// display current state gets `false` rather than an error. See
-    /// `login_item`'s module doc for why `set_login_item` keeps the
+    /// An honest no-op, not `Unsupported`: this backend itself never
+    /// creates a login-item registration (`set_login_item` stays
+    /// `Unsupported` on TUI), so `false` is always truthful about *this
+    /// backend's own* state — see this module's "Login items" doc
+    /// section for the caveat that a host or packaging step can still
+    /// have registered the binary out of band, in which case this call
+    /// reports `false` for an app that does start at login some other
+    /// way. `login_item`'s module doc has why `set_login_item` keeps the
     /// trait's `Unsupported` default while this query does not.
     fn login_item_enabled(&self) -> ServiceResult<bool> {
         Ok(false)
@@ -2256,6 +2276,18 @@ mod message_dialog_tests {
                 );
             }
         }
+    }
+
+    /// A terminal has no OS login-item registration to query — this pins
+    /// the honest no-op degrade: always `Ok(false)`, on every host this
+    /// runs on (no environment dependency, unlike `displays` above).
+    /// See the module doc's "Login items" section for why `false` here
+    /// is not the same claim as "this app is not registered to start at
+    /// login by any mechanism".
+    #[test]
+    fn login_item_enabled_always_reports_false_on_tui() {
+        let services = TuiPlatformServices::new();
+        assert_eq!(services.login_item_enabled(), Ok(false));
     }
 }
 
