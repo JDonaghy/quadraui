@@ -307,6 +307,25 @@ pub trait WindowControl {
     fn focus(&mut self) -> ServiceResult<()> {
         Err(BackendError::Unsupported)
     }
+
+    /// Mark the window's document as having unsaved changes (`true`) or
+    /// clean (`false`) — Electron `BrowserWindow.setDocumentEdited`
+    /// parity. macOS shows this as the small dot inside the window's
+    /// close button; every other backend has no equivalent chrome and
+    /// reports [`BackendError::Unsupported`].
+    fn set_document_edited(&mut self, _edited: bool) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Associate the window with the file at `path` (or clear the
+    /// association when `None`) — Electron
+    /// `BrowserWindow.setRepresentedFilename` parity. macOS shows this as
+    /// a proxy icon next to the title that the user can drag or
+    /// command-click to reveal the file's path; every other backend has
+    /// no equivalent chrome and reports [`BackendError::Unsupported`].
+    fn set_represented_filename(&mut self, _path: Option<&Path>) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
 }
 
 /// Tray / status-bar icon control surface — set the icon, tooltip, and
