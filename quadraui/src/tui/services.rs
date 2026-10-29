@@ -1757,12 +1757,19 @@ impl PlatformServices for TuiPlatformServices {
     /// [`crate::compose::FolderPickerController`] — see
     /// [`Self::show_file_open_dialog`]'s doc for the shared shape.
     /// `opts.initial_dir` seeds the browsing root (falling back to the
-    /// process's current directory); `opts.title`/`opts.initial_filename`/
+    /// process's current directory); `opts.initial_filename`/
     /// `opts.filters` don't apply to a directory chooser and are ignored,
-    /// matching [`crate::backend::FileDialogOptions`]'s own doc ("ignored
-    /// by `show_folder_open_dialog`"). This does not make
-    /// `BackendCaps::folder_dialogs` `true` on `TuiBackend` — see the
-    /// module doc's "Dialogs" section for why.
+    /// matching [`crate::backend::FileDialogOptions`]'s own doc on those
+    /// two fields. `opts.title` *does* apply on GTK/Win/macOS, but TUI
+    /// ignores it too: `FolderPickerController::build_palette` always
+    /// titles the palette `"Open Folder {root}"` with no override. This
+    /// does not make `BackendCaps::folder_dialogs` `true` on
+    /// `TuiBackend` — see the module doc's "Dialogs" section for why.
+    /// Every key reaches `FolderPickerController::handle` first, which
+    /// intercepts `-`, `j` and `k` as navigation before the generic
+    /// typing arm (see its `handle_key` preamble), so a folder named
+    /// e.g. `my-app` can't be typed into the filter — arrow keys still
+    /// reach it.
     fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
         let root = opts
             .initial_dir

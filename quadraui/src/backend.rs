@@ -4149,9 +4149,10 @@ pub trait PlatformServices {
     fn clipboard(&self) -> &dyn Clipboard;
 
     /// Show a native file-open dialog (blocking). Returns `None` if the
-    /// user cancelled. TUI backends have no native dialog to show and
-    /// unconditionally return `None` (no stderr hint is written); apps
-    /// should provide an in-TUI picker instead.
+    /// user cancelled. TUI backends have no native dialog to show;
+    /// instead they drive an in-canvas `FilePickerController` through a
+    /// nested draw-and-read loop and return the path it resolves, the
+    /// same `Some(path)`/`None` contract as a native chooser.
     fn show_file_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf>;
 
     /// Show a native file-save dialog.
@@ -4168,12 +4169,13 @@ pub trait PlatformServices {
     /// implementation of this method ignores them — callers should just
     /// leave them at their `Default` rather than populating them.
     ///
-    /// TUI backends have no native dialog to show and unconditionally
-    /// return `None` (no stderr hint is written), same as
-    /// [`Self::show_file_open_dialog`] — apps should provide an in-canvas
-    /// picker instead. Callers distinguish "no native chooser at all"
-    /// from "the user cancelled" via [`BackendCaps::folder_dialogs`], the
-    /// same way they already do for [`BackendCaps::file_dialogs`].
+    /// TUI backends have no native dialog to show; instead they drive an
+    /// in-canvas `FolderPickerController` through a nested draw-and-read
+    /// loop and return the path it resolves, the same shared shape as
+    /// [`Self::show_file_open_dialog`]. [`BackendCaps::folder_dialogs`]
+    /// still reports `false` on TUI — it tracks whether the backend shows
+    /// a *native* chooser, not whether this method does anything; callers
+    /// should just call it rather than gating on the flag.
     fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf>;
 
     /// Show a native message/alert dialog (blocking). Returns the id of

@@ -939,10 +939,10 @@ fn file_dialog_demo_shows_starting_hint() {
     );
 }
 
-/// `FileDialogDemo`'s `o` handler has no way to override
-/// `FileDialogOptions::initial_dir`, so `show_file_open_dialog` roots at
-/// `std::env::current_dir()` — this test's own process cwd, which `cargo
-/// test` sets to the package root (`quadraui/`, this crate's own
+/// Uses the plain `FileDialogDemo::new()` (no
+/// `FileDialogDemo::with_initial_dir` override), so `show_file_open_dialog`
+/// roots at `std::env::current_dir()` — this test's own process cwd, which
+/// `cargo test` sets to the package root (`quadraui/`, this crate's own
 /// `CARGO_MANIFEST_DIR`) for every integration-test binary. `build.rs`
 /// lives there and always matches the demo's `*.rs` filter, so typing
 /// "build" then Enter is a stable, layout-independent way to confirm a
@@ -1096,18 +1096,25 @@ fn file_dialog_demo_confirmed_status_survives_a_path_longer_than_the_screen() {
     );
 }
 
-/// `FileDialogDemo`'s `f` handler has no way to override
-/// `FileDialogOptions::initial_dir`, so `show_folder_open_dialog` roots at
-/// `std::env::current_dir()` — this test's own process cwd, the package
-/// root (`quadraui/`). `src/` is a real directory there, so typing "src"
-/// then Enter is a stable, layout-independent way to confirm a real
-/// folder path.
+/// Roots the demo at a tempdir this test controls (via
+/// `FileDialogDemo::with_initial_dir`, which feeds every dialog's
+/// `FileDialogOptions::initial_dir` through `base_opts`) rather than
+/// `std::env::current_dir()`, so the assertion below pins the exact leaf
+/// confirmed instead of a substring any checkout path might satisfy
+/// vacuously.
 #[test]
 fn file_dialog_demo_folder_confirms_a_real_path_on_tui() {
-    let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(tmp.path().join("targetdir")).expect("create dir");
+    let mut driver = TuiDriver::new(FileDialogDemo::with_initial_dir(tmp.path()), 100, 20);
     driver.queue_dialog_events(vec![
         UiEvent::KeyPressed {
-            key: Key::Char('s'),
+            key: Key::Char('t'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+        UiEvent::KeyPressed {
+            key: Key::Char('a'),
             modifiers: Modifiers::default(),
             repeat: false,
         },
@@ -1117,7 +1124,7 @@ fn file_dialog_demo_folder_confirms_a_real_path_on_tui() {
             repeat: false,
         },
         UiEvent::KeyPressed {
-            key: Key::Char('c'),
+            key: Key::Char('g'),
             modifiers: Modifiers::default(),
             repeat: false,
         },
@@ -1130,8 +1137,8 @@ fn file_dialog_demo_folder_confirms_a_real_path_on_tui() {
     driver.type_char('f');
     let screen = driver.screen();
     assert!(
-        screen.contains("Folder:") && screen.contains("src"),
-        "typing a filter that narrows to src then Enter must confirm that real folder path:\n{screen}"
+        screen.contains("Folder:") && screen.contains("✓ targetdir"),
+        "typing a filter that narrows to targetdir then Enter must confirm that real folder path:\n{screen}"
     );
 }
 
