@@ -279,6 +279,37 @@ mod tests {
         out
     }
 
+    /// The one record written for *this* test's induced panic.
+    ///
+    /// `guard()` serialises the tests in this module against each other, but
+    /// the panic hook `install_crash_handler` sets is process-global: while it
+    /// is installed, a panic raised by any *other* test running concurrently
+    /// in this binary (`#[should_panic]` cases, `catch_unwind` guards) also
+    /// lands a record in `dir`. So a test must pick its own record out by the
+    /// unique message it panicked with rather than assume the directory holds
+    /// exactly one file.
+    fn crash_record_with_message(dir: &Path, needle: &str) -> CrashRecord {
+        let records = crash_records_in(dir);
+        let mut matching = records
+            .iter()
+            .filter(|record| record.message.contains(needle));
+        let record = matching
+            .next()
+            .unwrap_or_else(|| {
+                panic!(
+                    "no crash record whose message contains {needle:?}; \
+                     got {:?}",
+                    records.iter().map(|r| &r.message).collect::<Vec<_>>()
+                )
+            })
+            .clone();
+        assert!(
+            matching.next().is_none(),
+            "expected exactly one crash record for {needle:?}"
+        );
+        record
+    }
+
     #[test]
     fn config_builders_round_trip_through_json() {
         let cfg = CrashReporterConfig::new()
@@ -353,14 +384,8 @@ mod tests {
         std::panic::set_hook(previous);
         assert!(join_result.is_err(), "child thread was expected to panic");
 
-        let records = crash_records_in(&dir);
-        let record = records
-            .iter()
-            .find(|r| {
-                r.message
-                    .contains("induced test panic for crash reporter acceptance")
-            })
-            .unwrap_or_else(|| panic!("no crash record for the induced panic among {records:?}"));
+        let record =
+            crash_record_with_message(&dir, "induced test panic for crash reporter acceptance");
         assert_eq!(record.thread, "crash-test-thread");
         assert!(!record.backtrace.is_empty());
         assert_eq!(record.app_version, "9.9.9");
@@ -397,11 +422,7 @@ mod tests {
 
         std::panic::set_hook(previous);
 
-        let records = crash_records_in(&dir);
-        let record = records
-            .iter()
-            .find(|r| r.message.contains("second induced test panic"))
-            .unwrap_or_else(|| panic!("no crash record for the induced panic among {records:?}"));
+        let record = crash_record_with_message(&dir, "second induced test panic");
         assert_eq!(
             record.upload_endpoint.as_deref(),
             Some("https://example.test/crashes")
