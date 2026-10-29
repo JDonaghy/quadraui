@@ -60,6 +60,16 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `PlatformServices::set_as_default_protocol_client`/
+  `is_default_protocol_client`/`remove_as_default_protocol_client` — the
+  protocol/file-association registration seam (`app.setAsDefaultProtocolClient`/
+  `isDefaultProtocolClient`/`removeAsDefaultProtocolClient` parity target).
+  All three take a bare URL scheme (e.g. `"myapp"`) and default to
+  `BackendError::Unsupported` on every in-tree backend, including TUI — no
+  backend has a safe default answer for OS-level registration state it
+  doesn't read. Per-backend registration (`LSSetDefaultHandlerForURLScheme`/
+  `HKCR` writes/`xdg-mime default`) is a separate, backend-specific
+  follow-on.
 - `PlatformServices::set_login_item`/`login_item_enabled` — the
   launch-at-login seam (`app.setLoginItemSettings`/`getLoginItemSettings`
   parity target), with a new `LoginItemOptions` type (`open_hidden`,
