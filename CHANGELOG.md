@@ -90,6 +90,17 @@ only a push to `main` runs this workflow.
   surface as `qui_app_path`/`qui_set_app_identifier` plus the `QUI_PATH_*`
   constants and a new `QUI_ERR_UNSUPPORTED` error code
   (`quadraui-ffi/src/lib.rs`).
+- `crash::install_crash_handler` — the crash-reporter seam (Electron's
+  `crashReporter` parity target). A standalone free function (panic-hook
+  logic is identical on every backend, so there is no per-backend override
+  to make), with a new `CrashReporterConfig` (`app_version`,
+  `upload_endpoint`, `metadata`, `log_dir`) and `CrashRecord` type in
+  `quadraui::crash`. Chains onto the previously installed panic hook and
+  writes a structured JSON record (message, thread, location, backtrace,
+  app version, metadata) to the configured `log_dir`, falling back to
+  `paths::resolve(AppPathKind::Logs)` when unset. Compiled unconditionally
+  on every backend, including TUI. Native minidump capture and crash
+  upload are out of scope — deferred to per-platform follow-ons.
 - Windows `PlatformServices::send_notification` (`win::services`) now raises a
   WinRT `ToastNotificationManager`/`ToastNotification` toast instead of a
   transient `Shell_NotifyIconW` balloon. The toast XML carries the
