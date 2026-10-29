@@ -401,6 +401,14 @@ only a push to `main` runs this workflow.
   Each now excludes `cmd` alongside `ctrl` the same way `FormController`
   already did, so the event falls through (`Ignored`/`KeyPressed`) for the
   app's own Cmd-shortcut dispatch instead of being consumed as input.
+- `PlatformServices::show_folder_open_dialog` on TUI drives a real
+  `compose::FolderPickerController` through the same nested draw-and-read
+  loop as `show_file_open_dialog`/`show_file_save_dialog`, instead of
+  unconditionally returning `None`. `BackendCaps::folder_dialogs` stays
+  `false` on `TuiBackend` — that flag means a real *native* OS directory
+  chooser, which a terminal cannot show regardless of how faithful the
+  in-canvas replacement is; callers after a real path rather than OS-native
+  chrome can ignore the flag and just call the method.
 
 ## [0.6.1] - 2026-10-26
 ### Added

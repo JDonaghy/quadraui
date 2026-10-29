@@ -2252,15 +2252,16 @@ impl Backend for TuiBackend {
     ///   choice, not the method's availability.
     /// - everything else: **not** declared. No window to
     ///   drag/resize/maximize, no native pointer glyph, no native menu,
-    ///   no IME positioning, and every `PlatformServices` dialog method
-    ///   unconditionally returns `None`
+    ///   no IME positioning, and `file_dialogs`/`folder_dialogs`/
+    ///   `native_dialogs` all stay `false` even though every
+    ///   `PlatformServices` dialog method
     ///   (`TuiPlatformServices::show_file_open_dialog` /
     ///   `show_file_save_dialog` / `show_folder_open_dialog` /
-    ///   `show_message_dialog`). The in-canvas `Dialog` primitive
-    ///   (`draw_dialog`) stays the only dialog path on this backend,
-    ///   same posture for `folder_dialogs`:
-    ///   hosts keep whatever in-canvas picker they
-    ///   already have.
+    ///   `show_message_dialog`) runs a real in-canvas controller through a
+    ///   nested draw-and-read loop and returns a genuine user choice — see
+    ///   that module's "Dialogs" section doc. Those flags specifically
+    ///   gate a *native* OS dialog, which this backend can never show, no
+    ///   matter how real the in-canvas replacement is.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         crate::backend::BackendCaps {
             mouse: true,

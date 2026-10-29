@@ -913,14 +913,14 @@ fn caret_shape_demo_escape_exits() {
     assert!(driver.exited(), "Escape should exit the demo");
 }
 
-// ─── FileDialogDemo: TUI open/save now return a real path ──────────────────
+// ─── FileDialogDemo: TUI open/save/folder all return a real path ───────────
 //
-// `show_file_open_dialog` / `show_file_save_dialog` drive a real
-// `compose::FilePickerController` through a nested draw-and-read loop and
+// `show_file_open_dialog` / `show_file_save_dialog` / `show_folder_open_dialog`
+// each drive a real `compose::FilePickerController` /
+// `compose::FolderPickerController` through a nested draw-and-read loop and
 // resolve to whichever path the (scripted, via
 // `TuiDriver::queue_dialog_events`) input actually picked. These tests
-// pin that positive contract. `show_folder_open_dialog` keeps the
-// unconditional-`None` contract. The GTK path (a real, modal,
+// pin that positive contract. The GTK path (a real, modal,
 // nested-mainloop-pumped `gtk4::FileDialog`) can't be driven by
 // `TuiDriver` — it's covered by the `gtk_file_dialog` example's manual
 // smoke test instead.
@@ -1096,18 +1096,57 @@ fn file_dialog_demo_confirmed_status_survives_a_path_longer_than_the_screen() {
     );
 }
 
-// `show_folder_open_dialog` is deliberately outside scope and keeps the
-// original unconditional-`None` TUI contract — same reasoning, same test
-// shape as before, so a future change can't silently make the TUI folder
-// path block waiting on something that will never resolve headlessly.
+/// `FileDialogDemo`'s `f` handler has no way to override
+/// `FileDialogOptions::initial_dir`, so `show_folder_open_dialog` roots at
+/// `std::env::current_dir()` — this test's own process cwd, the package
+/// root (`quadraui/`). `src/` is a real directory there, so typing "src"
+/// then Enter is a stable, layout-independent way to confirm a real
+/// folder path.
 #[test]
-fn file_dialog_demo_folder_reports_unsupported_on_tui() {
+fn file_dialog_demo_folder_confirms_a_real_path_on_tui() {
+    let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
+    driver.queue_dialog_events(vec![
+        UiEvent::KeyPressed {
+            key: Key::Char('s'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+        UiEvent::KeyPressed {
+            key: Key::Char('r'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+        UiEvent::KeyPressed {
+            key: Key::Char('c'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+        UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+    ]);
+    driver.type_char('f');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Folder:") && screen.contains("src"),
+        "typing a filter that narrows to src then Enter must confirm that real folder path:\n{screen}"
+    );
+}
+
+/// With no scripted input, the nested loop's very first event synthesizes
+/// Escape to cancel the picker — proves cancellation still reaches the app
+/// as `None`, distinct from unsupported (TUI genuinely has a working
+/// folder picker now; `None` here means "the user backed out").
+#[test]
+fn file_dialog_demo_folder_cancelled_returns_none_on_tui() {
     let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
     driver.type_char('f');
     let screen = driver.screen();
     assert!(
-        screen.contains("unsupported"),
-        "folder dialog must report None as unsupported on TUI:\n{screen}"
+        screen.contains("Folder pick cancelled"),
+        "an un-driven folder dialog must cancel (None), not hang or silently confirm:\n{screen}"
     );
 }
 
