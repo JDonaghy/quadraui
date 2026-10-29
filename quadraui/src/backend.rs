@@ -5125,6 +5125,34 @@ pub struct SystemTheme {
     /// Always `false` on TUI — a terminal has no equivalent OS-level
     /// setting to query.
     pub high_contrast: bool,
+    /// `true` when the OS "reduce motion" accessibility preference is
+    /// active (macOS `accessibilityDisplayShouldReduceMotion`, Windows
+    /// `SPI_GETCLIENTAREAANIMATION` inverted, GTK's `gtk-enable-animations`
+    /// inverted). An app honouring this should skip hover fades, slide/fade
+    /// transitions, and similar motion, falling back to an instant state
+    /// change. Always `false` on TUI — a terminal has no animation concept
+    /// to reduce in the first place. Defaults to `false` so existing struct
+    /// literals built before this field existed keep compiling.
+    #[serde(default)]
+    pub reduce_motion: bool,
+}
+
+#[cfg(test)]
+mod system_theme_tests {
+    use super::SystemTheme;
+
+    /// `SystemTheme` JSON serialized before `reduce_motion` existed (e.g. a
+    /// persisted `UiEvent::SystemThemeChanged` fixture) still deserializes,
+    /// with the field defaulting to `false` — the `#[serde(default)]`
+    /// contract this additive field relies on to stay non-breaking.
+    #[test]
+    fn deserializing_json_without_reduce_motion_defaults_it_to_false() {
+        let json = r#"{"dark":true,"accent":null,"high_contrast":false}"#;
+        let theme: SystemTheme = serde_json::from_str(json).expect("legacy shape should parse");
+        assert!(theme.dark);
+        assert!(!theme.high_contrast);
+        assert!(!theme.reduce_motion);
+    }
 }
 
 /// Decoded RGBA8 pixel buffer for a clipboard image round-trip

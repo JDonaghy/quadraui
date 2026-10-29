@@ -517,10 +517,11 @@ pub(crate) fn detect_system_theme_from(
     let bg_index: u8 = colorfgbg.rsplit(';').next()?.trim().parse().ok()?;
     Some(SystemTheme {
         dark: !matches!(bg_index, 7 | 15),
-        // No accent-colour or high-contrast signal exists in a terminal
-        // environment — see `SystemTheme`'s field docs.
+        // No accent-colour, high-contrast, or reduce-motion signal exists
+        // in a terminal environment — see `SystemTheme`'s field docs.
         accent: None,
         high_contrast: false,
+        reduce_motion: false,
     })
 }
 
@@ -890,6 +891,7 @@ mod tests {
         assert!(theme.dark);
         assert_eq!(theme.accent, None);
         assert!(!theme.high_contrast);
+        assert!(!theme.reduce_motion);
     }
 
     #[test]

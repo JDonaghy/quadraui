@@ -653,7 +653,12 @@ impl PlatformServices for GtkPlatformServices {
         let settings = gtk4::Settings::default().ok_or(BackendError::Unsupported)?;
         let dark = settings.is_gtk_application_prefer_dark_theme();
         let theme_name = settings.gtk_theme_name();
-        Ok(system_theme_from_gtk_settings(dark, theme_name.as_deref()))
+        let enable_animations = settings.is_gtk_enable_animations();
+        Ok(system_theme_from_gtk_settings(
+            dark,
+            theme_name.as_deref(),
+            enable_animations,
+        ))
     }
 
     /// `gdk::Display::monitors()` + `Monitor::geometry()`/
@@ -809,7 +814,18 @@ fn decode_gio_icon(source: &ImageSource) -> gio::Icon {
 /// No accent-colour source: GTK4 itself exposes none (that lives on
 /// libadwaita's `AdwStyleManager`, which this crate doesn't depend on), so
 /// `accent` is always `None` here.
-fn system_theme_from_gtk_settings(dark: bool, theme_name: Option<&str>) -> SystemTheme {
+///
+/// `enable_animations` is GTK's own `gtk-enable-animations` setting
+/// (`Settings::is_gtk_enable_animations`) — the desktop's reduce-motion
+/// signal on Linux, surfaced to GTK apps as "animations are off" rather
+/// than a dedicated "reduce motion" property. [`SystemTheme::reduce_motion`]
+/// is its logical inverse: animations disabled means motion should be
+/// reduced.
+fn system_theme_from_gtk_settings(
+    dark: bool,
+    theme_name: Option<&str>,
+    enable_animations: bool,
+) -> SystemTheme {
     let high_contrast = theme_name
         .map(|name| name.to_ascii_lowercase().contains("highcontrast"))
         .unwrap_or(false);
@@ -817,6 +833,7 @@ fn system_theme_from_gtk_settings(dark: bool, theme_name: Option<&str>) -> Syste
         dark,
         accent: None,
         high_contrast,
+        reduce_motion: !enable_animations,
     }
 }
 
@@ -1551,7 +1568,7 @@ mod tests {
 
     #[test]
     fn system_theme_from_gtk_settings_reports_dark() {
-        let theme = system_theme_from_gtk_settings(true, Some("Adwaita-dark"));
+        let theme = system_theme_from_gtk_settings(true, Some("Adwaita-dark"), true);
         assert!(theme.dark);
         assert_eq!(theme.accent, None);
         assert!(!theme.high_contrast);
@@ -1559,21 +1576,29 @@ mod tests {
 
     #[test]
     fn system_theme_from_gtk_settings_reports_light() {
-        let theme = system_theme_from_gtk_settings(false, Some("Adwaita"));
+        let theme = system_theme_from_gtk_settings(false, Some("Adwaita"), true);
         assert!(!theme.dark);
         assert!(!theme.high_contrast);
     }
 
     #[test]
     fn system_theme_from_gtk_settings_detects_high_contrast_case_insensitively() {
-        assert!(system_theme_from_gtk_settings(false, Some("HighContrast")).high_contrast);
-        assert!(system_theme_from_gtk_settings(false, Some("HighContrastInverse")).high_contrast);
-        assert!(system_theme_from_gtk_settings(true, Some("highcontrast")).high_contrast);
+        assert!(system_theme_from_gtk_settings(false, Some("HighContrast"), true).high_contrast);
+        assert!(
+            system_theme_from_gtk_settings(false, Some("HighContrastInverse"), true).high_contrast
+        );
+        assert!(system_theme_from_gtk_settings(true, Some("highcontrast"), true).high_contrast);
     }
 
     #[test]
     fn system_theme_from_gtk_settings_no_theme_name_is_not_high_contrast() {
-        assert!(!system_theme_from_gtk_settings(true, None).high_contrast);
+        assert!(!system_theme_from_gtk_settings(true, None, true).high_contrast);
+    }
+
+    #[test]
+    fn system_theme_from_gtk_settings_reduce_motion_is_inverse_of_enable_animations() {
+        assert!(!system_theme_from_gtk_settings(false, None, true).reduce_motion);
+        assert!(system_theme_from_gtk_settings(false, None, false).reduce_motion);
     }
 
     // ── Native-dialog CSS theming ────────────────────────────────────────
