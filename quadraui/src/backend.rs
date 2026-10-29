@@ -4639,6 +4639,21 @@ pub trait PlatformServices {
     /// what `opts` carries and [`crate::login_item`]'s module doc for
     /// which backends are expected to supply a real registration.
     ///
+    /// Two calling-convention rules pinned here so the per-backend
+    /// follow-ons (`SMAppService`/registry/XDG autostart) implement the
+    /// same contract rather than each inventing its own:
+    ///
+    /// - When `enabled` is `false`, `opts` carries nothing that applies
+    ///   (there is no launch left to configure) — a real implementation
+    ///   must ignore it rather than rejecting a non-default `opts`
+    ///   accompanying an unregister call.
+    /// - The call is idempotent in both directions: `set_login_item(true,
+    ///   opts)` called again with the same `opts` while already
+    ///   registered re-asserts the same registration and returns `Ok(())`
+    ///   rather than erroring on "already registered"; likewise
+    ///   `set_login_item(false, _)` while already unregistered returns
+    ///   `Ok(())` rather than erroring on "not registered".
+    ///
     /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
     /// real login-item registration yet (`SMAppService` on macOS, an
     /// `HKCU\...\Run` registry value on Win-GUI, an XDG autostart
@@ -5719,15 +5734,16 @@ mod secret_store_unsupported_tests {
 }
 
 #[cfg(test)]
-mod begin_drag_out_default_tests {
-    //! Coverage for [`PlatformServices::begin_drag_out`]'s *trait*
-    //! default — a minimal fake that overrides only the methods with no
-    //! default of their own (same "stands in for a backend that hasn't
-    //! touched this surface at all" reasoning
-    //! [`clipboard_default_tests`] already documents for [`Clipboard`]'s
-    //! defaulted methods) stands in for "no in-tree backend overrides
-    //! this yet", which is exactly today's state per this method's own
-    //! doc.
+mod service_default_tests {
+    //! Coverage for [`PlatformServices`]'s *trait* defaults —
+    //! [`PlatformServices::begin_drag_out`], [`PlatformServices::
+    //! set_login_item`], and [`PlatformServices::login_item_enabled`] — a
+    //! minimal fake that overrides only the methods with no default of
+    //! its own (same "stands in for a backend that hasn't touched this
+    //! surface at all" reasoning [`clipboard_default_tests`] already
+    //! documents for [`Clipboard`]'s defaulted methods) stands in for "no
+    //! in-tree backend overrides this yet", which is exactly today's
+    //! state per each method's own doc.
     use super::*;
 
     #[derive(Default)]
