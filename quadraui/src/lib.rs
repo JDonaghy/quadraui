@@ -367,6 +367,14 @@ pub mod power;
 // module doc.
 pub mod login_item;
 
+// Crash reporter seam: `CrashReporterConfig`/`CrashRecord`, the types
+// `install_crash_handler` trades in. A standalone free function, not a
+// `PlatformServices` method — a panic hook is identical logic on every
+// backend, so there is no backend-varying implementation to override.
+// Compiled unconditionally — the panic hook and on-disk record need no
+// backend feature; see `crash`'s module doc.
+pub mod crash;
+
 // Auto-update seam: `UpdateService` + the feed/info/staged types it
 // trades in, reached off `PlatformServices::update_service` the same way
 // `PlatformServices::secret_store` exposes `SecretStore`. Compiled
