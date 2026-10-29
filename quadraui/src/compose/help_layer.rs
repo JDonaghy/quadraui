@@ -245,9 +245,9 @@ impl HelpOverlayController {
                 HelpOverlayEvent::Ignored
             };
         };
-        // Ignore Ctrl/Alt-held combos so this doesn't steal e.g. a
-        // hypothetical Ctrl+? binding from the app.
-        let plain = !modifiers.ctrl && !modifiers.alt;
+        // Ignore Ctrl/Alt/Cmd-held combos so this doesn't steal e.g. a
+        // hypothetical Ctrl+? or Cmd+? binding from the app.
+        let plain = !modifiers.ctrl && !modifiers.alt && !modifiers.cmd;
 
         if self.open {
             match key {
@@ -546,6 +546,17 @@ mod tests {
         }
     }
 
+    fn cmd_ev(k: Key) -> UiEvent {
+        UiEvent::KeyPressed {
+            key: k,
+            modifiers: Modifiers {
+                cmd: true,
+                ..Modifiers::default()
+            },
+            repeat: false,
+        }
+    }
+
     // ── HelpRegistry ─────────────────────────────────────────────────
 
     #[test]
@@ -633,6 +644,18 @@ mod tests {
     fn ctrl_question_mark_does_not_open() {
         let mut ctrl = HelpOverlayController::new();
         let ev = ctrl.handle(&ctrl_ev(Key::Char('?')));
+        assert_eq!(ev, HelpOverlayEvent::Ignored);
+        assert!(!ctrl.is_open());
+    }
+
+    // macOS delivers a Cmd-modified letter as a plain `Key::Char` with
+    // `modifiers.cmd` set, the same shape Ctrl uses on every other
+    // backend — so it must be excluded the same way, or a hypothetical
+    // app-level Cmd+? binding would be stolen by the overlay.
+    #[test]
+    fn cmd_question_mark_does_not_open() {
+        let mut ctrl = HelpOverlayController::new();
+        let ev = ctrl.handle(&cmd_ev(Key::Char('?')));
         assert_eq!(ev, HelpOverlayEvent::Ignored);
         assert!(!ctrl.is_open());
     }
