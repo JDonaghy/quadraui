@@ -6127,3 +6127,66 @@ mod service_default_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod jump_list_item_tests {
+    use super::JumpListItem;
+    use std::path::PathBuf;
+
+    #[test]
+    fn new_is_empty_in_every_field() {
+        let item = JumpListItem::new();
+        assert_eq!(item, JumpListItem::default());
+        assert!(item.title.is_empty());
+        assert_eq!(item.program, PathBuf::new());
+        assert!(item.args.is_empty());
+        assert!(item.description.is_empty());
+    }
+
+    #[test]
+    fn builders_set_every_field() {
+        let item = JumpListItem::new()
+            .with_title("Open recent")
+            .with_program("my-app")
+            .with_description("Reopen the last project");
+        assert_eq!(item.title, "Open recent");
+        assert_eq!(item.program, PathBuf::from("my-app"));
+        assert_eq!(item.description, "Reopen the last project");
+        assert!(item.args.is_empty());
+    }
+
+    #[test]
+    fn with_args_replaces_rather_than_appends() {
+        let item = JumpListItem::new()
+            .with_args(["--first".to_string()])
+            .with_args(["--second".to_string(), "--third".to_string()]);
+        assert_eq!(item.args, vec!["--second", "--third"]);
+    }
+
+    #[test]
+    fn round_trips_through_json() {
+        let item = JumpListItem::new()
+            .with_title("Open recent")
+            .with_program("my-app")
+            .with_args(["--open".to_string(), "last".to_string()])
+            .with_description("Reopen the last project");
+        let json = serde_json::to_string(&item).unwrap();
+        let back: JumpListItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(item, back);
+    }
+
+    #[test]
+    fn deserializes_from_empty_json() {
+        let item: JumpListItem = serde_json::from_str("{}").unwrap();
+        assert_eq!(item, JumpListItem::default());
+    }
+
+    #[test]
+    fn deserializes_from_partial_json() {
+        let item: JumpListItem = serde_json::from_str(r#"{"title":"Open recent"}"#).unwrap();
+        assert_eq!(item.title, "Open recent");
+        assert_eq!(item.program, PathBuf::new());
+        assert!(item.args.is_empty());
+        assert!(item.description.is_empty());
+    }
+}
