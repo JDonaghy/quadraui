@@ -358,6 +358,22 @@ only a push to `main` runs this workflow.
   `Form`, after validation and before the field list is rendered, so a
   field hides/shows or enables/disables declaratively with no per-keystroke
   host round-trip; fields with no declared rule are left untouched.
+- `PlatformServices::add_recent_document`/`clear_recent_documents`/
+  `set_dock_menu`/`set_jump_list` — the recent-documents/jump-list/Dock-menu
+  seam (`app.addRecentDocument`/`app.setJumpList`/`app.dock.setMenu` parity
+  target). `set_dock_menu` reuses the existing menu model
+  (`&quadraui::primitives::context_menu::ContextMenu`), mirroring
+  `TrayService::set_menu`'s signature and "empty items = detach" semantics.
+  `set_jump_list` takes a new `JumpListItem` type (`title`, `program`,
+  `args`, `description`) in `quadraui::backend`. All four default to
+  `BackendError::Unsupported`; TUI overrides `add_recent_document`/
+  `clear_recent_documents`/`set_dock_menu` with an honest no-op that always
+  reports success (no stale-state risk from discarding them), while
+  `set_jump_list` keeps the `Unsupported` default even on TUI since a jump
+  list has no equivalent "discard it silently" story. Per-backend
+  implementation (macOS `NSDocumentController`/Dock menu,
+  Windows `SHAddToRecentDocs`/`ICustomDestinationList`) is a separate,
+  backend-specific follow-on.
 
 ### Fixed
 
