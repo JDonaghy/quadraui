@@ -4743,9 +4743,179 @@ pub trait PlatformServices {
         Err(BackendError::Unsupported)
     }
 
+    /// Add `path` to the OS "recent documents" list — Electron's
+    /// `app.addRecentDocument`. This is what surfaces a file this app
+    /// just opened in the platform's own recency UI: macOS's Dock icon
+    /// right-click "Open Recent" menu (`NSDocumentController`) and
+    /// Windows' taskbar jump list "Recent" group (`SHAddToRecentDocs`).
+    /// No validation of `path` is performed here — a real registration
+    /// is free to reject a path that doesn't exist or isn't readable;
+    /// this seam just forwards whatever the caller passes.
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
+    /// real recent-documents registration yet; wiring one into
+    /// `NSDocumentController` on macOS or `SHAddToRecentDocs` on Win-GUI
+    /// is a separate, backend-specific follow-on. TUI overrides this
+    /// with an honest no-op that always returns `Ok(())`: a terminal has
+    /// no OS-level recent-documents list of its own to add to, and
+    /// "doing nothing, successfully" is the truthful outcome of asking a
+    /// backend with no such list to extend it — unlike
+    /// [`Self::set_login_item`]'s TUI story, there is no stale-looking
+    /// registration this no-op could later contradict. GTK/Linux has no
+    /// single desktop-standard recent-documents API the way clipboard or
+    /// trash are standardised across desktop environments
+    /// (`GtkRecentManager` is GTK-specific, not a cross-desktop
+    /// contract), so it intentionally stays at this `Unsupported`
+    /// default rather than guessing at one desktop's own mechanism; a
+    /// real GTK implementation is a separate follow-on, not an
+    /// oversight.
+    fn add_recent_document(&self, path: &Path) -> ServiceResult<()> {
+        let _ = path;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Clear the OS "recent documents" list this app has contributed to
+    /// via [`Self::add_recent_document`] — Electron's
+    /// `app.clearRecentDocuments`.
+    ///
+    /// Default: [`BackendError::Unsupported`], mirroring
+    /// [`Self::add_recent_document`]'s default and TUI/GTK story: TUI
+    /// overrides this with an honest no-op that always returns `Ok(())`
+    /// (nothing was ever added on this backend, so "cleared" is
+    /// trivially true), while GTK/Linux stays `Unsupported` for the same
+    /// reason [`Self::add_recent_document`] does.
+    fn clear_recent_documents(&self) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Attach (or replace) this app's Dock icon menu — Electron's
+    /// `app.dock.setMenu`, macOS-only in Electron but exposed here as a
+    /// cross-platform seam the way [`TrayService::set_menu`] is. Reuses
+    /// [`ContextMenu`], the same menu primitive [`TrayService::set_menu`]
+    /// and [`Backend::show_context_menu`] already use, so there is one
+    /// menu vocabulary and one `WidgetId` activation path
+    /// (`UiEvent::ContextMenuItemActivated`) shared across a right-click
+    /// context menu, a tray menu, and a dock menu, rather than a
+    /// fourth bespoke menu type. Passing a menu with no items is not the
+    /// same as never calling this method — a backend that models "no
+    /// menu attached" and "menu attached with zero items" differently
+    /// should treat an empty [`ContextMenu::items`] as detaching the
+    /// menu, mirroring [`TrayService::set_menu`]'s own contract exactly.
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
+    /// real Dock menu attachment yet (`NSApplication.shared.dockTile`'s
+    /// `NSMenu` on macOS is the only platform with a literal "Dock" to
+    /// attach one to; a Windows follow-on would instead route through
+    /// [`Self::set_jump_list`]'s taskbar "Tasks" group, not this
+    /// method). TUI overrides this with an honest no-op that always
+    /// returns `Ok(())`: a terminal has no Dock icon of its own to
+    /// attach a menu to, and discarding the menu is the truthful outcome
+    /// rather than an error. GTK/Linux has no standard cross-desktop
+    /// equivalent of a Dock icon menu, so it intentionally stays at this
+    /// `Unsupported` default rather than guessing at one desktop's own
+    /// mechanism.
+    fn set_dock_menu(&self, menu: &ContextMenu) -> ServiceResult<()> {
+        let _ = menu;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Set this app's Windows taskbar jump list — Electron's
+    /// `app.setJumpList`. Windows-only in Electron (`ICustomDestinationList`);
+    /// exposed here as an optional seam method so a caller can target it
+    /// uniformly rather than branching on [`Self::platform_name`].
+    ///
+    /// Default: [`BackendError::Unsupported`] on every in-tree backend,
+    /// including TUI: unlike [`Self::add_recent_document`]/
+    /// [`Self::set_dock_menu`], a jump list has no "discard it silently"
+    /// honest no-op — a caller that builds a jump list expecting it to
+    /// eventually appear on a real Windows taskbar has no equivalent
+    /// surface on a terminal to redirect to, so staying `Unsupported`
+    /// here is more honest than claiming success. Wiring a real
+    /// `ICustomDestinationList` implementation on Win-GUI is a separate,
+    /// backend-specific follow-on; this method only has to give it a
+    /// contract to implement against.
+    fn set_jump_list(&self, items: &[JumpListItem]) -> ServiceResult<()> {
+        let _ = items;
+        Err(BackendError::Unsupported)
+    }
+
     /// Platform identifier — matches the `BackendNative.backend` field.
     /// One of `"tui"`, `"gtk"`, `"win-gui"`, `"macos"`.
     fn platform_name(&self) -> &'static str;
+}
+
+/// One task entry in a Windows jump list — [`PlatformServices::
+/// set_jump_list`]'s element type, mirroring the handful of fields
+/// Electron's `app.setJumpList` `JumpListItem` carries that make sense
+/// without pulling in the rest of that type's Windows-specific grab-bag
+/// (`iconPath`, `iconIndex`, custom categories). A plain data holder —
+/// the real `ICustomDestinationList` construction is entirely a Win-GUI
+/// backend follow-on's job, not this seam's.
+///
+/// `#[non_exhaustive]`: there are no consumers of this type yet, and a
+/// per-backend follow-on is likely to want more fields (an icon, a
+/// custom category name) later; `#[non_exhaustive]` keeps that additive
+/// rather than a semver-major break on a type with no consumers to break
+/// today. Construct with [`JumpListItem::new`] and the `with_*` builders,
+/// mirroring [`LoginItemOptions`]'s shape.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JumpListItem {
+    /// The task's visible label in the jump list.
+    #[serde(default)]
+    pub title: String,
+    /// The program to launch (typically this app's own executable path)
+    /// when the user activates this task.
+    #[serde(default)]
+    pub program: PathBuf,
+    /// Command-line arguments to pass on launch. Stored verbatim; quoting
+    /// for `CreateProcess`'s command-line splitting rules is the
+    /// responsibility of whichever backend follow-on writes this into a
+    /// real `ICustomDestinationList`.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Tooltip description shown for this task.
+    #[serde(default)]
+    pub description: String,
+}
+
+impl JumpListItem {
+    /// A new jump-list item with an empty title, program, args, and
+    /// description. Equivalent to [`JumpListItem::default`], spelled as
+    /// a constructor for symmetry with the `with_*` builders.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets [`Self::title`].
+    #[must_use]
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
+        self
+    }
+
+    /// Sets [`Self::program`].
+    #[must_use]
+    pub fn with_program(mut self, program: impl Into<PathBuf>) -> Self {
+        self.program = program.into();
+        self
+    }
+
+    /// Sets [`Self::args`], *replacing* any set by a previous call — this
+    /// is not an appender.
+    #[must_use]
+    pub fn with_args(mut self, args: impl IntoIterator<Item = String>) -> Self {
+        self.args = args.into_iter().collect();
+        self
+    }
+
+    /// Sets [`Self::description`].
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
 }
 
 /// A single named entry in the OS credential store, keyed by `service` +
@@ -5909,6 +6079,50 @@ mod service_default_tests {
         let services = FakePlatformServices::default();
         assert_eq!(
             services.remove_as_default_protocol_client("myapp"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn add_recent_document_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.add_recent_document(Path::new("/tmp/report.pdf")),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn clear_recent_documents_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.clear_recent_documents(),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn set_dock_menu_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        let menu = ContextMenu {
+            id: WidgetId::new("dock-menu"),
+            items: Vec::new(),
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+        };
+        assert_eq!(
+            services.set_dock_menu(&menu),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn set_jump_list_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        let items = [JumpListItem::new().with_title("Recent project")];
+        assert_eq!(
+            services.set_jump_list(&items),
             Err(BackendError::Unsupported)
         );
     }

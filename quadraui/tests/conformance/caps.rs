@@ -1193,6 +1193,14 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
         "remove_as_default_protocol_client",
         ServiceHonesty::AlwaysReal,
     ),
+    // `add_recent_document`/`clear_recent_documents`/`set_dock_menu`/
+    // `set_jump_list` all return `ServiceResult<()>` directly — same
+    // always-real-`Result` shape as the protocol-client methods just
+    // above.
+    ("add_recent_document", ServiceHonesty::AlwaysReal),
+    ("clear_recent_documents", ServiceHonesty::AlwaysReal),
+    ("set_dock_menu", ServiceHonesty::AlwaysReal),
+    ("set_jump_list", ServiceHonesty::AlwaysReal),
     ("platform_name", ServiceHonesty::AlwaysReal),
 ];
 
