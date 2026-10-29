@@ -4681,6 +4681,66 @@ pub trait PlatformServices {
         Err(BackendError::Unsupported)
     }
 
+    /// Register this app as the OS-level default handler for `scheme`
+    /// (e.g. `"myapp"` for `myapp://...` links) — Electron's
+    /// `app.setAsDefaultProtocolClient`. No validation of `scheme` is
+    /// performed here (no leading colon or `://` — callers pass the bare
+    /// scheme name, matching Electron's own argument shape); a real
+    /// registration is free to reject a scheme its own platform forbids
+    /// (reserved names, invalid characters).
+    ///
+    /// Default: [`BackendError::Unsupported`] on every in-tree backend,
+    /// including TUI. Unlike [`Self::set_login_item`]/
+    /// [`Self::login_item_enabled`] — where TUI can answer
+    /// `login_item_enabled` honestly with `false` because a terminal
+    /// binary's own code path could never have created that registration —
+    /// there is no safe uniform default here on *any* backend: this
+    /// scheme may already be claimed by a different installation of this
+    /// same app, a different app entirely, or nothing at all, and that
+    /// fact lives in OS state (`LSSetDefaultHandlerForURLScheme`'s
+    /// Launch Services database, the `HKCR\<scheme>` registry key,
+    /// `xdg-mime`'s `.desktop` default) this seam does not read. Wiring a
+    /// real registration per backend is a separate, backend-specific
+    /// follow-on; this method only has to give each of those a contract
+    /// to implement against.
+    fn set_as_default_protocol_client(&self, scheme: &str) -> ServiceResult<()> {
+        let _ = scheme;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Whether this app is currently registered as the OS-level default
+    /// handler for `scheme` — the read-back counterpart to
+    /// [`Self::set_as_default_protocol_client`], Electron's
+    /// `app.isDefaultProtocolClient`.
+    ///
+    /// Default: [`BackendError::Unsupported`], mirroring
+    /// [`Self::set_as_default_protocol_client`]'s default and for the
+    /// same reason: answering this query honestly requires reading real
+    /// OS registration state this seam does not yet touch on any
+    /// backend, and a blanket `false` would be actively misleading for a
+    /// scheme a previous run, a packaging step, or a different app
+    /// already claimed — not merely incomplete, the way
+    /// [`Self::login_item_enabled`]'s TUI override is.
+    fn is_default_protocol_client(&self, scheme: &str) -> ServiceResult<bool> {
+        let _ = scheme;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Unregister this app as the OS-level default handler for `scheme`
+    /// — Electron's `app.removeAsDefaultProtocolClient`. Idempotent by
+    /// contract: calling this for a scheme that was never registered (or
+    /// already unregistered) is expected to return `Ok(())` once a real
+    /// backend implements it, not an error on "nothing to remove" — the
+    /// same idempotence [`Self::set_login_item`]'s own doc pins for its
+    /// `enabled: false` call.
+    ///
+    /// Default: [`BackendError::Unsupported`], mirroring
+    /// [`Self::set_as_default_protocol_client`]'s default.
+    fn remove_as_default_protocol_client(&self, scheme: &str) -> ServiceResult<()> {
+        let _ = scheme;
+        Err(BackendError::Unsupported)
+    }
+
     /// Platform identifier — matches the `BackendNative.backend` field.
     /// One of `"tui"`, `"gtk"`, `"win-gui"`, `"macos"`.
     fn platform_name(&self) -> &'static str;
@@ -5737,7 +5797,10 @@ mod secret_store_unsupported_tests {
 mod service_default_tests {
     //! Coverage for [`PlatformServices`]'s *trait* defaults —
     //! [`PlatformServices::begin_drag_out`], [`PlatformServices::
-    //! set_login_item`], and [`PlatformServices::login_item_enabled`] — a
+    //! set_login_item`], [`PlatformServices::login_item_enabled`],
+    //! [`PlatformServices::set_as_default_protocol_client`],
+    //! [`PlatformServices::is_default_protocol_client`], and
+    //! [`PlatformServices::remove_as_default_protocol_client`] — a
     //! minimal fake that overrides only the methods with no default of
     //! its own (same "stands in for a backend that hasn't touched this
     //! surface at all" reasoning [`clipboard_default_tests`] already
@@ -5816,6 +5879,33 @@ mod service_default_tests {
         let services = FakePlatformServices::default();
         assert_eq!(
             services.login_item_enabled(),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn set_as_default_protocol_client_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.set_as_default_protocol_client("myapp"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn is_default_protocol_client_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.is_default_protocol_client("myapp"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn remove_as_default_protocol_client_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.remove_as_default_protocol_client("myapp"),
             Err(BackendError::Unsupported)
         );
     }
