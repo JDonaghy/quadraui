@@ -60,6 +60,13 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `PlatformServices::set_login_item`/`login_item_enabled` — the
+  launch-at-login seam (`app.setLoginItemSettings`/`getLoginItemSettings`
+  parity target), with a new `LoginItemOptions` type (`open_hidden`,
+  `args`) in `quadraui::login_item`. Both default to
+  `BackendError::Unsupported`; TUI overrides `login_item_enabled` with an
+  honest no-op that always reports `false`. Per-backend registration
+  (`SMAppService`/registry/XDG autostart) are separate follow-ons.
 - `PlatformServices::app_path` resolves standard, per-app filesystem
   locations — Electron's `app.getPath` parity target (`AppPathKind::
   UserData`/`AppConfig`/`AppCache`/`Logs`/`Temp`/`Downloads`/`Documents`/
