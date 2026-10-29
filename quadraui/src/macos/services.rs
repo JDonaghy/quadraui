@@ -856,7 +856,8 @@ impl PlatformServices for MacPlatformServices {
 
     /// `NSApp.effectiveAppearance` for light/dark,
     /// `NSWorkspace::accessibilityDisplayShouldIncreaseContrast` for high
-    /// contrast, `NSColor::controlAccentColor` for the accent colour.
+    /// contrast, `NSWorkspace::accessibilityDisplayShouldReduceMotion` for
+    /// reduce-motion, `NSColor::controlAccentColor` for the accent colour.
     /// Reads `effectiveAppearance().name()` and checks it for `"Dark"`
     /// rather than building an `NSArray` and calling
     /// `NSAppearance::bestMatchFromAppearancesWithNames` — for a one-shot
@@ -868,11 +869,13 @@ impl PlatformServices for MacPlatformServices {
             .effectiveAppearance()
             .name()
             .to_string();
-        let high_contrast =
-            NSWorkspace::sharedWorkspace().accessibilityDisplayShouldIncreaseContrast();
+        let workspace = NSWorkspace::sharedWorkspace();
+        let high_contrast = workspace.accessibilityDisplayShouldIncreaseContrast();
+        let reduce_motion = workspace.accessibilityDisplayShouldReduceMotion();
         Ok(system_theme_from_mac_appearance(
             &appearance_name,
             high_contrast,
+            reduce_motion,
             mac_accent_color(),
         ))
     }
@@ -934,7 +937,7 @@ fn rect_from_ns_rect(r: NSRect) -> Rect {
     )
 }
 
-/// Pure mapping from an `NSAppearance` name plus the two other
+/// Pure mapping from an `NSAppearance` name plus the other
 /// already-read signals to [`SystemTheme`] — split out from
 /// `system_theme` so the name-matching logic is unit-testable without a
 /// live `NSApplication` (mirrors this module's `native_button_order`/
@@ -942,12 +945,14 @@ fn rect_from_ns_rect(r: NSRect) -> Rect {
 fn system_theme_from_mac_appearance(
     appearance_name: &str,
     high_contrast: bool,
+    reduce_motion: bool,
     accent: Option<Color>,
 ) -> SystemTheme {
     SystemTheme {
         dark: appearance_name.contains("Dark"),
         accent,
         high_contrast,
+        reduce_motion,
     }
 }
 
@@ -1402,7 +1407,8 @@ mod tests {
 
     #[test]
     fn dark_aqua_appearance_reports_dark() {
-        let theme = system_theme_from_mac_appearance("NSAppearanceNameDarkAqua", false, None);
+        let theme =
+            system_theme_from_mac_appearance("NSAppearanceNameDarkAqua", false, false, None);
         assert!(theme.dark);
         assert!(!theme.high_contrast);
         assert_eq!(theme.accent, None);
@@ -1410,7 +1416,7 @@ mod tests {
 
     #[test]
     fn aqua_appearance_reports_light() {
-        let theme = system_theme_from_mac_appearance("NSAppearanceNameAqua", false, None);
+        let theme = system_theme_from_mac_appearance("NSAppearanceNameAqua", false, false, None);
         assert!(!theme.dark);
     }
 
@@ -1425,6 +1431,7 @@ mod tests {
         let theme = system_theme_from_mac_appearance(
             "NSAppearanceNameAccessibilityHighContrastDarkAqua",
             true,
+            false,
             None,
         );
         assert!(theme.dark);
@@ -1432,9 +1439,17 @@ mod tests {
     }
 
     #[test]
+    fn reduce_motion_flag_passes_through_unchanged() {
+        let theme = system_theme_from_mac_appearance("NSAppearanceNameAqua", false, true, None);
+        assert!(theme.reduce_motion);
+        let theme = system_theme_from_mac_appearance("NSAppearanceNameAqua", false, false, None);
+        assert!(!theme.reduce_motion);
+    }
+
+    #[test]
     fn accent_color_passes_through_unchanged() {
         let accent = Some(Color::rgb(0, 122, 255));
-        let theme = system_theme_from_mac_appearance("NSAppearanceNameAqua", false, accent);
+        let theme = system_theme_from_mac_appearance("NSAppearanceNameAqua", false, false, accent);
         assert_eq!(theme.accent, accent);
     }
 

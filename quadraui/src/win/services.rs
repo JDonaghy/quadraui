@@ -187,8 +187,9 @@ use windows::Win32::UI::Shell::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, LoadIconW, PostMessageW, HICON, IDI_ERROR, IDI_INFORMATION, MB_OK,
-    MONITORINFOF_PRIMARY, USER_DEFAULT_SCREEN_DPI,
+    GetCursorPos, LoadIconW, PostMessageW, SystemParametersInfoW, HICON, IDI_ERROR,
+    IDI_INFORMATION, MB_OK, MONITORINFOF_PRIMARY, SPI_GETCLIENTAREAANIMATION,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, USER_DEFAULT_SCREEN_DPI,
 };
 // WinRT (not Win32) — `system_theme`. `UISettings` is the
 // same class the issue names (`UISettings::GetColorValue`); `AccessibilitySettings`
@@ -2219,20 +2220,50 @@ fn win_system_theme() -> ServiceResult<SystemTheme> {
     let high_contrast = AccessibilitySettings::new()
         .and_then(|a| a.HighContrast())
         .unwrap_or(false);
+    // Same best-effort posture as `high_contrast` above: a failure to read
+    // the client-area-animation setting degrades to "animations on" (i.e.
+    // `reduce_motion: false`) rather than failing the whole query.
+    let reduce_motion = !win_client_area_animation_enabled().unwrap_or(true);
     Ok(system_theme_from_ui_colors(
         (bg.R, bg.G, bg.B),
         (accent.R, accent.G, accent.B),
         high_contrast,
+        reduce_motion,
     ))
 }
 
+/// `SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION)` — Windows' own
+/// reduce-motion signal (Settings → Accessibility → Visual effects →
+/// "Animation effects"). `true` means animations are enabled (motion is
+/// *not* reduced); [`win_system_theme`] inverts this into
+/// [`SystemTheme::reduce_motion`].
+#[cfg(target_os = "windows")]
+fn win_client_area_animation_enabled() -> ServiceResult<bool> {
+    let mut enabled = BOOL(0);
+    // SAFETY: `SPI_GETCLIENTAREAANIMATION` is a `BOOL`-out query — `pvparam`
+    // must point at a writable `BOOL`, which `enabled` is; `fwinini` is
+    // ignored for "get" actions so `0` (no `SPIF_*` flags) is correct here.
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            Some(&mut enabled as *mut _ as *mut core::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    }
+    .map_err(|e| BackendError::PlatformFailure {
+        context: format!("SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION): {e}"),
+    })?;
+    Ok(enabled.as_bool())
+}
+
 /// Pure mapping from `UISettings`' background/accent RGB triples plus the
-/// high-contrast flag to [`SystemTheme`] — split out so it's unit-testable
-/// without the real WinRT `UISettings`/`AccessibilitySettings` classes,
-/// which this crate can't construct on a non-Windows host (same
-/// cross-platform-testable-helper posture as [`wide_nul_terminated`]
-/// above; see that function's doc for why this is `allow`-gated rather
-/// than `cfg`-gated).
+/// high-contrast and reduce-motion flags to [`SystemTheme`] — split out so
+/// it's unit-testable without the real WinRT
+/// `UISettings`/`AccessibilitySettings` classes, which this crate can't
+/// construct on a non-Windows host (same cross-platform-testable-helper
+/// posture as [`wide_nul_terminated`] above; see that function's doc for
+/// why this is `allow`-gated rather than `cfg`-gated).
 ///
 /// `dark` is derived from `bg`'s perceptual luminance (ITU-R BT.601 luma,
 /// integer arithmetic) rather than a dedicated "is dark mode" WinRT
@@ -2245,6 +2276,7 @@ fn system_theme_from_ui_colors(
     bg: (u8, u8, u8),
     accent: (u8, u8, u8),
     high_contrast: bool,
+    reduce_motion: bool,
 ) -> SystemTheme {
     let (r, g, b) = bg;
     let luma = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
@@ -2252,6 +2284,7 @@ fn system_theme_from_ui_colors(
         dark: luma < 128,
         accent: Some(Color::rgb(accent.0, accent.1, accent.2)),
         high_contrast,
+        reduce_motion,
     }
 }
 
@@ -2407,21 +2440,30 @@ mod tests {
 
     #[test]
     fn system_theme_from_ui_colors_black_background_is_dark() {
-        let theme = system_theme_from_ui_colors((0, 0, 0), (0, 120, 215), false);
+        let theme = system_theme_from_ui_colors((0, 0, 0), (0, 120, 215), false, false);
         assert!(theme.dark);
         assert_eq!(theme.accent, Some(Color::rgb(0, 120, 215)));
         assert!(!theme.high_contrast);
+        assert!(!theme.reduce_motion);
     }
 
     #[test]
     fn system_theme_from_ui_colors_white_background_is_light() {
-        let theme = system_theme_from_ui_colors((255, 255, 255), (0, 120, 215), false);
+        let theme = system_theme_from_ui_colors((255, 255, 255), (0, 120, 215), false, false);
         assert!(!theme.dark);
     }
 
     #[test]
     fn system_theme_from_ui_colors_reports_high_contrast() {
-        assert!(system_theme_from_ui_colors((0, 0, 0), (255, 255, 0), true).high_contrast);
+        assert!(system_theme_from_ui_colors((0, 0, 0), (255, 255, 0), true, false).high_contrast);
+    }
+
+    #[test]
+    fn system_theme_from_ui_colors_reports_reduce_motion() {
+        let theme = system_theme_from_ui_colors((0, 0, 0), (255, 255, 0), false, true);
+        assert!(theme.reduce_motion);
+        let theme = system_theme_from_ui_colors((0, 0, 0), (255, 255, 0), false, false);
+        assert!(!theme.reduce_motion);
     }
 
     // ── display_from_monitor_rects ───────────────────────────────────────

@@ -60,6 +60,13 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `SystemTheme::reduce_motion` — the reduced-motion accessibility-preference
+  query (macOS `accessibilityDisplayShouldReduceMotion`, Windows
+  `SPI_GETCLIENTAREAANIMATION` inverted, GTK's `gtk-enable-animations`
+  inverted). Defaults to `false`; always `false` on TUI, which has no
+  animation concept to reduce. Additive field — existing `SystemTheme`
+  construction sites across all backends are updated in the same PR, so
+  this is a non-breaking change for consumers.
 - `PlatformServices::set_as_default_protocol_client`/
   `is_default_protocol_client`/`remove_as_default_protocol_client` — the
   protocol/file-association registration seam (`app.setAsDefaultProtocolClient`/
