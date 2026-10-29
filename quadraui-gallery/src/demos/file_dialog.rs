@@ -8,10 +8,8 @@
 //! `FolderPickerController` directly as an always-in-canvas widget. This
 //! demo instead shows the one call an app makes and lets each backend
 //! supply its own answer: a real native `gtk4::FileDialog` on GTK, and a
-//! real in-canvas `FilePickerController` driven through a nested
-//! draw-and-read loop on TUI — same call either way, except
-//! `show_folder_open_dialog`, which has no in-canvas fallback wired up
-//! yet and so returns `None` unconditionally on TUI (see
+//! real in-canvas `FilePickerController` / `FolderPickerController` driven
+//! through a nested draw-and-read loop on TUI — same call either way (see
 //! [`Self::caps_note`]).
 //!
 //! Three variants — Open, Save as, Folder — map directly onto those
@@ -255,8 +253,8 @@ impl Demo for FileDialogDemo {
             ),
             2 if !caps.folder_dialogs => Some(
                 "This backend has no native folder-picker facility (BackendCaps::folder_dialogs \
-                 is false) and no in-canvas fallback is wired up for it yet — the folder dialog \
-                 degrades all the way to None."
+                 is false) — the folder dialog still resolves a real path through an in-canvas \
+                 FolderPickerController driven by a nested draw-and-read loop."
                     .into(),
             ),
             _ => None,
