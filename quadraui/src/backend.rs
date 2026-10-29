@@ -41,6 +41,7 @@ use crate::drag::DragOutPayload;
 use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::focus::FocusManager;
 use crate::interaction::InteractionState;
+use crate::login_item::LoginItemOptions;
 use crate::modal_stack::ModalStack;
 use crate::paths::AppPathKind;
 use crate::power::{BlockerId, PowerSaveKind, ThermalState};
@@ -4199,11 +4200,11 @@ pub trait PlatformServices {
     ///
     /// A click on the notification (its body, or one of `n`'s declared
     /// actions) should push [`UiEvent::NotificationActivated`] where the
-    /// backend has a native channel for it — today only GTK does (see
-    /// `gtk::services`'s module doc); macOS's unbundled `osascript`
-    /// fallback and Win's `Shell_NotifyIconW` balloon fallback have no
-    /// click-through of their own to report through, and honestly do not
-    /// emit the event rather than faking it (each backend's
+    /// backend has a native channel for it — GTK (see `gtk::services`'s
+    /// module doc) and Win's WinRT toast path (see `win::services`'s
+    /// module doc) both do; macOS's unbundled `osascript` fallback has no
+    /// click-through of its own to report through, and honestly does not
+    /// emit the event rather than faking it (`macos::services`'s
     /// `send_notification` doc explains why, and what a real
     /// implementation there would need).
     fn send_notification(&self, n: Notification);
@@ -4629,6 +4630,114 @@ pub trait PlatformServices {
     /// icon or dock badge is.
     fn begin_drag_out(&self, items: DragOutPayload) -> ServiceResult<()> {
         let _ = items;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Register (`enabled: true`) or unregister (`enabled: false`) this
+    /// app to launch automatically when the user logs in — Electron's
+    /// `app.setLoginItemSettings`. See [`LoginItemOptions`]'s own doc for
+    /// what `opts` carries and [`crate::login_item`]'s module doc for
+    /// which backends are expected to supply a real registration.
+    ///
+    /// Two calling-convention rules pinned here so the per-backend
+    /// follow-ons (`SMAppService`/registry/XDG autostart) implement the
+    /// same contract rather than each inventing its own:
+    ///
+    /// - When `enabled` is `false`, `opts` carries nothing that applies
+    ///   (there is no launch left to configure) — a real implementation
+    ///   must ignore it rather than rejecting a non-default `opts`
+    ///   accompanying an unregister call.
+    /// - The call is idempotent in both directions: `set_login_item(true,
+    ///   opts)` called again with the same `opts` while already
+    ///   registered re-asserts the same registration and returns `Ok(())`
+    ///   rather than erroring on "already registered"; likewise
+    ///   `set_login_item(false, _)` while already unregistered returns
+    ///   `Ok(())` rather than erroring on "not registered".
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
+    /// real login-item registration yet (`SMAppService` on macOS, an
+    /// `HKCU\...\Run` registry value on Win-GUI, an XDG autostart
+    /// `.desktop` file on GTK/Linux are separate, backend-specific
+    /// follow-ons). TUI has no OS login/session-start hook to register
+    /// against and is expected to leave this at its default rather than
+    /// fake one.
+    fn set_login_item(&self, enabled: bool, opts: LoginItemOptions) -> ServiceResult<()> {
+        let _ = (enabled, opts);
+        Err(BackendError::Unsupported)
+    }
+
+    /// Whether this app is currently registered to launch at login — the
+    /// read-back counterpart to [`Self::set_login_item`], Electron's
+    /// `app.getLoginItemSettings().openAtLogin`.
+    ///
+    /// Default: [`BackendError::Unsupported`], mirroring
+    /// [`Self::set_login_item`]'s default. TUI overrides this with an
+    /// honest no-op that always reports `false` rather than staying
+    /// `Unsupported` — see
+    /// [`crate::tui::services::TuiPlatformServices::login_item_enabled`]
+    /// and [`crate::login_item`]'s module doc for why the query and the
+    /// mutation get different defaults.
+    fn login_item_enabled(&self) -> ServiceResult<bool> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Register this app as the OS-level default handler for `scheme`
+    /// (e.g. `"myapp"` for `myapp://...` links) — Electron's
+    /// `app.setAsDefaultProtocolClient`. No validation of `scheme` is
+    /// performed here (no leading colon or `://` — callers pass the bare
+    /// scheme name, matching Electron's own argument shape); a real
+    /// registration is free to reject a scheme its own platform forbids
+    /// (reserved names, invalid characters).
+    ///
+    /// Default: [`BackendError::Unsupported`] on every in-tree backend,
+    /// including TUI. Unlike [`Self::set_login_item`]/
+    /// [`Self::login_item_enabled`] — where TUI can answer
+    /// `login_item_enabled` honestly with `false` because a terminal
+    /// binary's own code path could never have created that registration —
+    /// there is no safe uniform default here on *any* backend: this
+    /// scheme may already be claimed by a different installation of this
+    /// same app, a different app entirely, or nothing at all, and that
+    /// fact lives in OS state (`LSSetDefaultHandlerForURLScheme`'s
+    /// Launch Services database, the `HKCR\<scheme>` registry key,
+    /// `xdg-mime`'s `.desktop` default) this seam does not read. Wiring a
+    /// real registration per backend is a separate, backend-specific
+    /// follow-on; this method only has to give each of those a contract
+    /// to implement against.
+    fn set_as_default_protocol_client(&self, scheme: &str) -> ServiceResult<()> {
+        let _ = scheme;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Whether this app is currently registered as the OS-level default
+    /// handler for `scheme` — the read-back counterpart to
+    /// [`Self::set_as_default_protocol_client`], Electron's
+    /// `app.isDefaultProtocolClient`.
+    ///
+    /// Default: [`BackendError::Unsupported`], mirroring
+    /// [`Self::set_as_default_protocol_client`]'s default and for the
+    /// same reason: answering this query honestly requires reading real
+    /// OS registration state this seam does not yet touch on any
+    /// backend, and a blanket `false` would be actively misleading for a
+    /// scheme a previous run, a packaging step, or a different app
+    /// already claimed — not merely incomplete, the way
+    /// [`Self::login_item_enabled`]'s TUI override is.
+    fn is_default_protocol_client(&self, scheme: &str) -> ServiceResult<bool> {
+        let _ = scheme;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Unregister this app as the OS-level default handler for `scheme`
+    /// — Electron's `app.removeAsDefaultProtocolClient`. Idempotent by
+    /// contract: calling this for a scheme that was never registered (or
+    /// already unregistered) is expected to return `Ok(())` once a real
+    /// backend implements it, not an error on "nothing to remove" — the
+    /// same idempotence [`Self::set_login_item`]'s own doc pins for its
+    /// `enabled: false` call.
+    ///
+    /// Default: [`BackendError::Unsupported`], mirroring
+    /// [`Self::set_as_default_protocol_client`]'s default.
+    fn remove_as_default_protocol_client(&self, scheme: &str) -> ServiceResult<()> {
+        let _ = scheme;
         Err(BackendError::Unsupported)
     }
 
@@ -5121,12 +5230,13 @@ impl Notification {
     }
 
     /// Suppress the notification sound, on backends that have a sound to
-    /// suppress: Win's balloon sets `NIIF_NOSOUND` when this is `true`,
-    /// and macOS's `osascript` fallback only adds a `sound name` clause
-    /// when this is `false` (see `win::services`/`macos::services`'s
-    /// `send_notification` docs). GTK's `gio::Notification` has no sound
-    /// control of its own at all — the desktop shell decides — so this
-    /// has nothing to bind to there.
+    /// suppress: Win's primary WinRT toast path emits `<audio
+    /// silent="true"/>` and its `Shell_NotifyIconW` balloon fallback sets
+    /// `NIIF_NOSOUND` when this is `true`, and macOS's `osascript`
+    /// fallback only adds a `sound name` clause when this is `false` (see
+    /// `win::services`/`macos::services`'s `send_notification` docs).
+    /// GTK's `gio::Notification` has no sound control of its own at all —
+    /// the desktop shell decides — so this has nothing to bind to there.
     #[must_use]
     pub fn with_silent(mut self, silent: bool) -> Self {
         self.silent = silent;
@@ -5685,15 +5795,19 @@ mod secret_store_unsupported_tests {
 }
 
 #[cfg(test)]
-mod begin_drag_out_default_tests {
-    //! Coverage for [`PlatformServices::begin_drag_out`]'s *trait*
-    //! default — a minimal fake that overrides only the methods with no
-    //! default of their own (same "stands in for a backend that hasn't
-    //! touched this surface at all" reasoning
-    //! [`clipboard_default_tests`] already documents for [`Clipboard`]'s
-    //! defaulted methods) stands in for "no in-tree backend overrides
-    //! this yet", which is exactly today's state per this method's own
-    //! doc.
+mod service_default_tests {
+    //! Coverage for [`PlatformServices`]'s *trait* defaults —
+    //! [`PlatformServices::begin_drag_out`], [`PlatformServices::
+    //! set_login_item`], [`PlatformServices::login_item_enabled`],
+    //! [`PlatformServices::set_as_default_protocol_client`],
+    //! [`PlatformServices::is_default_protocol_client`], and
+    //! [`PlatformServices::remove_as_default_protocol_client`] — a
+    //! minimal fake that overrides only the methods with no default of
+    //! its own (same "stands in for a backend that hasn't touched this
+    //! surface at all" reasoning [`clipboard_default_tests`] already
+    //! documents for [`Clipboard`]'s defaulted methods) stands in for "no
+    //! in-tree backend overrides this yet", which is exactly today's
+    //! state per each method's own doc.
     use super::*;
 
     #[derive(Default)]
@@ -5748,6 +5862,51 @@ mod begin_drag_out_default_tests {
         let payload = DragOutPayload::new().with_files([PathBuf::from("/tmp/a.txt")]);
         assert_eq!(
             services.begin_drag_out(payload),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn set_login_item_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.set_login_item(true, LoginItemOptions::default()),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn login_item_enabled_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.login_item_enabled(),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn set_as_default_protocol_client_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.set_as_default_protocol_client("myapp"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn is_default_protocol_client_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.is_default_protocol_client("myapp"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn remove_as_default_protocol_client_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.remove_as_default_protocol_client("myapp"),
             Err(BackendError::Unsupported)
         );
     }

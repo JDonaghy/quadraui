@@ -298,7 +298,13 @@ impl FilePickerController {
     }
 
     fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> FilePickerEvent {
-        let ctrl = modifiers.ctrl;
+        // `cmd` is treated the same as `ctrl`: every backend delivers a
+        // Cmd-modified letter (the macOS accelerator convention) as a
+        // plain `Key::Char` with the modifier set, not a dedicated key
+        // variant, so it must be excluded here or it would be typed into
+        // the filter instead of falling through `Ignored` for an
+        // app-level accelerator.
+        let modified = modifiers.ctrl || modifiers.cmd;
         match key {
             Key::Named(NamedKey::Escape) => FilePickerEvent::Cancelled,
 
@@ -316,7 +322,7 @@ impl FilePickerController {
                 self.pop_char();
                 FilePickerEvent::Consumed
             }
-            Key::Char(c) if !ctrl => {
+            Key::Char(c) if !modified => {
                 self.push_char(*c);
                 FilePickerEvent::Consumed
             }
@@ -827,6 +833,25 @@ mod tests {
             repeat: false,
         };
         assert_eq!(picker.handle(&ev, 10), FilePickerEvent::Cancelled);
+    }
+
+    // macOS delivers a Cmd-modified letter as a plain `Key::Char` with
+    // `modifiers.cmd` set, the same shape Ctrl uses on every other
+    // backend, so it must not be typed into the filter query.
+    #[test]
+    fn cmd_char_is_ignored_not_typed_into_query() {
+        let tmp = scratch_dir_with(&["a.rs"], &[]);
+        let mut picker = FilePickerController::new(FilePickerMode::Open, tmp.path(), vec![]);
+        let ev = UiEvent::KeyPressed {
+            key: Key::Char('f'),
+            modifiers: Modifiers {
+                cmd: true,
+                ..Default::default()
+            },
+            repeat: false,
+        };
+        assert_eq!(picker.handle(&ev, 10), FilePickerEvent::Ignored);
+        assert_eq!(picker.query(), "");
     }
 
     #[test]

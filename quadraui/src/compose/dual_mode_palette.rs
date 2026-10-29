@@ -271,17 +271,23 @@ impl DualModePaletteController {
     // ── Internal helpers ──────────────────────────────────────────────
 
     fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> DualModePaletteEvent {
-        let ctrl = modifiers.ctrl;
+        // `cmd` is treated the same as `ctrl`: every backend delivers a
+        // Cmd-modified letter (the macOS accelerator convention) as a
+        // plain `Key::Char` with the modifier set, not a dedicated key
+        // variant, so it must be excluded here or it would be typed/appended
+        // into the query instead of falling through `Ignored` for an
+        // app-level accelerator.
+        let modified = modifiers.ctrl || modifiers.cmd;
 
         match self.mode {
-            PaletteMode::Input => self.handle_key_input_mode(key, ctrl),
+            PaletteMode::Input => self.handle_key_input_mode(key, modified),
             PaletteMode::List => self.handle_key_list_mode(key, modifiers),
         }
     }
 
     /// Key dispatch when the palette is in `Input` mode.
-    /// `ctrl` is already extracted from modifiers.
-    fn handle_key_input_mode(&mut self, key: &Key, ctrl: bool) -> DualModePaletteEvent {
+    /// `modified` (`ctrl || cmd`) is already extracted from modifiers.
+    fn handle_key_input_mode(&mut self, key: &Key, modified: bool) -> DualModePaletteEvent {
         match key {
             Key::Named(NamedKey::Escape) => DualModePaletteEvent::Cancelled,
 
@@ -297,7 +303,7 @@ impl DualModePaletteController {
             }
 
             // Backspace — delete character to the left of cursor.
-            Key::Named(NamedKey::Backspace) if !ctrl => {
+            Key::Named(NamedKey::Backspace) if !modified => {
                 if self.cursor_char > 0 {
                     let chars: Vec<char> = self.query.chars().collect();
                     let mut new_query = String::new();
@@ -317,7 +323,7 @@ impl DualModePaletteController {
             }
 
             // Left arrow — move cursor left.
-            Key::Named(NamedKey::Left) if !ctrl => {
+            Key::Named(NamedKey::Left) if !modified => {
                 if self.cursor_char > 0 {
                     self.cursor_char -= 1;
                 }
@@ -325,7 +331,7 @@ impl DualModePaletteController {
             }
 
             // Right arrow — move cursor right.
-            Key::Named(NamedKey::Right) if !ctrl => {
+            Key::Named(NamedKey::Right) if !modified => {
                 let char_count = self.query.chars().count();
                 if self.cursor_char < char_count {
                     self.cursor_char += 1;
@@ -346,7 +352,7 @@ impl DualModePaletteController {
             }
 
             // Printable characters — insert at cursor.
-            Key::Char(c) if !ctrl => {
+            Key::Char(c) if !modified => {
                 let chars: Vec<char> = self.query.chars().collect();
                 let mut new_query = String::new();
                 for (i, &ch) in chars.iter().enumerate() {
@@ -373,7 +379,8 @@ impl DualModePaletteController {
     /// Scroll synchronisation happens in [`handle`](Self::handle) after this
     /// returns, so `visible_rows` is not passed here.
     fn handle_key_list_mode(&mut self, key: &Key, modifiers: &Modifiers) -> DualModePaletteEvent {
-        let ctrl = modifiers.ctrl;
+        // See `handle_key`'s comment: `cmd` is treated the same as `ctrl`.
+        let modified = modifiers.ctrl || modifiers.cmd;
 
         match key {
             Key::Named(NamedKey::Escape) => DualModePaletteEvent::Cancelled,
@@ -398,7 +405,7 @@ impl DualModePaletteController {
                 self.selected = self.selected.saturating_sub(1);
                 DualModePaletteEvent::Consumed
             }
-            Key::Char('k') if !ctrl => {
+            Key::Char('k') if !modified => {
                 self.selected = self.selected.saturating_sub(1);
                 DualModePaletteEvent::Consumed
             }
@@ -410,7 +417,7 @@ impl DualModePaletteController {
                 }
                 DualModePaletteEvent::Consumed
             }
-            Key::Char('j') if !ctrl => {
+            Key::Char('j') if !modified => {
                 if !self.items.is_empty() {
                     self.selected = (self.selected + 1).min(self.items.len() - 1);
                 }
@@ -418,7 +425,7 @@ impl DualModePaletteController {
             }
 
             // Backspace — delete last query character.
-            Key::Named(NamedKey::Backspace) if !ctrl => {
+            Key::Named(NamedKey::Backspace) if !modified => {
                 if !self.query.is_empty() {
                     self.query.pop();
                     self.cursor_char = self.query.chars().count();
@@ -431,7 +438,7 @@ impl DualModePaletteController {
             }
 
             // Printable characters — append to query.
-            Key::Char(c) if !ctrl => {
+            Key::Char(c) if !modified => {
                 // In List mode typing appends to the search query (no cursor
                 // movement — always appends to the end like a search box).
                 self.query.push(*c);
@@ -570,6 +577,17 @@ mod tests {
         }
     }
 
+    fn cmd_ev(k: Key) -> UiEvent {
+        UiEvent::KeyPressed {
+            key: k,
+            modifiers: Modifiers {
+                cmd: true,
+                ..Modifiers::default()
+            },
+            repeat: false,
+        }
+    }
+
     // ── Initial state ─────────────────────────────────────────────────
 
     #[test]
@@ -694,6 +712,16 @@ mod tests {
         assert_eq!(ev, DualModePaletteEvent::Ignored);
     }
 
+    // macOS delivers a Cmd-modified letter as a plain `Key::Char` with
+    // `modifiers.cmd` set, the same shape Ctrl uses on every other
+    // backend, so it must be ignored the same way.
+    #[test]
+    fn cmd_char_is_ignored_in_list_mode() {
+        let mut ctrl = DualModePaletteController::new("T", None, vec![]);
+        let ev = ctrl.handle(&cmd_ev(Key::Char('c')), 10);
+        assert_eq!(ev, DualModePaletteEvent::Ignored);
+    }
+
     // ── Input mode key dispatch ───────────────────────────────────────
 
     #[test]
@@ -727,6 +755,18 @@ mod tests {
         ctrl.handle(&key_ev(Key::Named(NamedKey::Left)), 10);
         ctrl.handle(&key_ev(Key::Char('b')), 10);
         assert_eq!(ctrl.query(), "abc");
+    }
+
+    // macOS delivers a Cmd-modified letter as a plain `Key::Char` with
+    // `modifiers.cmd` set, the same shape Ctrl uses on every other
+    // backend, so it must not be inserted into the query in Input mode.
+    #[test]
+    fn cmd_char_is_ignored_in_input_mode() {
+        let mut ctrl =
+            DualModePaletteController::new("T", None, vec![]).with_mode(PaletteMode::Input);
+        let ev = ctrl.handle(&cmd_ev(Key::Char('f')), 10);
+        assert_eq!(ev, DualModePaletteEvent::Ignored);
+        assert_eq!(ctrl.query(), "");
     }
 
     #[test]

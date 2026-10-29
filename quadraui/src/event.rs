@@ -1026,19 +1026,21 @@ pub enum UiEvent {
     /// without inventing its own out-of-band id scheme. `None` when the
     /// firing `Notification` carried no tag.
     ///
-    /// **Not every backend can produce this.** GTK (`gio::Notification`'s
-    /// action/default-action `GAction`s, wired in `gtk::services`) and
+    /// **Not every backend can produce this.** GTK's `gio::Notification`
+    /// action/default-action `GAction`s (wired in `gtk::services`),
     /// macOS's bundled `.app` path (`UNUserNotificationCenter`'s delegate,
-    /// wired in `macos::services`) both have a native click-through channel
-    /// and fire this variant. macOS falls back to `osascript display
-    /// notification` for an unbundled host (no `CFBundleIdentifier` to
-    /// authorize against) and Win's `Shell_NotifyIconW` balloon has no
-    /// click-through mechanism to report through either — see each
-    /// backend's `send_notification` doc for what each path covers. TUI
-    /// (and any other
-    /// backend with `BackendCaps::notifications == false`) degrades
-    /// notifications to the in-canvas `Toast` primitive instead (see
-    /// `compose::notification::notify_or_toast`); a toast's own action
+    /// wired in `macos::services`) and Win's WinRT
+    /// `ToastNotificationManager` toast (wired in `win::services`,
+    /// `ToastNotification::Activated`) all have a native click-through
+    /// channel and emit this variant. macOS falls back to `osascript
+    /// display notification` for an unbundled host (no
+    /// `CFBundleIdentifier` to authorize against), and Win falls back to a
+    /// `Shell_NotifyIconW` balloon when no AUMID/WinRT path is available;
+    /// neither fallback can report an activation — see each backend's
+    /// `send_notification` doc for what each path covers. TUI
+    /// (and any other backend with `BackendCaps::notifications == false`)
+    /// degrades notifications to the in-canvas `Toast` primitive instead
+    /// (see `compose::notification::notify_or_toast`); a toast's own action
     /// button click resolves through
     /// [`crate::primitives::toast::ToastStackLayout::hit_test`] /
     /// [`crate::primitives::toast::ToastHit`] from an ordinary

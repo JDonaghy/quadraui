@@ -1178,6 +1178,21 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
     // always-real-`Result` shape as the global-shortcut methods just
     // above.
     ("begin_drag_out", ServiceHonesty::AlwaysReal),
+    // `set_login_item`/`login_item_enabled` both return `ServiceResult<...>`
+    // directly — same always-real-`Result` shape as `begin_drag_out` just
+    // above.
+    ("set_login_item", ServiceHonesty::AlwaysReal),
+    ("login_item_enabled", ServiceHonesty::AlwaysReal),
+    // `set_as_default_protocol_client`/`is_default_protocol_client`/
+    // `remove_as_default_protocol_client` all return `ServiceResult<...>`
+    // directly — same always-real-`Result` shape as the login-item methods
+    // just above.
+    ("set_as_default_protocol_client", ServiceHonesty::AlwaysReal),
+    ("is_default_protocol_client", ServiceHonesty::AlwaysReal),
+    (
+        "remove_as_default_protocol_client",
+        ServiceHonesty::AlwaysReal,
+    ),
     ("platform_name", ServiceHonesty::AlwaysReal),
 ];
 

@@ -60,6 +60,23 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+- `PlatformServices::set_as_default_protocol_client`/
+  `is_default_protocol_client`/`remove_as_default_protocol_client` — the
+  protocol/file-association registration seam (`app.setAsDefaultProtocolClient`/
+  `isDefaultProtocolClient`/`removeAsDefaultProtocolClient` parity target).
+  All three take a bare URL scheme (e.g. `"myapp"`) and default to
+  `BackendError::Unsupported` on every in-tree backend, including TUI — no
+  backend has a safe default answer for OS-level registration state it
+  doesn't read. Per-backend registration (`LSSetDefaultHandlerForURLScheme`/
+  `HKCR` writes/`xdg-mime default`) is a separate, backend-specific
+  follow-on.
+- `PlatformServices::set_login_item`/`login_item_enabled` — the
+  launch-at-login seam (`app.setLoginItemSettings`/`getLoginItemSettings`
+  parity target), with a new `LoginItemOptions` type (`open_hidden`,
+  `args`) in `quadraui::login_item`. Both default to
+  `BackendError::Unsupported`; TUI overrides `login_item_enabled` with an
+  honest no-op that always reports `false`. Per-backend registration
+  (`SMAppService`/registry/XDG autostart) is a separate follow-on.
 - `PlatformServices::app_path` resolves standard, per-app filesystem
   locations — Electron's `app.getPath` parity target (`AppPathKind::
   UserData`/`AppConfig`/`AppCache`/`Logs`/`Temp`/`Downloads`/`Documents`/
@@ -73,6 +90,42 @@ only a push to `main` runs this workflow.
   surface as `qui_app_path`/`qui_set_app_identifier` plus the `QUI_PATH_*`
   constants and a new `QUI_ERR_UNSUPPORTED` error code
   (`quadraui-ffi/src/lib.rs`).
+- `crash::install_crash_handler` — the crash-reporter seam (Electron's
+  `crashReporter` parity target). A standalone free function (panic-hook
+  logic is identical on every backend, so there is no per-backend override
+  to make), with a new `CrashReporterConfig` (`app_version`,
+  `upload_endpoint`, `metadata`, `log_dir`) and `CrashRecord` type in
+  `quadraui::crash`. Chains onto the previously installed panic hook and
+  writes a structured JSON record (message, thread, location, backtrace,
+  app version, metadata) to the configured `log_dir`, falling back to
+  `paths::resolve(AppPathKind::Logs)` when unset. Compiled unconditionally
+  on every backend, including TUI. Native minidump capture and crash
+  upload are out of scope — deferred to per-platform follow-ons.
+- Windows `PlatformServices::send_notification` (`win::services`) now raises a
+  WinRT `ToastNotificationManager`/`ToastNotification` toast instead of a
+  transient `Shell_NotifyIconW` balloon. The toast XML carries the
+  `Notification`'s title, body, `actions` and `is_silent` (as `<audio
+  silent="true"/>`; icon is intentionally dropped, matching the macOS
+  `osascript` fallback); a repeated `tag` replaces the prior toast via
+  `CreateToastNotifierWithId` rather than stacking a new one. `win::run`
+  registers a per-title AppUserModelID
+  (`SetCurrentProcessExplicitAppUserModelID`) before the app's `setup` runs,
+  so the toast is attributed to the app in Action Center instead of showing
+  as a generic process name. The call initializes COM
+  (`ensure_com_initialized`) before activating the WinRT toast types, and
+  retains the live `ToastNotifier`/`ToastNotification` pair in
+  `WinPlatformServices` for as long as the toast can still be activated —
+  including the ordinary popup timeout, which only moves it into Action
+  Center rather than ending it — pruning the entry once the user acts on
+  it, dismisses it outright, `Failed` fires, a same-`tag` toast replaces
+  it, or `Show` itself errors. Clicking the toast body or an action button
+  now fires `UiEvent::NotificationActivated` through the existing event loop
+  (`ToastNotification::Activated` posts `WM_QUADRAUI_USER_EVENT` to the
+  window, which drains `drain_notification_events()`), matching the GTK
+  backend's existing click-through behavior. When WinRT/AUMID registration
+  is unavailable, `send_notification` still falls back to the legacy
+  `Shell_NotifyIconW` balloon, which (like the macOS fallback) has no
+  click-through channel and does not emit `NotificationActivated`.
 - Windows `Clipboard` implements `read_image`/`write_image`/`write_html`
   (`win::services`), matching the macOS/GTK backends instead of returning
   `Unsupported`. Images round-trip through `CF_DIBV5` (classic `CF_DIB` as a
@@ -339,6 +392,15 @@ only a push to `main` runs this workflow.
   was missing a `Toolbar` arm entirely, so every click anywhere in a toolbar
   row resolved to the field's own id (`FormEvent::FocusChanged`) instead of
   the specific button clicked (`FormEvent::ToolbarButtonClicked`).
+- A Cmd-modified letter key (`Key::Char` with `Modifiers::cmd` set — the shape
+  every backend, including macOS, delivers an accelerator in, rather than a
+  dedicated key variant) is no longer typed as a literal character or
+  interpreted as a vim-style shortcut by `compose::ChatController`,
+  `compose::HelpOverlayController`, `compose::FilePickerController`,
+  `compose::FolderPickerController`, or `compose::DualModePaletteController`.
+  Each now excludes `cmd` alongside `ctrl` the same way `FormController`
+  already did, so the event falls through (`Ignored`/`KeyPressed`) for the
+  app's own Cmd-shortcut dispatch instead of being consumed as input.
 
 ## [0.6.1] - 2026-10-26
 ### Added
