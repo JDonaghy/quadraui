@@ -39,12 +39,11 @@
 //!
 //! ## Dialogs
 //!
-//! `show_file_open_dialog`, `show_file_save_dialog`, and
-//! `show_message_dialog` used to return `None` unconditionally — a
-//! terminal has no native file picker or alert facility, and nothing in
-//! this crate drove an in-canvas replacement's show → block → return-a-
-//! choice contract. All three now drive a real in-canvas controller
-//! ([`crate::compose::FilePickerController`] /
+//! A terminal has no native file picker, directory chooser, or alert
+//! facility, so `show_file_open_dialog`, `show_file_save_dialog`,
+//! `show_folder_open_dialog`, and `show_message_dialog` all drive a real
+//! in-canvas controller ([`crate::compose::FilePickerController`] /
+//! [`crate::compose::FolderPickerController`] /
 //! [`crate::compose::MessageDialogController`]) through a **nested
 //! draw-and-read loop**: draw one frame, block for the next input event,
 //! feed it to the controller, repeat until it resolves. This is the TUI
@@ -66,15 +65,15 @@
 //! [`Self::queue_dialog_events`] (also reachable through
 //! [`crate::tui::testing::TuiDriver::queue_dialog_events`] for tests
 //! outside this crate) so the whole round trip — real
-//! `FilePickerController`/`MessageDialogController` state machine, real
-//! `TuiBackend` paint — is exercised with **no** live terminal, purely
-//! against `ratatui::backend::TestBackend` (see this module's own
-//! `dialog_tests` for the PlatformServices-level round trips this makes
-//! possible: file-open confirms a path, file-open cancels, file-save
-//! confirms a typed name, file-save seeds an initial filename,
-//! message-dialog resolves a button, message-dialog Escape resolves the
-//! cancel button, and an exhausted scripted queue still resolves rather
-//! than hanging).
+//! `FilePickerController`/`FolderPickerController`/`MessageDialogController`
+//! state machine, real `TuiBackend` paint — is exercised with **no** live
+//! terminal, purely against `ratatui::backend::TestBackend` (see this
+//! module's own `dialog_tests` for the PlatformServices-level round trips
+//! this makes possible: file-open confirms a path, file-open cancels,
+//! file-save confirms a typed name, file-save seeds an initial filename,
+//! folder-open confirms a path, folder-open cancels, message-dialog
+//! resolves a button, message-dialog Escape resolves the cancel button,
+//! and an exhausted scripted queue still resolves rather than hanging).
 //!
 //! The one thing this nested loop cannot do without help is share the
 //! *live* runner's `Terminal` instance — using a second, independently
@@ -88,12 +87,13 @@
 //! diff cache always reflects exactly what was last written, dialog
 //! frames included.
 //!
-//! `show_folder_open_dialog` is deliberately **not** touched here —
-//! issue #965 scopes to the three dialogs above; `FolderPickerController`
-//! stays an app-driven compose controller with no `PlatformServices`
-//! integration of its own (see that controller's module doc for why, and
-//! `crate::compose::file_picker`'s module doc for why the analogous file
-//! picker doesn't repeat one of its keybinding trade-offs).
+//! None of this flips `BackendCaps::file_dialogs` / `::folder_dialogs` /
+//! `::native_dialogs` to `true` on `TuiBackend`: those flags mean a real
+//! **native** OS dialog, which a terminal physically cannot show, no
+//! matter how faithful the in-canvas replacement is. Callers that care
+//! only about getting a real path or button choice back, rather than
+//! about the dialog being OS-native, can ignore the flag and just call
+//! the method.
 //!
 //! ## `shell.*` parity (issues #956, #1092) — every method now genuinely real
 //!
@@ -302,8 +302,8 @@ use crate::backend::{
     MessageDialogOptions, Notification, PlatformServices, ServiceResult, SystemTheme,
 };
 use crate::compose::{
-    FilePickerController, FilePickerEvent, FilePickerMode, MessageDialogController,
-    MessageDialogEvent,
+    FilePickerController, FilePickerEvent, FilePickerMode, FolderPickerController,
+    FolderPickerEvent, MessageDialogController, MessageDialogEvent,
 };
 use crate::diagnostics;
 use crate::event::{Point, Rect, UiEvent};
@@ -1753,13 +1753,35 @@ impl PlatformServices for TuiPlatformServices {
         )
     }
 
-    /// No native directory chooser on TUI — unconditionally `None`, same
-    /// as the file-dialog methods above. Apps should
-    /// provide an in-canvas picker instead (see
-    /// `BackendCaps::folder_dialogs`'s doc for why this is a distinct
-    /// flag from `file_dialogs`).
-    fn show_folder_open_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
-        None
+    /// Nested draw-and-read loop over
+    /// [`crate::compose::FolderPickerController`] — see
+    /// [`Self::show_file_open_dialog`]'s doc for the shared shape.
+    /// `opts.initial_dir` seeds the browsing root (falling back to the
+    /// process's current directory); `opts.title`/`opts.initial_filename`/
+    /// `opts.filters` don't apply to a directory chooser and are ignored,
+    /// matching [`crate::backend::FileDialogOptions`]'s own doc ("ignored
+    /// by `show_folder_open_dialog`"). This does not make
+    /// `BackendCaps::folder_dialogs` `true` on `TuiBackend` — see the
+    /// module doc's "Dialogs" section for why.
+    fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
+        let root = opts
+            .initial_dir
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let picker = RefCell::new(FolderPickerController::new(root, Vec::new(), false));
+        self.run_nested_dialog_loop(
+            |backend, viewport| picker.borrow().render(viewport, backend),
+            |event, _backend, viewport| {
+                let visible_rows = (viewport.height as usize)
+                    .saturating_sub(crate::compose::folder_picker::PALETTE_CHROME_ROWS);
+                match picker.borrow_mut().handle(event, visible_rows) {
+                    FolderPickerEvent::Confirmed { path } => NestedDialogStep::Resolved(path),
+                    FolderPickerEvent::Cancelled => NestedDialogStep::Cancelled,
+                    FolderPickerEvent::Consumed | FolderPickerEvent::Ignored => {
+                        NestedDialogStep::Continue
+                    }
+                }
+            },
+        )
     }
 
     /// Nested draw-and-read loop over
@@ -2196,12 +2218,13 @@ mod message_dialog_tests {
         assert!(services.show_message_dialog(opts).is_none());
     }
 
-    /// TUI has no native directory chooser, so
-    /// `show_folder_open_dialog` unconditionally returns `None` — same
-    /// shape as `show_message_dialog` above, and matching
-    /// `BackendCaps::folder_dialogs` being `false` on `TuiBackend`.
+    /// `show_folder_open_dialog` drives the same kind of nested
+    /// draw-and-read loop as `show_message_dialog` above, over
+    /// `FolderPickerController` instead — same "no surface wired yet"
+    /// degrade applies. See `dialog_tests` below for the real, wired
+    /// confirm/cancel round trips.
     #[test]
-    fn show_folder_open_dialog_always_returns_none() {
+    fn show_folder_open_dialog_returns_none_when_no_surface_wired() {
         let services = TuiPlatformServices::new();
         assert!(services
             .show_folder_open_dialog(FileDialogOptions::default())
@@ -2297,9 +2320,9 @@ mod message_dialog_tests {
 /// `ratatui::Terminal<TestBackend>` via `set_dialog_surface` and a
 /// scripted `UiEvent` sequence via `queue_dialog_events`, then calls the
 /// `PlatformServices` method exactly as an app would — the *same*
-/// `FilePickerController`/`MessageDialogController` state machine and
-/// `TuiBackend` paint path production uses, with no live terminal
-/// involved. See the module doc's "Dialogs" section.
+/// `FilePickerController`/`FolderPickerController`/`MessageDialogController`
+/// state machine and `TuiBackend` paint path production uses, with no live
+/// terminal involved. See the module doc's "Dialogs" section.
 #[cfg(test)]
 mod dialog_tests {
     use super::*;
@@ -2408,6 +2431,41 @@ mod dialog_tests {
         };
         let result = services.show_file_save_dialog(opts);
         assert_eq!(result, Some(tmp.path().join("untitled.txt")));
+    }
+
+    #[test]
+    fn show_folder_open_dialog_confirms_a_selected_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(tmp.path().join("targetdir")).expect("create dir");
+        let services = wired_services(60, 20);
+        // Filter down to the one subdirectory whose name contains "targ",
+        // then confirm it.
+        services.queue_dialog_events(vec![
+            key_char('t'),
+            key_char('a'),
+            key_char('r'),
+            key_char('g'),
+            key_named(NamedKey::Enter),
+        ]);
+        let opts = FileDialogOptions {
+            initial_dir: Some(tmp.path().to_path_buf()),
+            ..Default::default()
+        };
+        let result = services.show_folder_open_dialog(opts);
+        assert_eq!(result, Some(tmp.path().join("targetdir")));
+    }
+
+    #[test]
+    fn show_folder_open_dialog_cancelled_returns_none() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(tmp.path().join("targetdir")).expect("create dir");
+        let services = wired_services(60, 20);
+        services.queue_dialog_events(vec![key_named(NamedKey::Escape)]);
+        let opts = FileDialogOptions {
+            initial_dir: Some(tmp.path().to_path_buf()),
+            ..Default::default()
+        };
+        assert_eq!(services.show_folder_open_dialog(opts), None);
     }
 
     #[test]
