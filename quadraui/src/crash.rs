@@ -258,6 +258,11 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// Reads every crash record a directory holds. The installed hook is
+    /// process-global, so while a test's hook is active any concurrently
+    /// running test that panics (e.g. a `#[should_panic]` case) also lands a
+    /// record here. Callers therefore select their own record by its unique
+    /// panic message rather than asserting on the total count.
     fn crash_records_in(dir: &Path) -> Vec<CrashRecord> {
         let mut out = Vec::new();
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -349,16 +354,14 @@ mod tests {
         assert!(join_result.is_err(), "child thread was expected to panic");
 
         let records = crash_records_in(&dir);
-        assert_eq!(records.len(), 1, "expected exactly one crash record");
-        let record = &records[0];
+        let record = records
+            .iter()
+            .find(|r| {
+                r.message
+                    .contains("induced test panic for crash reporter acceptance")
+            })
+            .unwrap_or_else(|| panic!("no crash record for the induced panic among {records:?}"));
         assert_eq!(record.thread, "crash-test-thread");
-        assert!(
-            record
-                .message
-                .contains("induced test panic for crash reporter acceptance"),
-            "message was: {}",
-            record.message
-        );
         assert!(!record.backtrace.is_empty());
         assert_eq!(record.app_version, "9.9.9");
 
@@ -395,8 +398,10 @@ mod tests {
         std::panic::set_hook(previous);
 
         let records = crash_records_in(&dir);
-        assert_eq!(records.len(), 1);
-        let record = &records[0];
+        let record = records
+            .iter()
+            .find(|r| r.message.contains("second induced test panic"))
+            .unwrap_or_else(|| panic!("no crash record for the induced panic among {records:?}"));
         assert_eq!(
             record.upload_endpoint.as_deref(),
             Some("https://example.test/crashes")
