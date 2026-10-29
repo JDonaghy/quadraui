@@ -374,6 +374,13 @@ only a push to `main` runs this workflow.
   implementation (macOS `NSDocumentController`/Dock menu,
   Windows `SHAddToRecentDocs`/`ICustomDestinationList`) is a separate,
   backend-specific follow-on.
+- `WindowControl::set_document_edited`/`set_represented_filename` — the
+  dirty-document / represented-file seam
+  (`BrowserWindow.setDocumentEdited`/`setRepresentedFilename` parity
+  target). Both default to `BackendError::Unsupported`; macOS implements
+  them for real with `NSWindow::setDocumentEdited:`/
+  `setRepresentedFilename:` (the modified dot in the close button and the
+  titlebar proxy icon). No other in-tree backend has equivalent chrome.
 
 ### Fixed
 

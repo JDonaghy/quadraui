@@ -33,6 +33,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -4431,6 +4432,25 @@ impl WindowControl for MacBackend {
         window.makeKeyAndOrderFront(None);
         Ok(())
     }
+
+    /// `NSWindow::setDocumentEdited:` — the modified-dot the close button
+    /// shows when the document has unsaved changes.
+    fn set_document_edited(&mut self, edited: bool) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.setDocumentEdited(edited);
+        Ok(())
+    }
+
+    /// `NSWindow::setRepresentedFilename:` — the titlebar proxy icon tied
+    /// to a file path. `None` clears it: AppKit's own contract for
+    /// `representedFilename` is that an empty string removes the icon
+    /// and its command-click path menu.
+    fn set_represented_filename(&mut self, path: Option<&Path>) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        let filename = path.map(|p| p.to_string_lossy()).unwrap_or_default();
+        window.setRepresentedFilename(&NSString::from_str(&filename));
+        Ok(())
+    }
 }
 
 /// macOS's `TrayService` surface, backed by
@@ -5962,6 +5982,32 @@ mod tests {
         let mut b = MacBackend::new();
         assert!(matches!(
             crate::backend::WindowControl::set_decorated(&mut b, false),
+            Err(BackendError::Unsupported)
+        ));
+    }
+
+    /// Same no-window guard as `set_decorated` above — no real `NSWindow`
+    /// exists in a headless unit test, so both new `WindowControl` methods
+    /// must report `Unsupported` rather than panic. The live-window case
+    /// (modified dot / proxy icon actually drawn) can't be constructed
+    /// headlessly either — covered by the operator-run smoke tier instead.
+    #[test]
+    fn set_document_edited_err_without_window() {
+        let mut b = MacBackend::new();
+        assert!(matches!(
+            crate::backend::WindowControl::set_document_edited(&mut b, true),
+            Err(BackendError::Unsupported)
+        ));
+    }
+
+    #[test]
+    fn set_represented_filename_err_without_window() {
+        let mut b = MacBackend::new();
+        assert!(matches!(
+            crate::backend::WindowControl::set_represented_filename(
+                &mut b,
+                Some(std::path::Path::new("/tmp/example.txt"))
+            ),
             Err(BackendError::Unsupported)
         ));
     }
