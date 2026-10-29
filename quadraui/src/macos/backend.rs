@@ -34,7 +34,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use core_graphics::base::CGFloat;
@@ -357,6 +357,14 @@ pub struct MacBackend {
     /// drains it into `UiEvent::User` alongside `events`, on the AppKit
     /// main thread, same as any other queued event.
     tick_callback: WakeCallback,
+    /// Thread-safe inbox for [`crate::UiEvent::NotificationActivated`],
+    /// filled from `services::NotificationEventSink::deliver` —
+    /// `UNUserNotificationCenterDelegate`'s activation callback is not
+    /// guaranteed to run on the main thread, so it can't push straight
+    /// onto `events` the way GTK's main-thread-only `GAction` callback
+    /// does. [`Self::poll_events`] drains this into its output alongside
+    /// `events` and `user_events`, on the AppKit main thread.
+    notification_events: Arc<Mutex<VecDeque<UiEvent>>>,
     /// Per-toast entrance-slide animation, keyed by [`Toast::id`]. Inserted
     /// in [`Self::draw_toast_overlay`] the first time a toast id is seen and
     /// retained only while that id is still present in the
@@ -652,14 +660,49 @@ impl MacBackend {
             None,
         );
         let chrome_metrics = super::text::font_metrics(&chrome_font);
+
+        let events = Rc::new(std::cell::RefCell::new(VecDeque::new()));
+        let wake_callback: WakeCallback = Arc::new(std::sync::OnceLock::new());
+        let notification_events: Arc<Mutex<VecDeque<UiEvent>>> =
+            Arc::new(Mutex::new(VecDeque::new()));
+        // `MacPlatformServices` gets its own `NotificationEventSink`
+        // rather than sharing `events` directly — a notification
+        // activation lands on whatever thread AppKit invokes the
+        // `UNUserNotificationCenterDelegate` callback on, which isn't
+        // guaranteed to be the main thread the way GTK's `GAction`
+        // callback is (see `gtk::services`'s matching wiring). The sink
+        // is `Mutex`-backed and nudges this same `wake_callback` via GCD
+        // — see `Self::waker`'s doc for that mechanism.
+        let services = MacPlatformServices::new();
+        let notify_wake_callback = Arc::clone(&wake_callback);
+        let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            // Mirrors `Self::waker`'s own GCD hop (see its doc for the
+            // full rationale): the delegate callback this feeds can land
+            // on any thread AppKit chooses, so the redraw it triggers via
+            // `wake_callback` must first be bounced onto the main thread.
+            let wake_callback = Arc::clone(&notify_wake_callback);
+            DispatchQueue::main().exec_async(move || {
+                if let Some(bound) = wake_callback.get() {
+                    // SAFETY: see `Self::waker`'s matching `exec_async`
+                    // closure — GCD's own contract guarantees this runs
+                    // on the real main thread.
+                    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                    (bound.get(mtm))();
+                }
+            });
+        });
+        services.set_notification_sink(super::services::NotificationEventSink::new(
+            Arc::clone(&notification_events),
+            notify,
+        ));
         Self {
             viewport: Viewport::new(0.0, 0.0, 1.0),
             modal_stack: Rc::new(RefCell::new(ModalStack::new())),
             drag_state: Rc::new(RefCell::new(DragState::new())),
             core: crate::backend_core::BackendCore::default(),
             double_click: DoubleClickDetector::with_radius(MAC_DOUBLE_CLICK_RADIUS),
-            events: Rc::new(std::cell::RefCell::new(VecDeque::new())),
-            services: MacPlatformServices::new(),
+            events,
+            services,
             current_cg_ptr: Cell::new(std::ptr::null()),
             current_theme: Theme::default(),
             current_style: crate::Style::default(),
@@ -691,8 +734,9 @@ impl MacBackend {
             nerd_fonts_enabled: true,
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
-            wake_callback: Arc::new(std::sync::OnceLock::new()),
+            wake_callback,
             tick_callback: Arc::new(std::sync::OnceLock::new()),
+            notification_events,
             toast_enter: HashMap::new(),
             hover_fade: HashMap::new(),
         }
@@ -1565,6 +1609,15 @@ impl Backend for MacBackend {
         // `DispatchQueue::main().exec_async` nudge schedules exactly such
         // a repaint out-of-band the moment a background thread wakes.
         self.user_events.drain_into(&mut out);
+        // Fold in any `UiEvent::NotificationActivated` a notification
+        // delegate callback queued via `NotificationEventSink::deliver`
+        // since the last drain — see `notification_events`'s field doc.
+        let mut notifications = self
+            .notification_events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        out.extend(notifications.drain(..));
+        drop(notifications);
         out
     }
 

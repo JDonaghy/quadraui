@@ -367,6 +367,10 @@ macos = [
     "dep:trash",
     "dep:keyring",
     "dep:directories",
+    # macOS notification fidelity (`UNUserNotificationCenter`,
+    # `src/macos/services.rs`): see the dependency's own comment above.
+    "dep:objc2-user-notifications",
+    "dep:block2",
 ]
 # Optional flex/grid layout module, `quadraui::flex`. Pulls in `taffy` —
 # unit-agnostic (plain `f32` in, plain `f32` out, same as `event::Rect`),
@@ -636,6 +640,11 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
 ] }
 objc2-foundation = { version = "0.3", optional = true, features = [
     "NSArray",
+    # macOS notification fidelity (`UNUserNotificationCenter`,
+    # `src/macos/services.rs`): `NSBundle::mainBundle().bundleIdentifier()`
+    # gates the `UNUserNotificationCenter` path (needs a bundled `.app`)
+    # vs. the `osascript` fallback (works unbundled too).
+    "NSBundle",
     # Issue #953 (tray/status-bar icon): `NSData::with_bytes` feeds
     # `NSImage::initWithData` when `TrayService::set_icon` is handed an
     # `ImageSource::Bytes`.
@@ -651,11 +660,43 @@ objc2-foundation = { version = "0.3", optional = true, features = [
     "NSObjCRuntime",
     "NSProcessInfo",
     "NSRunLoop",
+    # macOS notification fidelity: `UNUserNotificationCenter::
+    # setNotificationCategories` takes an `NSSet<UNNotificationCategory>`.
+    "NSSet",
     "NSString",
     "NSThread",
     "NSTimer",
     "NSURL",
 ] }
+# macOS notification fidelity (`UNUserNotificationCenter`,
+# `src/macos/services.rs`): full-fidelity notifications — icon, action
+# buttons, tag-based replace, and a click-through activation callback —
+# matching GTK's `gio::Notification` path. `default-features = false`
+# because the crate's default pulls in `objc2-core-location` and
+# `UNNotificationServiceExtension`, neither of which this crate needs.
+objc2-user-notifications = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "UNUserNotificationCenter",
+    "UNNotificationRequest",
+    "UNNotificationContent",
+    "UNNotificationAction",
+    # `Notification::with_icon`: an icon reaches a `UNUserNotificationCenter`
+    # alert only as a `UNNotificationAttachment`, which is built from a file
+    # URL (`attachmentWithIdentifier:URL:options:error:`) — hence the temp-file
+    # hop in `MacPlatformServices::send_notification_via_notification_center`.
+    "UNNotificationAttachment",
+    "UNNotificationCategory",
+    "UNNotificationSound",
+    "UNNotificationResponse",
+    "UNNotificationTrigger",
+    "UNNotification",
+    "block2",
+] }
+# Needed directly (not just transitively via `objc2-user-notifications`'s
+# "block2" feature) to build the completion-handler blocks
+# `requestAuthorizationWithOptions:completionHandler:` and
+# `addNotificationRequest:withCompletionHandler:` take.
+block2 = { version = "0.6", optional = true }
 core-graphics = { version = "0.23", optional = true }
 core-text = { version = "20.1", optional = true }
 core-foundation = { version = "0.9", optional = true }

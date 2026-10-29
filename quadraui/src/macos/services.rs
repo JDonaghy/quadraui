@@ -6,31 +6,55 @@
 //! - **File dialogs** → `NSOpenPanel` / `NSSavePanel`, sync
 //!   `runModal`. Apps must invoke these from event handlers running
 //!   on the main thread (the `MacBackend` run loop guarantees this).
-//! - **Notifications** → `osascript -e 'display notification ...'`.
-//!   `UNUserNotificationCenter` requires a bundled `.app` with
-//!   `CFBundleIdentifier` and user authorization, neither of which
-//!   suit an unbundled CLI host. The osascript route works for both
-//!   bundled and unbundled hosts.
+//! - **Notifications** → `UNUserNotificationCenter`
+//!   (`objc2-user-notifications`) when the process is a bundled `.app`
+//!   ([`NSBundle::mainBundle`] reports a `CFBundleIdentifier` —
+//!   [`should_use_notification_center`]), falling back to
+//!   `osascript -e 'display notification ...'` otherwise:
+//!   `UNUserNotificationCenter` requires that bundle identifier and user
+//!   authorization, neither of which an unbundled CLI host has.
 //!
-//!   [`Notification`] fields `icon`, `actions`, and `tag` are silently
-//!   dropped: `display notification` has no icon parameter (it's always
-//!   Script Editor's), no button/action parameter, and no click-through
-//!   channel to report an activation back through at all — GTK and Win's
-//!   WinRT toast path are the backends
-//!   [`crate::UiEvent::NotificationActivated`] fires on (see that
-//!   variant's own doc). [`Notification::is_silent`]
-//!   maps to whether the `display notification` command's `sound name`
-//!   clause is present at all (see [`Self::send_notification`]'s own
-//!   doc; counterintuitively, *no* clause means *no* sound, so
-//!   `silent: false`, the default, is what adds one). A real fix needs
-//!   `UNUserNotificationCenter` (`objc2-user-notifications`) behind the
-//!   bundled-`.app` check this module doesn't have a way to perform
-//!   without a live macOS host to build/verify it against — `osascript`
-//!   stays the fallback for whichever host lands it. The AppleScript-building
-//!   helpers ([`crate::desktop::display_notification_script`]/
-//!   `crate::desktop::applescript_escape`) moved into `crate::desktop`
-//!   so `tui::services` could share the identical logic for its own
-//!   macOS notification fallback leg.
+//!   On the `UNUserNotificationCenter` path, [`Notification`]'s `title`,
+//!   `body`, `is_silent`, `icon`, `actions`, and `tag` all round-trip:
+//!   `actions` become `UNNotificationAction`s grouped under a
+//!   deterministic `UNNotificationCategory` ([`category_identifier`],
+//!   accumulated across calls in [`MacPlatformServices`] since
+//!   `setNotificationCategories` replaces rather than merges the
+//!   registered set), `icon` becomes a `UNNotificationAttachment` built
+//!   from a temp-file copy of the image
+//!   ([`MacPlatformServices::notification_icon_attachment`] — the
+//!   framework only attaches *files*, and moves the one it is given),
+//!   `tag` (or a synthetic identifier when absent —
+//!   [`request_identifier`]) becomes the `UNNotificationRequest`
+//!   identifier, and activating the notification or pressing one of its
+//!   actions delivers [`crate::UiEvent::NotificationActivated`] through
+//!   [`NotificationEventSink`] — macOS joins GTK as a backend that
+//!   variant fires on, including GTK's behaviour of firing *nothing*
+//!   for a notification the user merely dismisses
+//!   ([`notification_response_outcome`]).
+//!
+//!   A notification delivered while its own app is frontmost — the
+//!   common case, since `send_notification` is usually called from an
+//!   event handler — is shown as a banner only because the delegate
+//!   implements `userNotificationCenter:willPresentNotification:`
+//!   ([`foreground_presentation_options`]); the framework's default is
+//!   to show nothing and file it straight into Notification Center.
+//!
+//!   `urgent` is the one [`Notification`] field with no mapping here,
+//!   unlike GTK's `NotificationPriority::Urgent`: the AppKit analogue is
+//!   `UNMutableNotificationContent::setInterruptionLevel`, which exists
+//!   only from macOS 12 and would abort on an older host, since objc2
+//!   performs no runtime availability check.
+//!
+//!   On the `osascript` fallback path, `is_silent` is the only
+//!   [`Notification`] field with anywhere to go (see
+//!   [`MacPlatformServices::send_notification`]'s doc); `icon`,
+//!   `actions`, `tag`, and `urgent` are all dropped there. The
+//!   AppleScript-building helpers
+//!   ([`crate::desktop::display_notification_script`]/
+//!   `crate::desktop::applescript_escape`) live in `crate::desktop` so
+//!   `tui::services` can share the identical logic for its own macOS
+//!   notification fallback leg.
 //! - **`open_url`/`open_url_result`** → `open <url>` via
 //!   [`crate::desktop::open_with_default`] — the
 //!   crate-wide opener shared with `tui::services`/`win::services`.
@@ -51,40 +75,598 @@
 //!   method's own doc for the exact field mapping and coordinate-system
 //!   note.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 
+use block2::RcBlock;
+use objc2::rc::Retained;
+use objc2::runtime::{Bool, ProtocolObject};
+use objc2::{define_class, msg_send, AnyThread, DefinedClass};
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSBeep, NSColor, NSColorSpace,
     NSEvent, NSOpenPanel, NSSavePanel, NSScreen, NSWorkspace,
 };
-use objc2_foundation::{MainThreadMarker, NSArray, NSRect, NSString, NSURL};
+use objc2_foundation::{
+    MainThreadMarker, NSArray, NSBundle, NSError, NSObject, NSObjectProtocol, NSRect, NSSet,
+    NSString, NSURL,
+};
+use objc2_user_notifications::{
+    UNAuthorizationOptions, UNMutableNotificationContent, UNNotification, UNNotificationAction,
+    UNNotificationActionOptions, UNNotificationAttachment, UNNotificationCategory,
+    UNNotificationCategoryOptions, UNNotificationDefaultActionIdentifier,
+    UNNotificationDismissActionIdentifier, UNNotificationPresentationOptions,
+    UNNotificationRequest, UNNotificationResponse, UNNotificationSound, UNUserNotificationCenter,
+    UNUserNotificationCenterDelegate,
+};
 
 use crate::backend::{
     BackendError, Clipboard, Display, FileDialogOptions, MessageDialogButton, MessageDialogChoice,
     MessageDialogOptions, Notification, RgbaImage, ServiceResult, SystemTheme,
 };
-use crate::event::{Point, Rect};
+use crate::event::{Point, Rect, UiEvent};
 use crate::primitives::dialog::DialogSeverity;
-use crate::types::Color;
+use crate::primitives::image::ImageSource;
+use crate::types::{Color, WidgetId};
 use crate::PlatformServices;
 
 /// `NSModalResponseOK` — the user clicked Open / Save.
 const NS_MODAL_RESPONSE_OK: isize = 1;
+
+/// Prefix marking a `UNNotificationRequest` identifier as synthetic
+/// (generated by [`request_identifier`] because the [`Notification`] had
+/// no caller-supplied `tag`), rather than a real tag that should
+/// round-trip through [`UiEvent::NotificationActivated`]'s `tag` field.
+///
+/// Starts with the unit separator (`\u{1f}`) so no plausible
+/// caller-supplied tag can collide with it: a tag beginning with that
+/// control character would be misclassified as synthetic by
+/// [`tag_from_request_identifier`], which is an accepted corner case
+/// precisely because the character is unreachable from ordinary,
+/// human-authored tag strings. The identifier is internal to this
+/// module — it never reaches the user or the app.
+const SYNTHETIC_TAG_PREFIX: &str = "\u{1f}quadraui-notification-";
+
+/// The `UNNotificationRequest` identifier for a given [`Notification`]:
+/// its `tag` verbatim when present (so re-sending the same tag replaces
+/// the prior delivered notification), or a fresh synthetic identifier
+/// derived from `fresh_id` otherwise (so untagged notifications never
+/// collide with each other).
+fn request_identifier(tag: Option<&str>, fresh_id: u64) -> String {
+    match tag {
+        Some(tag) => tag.to_string(),
+        None => format!("{SYNTHETIC_TAG_PREFIX}{fresh_id}"),
+    }
+}
+
+/// Inverse of [`request_identifier`]: recovers the `tag` to report on
+/// [`UiEvent::NotificationActivated`] from the `UNNotificationRequest`
+/// identifier the delegate callback receives. A synthetic identifier
+/// (one this module generated because there was no real tag) reports
+/// `None`, matching what [`Notification::tag`] returned when the
+/// notification was sent.
+fn tag_from_request_identifier(request_id: &str) -> Option<String> {
+    if request_id.starts_with(SYNTHETIC_TAG_PREFIX) {
+        None
+    } else {
+        Some(request_id.to_string())
+    }
+}
+
+/// What a `UNUserNotificationCenterDelegate` response callback should do
+/// with the response it was handed — see [`notification_response_outcome`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NotificationResponseOutcome {
+    /// Deliver [`UiEvent::NotificationActivated`] with this `action`
+    /// field: `None` for the notification body itself, `Some` for a
+    /// specific action button.
+    Activated(Option<WidgetId>),
+    /// Deliver nothing.
+    Ignored,
+}
+
+/// Maps a `UNNotificationResponse::actionIdentifier()` to the event (if
+/// any) the delegate should deliver.
+///
+/// `UNNotificationDefaultActionIdentifier` — the user clicked the
+/// notification body — activates with no `action`.
+/// `UNNotificationDismissActionIdentifier` — the user cleared the
+/// notification without engaging with it — delivers nothing, matching
+/// GTK, where a dismissed notification fires no event: an app routing
+/// `NotificationActivated` to "raise my window" must not be dragged
+/// forward by a swipe-away. Anything else is an action button's
+/// [`WidgetId`].
+///
+/// The dismiss arm is reachable even though
+/// [`MacPlatformServices::send_notification`] registers its categories
+/// without `UNNotificationCategoryOptions::CustomDismissAction`:
+/// `currentNotificationCenter` is shared process-wide and holds a single
+/// delegate, so a response to a notification posted by the host app or
+/// another library — under a category that *does* ask for custom
+/// dismiss actions — arrives here too, and must not mint a bogus
+/// `WidgetId` out of AppKit's sentinel string.
+fn notification_response_outcome(
+    action_identifier: &str,
+    default_id: &str,
+    dismiss_id: &str,
+) -> NotificationResponseOutcome {
+    if action_identifier == dismiss_id {
+        NotificationResponseOutcome::Ignored
+    } else if action_identifier == default_id {
+        NotificationResponseOutcome::Activated(None)
+    } else {
+        NotificationResponseOutcome::Activated(Some(WidgetId::new(action_identifier)))
+    }
+}
+
+/// How a notification delivered while *this* app is frontmost should be
+/// presented, answering
+/// `userNotificationCenter:willPresentNotification:`.
+///
+/// Without that delegate method (or with an empty option set) macOS
+/// suppresses the alert entirely for a foreground app and files the
+/// notification straight into Notification Center — which is the common
+/// case here, since `send_notification` is normally called from an event
+/// handler of the very app the user is looking at. `Banner | List` asks
+/// for the same banner plus Notification Center entry a background
+/// delivery would get. `Sound` is added only when the delivered content
+/// actually carries one, so [`Notification::is_silent`] isn't undone by
+/// the foreground path.
+fn foreground_presentation_options(has_sound: bool) -> UNNotificationPresentationOptions {
+    let visual =
+        UNNotificationPresentationOptions::Banner | UNNotificationPresentationOptions::List;
+    if has_sound {
+        visual | UNNotificationPresentationOptions::Sound
+    } else {
+        visual
+    }
+}
+
+/// Whether to route [`MacPlatformServices::send_notification`] through
+/// `UNUserNotificationCenter` rather than falling back to `osascript`.
+/// `UNUserNotificationCenter` requires the process to be a bundled
+/// `.app` with a `CFBundleIdentifier` — an unbundled CLI host (no
+/// `bundle_identifier`) can't use it and always gets `osascript`.
+fn should_use_notification_center(bundle_identifier: Option<&str>) -> bool {
+    bundle_identifier.is_some()
+}
+
+/// Deterministic `UNNotificationCategory` identifier for a given set of
+/// action ids: notifications that declare the same actions, in the same
+/// order, share one category, since `setNotificationCategories` replaces
+/// rather than merges the whole registered set and
+/// [`MacPlatformServices`] needs a stable key to accumulate categories
+/// across calls (see `notification_categories`'s field doc). The unit
+/// separator (`\u{1f}`) can't appear inside a [`WidgetId`]'s interned
+/// string, so it's safe to join on.
+fn category_identifier(action_ids: &[&str]) -> String {
+    if action_ids.is_empty() {
+        "quadraui-category-none".to_string()
+    } else {
+        format!("quadraui-category:{}", action_ids.join("\u{1f}"))
+    }
+}
+
+/// Delivers [`UiEvent::NotificationActivated`] events from the
+/// `UNUserNotificationCenterDelegate` callback (which can fire on any
+/// thread AppKit chooses) into [`MacBackend`][super::backend::MacBackend]'s
+/// event queue, nudging the run loop awake via `notify` the same way
+/// [`super::backend::MacBackend::waker`] nudges it for `UserPayload`s —
+/// see that method's doc for the GCD mechanism `notify` is expected to
+/// perform. Cloning a `NotificationEventSink` shares the same queue and
+/// `notify` closure; `MacPlatformServices` keeps exactly one, handed to
+/// it once by `MacBackend::new`.
+#[derive(Clone)]
+pub(crate) struct NotificationEventSink {
+    notifications: Arc<Mutex<VecDeque<UiEvent>>>,
+    notify: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl NotificationEventSink {
+    pub(crate) fn new(
+        notifications: Arc<Mutex<VecDeque<UiEvent>>>,
+        notify: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        Self {
+            notifications,
+            notify,
+        }
+    }
+
+    /// Queue `event` and nudge the run loop awake so
+    /// `MacBackend::poll_events`/`wait_events` sees it promptly instead
+    /// of waiting for the next unrelated wake.
+    pub(crate) fn deliver(&self, event: UiEvent) {
+        self.notifications
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(event);
+        (self.notify)();
+    }
+}
+
+/// Per-instance state for [`QuadraNotificationDelegate`].
+pub(crate) struct QuadraNotificationDelegateIvars {
+    sink: NotificationEventSink,
+}
+
+define_class!(
+    /// `UNUserNotificationCenterDelegate` implementation: translates a
+    /// user activating a delivered notification (or one of its action
+    /// buttons) into [`UiEvent::NotificationActivated`] via the ivars'
+    /// [`NotificationEventSink`], and opts foreground deliveries into a
+    /// visible banner. Held alive by [`MacPlatformServices`] for the
+    /// life of the process — `UNUserNotificationCenter` holds only a
+    /// weak reference to its `delegate`.
+    //
+    // SAFETY:
+    // - No `MainThreadOnly` bound: AppKit is free to invoke delegate
+    //   callbacks off the main thread, and `NotificationEventSink` is
+    //   `Send + Sync` precisely so that's safe here.
+    // - No Drop impl; ivars hold an owned `NotificationEventSink` whose
+    //   own fields (`Arc`s) drop cleanly when the Obj-C runtime
+    //   finalises the instance.
+    #[unsafe(super(NSObject))]
+    #[ivars = QuadraNotificationDelegateIvars]
+    pub(crate) struct QuadraNotificationDelegate;
+
+    unsafe impl NSObjectProtocol for QuadraNotificationDelegate {}
+
+    unsafe impl UNUserNotificationCenterDelegate for QuadraNotificationDelegate {
+        /// Fires when the user activates a delivered notification or one
+        /// of its action buttons. Must call `completion_handler` exactly
+        /// once, or `UNUserNotificationCenter` considers the response
+        /// unhandled.
+        #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
+        fn handle_notification_response(
+            &self,
+            _center: &UNUserNotificationCenter,
+            response: &UNNotificationResponse,
+            completion_handler: &block2::DynBlock<dyn Fn()>,
+        ) {
+            let action_identifier = response.actionIdentifier().to_string();
+            let request_id = response.notification().request().identifier().to_string();
+            // SAFETY: both are read-only `extern "C"` statics AppKit
+            // initialises before any delegate callback can fire.
+            let default_id = unsafe { UNNotificationDefaultActionIdentifier.to_string() };
+            let dismiss_id = unsafe { UNNotificationDismissActionIdentifier.to_string() };
+            if let NotificationResponseOutcome::Activated(action) =
+                notification_response_outcome(&action_identifier, &default_id, &dismiss_id)
+            {
+                let tag = tag_from_request_identifier(&request_id);
+                self.ivars()
+                    .sink
+                    .deliver(UiEvent::NotificationActivated { tag, action });
+            }
+            completion_handler.call(());
+        }
+
+        /// Fires just before a notification delivered while this app is
+        /// frontmost would be presented, and decides how to present it
+        /// ([`foreground_presentation_options`]). Must call
+        /// `completion_handler` exactly once; without this method macOS
+        /// shows nothing at all for a foreground delivery.
+        #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
+        fn will_present_notification(
+            &self,
+            _center: &UNUserNotificationCenter,
+            notification: &UNNotification,
+            completion_handler: &block2::DynBlock<dyn Fn(UNNotificationPresentationOptions)>,
+        ) {
+            let has_sound = notification.request().content().sound().is_some();
+            completion_handler.call((foreground_presentation_options(has_sound),));
+        }
+    }
+);
+
+impl QuadraNotificationDelegate {
+    fn new(sink: NotificationEventSink) -> Retained<Self> {
+        let this = Self::alloc().set_ivars(QuadraNotificationDelegateIvars { sink });
+        unsafe { msg_send![super(this), init] }
+    }
+}
 
 /// macOS platform services backed by AppKit + `arboard` + shell-out
 /// helpers. Constructed by [`crate::macos::MacBackend::new`] and
 /// exposed through [`crate::Backend::services`].
 pub struct MacPlatformServices {
     clipboard: MacClipboard,
+    /// Set once by `MacBackend::new` via [`Self::set_notification_sink`].
+    /// `RefCell`-wrapped rather than a constructor argument since
+    /// `MacPlatformServices::new()` has no access to the `MacBackend`
+    /// fields the sink needs to be built from.
+    notification_sink: RefCell<Option<NotificationEventSink>>,
+    /// Categories registered with `UNUserNotificationCenter` so far,
+    /// keyed by [`category_identifier`]'s output. Accumulated here
+    /// rather than registered fresh per call because
+    /// `setNotificationCategories` *replaces* the whole registered set —
+    /// re-registering only the current notification's category would
+    /// silently un-register every other category already delivered and
+    /// still pending a user response.
+    ///
+    /// Entries are never evicted: an app that sends notifications with
+    /// unboundedly many *distinct* action sets grows this map (and the
+    /// registered category set) for the life of the process. Bounded in
+    /// practice by how many distinct action sets an app's code declares,
+    /// which is a small constant, not by how many notifications it
+    /// sends.
+    notification_categories: RefCell<HashMap<String, Retained<UNNotificationCategory>>>,
+    /// The one `UNUserNotificationCenterDelegate` installed so far,
+    /// kept alive here since `UNUserNotificationCenter::setDelegate`
+    /// only holds a weak reference.
+    notification_delegate:
+        RefCell<Option<Retained<ProtocolObject<dyn UNUserNotificationCenterDelegate>>>>,
+    /// Monotonic counter feeding [`request_identifier`]'s synthetic
+    /// identifiers for untagged notifications.
+    next_notification_id: Cell<u64>,
 }
 
 impl MacPlatformServices {
     pub fn new() -> Self {
         Self {
             clipboard: MacClipboard::new(),
+            notification_sink: RefCell::new(None),
+            notification_categories: RefCell::new(HashMap::new()),
+            notification_delegate: RefCell::new(None),
+            next_notification_id: Cell::new(0),
         }
+    }
+
+    /// Install the sink notification-activation events are delivered
+    /// through. Called once by [`super::backend::MacBackend::new`];
+    /// interior-mutable because `MacBackend::new` only has a `&`
+    /// reference to `services` by the time the sink is built (see that
+    /// call site's own comment for why).
+    pub(crate) fn set_notification_sink(&self, sink: NotificationEventSink) {
+        *self.notification_sink.borrow_mut() = Some(sink);
+        self.install_notification_delegate();
+    }
+
+    /// Install [`QuadraNotificationDelegate`] on
+    /// `UNUserNotificationCenter`, unless one is already installed or no
+    /// sink has been set yet.
+    ///
+    /// Called at launch from [`Self::set_notification_sink`], not on
+    /// first send: `userNotificationCenter:didReceiveNotificationResponse:`
+    /// for a notification the user clicked while the app *wasn't*
+    /// running is delivered right after launch, and a center with no
+    /// delegate at that moment drops it — so an app that has not yet
+    /// sent its own first notification would lose every cold-launch
+    /// activation. Idempotent, so [`Self::send_notification_via_notification_center`]
+    /// can also call it for the case where the sink arrives after
+    /// launch.
+    ///
+    /// Skipped entirely in an unbundled process, where
+    /// `currentNotificationCenter` has no bundle identifier to work from
+    /// and notifications go through `osascript` instead
+    /// ([`should_use_notification_center`]).
+    fn install_notification_delegate(&self) {
+        let bundle_identifier = NSBundle::mainBundle()
+            .bundleIdentifier()
+            .map(|s| s.to_string());
+        if !should_use_notification_center(bundle_identifier.as_deref())
+            || self.notification_delegate.borrow().is_some()
+        {
+            return;
+        }
+        let Some(sink) = self.notification_sink.borrow().clone() else {
+            return;
+        };
+        let delegate = QuadraNotificationDelegate::new(sink);
+        let delegate: Retained<ProtocolObject<dyn UNUserNotificationCenterDelegate>> =
+            ProtocolObject::from_retained(delegate);
+        UNUserNotificationCenter::currentNotificationCenter().setDelegate(Some(&delegate));
+        *self.notification_delegate.borrow_mut() = Some(delegate);
+    }
+
+    /// Hand `request` to `center`, reporting the framework's error
+    /// instead of discarding it: a rejected request (authorization
+    /// revoked, attachment unreadable, content over the size limit) is
+    /// otherwise completely silent, and "no notification appeared" with
+    /// no diagnostic is the hardest shape of this bug to chase.
+    fn add_notification_request(
+        center: &UNUserNotificationCenter,
+        request: &UNNotificationRequest,
+    ) {
+        let completion = RcBlock::new(move |error: *mut NSError| {
+            // SAFETY: the framework passes either null or a valid
+            // `NSError` that outlives this callback.
+            if let Some(error) = unsafe { error.as_ref() } {
+                crate::diagnostics::emit(format!("notification request failed: {error:?}"));
+            }
+        });
+        center.addNotificationRequest_withCompletionHandler(request, Some(&completion));
+    }
+
+    /// Confirm notification authorization, then deliver `request` from
+    /// inside the completion handler.
+    ///
+    /// Every send goes through here, not just the first. The
+    /// authorization prompt is asynchronous and nothing is authorized
+    /// until the user answers it, so a request added alongside the
+    /// prompt is dropped by the framework — which is why the add is
+    /// re-dispatched from the completion handler. The user is not
+    /// re-prompted per notification:
+    /// `requestAuthorizationWithOptions:completionHandler:` only puts up
+    /// the prompt the first time it is asked, and afterwards answers
+    /// immediately from the stored decision. Routing *every* send this
+    /// way (rather than only the first) is what keeps a second send
+    /// issued while the prompt is still up from being dropped.
+    ///
+    /// A denial is reported through [`crate::diagnostics`] like every
+    /// other failure on this path: "no notification appeared" is much
+    /// easier to chase with a line saying authorization was refused.
+    fn request_authorization_then_add(
+        center: &Retained<UNUserNotificationCenter>,
+        request: Retained<UNNotificationRequest>,
+    ) {
+        let options = UNAuthorizationOptions::Alert
+            | UNAuthorizationOptions::Sound
+            | UNAuthorizationOptions::Badge;
+        let deferred_center = center.clone();
+        let completion = RcBlock::new(move |granted: Bool, error: *mut NSError| {
+            // SAFETY: as in `add_notification_request` — null or a
+            // valid `NSError` owned by the framework.
+            if let Some(error) = unsafe { error.as_ref() } {
+                crate::diagnostics::emit(format!("notification authorization failed: {error:?}"));
+            }
+            if granted.as_bool() {
+                Self::add_notification_request(&deferred_center, &request);
+            } else {
+                crate::diagnostics::emit(
+                    "notification not shown: the user has not authorized notifications for this app",
+                );
+            }
+        });
+        center.requestAuthorizationWithOptions_completionHandler(options, &completion);
+    }
+
+    /// Build the `UNNotificationAttachment` carrying
+    /// [`Notification::icon`] into the alert.
+    ///
+    /// An attachment can only be created from a *file* URL, and the
+    /// framework **moves** the file it is handed into the system
+    /// attachment store — so the icon is first copied to a temp file by
+    /// [`crate::desktop::materialize_notification_icon`], never handed
+    /// over from a consumer-owned path.
+    ///
+    /// Returns `None`, leaving no temp file behind, when the icon can't
+    /// be read, isn't a recognised encoding, or the framework rejects
+    /// it: an icon-less notification is a better degrade than a dropped
+    /// one.
+    fn notification_icon_attachment(
+        icon: &ImageSource,
+        fresh_id: u64,
+    ) -> Option<Retained<UNNotificationAttachment>> {
+        let dir = std::env::temp_dir().join("quadraui-notification-icons");
+        // The process id keeps two quadraui apps (or two runs of one)
+        // from racing over the same path: `fresh_id` alone restarts at
+        // zero in every process.
+        let stem = format!("{}-{fresh_id}", std::process::id());
+        let path = match crate::desktop::materialize_notification_icon(icon, &dir, &stem) {
+            Ok(path) => path,
+            Err(e) => {
+                crate::diagnostics::emit(format!("notification icon unavailable: {e}"));
+                return None;
+            }
+        };
+        let url =
+            NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&path.to_string_lossy()), false);
+        // SAFETY: `options` is `None` — the one value needing no type
+        // check, since the parameter is an untyped `NSDictionary` whose
+        // keys the binding can't verify.
+        let attachment = unsafe {
+            UNNotificationAttachment::attachmentWithIdentifier_URL_options_error(
+                &NSString::from_str("icon"),
+                &url,
+                None,
+            )
+        };
+        match attachment {
+            Ok(attachment) => Some(attachment),
+            Err(e) => {
+                crate::diagnostics::emit(format!("notification icon rejected: {e:?}"));
+                // The framework only takes ownership of the file when it
+                // accepts it, so this copy is still ours to clean up.
+                let _ = std::fs::remove_file(&path);
+                None
+            }
+        }
+    }
+
+    /// `UNUserNotificationCenter` delivery path for
+    /// [`Self::send_notification`] once [`should_use_notification_center`]
+    /// confirms the process is a bundled `.app`.
+    ///
+    /// `notification_categories` accumulates a category per distinct
+    /// action set across every call, since `setNotificationCategories`
+    /// replaces rather than merges the registered set. Re-using a
+    /// [`Notification::tag`] as the request identifier is what gives
+    /// tagged notifications replace-by-tag semantics: the framework
+    /// replaces an already-delivered notification whose identifier
+    /// matches. Delivery itself is re-dispatched from the authorization
+    /// completion handler ([`Self::request_authorization_then_add`]).
+    fn send_notification_via_notification_center(&self, n: &Notification) {
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+        self.install_notification_delegate();
+
+        let action_ids: Vec<&str> = n.actions().iter().map(|(id, _)| id.as_str()).collect();
+        let category_id = category_identifier(&action_ids);
+        if !self
+            .notification_categories
+            .borrow()
+            .contains_key(&category_id)
+        {
+            let ns_actions: Vec<Retained<UNNotificationAction>> = n
+                .actions()
+                .iter()
+                .map(|(id, label)| {
+                    UNNotificationAction::actionWithIdentifier_title_options(
+                        &NSString::from_str(id.as_str()),
+                        &NSString::from_str(label),
+                        // Pressing a quadraui action button is a request
+                        // for the app to do something the user then
+                        // expects to see, so the app comes forward with
+                        // the resulting `NotificationActivated`, matching
+                        // what clicking the notification body itself
+                        // does.
+                        UNNotificationActionOptions::Foreground,
+                    )
+                })
+                .collect();
+            let actions_array = NSArray::from_retained_slice(&ns_actions);
+            let intent_identifiers = NSArray::<NSString>::from_slice(&[]);
+            let category =
+                UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
+                    &NSString::from_str(&category_id),
+                    &actions_array,
+                    &intent_identifiers,
+                    // No `CustomDismissAction`: clearing a notification
+                    // is not an activation, and quadraui matches GTK in
+                    // firing nothing for it (see
+                    // [`notification_response_outcome`]), so there is
+                    // nothing to gain from asking the framework to
+                    // deliver dismissal responses.
+                    UNNotificationCategoryOptions::empty(),
+                );
+            self.notification_categories
+                .borrow_mut()
+                .insert(category_id.clone(), category);
+            let all_categories: Vec<Retained<UNNotificationCategory>> = self
+                .notification_categories
+                .borrow()
+                .values()
+                .cloned()
+                .collect();
+            center.setNotificationCategories(&NSSet::from_retained_slice(&all_categories));
+        }
+
+        let fresh_id = self.next_notification_id.get();
+        self.next_notification_id.set(fresh_id + 1);
+
+        let content = UNMutableNotificationContent::new();
+        content.setTitle(&NSString::from_str(&n.title));
+        content.setBody(&NSString::from_str(&n.body));
+        content.setCategoryIdentifier(&NSString::from_str(&category_id));
+        if !n.is_silent() {
+            content.setSound(Some(&UNNotificationSound::defaultSound()));
+        }
+        if let Some(attachment) = n
+            .icon()
+            .and_then(|icon| Self::notification_icon_attachment(icon, fresh_id))
+        {
+            content.setAttachments(&NSArray::from_retained_slice(&[attachment]));
+        }
+
+        let request_id = request_identifier(n.tag(), fresh_id);
+        let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
+            &NSString::from_str(&request_id),
+            &content,
+            None,
+        );
+        Self::request_authorization_then_add(&center, request);
     }
 }
 
@@ -190,14 +772,24 @@ impl PlatformServices for MacPlatformServices {
         Some(opts.buttons[orig].id)
     }
 
-    /// Only `is_silent()` of the `Notification` fields has anywhere to go
-    /// on the `osascript` path; `icon`, `actions`, and `tag` are silently
-    /// dropped since `display notification` lacks corresponding parameters.
-    /// [`crate::desktop::display_notification_script`] is the pure logic half
-    /// so the AppleScript text itself is unit-testable without a live mac;
-    /// only the `Command::spawn` below needs one. Shared with `tui::services`
-    /// for its own macOS notification fallback leg.
+    /// Routes through `UNUserNotificationCenter` when the process is a
+    /// bundled `.app` ([`should_use_notification_center`]); otherwise
+    /// falls back to `osascript -e 'display notification ...'`, where
+    /// only `is_silent()` of the `Notification` fields has anywhere to
+    /// go (`display notification` has no `icon`/`actions`/`tag`
+    /// parameters). [`crate::desktop::display_notification_script`] is
+    /// the pure logic half of that fallback so the AppleScript text
+    /// itself is unit-testable without a live mac; only the
+    /// `Command::spawn` below needs one. Shared with `tui::services` for
+    /// its own macOS notification fallback leg.
     fn send_notification(&self, n: Notification) {
+        let bundle_identifier = NSBundle::mainBundle()
+            .bundleIdentifier()
+            .map(|s| s.to_string());
+        if should_use_notification_center(bundle_identifier.as_deref()) {
+            self.send_notification_via_notification_center(&n);
+            return;
+        }
         let script = crate::desktop::display_notification_script(&n.title, &n.body, n.is_silent());
         let _ = Command::new("osascript").arg("-e").arg(&script).spawn();
     }
@@ -979,5 +1571,106 @@ mod tests {
             severity: None,
         };
         assert!(svc.show_message_dialog(opts).is_none());
+    }
+
+    // ── Notification-Center pure helpers ────────────────────────────────
+
+    #[test]
+    fn request_identifier_uses_tag_verbatim_when_present() {
+        assert_eq!(
+            request_identifier(Some("download-complete"), 7),
+            "download-complete"
+        );
+    }
+
+    #[test]
+    fn request_identifier_falls_back_to_synthetic_id_without_a_tag() {
+        let id = request_identifier(None, 7);
+        assert_eq!(id, "\u{1f}quadraui-notification-7");
+        assert!(id.starts_with(SYNTHETIC_TAG_PREFIX));
+        // The unit separator keeps the synthetic namespace out of reach of
+        // any ordinary caller-supplied tag: a tag that merely *looks*
+        // synthetic still round-trips as a real tag.
+        assert_eq!(
+            tag_from_request_identifier("quadraui-notification-7"),
+            Some("quadraui-notification-7".to_string())
+        );
+    }
+
+    #[test]
+    fn request_identifier_round_trips_through_tag_from_request_identifier() {
+        let tagged = request_identifier(Some("download-complete"), 0);
+        assert_eq!(
+            tag_from_request_identifier(&tagged),
+            Some("download-complete".to_string())
+        );
+
+        let synthetic = request_identifier(None, 42);
+        assert_eq!(tag_from_request_identifier(&synthetic), None);
+    }
+
+    #[test]
+    fn notification_response_outcome_activates_without_an_action_for_a_body_click() {
+        assert_eq!(
+            notification_response_outcome("default", "default", "dismiss"),
+            NotificationResponseOutcome::Activated(None)
+        );
+    }
+
+    #[test]
+    fn notification_response_outcome_ignores_a_dismissal() {
+        assert_eq!(
+            notification_response_outcome("dismiss", "default", "dismiss"),
+            NotificationResponseOutcome::Ignored
+        );
+    }
+
+    #[test]
+    fn notification_response_outcome_reports_the_widget_id_for_a_real_action() {
+        assert_eq!(
+            notification_response_outcome("snooze", "default", "dismiss"),
+            NotificationResponseOutcome::Activated(Some(WidgetId::new("snooze")))
+        );
+    }
+
+    #[test]
+    fn foreground_presentation_options_always_ask_for_a_banner_and_list_entry() {
+        let silent = foreground_presentation_options(false);
+        assert!(silent.contains(UNNotificationPresentationOptions::Banner));
+        assert!(silent.contains(UNNotificationPresentationOptions::List));
+    }
+
+    #[test]
+    fn foreground_presentation_options_add_sound_only_when_the_content_has_one() {
+        assert!(!foreground_presentation_options(false)
+            .contains(UNNotificationPresentationOptions::Sound));
+        assert!(foreground_presentation_options(true)
+            .contains(UNNotificationPresentationOptions::Sound));
+    }
+
+    #[test]
+    fn should_use_notification_center_requires_a_bundle_identifier() {
+        assert!(should_use_notification_center(Some("com.example.app")));
+        assert!(!should_use_notification_center(None));
+    }
+
+    #[test]
+    fn category_identifier_is_stable_for_the_same_action_set() {
+        assert_eq!(
+            category_identifier(&["snooze", "dismiss"]),
+            category_identifier(&["snooze", "dismiss"])
+        );
+    }
+
+    #[test]
+    fn category_identifier_distinguishes_action_sets_and_order() {
+        let none = category_identifier(&[]);
+        let one = category_identifier(&["snooze"]);
+        let two = category_identifier(&["snooze", "dismiss"]);
+        let reordered = category_identifier(&["dismiss", "snooze"]);
+
+        assert_ne!(none, one);
+        assert_ne!(one, two);
+        assert_ne!(two, reordered);
     }
 }

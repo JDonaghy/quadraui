@@ -5207,8 +5207,9 @@ impl Notification {
     /// Attach an icon. The same [`ImageSource`] shape
     /// [`TrayService::set_icon`] takes — raw encoded bytes or a
     /// filesystem path, sniffed/decoded by whichever backend can honor
-    /// it. Backends with no icon facility (TUI's toast degrade, today's
-    /// macOS `osascript` path) ignore this.
+    /// it. Backends with no icon facility (TUI's toast degrade, the
+    /// macOS `osascript` fallback used by an unbundled process) ignore
+    /// this.
     #[must_use]
     pub fn with_icon(mut self, icon: ImageSource) -> Self {
         self.icon = Some(icon);

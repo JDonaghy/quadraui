@@ -1027,17 +1027,17 @@ pub enum UiEvent {
     /// firing `Notification` carried no tag.
     ///
     /// **Not every backend can produce this.** GTK's `gio::Notification`
-    /// action/default-action `GAction`s (wired in `gtk::services`) and
-    /// Win's WinRT `ToastNotificationManager` toast (wired in
-    /// `win::services`, `ToastNotification::Activated`) both have a
-    /// native click-through channel and emit this variant. macOS's
-    /// unbundled `osascript` fallback has no click-through mechanism to
-    /// report through and honestly never emits this variant — see that
-    /// backend's `send_notification` doc for what a real implementation
-    /// there (`UNUserNotificationCenter`) would need. Win itself falls
-    /// back to this same silent gap: when no AUMID/WinRT path is
-    /// available it degrades to a `Shell_NotifyIconW` balloon, which
-    /// (like macOS's fallback) cannot report an activation either. TUI
+    /// action/default-action `GAction`s (wired in `gtk::services`),
+    /// macOS's bundled `.app` path (`UNUserNotificationCenter`'s delegate,
+    /// wired in `macos::services`) and Win's WinRT
+    /// `ToastNotificationManager` toast (wired in `win::services`,
+    /// `ToastNotification::Activated`) all have a native click-through
+    /// channel and emit this variant. macOS falls back to `osascript
+    /// display notification` for an unbundled host (no
+    /// `CFBundleIdentifier` to authorize against), and Win falls back to a
+    /// `Shell_NotifyIconW` balloon when no AUMID/WinRT path is available;
+    /// neither fallback can report an activation — see each backend's
+    /// `send_notification` doc for what each path covers. TUI
     /// (and any other backend with `BackendCaps::notifications == false`)
     /// degrades notifications to the in-canvas `Toast` primitive instead
     /// (see `compose::notification::notify_or_toast`); a toast's own action
