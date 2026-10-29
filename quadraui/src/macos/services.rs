@@ -516,8 +516,7 @@ impl MacPlatformServices {
                 Self::add_notification_request(&deferred_center, &request);
             } else {
                 crate::diagnostics::emit(
-                    "notification not shown: the user has not authorized notifications for this app"
-                        .to_string(),
+                    "notification not shown: the user has not authorized notifications for this app",
                 );
             }
         });
