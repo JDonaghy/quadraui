@@ -208,6 +208,12 @@ use windows::UI::Notifications::{
     ToastNotification, ToastNotificationManager, ToastNotifier,
 };
 
+/// Live toasts keyed by notification id: the toast's `tag` plus the
+/// `ToastNotifier`/`ToastNotification` COM pair kept alive until the toast
+/// is activated, dismissed or fails.
+#[cfg(target_os = "windows")]
+type ActiveToasts = Arc<Mutex<HashMap<u64, (Option<String>, ToastNotifier, ToastNotification)>>>;
+
 /// System clipboard via raw Win32 calls. Stateless — every
 /// call opens, does one thing, and closes the clipboard, matching the
 /// classic Win32 clipboard's own "hold it as briefly as possible"
@@ -367,7 +373,7 @@ pub struct WinPlatformServices {
     /// inserted — same "replace, don't stack" rule `Tag` itself gives
     /// Action Center.
     #[cfg(target_os = "windows")]
-    active_toasts: Arc<Mutex<HashMap<u64, (Option<String>, ToastNotifier, ToastNotification)>>>,
+    active_toasts: ActiveToasts,
 }
 
 impl WinPlatformServices {
@@ -1879,7 +1885,7 @@ fn win_send_notification_toast(
     owner: Option<HWND>,
     aumid: &str,
     queue: Arc<Mutex<VecDeque<UiEvent>>>,
-    active_toasts: Arc<Mutex<HashMap<u64, (Option<String>, ToastNotifier, ToastNotification)>>>,
+    active_toasts: ActiveToasts,
     n: &Notification,
 ) -> windows::core::Result<()> {
     // WinRT activation (`RoActivateInstance`, underneath every call below)
