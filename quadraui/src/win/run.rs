@@ -1247,7 +1247,7 @@ mod win32 {
         // window that wants to be attributed to this AUMID", which this
         // function does.
         unsafe {
-            let _ = SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(aumid_string(
+            let _ = SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(super::aumid_string(
                 &config.title,
             )));
         }
@@ -1391,7 +1391,7 @@ mod win32 {
         // `SetCurrentProcessExplicitAppUserModelID`; recomputed here rather
         // than threaded through `RunConfig` since `aumid_string` is pure
         // and cheap.
-        backend.set_aumid(aumid_string(title));
+        backend.set_aumid(super::aumid_string(title));
         app.setup(&mut backend);
 
         // `None` (zero runtime cost — no timer ever armed below)
