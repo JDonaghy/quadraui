@@ -358,6 +358,15 @@ pub mod event;
 // `power`'s module doc.
 pub mod power;
 
+// Launch-at-login seam: `LoginItemOptions`, the type
+// `PlatformServices::set_login_item` trades in, reached off
+// `PlatformServices::set_login_item`/`PlatformServices::login_item_enabled`
+// the same way `power`'s types sit alongside its `PlatformServices`
+// methods above. Compiled unconditionally — the contract and its
+// `Unsupported` default need no backend feature; see `login_item`'s
+// module doc.
+pub mod login_item;
+
 // Auto-update seam: `UpdateService` + the feed/info/staged types it
 // trades in, reached off `PlatformServices::update_service` the same way
 // `PlatformServices::secret_store` exposes `SecretStore`. Compiled
@@ -669,6 +678,9 @@ pub use power::{BlockerId, PowerEventKind, PowerSaveKind, ThermalState};
 // `PlatformServices::begin_drag_out`'s argument type — see `drag`'s
 // module doc.
 pub use drag::DragOutPayload;
+// `PlatformServices::set_login_item`'s argument type — see `login_item`'s
+// module doc.
+pub use login_item::LoginItemOptions;
 // `PlatformServices::app_path`'s argument type, same precedent as
 // `DragOutPayload` above. The app-identifier getter/setters stay reachable
 // at `quadraui::paths::*` only — call sites there, not here.

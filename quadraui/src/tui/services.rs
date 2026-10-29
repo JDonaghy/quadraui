@@ -1961,6 +1961,16 @@ impl PlatformServices for TuiPlatformServices {
         }
     }
 
+    /// An honest no-op, not `Unsupported`: a terminal app has no OS
+    /// login-item registration to query, but "not registered" is the
+    /// truthful answer on every host, so a caller that only wants to
+    /// display current state gets `false` rather than an error. See
+    /// `login_item`'s module doc for why `set_login_item` keeps the
+    /// trait's `Unsupported` default while this query does not.
+    fn login_item_enabled(&self) -> ServiceResult<bool> {
+        Ok(false)
+    }
+
     fn platform_name(&self) -> &'static str {
         "tui"
     }

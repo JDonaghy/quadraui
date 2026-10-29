@@ -41,6 +41,7 @@ use crate::drag::DragOutPayload;
 use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::focus::FocusManager;
 use crate::interaction::InteractionState;
+use crate::login_item::LoginItemOptions;
 use crate::modal_stack::ModalStack;
 use crate::paths::AppPathKind;
 use crate::power::{BlockerId, PowerSaveKind, ThermalState};
@@ -4632,6 +4633,39 @@ pub trait PlatformServices {
         Err(BackendError::Unsupported)
     }
 
+    /// Register (`enabled: true`) or unregister (`enabled: false`) this
+    /// app to launch automatically when the user logs in — Electron's
+    /// `app.setLoginItemSettings`. See [`LoginItemOptions`]'s own doc for
+    /// what `opts` carries and [`crate::login_item`]'s module doc for
+    /// which backends are expected to supply a real registration.
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
+    /// real login-item registration yet (`SMAppService` on macOS, an
+    /// `HKCU\...\Run` registry value on Win-GUI, an XDG autostart
+    /// `.desktop` file on GTK/Linux are separate, backend-specific
+    /// follow-ons). TUI has no OS login/session-start hook to register
+    /// against and is expected to leave this at its default rather than
+    /// fake one.
+    fn set_login_item(&self, enabled: bool, opts: LoginItemOptions) -> ServiceResult<()> {
+        let _ = (enabled, opts);
+        Err(BackendError::Unsupported)
+    }
+
+    /// Whether this app is currently registered to launch at login — the
+    /// read-back counterpart to [`Self::set_login_item`], Electron's
+    /// `app.getLoginItemSettings().openAtLogin`.
+    ///
+    /// Default: [`BackendError::Unsupported`], mirroring
+    /// [`Self::set_login_item`]'s default. TUI overrides this with an
+    /// honest no-op that always reports `false` rather than staying
+    /// `Unsupported` — see
+    /// [`crate::tui::services::TuiPlatformServices::login_item_enabled`]
+    /// and [`crate::login_item`]'s module doc for why the query and the
+    /// mutation get different defaults.
+    fn login_item_enabled(&self) -> ServiceResult<bool> {
+        Err(BackendError::Unsupported)
+    }
+
     /// Platform identifier — matches the `BackendNative.backend` field.
     /// One of `"tui"`, `"gtk"`, `"win-gui"`, `"macos"`.
     fn platform_name(&self) -> &'static str;
@@ -5748,6 +5782,24 @@ mod begin_drag_out_default_tests {
         let payload = DragOutPayload::new().with_files([PathBuf::from("/tmp/a.txt")]);
         assert_eq!(
             services.begin_drag_out(payload),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn set_login_item_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.set_login_item(true, LoginItemOptions::default()),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn login_item_enabled_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.login_item_enabled(),
             Err(BackendError::Unsupported)
         );
     }
