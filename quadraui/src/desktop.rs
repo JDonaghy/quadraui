@@ -1570,11 +1570,8 @@ pub(crate) fn display_notification_script(title: &str, body: &str, silent: bool)
 /// will render. `None` means "not a format recognised here" — callers
 /// skip the icon rather than guess an extension that would make the
 /// platform decoder fail on a correctly-encoded image.
-#[cfg(any(
-    all(target_os = "macos", any(feature = "macos", feature = "tui")),
-    test
-))]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg(any(all(target_os = "macos", feature = "macos"), test))]
+#[cfg_attr(not(all(target_os = "macos", feature = "macos")), allow(dead_code))]
 pub(crate) fn encoded_image_extension(bytes: &[u8]) -> Option<&'static str> {
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
     if bytes.starts_with(PNG) {
@@ -1597,14 +1594,23 @@ pub(crate) fn encoded_image_extension(bytes: &[u8]) -> Option<&'static str> {
     }
     // SVG has no magic number; the two openings a serialiser emits are
     // an XML prolog and a bare root element, either possibly preceded
-    // by whitespace or a UTF-8 BOM.
+    // by whitespace or a UTF-8 BOM. A prolog alone is any XML document,
+    // so the `<svg` root element has to turn up inside the sniffed
+    // window too — a plist or an SVG whose prolog and doctype run past
+    // it both sniff as "unrecognised", which costs an icon rather than
+    // writing an `.svg` the platform decoder would choke on.
     let text = bytes
         .strip_prefix(b"\xef\xbb\xbf".as_slice())
         .unwrap_or(bytes);
-    let text = std::str::from_utf8(text.get(..text.len().min(512))?)
-        .ok()?
-        .trim_start();
-    if text.starts_with("<?xml") || text.starts_with("<svg") {
+    let window = text.get(..text.len().min(512))?;
+    let text = match std::str::from_utf8(window) {
+        Ok(text) => text,
+        // The window can land mid-character; the valid prefix is still
+        // enough to spot a root element.
+        Err(e) => std::str::from_utf8(&window[..e.valid_up_to()]).ok()?,
+    };
+    let text = text.trim_start();
+    if text.starts_with("<svg") || (text.starts_with("<?xml") && text.contains("<svg")) {
         return Some("svg");
     }
     None
@@ -1625,11 +1631,8 @@ pub(crate) fn encoded_image_extension(bytes: &[u8]) -> Option<&'static str> {
 /// encoding is an [`std::io::ErrorKind::InvalidData`] error so the
 /// caller can skip the icon instead of writing a file the platform
 /// cannot decode. `dir` is created if missing.
-#[cfg(any(
-    all(target_os = "macos", any(feature = "macos", feature = "tui")),
-    test
-))]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg(any(all(target_os = "macos", feature = "macos"), test))]
+#[cfg_attr(not(all(target_os = "macos", feature = "macos")), allow(dead_code))]
 pub(crate) fn materialize_notification_icon(
     source: &crate::primitives::image::ImageSource,
     dir: &std::path::Path,
@@ -1672,10 +1675,14 @@ mod notification_icon_tests {
 
     const PNG_HEADER: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
 
-    fn scratch_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("quadraui-icon-tests-{name}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
+    /// A scratch directory that cleans itself up when the returned
+    /// guard drops. `icons` is deliberately *not* created, so a test can
+    /// assert `materialize_notification_icon` created (or didn't create)
+    /// the directory it was handed.
+    fn scratch_dir() -> (tempfile::TempDir, std::path::PathBuf) {
+        let root = tempfile::tempdir().expect("scratch dir");
+        let icons = root.path().join("icons");
+        (root, icons)
     }
 
     #[test]
@@ -1717,20 +1724,27 @@ mod notification_icon_tests {
     }
 
     #[test]
+    fn encoded_image_extension_rejects_xml_that_is_not_svg() {
+        assert_eq!(
+            encoded_image_extension(b"<?xml version=\"1.0\"?><plist version=\"1.0\"></plist>"),
+            None
+        );
+    }
+
+    #[test]
     fn materialize_bytes_icon_sniffs_extension_and_creates_the_directory() {
-        let dir = scratch_dir("bytes");
+        let (_root, dir) = scratch_dir();
         let written =
             materialize_notification_icon(&ImageSource::Bytes(PNG_HEADER.to_vec()), &dir, "icon-7")
                 .expect("png bytes materialize");
 
         assert_eq!(written, dir.join("icon-7.png"));
         assert_eq!(std::fs::read(&written).unwrap(), PNG_HEADER);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn materialize_path_icon_copies_and_keeps_the_source_extension() {
-        let dir = scratch_dir("path");
+        let (_root, dir) = scratch_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let original = dir.join("logo.PNG");
         std::fs::write(&original, PNG_HEADER).unwrap();
@@ -1742,12 +1756,11 @@ mod notification_icon_tests {
         assert_eq!(written, dir.join("icon-1.png"));
         // The consumer's own file is copied, never moved away.
         assert!(original.exists());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn materialize_path_icon_without_extension_falls_back_to_sniffing() {
-        let dir = scratch_dir("extensionless");
+        let (_root, dir) = scratch_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let original = dir.join("logo");
         std::fs::write(&original, PNG_HEADER).unwrap();
@@ -1756,12 +1769,11 @@ mod notification_icon_tests {
             .expect("extensionless icon materializes");
 
         assert_eq!(written, dir.join("icon-2.png"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn materialize_unrecognised_bytes_reports_invalid_data_and_writes_nothing() {
-        let dir = scratch_dir("unrecognised");
+        let (_root, dir) = scratch_dir();
         let err = materialize_notification_icon(
             &ImageSource::Bytes(b"definitely not an image".to_vec()),
             &dir,
@@ -1775,7 +1787,7 @@ mod notification_icon_tests {
 
     #[test]
     fn materialize_missing_path_reports_not_found() {
-        let dir = scratch_dir("missing");
+        let (_root, dir) = scratch_dir();
         let err =
             materialize_notification_icon(&ImageSource::Path(dir.join("nope.png")), &dir, "icon-4")
                 .expect_err("a missing icon file is an error");
