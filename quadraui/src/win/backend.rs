@@ -794,9 +794,12 @@ impl WinBackend {
     /// [`WinPlatformServices::send_notification`] can pass it to
     /// `ToastNotificationManager::CreateToastNotifierWithId` — mirrors
     /// [`Self::attach_surface`] calling `self.services.set_window`.
+    /// `display_name` is the human-readable name registered alongside
+    /// `aumid` and shown as the toast header, Action Center group label,
+    /// and Settings → Notifications entry.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    pub(crate) fn set_aumid(&self, aumid: String) {
-        self.services.set_aumid(aumid);
+    pub(crate) fn set_aumid(&self, aumid: String, display_name: String) {
+        self.services.set_aumid(aumid, display_name);
     }
 
     /// Update the cached DirectWrite line height (in DIPs). Mirrors

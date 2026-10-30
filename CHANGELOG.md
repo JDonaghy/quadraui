@@ -442,13 +442,16 @@ only a push to `main` runs this workflow.
 - Windows `PlatformServices::send_notification` no longer silently drops a
   notification for an unregistered `AppUserModelID` — the state every
   unpackaged/`cargo run`/xcopy-deployed app starts in, where the WinRT toast
-  APIs return `Ok` but render nothing. `set_aumid` now also writes the
-  `HKCU\Software\Classes\AppUserModelId\<aumid>\DisplayName` registry value
-  an unpackaged Win32 app needs before the OS will surface a toast for that
-  AUMID, and only records the AUMID as usable when that write succeeds; a
-  failed or skipped registration leaves `send_notification` with no toast to
-  attempt, so it falls straight through to the `Shell_NotifyIconW` balloon
-  instead of showing nothing.
+  APIs return `Ok` but render nothing. A failed or skipped AUMID registration
+  leaves `send_notification` with no toast to attempt, so it falls through to
+  the `Shell_NotifyIconW` balloon instead of showing nothing, once a window
+  has attached.
+- `set_aumid` writes the `HKCU\Software\Classes\AppUserModelId\<aumid>\DisplayName`
+  registry value an unpackaged Win32 app needs before the OS will surface a
+  toast for that AUMID, using the window title as the human-readable name
+  shown in the toast header, Action Center, and Settings → Notifications
+  (not the opaque AUMID string). The AUMID is only recorded as usable once
+  that write succeeds.
 
 ## [0.6.1] - 2026-10-26
 ### Added
