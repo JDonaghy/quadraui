@@ -73,6 +73,7 @@
 use serde::{Deserialize, Serialize};
 
 mod chrome;
+mod content;
 pub mod tree;
 
 pub use tree::{
@@ -171,6 +172,16 @@ pub enum A11yRole {
     Progress,
     /// A non-interactive image.
     Image,
+    /// A data visualization such as a line, bar, or scatter chart. Maps
+    /// onto `accesskit::Role::GraphicsDocument`. Carries no synthesized
+    /// label — a chart's visual series data has no textual equivalent, so
+    /// the accessible name is whatever the app supplies; an unlabelled
+    /// chart is announced as unlabelled.
+    Chart,
+    /// An arbitrary immediate-mode drawing surface. Maps onto
+    /// `accesskit::Role::Canvas`. Carries no synthesized label, for the
+    /// same reason as [`Self::Chart`]: the app must supply one.
+    Canvas,
     /// A generic grouping container with no more specific role.
     Group,
     /// Decorative content an AT should skip — ARIA's `none`/`presentation`.
@@ -464,6 +475,8 @@ mod accesskit_convert {
                 A11yRole::Splitter => accesskit::Role::Splitter,
                 A11yRole::Progress => accesskit::Role::ProgressIndicator,
                 A11yRole::Image => accesskit::Role::Image,
+                A11yRole::Chart => accesskit::Role::GraphicsDocument,
+                A11yRole::Canvas => accesskit::Role::Canvas,
                 A11yRole::Group => accesskit::Role::Group,
                 A11yRole::Presentation => accesskit::Role::GenericContainer,
             }

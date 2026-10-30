@@ -786,6 +786,15 @@ fn describe(content: &OwnedContent) -> Described {
         OwnedContent::SplitTree(tree) => Described::from_primitive(tree),
         OwnedContent::Panel(panel) => Described::from_primitive(panel),
         OwnedContent::SidebarPanel(panel) => Described::from_primitive(panel),
+        OwnedContent::Editor(editor) => Described::from_primitive(editor),
+        OwnedContent::TextInput(ti) => Described::from_primitive(ti),
+        OwnedContent::TextDisplay(td) => Described::from_primitive(td),
+        OwnedContent::Terminal(term) => Described::from_primitive(term),
+        OwnedContent::DiffView(view) => Described::from_primitive(view),
+        OwnedContent::Chart(chart) => Described::from_primitive(chart),
+        OwnedContent::Image(image) => Described::from_primitive(image),
+        OwnedContent::Minimap(minimap) => Described::from_primitive(minimap),
+        OwnedContent::Canvas(canvas) => Described::from_primitive(canvas),
         // Unit variants: the source surface carries no serializable
         // content, so only the role and name survive the frame capture.
         OwnedContent::FindReplace => Described::labelled(A11yRole::Form, "Find and replace"),
@@ -902,6 +911,8 @@ fn role_name(role: A11yRole) -> &'static str {
         A11yRole::Splitter => "splitter",
         A11yRole::Progress => "progress",
         A11yRole::Image => "image",
+        A11yRole::Chart => "chart",
+        A11yRole::Canvas => "canvas",
         A11yRole::Group => "group",
         A11yRole::Presentation => "presentation",
     }
