@@ -58,6 +58,8 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+
+## [0.7.0] - 2026-10-30
 ### Added
 
 This tranche adds a wide Electron-parity API surface. Most of it is real,
