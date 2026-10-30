@@ -27,10 +27,12 @@
 //!   document from the `Notification`'s title/body/action buttons (see
 //!   [`build_toast_xml`]), registers it under this process's
 //!   AppUserModelID (set once in `win::run` at window creation via
-//!   [`WinPlatformServices::set_aumid`], which also writes the
-//!   `HKCU\Software\Classes\AppUserModelId\<aumid>\DisplayName` registry
-//!   key an unpackaged app needs before Windows will render a toast for
-//!   that AUMID at all — see [`win_register_aumid_display_name`]), and
+//!   [`WinPlatformServices::set_aumid`], which also writes the window
+//!   title into the `HKCU\Software\Classes\AppUserModelId\<aumid>\DisplayName`
+//!   registry value an unpackaged app needs before Windows will render a
+//!   toast for that AUMID at all, and that Windows itself shows as the
+//!   toast header, Action Center group label, and Settings → Notifications
+//!   entry — see [`win_register_aumid_display_name`]), and
 //!   shows it through a `ToastNotifier`. `tag()` maps onto the
 //!   toast's own `Tag` property, so Windows itself replaces a prior toast
 //!   that shares a tag rather than stacking a new one in Action Center.
@@ -52,8 +54,10 @@
 //!   registry write never succeeded, or `CreateToastNotifierWithId`/`Show`
 //!   fails for any other reason (WinRT unavailable), `send_notification`
 //!   falls back to the legacy transient `Shell_NotifyIconW` balloon tip —
-//!   never both paths and never neither, so a notification is never
-//!   silently dropped. The fallback adds a tray
+//!   never both paths at once, once a window has attached (the balloon
+//!   fallback needs an `HWND` to host the tray icon on, so a
+//!   `send_notification` call from inside `AppLogic::setup`, before any
+//!   window exists, still has neither path available). The fallback adds a tray
 //!   icon with `NIF_INFO` set, then removes it a few seconds later from a
 //!   spawned thread (a balloon has no lifetime of its own independent of
 //!   the icon it's attached to, and this backend has no persistent tray
@@ -181,8 +185,8 @@ use windows::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT};
 // that function's doc for why this key, specifically, is load-bearing.
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_WRITE,
-    REG_OPTION_NON_VOLATILE, REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteKeyW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+    KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Controls::{
@@ -428,36 +432,45 @@ impl WinPlatformServices {
     /// unpackaged app's AUMID has to also be registered under
     /// `HKCU\Software\Classes\AppUserModelId\<aumid>` with a `DisplayName`,
     /// or the OS accepts the toast call but renders nothing — see
-    /// [`win_register_aumid_display_name`]. This only stores `aumid` (and
-    /// so only lets `send_notification` attempt the toast path) once that
-    /// registration succeeds; on failure `self.aumid` stays `None` so
-    /// `send_notification` falls straight through to the
+    /// [`win_register_aumid_display_name`]. `display_name` is the
+    /// human-readable string Windows shows as the toast header, Action
+    /// Center group label, and Settings → Notifications entry — callers
+    /// pass the window title, not `aumid` itself, which is an opaque
+    /// `Quadraui.App.<hex>` identifier with no meaning to a user. This only
+    /// stores `aumid` (and so only lets `send_notification` attempt the
+    /// toast path) once that registration succeeds; on failure `self.aumid`
+    /// stays `None` so `send_notification` falls straight through to the
     /// `Shell_NotifyIconW` balloon instead of silently showing nothing.
     /// Ungated signature: `WinBackend::set_aumid` calls this unconditionally
     /// from `wndproc`'s `#[cfg(target_os = "windows")]` block, but the
     /// delegate itself still needs to type-check on every platform.
-    pub(crate) fn set_aumid(&self, aumid: String) {
+    pub(crate) fn set_aumid(&self, aumid: String, display_name: String) {
         #[cfg(target_os = "windows")]
         {
-            self.apply_aumid_registration(aumid, win_register_aumid_display_name);
+            self.apply_aumid_registration(aumid, display_name, win_register_aumid_display_name);
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = aumid;
+            let _ = (aumid, display_name);
         }
     }
 
     /// [`Self::set_aumid`]'s gate, with the registry write taken as a
     /// parameter rather than called directly: stores `aumid` only if
-    /// `register(&aumid)` reports success, otherwise leaves `self.aumid`
-    /// untouched (so still `None`, if this is the first call). Split out
-    /// so the decision — never store an AUMID `send_notification` can't
-    /// actually use — is exercised in tests below without a live registry
-    /// write; [`Self::set_aumid`] always passes the real
+    /// `register(&aumid, &display_name)` reports success, otherwise leaves
+    /// `self.aumid` untouched (so still `None`, if this is the first call).
+    /// Split out so the decision — never store an AUMID `send_notification`
+    /// can't actually use — is exercised in tests below without a live
+    /// registry write; [`Self::set_aumid`] always passes the real
     /// [`win_register_aumid_display_name`].
     #[cfg(target_os = "windows")]
-    fn apply_aumid_registration(&self, aumid: String, register: impl FnOnce(&str) -> bool) {
-        if register(&aumid) {
+    fn apply_aumid_registration(
+        &self,
+        aumid: String,
+        display_name: String,
+        register: impl FnOnce(&str, &str) -> bool,
+    ) {
+        if register(&aumid, &display_name) {
             *self.aumid.borrow_mut() = Some(aumid);
         }
     }
@@ -553,9 +566,12 @@ impl PlatformServices for WinPlatformServices {
     /// `HKCU\Software\Classes\AppUserModelId` for this process; otherwise
     /// `self.aumid` is `None` and there's nothing to try. Falls back to the
     /// legacy [`win_send_notification_balloon`] either way: no AUMID
-    /// registered, or `CreateToastNotifierWithId`/`Show` erroring out. A
-    /// notification is never silently dropped — one of the two paths
-    /// always runs.
+    /// registered, or `CreateToastNotifierWithId`/`Show` erroring out. Once
+    /// a window has attached, one of the two paths always runs, so the
+    /// notification is never silently dropped — but the balloon fallback
+    /// needs the owning `HWND` [`Self::set_window`] stores, so a call made
+    /// from inside `AppLogic::setup`, before any window exists, still
+    /// produces nothing if AUMID registration also failed.
     fn send_notification(&self, n: Notification) {
         #[cfg(target_os = "windows")]
         {
@@ -1889,8 +1905,17 @@ fn build_toast_xml(n: &Notification) -> String {
     )
 }
 
-/// Register `aumid` as a notification-capable app identity by writing a
-/// `DisplayName` under `HKCU\Software\Classes\AppUserModelId\<aumid>`.
+/// `HKEY_CURRENT_USER`-relative subkey path a given `aumid` registers its
+/// toast `DisplayName` under. Shared by [`win_register_aumid_display_name`]
+/// and its round-trip test below, so the two can't drift apart.
+#[cfg(target_os = "windows")]
+fn aumid_registry_subkey(aumid: &str) -> String {
+    format!("Software\\Classes\\AppUserModelId\\{aumid}")
+}
+
+/// Register `aumid` as a notification-capable app identity by writing
+/// `display_name` as its `DisplayName` under
+/// `HKCU\Software\Classes\AppUserModelId\<aumid>`.
 ///
 /// `SetCurrentProcessExplicitAppUserModelID` (called separately, in
 /// `win::run`) only tags *this process* with `aumid`; it does not make
@@ -1908,14 +1933,23 @@ fn build_toast_xml(n: &Notification) -> String {
 /// needs `Activated`/`Dismissed`/`Failed` to fire on this already-running
 /// process, never a relaunch-after-close.
 ///
+/// `display_name` is what Windows shows as the toast header, the Action
+/// Center group label, and the Settings → Notifications entry — callers
+/// pass the window title, not `aumid` itself (an opaque
+/// `Quadraui.App.<hex>` string with no meaning to a user).
+///
 /// Returns `false` on any registry failure, in which case
 /// [`WinPlatformServices::set_aumid`] leaves `self.aumid` as `None` so
 /// [`WinPlatformServices::send_notification`] goes straight to the
 /// [`win_send_notification_balloon`] fallback instead of attempting a
-/// toast that would again render nothing.
+/// toast that would again render nothing. A failure after the key was
+/// created but before `DisplayName` could be written removes the
+/// now-useless empty key again, rather than leaving a stray
+/// `AppUserModelId\<aumid>` entry behind for a future registration attempt
+/// to trip over.
 #[cfg(target_os = "windows")]
-fn win_register_aumid_display_name(aumid: &str) -> bool {
-    let subkey = wide_nul_terminated(&format!("Software\\Classes\\AppUserModelId\\{aumid}"));
+fn win_register_aumid_display_name(aumid: &str, display_name: &str) -> bool {
+    let subkey = wide_nul_terminated(&aumid_registry_subkey(aumid));
     let mut hkey = HKEY::default();
     // SAFETY: `subkey` is a UTF-16, NUL-terminated buffer kept alive for
     // the duration of this call; `phkresult`/`lpdwdisposition` point at a
@@ -1934,18 +1968,25 @@ fn win_register_aumid_display_name(aumid: &str) -> bool {
         )
     };
     if created != ERROR_SUCCESS {
+        crate::diagnostics::emit(format!(
+            "quadraui: RegCreateKeyExW failed for AppUserModelId\\{aumid} \
+             ({created:?}); toast notifications will fall back to the balloon tray icon"
+        ));
         return false;
     }
 
     let value_name = wide_nul_terminated("DisplayName");
-    let display_name = wide_nul_terminated(aumid);
+    let display_name_wide = wide_nul_terminated(display_name);
     // SAFETY: REG_SZ data is the raw UTF-16LE bytes, NUL terminator
-    // included; `display_name` is a `Vec<u16>` from the same helper every
-    // other wide Win32 string argument in this module uses, so the byte
-    // length is exactly twice its `u16` length and the buffer is live for
-    // the duration of this reinterpretation.
+    // included; `display_name_wide` is a `Vec<u16>` from the same helper
+    // every other wide Win32 string argument in this module uses, so the
+    // byte length is exactly twice its `u16` length and the buffer is live
+    // for the duration of this reinterpretation.
     let display_name_bytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(display_name.as_ptr().cast::<u8>(), display_name.len() * 2)
+        std::slice::from_raw_parts(
+            display_name_wide.as_ptr().cast::<u8>(),
+            display_name_wide.len() * 2,
+        )
     };
     // SAFETY: `hkey` was just opened above and is closed below regardless
     // of outcome; `value_name`/`display_name_bytes` are both kept alive
@@ -1963,7 +2004,21 @@ fn win_register_aumid_display_name(aumid: &str) -> bool {
     unsafe {
         let _ = RegCloseKey(hkey);
     }
-    set == ERROR_SUCCESS
+    if set != ERROR_SUCCESS {
+        crate::diagnostics::emit(format!(
+            "quadraui: RegSetValueExW(DisplayName) failed for AppUserModelId\\{aumid} \
+             ({set:?}); toast notifications will fall back to the balloon tray icon"
+        ));
+        // SAFETY: `subkey` is the same UTF-16, NUL-terminated buffer used
+        // to create this key above; deleting it removes the
+        // now-DisplayName-less key this call just created rather than
+        // leaving it behind for a future registration attempt to find.
+        unsafe {
+            let _ = RegDeleteKeyW(HKEY_CURRENT_USER, PCWSTR::from_raw(subkey.as_ptr()));
+        }
+        return false;
+    }
+    true
 }
 
 /// Id [`WinPlatformServices::active_toasts`] is keyed on — private to this
@@ -3076,7 +3131,7 @@ mod tests {
         assert!(xml.contains("arguments=\"a&amp;b\""));
     }
 
-    // ── apply_aumid_registration (quadraui#1823) ────────────────────────
+    // ── apply_aumid_registration ─────────────────────────────────────────
     //
     // `send_notification` reads `self.aumid` to decide toast vs. balloon
     // (`Some` => try the toast, `None` => balloon straight away — see that
@@ -3091,7 +3146,11 @@ mod tests {
     #[test]
     fn apply_aumid_registration_stores_aumid_when_registration_succeeds() {
         let svc = WinPlatformServices::new();
-        svc.apply_aumid_registration("Quadraui.Test.Registered".to_string(), |_| true);
+        svc.apply_aumid_registration(
+            "Quadraui.Test.Registered".to_string(),
+            "Test App".to_string(),
+            |_, _| true,
+        );
         assert_eq!(
             svc.aumid.borrow().as_deref(),
             Some("Quadraui.Test.Registered")
@@ -3101,40 +3160,70 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn apply_aumid_registration_leaves_aumid_none_when_registration_fails() {
-        // The unregistered-AUMID regression (quadraui#1823): if the
-        // `AppUserModelId` registry write fails or never ran,
+        // If the `AppUserModelId` registry write fails or never ran,
         // `send_notification` must have no toast to attempt, so it falls
         // straight through to the `Shell_NotifyIconW` balloon — never
         // silently showing nothing.
         let svc = WinPlatformServices::new();
-        svc.apply_aumid_registration("Quadraui.Test.Unregistered".to_string(), |_| false);
+        svc.apply_aumid_registration(
+            "Quadraui.Test.Unregistered".to_string(),
+            "Test App".to_string(),
+            |_, _| false,
+        );
         assert!(svc.aumid.borrow().is_none());
     }
 
     #[cfg(target_os = "windows")]
     #[test]
     fn apply_aumid_registration_does_not_overwrite_a_prior_success_on_later_failure() {
+        // Documents current behavior, not a guaranteed contract: this
+        // backend only ever registers one AUMID per process (computed once
+        // in `win::run` from `RunConfig::title`), so a second, different
+        // `aumid` never reaches `set_aumid` in practice. If that changes,
+        // revisit whether "keep the stale value" is still the right call.
         let svc = WinPlatformServices::new();
-        svc.apply_aumid_registration("Quadraui.Test.First".to_string(), |_| true);
-        svc.apply_aumid_registration("Quadraui.Test.Second".to_string(), |_| false);
+        svc.apply_aumid_registration(
+            "Quadraui.Test.First".to_string(),
+            "Test App".to_string(),
+            |_, _| true,
+        );
+        svc.apply_aumid_registration(
+            "Quadraui.Test.Second".to_string(),
+            "Test App".to_string(),
+            |_, _| false,
+        );
         assert_eq!(svc.aumid.borrow().as_deref(), Some("Quadraui.Test.First"));
     }
 
-    // ── win_register_aumid_display_name (quadraui#1823) ─────────────────
+    // ── win_register_aumid_display_name ──────────────────────────────────
     //
-    // Live `HKCU` round-trip: exercises the actual registry write this fix
-    // adds, confirming it both succeeds and leaves a `DisplayName` WinRT
-    // can read back — not just that `RegCreateKeyExW`/`RegSetValueExW`
-    // returned success codes. `HKCU` is always writable for the account
-    // running the test, including on a CI runner, so this needs no
-    // elevation. Cleans up the key it creates so repeated runs don't leave
-    // stale entries under `AppUserModelId`.
+    // Live `HKCU` round-trip: exercises the actual registry write this
+    // function performs, confirming it both succeeds and leaves the
+    // human-readable `display_name` — not `aumid` itself — as a
+    // `DisplayName` WinRT can read back, not just that
+    // `RegCreateKeyExW`/`RegSetValueExW` returned success codes. `HKCU` is
+    // always writable for the account running the test, including on a CI
+    // runner, so this needs no elevation. A guard cleans up the key it
+    // creates on drop, so an early `assert!` panic still leaves no stale
+    // entry under `AppUserModelId` for the next run to collide with.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_register_aumid_display_name_writes_a_readable_display_name() {
-        use windows::Win32::System::Registry::{
-            RegDeleteKeyW, RegOpenKeyExW, RegQueryValueExW, KEY_READ,
-        };
+        use windows::Win32::System::Registry::{RegOpenKeyExW, RegQueryValueExW, KEY_READ};
+
+        /// Deletes `AppUserModelId\<aumid>` on drop, so the key this test
+        /// creates is removed even if an `assert!` in between panics.
+        struct CleanupGuard<'a>(&'a str);
+        impl Drop for CleanupGuard<'_> {
+            fn drop(&mut self) {
+                let subkey = wide_nul_terminated(&aumid_registry_subkey(self.0));
+                // SAFETY: `subkey` is a live, NUL-terminated wide buffer
+                // for the duration of this call.
+                unsafe {
+                    let _ = RegDeleteKeyW(HKEY_CURRENT_USER, PCWSTR::from_raw(subkey.as_ptr()));
+                }
+            }
+        }
 
         let aumid = format!(
             "Quadraui.Test.RegistryRoundTrip.{:x}",
@@ -3143,10 +3232,12 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         );
+        let display_name = "Readable Test App Name";
+        let _cleanup = CleanupGuard(&aumid);
 
-        assert!(win_register_aumid_display_name(&aumid));
+        assert!(win_register_aumid_display_name(&aumid, display_name));
 
-        let subkey = wide_nul_terminated(&format!("Software\\Classes\\AppUserModelId\\{aumid}"));
+        let subkey = wide_nul_terminated(&aumid_registry_subkey(&aumid));
         let mut hkey = HKEY::default();
         // SAFETY: `subkey` is a live, NUL-terminated wide buffer for the
         // duration of this call; `phkresult` points at a local.
@@ -3182,19 +3273,11 @@ mod tests {
         };
         assert_eq!(queried, ERROR_SUCCESS);
         let read_wide = &buf[..buf_len as usize / 2];
-        assert_eq!(decode_wide_nul_terminated(read_wide), aumid);
+        assert_eq!(decode_wide_nul_terminated(read_wide), display_name);
 
         // SAFETY: `hkey` is a key this test opened and has not yet closed.
         unsafe {
             let _ = RegCloseKey(hkey);
-        }
-        // Deletes the same `AppUserModelId\<aumid>` key `RegCreateKeyExW`
-        // created above (`subkey` is still the matching, live wide buffer),
-        // so this test leaves no trace behind for the next run to collide
-        // with.
-        // SAFETY: `subkey` is still a live, NUL-terminated wide buffer.
-        unsafe {
-            let _ = RegDeleteKeyW(HKEY_CURRENT_USER, PCWSTR::from_raw(subkey.as_ptr()));
         }
     }
 }

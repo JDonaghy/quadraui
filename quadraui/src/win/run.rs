@@ -1394,7 +1394,7 @@ mod win32 {
         // process-wide via `SetCurrentProcessExplicitAppUserModelID`;
         // recomputed here rather than threaded through `RunConfig` since
         // `aumid_string` is pure and cheap.
-        backend.set_aumid(super::aumid_string(title));
+        backend.set_aumid(super::aumid_string(title), title.to_string());
         app.setup(&mut backend);
 
         // `None` (zero runtime cost — no timer ever armed below)
