@@ -94,6 +94,13 @@ only a push to `main` runs this workflow.
 - `A11yScenario::with_modal` / `set_modal` on the headless accessibility
   test seam, for snapshotting the modal/hidden split without a backend.
 
+### Fixed
+
+- Accessibility names no longer carry presentation-only characters: a menu-bar
+  item labelled `"&File"` announces as `File` (and `"&&"` as a literal `&`),
+  and tooltip and status-bar text is trimmed, so the padding spaces a bordered
+  box needs are not spoken.
+
 ## [0.7.0] - 2026-10-30
 ### Added
 
