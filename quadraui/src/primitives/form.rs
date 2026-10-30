@@ -775,7 +775,7 @@ fn item_x_positions(origin_x: f32, _row_height: f32, gap: f32, widths: &[f32]) -
 ))]
 #[allow(dead_code)]
 mod native_surface_paint {
-    use super::{FieldKind, Form, FormLayout, ValidationState};
+    use super::{FieldKind, Form, FormLayout, LabelAlign, LabelPosition, ValidationState};
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     // The selected-item background pill's rect and the widget-state decision
@@ -907,365 +907,457 @@ mod native_surface_paint {
 
             let label_text = plain_text(&field.label);
             let (label_w, label_h) = surface.surface_measure_text(&label_text);
-            let label_x = row_rect.x + 6.0;
-            let label_y = row_rect.y + (row_h - label_h) / 2.0;
-            surface.surface_draw_text_run(
-                Rect::new(label_x, label_y, label_w, label_h),
-                &label_text,
-                field_fg,
-            );
-            let label_right = label_x + label_w;
-            let no_label = label_text.is_empty();
-            let input_right = row_rect.x + row_rect.width - 8.0;
+            let position = if is_header {
+                LabelPosition::Inline
+            } else {
+                form.resolved_label_position(field)
+            };
 
-            match &field.kind {
-                FieldKind::Label => {}
-                FieldKind::Toggle { value } => {
-                    // Drawn checkbox rather than a `[x]` / `[ ]` text
-                    // glyph — the TUI painter keeps the glyph.
-                    let fg = if *value && !field.disabled {
-                        theme.accent_fg
-                    } else {
-                        field_fg
-                    };
-                    let box_size = (row_h - 8.0).clamp(10.0, 16.0);
-                    let ix = if no_label {
-                        label_x
-                    } else {
-                        input_right - box_size
-                    };
-                    if no_label || ix > label_right + 8.0 {
-                        let iy = row_rect.y + (row_h - box_size) / 2.0;
-                        let box_rect = Rect::new(ix, iy, box_size, box_size);
-                        if *value {
-                            surface.surface_fill_rounded_rect(box_rect, 2.0, fg);
-                            let check_fg = theme.background;
-                            surface.surface_draw_line(
-                                crate::Point::new(
-                                    box_rect.x + box_size * 0.22,
-                                    box_rect.y + box_size * 0.52,
-                                ),
-                                crate::Point::new(
-                                    box_rect.x + box_size * 0.42,
-                                    box_rect.y + box_size * 0.75,
-                                ),
-                                check_fg,
-                                1.5,
-                            );
-                            surface.surface_draw_line(
-                                crate::Point::new(
-                                    box_rect.x + box_size * 0.42,
-                                    box_rect.y + box_size * 0.75,
-                                ),
-                                crate::Point::new(
-                                    box_rect.x + box_size * 0.8,
-                                    box_rect.y + box_size * 0.25,
-                                ),
-                                check_fg,
-                                1.5,
-                            );
-                        } else {
-                            surface.surface_stroke_rect(box_rect, fg, 1.0);
-                        }
-                    }
-                }
-                FieldKind::TextInput {
-                    value,
-                    placeholder,
-                    cursor,
-                    selection_anchor,
-                } => {
-                    paint_text_input_box(
-                        surface,
-                        row_rect,
-                        label_right,
-                        no_label,
-                        input_right,
-                        value,
-                        placeholder,
-                        *cursor,
-                        *selection_anchor,
-                        field_fg,
-                        theme.muted_fg,
-                        theme.selection_bg,
-                        theme.accent_fg,
+            // (draw_label, label_x, label_y, label_right, no_label, content_rect)
+            let (draw_label, label_x, label_y, label_right, no_label, content_rect) =
+                if label_text.is_empty() {
+                    (
                         false,
-                        '\0',
-                    );
-                }
-                FieldKind::PasswordInput {
-                    value,
-                    placeholder,
-                    cursor,
-                    mask_char,
-                } => {
-                    paint_text_input_box(
-                        surface,
-                        row_rect,
-                        label_right,
-                        no_label,
-                        input_right,
-                        value,
-                        placeholder,
-                        *cursor,
-                        None,
-                        field_fg,
-                        theme.muted_fg,
-                        theme.selection_bg,
-                        theme.accent_fg,
+                        row_rect.x + 6.0,
+                        row_rect.y,
+                        row_rect.x + 6.0,
                         true,
-                        *mask_char,
-                    );
-                }
-                FieldKind::TextArea {
-                    value,
-                    placeholder,
-                    cursor,
-                    ..
-                } => {
-                    let first_line = value.lines().next().unwrap_or("");
-                    paint_text_input_box(
-                        surface,
                         row_rect,
-                        label_right,
-                        no_label,
-                        input_right,
-                        first_line,
-                        placeholder,
-                        *cursor,
-                        None,
-                        field_fg,
-                        theme.muted_fg,
-                        theme.selection_bg,
-                        theme.accent_fg,
-                        false,
-                        '\0',
-                    );
-                }
-                FieldKind::Button => {
-                    let cap = label_text.clone();
-                    let total_w = label_w + 24.0;
-                    let ix = if no_label {
-                        label_x
-                    } else {
-                        input_right - total_w
-                    };
-                    if no_label || ix > row_rect.x + 8.0 {
-                        let brk = if is_focused {
+                    )
+                } else {
+                    match position {
+                        LabelPosition::Hidden => (
+                            false,
+                            row_rect.x + 6.0,
+                            row_rect.y,
+                            row_rect.x + 6.0,
+                            true,
+                            row_rect,
+                        ),
+                        LabelPosition::Top => {
+                            let label_band = (label_h + 2.0).min(row_h);
+                            let content_y = row_rect.y + label_band;
+                            let content_h = (row_h - label_band).max(0.0);
+                            (
+                                true,
+                                row_rect.x + 6.0,
+                                row_rect.y + 2.0,
+                                row_rect.x + 6.0,
+                                true,
+                                Rect::new(row_rect.x, content_y, row_rect.width, content_h),
+                            )
+                        }
+                        LabelPosition::Left => {
+                            let col_width = form
+                                .resolved_label_width(field)
+                                .unwrap_or(label_w)
+                                .max(label_w);
+                            let align_offset = match form.resolved_label_align(field) {
+                                LabelAlign::Start => 0.0,
+                                LabelAlign::Center => (col_width - label_w) / 2.0,
+                                LabelAlign::End => col_width - label_w,
+                            };
+                            (
+                                true,
+                                row_rect.x + 6.0 + align_offset,
+                                row_rect.y + (row_h - label_h) / 2.0,
+                                row_rect.x + 6.0 + col_width,
+                                false,
+                                row_rect,
+                            )
+                        }
+                        LabelPosition::Inline => (
+                            true,
+                            row_rect.x + 6.0,
+                            row_rect.y + (row_h - label_h) / 2.0,
+                            row_rect.x + 6.0 + label_w,
+                            false,
+                            row_rect,
+                        ),
+                    }
+                };
+            if draw_label {
+                surface.surface_draw_text_run(
+                    Rect::new(label_x, label_y, label_w, label_h),
+                    &label_text,
+                    field_fg,
+                );
+            }
+            // The field body (checkbox, text input, dropdown, …) paints
+            // within `content_rect` rather than the full row: for
+            // `LabelPosition::Top` that excludes the label band reserved
+            // above it, while every other position leaves it equal to the
+            // row's full bounds. Shadowed only inside this block — the
+            // validation message strip below still measures against the
+            // row's original (message-adjusted) bounds.
+            {
+                let row_rect = content_rect;
+                let row_h = row_rect.height;
+                let input_right = row_rect.x + row_rect.width - 8.0;
+
+                match &field.kind {
+                    FieldKind::Label => {}
+                    FieldKind::Toggle { value } => {
+                        // Drawn checkbox rather than a `[x]` / `[ ]` text
+                        // glyph — the TUI painter keeps the glyph.
+                        let fg = if *value && !field.disabled {
                             theme.accent_fg
-                        } else {
-                            theme.muted_fg
-                        };
-                        let (_, h) = surface.surface_measure_text("<");
-                        let y = row_rect.y + (row_h - h) / 2.0;
-                        surface.surface_draw_text_run(Rect::new(ix, y, 12.0, h), "<", brk);
-                        let text_fg = if field.disabled {
-                            theme.muted_fg
                         } else {
                             field_fg
                         };
-                        surface.surface_draw_text_run(
-                            Rect::new(ix + 12.0, y, label_w, h),
-                            &cap,
-                            text_fg,
-                        );
-                        surface.surface_draw_text_run(
-                            Rect::new(ix + 12.0 + label_w + 4.0, y, 12.0, h),
-                            ">",
-                            brk,
-                        );
-                    }
-                }
-                FieldKind::ReadOnly { value } => {
-                    let text = plain_text(value);
-                    let (w, h) = surface.surface_measure_text(&text);
-                    let ix = if no_label { label_x } else { input_right - w };
-                    if no_label || ix > label_right + 8.0 {
-                        let iy = row_rect.y + (row_h - h) / 2.0;
-                        // Was unconditionally `theme.muted_fg`,
-                        // so a focused (`selected_bg`) `ReadOnly` row painted
-                        // its value in the same dim colour as an unfocused
-                        // one — unreadable on `selected_bg`, unlike every
-                        // other field kind here, which derives its value
-                        // colour from `field_fg` (focus/disabled-aware).
-                        surface.surface_draw_text_run(Rect::new(ix, iy, w, h), &text, field_fg);
-                    }
-                }
-                FieldKind::Slider {
-                    value, min, max, ..
-                } => {
-                    let track_w = 80.0_f32;
-                    let range = (max - min).max(f32::EPSILON);
-                    let frac = ((value - min) / range).clamp(0.0, 1.0);
-                    let value_str = format!("{value:.2}");
-                    let (value_w, value_h) = surface.surface_measure_text(&value_str);
-                    let total = track_w + 8.0 + value_w;
-                    let ix = input_right - total;
-                    if ix > label_right + 8.0 {
-                        let track_y = row_rect.y + row_h / 2.0 - 2.0;
-                        surface.surface_fill_rect(
-                            Rect::new(ix, track_y, track_w, 4.0),
-                            theme.muted_fg,
-                        );
-                        surface.surface_fill_rect(
-                            Rect::new(ix, track_y, track_w * frac, 4.0),
-                            theme.accent_fg,
-                        );
-                        let vy = row_rect.y + (row_h - value_h) / 2.0;
-                        surface.surface_draw_text_run(
-                            Rect::new(ix + track_w + 8.0, vy, value_w, value_h),
-                            &value_str,
-                            field_fg,
-                        );
-                    }
-                }
-                FieldKind::ColorPicker { value } => {
-                    let hex = format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b);
-                    let (hw, hh) = surface.surface_measure_text(&hex);
-                    let swatch = 12.0_f32;
-                    let total = swatch + 6.0 + hw;
-                    let ix = input_right - total;
-                    if ix > label_right + 8.0 {
-                        let sy = row_rect.y + (row_h - swatch) / 2.0;
-                        surface.surface_fill_rect(Rect::new(ix, sy, swatch, swatch), *value);
-                        let ty = row_rect.y + (row_h - hh) / 2.0;
-                        surface.surface_draw_text_run(
-                            Rect::new(ix + swatch + 6.0, ty, hw, hh),
-                            &hex,
-                            field_fg,
-                        );
-                    }
-                }
-                FieldKind::Dropdown {
-                    options,
-                    selected_idx,
-                } => {
-                    let chosen = options
-                        .get(*selected_idx)
-                        .map(plain_text)
-                        .unwrap_or_default();
-                    let (cw, ch) = surface.surface_measure_text(&chosen);
-                    let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
-                    let total = cw + 4.0 + chev_w;
-                    let ix = input_right - total;
-                    if ix > label_right + 8.0 {
-                        let ty = row_rect.y + (row_h - ch) / 2.0;
-                        surface.surface_draw_text_run(Rect::new(ix, ty, cw, ch), &chosen, field_fg);
-                        surface.surface_draw_text_run(
-                            Rect::new(ix + cw + 4.0, ty, chev_w, ch),
-                            "\u{25BE}",
-                            theme.muted_fg,
-                        );
-                    }
-                }
-                FieldKind::ToggleGroup { toggles } => {
-                    for (item_id, item_rect) in &vf.item_bounds {
-                        if let Some(t) = toggles.iter().find(|t| &t.id == item_id) {
-                            let on = t.value && !field.disabled;
-                            let fg = if on { theme.accent_fg } else { theme.muted_fg };
-                            let r = translate(item_rect, origin);
-                            if let Some((pill, bg)) = selected_item_fill(r, on, theme.selected_bg) {
-                                surface.surface_fill_rect(pill, bg);
+                        let box_size = (row_h - 8.0).clamp(10.0, 16.0);
+                        let ix = if no_label {
+                            label_x
+                        } else {
+                            input_right - box_size
+                        };
+                        if no_label || ix > label_right + 8.0 {
+                            let iy = row_rect.y + (row_h - box_size) / 2.0;
+                            let box_rect = Rect::new(ix, iy, box_size, box_size);
+                            if *value {
+                                surface.surface_fill_rounded_rect(box_rect, 2.0, fg);
+                                let check_fg = theme.background;
+                                surface.surface_draw_line(
+                                    crate::Point::new(
+                                        box_rect.x + box_size * 0.22,
+                                        box_rect.y + box_size * 0.52,
+                                    ),
+                                    crate::Point::new(
+                                        box_rect.x + box_size * 0.42,
+                                        box_rect.y + box_size * 0.75,
+                                    ),
+                                    check_fg,
+                                    1.5,
+                                );
+                                surface.surface_draw_line(
+                                    crate::Point::new(
+                                        box_rect.x + box_size * 0.42,
+                                        box_rect.y + box_size * 0.75,
+                                    ),
+                                    crate::Point::new(
+                                        box_rect.x + box_size * 0.8,
+                                        box_rect.y + box_size * 0.25,
+                                    ),
+                                    check_fg,
+                                    1.5,
+                                );
+                            } else {
+                                surface.surface_stroke_rect(box_rect, fg, 1.0);
                             }
-                            surface.surface_draw_text_run(r, &t.label, fg);
                         }
                     }
-                }
-                FieldKind::ButtonRow { buttons } => {
-                    for (item_id, item_rect) in &vf.item_bounds {
-                        if let Some(b) = buttons.iter().find(|b| &b.id == item_id) {
-                            let r = translate(item_rect, origin);
-                            let disabled = b.disabled || field.disabled;
-                            let bg = if disabled { row_bg } else { theme.hover_bg };
-                            surface.surface_fill_rect(r, bg);
-                            let fg = if disabled { theme.muted_fg } else { field_fg };
-                            let mut tx = r.x + 4.0;
-                            if let Some(ref icon) = b.icon {
-                                let (iw, ih) = surface.surface_measure_text(&icon.fallback);
-                                let iy = r.y + (r.height - ih) / 2.0;
+                    FieldKind::TextInput {
+                        value,
+                        placeholder,
+                        cursor,
+                        selection_anchor,
+                    } => {
+                        paint_text_input_box(
+                            surface,
+                            row_rect,
+                            label_right,
+                            no_label,
+                            input_right,
+                            value,
+                            placeholder,
+                            *cursor,
+                            *selection_anchor,
+                            field_fg,
+                            theme.muted_fg,
+                            theme.selection_bg,
+                            theme.accent_fg,
+                            false,
+                            '\0',
+                        );
+                    }
+                    FieldKind::PasswordInput {
+                        value,
+                        placeholder,
+                        cursor,
+                        mask_char,
+                    } => {
+                        paint_text_input_box(
+                            surface,
+                            row_rect,
+                            label_right,
+                            no_label,
+                            input_right,
+                            value,
+                            placeholder,
+                            *cursor,
+                            None,
+                            field_fg,
+                            theme.muted_fg,
+                            theme.selection_bg,
+                            theme.accent_fg,
+                            true,
+                            *mask_char,
+                        );
+                    }
+                    FieldKind::TextArea {
+                        value,
+                        placeholder,
+                        cursor,
+                        ..
+                    } => {
+                        let first_line = value.lines().next().unwrap_or("");
+                        paint_text_input_box(
+                            surface,
+                            row_rect,
+                            label_right,
+                            no_label,
+                            input_right,
+                            first_line,
+                            placeholder,
+                            *cursor,
+                            None,
+                            field_fg,
+                            theme.muted_fg,
+                            theme.selection_bg,
+                            theme.accent_fg,
+                            false,
+                            '\0',
+                        );
+                    }
+                    FieldKind::Button => {
+                        let cap = label_text.clone();
+                        let total_w = label_w + 24.0;
+                        let ix = if no_label {
+                            label_x
+                        } else {
+                            input_right - total_w
+                        };
+                        if no_label || ix > row_rect.x + 8.0 {
+                            let brk = if is_focused {
+                                theme.accent_fg
+                            } else {
+                                theme.muted_fg
+                            };
+                            let (_, h) = surface.surface_measure_text("<");
+                            let y = row_rect.y + (row_h - h) / 2.0;
+                            surface.surface_draw_text_run(Rect::new(ix, y, 12.0, h), "<", brk);
+                            let text_fg = if field.disabled {
+                                theme.muted_fg
+                            } else {
+                                field_fg
+                            };
+                            surface.surface_draw_text_run(
+                                Rect::new(ix + 12.0, y, label_w, h),
+                                &cap,
+                                text_fg,
+                            );
+                            surface.surface_draw_text_run(
+                                Rect::new(ix + 12.0 + label_w + 4.0, y, 12.0, h),
+                                ">",
+                                brk,
+                            );
+                        }
+                    }
+                    FieldKind::ReadOnly { value } => {
+                        let text = plain_text(value);
+                        let (w, h) = surface.surface_measure_text(&text);
+                        let ix = if no_label { label_x } else { input_right - w };
+                        if no_label || ix > label_right + 8.0 {
+                            let iy = row_rect.y + (row_h - h) / 2.0;
+                            // Was unconditionally `theme.muted_fg`,
+                            // so a focused (`selected_bg`) `ReadOnly` row painted
+                            // its value in the same dim colour as an unfocused
+                            // one — unreadable on `selected_bg`, unlike every
+                            // other field kind here, which derives its value
+                            // colour from `field_fg` (focus/disabled-aware).
+                            surface.surface_draw_text_run(Rect::new(ix, iy, w, h), &text, field_fg);
+                        }
+                    }
+                    FieldKind::Slider {
+                        value, min, max, ..
+                    } => {
+                        let track_w = 80.0_f32;
+                        let range = (max - min).max(f32::EPSILON);
+                        let frac = ((value - min) / range).clamp(0.0, 1.0);
+                        let value_str = format!("{value:.2}");
+                        let (value_w, value_h) = surface.surface_measure_text(&value_str);
+                        let total = track_w + 8.0 + value_w;
+                        let ix = input_right - total;
+                        if ix > label_right + 8.0 {
+                            let track_y = row_rect.y + row_h / 2.0 - 2.0;
+                            surface.surface_fill_rect(
+                                Rect::new(ix, track_y, track_w, 4.0),
+                                theme.muted_fg,
+                            );
+                            surface.surface_fill_rect(
+                                Rect::new(ix, track_y, track_w * frac, 4.0),
+                                theme.accent_fg,
+                            );
+                            let vy = row_rect.y + (row_h - value_h) / 2.0;
+                            surface.surface_draw_text_run(
+                                Rect::new(ix + track_w + 8.0, vy, value_w, value_h),
+                                &value_str,
+                                field_fg,
+                            );
+                        }
+                    }
+                    FieldKind::ColorPicker { value } => {
+                        let hex = format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b);
+                        let (hw, hh) = surface.surface_measure_text(&hex);
+                        let swatch = 12.0_f32;
+                        let total = swatch + 6.0 + hw;
+                        let ix = input_right - total;
+                        if ix > label_right + 8.0 {
+                            let sy = row_rect.y + (row_h - swatch) / 2.0;
+                            surface.surface_fill_rect(Rect::new(ix, sy, swatch, swatch), *value);
+                            let ty = row_rect.y + (row_h - hh) / 2.0;
+                            surface.surface_draw_text_run(
+                                Rect::new(ix + swatch + 6.0, ty, hw, hh),
+                                &hex,
+                                field_fg,
+                            );
+                        }
+                    }
+                    FieldKind::Dropdown {
+                        options,
+                        selected_idx,
+                    } => {
+                        let chosen = options
+                            .get(*selected_idx)
+                            .map(plain_text)
+                            .unwrap_or_default();
+                        let (cw, ch) = surface.surface_measure_text(&chosen);
+                        let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
+                        let total = cw + 4.0 + chev_w;
+                        let ix = input_right - total;
+                        if ix > label_right + 8.0 {
+                            let ty = row_rect.y + (row_h - ch) / 2.0;
+                            surface.surface_draw_text_run(
+                                Rect::new(ix, ty, cw, ch),
+                                &chosen,
+                                field_fg,
+                            );
+                            surface.surface_draw_text_run(
+                                Rect::new(ix + cw + 4.0, ty, chev_w, ch),
+                                "\u{25BE}",
+                                theme.muted_fg,
+                            );
+                        }
+                    }
+                    FieldKind::ToggleGroup { toggles } => {
+                        for (item_id, item_rect) in &vf.item_bounds {
+                            if let Some(t) = toggles.iter().find(|t| &t.id == item_id) {
+                                let on = t.value && !field.disabled;
+                                let fg = if on { theme.accent_fg } else { theme.muted_fg };
+                                let r = translate(item_rect, origin);
+                                if let Some((pill, bg)) =
+                                    selected_item_fill(r, on, theme.selected_bg)
+                                {
+                                    surface.surface_fill_rect(pill, bg);
+                                }
+                                surface.surface_draw_text_run(r, &t.label, fg);
+                            }
+                        }
+                    }
+                    FieldKind::ButtonRow { buttons } => {
+                        for (item_id, item_rect) in &vf.item_bounds {
+                            if let Some(b) = buttons.iter().find(|b| &b.id == item_id) {
+                                let r = translate(item_rect, origin);
+                                let disabled = b.disabled || field.disabled;
+                                let bg = if disabled { row_bg } else { theme.hover_bg };
+                                surface.surface_fill_rect(r, bg);
+                                let fg = if disabled { theme.muted_fg } else { field_fg };
+                                let mut tx = r.x + 4.0;
+                                if let Some(ref icon) = b.icon {
+                                    let (iw, ih) = surface.surface_measure_text(&icon.fallback);
+                                    let iy = r.y + (r.height - ih) / 2.0;
+                                    surface.surface_draw_text_run(
+                                        Rect::new(tx, iy, iw, ih),
+                                        &icon.fallback,
+                                        fg,
+                                    );
+                                    tx += iw + 4.0;
+                                }
+                                let (lw, lh) = surface.surface_measure_text(&b.label);
+                                let ly = r.y + (r.height - lh) / 2.0;
                                 surface.surface_draw_text_run(
-                                    Rect::new(tx, iy, iw, ih),
-                                    &icon.fallback,
+                                    Rect::new(tx, ly, lw, lh),
+                                    &b.label,
                                     fg,
                                 );
-                                tx += iw + 4.0;
                             }
-                            let (lw, lh) = surface.surface_measure_text(&b.label);
-                            let ly = r.y + (r.height - lh) / 2.0;
-                            surface.surface_draw_text_run(Rect::new(tx, ly, lw, lh), &b.label, fg);
                         }
                     }
-                }
-                FieldKind::SegmentedControl {
-                    options,
-                    selected_idx,
-                } => {
-                    for (i, (_item_id, item_rect)) in vf.item_bounds.iter().enumerate() {
-                        let opt = options.get(i).map(|s| s.as_str()).unwrap_or("");
-                        let fg = if i == *selected_idx {
-                            theme.accent_fg
+                    FieldKind::SegmentedControl {
+                        options,
+                        selected_idx,
+                    } => {
+                        for (i, (_item_id, item_rect)) in vf.item_bounds.iter().enumerate() {
+                            let opt = options.get(i).map(|s| s.as_str()).unwrap_or("");
+                            let fg = if i == *selected_idx {
+                                theme.accent_fg
+                            } else {
+                                theme.muted_fg
+                            };
+                            let r = translate(item_rect, origin);
+                            if let Some((pill, bg)) =
+                                selected_item_fill(r, i == *selected_idx, theme.selected_bg)
+                            {
+                                surface.surface_fill_rect(pill, bg);
+                            }
+                            let (tw, th) = surface.surface_measure_text(opt);
+                            let ty = r.y + (r.height - th) / 2.0;
+                            surface.surface_draw_text_run(Rect::new(r.x, ty, tw, th), opt, fg);
+                        }
+                    }
+                    FieldKind::Toolbar(_) => {
+                        // See this fn's doc: painted by the caller after
+                        // `paint` returns, using the backend's own toolbar
+                        // rasteriser.
+                    }
+                    FieldKind::DatePicker(picker) => {
+                        // While this row is focused, `focused` is the live
+                        // scrub position `FormController` overlays per
+                        // keystroke (see `compose::form_controller`'s "Date
+                        // picker fields" doc section) — showing `selected`
+                        // instead would make every scrub past the first
+                        // confirmation invisible. Once focus moves on,
+                        // `selected` (falling back to `focused` pre-first-
+                        // confirmation) is the field's settled value.
+                        let date = if is_focused {
+                            picker.focused
                         } else {
-                            theme.muted_fg
+                            picker.selected.unwrap_or(picker.focused)
                         };
-                        let r = translate(item_rect, origin);
-                        if let Some((pill, bg)) =
-                            selected_item_fill(r, i == *selected_idx, theme.selected_bg)
-                        {
-                            surface.surface_fill_rect(pill, bg);
+                        let text = date.format(picker.locale.format);
+                        let (tw, th) = surface.surface_measure_text(&text);
+                        let ix = if no_label { label_x } else { input_right - tw };
+                        if no_label || ix > label_right + 8.0 {
+                            let ty = row_rect.y + (row_h - th) / 2.0;
+                            surface.surface_draw_text_run(
+                                Rect::new(ix, ty, tw, th),
+                                &text,
+                                field_fg,
+                            );
                         }
-                        let (tw, th) = surface.surface_measure_text(opt);
-                        let ty = r.y + (r.height - th) / 2.0;
-                        surface.surface_draw_text_run(Rect::new(r.x, ty, tw, th), opt, fg);
                     }
-                }
-                FieldKind::Toolbar(_) => {
-                    // See this fn's doc: painted by the caller after
-                    // `paint` returns, using the backend's own toolbar
-                    // rasteriser.
-                }
-                FieldKind::DatePicker(picker) => {
-                    // While this row is focused, `focused` is the live
-                    // scrub position `FormController` overlays per
-                    // keystroke (see `compose::form_controller`'s "Date
-                    // picker fields" doc section) — showing `selected`
-                    // instead would make every scrub past the first
-                    // confirmation invisible. Once focus moves on,
-                    // `selected` (falling back to `focused` pre-first-
-                    // confirmation) is the field's settled value.
-                    let date = if is_focused {
-                        picker.focused
-                    } else {
-                        picker.selected.unwrap_or(picker.focused)
-                    };
-                    let text = date.format(picker.locale.format);
-                    let (tw, th) = surface.surface_measure_text(&text);
-                    let ix = if no_label { label_x } else { input_right - tw };
-                    if no_label || ix > label_right + 8.0 {
-                        let ty = row_rect.y + (row_h - th) / 2.0;
-                        surface.surface_draw_text_run(Rect::new(ix, ty, tw, th), &text, field_fg);
-                    }
-                }
-                FieldKind::ComboBox(combo) => {
-                    // Compact row only — `text` is the live, possibly
-                    // mid-filter buffer; the open dropdown (if any) is
-                    // painted by the app after this fn returns, per this
-                    // field's doc.
-                    let (tw, th) = surface.surface_measure_text(&combo.text);
-                    let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
-                    let total = tw + 4.0 + chev_w;
-                    let ix = input_right - total;
-                    if ix > label_right + 8.0 {
-                        let ty = row_rect.y + (row_h - th) / 2.0;
-                        surface.surface_draw_text_run(
-                            Rect::new(ix, ty, tw, th),
-                            &combo.text,
-                            field_fg,
-                        );
-                        surface.surface_draw_text_run(
-                            Rect::new(ix + tw + 4.0, ty, chev_w, th),
-                            "\u{25BE}",
-                            theme.muted_fg,
-                        );
+                    FieldKind::ComboBox(combo) => {
+                        // Compact row only — `text` is the live, possibly
+                        // mid-filter buffer; the open dropdown (if any) is
+                        // painted by the app after this fn returns, per this
+                        // field's doc.
+                        let (tw, th) = surface.surface_measure_text(&combo.text);
+                        let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
+                        let total = tw + 4.0 + chev_w;
+                        let ix = input_right - total;
+                        if ix > label_right + 8.0 {
+                            let ty = row_rect.y + (row_h - th) / 2.0;
+                            surface.surface_draw_text_run(
+                                Rect::new(ix, ty, tw, th),
+                                &combo.text,
+                                field_fg,
+                            );
+                            surface.surface_draw_text_run(
+                                Rect::new(ix + tw + 4.0, ty, chev_w, th),
+                                "\u{25BE}",
+                                theme.muted_fg,
+                            );
+                        }
                     }
                 }
             }
@@ -1839,6 +1931,281 @@ mod native_surface_paint {
         // tests can't see: that `paint()` actually wires `Form` state
         // through to `selected_item_fill` and issues the resulting fill
         // via `PaintSurface`, exercised through `RecordingSurface`.
+
+        /// Builds a single text-input form and paints it, so each
+        /// `label_position`/`label_align`/`label_width` test only has to
+        /// state the override and read back where "Name" and the value
+        /// text landed.
+        fn labeled_text_field_form(
+            label_position: Option<LabelPosition>,
+            label_align: Option<LabelAlign>,
+            label_width: Option<f32>,
+        ) -> Form {
+            let mut form = one_field_form(
+                "name",
+                FieldKind::TextInput {
+                    value: "val".into(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+            );
+            form.fields[0].label = StyledText::plain("Name");
+            form.fields[0].label_position = label_position;
+            form.fields[0].label_align = label_align;
+            form.fields[0].label_width = label_width;
+            form
+        }
+
+        /// A regression guard: an all-defaults form (no field ever sets
+        /// `label_position`/`label_align`/`label_width`) must paint
+        /// byte-for-byte identically before and after this module honours
+        /// those fields — existing consumers that never set them see no
+        /// change at all.
+        #[test]
+        fn default_label_position_paints_unchanged() {
+            let form = labeled_text_field_form(None, None, None);
+            let (surface, _) = paint_recorded(&form);
+
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Name")
+                .expect("label text run recorded");
+            // Today's default: label flush-left at `row.x + 6`, vertically
+            // centred in the row.
+            assert_eq!(label_rect.x, 6.0);
+
+            let (value_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "val")
+                .expect("value text run recorded");
+            // The value sits to the right of the label with no gap beyond
+            // the label's own measured width — unchanged from before
+            // `label_position` existed.
+            assert!(value_rect.x > label_rect.x + label_rect.width);
+        }
+
+        #[test]
+        fn label_position_hidden_suppresses_label_and_widens_field() {
+            let with_label = labeled_text_field_form(None, None, None);
+            let (surface_label, _) = paint_recorded(&with_label);
+            let (shown_label_rect, _, _) = surface_label
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Name")
+                .expect("label painted by default");
+
+            let hidden = labeled_text_field_form(Some(LabelPosition::Hidden), None, None);
+            let (surface_hidden, _) = paint_recorded(&hidden);
+            assert!(
+                !surface_hidden.text_runs.iter().any(|(_, t, _)| t == "Name"),
+                "Hidden must suppress the label text run entirely; runs were {:?}",
+                surface_hidden.text_runs,
+            );
+
+            let (hidden_value_rect, _, _) = surface_hidden
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "val")
+                .expect("value still painted");
+            let (shown_value_rect, _, _) = surface_label
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "val")
+                .expect("value still painted");
+            assert!(
+                hidden_value_rect.x < shown_value_rect.x,
+                "with the label hidden the field should start further \
+                 left (no label column reserved); hidden value was at \
+                 x={}, labeled value was at x={}, label rect was {:?}",
+                hidden_value_rect.x,
+                shown_value_rect.x,
+                shown_label_rect,
+            );
+        }
+
+        #[test]
+        fn label_position_top_places_label_above_the_field_row() {
+            let form = labeled_text_field_form(Some(LabelPosition::Top), None, None);
+            // `Top` stacks the label above the value within the row
+            // height it's given — `Form::layout` doesn't grow rows for it
+            // (out of this painter's scope), so the test supplies a row
+            // tall enough for both lines, the way a real backend's
+            // two-line `measure_field` for a `Top`-labelled field would.
+            let row_h = form_row_height(14.0) * 2.0;
+            let measure = form_field_measure(&form.fields[0], row_h, &FixedMeasure);
+            let flayout = form.layout(320.0, 160.0, |_| measure.clone());
+            let mut surface = RecordingSurface::default();
+            paint(
+                &form,
+                &flayout,
+                &mut surface,
+                &Theme::default(),
+                crate::Point::new(0.0, 0.0),
+            );
+
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Name")
+                .expect("label text run recorded");
+            let (value_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "val")
+                .expect("value text run recorded");
+
+            assert!(
+                label_rect.y + label_rect.height <= value_rect.y + 0.01,
+                "Top must place the label's bottom edge at or above the \
+                 value's top edge; label was {:?}, value was {:?}",
+                label_rect,
+                value_rect,
+            );
+            // Unlike `Left`, `Top` doesn't reserve a label column — the
+            // value starts near the row's left edge, not to the right of
+            // the label.
+            assert!(value_rect.x < label_rect.x + label_rect.width);
+        }
+
+        #[test]
+        fn label_position_inline_matches_default_left_placement() {
+            // The TUI reference and this painter both treat `Inline`'s
+            // geometry (label immediately left of the value, no reserved
+            // column) the same as today's unconfigured default — this
+            // guards that the explicit variant doesn't drift from it.
+            let inline = labeled_text_field_form(Some(LabelPosition::Inline), None, None);
+            let default = labeled_text_field_form(None, None, None);
+            let (surface_inline, _) = paint_recorded(&inline);
+            let (surface_default, _) = paint_recorded(&default);
+
+            let inline_label = surface_inline
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Name")
+                .expect("label painted");
+            let default_label = surface_default
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Name")
+                .expect("label painted");
+            assert_eq!(inline_label.0, default_label.0);
+        }
+
+        #[test]
+        fn label_align_shifts_label_within_an_explicit_column() {
+            let col_width = 120.0;
+            let start = labeled_text_field_form(
+                Some(LabelPosition::Left),
+                Some(LabelAlign::Start),
+                Some(col_width),
+            );
+            let center = labeled_text_field_form(
+                Some(LabelPosition::Left),
+                Some(LabelAlign::Center),
+                Some(col_width),
+            );
+            let end = labeled_text_field_form(
+                Some(LabelPosition::Left),
+                Some(LabelAlign::End),
+                Some(col_width),
+            );
+
+            let label_x = |form: &Form| -> f32 {
+                let (surface, _) = paint_recorded(form);
+                surface
+                    .text_runs
+                    .iter()
+                    .find(|(_, t, _)| t == "Name")
+                    .expect("label painted")
+                    .0
+                    .x
+            };
+
+            let start_x = label_x(&start);
+            let center_x = label_x(&center);
+            let end_x = label_x(&end);
+
+            assert!(
+                start_x < center_x && center_x < end_x,
+                "Start < Center < End within the label column; got \
+                 start={start_x}, center={center_x}, end={end_x}",
+            );
+        }
+
+        #[test]
+        fn label_width_sizes_the_column() {
+            // Every field kind anchors its own widget to the row's right
+            // edge (not to the label column), so `label_width`'s only
+            // painter-visible effect is on the label's own placement
+            // within that column. `End` align makes the column width
+            // observable directly: the label sits at
+            // `row.x + 6 + (col_width - label_w)`, so a wider explicit
+            // `label_width` must push an `End`-aligned label further
+            // right.
+            let narrow = labeled_text_field_form(
+                Some(LabelPosition::Left),
+                Some(LabelAlign::End),
+                Some(20.0),
+            );
+            let wide = labeled_text_field_form(
+                Some(LabelPosition::Left),
+                Some(LabelAlign::End),
+                Some(200.0),
+            );
+
+            let label_x = |form: &Form| -> f32 {
+                let (surface, _) = paint_recorded(form);
+                surface
+                    .text_runs
+                    .iter()
+                    .find(|(_, t, _)| t == "Name")
+                    .expect("label painted")
+                    .0
+                    .x
+            };
+
+            assert!(
+                label_x(&narrow) < label_x(&wide),
+                "a wider explicit label_width must reserve more column \
+                 space, pushing an End-aligned label further right",
+            );
+        }
+
+        #[test]
+        fn label_width_none_falls_back_to_natural_label_width() {
+            // With no explicit `label_width`, `Left` must size the column
+            // to the label's own measured width (today's default), not an
+            // arbitrary fallback. `End` align exposes this: the column
+            // width always equals the label's own width, so the offset
+            // `col_width - label_w` is zero regardless of how long the
+            // label text is.
+            let short =
+                labeled_text_field_form(Some(LabelPosition::Left), Some(LabelAlign::End), None);
+            let mut long_label_form = short.clone();
+            long_label_form.fields[0].label = StyledText::plain("Much Longer Name");
+
+            let label_x = |form: &Form| -> f32 {
+                let (surface, _) = paint_recorded(form);
+                surface
+                    .text_runs
+                    .iter()
+                    .find(|(_, t, _)| t == "Name" || t == "Much Longer Name")
+                    .expect("label painted")
+                    .0
+                    .x
+            };
+
+            assert_eq!(
+                label_x(&short),
+                label_x(&long_label_form),
+                "with no explicit label_width, the column tracks the \
+                 label's own width, so an End-aligned label always sits \
+                 flush left regardless of its text length",
+            );
+        }
     }
 }
 
