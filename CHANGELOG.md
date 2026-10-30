@@ -90,17 +90,29 @@ only a push to `main` runs this workflow.
   text input, text display, terminal, diff view, chart, image, minimap and
   canvas all describe themselves to the `A11yTree`. Editor and text input
   expose their role, label and current text as a value (full cursor/selection
-  semantics are a later issue); text display exposes its title as the label
-  and each line as a child; terminal exposes its visible grid as a value
-  (scrollback is out of scope); diff view exposes its two panes as labelled,
-  independently read-only/editable documents. Chart, image and canvas have no
-  textual equivalent for their visual content, so they rely on an app-supplied
-  label — an unlabelled one is announced as unlabelled, and image additionally
-  falls back to `Image::fallback_text`. Minimap is hidden from assistive
-  technology as a `Presentation` duplicate of the editor's own buffer. Adds
-  two new `A11yRole` variants, `Chart` and `Canvas`. Additive: the mapping is
-  a sidecar `A11yPrimitive` impl per primitive, so no primitive struct changes
-  shape.
+  semantics are a later issue), joining `EditorLine::raw_text` line-by-line
+  with the trailing `\n` each line may or may not already carry stripped
+  first, so lines read as separate lines either way; text display exposes its
+  title as the label and each line as a child, timestamp-prefixed when the
+  line has one; terminal exposes its visible grid as a value, with each row's
+  vt100 trailing blank padding trimmed first (scrollback is out of scope);
+  diff view exposes a single read-only-aware document pane in `Unified` mode
+  (the hunk's `@@ … @@` header and `+`/`-`/` ` prefixed rows, matching what
+  every backend paints) and its existing two labelled, independently
+  read-only/editable panes in `SideBySide` mode. Chart, image and canvas have
+  no textual equivalent for their visual content, so they rely on an
+  app-supplied label — a chart additionally falls back to `Chart::y_label`,
+  then `Chart::x_label`, then (only when `Chart::show_legend` is set) its
+  series labels joined with `", "`; an unlabelled one is announced as
+  unlabelled, and image additionally falls back to `Image::fallback_text`.
+  Minimap is hidden from assistive technology as a `Presentation` duplicate of
+  the editor's own buffer. Adds two new `A11yRole` variants, `Chart` and
+  `Canvas`. Additive: the mapping is a sidecar `A11yPrimitive` impl per
+  primitive, so no primitive struct changes shape; none of these impls fall
+  back to the generic kind-name label an unmapped primitive gets, so a chart,
+  canvas, editor or minimap with no app-supplied label announces with just
+  its role, not a synthesized name — a behavior change for any consumer that
+  relied on the earlier generic fallback.
 - `quadraui::frame_to_tree_with_modal` and `A11yTreeBuilder::with_modal_top`
   / `set_modal_top` — build an accessibility tree against the backend's
   modal stack, so the surface a modal dialog lives on is marked `modal` and
@@ -127,6 +139,14 @@ only a push to `main` runs this workflow.
   item labelled `"&File"` announces as `File` (and `"&&"` as a literal `&`),
   and tooltip and status-bar text is trimmed, so the padding spaces a bordered
   box needs are not spoken.
+
+- `A11yTree::to_snapshot()` escapes backslashes and embedded newlines in a
+  node's `value=` state token (`\` to `\\`, a real newline to the two-character
+  `\n`) instead of emitting the raw character, so a multi-line value (an
+  editor buffer, a terminal grid, a diff pane) can no longer break the
+  snapshot format's one-line-per-node invariant. Any test asserting on a
+  `value=` string containing a literal newline needs updating to the escaped
+  form.
 
 ## [0.7.0] - 2026-10-30
 ### Added
