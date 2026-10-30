@@ -73,6 +73,26 @@ only a push to `main` runs this workflow.
   values identically. `ToggleGroup` / `ButtonRow` / `SegmentedControl` /
   `Toolbar` fields don't yet see `label_position` — their item columns are
   sized in `layout_metrics.rs`, unchanged here.
+### Added
+
+- Accessibility role/state mapping for the control and application-chrome
+  primitives — activity bar, tab bar, toolbar, menu bar, context menu,
+  status bar, command center, command line, dialog, form, find/replace,
+  toast overlay, tooltip, rich-text popup, progress, spinner, scrollbar,
+  split, split tree, panel, sidebar panel and drop zone all describe
+  themselves to the `A11yTree` instead of falling back to an unlabelled
+  group. Toast overlays and their toasts are polite live regions; purely
+  visual parts (scrollbar thumb, split divider, progress track, spinner
+  animation) are exposed as `A11yRole::Presentation` children rather than
+  dropped silently. Additive: the mapping is a sidecar `A11yPrimitive` impl
+  per descriptor, so no primitive struct changes shape.
+- `quadraui::frame_to_tree_with_modal` and `A11yTreeBuilder::with_modal_top`
+  / `set_modal_top` — build an accessibility tree against the backend's
+  modal stack, so the surface a modal dialog lives on is marked `modal` and
+  every other top-level surface is marked `hidden` from assistive
+  technology while it is open.
+- `A11yScenario::with_modal` / `set_modal` on the headless accessibility
+  test seam, for snapshotting the modal/hidden split without a backend.
 
 ## [0.7.0] - 2026-10-30
 ### Added

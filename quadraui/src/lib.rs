@@ -471,8 +471,9 @@ mod text_selection;
 mod backend_core;
 
 pub use a11y::{
-    frame_to_tree, A11yChecked, A11yChild, A11yInfo, A11yLive, A11yNodeId, A11yPrimitive, A11yRole,
-    A11yTree, A11yTreeBuilder, A11yTreeNode, A11yUpdate, A11yValueRange,
+    frame_to_tree, frame_to_tree_with_modal, A11yChecked, A11yChild, A11yInfo, A11yLive,
+    A11yNodeId, A11yPrimitive, A11yRole, A11yTree, A11yTreeBuilder, A11yTreeNode, A11yUpdate,
+    A11yValueRange,
 };
 pub use caret_blink::CaretBlinkState;
 pub use diff::compute_hunks;
