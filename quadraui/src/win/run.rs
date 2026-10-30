@@ -715,16 +715,17 @@ const AUMID_PREFIX: &str = "Quadraui.App";
 ///
 /// `win32::run` registers this once via
 /// `SetCurrentProcessExplicitAppUserModelID` before any window exists —
-/// required for a WinRT toast to be attributed to this process rather
-/// than silently dropped — and `win32::create_window` hands the same
-/// string to [`WinBackend::set_aumid`] so `WinPlatformServices::
-/// send_notification` can pass it to `ToastNotificationManager::
-/// CreateToastNotifierWithId`. Registering the AUMID alone does not
-/// guarantee a toast shows: unpackaged desktop apps also need a Start
-/// Menu shortcut whose `System.AppUserModel.ID` matches, which this
-/// crate cannot create — `send_notification` treats any WinRT failure
-/// as a cue to fall back to the legacy balloon rather than assuming the
-/// happy path always holds.
+/// needed so a WinRT toast is attributed to this process at all — and
+/// `win32::create_window` hands the same string to
+/// [`WinBackend::set_aumid`], which also writes the
+/// `HKCU\Software\Classes\AppUserModelId\<aumid>\DisplayName` registry
+/// key an unpackaged app needs before Windows will actually render a
+/// toast for that AUMID (see `services::win_register_aumid_display_name`).
+/// `SetCurrentProcessExplicitAppUserModelID` alone does not guarantee a
+/// toast shows — without that registry key the WinRT calls still return
+/// `Ok` and the toast is discarded — so `set_aumid` only lets
+/// `send_notification` attempt the toast path once that write succeeds,
+/// falling back to the legacy balloon otherwise.
 ///
 /// Pure string formatting, no WinAPI dependency, so it's unit-tested off
 /// Windows below.
@@ -1234,12 +1235,14 @@ mod win32 {
         // Attributes this process to an AppUserModelID so a
         // WinRT toast notification shows up in Action Center under this
         // app rather than being silently dropped or attributed to a
-        // generic host. Best-effort, same idiom as the DPI call above: an
-        // unpackaged desktop app without a matching Start Menu shortcut
-        // can still fail to register, and `WinPlatformServices::
-        // send_notification` already falls back to the legacy balloon
-        // tip when the WinRT toast path doesn't pan out, so a failure
-        // here isn't fatal to the app.
+        // generic host. Best-effort, same idiom as the DPI call above:
+        // this call alone is not enough to make an unpackaged app's toast
+        // render (see `create_window`'s `backend.set_aumid` call below,
+        // which also registers the AUMID in the registry), and
+        // `WinPlatformServices::send_notification` falls back to the
+        // legacy balloon tip whenever that registration or the WinRT
+        // toast call itself doesn't pan out, so a failure here isn't
+        // fatal to the app.
         //
         // SAFETY: `SetCurrentProcessExplicitAppUserModelID` takes an
         // owned, null-terminated wide string (via `HSTRING`'s `Param`
@@ -1385,12 +1388,12 @@ mod win32 {
         let mut backend = WinBackend::new();
         // Needs no `HWND` (unlike `attach_surface` below), so this can — and
         // must — run before `app.setup`: a `send_notification` call from
-        // inside `AppLogic::setup` needs the AUMID already set, or it falls
-        // straight through to the balloon fallback. Same string
-        // `win32::run` separately registers process-wide via
-        // `SetCurrentProcessExplicitAppUserModelID`; recomputed here rather
-        // than threaded through `RunConfig` since `aumid_string` is pure
-        // and cheap.
+        // inside `AppLogic::setup` needs the AUMID already set and
+        // registered, or it falls straight through to the balloon
+        // fallback. Same string `win32::run` separately registers
+        // process-wide via `SetCurrentProcessExplicitAppUserModelID`;
+        // recomputed here rather than threaded through `RunConfig` since
+        // `aumid_string` is pure and cheap.
         backend.set_aumid(super::aumid_string(title));
         app.setup(&mut backend);
 
