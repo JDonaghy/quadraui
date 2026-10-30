@@ -294,16 +294,14 @@
 //!
 //! ## Recent documents / Dock menu
 //!
-//! `add_recent_document`, `clear_recent_documents`, and `set_dock_menu`
-//! all override the trait default with an honest no-op that always
-//! returns `Ok(())`: a terminal has no OS-level recent-documents list or
-//! Dock icon of its own, so discarding the call and reporting success is
-//! the truthful outcome rather than an error — unlike `set_login_item`'s
-//! TUI story above, there is no stale-looking registration one of these
-//! no-ops could later contradict. `set_jump_list` keeps the trait's
-//! `Unsupported` default even on TUI: a jump list has no equivalent
-//! "discard it silently" story, since a caller building one expects it
-//! to eventually surface on a real Windows taskbar.
+//! `add_recent_document`, `clear_recent_documents`, `set_dock_menu`, and
+//! `set_jump_list` all keep the trait's `Unsupported` default on TUI: a
+//! terminal has no OS-level recent-documents list, Dock icon, or jump
+//! list of its own, and a caller building one of these expects it to
+//! eventually surface on a real Dock or taskbar — silently discarding
+//! the call and reporting success would tell that caller a feature
+//! exists here when it does not. `Unsupported` is the honest answer for
+//! all four.
 
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
@@ -2034,29 +2032,29 @@ impl PlatformServices for TuiPlatformServices {
         Ok(false)
     }
 
-    /// An honest no-op, not `Unsupported`: a terminal has no OS-level
-    /// recent-documents list of its own to add to, so discarding `path`
-    /// and reporting success is the truthful outcome — see this trait
-    /// method's own doc for why that differs from
-    /// [`Self::set_login_item`]'s TUI story.
+    /// A terminal has no OS-level recent-documents list of its own to add
+    /// to — there is no honest "success" value for a mutation with
+    /// nothing in this backend to mutate, so this keeps the trait's
+    /// `Unsupported` default. See this module's "Recent documents / Dock
+    /// menu" section.
     fn add_recent_document(&self, path: &Path) -> ServiceResult<()> {
         let _ = path;
-        Ok(())
+        Err(BackendError::Unsupported)
     }
 
-    /// An honest no-op for the same reason [`Self::add_recent_document`]
-    /// is: nothing was ever added on this backend, so "cleared" is
-    /// trivially true.
+    /// Same story as [`Self::add_recent_document`]: nothing on this
+    /// backend ever created the list this would clear.
     fn clear_recent_documents(&self) -> ServiceResult<()> {
-        Ok(())
+        Err(BackendError::Unsupported)
     }
 
-    /// An honest no-op: a terminal has no Dock icon of its own to attach
-    /// `menu` to, so discarding it and reporting success is the truthful
-    /// outcome rather than an error.
+    /// A terminal has no Dock icon of its own to attach `menu` to — see
+    /// this module's "Recent documents / Dock menu" section for why this
+    /// keeps the trait's `Unsupported` default rather than discarding
+    /// `menu` and reporting success.
     fn set_dock_menu(&self, menu: &ContextMenu) -> ServiceResult<()> {
         let _ = menu;
-        Ok(())
+        Err(BackendError::Unsupported)
     }
 
     fn platform_name(&self) -> &'static str {
@@ -2360,31 +2358,33 @@ mod message_dialog_tests {
     }
 
     /// A terminal has no OS-level recent-documents list to add to — this
-    /// pins the honest no-op degrade documented in the module doc's
-    /// "Recent documents / Dock menu" section: the call always succeeds
-    /// rather than erroring, with the path discarded.
+    /// pins the typed degrade documented in the module doc's "Recent
+    /// documents / Dock menu" section: the call stays `Unsupported`
+    /// rather than discarding the path and reporting success.
     #[test]
-    fn add_recent_document_always_succeeds_on_tui() {
+    fn add_recent_document_stays_unsupported_on_tui() {
         let services = TuiPlatformServices::new();
         assert_eq!(
             services.add_recent_document(std::path::Path::new("/tmp/report.pdf")),
-            Ok(())
+            Err(BackendError::Unsupported)
         );
     }
 
-    /// Same honest-no-op story as [`add_recent_document_always_succeeds_on_tui`]:
-    /// there is no list to clear, so clearing it trivially succeeds.
+    /// Same typed-degrade story as [`add_recent_document_stays_unsupported_on_tui`]:
+    /// there is no list on this backend to clear.
     #[test]
-    fn clear_recent_documents_always_succeeds_on_tui() {
+    fn clear_recent_documents_stays_unsupported_on_tui() {
         let services = TuiPlatformServices::new();
-        assert_eq!(services.clear_recent_documents(), Ok(()));
+        assert_eq!(
+            services.clear_recent_documents(),
+            Err(BackendError::Unsupported)
+        );
     }
 
-    /// A terminal has no Dock icon to attach a menu to — discarding the
-    /// menu and reporting success is the truthful outcome, mirroring
-    /// [`add_recent_document_always_succeeds_on_tui`] above.
+    /// A terminal has no Dock icon to attach a menu to, mirroring
+    /// [`add_recent_document_stays_unsupported_on_tui`] above.
     #[test]
-    fn set_dock_menu_always_succeeds_on_tui() {
+    fn set_dock_menu_stays_unsupported_on_tui() {
         use crate::primitives::context_menu::ContextMenuPlacement;
         use crate::types::WidgetId;
 
@@ -2396,13 +2396,14 @@ mod message_dialog_tests {
             bg: None,
             placement: ContextMenuPlacement::AnchorPoint,
         };
-        assert_eq!(services.set_dock_menu(&menu), Ok(()));
+        assert_eq!(
+            services.set_dock_menu(&menu),
+            Err(BackendError::Unsupported)
+        );
     }
 
-    /// Unlike the three no-ops above, `set_jump_list` keeps the trait's
-    /// `Unsupported` default even on TUI — see the module doc's "Recent
-    /// documents / Dock menu" section for why a jump list has no honest
-    /// "discard it silently" story.
+    /// Same typed-degrade story as the three methods above — see the
+    /// module doc's "Recent documents / Dock menu" section.
     #[test]
     fn set_jump_list_still_unsupported_on_tui() {
         use crate::backend::JumpListItem;

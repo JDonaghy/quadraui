@@ -533,6 +533,16 @@ an unattended `cargo update`.
   life while `set_icon`/`set_menu` keep reporting `Ok`. The watch holds only a
   weak reference to the item's own state, so it cannot keep the item's D-Bus
   connection alive past the item itself being dropped.
+- `TuiPlatformServices::add_recent_document`, `clear_recent_documents`, and
+  `set_dock_menu` now return `Err(BackendError::Unsupported)` instead of
+  discarding their input and reporting `Ok(())`. A terminal has no OS
+  recent-documents list or dock to attach a menu to, so the honest answer is
+  the same typed degrade `set_jump_list` already used for the same reasoning;
+  the previous bare `Ok(())` was the "returns success, did nothing"
+  anti-pattern `PlatformServices` honesty (`PRIMITIVE_RULES.md` rule 9)
+  forbids. Covered by a new `examples/tui_platform_seams.rs` demo (exercising
+  every `PlatformServices` seam from app code) and its `tests/
+  tui_example_driver.rs` driver tests.
 
 ## [0.6.1] - 2026-10-26
 ### Added

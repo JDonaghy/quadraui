@@ -140,6 +140,8 @@ mod palette_dual_mode_app;
 mod panel_app;
 #[path = "../examples/common/pipeline_app.rs"]
 mod pipeline_app;
+#[path = "../examples/common/platform_seams_demo.rs"]
+mod platform_seams_demo;
 #[path = "../examples/common/search_panel.rs"]
 mod search_panel;
 #[path = "../examples/common/selection_app.rs"]
@@ -239,6 +241,7 @@ use multi_tree::DebugSidebar;
 use palette_dual_mode_app::PaletteDualModeApp;
 use panel_app::PanelApp;
 use pipeline_app::PipelineApp;
+use platform_seams_demo::PlatformSeamsDemo;
 use search_panel::SearchPanelApp;
 use selection_app::SelectionDemo;
 use shell_menu_demo::ShellMenuDemo;
@@ -833,6 +836,165 @@ fn window_control_demo_always_on_top_reports_unsupported_on_tui() {
 #[test]
 fn window_control_demo_escape_exits() {
     let mut driver = TuiDriver::new(WindowControlDemo::new(), 100, 20);
+    assert!(!driver.exited());
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Escape should exit the demo");
+}
+
+// ─── PlatformSeamsDemo: `Backend::services()` / `PlatformServices` ─────────
+//
+// `services()` returns `&dyn PlatformServices` directly (never `None`),
+// so unlike `WindowControlDemo` there's no "no window yet" case to fold
+// in. TUI gives honest real answers for `app_path`, the power-save-block
+// round trip, and `login_item_enabled`, and reports `Unsupported` for
+// everything else — both outcomes are deterministic and assertable
+// headlessly with no live desktop required.
+
+#[test]
+fn platform_seams_demo_shows_starting_hint() {
+    let driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    assert!(
+        driver.screen_contains("p=path"),
+        "status bar should hint at the key bindings:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_app_path_succeeds_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('p');
+    assert!(
+        driver.screen_contains("app_path: \""),
+        "TUI genuinely supports a per-app user-data path:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_power_save_block_round_trips_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('w');
+    assert!(
+        driver.screen_contains("power_save_block: ()"),
+        "TUI tracks a real (bookkeeping-only) blocker id end to end:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_login_item_enabled_reports_false_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('e');
+    assert!(
+        driver.screen_contains("login_item_enabled: false"),
+        "TUI has no login-item registry, so it is honestly never enabled:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_global_shortcut_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('g');
+    assert!(
+        driver.screen_contains("register_global_shortcut: Unsupported"),
+        "TUI has no OS global-shortcut registry:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_drag_out_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('d');
+    assert!(
+        driver.screen_contains("begin_drag_out: Unsupported"),
+        "TUI has no OS drag source:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_set_login_item_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('l');
+    assert!(
+        driver.screen_contains("set_login_item: Unsupported"),
+        "TUI has no login-item registry to write to:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_default_protocol_client_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('o');
+    assert!(
+        driver.screen_contains("set_as_default_protocol_client: Unsupported"),
+        "TUI has no protocol-handler registry:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_add_recent_document_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('r');
+    assert!(
+        driver.screen_contains("add_recent_document: Unsupported"),
+        "TUI has no OS recent-documents list:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_clear_recent_documents_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('c');
+    assert!(
+        driver.screen_contains("clear_recent_documents: Unsupported"),
+        "TUI has no OS recent-documents list to clear:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_dock_menu_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('k');
+    assert!(
+        driver.screen_contains("set_dock_menu: Unsupported"),
+        "TUI has no desktop-shell dock to attach a menu to:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_jump_list_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('j');
+    assert!(
+        driver.screen_contains("set_jump_list: Unsupported"),
+        "TUI has no taskbar jump list:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_update_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('u');
+    assert!(
+        driver.screen_contains("download_and_stage: Unsupported"),
+        "TUI has no native update mechanism to stage into:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_escape_exits() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
     assert!(!driver.exited());
     driver.press_named(NamedKey::Escape);
     assert!(driver.exited(), "Escape should exit the demo");
