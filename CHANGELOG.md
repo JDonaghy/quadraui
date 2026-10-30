@@ -86,6 +86,21 @@ only a push to `main` runs this workflow.
   animation) are exposed as `A11yRole::Presentation` children rather than
   dropped silently. Additive: the mapping is a sidecar `A11yPrimitive` impl
   per descriptor, so no primitive struct changes shape.
+- Accessibility role/label/value mapping for the content primitives — editor,
+  text input, text display, terminal, diff view, chart, image, minimap and
+  canvas all describe themselves to the `A11yTree`. Editor and text input
+  expose their role, label and current text as a value (full cursor/selection
+  semantics are a later issue); text display exposes its title as the label
+  and each line as a child; terminal exposes its visible grid as a value
+  (scrollback is out of scope); diff view exposes its two panes as labelled,
+  independently read-only/editable documents. Chart, image and canvas have no
+  textual equivalent for their visual content, so they rely on an app-supplied
+  label — an unlabelled one is announced as unlabelled, and image additionally
+  falls back to `Image::fallback_text`. Minimap is hidden from assistive
+  technology as a `Presentation` duplicate of the editor's own buffer. Adds
+  two new `A11yRole` variants, `Chart` and `Canvas`. Additive: the mapping is
+  a sidecar `A11yPrimitive` impl per primitive, so no primitive struct changes
+  shape.
 - `quadraui::frame_to_tree_with_modal` and `A11yTreeBuilder::with_modal_top`
   / `set_modal_top` — build an accessibility tree against the backend's
   modal stack, so the surface a modal dialog lives on is marked `modal` and
