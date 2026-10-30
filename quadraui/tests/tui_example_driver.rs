@@ -844,11 +844,12 @@ fn window_control_demo_escape_exits() {
 // ─── PlatformSeamsDemo: `Backend::services()` / `PlatformServices` ─────────
 //
 // `services()` returns `&dyn PlatformServices` directly (never `None`),
-// so unlike `WindowControlDemo` there's no "no window yet" case to fold
-// in. TUI gives honest real answers for `app_path`, the power-save-block
-// round trip, and `login_item_enabled`, and reports `Unsupported` for
-// everything else — both outcomes are deterministic and assertable
-// headlessly with no live desktop required.
+// unlike `WindowControlDemo`'s `window()`, so there's no "no window yet"
+// case to fold in. TUI gives honest real answers for `app_path`, the
+// power-save-block round trip, and `login_item_enabled`, reports a
+// host-dependent real `SystemTheme`/`Unsupported` for `system_theme`, and
+// reports `Unsupported` for everything else — all outcomes are
+// deterministic and assertable headlessly with no live desktop required.
 
 #[test]
 fn platform_seams_demo_shows_starting_hint() {
@@ -862,11 +863,29 @@ fn platform_seams_demo_shows_starting_hint() {
 
 #[test]
 fn platform_seams_demo_app_path_succeeds_on_tui() {
+    // `app_path` resolves a per-app user-data directory under the host's
+    // home directory, so this asserts the `Ok("...")` shape rather than a
+    // specific path — it only needs a resolvable home directory, which
+    // holds on every CI runner and dev machine this test runs on.
     let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
     driver.type_char('p');
     assert!(
         driver.screen_contains("app_path: \""),
         "TUI genuinely supports a per-app user-data path:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_system_theme_surfaces_a_typed_answer_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('t');
+    // `system_theme` is host-dependent (`detect_system_theme()` reads the
+    // running terminal/desktop), so the value itself isn't pinned here —
+    // only that the seam answers with a typed result rather than nothing.
+    assert!(
+        driver.screen_contains("system_theme: "),
+        "TUI should surface a typed SystemTheme/Unsupported answer:\n{}",
         driver.screen()
     );
 }

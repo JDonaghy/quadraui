@@ -3,15 +3,18 @@
 //! returns as on-screen status text.
 //!
 //! Every key below reaches a `PlatformServices` method directly (unlike
-//! `WindowControlDemo`, `services()` returns `&dyn PlatformServices`
-//! directly rather than `Option<&mut dyn WindowControl>`, so there's no
-//! "no window yet" case to fold in). TUI gives three of these real,
-//! honest answers (`app_path`, the power-save-block round trip,
-//! `login_item_enabled`) and reports `Unsupported` for the rest — there is
-//! no OS global-shortcut registry, drag source, login-item registry,
-//! protocol-handler registry, recent-documents list, dock menu, jump
-//! list, or updater a terminal controls. Both outcomes are deterministic
-//! and driver-testable with no live desktop required.
+//! `WindowControlDemo`'s `window()`, which returns
+//! `Option<&mut dyn WindowControl>` and so has a "no window yet" case to
+//! fold in, `services()` returns `&dyn PlatformServices` directly with no
+//! such case). TUI gives three of these real, honest answers (`app_path`,
+//! the power-save-block round trip, `login_item_enabled`) and reports
+//! `Unsupported` for the rest — there is no OS global-shortcut registry,
+//! drag source, login-item registry, protocol-handler registry,
+//! recent-documents list, dock menu, jump list, or updater a terminal
+//! controls. `system_theme` is a fourth, host-dependent case: it reports
+//! the real `SystemTheme` (including `reduce_motion`) when the terminal's
+//! environment exposes one, and `Unsupported` otherwise — both outcomes
+//! are deterministic and driver-testable with no live desktop required.
 //!
 //! Deliberately out of scope: `install_crash_handler` (a process-global
 //! `std::panic::set_hook` with no backend-specific honesty story — wiring
@@ -38,16 +41,31 @@ use quadraui::{
 };
 
 pub struct PlatformSeamsDemo {
-    status: String,
+    /// One hint per key binding, lowest priority first. `StatusBar`'s
+    /// priority-drop layout always keeps the last entry visible even when it
+    /// alone overflows the available width, so `"p=path"` sits last to stay
+    /// the one guaranteed-visible hint at any terminal width.
+    status: Vec<String>,
 }
 
 impl PlatformSeamsDemo {
     pub fn new() -> Self {
         Self {
-            status: "p=path t=theme w=power-block g=global-shortcut d=drag-out l=login-item \
-                      e=login-item-enabled o=protocol r=add-recent c=clear-recent k=dock-menu \
-                      j=jump-list u=update"
-                .to_string(),
+            status: vec![
+                "t=theme".to_string(),
+                "w=power-block".to_string(),
+                "g=global-shortcut".to_string(),
+                "d=drag-out".to_string(),
+                "l=login-item".to_string(),
+                "e=login-item-enabled".to_string(),
+                "o=protocol".to_string(),
+                "r=add-recent".to_string(),
+                "c=clear-recent".to_string(),
+                "k=dock-menu".to_string(),
+                "j=jump-list".to_string(),
+                "u=update".to_string(),
+                "p=path".to_string(),
+            ],
         }
     }
 
@@ -70,13 +88,17 @@ impl PlatformSeamsDemo {
                 bold: true,
                 action_id: None,
             }],
-            right_segments: vec![StatusBarSegment {
-                text: format!(" {} ", self.status),
-                fg: Color::rgb(220, 220, 220),
-                bg: Color::rgb(40, 80, 120),
-                bold: false,
-                action_id: None,
-            }],
+            right_segments: self
+                .status
+                .iter()
+                .map(|s| StatusBarSegment {
+                    text: format!(" {} ", s),
+                    fg: Color::rgb(220, 220, 220),
+                    bg: Color::rgb(40, 80, 120),
+                    bold: false,
+                    action_id: None,
+                })
+                .collect(),
         }
     }
 }
@@ -112,7 +134,7 @@ impl AppLogic for PlatformSeamsDemo {
                 ..
             } => {
                 let result = backend.services().app_path(AppPathKind::UserData);
-                self.status = Self::describe("app_path", result);
+                self.status = vec![Self::describe("app_path", result)];
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
@@ -120,7 +142,7 @@ impl AppLogic for PlatformSeamsDemo {
                 ..
             } => {
                 let result = backend.services().system_theme();
-                self.status = Self::describe("system_theme", result);
+                self.status = vec![Self::describe("system_theme", result)];
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
@@ -131,7 +153,7 @@ impl AppLogic for PlatformSeamsDemo {
                     .services()
                     .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
                     .and_then(|id| backend.services().end_power_save_block(id));
-                self.status = Self::describe("power_save_block", result);
+                self.status = vec![Self::describe("power_save_block", result)];
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
@@ -145,7 +167,7 @@ impl AppLogic for PlatformSeamsDemo {
                     label: None,
                 };
                 let result = backend.services().register_global_shortcut(accel);
-                self.status = Self::describe("register_global_shortcut", result);
+                self.status = vec![Self::describe("register_global_shortcut", result)];
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
@@ -154,7 +176,7 @@ impl AppLogic for PlatformSeamsDemo {
             } => {
                 let payload = DragOutPayload::new().with_text("platform-seams-demo");
                 let result = backend.services().begin_drag_out(payload);
-                self.status = Self::describe("begin_drag_out", result);
+                self.status = vec![Self::describe("begin_drag_out", result)];
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
@@ -164,7 +186,7 @@ impl AppLogic for PlatformSeamsDemo {
                 let result = backend
                     .services()
                     .set_login_item(true, LoginItemOptions::new());
-                self.status = Self::describe("set_login_item", result);
+                self.status = vec![Self::describe("set_login_item", result)];
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
@@ -172,7 +194,7 @@ impl AppLogic for PlatformSeamsDemo {
                 ..
             } => {
                 let result = backend.services().login_item_enabled();
-                self.status = Self::describe("login_item_enabled", result);
+                self.status = vec![Self::describe("login_item_enabled", result)];
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
@@ -182,7 +204,7 @@ impl AppLogic for PlatformSeamsDemo {
                 let result = backend
                     .services()
                     .set_as_default_protocol_client("platform-seams-demo");
-                self.status = Self::describe("set_as_default_protocol_client", result);
+                self.status = vec![Self::describe("set_as_default_protocol_client", result)];
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
@@ -191,7 +213,7 @@ impl AppLogic for PlatformSeamsDemo {
             } => {
                 let path = PathBuf::from("/tmp/platform-seams-demo.txt");
                 let result = backend.services().add_recent_document(&path);
-                self.status = Self::describe("add_recent_document", result);
+                self.status = vec![Self::describe("add_recent_document", result)];
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
@@ -199,7 +221,7 @@ impl AppLogic for PlatformSeamsDemo {
                 ..
             } => {
                 let result = backend.services().clear_recent_documents();
-                self.status = Self::describe("clear_recent_documents", result);
+                self.status = vec![Self::describe("clear_recent_documents", result)];
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
@@ -214,7 +236,7 @@ impl AppLogic for PlatformSeamsDemo {
                     placement: ContextMenuPlacement::AnchorPoint,
                 };
                 let result = backend.services().set_dock_menu(&menu);
-                self.status = Self::describe("set_dock_menu", result);
+                self.status = vec![Self::describe("set_dock_menu", result)];
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
@@ -223,7 +245,7 @@ impl AppLogic for PlatformSeamsDemo {
             } => {
                 let items = [JumpListItem::new().with_title("Recent project")];
                 let result = backend.services().set_jump_list(&items);
-                self.status = Self::describe("set_jump_list", result);
+                self.status = vec![Self::describe("set_jump_list", result)];
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
@@ -240,7 +262,7 @@ impl AppLogic for PlatformSeamsDemo {
                     .services()
                     .update_service()
                     .download_and_stage(&info);
-                self.status = Self::describe("download_and_stage", result);
+                self.status = vec![Self::describe("download_and_stage", result)];
                 Reaction::Redraw
             }
             UiEvent::WindowResized { .. } => Reaction::Redraw,
