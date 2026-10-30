@@ -580,15 +580,21 @@ impl A11yPrimitive for Form {
 fn form_field(idx: usize, total: usize, field: &FormField) -> A11yChild {
     let label = plain_text(&field.label);
     let (role, info, mut children) = field_kind(&field.kind);
+    // A kind that counts its own options (a dropdown, a radio group, a
+    // combo box) already carries a `set_size` describing *that* set, not
+    // the form's fields. Pairing the field's position among the fields
+    // with the kind's own total would announce a position and size drawn
+    // from two different sets, so position/size in the form's set is
+    // reported only when the kind does not already own one.
+    let kind_owns_set_size = info.set_size.is_some();
     let mut info = info
         .with_role(role)
         .with_label(label)
-        .with_disabled(field.disabled)
-        .with_position_in_set(idx as u32 + 1);
-    // A kind that counts its own options (a dropdown, a radio group) keeps
-    // that size; everything else reports its place among the fields.
-    if info.set_size.is_none() {
-        info = info.with_set_size(total as u32);
+        .with_disabled(field.disabled);
+    if !kind_owns_set_size {
+        info = info
+            .with_position_in_set(idx as u32 + 1)
+            .with_set_size(total as u32);
     }
     if info.value.is_none() {
         if let Some(hint) = non_empty(plain_text(&field.hint)) {
@@ -1082,31 +1088,41 @@ impl A11yPrimitive for SplitTree {
 }
 
 fn split_tree_children(tree: &SplitTree) -> Vec<A11yChild> {
+    vec![split_tree_node(tree, "split")]
+}
+
+/// Builds the single [`A11yChild`] for one node of a [`SplitTree`], keyed
+/// by `key`. A split's two halves are recursed into with positional keys
+/// (`"split.first"` / `"split.second"`) rather than the constant `"split"`
+/// used here, so a nested split-of-splits — the ordinary four-pane grid —
+/// never gives two sibling nodes the same key (and therefore the same
+/// [`crate::a11y::tree::A11yNodeId`]).
+fn split_tree_node(tree: &SplitTree, key: impl Into<String>) -> A11yChild {
     match tree {
-        SplitTree::Leaf(id) => vec![A11yChild::new(
+        SplitTree::Leaf(id) => A11yChild::new(
             format!("leaf.{}", id.as_str()),
             A11yInfo::new()
                 .with_role(A11yRole::Group)
                 .with_label(id.as_str()),
-        )],
+        ),
         SplitTree::Split {
             direction,
             ratio,
             first,
             second,
         } => {
-            let mut children = split_tree_children(first);
+            let mut children = vec![split_tree_node(first, "split.first")];
             children.push(presentational("divider", "Split divider"));
-            children.extend(split_tree_children(second));
-            vec![A11yChild::new(
-                "split",
+            children.push(split_tree_node(second, "split.second"));
+            A11yChild::new(
+                key,
                 A11yInfo::new()
                     .with_role(A11yRole::Group)
                     .with_label("Split")
                     .with_value(direction_name(*direction))
                     .with_value_range(A11yValueRange::new(*ratio as f64, 0.0, 1.0)),
             )
-            .with_children(children)]
+            .with_children(children)
         }
     }
 }
