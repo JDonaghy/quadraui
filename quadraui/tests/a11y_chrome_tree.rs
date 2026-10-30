@@ -6,6 +6,8 @@
 //! The snapshots are the contract an assistive technology sees, so they
 //! spell out roles, labels and states rather than probing single fields.
 
+use appshell_demo::AppShellDemo;
+use quadraui::compose::app_shell::AppShell;
 use quadraui::testing::a11y::A11yScenario;
 use quadraui::{
     ActivityBar, ActivityItem, Color, CommandCenter, CommandLine, ContextMenu, ContextMenuItem,
@@ -449,5 +451,109 @@ window \"quadraui\" [focused]
     presentation \"Split divider\"
   scroll_bar \"Vertical scrollbar\" [range=0/0-1]
     presentation \"Scrollbar thumb\"",
+    );
+}
+
+// ------------------------------------------------- whole-window app shell
+
+#[path = "../examples/common/appshell_demo.rs"]
+mod appshell_demo;
+
+/// The `appshell_demo` example's shell, built from its own `ShellConfig`
+/// the way `build_shell_adapter` builds it at runtime.
+fn demo_shell() -> AppShell {
+    let config = AppShellDemo::config();
+    let mut shell = AppShell::new(config.panels, config.default_sidebar_width)
+        .with_bottom_items(config.bottom_items)
+        .with_min_width(config.min_sidebar_width)
+        .with_max_width(config.max_sidebar_width)
+        .with_activity_bar_width(config.activity_bar_width)
+        .with_position(config.position);
+    for (id, icon) in config.panel_icons {
+        shell = shell.with_panel_icon(id, icon);
+    }
+    if config.has_command_line {
+        shell = shell.with_command_line();
+    }
+    if config.has_status_bar {
+        shell = shell.with_status_bar();
+    }
+    if config.status_bar_under_main_column {
+        shell = shell.with_status_bar_under_main_column();
+    }
+    shell.set_title_bar_visible(config.has_title_bar);
+    shell
+}
+
+/// The sidebar header `AppShell::render` paints above the active panel's
+/// content. Colours come from the backend theme and are irrelevant to the
+/// accessibility tree, so any palette will do here.
+fn sidebar_header(shell: &AppShell) -> StatusBar {
+    let title = shell
+        .active_panel()
+        .map(|panel| panel.title.clone())
+        .unwrap_or_default();
+    StatusBar {
+        id: WidgetId::new("app-shell:sidebar-header"),
+        left_segments: vec![StatusBarSegment {
+            text: format!(" {title} "),
+            fg: Color::rgb(220, 220, 220),
+            bg: Color::rgb(40, 40, 40),
+            bold: true,
+            action_id: None,
+        }],
+        right_segments: vec![],
+    }
+}
+
+/// The whole-window shape an assistive technology sees for the AppShell
+/// demo: the shell's own chrome (activity bar, sidebar header) plus every
+/// content bar the app paints, in paint order.
+#[test]
+fn appshell_demo_whole_window_tree() {
+    let shell = demo_shell();
+    let layout = shell.layout(VIEWPORT, 1.0);
+    let app = AppShellDemo::new();
+
+    let mut scenario = A11yScenario::new().with_root_label("AppShell Demo");
+    scenario.push(Surface::ActivityBar {
+        rect: layout.activity_bar_bounds,
+        bar: shell.build_activity_bar(),
+        hovered: None,
+    });
+    scenario.push(Surface::StatusBar {
+        rect: layout.sidebar_header_bounds.expect("sidebar header"),
+        bar: sidebar_header(&shell),
+        hovered: None,
+        pressed: None,
+    });
+    for (rect, bar) in app.content_bars(&layout, 1.0) {
+        scenario.push(Surface::StatusBar {
+            rect,
+            bar,
+            hovered: None,
+            pressed: None,
+        });
+    }
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"AppShell Demo\" [focused]
+  toolbar \"Activity bar\" [size=4]
+    tab \"Explorer\" [selected pos=1/4]
+    tab \"Search\" [pos=2/4]
+    tab \"Source Control\" [pos=3/4]
+    tab \"Settings\" [pos=4/4]
+  status \"Status bar\"
+    label \"EXPLORER\"
+  status \"Status bar\"
+    label \"(sidebar content here)\"
+  status \"Status bar\"
+    label \"Tab=focus bar | click icons | drag divider | p=jump to Source Control | Ctrl+B=toggle sidebar | t=toggle title bar | q=quit\"
+  status \"Status bar\"
+    label \"STATUS BAR (main-column width)\"
+    label \"x=25 w=55\"
+  status \"Status bar\"
+    label \"COMMAND LINE\"",
     );
 }

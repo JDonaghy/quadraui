@@ -148,6 +148,108 @@ impl AppShellDemo {
         .with_status_bar_under_main_column()
         .with_command_line()
     }
+
+    /// Every content bar this app paints into the bounds the shell handed
+    /// it, paired with the rect it goes in, in paint order.
+    ///
+    /// `render_content` draws exactly this list, so a test can snapshot
+    /// the app's contribution to the window without a backend and still
+    /// be looking at what a real frame contains.
+    pub fn content_bars(&self, layout: &AppShellLayout, lh: f32) -> Vec<(Rect, StatusBar)> {
+        fn bar(id: &str, left: StatusBarSegment, right: Vec<StatusBarSegment>) -> StatusBar {
+            StatusBar {
+                id: WidgetId::new(id),
+                left_segments: vec![left],
+                right_segments: right,
+            }
+        }
+
+        fn segment(text: String, fg: Color, bg: Color, bold: bool) -> StatusBarSegment {
+            StatusBarSegment {
+                text,
+                fg,
+                bg,
+                bold,
+                action_id: None,
+            }
+        }
+
+        let mut bars = Vec::new();
+
+        if let Some(content) = layout.sidebar_content_bounds {
+            bars.push((
+                Rect::new(content.x, content.y, content.width, lh),
+                bar(
+                    "sidebar-content",
+                    segment(
+                        " (sidebar content here) ".into(),
+                        Color::rgb(140, 140, 140),
+                        Color::rgb(30, 30, 30),
+                        false,
+                    ),
+                    vec![],
+                ),
+            ));
+        }
+
+        bars.push((
+            Rect::new(
+                layout.main_content_bounds.x,
+                layout.main_content_bounds.y,
+                layout.main_content_bounds.width,
+                lh,
+            ),
+            bar(
+                "main-label",
+                segment(
+                    format!(" {} ", self.last_event),
+                    Color::rgb(200, 200, 200),
+                    Color::rgb(30, 30, 30),
+                    false,
+                ),
+                vec![],
+            ),
+        ));
+
+        if let Some(sb) = layout.status_bar_bounds {
+            bars.push((
+                sb,
+                bar(
+                    "demo-status-bar",
+                    segment(
+                        " STATUS BAR (main-column width) ".into(),
+                        Color::rgb(255, 255, 255),
+                        Color::rgb(0, 122, 204),
+                        true,
+                    ),
+                    vec![segment(
+                        format!(" x={:.0} w={:.0} ", sb.x, sb.width),
+                        Color::rgb(255, 255, 255),
+                        Color::rgb(0, 100, 180),
+                        false,
+                    )],
+                ),
+            ));
+        }
+
+        if let Some(cmd) = layout.command_line_bounds {
+            bars.push((
+                cmd,
+                bar(
+                    "demo-command-line",
+                    segment(
+                        " COMMAND LINE ".into(),
+                        Color::rgb(200, 200, 200),
+                        Color::rgb(50, 50, 50),
+                        false,
+                    ),
+                    vec![],
+                ),
+            ));
+        }
+
+        bars
+    }
 }
 
 impl Default for AppShellDemo {
@@ -162,75 +264,8 @@ impl ShellApp for AppShellDemo {
         // Publish the activity bar's real painted bounds for regression tests.
         self.probe.bounds.set(Some(layout.activity_bar_bounds));
 
-        if let Some(content) = layout.sidebar_content_bounds {
-            let label = StatusBar {
-                id: WidgetId::new("sidebar-content"),
-                left_segments: vec![StatusBarSegment {
-                    text: " (sidebar content here) ".into(),
-                    fg: Color::rgb(140, 140, 140),
-                    bg: Color::rgb(30, 30, 30),
-                    bold: false,
-                    action_id: None,
-                }],
-                right_segments: vec![],
-            };
-            let rect = Rect::new(content.x, content.y, content.width, lh);
-            backend.draw_status_bar_interactive(rect, &label, &InteractionState::new());
-        }
-
-        let main_label = StatusBar {
-            id: WidgetId::new("main-label"),
-            left_segments: vec![StatusBarSegment {
-                text: format!(" {} ", self.last_event),
-                fg: Color::rgb(200, 200, 200),
-                bg: Color::rgb(30, 30, 30),
-                bold: false,
-                action_id: None,
-            }],
-            right_segments: vec![],
-        };
-        let rect = Rect::new(
-            layout.main_content_bounds.x,
-            layout.main_content_bounds.y,
-            layout.main_content_bounds.width,
-            lh,
-        );
-        backend.draw_status_bar_interactive(rect, &main_label, &InteractionState::new());
-
-        if let Some(sb) = layout.status_bar_bounds {
-            let bar = StatusBar {
-                id: WidgetId::new("demo-status-bar"),
-                left_segments: vec![StatusBarSegment {
-                    text: " STATUS BAR (main-column width) ".into(),
-                    fg: Color::rgb(255, 255, 255),
-                    bg: Color::rgb(0, 122, 204),
-                    bold: true,
-                    action_id: None,
-                }],
-                right_segments: vec![StatusBarSegment {
-                    text: format!(" x={:.0} w={:.0} ", sb.x, sb.width),
-                    fg: Color::rgb(255, 255, 255),
-                    bg: Color::rgb(0, 100, 180),
-                    bold: false,
-                    action_id: None,
-                }],
-            };
-            backend.draw_status_bar_interactive(sb, &bar, &InteractionState::new());
-        }
-
-        if let Some(cmd) = layout.command_line_bounds {
-            let bar = StatusBar {
-                id: WidgetId::new("demo-command-line"),
-                left_segments: vec![StatusBarSegment {
-                    text: " COMMAND LINE ".into(),
-                    fg: Color::rgb(200, 200, 200),
-                    bg: Color::rgb(50, 50, 50),
-                    bold: false,
-                    action_id: None,
-                }],
-                right_segments: vec![],
-            };
-            backend.draw_status_bar_interactive(cmd, &bar, &InteractionState::new());
+        for (rect, bar) in self.content_bars(layout, lh) {
+            backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
         }
     }
 
