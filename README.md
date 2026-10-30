@@ -113,7 +113,7 @@ comfortable with a pre-1.0 API.
 
 ## Status
 
-`0.6.x` — pre-1.0, published on crates.io. Breaking changes are grouped
+`0.7.x` — pre-1.0, published on crates.io. Breaking changes are grouped
 into scheduled minor releases and recorded in `CHANGELOG.md`. What a `0.x`
 release may change is D-019 in
 [`quadraui/docs/decisions/DECISIONS.md`](quadraui/docs/decisions/DECISIONS.md);
@@ -155,7 +155,7 @@ tracker.
 
 ```toml
 [dependencies]
-quadraui = { version = "0.6", features = ["tui", "gtk"] }
+quadraui = { version = "0.7", features = ["tui", "gtk"] }
 ```
 
 Feature flags, the system packages each backend needs, and every
