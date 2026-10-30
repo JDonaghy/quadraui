@@ -59,14 +59,20 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Fixed
-- The shared GUI form painter (`macOS`, Windows, GTK) now honors
+- The shared GUI form painter (`macOS`, `Windows`, `GTK`) now honors
   `FormField`'s `label_position`, `label_align` and `label_width` instead of
   always drawing the label flush-left — `Hidden` suppresses the label and
-  gives the field the full row, `Top` stacks the label above the field,
-  `Left`/`Inline` place it beside the field with `label_align` positioning
-  it within the (explicit-or-natural) label column. The TUI renderer
-  already honored these; forms that never set them render byte-for-byte
-  unchanged.
+  gives the field the full row, `Top` stacks the label above the field
+  (falling back to `Left`'s side-by-side layout when the row isn't tall
+  enough for both the label's own line and a usable field body), `Left`/
+  `Inline` place it beside the field with `label_align` positioning it
+  within a label column shared across every `Left`-resolved field in the
+  form (sized to the widest explicit-or-natural label, mirroring the TUI
+  renderer's `left_label_column_width`). The TUI renderer already honored
+  these; forms that never set them keep painting their field bodies and
+  values identically. `ToggleGroup` / `ButtonRow` / `SegmentedControl` /
+  `Toolbar` fields don't yet see `label_position` — their item columns are
+  sized in `layout_metrics.rs`, unchanged here.
 
 ## [0.7.0] - 2026-10-30
 ### Added

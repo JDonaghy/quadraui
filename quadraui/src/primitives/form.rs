@@ -775,7 +775,9 @@ fn item_x_positions(origin_x: f32, _row_height: f32, gap: f32, widths: &[f32]) -
 ))]
 #[allow(dead_code)]
 mod native_surface_paint {
-    use super::{FieldKind, Form, FormLayout, LabelAlign, LabelPosition, ValidationState};
+    use super::{
+        FieldKind, Form, FormField, FormLayout, LabelAlign, LabelPosition, ValidationState,
+    };
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     // The selected-item background pill's rect and the widget-state decision
@@ -809,6 +811,90 @@ mod native_surface_paint {
         t.spans.iter().map(|s| s.text.as_str()).collect()
     }
 
+    /// Shared label-column width (in pixels) for every `Left`-resolved
+    /// field in `form`, mirroring `tui::form::left_label_column_width`'s
+    /// semantics so the two renderers agree. An explicit
+    /// `resolved_label_width` on any such field counts toward the max,
+    /// so one wide override pulls the whole column wider; fields that
+    /// leave it unset fall back to their own label's measured width.
+    /// Fields resolved to `Top`/`Inline`/`Hidden`, and a bare
+    /// `FieldKind::Label` header (which never reserves a label
+    /// column), don't share this column and are excluded.
+    fn left_label_column_width(form: &Form, surface: &dyn PaintSurface) -> f32 {
+        form.fields
+            .iter()
+            .filter(|f| {
+                !matches!(f.kind, FieldKind::Label)
+                    && form.resolved_label_position(f) == LabelPosition::Left
+                    && !plain_text(&f.label).is_empty()
+            })
+            .map(|f| {
+                form.resolved_label_width(f)
+                    .unwrap_or_else(|| surface.surface_measure_text(&plain_text(&f.label)).0)
+            })
+            .fold(0.0_f32, f32::max)
+    }
+
+    /// `LabelPosition::Left`'s label geometry: the label sits beside the
+    /// field, positioned within a column shared by every `Left`-resolved
+    /// field (`left_label_width`, from [`left_label_column_width`]) and
+    /// widened to this field's own label when that's wider than the
+    /// shared column. Also used as `Top`'s fallback when the row is too
+    /// short to stack the label above the field (see the `Top` arm in
+    /// [`paint`]).
+    ///
+    /// Returns `(label_x, label_y, label_right)` — `label_right` is the
+    /// reserved column's right edge, not the painted text's own right
+    /// edge, so every row in the column leaves the same field-body start
+    /// regardless of `label_align`.
+    fn left_label_geometry(
+        form: &Form,
+        field: &FormField,
+        row_rect: Rect,
+        row_h: f32,
+        label_w: f32,
+        label_h: f32,
+        left_label_width: f32,
+    ) -> (f32, f32, f32) {
+        let col_width = left_label_width.max(label_w);
+        let align_offset = match form.resolved_label_align(field) {
+            LabelAlign::Start => 0.0,
+            LabelAlign::Center => (col_width - label_w) / 2.0,
+            LabelAlign::End => col_width - label_w,
+        };
+        (
+            row_rect.x + 6.0 + align_offset,
+            row_rect.y + (row_h - label_h) / 2.0,
+            row_rect.x + 6.0 + col_width,
+        )
+    }
+
+    /// Resolved label geometry for one field row — decoded from the
+    /// `match` in [`paint`] into named fields instead of a positional
+    /// tuple, so each arm reads as names rather than tuple slots.
+    struct LabelGeometry {
+        /// Whether to paint the label text run at all (`false` for an
+        /// empty label and for `Hidden`). `label_x`/`label_y` below are
+        /// unused placeholders when this is `false`.
+        draw_label: bool,
+        label_x: f32,
+        label_y: f32,
+        /// The reserved label column's right edge — where the field
+        /// body starts when a label column exists. Only meaningful
+        /// when `!no_label`.
+        label_right: f32,
+        /// Whether this field has no reserved label column at all (an
+        /// empty label, `Hidden`, or `Top`'s own input row) — the
+        /// field body then starts flush left instead of past
+        /// `label_right`.
+        no_label: bool,
+        /// The rect the field body paints within, instead of the
+        /// row's full bounds — only narrower than the row for `Top`
+        /// (when the row is tall enough to fit both bands), which
+        /// carves the label's own band off the top.
+        content_rect: Rect,
+    }
+
     /// Paint a laid-out [`Form`] using `surface`'s [`PaintSurface`] verbs.
     ///
     /// `flayout` must be the *same* [`FormLayout`] the caller uses for
@@ -833,6 +919,17 @@ mod native_surface_paint {
     /// over `surface`'s exclusive borrow), using their existing per-backend
     /// toolbar rasteriser at the field's `VisibleFormField::bounds` /
     /// `item_bounds`. See `GtkBackend::draw_form` for the reference pattern.
+    ///
+    /// # `label_position` doesn't reach item-based field kinds
+    ///
+    /// `ToggleGroup` / `ButtonRow` / `SegmentedControl` / `Toolbar` paint
+    /// their items at `VisibleFormField::item_bounds`, whose start
+    /// column (`layout_metrics::items_start_x`) always reserves
+    /// `label_w + 12` regardless of the resolved `label_position` — so
+    /// those four kinds keep a label gutter even under `Hidden`, and
+    /// don't yet get a `Top` row split. Fixing that needs
+    /// `layout_metrics.rs` (`items_start_x`'s signature would need a
+    /// `label_position` input), which is out of this painter's scope.
     pub(crate) fn paint(
         form: &Form,
         flayout: &FormLayout,
@@ -847,6 +944,7 @@ mod native_surface_paint {
             flayout.viewport_height,
         );
         surface.surface_fill_rect(form_rect, theme.tab_bar_bg);
+        let left_label_width = left_label_column_width(form, surface);
 
         for vf in &flayout.visible_fields {
             let Some(field) = form.fields.get(vf.field_idx) else {
@@ -913,69 +1011,111 @@ mod native_surface_paint {
                 form.resolved_label_position(field)
             };
 
-            // (draw_label, label_x, label_y, label_right, no_label, content_rect)
-            let (draw_label, label_x, label_y, label_right, no_label, content_rect) =
-                if label_text.is_empty() {
-                    (
-                        false,
-                        row_rect.x + 6.0,
-                        row_rect.y,
-                        row_rect.x + 6.0,
-                        true,
-                        row_rect,
-                    )
-                } else {
-                    match position {
-                        LabelPosition::Hidden => (
-                            false,
-                            row_rect.x + 6.0,
-                            row_rect.y,
-                            row_rect.x + 6.0,
-                            true,
-                            row_rect,
-                        ),
-                        LabelPosition::Top => {
-                            let label_band = (label_h + 2.0).min(row_h);
-                            let content_y = row_rect.y + label_band;
-                            let content_h = (row_h - label_band).max(0.0);
-                            (
-                                true,
-                                row_rect.x + 6.0,
-                                row_rect.y + 2.0,
-                                row_rect.x + 6.0,
-                                true,
-                                Rect::new(row_rect.x, content_y, row_rect.width, content_h),
-                            )
-                        }
-                        LabelPosition::Left => {
-                            let col_width = form
-                                .resolved_label_width(field)
-                                .unwrap_or(label_w)
-                                .max(label_w);
-                            let align_offset = match form.resolved_label_align(field) {
-                                LabelAlign::Start => 0.0,
-                                LabelAlign::Center => (col_width - label_w) / 2.0,
-                                LabelAlign::End => col_width - label_w,
-                            };
-                            (
-                                true,
-                                row_rect.x + 6.0 + align_offset,
-                                row_rect.y + (row_h - label_h) / 2.0,
-                                row_rect.x + 6.0 + col_width,
-                                false,
+            let geometry = if label_text.is_empty() {
+                LabelGeometry {
+                    draw_label: false,
+                    label_x: row_rect.x + 6.0,
+                    label_y: row_rect.y,
+                    label_right: row_rect.x + 6.0,
+                    no_label: true,
+                    content_rect: row_rect,
+                }
+            } else {
+                match position {
+                    LabelPosition::Hidden => LabelGeometry {
+                        draw_label: false,
+                        label_x: row_rect.x + 6.0,
+                        label_y: row_rect.y,
+                        label_right: row_rect.x + 6.0,
+                        no_label: true,
+                        content_rect: row_rect,
+                    },
+                    LabelPosition::Top => {
+                        let label_band = (label_h + 2.0).min(row_h);
+                        let content_h = (row_h - label_band).max(0.0);
+                        // `Form::layout` doesn't grow a row for `Top` —
+                        // `form_field_measure` reserves extra height
+                        // only for a validation message, never for a
+                        // `Top`-resolved label's own line (see its
+                        // doc). At a typical default row height that
+                        // leaves no room for both the label's line and
+                        // a usable field body, so below this threshold
+                        // fall back to `Left`'s layout (label beside
+                        // the field, sharing the row's full height)
+                        // instead of stacking the label into a
+                        // collapsed or negative-height content strip.
+                        if content_h < label_h {
+                            let (label_x, label_y, label_right) = left_label_geometry(
+                                form,
+                                field,
                                 row_rect,
-                            )
+                                row_h,
+                                label_w,
+                                label_h,
+                                left_label_width,
+                            );
+                            LabelGeometry {
+                                draw_label: true,
+                                label_x,
+                                label_y,
+                                label_right,
+                                no_label: false,
+                                content_rect: row_rect,
+                            }
+                        } else {
+                            let content_y = row_rect.y + label_band;
+                            LabelGeometry {
+                                draw_label: true,
+                                label_x: row_rect.x + 6.0,
+                                label_y: row_rect.y + 2.0,
+                                label_right: row_rect.x + 6.0,
+                                no_label: true,
+                                content_rect: Rect::new(
+                                    row_rect.x,
+                                    content_y,
+                                    row_rect.width,
+                                    content_h,
+                                ),
+                            }
                         }
-                        LabelPosition::Inline => (
-                            true,
-                            row_rect.x + 6.0,
-                            row_rect.y + (row_h - label_h) / 2.0,
-                            row_rect.x + 6.0 + label_w,
-                            false,
-                            row_rect,
-                        ),
                     }
-                };
+                    LabelPosition::Left => {
+                        let (label_x, label_y, label_right) = left_label_geometry(
+                            form,
+                            field,
+                            row_rect,
+                            row_h,
+                            label_w,
+                            label_h,
+                            left_label_width,
+                        );
+                        LabelGeometry {
+                            draw_label: true,
+                            label_x,
+                            label_y,
+                            label_right,
+                            no_label: false,
+                            content_rect: row_rect,
+                        }
+                    }
+                    LabelPosition::Inline => LabelGeometry {
+                        draw_label: true,
+                        label_x: row_rect.x + 6.0,
+                        label_y: row_rect.y + (row_h - label_h) / 2.0,
+                        label_right: row_rect.x + 6.0 + label_w,
+                        no_label: false,
+                        content_rect: row_rect,
+                    },
+                }
+            };
+            let LabelGeometry {
+                draw_label,
+                label_x,
+                label_y,
+                label_right,
+                no_label,
+                content_rect,
+            } = geometry;
             if draw_label {
                 surface.surface_draw_text_run(
                     Rect::new(label_x, label_y, label_w, label_h),
@@ -2204,6 +2344,112 @@ mod native_surface_paint {
                 "with no explicit label_width, the column tracks the \
                  label's own width, so an End-aligned label always sits \
                  flush left regardless of its text length",
+            );
+        }
+
+        #[test]
+        fn label_position_top_falls_back_to_left_when_the_row_cannot_fit_both_bands() {
+            // At a real backend's default row height (`form_row_height`,
+            // undoubled — unlike
+            // `label_position_top_places_label_above_the_field_row`
+            // above, which hands the row double the height precisely to
+            // dodge this case) there isn't room for both the label's own
+            // line and a usable field body, so `Top` must fall back to
+            // `Left`'s side-by-side layout rather than collapsing the
+            // field body to a zero/negative-height strip.
+            let form = labeled_text_field_form(Some(LabelPosition::Top), None, None);
+            let (surface, _) = paint_recorded(&form);
+
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Name")
+                .expect("label text run recorded");
+            let (value_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "val")
+                .expect("value text run recorded");
+
+            assert!(
+                value_rect.x > label_rect.x + label_rect.width,
+                "fallback must place the value beside the label, not \
+                 below it; label was {:?}, value was {:?}",
+                label_rect,
+                value_rect,
+            );
+            assert!(
+                value_rect.height > 0.0,
+                "fallback must give the field body positive height; \
+                 value run was {value_rect:?}",
+            );
+        }
+
+        #[test]
+        fn left_label_column_is_shared_across_every_left_field_in_the_form() {
+            // Mirrors `tui::form::left_label_column_width`: every
+            // `Left`-resolved field in the form shares one label column
+            // sized to the widest label (explicit `label_width` or
+            // natural width), not each field's own label width. A short
+            // label's `End`-aligned text must line up with a long
+            // label's, both flush against the shared column's right
+            // edge.
+            let mut form = one_field_form(
+                "short",
+                FieldKind::TextInput {
+                    value: "a".into(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+            );
+            form.fields[0].label = StyledText::plain("ID");
+            form.fields[0].label_position = Some(LabelPosition::Left);
+            form.fields[0].label_align = Some(LabelAlign::End);
+            form.fields.push(FormField {
+                id: WidgetId::new("long"),
+                label: StyledText::plain("Much Longer Label"),
+                kind: FieldKind::TextInput {
+                    value: "b".into(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: Some(LabelPosition::Left),
+                label_align: Some(LabelAlign::End),
+                label_width: None,
+                tab_index: None,
+            });
+
+            let (surface, _) = paint_recorded(&form);
+
+            let (short_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "ID")
+                .expect("short label painted");
+            let (long_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Much Longer Label")
+                .expect("long label painted");
+
+            assert_eq!(
+                short_rect.x + short_rect.width,
+                long_rect.x + long_rect.width,
+                "both End-aligned labels must share one column sized to \
+                 the widest label, so their right edges line up; short \
+                 was {:?}, long was {:?}",
+                short_rect,
+                long_rect,
+            );
+            assert!(
+                short_rect.x > long_rect.x,
+                "the shorter label must sit further right than the \
+                 longer one within the shared End-aligned column",
             );
         }
     }
