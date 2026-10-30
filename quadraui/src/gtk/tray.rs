@@ -28,6 +28,14 @@
 //! that does go to the bus is itself bounded to [`DBUS_CALL_TIMEOUT`],
 //! so a reachable-but-unresponsive bus address degrades to the same
 //! honest `false` as an unreachable one instead of hanging the caller.
+//! A successful [`linux::connect`] also starts a background thread that
+//! watches the watcher's own bus-name ownership and re-runs
+//! `RegisterStatusNotifierItem` whenever a new owner takes it, so a
+//! watcher restart (plasmashell crashing/restarting, the GNOME
+//! AppIndicator extension being toggled off and back on) is recovered
+//! from instead of leaving the item permanently gone while
+//! `set_icon`/`set_menu` keep reporting `Ok` — see
+//! [`linux::spawn_watcher_restart_recovery`].
 //!
 //! ## Crossing to the GTK main thread
 //!
@@ -69,7 +77,15 @@
 //! re-fetch it. `Menu` itself is advertised unconditionally as
 //! `/MenuBar` — see [`linux::StatusNotifierItemIface::menu`] — since SNI
 //! has no `NewMenu` signal a host could react to if the path changed
-//! later.
+//! later. `Status` starts at `"Passive"` and only [`GtkTrayState::set_icon`]'s
+//! first call flips it to `"Active"`, with a one-time `NewStatus` emit —
+//! see [`TrayShared::active`]'s doc for why a capability probe that
+//! never calls `set_icon` must not show a permanent blank item.
+//! `set_menu` also emits a `PropertiesChanged` refresh for `ItemIsMenu`,
+//! which [`linux::StatusNotifierItemIface::item_is_menu`] always answers
+//! live from [`TrayShared::has_menu`] — a host (KDE Plasma, waybar) that
+//! read `false` before a menu was attached needs telling to re-fetch it,
+//! the same reason the dbusmenu `LayoutUpdated` emit exists.
 //!
 //! ## Teardown
 //!
@@ -140,6 +156,15 @@ struct TrayShared {
     /// knows — once it also sees `LayoutUpdated` carrying this value —
     /// that a re-fetch would return something different.
     menu_revision: u32,
+    /// Whether [`GtkTrayState::set_icon`] has ever been called. Backs the
+    /// `Status` property: `false` reports `"Passive"`, matching
+    /// `TrayService::set_icon`'s contract that a host which never calls
+    /// `set_icon` shows nothing, the same lazy-creation behaviour
+    /// `macos::tray`'s `NSStatusItem` gets for free. There is no way back
+    /// to `false` — once an icon has been shown there is no
+    /// `TrayService::remove`/`hide` to revert it (see this module's
+    /// "Teardown" doc section).
+    active: bool,
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -236,11 +261,21 @@ impl GtkTrayState {
         let pixmap = decode_icon(&icon).ok_or_else(|| BackendError::PlatformFailure {
             context: "GTK tray: failed to decode icon".to_string(),
         })?;
-        {
+        let became_active = {
             let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
             shared.icon = vec![pixmap];
-        }
+            let was_active = shared.active;
+            shared.active = true;
+            !was_active
+        };
         self.emit_item_signal("NewIcon");
+        // Only the first `set_icon` flips `Status` from `Passive` to
+        // `Active` — see `TrayShared::active`'s doc — so this only fires
+        // once per item, matching the one-shot lazy-creation contract
+        // rather than re-announcing `Active` on every icon change.
+        if became_active {
+            self.emit_new_status("Active");
+        }
         Ok(())
     }
 
@@ -271,6 +306,13 @@ impl GtkTrayState {
             shared.menu_revision
         };
         self.emit_layout_updated(revision);
+        // `ItemIsMenu` tracks `TrayShared::has_menu` live (see
+        // `linux::StatusNotifierItemIface::item_is_menu`), so a host that
+        // already read it once — e.g. at registration, before this menu
+        // was attached — needs telling to re-fetch it, the same reason
+        // `emit_item_signal`/`emit_layout_updated` exist for the other
+        // properties this module can change after registration.
+        self.emit_item_is_menu_changed();
         Ok(())
     }
 
@@ -306,6 +348,59 @@ impl GtkTrayState {
 
     #[cfg(not(target_os = "linux"))]
     fn emit_item_signal(&self, _member: &str) {}
+
+    /// Emits `org.kde.StatusNotifierItem`'s `NewStatus(STRING status)` —
+    /// unlike `NewIcon`/`NewToolTip`/`NewTitle` this signal carries the
+    /// new value itself rather than telling the host to re-fetch it, per
+    /// the SNI spec, so it cannot reuse [`Self::emit_item_signal`].
+    #[cfg(target_os = "linux")]
+    fn emit_new_status(&self, status: &str) {
+        if let Some(connection) = &self.connection {
+            let _ = connection.emit_signal(
+                Option::<zbus::names::BusName<'_>>::None,
+                "/StatusNotifierItem",
+                "org.kde.StatusNotifierItem",
+                "NewStatus",
+                &(status,),
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn emit_new_status(&self, _status: &str) {}
+
+    /// Emits the standard `org.freedesktop.DBus.Properties.
+    /// PropertiesChanged` signal for `ItemIsMenu`, telling a host that
+    /// already read the property once that it has changed — see
+    /// [`Self::set_menu`]'s call site for why this, and not `NewStatus`'s
+    /// dedicated-signal shape, is the right tool here: `ItemIsMenu` is a
+    /// plain property with no SNI-specific change signal of its own.
+    #[cfg(target_os = "linux")]
+    fn emit_item_is_menu_changed(&self) {
+        if let Some(connection) = &self.connection {
+            let is_menu = self
+                .shared
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .has_menu();
+            let changed: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> =
+                std::collections::HashMap::from([(
+                    "ItemIsMenu",
+                    zbus::zvariant::Value::from(is_menu),
+                )]);
+            let invalidated: Vec<&str> = Vec::new();
+            let _ = connection.emit_signal(
+                Option::<zbus::names::BusName<'_>>::None,
+                "/StatusNotifierItem",
+                "org.freedesktop.DBus.Properties",
+                "PropertiesChanged",
+                &("org.kde.StatusNotifierItem", changed, invalidated),
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn emit_item_is_menu_changed(&self) {}
 
     /// Emits `com.canonical.dbusmenu`'s `LayoutUpdated(revision, parent)`
     /// for the root menu (`parent == 0`) so a host that cached the
@@ -476,9 +571,17 @@ mod linux {
             shared.tooltip.clone()
         }
 
+        /// `"Passive"` until the first [`super::GtkTrayState::set_icon`]
+        /// call, then `"Active"` — see `TrayShared::active`'s doc. A host
+        /// that probes `Backend::tray()` without ever calling `set_icon`
+        /// (a capability probe) must not show a permanent blank item;
+        /// reporting `Passive` is how this module keeps that promise
+        /// since GTK, unlike `macos::tray`, has no way to defer
+        /// registering with the watcher at all.
         #[zbus(property)]
         fn status(&self) -> String {
-            "Active".to_string()
+            let shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+            if shared.active { "Active" } else { "Passive" }.to_string()
         }
 
         #[zbus(property)]
@@ -518,9 +621,19 @@ mod linux {
                 .into()
         }
 
+        /// Mirrors [`TrayShared::has_menu`] live: `true` once
+        /// [`super::GtkTrayState::set_menu`] has attached a non-empty
+        /// menu. A host (KDE Plasma, waybar) that sees `true` opens the
+        /// dbusmenu on left-click instead of calling `Activate` —
+        /// hard-coding this `false` left those hosts with no way to open
+        /// the menu and no `TrayClicked` either, since [`Self::
+        /// push_click`] drops `Activate` whenever a menu is attached.
         #[zbus(property)]
         fn item_is_menu(&self) -> bool {
-            false
+            self.shared
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .has_menu()
         }
 
         fn activate(&self, x: i32, y: i32) {
@@ -759,8 +872,46 @@ mod linux {
             .unique_name()
             .map(|n| n.to_string())
             .unwrap_or_default();
-        watcher.call_method("RegisterStatusNotifierItem", &(unique_name,))?;
+        watcher.call_method("RegisterStatusNotifierItem", &(unique_name.clone(),))?;
+        spawn_watcher_restart_recovery(watcher, unique_name);
         Ok(connection)
+    }
+
+    /// Watches `org.kde.StatusNotifierWatcher`'s own bus-name ownership
+    /// on a dedicated background thread for as long as `watcher`'s
+    /// connection stays alive, and re-runs `RegisterStatusNotifierItem`
+    /// every time a new owner takes the name. A plasmashell restart, or
+    /// toggling GNOME's AppIndicator extension off and back on, both
+    /// show up this way — without this, `connect`'s one-time
+    /// registration is only ever seen by the watcher instance that was
+    /// running when it ran, so a later restart loses the icon for the
+    /// rest of the process's life even though `set_icon`/`set_menu` keep
+    /// reporting `Ok`. Best-effort: if `receive_owner_changed` itself
+    /// fails to subscribe, this silently does nothing rather than
+    /// failing `connect` over a recovery path that was never load-
+    /// bearing for the initial registration.
+    fn spawn_watcher_restart_recovery(
+        watcher: zbus::blocking::Proxy<'static>,
+        unique_name: String,
+    ) {
+        let Ok(owner_changes) = watcher.receive_owner_changed() else {
+            return;
+        };
+        std::thread::spawn(move || {
+            // Each item is `None` for an owner change that releases the
+            // name (nothing to register with) and `Some` for a new
+            // owner taking it — only the latter means a watcher is
+            // there to register with again. The iterator itself stops
+            // once the underlying connection is dropped, which is this
+            // thread's own exit condition — there is nothing left to
+            // recover for.
+            for new_owner in owner_changes {
+                if new_owner.is_some() {
+                    let _ =
+                        watcher.call_method("RegisterStatusNotifierItem", &(unique_name.clone(),));
+                }
+            }
+        });
     }
 
     #[cfg(test)]
@@ -902,6 +1053,43 @@ mod linux {
             };
 
             assert_eq!(iface.menu().as_str(), "/MenuBar");
+        }
+
+        /// A bare capability probe (`backend.tray()` with `set_icon`
+        /// never called) must report `Passive`, not `Active` — see
+        /// `TrayShared::active`'s doc. Once `set_icon` flips it, there is
+        /// no way back.
+        #[test]
+        fn status_is_passive_until_set_icon_then_active() {
+            let shared = shared_with_menu(None);
+            let iface = StatusNotifierItemIface {
+                shared: Arc::clone(&shared),
+                waker: Arc::new(|_| {}),
+            };
+
+            assert_eq!(iface.status(), "Passive");
+
+            shared.lock().unwrap_or_else(|e| e.into_inner()).active = true;
+
+            assert_eq!(iface.status(), "Active");
+        }
+
+        /// `ItemIsMenu` mirrors whether a menu is currently attached, not
+        /// a fixed value — a KDE/waybar host reads this to decide
+        /// whether left-click opens the dbusmenu or sends `Activate`.
+        #[test]
+        fn item_is_menu_mirrors_whether_a_menu_is_attached() {
+            let without_menu = StatusNotifierItemIface {
+                shared: shared_with_menu(None),
+                waker: Arc::new(|_| {}),
+            };
+            assert!(!without_menu.item_is_menu());
+
+            let with_menu = StatusNotifierItemIface {
+                shared: shared_with_menu(Some(menu_bar(vec![item("one")]))),
+                waker: Arc::new(|_| {}),
+            };
+            assert!(with_menu.item_is_menu());
         }
     }
 }
