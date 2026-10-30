@@ -10,11 +10,13 @@ use appshell_demo::AppShellDemo;
 use quadraui::compose::app_shell::AppShell;
 use quadraui::testing::a11y::A11yScenario;
 use quadraui::{
-    ActivityBar, ActivityItem, Color, CommandCenter, CommandLine, ContextMenu, ContextMenuItem,
-    ContextMenuItemMeasure, Dialog, DialogButton, DialogMeasure, FieldKind, Form, FormField, Icon,
-    ProgressBar, Rect, Scrollbar, Split, SplitDirection, StatusBar, StatusBarSegment, StyledText,
-    Surface, TabBar, TabBarSegment, TabItem, Toast, ToastCorner, ToastOverlay, ToastSeverity,
-    ToolbarItemMeasure, ValidationState, WidgetId,
+    compute_find_replace_hit_regions, ActivityBar, ActivityItem, Color, CommandCenter, CommandLine,
+    ContextMenu, ContextMenuItem, ContextMenuItemMeasure, Dialog, DialogButton, DialogMeasure,
+    DropOverlay, FieldKind, FindReplacePanel, Form, FormField, Icon, MenuBar, MenuBarItem, Panel,
+    PanelAction, ProgressBar, Rect, RichTextLink, RichTextPopup, RichTextPopupMeasure, Scrollbar,
+    Spinner, Split, SplitDirection, SplitTree, StatusBar, StatusBarSegment, StyledText, Surface,
+    TabBar, TabBarSegment, TabItem, Toast, ToastCorner, ToastOverlay, ToastSeverity,
+    ToolbarItemMeasure, Tooltip, TooltipMeasure, ValidationState, WidgetId, FR_PANEL_WIDTH,
 };
 
 const VIEWPORT: Rect = Rect {
@@ -202,6 +204,58 @@ fn menu_item(id: &str, label: &str) -> ContextMenuItem {
         label: StyledText::plain(label),
         ..ContextMenuItem::default()
     }
+}
+
+fn menu(id: &str, label: &str, submenu: Option<Vec<ContextMenuItem>>) -> MenuBarItem {
+    MenuBarItem {
+        id: WidgetId::new(id),
+        label: label.to_string(),
+        disabled: false,
+        submenu,
+    }
+}
+
+#[test]
+fn menu_bar_announces_names_without_alt_markers() {
+    let mut help = menu("menu:help", "H&&M && Co", None);
+    help.disabled = true;
+    let bar = MenuBar {
+        id: WidgetId::new("menubar"),
+        items: vec![
+            menu(
+                "menu:file",
+                "&File",
+                Some(vec![
+                    menu_item("menu:open", "Open…"),
+                    menu_item("menu:quit", "Quit"),
+                ]),
+            ),
+            menu("menu:edit", "&Edit", Some(vec![])),
+            help,
+        ],
+        open_item: Some(0),
+        focused_item: Some(0),
+    };
+    let snapshot = A11yScenario::new()
+        .with_surface(Surface::MenuBar {
+            rect: rect(0.0, 1.0),
+            bar,
+        })
+        .with_focus(WidgetId::new("menubar"))
+        .snapshot();
+
+    snapshot.assert_matches(
+        "\
+window \"quadraui\"
+  menu_bar \"Menu bar\" [size=3]
+    menu_item \"File\" [focused expanded pos=1/3]
+      menu \"File\" [size=2]
+        menu_item \"Open…\" [pos=1/2]
+        menu_item \"Quit\" [pos=2/2]
+    menu_item \"Edit\" [collapsed pos=2/3]
+      menu \"Edit\" [size=0]
+    menu_item \"H&M & Co\" [collapsed disabled pos=3/3]",
+    );
 }
 
 #[test]
@@ -451,6 +505,157 @@ window \"quadraui\" [focused]
     presentation \"Split divider\"
   scroll_bar \"Vertical scrollbar\" [range=0/0-1]
     presentation \"Scrollbar thumb\"",
+    );
+}
+
+// ------------------------------------------------ overlays and containers
+
+#[test]
+fn overlays_and_containers_report_their_own_structure() {
+    let tooltip = Tooltip::new(WidgetId::new("tip"), "Go to definition  (F12) ");
+    let popup = RichTextPopup {
+        id: WidgetId::new("hover"),
+        lines: vec![
+            StyledText::plain("fn main()"),
+            StyledText::plain("See the book"),
+        ],
+        line_text: vec!["fn main()".to_string(), "See the book".to_string()],
+        links: vec![RichTextLink {
+            line: 1,
+            start_byte: 4,
+            end_byte: 12,
+            url: "https://doc.rust-lang.org/book/".to_string(),
+        }],
+        line_scales: Vec::new(),
+        scroll_top: 0,
+        max_visible_rows: 20,
+        has_focus: true,
+        selection: None,
+        focused_link: Some(0),
+        placement: Default::default(),
+        padding: 1.0,
+        fg: None,
+        bg: None,
+    };
+    let snapshot = A11yScenario::new()
+        .with_surface(Surface::Spinner {
+            rect: rect(0.0, 1.0),
+            spinner: Spinner {
+                id: WidgetId::new("spinner"),
+                label: "Connecting".to_string(),
+                frame_idx: 3,
+                accent: None,
+            },
+        })
+        .with_surface(Surface::Panel {
+            rect: rect(1.0, 8.0),
+            panel: Panel {
+                id: WidgetId::new("panel"),
+                title: Some(StyledText::plain("Problems")),
+                actions: vec![PanelAction {
+                    id: WidgetId::new("panel:filter"),
+                    icon: "⚑".to_string(),
+                    tooltip: "Filter".to_string(),
+                    is_active: true,
+                }],
+                accent: None,
+                collapsed: true,
+            },
+        })
+        .with_surface(Surface::SplitTree {
+            rect: rect(9.0, 10.0),
+            tree: SplitTree::Split {
+                direction: SplitDirection::Vertical,
+                ratio: 0.25,
+                first: Box::new(SplitTree::Leaf(WidgetId::new("editor"))),
+                second: Box::new(SplitTree::Leaf(WidgetId::new("terminal"))),
+            },
+        })
+        .with_surface(Surface::Tooltip {
+            layout: tooltip.layout(
+                rect(0.0, 1.0),
+                VIEWPORT,
+                TooltipMeasure::new(26.0, 3.0),
+                1.0,
+            ),
+            tooltip,
+        })
+        .with_surface(Surface::RichTextPopup {
+            layout: popup.layout(
+                0.0,
+                10.0,
+                VIEWPORT,
+                RichTextPopupMeasure::new(20.0, 1.0),
+                |_, _, _| 8.0,
+            ),
+            popup,
+        })
+        .snapshot();
+
+    snapshot.assert_matches(
+        "\
+window \"quadraui\" [focused]
+  progress \"Connecting\"
+    presentation \"Spinner\"
+  group \"Problems\" [collapsed]
+    button \"Filter\" [checked pos=1/1]
+  group \"Split tree\"
+    group \"Split\" [value=\"vertical\" range=0.25/0-1]
+      group \"editor\"
+      presentation \"Split divider\"
+      group \"terminal\"
+  tooltip \"Go to definition  (F12)\"
+  document \"Rich text popup\" [size=2]
+    label \"fn main()\" [pos=1/2]
+    label \"See the book\" [pos=2/2]
+    button \"the book\" [selected value=\"https://doc.rust-lang.org/book/\"]",
+    );
+}
+
+/// `OwnedContent::FindReplace` and `OwnedContent::DropOverlay` carry no
+/// payload — the frame snapshot cannot clone those two primitives — so
+/// the tree names the surface and stops there rather than dropping it.
+#[test]
+fn payload_less_overlays_still_appear_in_the_tree() {
+    let (hit_regions, _input_width) =
+        compute_find_replace_hit_regions(FR_PANEL_WIDTH, false, "1 of 3", 1, 1);
+    let snapshot = A11yScenario::new()
+        .with_surface(Surface::FindReplace {
+            rect: rect(0.0, 3.0),
+            panel: FindReplacePanel {
+                query: "needle".to_string(),
+                replacement: String::new(),
+                show_replace: false,
+                focus: 0,
+                cursor: 6,
+                sel_anchor: None,
+                match_info: "1 of 3".to_string(),
+                case_sensitive: false,
+                whole_word: false,
+                use_regex: false,
+                preserve_case: false,
+                in_selection: false,
+                group_bounds: VIEWPORT,
+                panel_width: FR_PANEL_WIDTH,
+                replace_one_glyph: "R1".to_string(),
+                replace_all_glyph: "R*".to_string(),
+                hit_regions,
+            },
+        })
+        .with_surface(Surface::DropOverlay {
+            overlay: DropOverlay {
+                highlight: Some(rect(4.0, 4.0)),
+                insertion_bar: None,
+                ghost_position: None,
+            },
+        })
+        .snapshot();
+
+    snapshot.assert_matches(
+        "\
+window \"quadraui\" [focused]
+  form \"Find and replace\"
+  presentation \"Drop overlay\"",
     );
 }
 
