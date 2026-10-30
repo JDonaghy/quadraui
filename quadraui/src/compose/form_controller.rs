@@ -159,11 +159,12 @@ use crate::primitives::form::{
 use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
 use crate::primitives::text_input::{EditOp, TextEditor, TextInput};
 use crate::text_util::snap_to_char_boundary;
-use crate::validation::{validate, FormRules};
+use crate::types::StyledSpan;
+use crate::validation::{validate, FormRules, Validator};
 use crate::visibility::{apply_visibility, FormVisibility};
 use crate::{
-    Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar, UiEvent,
-    WidgetId,
+    Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar, Theme,
+    UiEvent, WidgetId,
 };
 
 /// What happened after [`FormController::handle`] processed an event.
@@ -327,7 +328,8 @@ impl FormController {
         // callers that need handle_cached() should call set_backend_info()
         // or render_and_cache().
         let (form_rect, sb_rect) = split_rect_lh(self.field_count(), lh, rect);
-        let form = self.build_form(form_rect);
+        let theme = backend.theme();
+        let form = self.build_form(form_rect, Some(&theme));
         backend.draw_form(form_rect, &form);
         if let Some(sb_rect) = sb_rect {
             let sb = build_scrollbar_lh(
@@ -468,7 +470,14 @@ impl FormController {
 
     // ── Internal helpers ──────────────────────────────────────────────
 
-    fn build_form(&self, _rect: Rect) -> Form {
+    /// Build the per-render/per-hit-test `Form` by cloning the stored form
+    /// and overlaying transient state (scroll, focus, in-progress edits,
+    /// required-field markers). `theme` only affects the marker's color
+    /// (via [`overlay_required_marker`]); pass `None` from a call site that
+    /// has no backend handy (e.g. hit-testing) — the marker text itself is
+    /// still appended, so label-width-derived geometry stays identical to
+    /// a themed render.
+    fn build_form(&self, _rect: Rect, theme: Option<&Theme>) -> Form {
         match &self.form {
             Some(f) => {
                 let mut form = f.clone();
@@ -493,6 +502,7 @@ impl FormController {
                         }
                     }
                 }
+                overlay_required_marker(&mut form, &self.rules, theme);
                 form
             }
             None => Form {
@@ -1017,7 +1027,11 @@ impl FormController {
         }
 
         if form_rect.contains(Point::new(x, y)) {
-            let form = self.build_form(form_rect);
+            // Color is irrelevant to hit-testing, so skip the backend
+            // dependency here; the marker text itself is still appended
+            // (see `build_form`'s doc), keeping label-width-derived
+            // geometry identical to what a themed render would produce.
+            let form = self.build_form(form_rect, None);
             let layout = if let Some(be) = backend {
                 be.form_layout(form_rect, &form)
             } else {
@@ -1223,6 +1237,34 @@ fn overlay_date_edit(kind: &mut FieldKind, focused: CalendarDate, visible_month:
     if let FieldKind::DatePicker(picker) = kind {
         picker.focused = focused;
         picker.visible_month = visible_month;
+    }
+}
+
+/// Append a trailing `" *"` span to the label of every field that carries
+/// a [`Validator::Required`] rule in `rules`, so the shared painter
+/// (`primitives::form`) and the TUI renderer (`tui::form`) both show a
+/// required-field marker without either needing its own notion of "which
+/// fields are required" — they just render `label.spans` as given.
+///
+/// Inert when `rules.fields` is empty (the common, rules-less case): no
+/// spans are ever appended, so a form with no `FormRules` renders exactly
+/// as before this overlay existed.
+fn overlay_required_marker(form: &mut Form, rules: &FormRules, theme: Option<&Theme>) {
+    if rules.fields.is_empty() {
+        return;
+    }
+    for field in &mut form.fields {
+        let is_required = rules
+            .fields
+            .get(field.id.as_str())
+            .is_some_and(|rules| rules.iter().any(|rule| rule.check == Validator::Required));
+        if is_required {
+            let marker = match theme {
+                Some(t) => StyledSpan::with_fg(" *", t.error_fg),
+                None => StyledSpan::plain(" *"),
+            };
+            field.label.spans.push(marker);
+        }
     }
 }
 
@@ -1637,6 +1679,109 @@ mod tests {
     }
 
     #[test]
+    fn blurring_a_required_field_populates_validation_without_manual_validate_call() {
+        use crate::validation::{Rule, Severity, Validator};
+
+        fn name_email_form(name_value: &str, focused: &str) -> Form {
+            Form {
+                id: WidgetId::new("form"),
+                fields: vec![
+                    FormField {
+                        id: WidgetId::new("name"),
+                        label: StyledText::plain("Name"),
+                        kind: FieldKind::TextInput {
+                            value: name_value.to_string(),
+                            placeholder: String::new(),
+                            cursor: None,
+                            selection_anchor: None,
+                        },
+                        hint: StyledText::default(),
+                        disabled: false,
+                        validation: None,
+                        label_position: None,
+                        label_align: None,
+                        label_width: None,
+                        tab_index: None,
+                    },
+                    text_field("email", "", None),
+                ],
+                focused_field: Some(WidgetId::new(focused)),
+                scroll_offset: 0,
+                has_focus: true,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                label_width: None,
+            }
+        }
+
+        let mut fc = FormController::new("f".into());
+        fc.set_form(name_email_form("", "name"));
+        fc.set_has_focus(true);
+        fc.set_backend_info(1.0);
+        let mut rules = FormRules::default();
+        rules.fields.insert(
+            "name".to_string(),
+            vec![Rule {
+                check: Validator::Required,
+                message: "Required".to_string(),
+                severity: Severity::Error,
+            }],
+        );
+        fc.set_rules(rules);
+
+        // Tab away from "name" — the controller reports the focus move; the
+        // host persists it the same way the module doc's "Keyboard editing"
+        // section describes, by feeding the new `focused_field` back on the
+        // next `set_form` call. Nothing here calls `validate()` directly.
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("email")
+            }),
+            "tab should blur \"name\" and focus \"email\""
+        );
+        fc.set_form(name_email_form("", "email"));
+        assert_eq!(
+            fc.form().unwrap().fields[0].validation,
+            Some(crate::primitives::form::ValidationState::Error(
+                "Required".to_string()
+            )),
+            "blurring the empty required field should populate its \
+             validation state without a manual validate() call"
+        );
+
+        // Filling the field in and pushing the next frame (still away from
+        // "name") clears the error, again with no manual validate() call.
+        fc.set_form(name_email_form("Ada", "email"));
+        assert_eq!(
+            fc.form().unwrap().fields[0].validation,
+            None,
+            "a now-passing field should have its validation state cleared"
+        );
+
+        // A controller with no `FormRules` set never shows a validation
+        // state after the same focus/blur sequence — the inert path.
+        let mut fc_no_rules = FormController::new("f2".into());
+        fc_no_rules.set_form(name_email_form("", "name"));
+        fc_no_rules.set_has_focus(true);
+        fc_no_rules.set_backend_info(1.0);
+        fc_no_rules.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        fc_no_rules.set_form(name_email_form("", "email"));
+        assert_eq!(
+            fc_no_rules.form().unwrap().fields[0].validation,
+            None,
+            "a form with no FormRules shows no validation state after blur"
+        );
+    }
+
+    #[test]
     fn set_visibility_applies_on_every_set_form_call() {
         use crate::expr::{Expr, Value};
         use crate::visibility::{FieldVisibility, FormVisibility};
@@ -1759,7 +1904,7 @@ mod tests {
         let mut fc = test_controller(10);
         fc.set_scroll_offset(3);
         fc.set_has_focus(true);
-        let form = fc.build_form(Rect::new(0.0, 0.0, 40.0, 100.0));
+        let form = fc.build_form(Rect::new(0.0, 0.0, 40.0, 100.0), None);
         assert_eq!(form.scroll_offset, 3);
         assert!(form.has_focus);
     }
@@ -1767,7 +1912,7 @@ mod tests {
     #[test]
     fn build_form_with_no_data_returns_empty() {
         let fc = FormController::new("empty".into());
-        let form = fc.build_form(Rect::new(0.0, 0.0, 40.0, 100.0));
+        let form = fc.build_form(Rect::new(0.0, 0.0, 40.0, 100.0), None);
         assert!(form.fields.is_empty());
         assert_eq!(form.id.as_str(), "empty-form");
     }
@@ -2710,7 +2855,7 @@ mod tests {
             label_width: None,
         });
 
-        let rendered = fc.build_form(RECT);
+        let rendered = fc.build_form(RECT, None);
         match &rendered.fields[0].kind {
             FieldKind::TextInput { value, cursor, .. } => {
                 assert_eq!(value, "abc");
@@ -2851,7 +2996,7 @@ mod tests {
             "pure focus-day movement changes no persisted value, so it's \
              Consumed not a FormEvent, mirroring text cursor movement"
         );
-        let form = fc.build_form(RECT);
+        let form = fc.build_form(RECT, None);
         match &form.fields[0].kind {
             FieldKind::DatePicker(picker) => {
                 assert_eq!(picker.focused, start.add_days(1));
@@ -2888,7 +3033,7 @@ mod tests {
             RECT,
         );
         assert_eq!(ev2, FormControllerEvent::Consumed);
-        let form = fc.build_form(RECT);
+        let form = fc.build_form(RECT, None);
         match &form.fields[0].kind {
             FieldKind::DatePicker(picker) => assert_eq!(
                 picker.focused,
@@ -2924,7 +3069,7 @@ mod tests {
         // untouched field (still `start`) shows `start` again, not the
         // confirmed day — the app is expected to push the new value
         // back via `set_form` itself.
-        let form = fc.build_form(RECT);
+        let form = fc.build_form(RECT, None);
         match &form.fields[0].kind {
             FieldKind::DatePicker(picker) => assert_eq!(picker.focused, start),
             other => panic!("expected DatePicker, got {other:?}"),
@@ -3005,7 +3150,7 @@ mod tests {
             RECT,
         );
         assert_eq!(ev, FormControllerEvent::Consumed);
-        let form = fc.build_form(RECT);
+        let form = fc.build_form(RECT, None);
         match &form.fields[1].kind {
             FieldKind::DatePicker(picker) => assert_eq!(
                 picker.focused,
@@ -3039,7 +3184,7 @@ mod tests {
         );
         assert_eq!(ev, FormControllerEvent::Consumed);
 
-        let form = fc.build_form(RECT);
+        let form = fc.build_form(RECT, None);
         match &form.fields[0].kind {
             FieldKind::DatePicker(picker) => {
                 assert_eq!(
@@ -3079,7 +3224,7 @@ mod tests {
             "Ctrl+Right is a host accelerator candidate, not calendar \
              navigation, so it must not be swallowed by the DatePicker"
         );
-        let form = fc.build_form(RECT);
+        let form = fc.build_form(RECT, None);
         match &form.fields[0].kind {
             FieldKind::DatePicker(picker) => {
                 assert_eq!(picker.focused, start, "the calendar must not have moved")
@@ -3122,7 +3267,7 @@ mod tests {
             label_width: None,
         });
 
-        let form = fc.build_form(RECT);
+        let form = fc.build_form(RECT, None);
         match &form.fields[0].kind {
             FieldKind::DatePicker(picker) => assert_eq!(
                 picker.focused, d1_start,
@@ -3302,7 +3447,7 @@ mod tests {
             "Ctrl+A is a host accelerator candidate, not combo-box text \
              entry, so it must not be swallowed by the ComboBox"
         );
-        let form = fc.build_form(RECT);
+        let form = fc.build_form(RECT, None);
         match &form.fields[0].kind {
             FieldKind::ComboBox(combo) => {
                 assert_eq!(combo.text, "ab", "the text must not have changed")
@@ -3537,7 +3682,7 @@ mod tests {
             "Ctrl+Down is a host accelerator candidate, not dropdown \
              navigation, so it must not be swallowed"
         );
-        let form = fc.build_form(RECT);
+        let form = fc.build_form(RECT, None);
         match &form.fields[0].kind {
             FieldKind::Dropdown { selected_idx, .. } => {
                 assert_eq!(*selected_idx, 0, "selection must not have changed")

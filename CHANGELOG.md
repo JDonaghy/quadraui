@@ -93,8 +93,20 @@ only a push to `main` runs this workflow.
   technology while it is open.
 - `A11yScenario::with_modal` / `set_modal` on the headless accessibility
   test seam, for snapshotting the modal/hidden split without a backend.
+- Form fields with a `Required` validation rule now render a `*` marker
+  next to their label, in `theme.error_fg`, on both the shared GUI painter
+  and the TUI renderer. Non-required fields render unchanged. Additive:
+  the marker is injected by `FormController` into the `Form` it already
+  builds, so no primitive struct gains a new field.
 
 ### Fixed
+
+- `FormController::set_form`'s existing per-call validation (attached via
+  `set_rules`) now has test coverage for the actual focus/blur path — tabbing
+  away from a field with a failing rule populates its `ValidationState` the
+  next time the host feeds the updated `focused_field` back through
+  `set_form`, with no manual `validate()` call, and tabbing away from a
+  now-passing field clears it. A form with no `FormRules` set is unaffected.
 
 - Accessibility names no longer carry presentation-only characters: a menu-bar
   item labelled `"&File"` announces as `File` (and `"&&"` as a literal `&`),
