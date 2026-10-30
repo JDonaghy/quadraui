@@ -1117,11 +1117,26 @@ mod native_surface_paint {
                 content_rect,
             } = geometry;
             if draw_label {
-                surface.surface_draw_text_run(
-                    Rect::new(label_x, label_y, label_w, label_h),
-                    &label_text,
-                    field_fg,
-                );
+                // Draw each span of the label at its own color (falling
+                // back to `field_fg` for a plain span), advancing `x` by
+                // each span's measured width — a required-field marker
+                // span (appended by the controller) renders in its own
+                // color this way, while a label with only one plain span
+                // (every label without a marker) draws identically to a
+                // single `surface_draw_text_run` call over the whole
+                // text. `label_w`/`label_h` stay derived from the
+                // flattened `label_text` so geometry/overlap sizing is
+                // unaffected.
+                let mut x = label_x;
+                for span in &field.label.spans {
+                    let (span_w, span_h) = surface.surface_measure_text(&span.text);
+                    surface.surface_draw_text_run(
+                        Rect::new(x, label_y, span_w, span_h.max(label_h)),
+                        &span.text,
+                        span.fg.unwrap_or(field_fg),
+                    );
+                    x += span_w;
+                }
             }
             // The field body (checkbox, text input, dropdown, …) paints
             // within `content_rect` rather than the full row: for
@@ -1654,7 +1669,7 @@ mod native_surface_paint {
         use crate::event::Viewport;
         use crate::primitives::form::{FormField, ToggleGroupItem};
         use crate::primitives::layout_metrics::{form_field_measure, form_row_height, TextMeasure};
-        use crate::types::WidgetId;
+        use crate::types::{StyledSpan, WidgetId};
         use crate::Image;
 
         /// Records every drawing verb `paint` issues, so a paint
@@ -2058,6 +2073,112 @@ mod native_surface_paint {
                 label_bottom,
                 label_rect,
                 msg_rect,
+            );
+        }
+
+        /// A required-field marker span (as [`crate::compose::form_controller`]
+        /// appends to `label.spans`) paints as its own text run, in its own
+        /// colour, laid out right after the label's own span — not merged
+        /// into one plain-coloured string, and not overlapping the label or
+        /// a validation message painted below.
+        #[test]
+        fn required_marker_span_paints_separately_from_label() {
+            let mut form = one_field_form(
+                "name",
+                FieldKind::TextInput {
+                    value: String::new(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+            );
+            form.fields[0].label = StyledText {
+                spans: vec![
+                    StyledSpan::plain("Name"),
+                    StyledSpan::with_fg(" *", Color::rgb(220, 80, 80)),
+                ],
+            };
+            form.fields[0].validation = Some(ValidationState::Error("Required".to_string()));
+
+            let row_h = form_row_height(14.0);
+            let measure = form_field_measure(&form.fields[0], row_h, &FixedMeasure);
+            let flayout = form.layout(320.0, 160.0, |_| measure.clone());
+            let mut surface = RecordingSurface::default();
+            paint(
+                &form,
+                &flayout,
+                &mut surface,
+                &Theme::default(),
+                crate::Point::new(0.0, 0.0),
+            );
+
+            let (label_rect, _, label_color) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Name")
+                .expect("label text run recorded");
+            let (marker_rect, _, marker_color) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == " *")
+                .expect("marker text run recorded as its own text run");
+
+            assert_eq!(
+                *marker_color,
+                Color::rgb(220, 80, 80),
+                "marker keeps its own colour rather than the label's colour",
+            );
+            assert_ne!(
+                marker_color, label_color,
+                "marker colour must differ from the plain label colour",
+            );
+            assert!(
+                marker_rect.x >= label_rect.x + label_rect.width - 0.01,
+                "marker (x={}) must start at or after the label's right \
+                 edge (x={}), never overlapping the label text",
+                marker_rect.x,
+                label_rect.x + label_rect.width,
+            );
+
+            let (msg_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Required")
+                .expect("validation message text run recorded");
+            let marker_bottom = marker_rect.y + marker_rect.height;
+            assert!(
+                marker_bottom <= msg_rect.y + 0.01,
+                "validation message (y={}) must start at or below the \
+                 marker's bottom edge (y={}); marker was {:?}, message was {:?}",
+                msg_rect.y,
+                marker_bottom,
+                marker_rect,
+                msg_rect,
+            );
+        }
+
+        /// A field with no required marker renders its label as a single
+        /// plain span — no stray `*` text run — confirming the per-span
+        /// draw loop is a no-op generalisation for the common case.
+        #[test]
+        fn non_required_field_paints_no_marker() {
+            let mut form = one_field_form(
+                "name",
+                FieldKind::TextInput {
+                    value: String::new(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+            );
+            form.fields[0].label = StyledText::plain("Name");
+
+            let (surface, _) = paint_recorded(&form);
+            assert!(
+                !surface.text_runs.iter().any(|(_, t, _)| t.contains('*')),
+                "no marker text run should be painted for a field with a \
+                 single plain label span; text runs were {:?}",
+                surface.text_runs,
             );
         }
 
