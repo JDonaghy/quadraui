@@ -319,7 +319,6 @@ use crate::compose::{
 use crate::diagnostics;
 use crate::event::{Point, Rect, UiEvent};
 use crate::power::{BlockerId, PowerSaveKind};
-use crate::primitives::context_menu::ContextMenu;
 use crate::tui::backend::TuiBackend;
 use crate::update::{StagedUpdate, UpdateInfo, UpdateService};
 use crate::{Key, Modifiers, NamedKey};
@@ -2032,30 +2031,12 @@ impl PlatformServices for TuiPlatformServices {
         Ok(false)
     }
 
-    /// A terminal has no OS-level recent-documents list of its own to add
-    /// to — there is no honest "success" value for a mutation with
-    /// nothing in this backend to mutate, so this keeps the trait's
-    /// `Unsupported` default. See this module's "Recent documents / Dock
-    /// menu" section.
-    fn add_recent_document(&self, path: &Path) -> ServiceResult<()> {
-        let _ = path;
-        Err(BackendError::Unsupported)
-    }
-
-    /// Same story as [`Self::add_recent_document`]: nothing on this
-    /// backend ever created the list this would clear.
-    fn clear_recent_documents(&self) -> ServiceResult<()> {
-        Err(BackendError::Unsupported)
-    }
-
-    /// A terminal has no Dock icon of its own to attach `menu` to — see
-    /// this module's "Recent documents / Dock menu" section for why this
-    /// keeps the trait's `Unsupported` default rather than discarding
-    /// `menu` and reporting success.
-    fn set_dock_menu(&self, menu: &ContextMenu) -> ServiceResult<()> {
-        let _ = menu;
-        Err(BackendError::Unsupported)
-    }
+    // `add_recent_document`, `clear_recent_documents`, and `set_dock_menu`
+    // all fall through to the trait's own `Unsupported` default — see
+    // this module's "Recent documents / Dock menu" doc section above for
+    // why a terminal has no honest "success" value for any of the three.
+    // Left unoverridden (rather than restated here) so that default is
+    // the one place this behavior lives.
 
     fn platform_name(&self) -> &'static str {
         "tui"
@@ -2385,7 +2366,7 @@ mod message_dialog_tests {
     /// [`add_recent_document_stays_unsupported_on_tui`] above.
     #[test]
     fn set_dock_menu_stays_unsupported_on_tui() {
-        use crate::primitives::context_menu::ContextMenuPlacement;
+        use crate::primitives::context_menu::{ContextMenu, ContextMenuPlacement};
         use crate::types::WidgetId;
 
         let services = TuiPlatformServices::new();
@@ -2405,7 +2386,7 @@ mod message_dialog_tests {
     /// Same typed-degrade story as the three methods above — see the
     /// module doc's "Recent documents / Dock menu" section.
     #[test]
-    fn set_jump_list_still_unsupported_on_tui() {
+    fn set_jump_list_stays_unsupported_on_tui() {
         use crate::backend::JumpListItem;
 
         let services = TuiPlatformServices::new();

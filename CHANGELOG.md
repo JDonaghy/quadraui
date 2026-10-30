@@ -541,8 +541,8 @@ an unattended `cargo update`.
   the previous bare `Ok(())` was the "returns success, did nothing"
   anti-pattern `PlatformServices` honesty (`PRIMITIVE_RULES.md` rule 9)
   forbids. Covered by a new `examples/tui_platform_seams.rs` demo (exercising
-  every `PlatformServices` seam from app code) and its `tests/
-  tui_example_driver.rs` driver tests.
+  every `PlatformServices` seam from app code) and its
+  `tests/tui_example_driver.rs` driver tests.
 
 ## [0.6.1] - 2026-10-26
 ### Added

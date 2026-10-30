@@ -1625,6 +1625,17 @@ name = "gtk_platform_services"
 path = "examples/gtk_platform_services.rs"
 required-features = ["gtk"]
 
+# PlatformServices Rule 9 typed-degrade demo — drives app_path,
+# update_service, begin_power_save_block, register_global_shortcut,
+# begin_drag_out, set_login_item, set_as_default_protocol_client,
+# add_recent_document, set_jump_list, set_dock_menu and reduce_motion
+# through the headless TUI backend so each documented degrade has a
+# driver-tested assertion.
+[[example]]
+name = "tui_platform_seams"
+path = "examples/tui_platform_seams.rs"
+required-features = ["tui"]
+
 [[example]]
 name = "tui_message_dialog"
 path = "examples/tui_message_dialog.rs"
