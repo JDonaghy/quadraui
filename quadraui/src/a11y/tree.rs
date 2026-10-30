@@ -51,11 +51,21 @@
 //!
 //! A primitive opts into a real mapping by implementing
 //! [`A11yPrimitive`] — role plus state for itself, plus the child nodes
-//! it contains. [`ListView`] (a collection) and [`Toolbar`] (a control
-//! container) are mapped fully. Every other primitive goes through a
-//! generic fallback: it still appears, as a [`A11yRole::Group`] labelled
-//! with its kind ("Diff view", "Minimap", …), so an unmapped primitive
-//! reads as an unhelpful group rather than vanishing from the tree.
+//! it contains. Collections ([`ListView`]) and the application chrome —
+//! tab bars, activity bars, menus, status bars, dialogs, forms, toasts,
+//! tooltips, progress indicators, scrollbars, splits and panels — are
+//! mapped fully; the chrome mappings live in [`super::chrome`]. Every
+//! other primitive goes through a generic fallback: it still appears, as
+//! a [`A11yRole::Group`] labelled with its kind ("Diff view", "Minimap",
+//! …), so an unmapped primitive reads as an unhelpful group rather than
+//! vanishing from the tree.
+//!
+//! Two kinds of node are deliberate rather than accidental:
+//! a [`A11yRole::Presentation`] node marks a part with no semantics of
+//! its own (a scrollbar thumb, a split divider, a spinner glyph) — it is
+//! still in the tree, so a snapshot shows the real structure; and
+//! [`A11yLive::Polite`] on a toast overlay makes it a live region an
+//! assistive technology announces without taking focus.
 //!
 //! A consumer can override any of this per node:
 //! [`crate::frame::OwnedNode::a11y`] is merged over the primitive's own
@@ -85,7 +95,7 @@ use std::collections::HashMap;
 use crate::a11y::{A11yChecked, A11yInfo, A11yLive, A11yRole};
 use crate::event::Rect;
 use crate::focus::FocusManager;
-use crate::frame::{OwnedContent, OwnedFrame};
+use crate::frame::{OwnedContent, OwnedFrame, OwnedNode};
 use crate::primitives::list::ListView;
 use crate::primitives::toolbar::{Toolbar, ToolbarButton};
 use crate::types::{StyledText, WidgetId};
@@ -306,6 +316,12 @@ impl A11yTreeNode {
         if let Some(live) = self.info.live {
             node.set_live(live.into());
         }
+        if self.info.hidden == Some(true) {
+            node.set_hidden();
+        }
+        if self.info.modal == Some(true) {
+            node.set_modal();
+        }
         if !self.children.is_empty() {
             node.set_children(
                 self.children
@@ -461,6 +477,7 @@ pub struct A11yTreeBuilder {
     prev: HashMap<A11yNodeId, A11yTreeNode>,
     sent_tree: bool,
     root_label: Option<String>,
+    modal_top: Option<WidgetId>,
 }
 
 impl A11yTreeBuilder {
@@ -476,6 +493,23 @@ impl A11yTreeBuilder {
         self
     }
 
+    /// Names the widget on top of the backend's
+    /// [`ModalStack`](crate::ModalStack) — the authoritative source of
+    /// modality. While it is set and the matching surface is present,
+    /// that surface is marked modal and every other top-level surface is
+    /// hidden from assistive technology. `None` falls back to treating
+    /// the topmost dialog surface in the frame as the modal one.
+    pub fn with_modal_top(mut self, modal_top: impl Into<Option<WidgetId>>) -> Self {
+        self.modal_top = modal_top.into();
+        self
+    }
+
+    /// Updates the modal top between frames — the stateful form of
+    /// [`Self::with_modal_top`].
+    pub fn set_modal_top(&mut self, modal_top: impl Into<Option<WidgetId>>) {
+        self.modal_top = modal_top.into();
+    }
+
     /// The full tree for this frame. Does not touch the diff state, so
     /// it can be called freely from tests and debug tooling.
     pub fn tree(&self, frame: &OwnedFrame, focus: &FocusManager) -> A11yTree {
@@ -483,6 +517,7 @@ impl A11yTreeBuilder {
             frame,
             focus,
             self.root_label.as_deref().unwrap_or(DEFAULT_ROOT_LABEL),
+            self.modal_top.as_ref(),
         )
     }
 
@@ -536,10 +571,59 @@ impl A11yTreeBuilder {
 /// The full accessibility tree for one frame, with the default root
 /// label — the stateless convenience form of [`A11yTreeBuilder::tree`].
 pub fn frame_to_tree(frame: &OwnedFrame, focus: &FocusManager) -> A11yTree {
-    build_tree(frame, focus, DEFAULT_ROOT_LABEL)
+    build_tree(frame, focus, DEFAULT_ROOT_LABEL, None)
 }
 
-fn build_tree(frame: &OwnedFrame, focus: &FocusManager, root_label: &str) -> A11yTree {
+/// The full accessibility tree for one frame, with the widget on top of
+/// the backend's [`ModalStack`](crate::ModalStack) named explicitly.
+///
+/// The modal stack is held by the backend rather than captured in the
+/// frame, so a caller that has it passes the top entry's id here: that
+/// surface is marked modal and every other top-level surface is hidden
+/// from assistive technology, so the AT cursor cannot escape the dialog.
+/// `None` is identical to [`frame_to_tree`], which falls back to the
+/// topmost dialog surface in the frame.
+pub fn frame_to_tree_with_modal(
+    frame: &OwnedFrame,
+    focus: &FocusManager,
+    modal_top: Option<&WidgetId>,
+) -> A11yTree {
+    build_tree(frame, focus, DEFAULT_ROOT_LABEL, modal_top)
+}
+
+/// The identity a modal stack entry is matched against. Overlay
+/// surfaces are captured without a hit-test widget id, so the
+/// descriptor's own id is the only thing a modal stack can name.
+fn modal_identity(node: &OwnedNode) -> Option<WidgetId> {
+    node.widget_id.or(match &node.content {
+        OwnedContent::Dialog(dialog) => Some(dialog.id),
+        OwnedContent::ContextMenu(menu) => Some(menu.id),
+        _ => None,
+    })
+}
+
+/// Which top-level surface, if any, holds a modal dialog: the one named
+/// by the modal stack, else the topmost dialog painted this frame.
+fn modal_surface(frame: &OwnedFrame, modal_top: Option<&WidgetId>) -> Option<usize> {
+    match modal_top {
+        Some(id) => frame
+            .nodes()
+            .iter()
+            .position(|node| modal_identity(node).as_ref() == Some(id)),
+        None => frame
+            .nodes()
+            .iter()
+            .rposition(|node| matches!(node.content, OwnedContent::Dialog(_))),
+    }
+}
+
+fn build_tree(
+    frame: &OwnedFrame,
+    focus: &FocusManager,
+    root_label: &str,
+    modal_top: Option<&WidgetId>,
+) -> A11yTree {
+    let modal_idx = modal_surface(frame, modal_top);
     let mut nodes: Vec<A11yTreeNode> = Vec::with_capacity(frame.nodes().len() + 1);
     let mut root_children: Vec<A11yNodeId> = Vec::new();
     let mut root_bounds: Option<Rect> = None;
@@ -556,16 +640,25 @@ fn build_tree(frame: &OwnedFrame, focus: &FocusManager, root_label: &str) -> A11
         children: Vec::new(),
     });
 
-    for owned in frame.nodes() {
+    for (pos, owned) in frame.nodes().iter().enumerate() {
         let id = match &owned.widget_id {
             Some(widget) => A11yNodeId::for_widget(widget),
             None => A11yNodeId::for_key(&format!("surface.{}", owned.idx)),
         };
         let described = describe(&owned.content);
-        let info = match &owned.a11y {
+        let mut info = match &owned.a11y {
             Some(override_info) => merge(described.info, override_info),
             None => described.info,
         };
+        // An explicit override still wins: modality is derived state,
+        // and a consumer that asserted it knows better.
+        if let Some(modal_idx) = modal_idx {
+            if pos == modal_idx {
+                info.modal.get_or_insert(true);
+            } else {
+                info.hidden.get_or_insert(true);
+            }
+        }
         let child_ids: Vec<A11yNodeId> = described
             .children
             .iter()
@@ -658,12 +751,47 @@ impl Described {
             focus_key: None,
         }
     }
+
+    /// A surface whose content is not captured in the frame: it still gets
+    /// a real role and name, just no children.
+    fn labelled(role: A11yRole, label: &str) -> Self {
+        Self {
+            info: A11yInfo::new().with_role(role).with_label(label),
+            children: Vec::new(),
+            focus_key: None,
+        }
+    }
 }
 
 fn describe(content: &OwnedContent) -> Described {
     match content {
         OwnedContent::List(list) => Described::from_primitive(list),
         OwnedContent::Toolbar(bar) => Described::from_primitive(bar),
+        OwnedContent::TabBar(bar) => Described::from_primitive(bar),
+        OwnedContent::ActivityBar(bar) => Described::from_primitive(bar),
+        OwnedContent::MenuBar(bar) => Described::from_primitive(bar),
+        OwnedContent::ContextMenu(menu) => Described::from_primitive(menu),
+        OwnedContent::StatusBar(bar) => Described::from_primitive(bar),
+        OwnedContent::CommandCenter(cc) => Described::from_primitive(cc),
+        OwnedContent::CommandLine(cmd) => Described::from_primitive(cmd),
+        OwnedContent::Dialog(dialog) => Described::from_primitive(dialog),
+        OwnedContent::Form(form) => Described::from_primitive(form),
+        OwnedContent::Toast(stack) => Described::from_primitive(stack),
+        OwnedContent::Tooltip(tooltip) => Described::from_primitive(tooltip),
+        OwnedContent::RichTextPopup(popup) => Described::from_primitive(popup),
+        OwnedContent::Progress(bar) => Described::from_primitive(bar),
+        OwnedContent::Spinner(spinner) => Described::from_primitive(spinner),
+        OwnedContent::Scrollbar(sb) => Described::from_primitive(sb),
+        OwnedContent::Split(split) => Described::from_primitive(split),
+        OwnedContent::SplitTree(tree) => Described::from_primitive(tree),
+        OwnedContent::Panel(panel) => Described::from_primitive(panel),
+        OwnedContent::SidebarPanel(panel) => Described::from_primitive(panel),
+        // Unit variants: the source surface carries no serializable
+        // content, so only the role and name survive the frame capture.
+        OwnedContent::FindReplace => Described::labelled(A11yRole::Form, "Find and replace"),
+        OwnedContent::DropOverlay => {
+            Described::labelled(A11yRole::Presentation, "Drop overlay")
+        }
         other => Described::fallback(other),
     }
 }
@@ -686,6 +814,8 @@ fn merge(base: A11yInfo, over: &A11yInfo) -> A11yInfo {
     merged.position_in_set = over.position_in_set.or(merged.position_in_set);
     merged.set_size = over.set_size.or(merged.set_size);
     merged.live = over.live.or(merged.live);
+    merged.hidden = over.hidden.or(merged.hidden);
+    merged.modal = over.modal.or(merged.modal);
     merged
 }
 
@@ -747,6 +877,7 @@ fn role_name(role: A11yRole) -> &'static str {
         A11yRole::TabList => "tab_list",
         A11yRole::Menu => "menu",
         A11yRole::MenuItem => "menu_item",
+        A11yRole::MenuBar => "menu_bar",
         A11yRole::Tree => "tree",
         A11yRole::TreeItem => "tree_item",
         A11yRole::List => "list",
@@ -755,11 +886,22 @@ fn role_name(role: A11yRole) -> &'static str {
         A11yRole::Row => "row",
         A11yRole::Cell => "cell",
         A11yRole::TextInput => "text_input",
+        A11yRole::CheckBox => "check_box",
+        A11yRole::RadioGroup => "radio_group",
+        A11yRole::RadioButton => "radio_button",
+        A11yRole::Slider => "slider",
+        A11yRole::ComboBox => "combo_box",
+        A11yRole::Label => "label",
+        A11yRole::Form => "form",
         A11yRole::Document => "document",
         A11yRole::Editor => "editor",
         A11yRole::Terminal => "terminal",
         A11yRole::Dialog => "dialog",
         A11yRole::Status => "status",
+        A11yRole::Alert => "alert",
+        A11yRole::Tooltip => "tooltip",
+        A11yRole::ScrollBar => "scroll_bar",
+        A11yRole::Splitter => "splitter",
         A11yRole::Progress => "progress",
         A11yRole::Image => "image",
         A11yRole::Group => "group",
@@ -818,15 +960,21 @@ fn state_tokens(node: &A11yTreeNode, focused: bool) -> Vec<String> {
         Some(A11yLive::Assertive) => tokens.push("live=assertive".to_string()),
         Some(A11yLive::Off) | None => {}
     }
+    if info.modal == Some(true) {
+        tokens.push("modal".to_string());
+    }
+    if info.hidden == Some(true) {
+        tokens.push("hidden".to_string());
+    }
     tokens
 }
 
 /// Plain text of a styled run, for use as an accessible name.
-fn plain_text(text: &StyledText) -> String {
+pub(super) fn plain_text(text: &StyledText) -> String {
     text.spans.iter().map(|span| span.text.as_str()).collect()
 }
 
-fn non_empty(text: String) -> Option<String> {
+pub(super) fn non_empty(text: String) -> Option<String> {
     if text.trim().is_empty() {
         None
     } else {
@@ -950,6 +1098,7 @@ fn toolbar_child(idx: usize, button: &ToolbarButton) -> A11yChild {
 mod tests {
     use super::*;
     use crate::frame::{ScreenLayout, Surface};
+    use crate::primitives::canvas::Canvas;
     use crate::primitives::list::ListItem;
     use crate::primitives::scrollbar::Scrollbar;
     use crate::primitives::toolbar::ToolbarButton;
@@ -1019,6 +1168,18 @@ mod tests {
 
     /// A surface whose primitive has no `a11y_info` hook and whose
     /// capture carries no `WidgetId` — the generic-fallback case.
+    fn canvas_surface() -> Surface {
+        Surface::Canvas {
+            rect: Rect::new(0.0, 0.0, 30.0, 10.0),
+            canvas: Canvas {
+                id: WidgetId::new("sketch"),
+                ops: Vec::new(),
+            },
+        }
+    }
+
+    /// A mapped surface whose capture carries no `WidgetId`, and whose
+    /// mapping emits a presentational child for the thumb.
     fn scrollbar_surface() -> Surface {
         let rect = Rect::new(29.0, 0.0, 1.0, 10.0);
         Surface::Scrollbar {
@@ -1077,7 +1238,7 @@ mod tests {
 
     #[test]
     fn unmapped_primitive_is_a_labelled_group() {
-        let frame = frame_with(vec![scrollbar_surface()]);
+        let frame = frame_with(vec![canvas_surface()]);
         let tree = frame_to_tree(&frame, &FocusManager::new());
         let node = tree
             .children_of(tree.root())
@@ -1085,7 +1246,19 @@ mod tests {
             .copied()
             .expect("surface node");
         assert_eq!(node.role(), A11yRole::Group);
-        assert_eq!(node.label(), Some("Scrollbar"));
+        assert_eq!(node.label(), Some("Canvas"));
+    }
+
+    #[test]
+    fn scrollbar_reports_its_axis_and_a_presentational_thumb() {
+        let frame = frame_with(vec![scrollbar_surface()]);
+        let tree = frame_to_tree(&frame, &FocusManager::new());
+        assert_eq!(
+            tree.to_snapshot(),
+            "window \"quadraui\" [focused]\n  \
+             scroll_bar \"Vertical scrollbar\" [range=0/0-1]\n    \
+             presentation \"Scrollbar thumb\"\n"
+        );
     }
 
     #[test]
@@ -1258,7 +1431,7 @@ mod tests {
 
     #[test]
     fn surfaces_without_a_widget_id_still_appear() {
-        let frame = frame_with(vec![scrollbar_surface()]);
+        let frame = frame_with(vec![canvas_surface()]);
         let tree = frame_to_tree(&frame, &FocusManager::new());
         assert_eq!(tree.nodes().len(), 2, "root plus the id-less surface");
         assert_eq!(
