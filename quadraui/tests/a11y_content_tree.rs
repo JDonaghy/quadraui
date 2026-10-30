@@ -84,7 +84,54 @@ fn editor_exposes_role_and_joined_line_text() {
     scenario.snapshot().assert_matches(
         "\
 window \"quadraui\" [focused]
-  editor [value=\"fn main() {}\n\"]",
+  editor [value=\"fn main() {}\"]",
+    );
+}
+
+/// `EditorLine::raw_text` is not guaranteed to carry a trailing `\n` —
+/// a buffer whose lines omit it must still read as separate lines, not
+/// one run-together string.
+#[test]
+fn editor_with_newline_free_lines_still_reads_as_separate_lines() {
+    let line = |text: &str, idx: usize| EditorLine {
+        raw_text: text.to_string(),
+        gutter_text: format!("{:>3}", idx + 1),
+        spans: Vec::new(),
+        line_idx: idx,
+        is_current_line: false,
+        is_fold_header: false,
+        folded_line_count: 0,
+        git_diff: None,
+        diff_status: None,
+        diagnostics: Vec::new(),
+        spell_errors: Vec::new(),
+        is_breakpoint: false,
+        is_conditional_bp: false,
+        is_dap_current: false,
+        is_wrap_continuation: false,
+        segment_col_offset: 0,
+        annotation: None,
+        ghost_suffix: None,
+        is_ghost_continuation: false,
+        indent_guides: Vec::new(),
+        colorcolumns: Vec::new(),
+    };
+    let editor = Editor::new(WidgetId::from("editor"), rect(10.0)).with_lines(vec![
+        line("fn main() {", 0),
+        line("    one();", 1),
+        line("}", 2),
+    ]);
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::Editor {
+        rect: VIEWPORT,
+        editor,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  editor [value=\"fn main() {\\n    one();\\n}\"]",
     );
 }
 
@@ -141,6 +188,32 @@ window \"quadraui\" [focused]
     );
 }
 
+/// A line's timestamp is part of what gets read out, not just what gets
+/// painted — it must survive into the accessible child, prefixed exactly
+/// as it would appear on screen.
+#[test]
+fn text_display_line_includes_timestamp_prefix() {
+    let mut td = TextDisplay::new(WidgetId::from("log"));
+    td.lines.push(TextDisplayLine {
+        spans: vec![StyledSpan::plain("server started")],
+        decoration: Decoration::default(),
+        timestamp: Some("12:34:56".to_string()),
+    });
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::TextDisplay {
+        rect: rect(5.0),
+        td,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  document
+    label \"12:34:56 server started\"",
+    );
+}
+
 // --------------------------------------------------------------- terminal
 
 #[test]
@@ -161,6 +234,45 @@ fn terminal_exposes_role_and_visible_grid_as_value() {
         "\
 window \"quadraui\" [focused]
   terminal [value=\"hi\"]",
+    );
+}
+
+/// Never-written cells default to a single space (vt100 convention) —
+/// a row padded out to the grid width must not read as a wall of spaces.
+#[test]
+fn terminal_trims_trailing_blank_padding_from_each_row() {
+    let blank = cell(' ');
+    let term = Terminal {
+        id: "term".into(),
+        cells: vec![
+            vec![
+                cell('h'),
+                cell('i'),
+                blank.clone(),
+                blank.clone(),
+                blank.clone(),
+            ],
+            vec![
+                cell('o'),
+                cell('k'),
+                blank.clone(),
+                blank.clone(),
+                blank.clone(),
+            ],
+        ],
+        scrollbar: None,
+    };
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::Terminal {
+        rect: rect(2.0),
+        term,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  terminal [value=\"hi\\nok\"]",
     );
 }
 
@@ -192,8 +304,8 @@ fn diff_view_exposes_read_only_labelled_panes() {
         "\
 window \"quadraui\" [focused]
   document
-    document \"a/file.rs\" [readonly value=\"old\n\"]
-    document \"b/file.rs\" [readonly value=\"new\n\"]",
+    document \"a/file.rs\" [readonly value=\"old\\n\"]
+    document \"b/file.rs\" [readonly value=\"new\\n\"]",
     );
 }
 
@@ -223,8 +335,58 @@ fn diff_view_right_editable_pane_drops_readonly_token() {
         "\
 window \"quadraui\" [focused]
   document
-    document \"Left\" [readonly value=\"old\n\"]
-    document \"Right\" [value=\"new\n\"]",
+    document \"Left\" [readonly value=\"old\\n\"]
+    document \"Right\" [value=\"new\\n\"]",
+    );
+}
+
+/// [`DiffMode::Unified`] has only one column to read — the hunk's `@@ … @@`
+/// header followed by its `+`/`-`/` ` prefixed rows — matching exactly what
+/// every backend's `draw_unified` paints.
+#[test]
+fn diff_view_unified_mode_exposes_single_pane_with_hunk_text() {
+    use quadraui::{DiffHunk, DiffRow, DiffRowKind};
+
+    let view = DiffView {
+        id: "diff".into(),
+        left: "old\n".to_string(),
+        right: "new\n".to_string(),
+        left_label: Some("a/file.rs".to_string()),
+        right_label: Some("b/file.rs".to_string()),
+        hunks: vec![DiffHunk {
+            left_start: 1,
+            right_start: 1,
+            rows: vec![
+                DiffRow {
+                    left: Some("old".to_string()),
+                    right: None,
+                    kind: DiffRowKind::Removed,
+                },
+                DiffRow {
+                    left: None,
+                    right: Some("new".to_string()),
+                    kind: DiffRowKind::Added,
+                },
+            ],
+        }],
+        mode: DiffMode::Unified,
+        editability: DiffEditability::ReadOnly,
+        scroll_offset: 0,
+        focused_pane: DiffPane::Left,
+        has_focus: false,
+    };
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::DiffView {
+        rect: rect(10.0),
+        view,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  document
+    document [readonly value=\"@@ -1,1 +1,1 @@\\n-old\\n+new\"]",
     );
 }
 
@@ -265,6 +427,91 @@ fn chart_with_no_app_label_is_unlabelled() {
         "\
 window \"quadraui\" [focused]
   chart",
+    );
+}
+
+/// A chart's visual series data has no textual equivalent, so an app that
+/// turns on the legend — the only visual cue that series names are meant
+/// to be read — gets them joined into the accessible name.
+#[test]
+fn chart_with_legend_shown_uses_series_labels_as_name() {
+    let chart = Chart {
+        id: "cpu".into(),
+        kind: ChartKind::Sparkline,
+        series: vec![
+            Series {
+                label: "cpu".to_string(),
+                data: vec![0.1, 0.4, 0.2],
+                color: None,
+                fill: false,
+            },
+            Series {
+                label: "memory".to_string(),
+                data: vec![0.3, 0.5, 0.2],
+                color: None,
+                fill: false,
+            },
+        ],
+        x_label: None,
+        y_label: None,
+        y_range: None,
+        x_range: None,
+        show_legend: true,
+        y_ticks: None,
+        x_ticks: None,
+        show_grid: false,
+    };
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::Chart {
+        rect: rect(3.0),
+        chart,
+        hovered_point: None,
+        crosshair_x: None,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  chart \"cpu, memory\"",
+    );
+}
+
+/// An axis label takes priority over the legend fallback, since it is a
+/// more deliberate app-authored name than a joined series-label list.
+#[test]
+fn chart_with_axis_label_prefers_it_over_legend() {
+    let chart = Chart {
+        id: "cpu".into(),
+        kind: ChartKind::Sparkline,
+        series: vec![Series {
+            label: "cpu".to_string(),
+            data: vec![0.1, 0.4, 0.2],
+            color: None,
+            fill: false,
+        }],
+        x_label: Some("Time".to_string()),
+        y_label: Some("Percent".to_string()),
+        y_range: None,
+        x_range: None,
+        show_legend: true,
+        y_ticks: None,
+        x_ticks: None,
+        show_grid: false,
+    };
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::Chart {
+        rect: rect(3.0),
+        chart,
+        hovered_point: None,
+        crosshair_x: None,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  chart \"Percent\"",
     );
 }
 

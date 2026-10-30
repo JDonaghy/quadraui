@@ -173,10 +173,11 @@ pub enum A11yRole {
     /// A non-interactive image.
     Image,
     /// A data visualization such as a line, bar, or scatter chart. Maps
-    /// onto `accesskit::Role::GraphicsDocument`. Carries no synthesized
-    /// label — a chart's visual series data has no textual equivalent, so
-    /// the accessible name is whatever the app supplies; an unlabelled
-    /// chart is announced as unlabelled.
+    /// onto `accesskit::Role::GraphicsDocument`. A chart's visual series
+    /// data has no textual equivalent, so the accessible name falls back,
+    /// in order, to the app's own label override, the chart's axis labels,
+    /// then (only when the legend is shown) its series labels; a chart with
+    /// none of those is announced as unlabelled.
     Chart,
     /// An arbitrary immediate-mode drawing surface. Maps onto
     /// `accesskit::Role::Canvas`. Carries no synthesized label, for the
