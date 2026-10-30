@@ -461,12 +461,14 @@ only a push to `main` runs this workflow.
   `ItemIsMenu` now mirrors whether a menu is actually attached instead of a
   hard-coded `false`, and `set_menu` emits a `PropertiesChanged` refresh for
   it, so KDE Plasma and waybar open the dbusmenu on left-click instead of
-  sending a dead `Activate`. A background thread watches
-  `org.kde.StatusNotifierWatcher`'s own name ownership and re-registers the
-  item whenever a new owner takes it, recovering from a plasmashell restart
-  or a GNOME AppIndicator-extension toggle instead of silently losing the
-  icon for the rest of the process's life while `set_icon`/`set_menu` keep
-  reporting `Ok`.
+  sending a dead `Activate`. A background thread polls
+  `org.kde.StatusNotifierWatcher`'s own name ownership on its own short-lived
+  connections and re-registers the item whenever a new owner takes it,
+  recovering from a plasmashell restart or a GNOME AppIndicator-extension
+  toggle instead of silently losing the icon for the rest of the process's
+  life while `set_icon`/`set_menu` keep reporting `Ok`. The watch holds only a
+  weak reference to the item's own state, so it cannot keep the item's D-Bus
+  connection alive past the item itself being dropped.
 
 ## [0.6.1] - 2026-10-26
 ### Added

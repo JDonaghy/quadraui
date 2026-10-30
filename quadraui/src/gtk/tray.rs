@@ -29,12 +29,16 @@
 //! so a reachable-but-unresponsive bus address degrades to the same
 //! honest `false` as an unreachable one instead of hanging the caller.
 //! A successful [`linux::connect`] also starts a background thread that
-//! watches the watcher's own bus-name ownership and re-runs
+//! polls the watcher's own bus-name ownership — on short-lived
+//! connections of its own, not the item's — and re-runs
 //! `RegisterStatusNotifierItem` whenever a new owner takes it, so a
 //! watcher restart (plasmashell crashing/restarting, the GNOME
 //! AppIndicator extension being toggled off and back on) is recovered
 //! from instead of leaving the item permanently gone while
-//! `set_icon`/`set_menu` keep reporting `Ok` — see
+//! `set_icon`/`set_menu` keep reporting `Ok`. The thread outlives
+//! neither the item nor this process: it holds only a weak reference to
+//! the item's shared state and exits within one poll interval of that
+//! state's last strong owner dropping — see
 //! [`linux::spawn_watcher_restart_recovery`].
 //!
 //! ## Crossing to the GTK main thread
@@ -85,7 +89,12 @@
 //! which [`linux::StatusNotifierItemIface::item_is_menu`] always answers
 //! live from [`TrayShared::has_menu`] — a host (KDE Plasma, waybar) that
 //! read `false` before a menu was attached needs telling to re-fetch it,
-//! the same reason the dbusmenu `LayoutUpdated` emit exists.
+//! the same reason the dbusmenu `LayoutUpdated` emit exists. This relies
+//! on the host actually honouring `PropertiesChanged` on
+//! `org.kde.StatusNotifierItem`; a host that only re-fetches properties
+//! on `NewIcon`/`NewStatus`/`NewToolTip` and ignores `PropertiesChanged`
+//! there would still see a stale `ItemIsMenu` after a `set_menu` call
+//! that follows `set_icon`.
 //!
 //! ## Teardown
 //!
@@ -93,8 +102,13 @@
 //! closes the D-Bus connection on its own; the only way the tray item
 //! goes away is `GtkBackend` (and with it, `GtkTrayState`) being
 //! dropped, which drops `zbus::blocking::Connection` and lets the bus
-//! itself notice the peer disappeared. That is intentional — there is
-//! no `TrayService::remove`/`hide` in the trait for any backend to call.
+//! itself notice the peer disappeared. The watcher-restart recovery
+//! thread (see `linux::spawn_watcher_restart_recovery`) never stands in
+//! the way of that: it holds a `Weak` reference to the item's shared
+//! state rather than the connection itself, so it cannot keep either one
+//! alive, and notices the state is gone on its next poll tick. That is
+//! intentional — there is no `TrayService::remove`/`hide` in the trait
+//! for any backend to call.
 
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
@@ -172,6 +186,16 @@ impl TrayShared {
     fn has_menu(&self) -> bool {
         self.menu.is_some()
     }
+
+    /// Flips `active` to `true` and reports whether this call is the one
+    /// that did it — `true` only the first time this is called, `false`
+    /// on every call after. Backs `Status`'s one-shot `Passive`→`Active`
+    /// transition (see [`TrayShared::active`]'s doc) as a pure,
+    /// bus-independent operation so it has direct unit-test coverage
+    /// without needing a live connection.
+    fn mark_active(&mut self) -> bool {
+        !std::mem::replace(&mut self.active, true)
+    }
 }
 
 /// Floor on how often [`GtkTrayState::ensure_connected`] re-attempts a
@@ -195,6 +219,24 @@ const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
 /// watcher as absent.
 #[cfg(target_os = "linux")]
 const DBUS_CALL_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How often [`linux::spawn_watcher_restart_recovery`]'s background loop
+/// polls for a new owner of `org.kde.StatusNotifierWatcher`'s bus name —
+/// see that function's doc for why this polls on fresh, short-lived
+/// connections rather than subscribing to `NameOwnerChanged` on the
+/// item's own long-lived connection.
+#[cfg(target_os = "linux")]
+const WATCHER_RESTART_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How many times [`linux::register_with_retry`] retries a failed
+/// `RegisterStatusNotifierItem` call before giving up until the
+/// recovery loop's next poll tick.
+#[cfg(target_os = "linux")]
+const REGISTER_RETRY_ATTEMPTS: u32 = 3;
+
+/// Delay between [`linux::register_with_retry`]'s attempts.
+#[cfg(target_os = "linux")]
+const REGISTER_RETRY_DELAY: Duration = Duration::from_millis(200);
 
 /// Per-[`super::backend::GtkBackend`] tray state. `connection` is
 /// `None` until [`Self::ensure_connected`] first succeeds; on Linux
@@ -264,9 +306,7 @@ impl GtkTrayState {
         let became_active = {
             let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
             shared.icon = vec![pixmap];
-            let was_active = shared.active;
-            shared.active = true;
-            !was_active
+            shared.mark_active()
         };
         self.emit_item_signal("NewIcon");
         // Only the first `set_icon` flips `Status` from `Passive` to
@@ -377,17 +417,16 @@ impl GtkTrayState {
     /// plain property with no SNI-specific change signal of its own.
     #[cfg(target_os = "linux")]
     fn emit_item_is_menu_changed(&self) {
+        use std::collections::HashMap;
+
         if let Some(connection) = &self.connection {
             let is_menu = self
                 .shared
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .has_menu();
-            let changed: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> =
-                std::collections::HashMap::from([(
-                    "ItemIsMenu",
-                    zbus::zvariant::Value::from(is_menu),
-                )]);
+            let changed: HashMap<&str, zbus::zvariant::Value<'_>> =
+                HashMap::from([("ItemIsMenu", zbus::zvariant::Value::from(is_menu))]);
             let invalidated: Vec<&str> = Vec::new();
             let _ = connection.emit_signal(
                 Option::<zbus::names::BusName<'_>>::None,
@@ -577,7 +616,11 @@ mod linux {
         /// (a capability probe) must not show a permanent blank item;
         /// reporting `Passive` is how this module keeps that promise
         /// since GTK, unlike `macos::tray`, has no way to defer
-        /// registering with the watcher at all.
+        /// registering with the watcher at all. This is not quite full
+        /// parity with `NSStatusItem`'s lazy creation, though: KDE Plasma
+        /// still lists a `Passive` item in its hidden/overflow tray
+        /// popup, so a capability probe alone can still surface a blank
+        /// row there even though nothing is visible in the main tray.
         #[zbus(property)]
         fn status(&self) -> String {
             let shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -624,10 +667,10 @@ mod linux {
         /// Mirrors [`TrayShared::has_menu`] live: `true` once
         /// [`super::GtkTrayState::set_menu`] has attached a non-empty
         /// menu. A host (KDE Plasma, waybar) that sees `true` opens the
-        /// dbusmenu on left-click instead of calling `Activate` —
-        /// hard-coding this `false` left those hosts with no way to open
-        /// the menu and no `TrayClicked` either, since [`Self::
-        /// push_click`] drops `Activate` whenever a menu is attached.
+        /// dbusmenu on left-click instead of calling `Activate` — a host
+        /// that reads `false` has no way to open the menu, and no
+        /// `TrayClicked` either, since [`Self::push_click`] drops
+        /// `Activate` whenever a menu is attached.
         #[zbus(property)]
         fn item_is_menu(&self) -> bool {
             self.shared
@@ -862,54 +905,133 @@ mod linux {
                 waker: Arc::clone(&waker),
             },
         )?;
+        let unique_name = connection
+            .unique_name()
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+        // Captured before registering, so the recovery loop's baseline
+        // already reflects reality the moment `connect` returns — a
+        // watcher restart landing in the gap between this read and the
+        // `RegisterStatusNotifierItem` call below is still a change the
+        // loop's first poll tick will see, rather than being missed
+        // because the loop's own baseline was taken too late.
+        let initial_owner = current_watcher_owner(&connection);
         let watcher = zbus::blocking::Proxy::new(
             &connection,
             "org.kde.StatusNotifierWatcher",
             "/StatusNotifierWatcher",
             "org.kde.StatusNotifierWatcher",
         )?;
-        let unique_name = connection
-            .unique_name()
-            .map(|n| n.to_string())
-            .unwrap_or_default();
         watcher.call_method("RegisterStatusNotifierItem", &(unique_name.clone(),))?;
-        spawn_watcher_restart_recovery(watcher, unique_name);
+        spawn_watcher_restart_recovery(Arc::downgrade(&shared), unique_name, initial_owner);
         Ok(connection)
     }
 
-    /// Watches `org.kde.StatusNotifierWatcher`'s own bus-name ownership
-    /// on a dedicated background thread for as long as `watcher`'s
-    /// connection stays alive, and re-runs `RegisterStatusNotifierItem`
-    /// every time a new owner takes the name. A plasmashell restart, or
-    /// toggling GNOME's AppIndicator extension off and back on, both
-    /// show up this way — without this, `connect`'s one-time
-    /// registration is only ever seen by the watcher instance that was
-    /// running when it ran, so a later restart loses the icon for the
-    /// rest of the process's life even though `set_icon`/`set_menu` keep
-    /// reporting `Ok`. Best-effort: if `receive_owner_changed` itself
-    /// fails to subscribe, this silently does nothing rather than
-    /// failing `connect` over a recovery path that was never load-
-    /// bearing for the initial registration.
+    /// Current owner of `org.kde.StatusNotifierWatcher`'s well-known bus
+    /// name, or `None` if nobody owns it (including when the probe
+    /// connection itself fails). Used both to establish
+    /// [`spawn_watcher_restart_recovery`]'s starting baseline and by its
+    /// polling loop on every later tick.
+    fn current_watcher_owner(connection: &Connection) -> Option<zbus::names::OwnedUniqueName> {
+        let proxy = zbus::blocking::fdo::DBusProxy::new(connection).ok()?;
+        let name: zbus::names::BusName<'_> = "org.kde.StatusNotifierWatcher".try_into().ok()?;
+        proxy.get_name_owner(name).ok()
+    }
+
+    /// Whether a poll tick's freshly observed watcher owner represents
+    /// an actual restart worth re-registering for: some owner is present
+    /// now and it differs from the last one seen. Pulled out of
+    /// [`spawn_watcher_restart_recovery`]'s loop as a pure function, with
+    /// no D-Bus call of its own, so the "is this change interesting"
+    /// decision has direct unit-test coverage independent of whether the
+    /// host running the tests has a watcher at all.
+    fn watcher_restarted(
+        previous: &Option<zbus::names::OwnedUniqueName>,
+        current: &Option<zbus::names::OwnedUniqueName>,
+    ) -> bool {
+        current.is_some() && current != previous
+    }
+
+    /// Calls `RegisterStatusNotifierItem` on a fresh proxy built on
+    /// `connection`, retrying up to [`super::REGISTER_RETRY_ATTEMPTS`]
+    /// times with [`super::REGISTER_RETRY_DELAY`] between attempts. A
+    /// watcher that has only just taken over the bus name can briefly
+    /// refuse registrations before its own object server is ready to
+    /// accept them, so a single failed attempt right after an owner
+    /// change does not necessarily mean recovery failed outright.
+    /// Best-effort beyond that: if every attempt fails, this gives up
+    /// until the recovery loop's next poll tick re-evaluates the owner.
+    fn register_with_retry(connection: &Connection, unique_name: &str) {
+        for attempt in 0..super::REGISTER_RETRY_ATTEMPTS {
+            let Ok(watcher) = zbus::blocking::Proxy::new(
+                connection,
+                "org.kde.StatusNotifierWatcher",
+                "/StatusNotifierWatcher",
+                "org.kde.StatusNotifierWatcher",
+            ) else {
+                return;
+            };
+            if watcher
+                .call_method("RegisterStatusNotifierItem", &(unique_name,))
+                .is_ok()
+            {
+                return;
+            }
+            if attempt + 1 < super::REGISTER_RETRY_ATTEMPTS {
+                std::thread::sleep(super::REGISTER_RETRY_DELAY);
+            }
+        }
+    }
+
+    /// Polls for a new owner of `org.kde.StatusNotifierWatcher`'s bus
+    /// name on a background thread, and re-runs
+    /// `RegisterStatusNotifierItem` every time the owner changes — a
+    /// plasmashell restart, or toggling GNOME's AppIndicator extension
+    /// off and back on, both show up this way. Without this, `connect`'s
+    /// one-time registration is only ever seen by the watcher instance
+    /// that was running when it ran, so a later restart loses the icon
+    /// for the rest of the process's life even though
+    /// `set_icon`/`set_menu` keep reporting `Ok`.
+    ///
+    /// Deliberately holds no connection of its own beyond each poll
+    /// tick: a persistent `Proxy`/`Connection` here would keep the
+    /// item's own bus connection (and everything reachable through it —
+    /// the registered interface objects, their
+    /// `Arc<Mutex<TrayShared>>` clones) alive for as long as this thread
+    /// ran, which would be forever, since the thread would then be the
+    /// connection's own last owner — breaking this module's "Teardown"
+    /// invariant that dropping `GtkTrayState` drops its connection.
+    /// Instead each tick dials a fresh, short-lived connection purely to
+    /// check the watcher's current owner ([`current_watcher_owner`]) and,
+    /// on an actual change ([`watcher_restarted`]), to re-register
+    /// ([`register_with_retry`]) — and the loop itself holds only a
+    /// `Weak` reference to `shared`, exiting the moment it can no longer
+    /// upgrade, which happens once `GtkTrayState` (and the connection it
+    /// owns) is dropped and nothing else keeps `shared` alive. That
+    /// bounds this thread's lifetime to roughly `GtkTrayState`'s own
+    /// lifetime plus one poll tick, rather than outliving it.
     fn spawn_watcher_restart_recovery(
-        watcher: zbus::blocking::Proxy<'static>,
+        shared: std::sync::Weak<Mutex<TrayShared>>,
         unique_name: String,
+        initial_owner: Option<zbus::names::OwnedUniqueName>,
     ) {
-        let Ok(owner_changes) = watcher.receive_owner_changed() else {
-            return;
-        };
         std::thread::spawn(move || {
-            // Each item is `None` for an owner change that releases the
-            // name (nothing to register with) and `Some` for a new
-            // owner taking it — only the latter means a watcher is
-            // there to register with again. The iterator itself stops
-            // once the underlying connection is dropped, which is this
-            // thread's own exit condition — there is nothing left to
-            // recover for.
-            for new_owner in owner_changes {
-                if new_owner.is_some() {
-                    let _ =
-                        watcher.call_method("RegisterStatusNotifierItem", &(unique_name.clone(),));
+            let mut last_owner = initial_owner;
+            loop {
+                std::thread::sleep(super::WATCHER_RESTART_POLL_INTERVAL);
+                if shared.upgrade().is_none() {
+                    return;
                 }
+                let Ok(probe) = zbus::blocking::connection::Builder::session()
+                    .and_then(|b| b.method_timeout(super::DBUS_CALL_TIMEOUT).build())
+                else {
+                    continue;
+                };
+                let current = current_watcher_owner(&probe);
+                if watcher_restarted(&last_owner, &current) {
+                    register_with_retry(&probe, &unique_name);
+                }
+                last_owner = current;
             }
         });
     }
@@ -1091,6 +1213,18 @@ mod linux {
             };
             assert!(with_menu.item_is_menu());
         }
+
+        #[test]
+        fn watcher_restarted_true_only_when_a_new_owner_differs() {
+            let a = zbus::names::OwnedUniqueName::try_from(":1.1").unwrap();
+            let b = zbus::names::OwnedUniqueName::try_from(":1.2").unwrap();
+
+            assert!(!watcher_restarted(&None, &None));
+            assert!(watcher_restarted(&None, &Some(a.clone())));
+            assert!(!watcher_restarted(&Some(a.clone()), &Some(a.clone())));
+            assert!(watcher_restarted(&Some(a), &Some(b.clone())));
+            assert!(!watcher_restarted(&Some(b), &None));
+        }
     }
 }
 
@@ -1173,6 +1307,18 @@ pub(crate) mod tests {
             UiEvent::ContextMenuItemActivated(id) if id == WidgetId::new("item")
         ));
         assert!(matches!(events[2], UiEvent::User(_)));
+    }
+
+    #[test]
+    fn mark_active_flips_once_and_reports_the_transition() {
+        let mut shared = TrayShared::default();
+        assert!(
+            shared.mark_active(),
+            "first call performs the Passive->Active transition"
+        );
+        assert!(shared.active);
+        assert!(!shared.mark_active(), "second call is a no-op transition");
+        assert!(!shared.mark_active());
     }
 
     /// Probes the session bus directly for a running
