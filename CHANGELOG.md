@@ -58,6 +58,15 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Fixed
+- The shared GUI form painter (`macOS`, Windows, GTK) now honors
+  `FormField`'s `label_position`, `label_align` and `label_width` instead of
+  always drawing the label flush-left — `Hidden` suppresses the label and
+  gives the field the full row, `Top` stacks the label above the field,
+  `Left`/`Inline` place it beside the field with `label_align` positioning
+  it within the (explicit-or-natural) label column. The TUI renderer
+  already honored these; forms that never set them render byte-for-byte
+  unchanged.
 
 ## [0.7.0] - 2026-10-30
 ### Added
