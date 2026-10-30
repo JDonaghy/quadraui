@@ -354,6 +354,66 @@ window \"quadraui\" [focused]
     );
 }
 
+/// A field whose kind owns its own set (a dropdown's option count, here)
+/// must not also be announced with a position/size drawn from the form's
+/// field list — `aria-posinset`/`aria-setsize` describe one set, and
+/// pairing a field index with an unrelated option total announces the
+/// wrong "n of m". The dropdown reports only its own `size`; the plain
+/// fields around it still report their place among the form's fields.
+#[test]
+fn a_field_that_owns_its_own_set_size_does_not_borrow_the_forms_position() {
+    let form = Form {
+        id: WidgetId::new("form"),
+        fields: vec![
+            field(
+                "form:name",
+                "Name",
+                FieldKind::TextInput {
+                    value: "Ada".to_string(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+            ),
+            field(
+                "form:theme",
+                "Theme",
+                FieldKind::Dropdown {
+                    options: vec![
+                        StyledText::plain("Light"),
+                        StyledText::plain("Dark"),
+                        StyledText::plain("High contrast"),
+                        StyledText::plain("System"),
+                    ],
+                    selected_idx: 1,
+                },
+            ),
+            field("form:news", "Newsletter", FieldKind::Toggle { value: true }),
+        ],
+        focused_field: None,
+        scroll_offset: 0,
+        has_focus: true,
+        label_position: Default::default(),
+        label_align: Default::default(),
+        label_width: None,
+    };
+    let snapshot = A11yScenario::new()
+        .with_surface(Surface::Form {
+            rect: rect(0.0, 6.0),
+            form,
+        })
+        .snapshot();
+
+    snapshot.assert_matches(
+        "\
+window \"quadraui\" [focused]
+  form \"Form\" [size=3]
+    text_input \"Name\" [readonly value=\"Ada\" pos=1/3]
+    combo_box \"Theme\" [value=\"Dark\" size=4]
+    check_box \"Newsletter\" [checked pos=3/3]",
+    );
+}
+
 // ----------------------------------------------------------------- dialog
 
 #[test]
@@ -609,6 +669,51 @@ window \"quadraui\" [focused]
     label \"fn main()\" [pos=1/2]
     label \"See the book\" [pos=2/2]
     button \"the book\" [selected value=\"https://doc.rust-lang.org/book/\"]",
+    );
+}
+
+/// A split whose *both* halves are themselves splits — the ordinary
+/// four-pane grid — must not collide the two inner `"split"` nodes under
+/// the same parent key. Each half keeps its own distinct leaves rather
+/// than one half silently replacing the other in the tree.
+#[test]
+fn nested_split_of_splits_keeps_all_four_panes() {
+    let snapshot = A11yScenario::new()
+        .with_surface(Surface::SplitTree {
+            rect: rect(0.0, 10.0),
+            tree: SplitTree::Split {
+                direction: SplitDirection::Horizontal,
+                ratio: 0.5,
+                first: Box::new(SplitTree::Split {
+                    direction: SplitDirection::Vertical,
+                    ratio: 0.5,
+                    first: Box::new(SplitTree::Leaf(WidgetId::new("top-left"))),
+                    second: Box::new(SplitTree::Leaf(WidgetId::new("bottom-left"))),
+                }),
+                second: Box::new(SplitTree::Split {
+                    direction: SplitDirection::Vertical,
+                    ratio: 0.5,
+                    first: Box::new(SplitTree::Leaf(WidgetId::new("top-right"))),
+                    second: Box::new(SplitTree::Leaf(WidgetId::new("bottom-right"))),
+                }),
+            },
+        })
+        .snapshot();
+
+    snapshot.assert_matches(
+        "\
+window \"quadraui\" [focused]
+  group \"Split tree\"
+    group \"Split\" [value=\"horizontal\" range=0.5/0-1]
+      group \"Split\" [value=\"vertical\" range=0.5/0-1]
+        group \"top-left\"
+        presentation \"Split divider\"
+        group \"bottom-left\"
+      presentation \"Split divider\"
+      group \"Split\" [value=\"vertical\" range=0.5/0-1]
+        group \"top-right\"
+        presentation \"Split divider\"
+        group \"bottom-right\"",
     );
 }
 
