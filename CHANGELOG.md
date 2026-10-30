@@ -439,6 +439,16 @@ only a push to `main` runs this workflow.
   chooser, which a terminal cannot show regardless of how faithful the
   in-canvas replacement is; callers after a real path rather than OS-native
   chrome can ignore the flag and just call the method.
+- Windows `PlatformServices::send_notification` no longer silently drops a
+  notification for an unregistered `AppUserModelID` — the state every
+  unpackaged/`cargo run`/xcopy-deployed app starts in, where the WinRT toast
+  APIs return `Ok` but render nothing. `set_aumid` now also writes the
+  `HKCU\Software\Classes\AppUserModelId\<aumid>\DisplayName` registry value
+  an unpackaged Win32 app needs before the OS will surface a toast for that
+  AUMID, and only records the AUMID as usable when that write succeeds; a
+  failed or skipped registration leaves `send_notification` with no toast to
+  attempt, so it falls straight through to the `Shell_NotifyIconW` balloon
+  instead of showing nothing.
 
 ## [0.6.1] - 2026-10-26
 ### Added

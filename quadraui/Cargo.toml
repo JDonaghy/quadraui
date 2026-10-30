@@ -821,8 +821,10 @@ windows = { version = "0.62", optional = true, features = [
     # Toast notifications: WinRT `Windows.UI.Notifications`
     # (`ToastNotification`/`ToastNotificationManager`/`ToastNotifier`) in
     # `send_notification`, replacing the pre-Win8-style `Shell_NotifyIconW`
-    # balloon as the primary path (the balloon stays as a fallback for when
-    # no AppUserModelID/shortcut is registered).
+    # balloon as the primary path (the balloon stays as a fallback for
+    # whenever the toast path isn't usable — see `Win32_System_Registry`
+    # below for why the AUMID has to be registered, not just set, before
+    # that's true).
     "UI_Notifications",
     # `windows::Data::Xml::Dom::XmlDocument`: the toast
     # content is built as a `ToastGeneric` XML document and handed to
@@ -833,6 +835,13 @@ windows = { version = "0.62", optional = true, features = [
     # `windows::Foundation::TypedEventHandler`: `ToastNotification::Activated`
     # takes one to deliver the click-through callback.
     "Foundation",
+    # `RegCreateKeyExW`/`RegSetValueExW`/`RegCloseKey`
+    # (`win_register_aumid_display_name`): writes
+    # `HKCU\Software\Classes\AppUserModelId\<aumid>\DisplayName` — the
+    # minimal registration an unpackaged app needs before WinRT will render
+    # a toast for its AUMID at all. Without this, `CreateToastNotifierWithId`
+    # and `Show` both return `Ok` while the OS discards the toast.
+    "Win32_System_Registry",
 ] }
 # `windows_numerics::Vector2` — the point type `ID2D1RenderTarget::DrawLine`/
 # `DrawEllipse`'s `D2D1_ELLIPSE` take (issue #26's chart line paths and hover
