@@ -117,6 +117,7 @@ pub mod native_menu;
 pub mod palette_dual_mode_app;
 pub mod panel_app;
 pub mod pipeline_app;
+pub mod platform_seams_demo;
 pub mod right_click_demo;
 #[cfg(any(feature = "gtk", feature = "win"))]
 pub mod scroll_view_demo;

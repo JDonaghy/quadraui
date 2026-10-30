@@ -4774,20 +4774,16 @@ pub trait PlatformServices {
     /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
     /// real recent-documents registration yet; wiring one into
     /// `NSDocumentController` on macOS or `SHAddToRecentDocs` on Win-GUI
-    /// is a separate, backend-specific follow-on. TUI overrides this
-    /// with an honest no-op that always returns `Ok(())`: a terminal has
-    /// no OS-level recent-documents list of its own to add to, and
-    /// "doing nothing, successfully" is the truthful outcome of asking a
-    /// backend with no such list to extend it — unlike
-    /// [`Self::set_login_item`]'s TUI story, there is no stale-looking
-    /// registration this no-op could later contradict. GTK/Linux has no
-    /// single desktop-standard recent-documents API the way clipboard or
-    /// trash are standardised across desktop environments
-    /// (`GtkRecentManager` is GTK-specific, not a cross-desktop
-    /// contract), so it intentionally stays at this `Unsupported`
-    /// default rather than guessing at one desktop's own mechanism; a
-    /// real GTK implementation is a separate follow-on, not an
-    /// oversight.
+    /// is a separate, backend-specific follow-on. TUI keeps this default
+    /// too: a terminal has no OS-level recent-documents list of its own
+    /// to add to, and there is no honest "success" value for a mutation
+    /// with nothing in this backend to mutate. GTK/Linux has no single
+    /// desktop-standard recent-documents API the way clipboard or trash
+    /// are standardised across desktop environments (`GtkRecentManager`
+    /// is GTK-specific, not a cross-desktop contract), so it
+    /// intentionally stays at this `Unsupported` default rather than
+    /// guessing at one desktop's own mechanism; a real GTK implementation
+    /// is a separate follow-on, not an oversight.
     fn add_recent_document(&self, path: &Path) -> ServiceResult<()> {
         let _ = path;
         Err(BackendError::Unsupported)
@@ -4798,11 +4794,10 @@ pub trait PlatformServices {
     /// `app.clearRecentDocuments`.
     ///
     /// Default: [`BackendError::Unsupported`], mirroring
-    /// [`Self::add_recent_document`]'s default and TUI/GTK story: TUI
-    /// overrides this with an honest no-op that always returns `Ok(())`
-    /// (nothing was ever added on this backend, so "cleared" is
-    /// trivially true), while GTK/Linux stays `Unsupported` for the same
-    /// reason [`Self::add_recent_document`] does.
+    /// [`Self::add_recent_document`]'s default and story on every
+    /// in-tree backend, TUI included: nothing was ever added on a
+    /// backend with no such list, so there is no honest "success" value
+    /// for clearing it either.
     fn clear_recent_documents(&self) -> ServiceResult<()> {
         Err(BackendError::Unsupported)
     }
@@ -4826,10 +4821,9 @@ pub trait PlatformServices {
     /// `NSMenu` on macOS is the only platform with a literal "Dock" to
     /// attach one to; a Windows follow-on would instead route through
     /// [`Self::set_jump_list`]'s taskbar "Tasks" group, not this
-    /// method). TUI overrides this with an honest no-op that always
-    /// returns `Ok(())`: a terminal has no Dock icon of its own to
-    /// attach a menu to, and discarding the menu is the truthful outcome
-    /// rather than an error. GTK/Linux has no standard cross-desktop
+    /// method). TUI keeps this default too: a terminal has no Dock icon
+    /// of its own to attach a menu to, and there is no honest "success"
+    /// value for attaching one. GTK/Linux has no standard cross-desktop
     /// equivalent of a Dock icon menu, so it intentionally stays at this
     /// `Unsupported` default rather than guessing at one desktop's own
     /// mechanism.
@@ -4844,12 +4838,11 @@ pub trait PlatformServices {
     /// uniformly rather than branching on [`Self::platform_name`].
     ///
     /// Default: [`BackendError::Unsupported`] on every in-tree backend,
-    /// including TUI: unlike [`Self::add_recent_document`]/
-    /// [`Self::set_dock_menu`], a jump list has no "discard it silently"
-    /// honest no-op — a caller that builds a jump list expecting it to
-    /// eventually appear on a real Windows taskbar has no equivalent
-    /// surface on a terminal to redirect to, so staying `Unsupported`
-    /// here is more honest than claiming success. Wiring a real
+    /// including TUI, mirroring [`Self::add_recent_document`]/
+    /// [`Self::set_dock_menu`]: a caller that builds a jump list expects
+    /// it to eventually appear on a real Windows taskbar, and there is
+    /// no equivalent surface on a terminal to redirect it to, so staying
+    /// `Unsupported` is the honest answer. Wiring a real
     /// `ICustomDestinationList` implementation on Win-GUI is a separate,
     /// backend-specific follow-on; this method only has to give it a
     /// contract to implement against.
