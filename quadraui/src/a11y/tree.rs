@@ -789,9 +789,7 @@ fn describe(content: &OwnedContent) -> Described {
         // Unit variants: the source surface carries no serializable
         // content, so only the role and name survive the frame capture.
         OwnedContent::FindReplace => Described::labelled(A11yRole::Form, "Find and replace"),
-        OwnedContent::DropOverlay => {
-            Described::labelled(A11yRole::Presentation, "Drop overlay")
-        }
+        OwnedContent::DropOverlay => Described::labelled(A11yRole::Presentation, "Drop overlay"),
         other => Described::fallback(other),
     }
 }

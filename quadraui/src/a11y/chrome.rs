@@ -319,7 +319,10 @@ impl A11yPrimitive for StatusBar {
 
     fn a11y_children(&self) -> Vec<A11yChild> {
         let mut children = Vec::new();
-        for (side, segments) in [("left", &self.left_segments), ("right", &self.right_segments)] {
+        for (side, segments) in [
+            ("left", &self.left_segments),
+            ("right", &self.right_segments),
+        ] {
             for (idx, segment) in segments.iter().enumerate() {
                 if let Some(child) = status_segment(side, idx, segment) {
                     children.push(child);
@@ -331,7 +334,9 @@ impl A11yPrimitive for StatusBar {
 }
 
 fn status_segment(side: &str, idx: usize, segment: &StatusBarSegment) -> Option<A11yChild> {
-    let label = non_empty(segment.text.clone())?;
+    // Segments carry their own visual padding (`" main "`). An announced
+    // name must not, so the label is the trimmed text.
+    let label = non_empty(segment.text.trim().to_string())?;
     let role = match segment.action_id {
         Some(_) => A11yRole::Button,
         None => A11yRole::Label,
@@ -425,7 +430,9 @@ impl A11yPrimitive for Dialog {
             Some(DialogInput::TextInput(input)) => {
                 let info = A11yInfo::new()
                     .with_role(A11yRole::TextInput)
-                    .with_label(non_empty(input.placeholder.clone()).unwrap_or_else(|| "Input".into()))
+                    .with_label(
+                        non_empty(input.placeholder.clone()).unwrap_or_else(|| "Input".into()),
+                    )
                     .with_read_only(input.cursor.is_none());
                 let info = match non_empty(input.value.clone()) {
                     Some(value) => info.with_value(value),
@@ -478,7 +485,9 @@ fn dialog_table(table: &DialogTable) -> A11yChild {
         rows.push(
             A11yChild::new(
                 "header",
-                A11yInfo::new().with_role(A11yRole::Row).with_label("Header"),
+                A11yInfo::new()
+                    .with_role(A11yRole::Row)
+                    .with_label("Header"),
             )
             .with_children(table_cells(headers)),
         );
@@ -487,7 +496,11 @@ fn dialog_table(table: &DialogTable) -> A11yChild {
         rows.push(
             A11yChild::new(
                 format!("row.{idx}"),
-                in_set(A11yInfo::new().with_role(A11yRole::Row), idx, table.rows.len()),
+                in_set(
+                    A11yInfo::new().with_role(A11yRole::Row),
+                    idx,
+                    table.rows.len(),
+                ),
             )
             .with_children(table_cells(row)),
         );
