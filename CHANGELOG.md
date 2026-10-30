@@ -60,30 +60,26 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 
+This tranche adds a wide Electron-parity API surface. Most of it is real,
+backend-implemented behaviour; a meaningful slice is contract-only — the
+seam, types and backend-neutral bookkeeping land now, but every method
+still answers `BackendError::Unsupported` on every GUI backend (TUI
+included, except where a backend installs an honest no-op) until a later
+PR wires up the per-platform implementation. The two groups below separate
+"this works today" from "this compiles and type-checks against a future
+backend, but calling it on 0.7.0 does nothing."
+
+#### New platform capabilities (implemented on at least one real backend)
+
 - `SystemTheme::reduce_motion` — the reduced-motion accessibility-preference
   query (macOS `accessibilityDisplayShouldReduceMotion`, Windows
   `SPI_GETCLIENTAREAANIMATION` inverted, GTK's `gtk-enable-animations`
   inverted). Defaults to `false`; always `false` on TUI, which has no
   animation concept to reduce. Additive field — existing `SystemTheme`
-  construction sites across all backends are updated in the same PR, so
-  this is a non-breaking change for consumers.
-- `PlatformServices::set_as_default_protocol_client`/
-  `is_default_protocol_client`/`remove_as_default_protocol_client` — the
-  protocol/file-association registration seam (`app.setAsDefaultProtocolClient`/
-  `isDefaultProtocolClient`/`removeAsDefaultProtocolClient` parity target).
-  All three take a bare URL scheme (e.g. `"myapp"`) and default to
-  `BackendError::Unsupported` on every in-tree backend, including TUI — no
-  backend has a safe default answer for OS-level registration state it
-  doesn't read. Per-backend registration (`LSSetDefaultHandlerForURLScheme`/
-  `HKCR` writes/`xdg-mime default`) is a separate, backend-specific
-  follow-on.
-- `PlatformServices::set_login_item`/`login_item_enabled` — the
-  launch-at-login seam (`app.setLoginItemSettings`/`getLoginItemSettings`
-  parity target), with a new `LoginItemOptions` type (`open_hidden`,
-  `args`) in `quadraui::login_item`. Both default to
-  `BackendError::Unsupported`; TUI overrides `login_item_enabled` with an
-  honest no-op that always reports `false`. Per-backend registration
-  (`SMAppService`/registry/XDG autostart) is a separate follow-on.
+  construction sites across all backends are updated in the same PR, and
+  `Default`/serde-based consumers see no change. A consumer that builds
+  `SystemTheme` from a struct literal without `..Default::default()` does
+  break; see the breaking-changes list under `### Changed` below.
 - `PlatformServices::app_path` resolves standard, per-app filesystem
   locations — Electron's `app.getPath` parity target (`AppPathKind::
   UserData`/`AppConfig`/`AppCache`/`Logs`/`Temp`/`Downloads`/`Documents`/
@@ -206,33 +202,6 @@ only a push to `main` runs this workflow.
 - `TextInputLayout::pointer_shape` now reports `Text` (not `Default`) over
   the blank band inside `content_bounds` below the last visible line,
   matching how native multi-line editors still show an I-beam there.
-- `PlatformServices::begin_drag_out` and `DragOutPayload` (`drag::DragOutPayload`,
-  also re-exported at the crate root) — the seam for dragging an item *out* of
-  a quadraui window to the OS (Finder / Explorer / another app), Electron's
-  `webContents.startDrag` parity and the counterpart to the existing drag-*in*
-  `UiEvent::FilesDropped`. `DragOutPayload` carries file paths, free-text (a
-  `text/uri-list` fallback, renderable via `DragOutPayload::to_uri_list`), or
-  both. `begin_drag_out` defaults to `BackendError::Unsupported` with no
-  in-tree backend overriding it yet — the per-backend OS drag session
-  (`NSView::beginDraggingSession` on macOS, `IDropSource`/`DoDragDrop` on
-  Win-GUI, `gtk4::DragSource` on GTK) is a separate follow-on.
-  `DragOutPayload::to_uri_list` renders each path through the shared,
-  now-uncfg'd `desktop::path_to_file_uri` — percent-encoded per RFC 3986,
-  correct for Windows drive-letter, UNC and verbatim (`\\?\`) paths (not
-  just POSIX ones), lossless for non-UTF-8 Unix paths, and CRLF-terminated
-  on every line including the last per RFC 2483. A relative path, the one
-  shape with no well-defined `file://` URI, is skipped.
-- `PlatformServices::register_global_shortcut`/`unregister_global_shortcut`/
-  `unregister_all_global_shortcuts`, `GlobalShortcutId`,
-  `GlobalShortcutRegistry` and `UiEvent::GlobalShortcut` — the seam for an
-  OS-wide hotkey that fires even when the app isn't focused, distinct from
-  the in-window-only `Accelerator`/`register_accelerator`. Backend-neutral
-  bookkeeping (id lifecycle, double-registration rejection) only; the three
-  `PlatformServices` methods default to `BackendError::Unsupported` with no
-  in-tree backend overriding them yet — per-backend OS hotkey registration
-  (Win32 `RegisterHotKey`, Carbon/Cocoa `RegisterEventHotKey`, the
-  `org.freedesktop.portal.GlobalShortcuts` XDG portal) is a separate
-  follow-on.
 - `WindowControl::is_fullscreen` — queries the window's current fullscreen
   state, alongside the existing `is_maximized`, so a backend-neutral caller
   can read both chrome flags without tracking its own shadow state.
@@ -248,30 +217,6 @@ only a push to `main` runs this workflow.
   state snapshot rather than a delta, including the Win32 detail that
   minimizing a maximized window reports `maximized` and `minimized` together.
   GTK and macOS producers are tracked separately.
-- `PlatformServices::update_service` — an auto-update seam. The new
-  `UpdateService` trait (`check_for_update`, `download_and_stage`,
-  `apply_on_quit`) plus its `UpdateFeed`/`UpdateInfo`/`StagedUpdate` types
-  give every backend a contract to implement an updater against, without
-  requiring one yet: the default `UpdateService` returns
-  `BackendError::Unsupported` from every method. The TUI backend overrides
-  `download_and_stage` to emit an `"update available: <version>"`
-  diagnostic through `quadraui::diagnostics` before degrading to the same
-  `Unsupported`, since a terminal app has no package format of its own to
-  stage. `UpdateInfo::builder` offers a named-field alternative to `new`'s
-  four same-typed positional arguments. Sparkle/WinSparkle/AppImage
-  implementations are separate follow-ons.
-- `PlatformServices::on_battery`/`thermal_state` and
-  `begin_power_save_block`/`end_power_save_block` — a power-monitor and
-  sleep-blocker seam, plus the new `UiEvent::PowerStateChanged` event (not
-  yet emitted by any backend) and the `power` module's `PowerSaveKind`/
-  `ThermalState`/`BlockerId`/`PowerEventKind` types. All four methods
-  default to `BackendError::Unsupported`. The TUI backend overrides the
-  blocker pair with an honest no-op implementation — it mints and tracks a
-  real `BlockerId` so a begin/end lifecycle behaves consistently, it just
-  never asks the OS to stay awake — while leaving `on_battery`/
-  `thermal_state` at the default, since a terminal has no battery/thermal
-  signal of its own. IOKit/Win32/`org.freedesktop.login1` implementations
-  are separate, backend-specific follow-ons.
 - `FieldKind::Dropdown` TUI popup: the TUI backend now paints an in-canvas
   option list under a focused `Dropdown` field, instead of leaving the
   selected value and the rest of the options invisible between Enter
@@ -365,6 +310,88 @@ only a push to `main` runs this workflow.
   `Form`, after validation and before the field list is rendered, so a
   field hides/shows or enables/disables declaratively with no per-keystroke
   host round-trip; fields with no declared rule are left untouched.
+- `WindowControl::set_document_edited`/`set_represented_filename` — the
+  dirty-document / represented-file seam
+  (`BrowserWindow.setDocumentEdited`/`setRepresentedFilename` parity
+  target). Both default to `BackendError::Unsupported`; macOS implements
+  them for real with `NSWindow::setDocumentEdited:`/
+  `setRepresentedFilename:` (the modified dot in the close button and the
+  titlebar proxy icon). No other in-tree backend has equivalent chrome.
+
+#### New capability contracts (Electron-parity API surface, not yet implemented)
+
+No in-tree backend implements the methods below yet; each one defaults to
+`BackendError::Unsupported` on every GUI backend, TUI included except
+where a bullet notes an honest no-op override.
+
+- `PlatformServices::set_as_default_protocol_client`/
+  `is_default_protocol_client`/`remove_as_default_protocol_client` — the
+  protocol/file-association registration seam (`app.setAsDefaultProtocolClient`/
+  `isDefaultProtocolClient`/`removeAsDefaultProtocolClient` parity target).
+  All three take a bare URL scheme (e.g. `"myapp"`) and default to
+  `BackendError::Unsupported` on every in-tree backend, including TUI — no
+  backend has a safe default answer for OS-level registration state it
+  doesn't read. Per-backend registration (`LSSetDefaultHandlerForURLScheme`/
+  `HKCR` writes/`xdg-mime default`) is a separate, backend-specific
+  follow-on.
+- `PlatformServices::set_login_item`/`login_item_enabled` — the
+  launch-at-login seam (`app.setLoginItemSettings`/`getLoginItemSettings`
+  parity target), with a new `LoginItemOptions` type (`open_hidden`,
+  `args`) in `quadraui::login_item`. Both default to
+  `BackendError::Unsupported`; TUI overrides `login_item_enabled` with an
+  honest no-op that always reports `false`. Per-backend registration
+  (`SMAppService`/registry/XDG autostart) is a separate follow-on.
+- `PlatformServices::begin_drag_out` and `DragOutPayload` (`drag::DragOutPayload`,
+  also re-exported at the crate root) — the seam for dragging an item *out* of
+  a quadraui window to the OS (Finder / Explorer / another app), Electron's
+  `webContents.startDrag` parity and the counterpart to the existing drag-*in*
+  `UiEvent::FilesDropped`. `DragOutPayload` carries file paths, free-text (a
+  `text/uri-list` fallback, renderable via `DragOutPayload::to_uri_list`), or
+  both. `begin_drag_out` defaults to `BackendError::Unsupported` with no
+  in-tree backend overriding it yet — the per-backend OS drag session
+  (`NSView::beginDraggingSession` on macOS, `IDropSource`/`DoDragDrop` on
+  Win-GUI, `gtk4::DragSource` on GTK) is a separate follow-on.
+  `DragOutPayload::to_uri_list` renders each path through the shared,
+  now-uncfg'd `desktop::path_to_file_uri` — percent-encoded per RFC 3986,
+  correct for Windows drive-letter, UNC and verbatim (`\\?\`) paths (not
+  just POSIX ones), lossless for non-UTF-8 Unix paths, and CRLF-terminated
+  on every line including the last per RFC 2483. A relative path, the one
+  shape with no well-defined `file://` URI, is skipped.
+- `PlatformServices::register_global_shortcut`/`unregister_global_shortcut`/
+  `unregister_all_global_shortcuts`, `GlobalShortcutId`,
+  `GlobalShortcutRegistry` and `UiEvent::GlobalShortcut` — the seam for an
+  OS-wide hotkey that fires even when the app isn't focused, distinct from
+  the in-window-only `Accelerator`/`register_accelerator`. Backend-neutral
+  bookkeeping (id lifecycle, double-registration rejection) only; the three
+  `PlatformServices` methods default to `BackendError::Unsupported` with no
+  in-tree backend overriding them yet — per-backend OS hotkey registration
+  (Win32 `RegisterHotKey`, Carbon/Cocoa `RegisterEventHotKey`, the
+  `org.freedesktop.portal.GlobalShortcuts` XDG portal) is a separate
+  follow-on.
+- `PlatformServices::update_service` — an auto-update seam. The new
+  `UpdateService` trait (`check_for_update`, `download_and_stage`,
+  `apply_on_quit`) plus its `UpdateFeed`/`UpdateInfo`/`StagedUpdate` types
+  give every backend a contract to implement an updater against, without
+  requiring one yet: the default `UpdateService` returns
+  `BackendError::Unsupported` from every method. The TUI backend overrides
+  `download_and_stage` to emit an `"update available: <version>"`
+  diagnostic through `quadraui::diagnostics` before degrading to the same
+  `Unsupported`, since a terminal app has no package format of its own to
+  stage. `UpdateInfo::builder` offers a named-field alternative to `new`'s
+  four same-typed positional arguments. Sparkle/WinSparkle/AppImage
+  implementations are separate follow-ons.
+- `PlatformServices::on_battery`/`thermal_state` and
+  `begin_power_save_block`/`end_power_save_block` — a power-monitor and
+  sleep-blocker seam, plus the new `UiEvent::PowerStateChanged` event (not
+  yet emitted by any backend) and the `power` module's `PowerSaveKind`/
+  `ThermalState`/`BlockerId`/`PowerEventKind` types. All four methods
+  default to `BackendError::Unsupported`. The TUI backend overrides the
+  blocker pair with an honest no-op implementation — it mints and tracks a
+  real `BlockerId` so a begin/end lifecycle behaves consistently, it just
+  never asks the OS to stay awake — while leaving `on_battery`/
+  `thermal_state` at the default, since a terminal has no battery/thermal
+  signal of its own. IOKit/Win32/`org.freedesktop.login1` implementations
+  are separate, backend-specific follow-ons.
 - `PlatformServices::add_recent_document`/`clear_recent_documents`/
   `set_dock_menu`/`set_jump_list` — the recent-documents/jump-list/Dock-menu
   seam (`app.addRecentDocument`/`app.setJumpList`/`app.dock.setMenu` parity
@@ -381,13 +408,50 @@ only a push to `main` runs this workflow.
   implementation (macOS `NSDocumentController`/Dock menu,
   Windows `SHAddToRecentDocs`/`ICustomDestinationList`) is a separate,
   backend-specific follow-on.
-- `WindowControl::set_document_edited`/`set_represented_filename` — the
-  dirty-document / represented-file seam
-  (`BrowserWindow.setDocumentEdited`/`setRepresentedFilename` parity
-  target). Both default to `BackendError::Unsupported`; macOS implements
-  them for real with `NSWindow::setDocumentEdited:`/
-  `setRepresentedFilename:` (the modified dot in the close button and the
-  titlebar proxy icon). No other in-tree backend has equivalent chrome.
+
+### Changed
+
+**Breaking** (see "Downstream impact" below). The entries in this tranche
+that are not safe for an existing downstream to pick up on a `0.6.x` ->
+`0.7.0` bump without source changes:
+
+- `Form`/`FormField` gained new, non-optional-by-shim fields — three on
+  `Form` (`label_position`, `label_align`, `label_width`) and four on
+  `FormField` (`label_position`, `label_align`, `label_width`,
+  `tab_index`) — and neither struct is `#[non_exhaustive]`
+  (`quadraui/src/primitives/form.rs`). `#[serde(default)]` makes this
+  non-breaking for deserialization and for any construction that already
+  uses `..Default::default()`, but any downstream building `Form { .. }`/
+  `FormField { .. }` as an exhaustive struct literal fails to compile.
+  coord-tui does this at roughly 10 sites; vimcode at roughly 7, and
+  vimcode pins `quadraui = "0.6"` from crates.io, so this would otherwise
+  break on its next `cargo update`.
+- `PointerShape` (`quadraui::backend::PointerShape`) is now
+  `#[non_exhaustive]`, on top of gaining nine new variants — breaking for
+  any downstream `match`ing it exhaustively (without a wildcard arm),
+  independent of the new variants themselves.
+- `SystemTheme::reduce_motion` — the new field is `#[serde(default)]` and
+  every in-tree construction site is updated, so `Default`/serde-based
+  consumers see no change, but a downstream building `SystemTheme` from a
+  struct literal without `..Default::default()` fails to compile. This is
+  the accurate, qualified claim; unqualified "non-breaking" wording for
+  this field is wrong and does not appear above.
+- The TUI `Form`/`FormField` label-placement paint path (see the
+  `### Added` entry above): every field that resolves to the default
+  `Left` label position now shares one label column sized to the widest
+  such label, so an existing multi-field form's inputs — including
+  `ToggleGroup`/`ButtonRow`/`Toolbar`/`SegmentedControl` item columns —
+  can move right to line up with that shared column. No API changed, but
+  the rendered layout of an unmodified form does.
+
+**Downstream impact.** coord-tui
+(TODO(link): coord-tui consumer-migration issue) and vimcode
+(TODO(link): vimcode consumer-migration issue) both construct `Form`/
+`FormField` via struct literals and need to switch to
+`..Default::default()` (or a builder, once one exists) before adopting
+`0.7.0`; vimcode additionally needs to widen its `quadraui = "0.6"`
+crates.io dependency to `"0.7"` deliberately rather than picking it up on
+an unattended `cargo update`.
 
 ### Fixed
 
