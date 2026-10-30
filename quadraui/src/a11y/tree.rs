@@ -51,14 +51,16 @@
 //!
 //! A primitive opts into a real mapping by implementing
 //! [`A11yPrimitive`] — role plus state for itself, plus the child nodes
-//! it contains. Collections ([`ListView`]) and the application chrome —
-//! tab bars, activity bars, menus, status bars, dialogs, forms, toasts,
-//! tooltips, progress indicators, scrollbars, splits and panels — are
-//! mapped fully; the chrome mappings live in [`super::chrome`]. Every
-//! other primitive goes through a generic fallback: it still appears, as
-//! a [`A11yRole::Group`] labelled with its kind ("Diff view", "Minimap",
-//! …), so an unmapped primitive reads as an unhelpful group rather than
-//! vanishing from the tree.
+//! it contains. Collections ([`ListView`]), the application chrome — tab
+//! bars, activity bars, menus, status bars, dialogs, forms, toasts,
+//! tooltips, progress indicators, scrollbars, splits and panels (mapped
+//! in [`super::chrome`]) — and the content primitives — editor, text
+//! input, text display, terminal, diff view, chart, image, minimap and
+//! canvas (mapped in [`super::content`]) — are mapped fully. Every other
+//! primitive (`Board`, `MessageList`, `PipelineView`, …) goes through a
+//! generic fallback: it still appears, as a [`A11yRole::Group`] labelled
+//! with its kind ("Board", "Message list", …), so an unmapped primitive
+//! reads as an unhelpful group rather than vanishing from the tree.
 //!
 //! Two kinds of node are deliberate rather than accidental:
 //! a [`A11yRole::Presentation`] node marks a part with no semantics of
@@ -391,6 +393,9 @@ impl A11yTree {
 
     /// A stable, assertable text rendering of the whole tree: one line
     /// per node, two spaces of indent per level, `role "label" [state]`.
+    /// A multi-line `value` (an editor buffer, a terminal grid, a diff
+    /// pane) is escaped — `\n` becomes the two characters `\` `n` — so
+    /// the node it belongs to still occupies exactly one line.
     ///
     /// Bounds are deliberately **not** included — they depend on the
     /// frame's layout and would make every snapshot brittle. Assert on
@@ -947,7 +952,7 @@ fn state_tokens(node: &A11yTreeNode, focused: bool) -> Vec<String> {
         tokens.push("readonly".to_string());
     }
     if let Some(value) = &info.value {
-        tokens.push(format!("value=\"{value}\""));
+        tokens.push(format!("value=\"{}\"", escape_snapshot_value(value)));
     }
     if let Some(range) = info.value_range {
         tokens.push(format!(
@@ -976,6 +981,16 @@ fn state_tokens(node: &A11yTreeNode, focused: bool) -> Vec<String> {
         tokens.push("hidden".to_string());
     }
     tokens
+}
+
+/// Escapes embedded newlines (and the backslash that would make the
+/// escape ambiguous) in a `value=` token so a multi-line value — an
+/// editor buffer, a terminal grid, a diff pane — still renders on the
+/// single snapshot line its node occupies. [`A11yTree::to_snapshot`]
+/// documents one line per node; this is what keeps that true for
+/// primitives whose value is itself multi-line.
+fn escape_snapshot_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\n', "\\n")
 }
 
 /// Plain text of a styled run, for use as an accessible name.
@@ -1107,6 +1122,7 @@ fn toolbar_child(idx: usize, button: &ToolbarButton) -> A11yChild {
 mod tests {
     use super::*;
     use crate::frame::{ScreenLayout, Surface};
+    use crate::primitives::board::BoardModel;
     use crate::primitives::canvas::Canvas;
     use crate::primitives::list::ListItem;
     use crate::primitives::scrollbar::Scrollbar;
@@ -1175,14 +1191,28 @@ mod tests {
         }
     }
 
-    /// A surface whose primitive has no `a11y_info` hook and whose
-    /// capture carries no `WidgetId` — the generic-fallback case.
+    /// A surface whose capture carries no top-level `WidgetId` (the id
+    /// lives on the primitive, not the `Surface` variant itself).
     fn canvas_surface() -> Surface {
         Surface::Canvas {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
             canvas: Canvas {
                 id: WidgetId::new("sketch"),
                 ops: Vec::new(),
+            },
+        }
+    }
+
+    /// A surface whose primitive has no `a11y_info` hook — the
+    /// generic-fallback case.
+    fn board_surface() -> Surface {
+        Surface::Board {
+            rect: Rect::new(0.0, 0.0, 30.0, 10.0),
+            model: BoardModel {
+                id: WidgetId::new("sprint"),
+                columns: Vec::new(),
+                selected_card_id: None,
+                col_scroll_offset: 0,
             },
         }
     }
@@ -1247,7 +1277,7 @@ mod tests {
 
     #[test]
     fn unmapped_primitive_is_a_labelled_group() {
-        let frame = frame_with(vec![canvas_surface()]);
+        let frame = frame_with(vec![board_surface()]);
         let tree = frame_to_tree(&frame, &FocusManager::new());
         let node = tree
             .children_of(tree.root())
@@ -1255,7 +1285,7 @@ mod tests {
             .copied()
             .expect("surface node");
         assert_eq!(node.role(), A11yRole::Group);
-        assert_eq!(node.label(), Some("Canvas"));
+        assert_eq!(node.label(), Some("Board"));
     }
 
     #[test]
