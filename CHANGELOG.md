@@ -452,6 +452,21 @@ only a push to `main` runs this workflow.
   shown in the toast header, Action Center, and Settings → Notifications
   (not the opaque AUMID string). The AUMID is only recorded as usable once
   that write succeeds.
+- GTK/Linux tray (`StatusNotifierItem`): a bare `Backend::tray()` capability
+  probe that never calls `set_icon` now reports `Status = "Passive"` instead
+  of a permanently-registered, visibly blank item — matching
+  `TrayService::set_icon`'s "a host that never calls this shows nothing"
+  contract and the lazy creation `macos::tray`'s `NSStatusItem` already gets.
+  The first `set_icon` flips it to `"Active"` and emits `NewStatus` once.
+  `ItemIsMenu` now mirrors whether a menu is actually attached instead of a
+  hard-coded `false`, and `set_menu` emits a `PropertiesChanged` refresh for
+  it, so KDE Plasma and waybar open the dbusmenu on left-click instead of
+  sending a dead `Activate`. A background thread watches
+  `org.kde.StatusNotifierWatcher`'s own name ownership and re-registers the
+  item whenever a new owner takes it, recovering from a plasmashell restart
+  or a GNOME AppIndicator-extension toggle instead of silently losing the
+  icon for the rest of the process's life while `set_icon`/`set_menu` keep
+  reporting `Ok`.
 
 ## [0.6.1] - 2026-10-26
 ### Added
