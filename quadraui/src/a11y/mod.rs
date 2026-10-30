@@ -60,10 +60,10 @@
 //!
 //! `A11yInfo`'s two oldest fields, `a11y_role` and `a11y_label`, keep the
 //! `a11y_` prefix to match `docs/UI_CRATE_DESIGN.md` decision #6 (see
-//! above). The eleven state/structure fields added alongside the typed
-//! role (`selected`, `expanded`, `checked`, `disabled`, `read_only`,
+//! above). The state/structure fields alongside the typed role
+//! (`selected`, `expanded`, `checked`, `disabled`, `read_only`,
 //! `value`, `value_range`, `level`, `position_in_set`, `set_size`,
-//! `live`) deliberately drop it: they live only on this sidecar struct,
+//! `live`, `hidden`, `modal`) deliberately drop it: they live only on this sidecar struct,
 //! so the field name alone (`info.selected`, not `info.a11y_selected`)
 //! is already unambiguous, and decision #6's own rationale was to
 //! disambiguate `a11y_role`/`a11y_label` from a primitive's own
@@ -72,11 +72,12 @@
 
 use serde::{Deserialize, Serialize};
 
+mod chrome;
 pub mod tree;
 
 pub use tree::{
-    frame_to_tree, A11yChild, A11yNodeId, A11yPrimitive, A11yTree, A11yTreeBuilder, A11yTreeNode,
-    A11yUpdate,
+    frame_to_tree, frame_to_tree_with_modal, A11yChild, A11yNodeId, A11yPrimitive, A11yTree,
+    A11yTreeBuilder, A11yTreeNode, A11yUpdate,
 };
 
 /// A typed accessibility role, replacing a free-form role string.
@@ -113,6 +114,8 @@ pub enum A11yRole {
     Menu,
     /// A single selectable entry within a [`Self::Menu`].
     MenuItem,
+    /// The application's top-level menu bar, containing [`Self::Menu`]s.
+    MenuBar,
     /// A hierarchical tree of [`Self::TreeItem`]s.
     Tree,
     /// A single node within a [`Self::Tree`].
@@ -129,6 +132,21 @@ pub enum A11yRole {
     Cell,
     /// A single-line (or multi-line) editable text field.
     TextInput,
+    /// A two- or tri-state checkbox or toggle switch.
+    CheckBox,
+    /// A container of mutually exclusive [`Self::RadioButton`]s, such as a
+    /// segmented control.
+    RadioGroup,
+    /// One mutually exclusive option within a [`Self::RadioGroup`].
+    RadioButton,
+    /// A continuous numeric control dragged along a track.
+    Slider,
+    /// A collapsed list of options with one currently selected.
+    ComboBox,
+    /// Static text naming another element, such as a form field caption.
+    Label,
+    /// A group of related input fields submitted together.
+    Form,
     /// A read-mostly document surface (e.g. a rendered preview pane).
     Document,
     /// A multi-line editable document, such as a code editor. Maps onto
@@ -141,6 +159,14 @@ pub enum A11yRole {
     Dialog,
     /// A status message region (e.g. a status bar).
     Status,
+    /// An important, time-sensitive message such as a toast notification.
+    Alert,
+    /// Transient explanatory text attached to another element.
+    Tooltip,
+    /// A scrollbar driving a scrollable region.
+    ScrollBar,
+    /// A draggable divider between two resizable panes.
+    Splitter,
     /// A progress indicator.
     Progress,
     /// A non-interactive image.
@@ -277,6 +303,18 @@ pub struct A11yInfo {
     /// explicit `Off` for backends that care about the difference.
     #[serde(default)]
     pub live: Option<A11yLive>,
+    /// Whether this element and its subtree are withheld from assistive
+    /// technology while still painted on screen — ARIA's `aria-hidden`.
+    /// Set on every top-level surface behind an open modal dialog so the
+    /// AT cursor cannot escape the dialog. `None` means "not asserted"
+    /// rather than "visible".
+    #[serde(default)]
+    pub hidden: Option<bool>,
+    /// Whether this element is a modal dialog: content outside it is
+    /// inert while it is open — ARIA's `aria-modal`. `None` means "not
+    /// asserted" rather than "non-modal".
+    #[serde(default)]
+    pub modal: Option<bool>,
 }
 
 impl A11yInfo {
@@ -364,6 +402,19 @@ impl A11yInfo {
         self.live = Some(live);
         self
     }
+
+    /// Sets whether this element and its subtree are withheld from
+    /// assistive technology.
+    pub fn with_hidden(mut self, hidden: bool) -> Self {
+        self.hidden = Some(hidden);
+        self
+    }
+
+    /// Sets whether this element is a modal dialog.
+    pub fn with_modal(mut self, modal: bool) -> Self {
+        self.modal = Some(modal);
+        self
+    }
 }
 
 /// `accesskit`-facing conversions. Gated on the optional `a11y` cargo
@@ -386,6 +437,7 @@ mod accesskit_convert {
                 A11yRole::TabList => accesskit::Role::TabList,
                 A11yRole::Menu => accesskit::Role::Menu,
                 A11yRole::MenuItem => accesskit::Role::MenuItem,
+                A11yRole::MenuBar => accesskit::Role::MenuBar,
                 A11yRole::Tree => accesskit::Role::Tree,
                 A11yRole::TreeItem => accesskit::Role::TreeItem,
                 A11yRole::List => accesskit::Role::List,
@@ -394,11 +446,22 @@ mod accesskit_convert {
                 A11yRole::Row => accesskit::Role::Row,
                 A11yRole::Cell => accesskit::Role::Cell,
                 A11yRole::TextInput => accesskit::Role::TextInput,
+                A11yRole::CheckBox => accesskit::Role::CheckBox,
+                A11yRole::RadioGroup => accesskit::Role::RadioGroup,
+                A11yRole::RadioButton => accesskit::Role::RadioButton,
+                A11yRole::Slider => accesskit::Role::Slider,
+                A11yRole::ComboBox => accesskit::Role::ComboBox,
+                A11yRole::Label => accesskit::Role::Label,
+                A11yRole::Form => accesskit::Role::Form,
                 A11yRole::Document => accesskit::Role::Document,
                 A11yRole::Editor => accesskit::Role::Document,
                 A11yRole::Terminal => accesskit::Role::Terminal,
                 A11yRole::Dialog => accesskit::Role::Dialog,
                 A11yRole::Status => accesskit::Role::Status,
+                A11yRole::Alert => accesskit::Role::Alert,
+                A11yRole::Tooltip => accesskit::Role::Tooltip,
+                A11yRole::ScrollBar => accesskit::Role::ScrollBar,
+                A11yRole::Splitter => accesskit::Role::Splitter,
                 A11yRole::Progress => accesskit::Role::ProgressIndicator,
                 A11yRole::Image => accesskit::Role::Image,
                 A11yRole::Group => accesskit::Role::Group,
@@ -491,6 +554,8 @@ mod tests {
         assert_eq!(info.position_in_set, None);
         assert_eq!(info.set_size, None);
         assert_eq!(info.live, None);
+        assert_eq!(info.hidden, None);
+        assert_eq!(info.modal, None);
     }
 
     #[test]
@@ -508,7 +573,9 @@ mod tests {
             .with_level(2)
             .with_position_in_set(3)
             .with_set_size(10)
-            .with_live(A11yLive::Polite);
+            .with_live(A11yLive::Polite)
+            .with_hidden(true)
+            .with_modal(true);
 
         assert_eq!(info.a11y_role, Some(A11yRole::Button));
         assert_eq!(info.a11y_label.as_deref(), Some("Save"));
@@ -526,6 +593,8 @@ mod tests {
         assert_eq!(info.position_in_set, Some(3));
         assert_eq!(info.set_size, Some(10));
         assert_eq!(info.live, Some(A11yLive::Polite));
+        assert_eq!(info.hidden, Some(true));
+        assert_eq!(info.modal, Some(true));
     }
 
     /// `#[serde(default)]` allows JSON missing these fields (or `{}`) to

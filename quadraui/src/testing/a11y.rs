@@ -85,7 +85,7 @@ impl A11yScenario {
 
     /// Renames the root window node, as an application would.
     pub fn with_root_label(mut self, label: impl Into<String>) -> Self {
-        self.builder = A11yTreeBuilder::new().with_root_label(label);
+        self.builder = std::mem::take(&mut self.builder).with_root_label(label);
         self
     }
 
@@ -112,9 +112,24 @@ impl A11yScenario {
         self
     }
 
+    /// Names the surface a backend's modal stack holds on top,
+    /// chainable. That surface is marked modal and every other
+    /// top-level surface is hidden from assistive technology; without
+    /// it the topmost dialog surface in the frame is used.
+    pub fn with_modal(mut self, id: WidgetId) -> Self {
+        self.set_modal(Some(id));
+        self
+    }
+
     /// Appends a surface.
     pub fn push(&mut self, surface: Surface) {
         self.layout.push(surface);
+    }
+
+    /// Sets (or clears) the modal top between snapshots — the stateful
+    /// form of [`Self::with_modal`].
+    pub fn set_modal(&mut self, id: Option<WidgetId>) {
+        self.builder.set_modal_top(id);
     }
 
     /// The pushed surfaces, mutably — replace one and re-snapshot to
