@@ -65,6 +65,23 @@ fn in_set(info: A11yInfo, idx: usize, total: usize) -> A11yInfo {
         .with_set_size(total as u32)
 }
 
+/// A menu label with its Alt-activation marker removed: `"&File"`
+/// announces as `File`, and a literal ampersand is written `"&&"`.
+/// The marker is a visual underline cue, not part of the name.
+fn strip_mnemonic(label: &str) -> String {
+    let mut out = String::with_capacity(label.len());
+    let mut chars = label.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '&' {
+            out.push(ch);
+        } else if chars.as_str().starts_with('&') {
+            chars.next();
+            out.push('&');
+        }
+    }
+    out
+}
+
 /// The axis name a scrollbar or split reports as its value.
 fn direction_name(direction: SplitDirection) -> &'static str {
     match direction {
@@ -201,10 +218,11 @@ impl A11yPrimitive for MenuBar {
             .iter()
             .enumerate()
             .map(|(idx, item)| {
+                let name = strip_mnemonic(&item.label);
                 let info = in_set(
                     A11yInfo::new()
                         .with_role(A11yRole::MenuItem)
-                        .with_label(&item.label)
+                        .with_label(&name)
                         .with_disabled(item.disabled)
                         .with_expanded(self.open_item == Some(idx)),
                     idx,
@@ -216,7 +234,7 @@ impl A11yPrimitive for MenuBar {
                         "menu",
                         A11yInfo::new()
                             .with_role(A11yRole::Menu)
-                            .with_label(&item.label)
+                            .with_label(&name)
                             .with_set_size(items.len() as u32),
                     )
                     .with_children(context_menu_children(items))]),
@@ -890,6 +908,8 @@ fn severity_name(severity: ToastSeverity) -> &'static str {
 
 impl A11yPrimitive for Tooltip {
     fn a11y_info(&self) -> A11yInfo {
+        // Tip text is written for a bordered box, so it may carry padding
+        // spaces at either end; an announced name must not.
         let label = match &self.styled_lines {
             Some(lines) if !lines.is_empty() => lines
                 .iter()
@@ -898,7 +918,7 @@ impl A11yPrimitive for Tooltip {
                 .join(" ")
                 .trim()
                 .to_string(),
-            _ => self.text.clone(),
+            _ => self.text.trim().to_string(),
         };
         A11yInfo::new()
             .with_role(A11yRole::Tooltip)
