@@ -37,10 +37,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::dispatch::DragState;
+use crate::drag::DragOutPayload;
 use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::focus::FocusManager;
 use crate::interaction::InteractionState;
+use crate::login_item::LoginItemOptions;
 use crate::modal_stack::ModalStack;
+use crate::paths::AppPathKind;
+use crate::power::{BlockerId, PowerSaveKind, ThermalState};
 use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::button::{Button, ButtonLayout};
@@ -81,6 +85,7 @@ use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::switch::{Switch, SwitchLayout};
+use crate::update::UpdateService;
 // `TabBarHits` is `#[deprecated]` — this trait still returns it from six
 // methods below, so the import itself needs the same allow every use site
 // does.
@@ -94,8 +99,8 @@ use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::{Color, WidgetId};
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Form, ListView, Palette, PaletteLayout, StatusBar,
-    TabBar, Terminal, TextDisplay, TreeView,
+    Accelerator, AcceleratorId, ActivityBar, Form, GlobalShortcutId, ListView, Palette,
+    PaletteLayout, StatusBar, TabBar, Terminal, TextDisplay, TreeView,
 };
 use serde::{Deserialize, Serialize};
 
@@ -121,12 +126,46 @@ pub enum ResizeEdge {
 /// already taken by [`crate::primitives::editor::CursorShape`] (the
 /// text-editor caret shape, re-exported as `EditorCursorShape`), which is an
 /// unrelated concept (text caret vs. OS mouse pointer).
+///
+/// `#[non_exhaustive]`: every variant beyond [`Self::Default`] and
+/// [`Self::Resize`] is additive — a future shape (e.g. a zoom/magnifier
+/// cursor) must not be a breaking change for a downstream consumer matching
+/// on this type. A backend's own `PointerShape` → native-cursor mapping is
+/// free to fall back to [`Self::Default`] for any variant it hasn't wired
+/// up yet (see each backend's `mac_cursor_kind`/`pointer_shape_cursor_name`/
+/// `pointer_shape_to_win32_cursor`) — that fallback, not a hard match-arm
+/// requirement, is what keeps adding a variant here non-breaking in-tree
+/// too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PointerShape {
     /// The platform's normal arrow/default pointer.
     Default,
     /// A directional resize pointer for the given window edge/corner.
     Resize(ResizeEdge),
+    /// I-beam over editable/selectable text (e.g. [`TextInput`]).
+    Text,
+    /// A hand/pointing-hand cursor over a clickable control (buttons,
+    /// links, list/tree rows that activate on click).
+    Pointer,
+    /// An open-hand cursor over something draggable, before the drag
+    /// starts.
+    Grab,
+    /// A closed-hand cursor while a drag is in progress.
+    Grabbing,
+    /// A crosshair, e.g. for a precise-selection/drawing surface.
+    Crosshair,
+    /// A busy/wait cursor for an operation in progress.
+    Wait,
+    /// A "this drop target/action is rejected" cursor.
+    NotAllowed,
+    /// A horizontal (left-right) column-resize cursor, distinct from
+    /// [`Self::Resize`]'s window-edge resize — for in-content dividers
+    /// such as a table column border or a split-pane sash.
+    ColResize,
+    /// A vertical (up-down) row-resize cursor — the row/sash counterpart
+    /// of [`Self::ColResize`].
+    RowResize,
 }
 
 /// Window-state control surface — set/get the title, size, position and
@@ -215,6 +254,16 @@ pub trait WindowControl {
         Err(BackendError::Unsupported)
     }
 
+    /// Whether the window is currently fullscreen. Read-only and
+    /// side-effect-free — same "poll it from a paint path" rationale as
+    /// [`Self::is_maximized`]. A backend whose fullscreen is a manual
+    /// style/rect flip rather than a single reversible OS call (Win-GUI)
+    /// answers from whatever it saved when [`Self::set_fullscreen`] last
+    /// ran, not a live OS query.
+    fn is_fullscreen(&self) -> ServiceResult<bool> {
+        Err(BackendError::Unsupported)
+    }
+
     /// Pin (`true`) or unpin (`false`) the window above all others.
     ///
     /// Not available on GTK4/Wayland: Wayland's window-stacking model has
@@ -256,6 +305,25 @@ pub trait WindowControl {
 
     /// Bring the window to the front and give it keyboard focus.
     fn focus(&mut self) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Mark the window's document as having unsaved changes (`true`) or
+    /// clean (`false`) — Electron `BrowserWindow.setDocumentEdited`
+    /// parity. macOS shows this as the small dot inside the window's
+    /// close button; every other backend has no equivalent chrome and
+    /// reports [`BackendError::Unsupported`].
+    fn set_document_edited(&mut self, _edited: bool) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Associate the window with the file at `path` (or clear the
+    /// association when `None`) — Electron
+    /// `BrowserWindow.setRepresentedFilename` parity. macOS shows this as
+    /// a proxy icon next to the title that the user can drag or
+    /// command-click to reveal the file's path; every other backend has
+    /// no equivalent chrome and reports [`BackendError::Unsupported`].
+    fn set_represented_filename(&mut self, _path: Option<&Path>) -> ServiceResult<()> {
         Err(BackendError::Unsupported)
     }
 }
@@ -4100,9 +4168,10 @@ pub trait PlatformServices {
     fn clipboard(&self) -> &dyn Clipboard;
 
     /// Show a native file-open dialog (blocking). Returns `None` if the
-    /// user cancelled. TUI backends have no native dialog to show and
-    /// unconditionally return `None` (no stderr hint is written); apps
-    /// should provide an in-TUI picker instead.
+    /// user cancelled. TUI backends have no native dialog to show;
+    /// instead they drive an in-canvas `FilePickerController` through a
+    /// nested draw-and-read loop and return the path it resolves, the
+    /// same `Some(path)`/`None` contract as a native chooser.
     fn show_file_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf>;
 
     /// Show a native file-save dialog.
@@ -4119,12 +4188,13 @@ pub trait PlatformServices {
     /// implementation of this method ignores them — callers should just
     /// leave them at their `Default` rather than populating them.
     ///
-    /// TUI backends have no native dialog to show and unconditionally
-    /// return `None` (no stderr hint is written), same as
-    /// [`Self::show_file_open_dialog`] — apps should provide an in-canvas
-    /// picker instead. Callers distinguish "no native chooser at all"
-    /// from "the user cancelled" via [`BackendCaps::folder_dialogs`], the
-    /// same way they already do for [`BackendCaps::file_dialogs`].
+    /// TUI backends have no native dialog to show; instead they drive an
+    /// in-canvas `FolderPickerController` through a nested draw-and-read
+    /// loop and return the path it resolves, the same shared shape as
+    /// [`Self::show_file_open_dialog`]. [`BackendCaps::folder_dialogs`]
+    /// still reports `false` on TUI — it tracks whether the backend shows
+    /// a *native* chooser, not whether this method does anything; callers
+    /// should just call it rather than gating on the flag.
     fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf>;
 
     /// Show a native message/alert dialog (blocking). Returns the id of
@@ -4151,11 +4221,11 @@ pub trait PlatformServices {
     ///
     /// A click on the notification (its body, or one of `n`'s declared
     /// actions) should push [`UiEvent::NotificationActivated`] where the
-    /// backend has a native channel for it — today only GTK does (see
-    /// `gtk::services`'s module doc); macOS's unbundled `osascript`
-    /// fallback and Win's `Shell_NotifyIconW` balloon fallback have no
-    /// click-through of their own to report through, and honestly do not
-    /// emit the event rather than faking it (each backend's
+    /// backend has a native channel for it — GTK (see `gtk::services`'s
+    /// module doc) and Win's WinRT toast path (see `win::services`'s
+    /// module doc) both do; macOS's unbundled `osascript` fallback has no
+    /// click-through of its own to report through, and honestly does not
+    /// emit the event rather than faking it (`macos::services`'s
     /// `send_notification` doc explains why, and what a real
     /// implementation there would need).
     fn send_notification(&self, n: Notification);
@@ -4288,10 +4358,12 @@ pub trait PlatformServices {
     /// - **Win-GUI** — `UISettings::GetColorValue` (`Background`/`Accent`
     ///   `UIColorType`s).
     ///
-    /// No backend pushes [`crate::UiEvent::SystemThemeChanged`] on a live OS
-    /// theme change yet (same "declare the gap, don't fake it" posture as
-    /// [`crate::UiEvent::WindowStateChanged`], which also has zero producers
-    /// today) — this method is a poll-on-demand query, not a subscription.
+    /// Win-GUI additionally pushes [`crate::UiEvent::SystemThemeChanged`]
+    /// on a live `WM_SETTINGCHANGE("ImmersiveColorSet")`; macOS and GTK
+    /// have no producer yet (same "declare the gap, don't fake it" posture
+    /// as [`crate::UiEvent::WindowStateChanged`] there) — on those two
+    /// backends this method remains a poll-on-demand query, not a
+    /// subscription.
     fn system_theme(&self) -> ServiceResult<SystemTheme> {
         Err(BackendError::Unsupported)
     }
@@ -4325,6 +4397,37 @@ pub trait PlatformServices {
     fn secret_store(&self) -> &dyn SecretStore {
         static STORE: KeyringSecretStore = KeyringSecretStore;
         &STORE
+    }
+
+    /// A standard, per-app filesystem location — Electron's
+    /// `app.getPath` equivalent. See [`AppPathKind`] for the full set and
+    /// [`crate::paths`]'s module doc for how `UserData`/
+    /// `AppConfig`/`AppCache`/`Logs` are scoped by the app identifier
+    /// [`crate::paths::set_app_identifier`] installs.
+    ///
+    /// This one is **backend-independent**, the same way
+    /// [`Self::secret_store`] is: it's backed by the cross-platform
+    /// `directories` crate plus `std::env::temp_dir`, not by a
+    /// per-backend native implementation, so it needs no override in
+    /// `tui`/`gtk`/`macos`/`win::services` — the same default body serves
+    /// all four. Resolving these needs only a filesystem and environment
+    /// variables, no window, no display server, no desktop session, so
+    /// this is **full support on TUI**, not a degrade.
+    ///
+    /// Default: resolves via [`crate::paths::resolve`] when this crate
+    /// was built with any of the `tui`/`gtk`/`macos`/`win` features (the
+    /// same four that already pull in `keyring` for
+    /// [`Self::secret_store`] — see that dependency's Cargo.toml comment);
+    /// `Err(BackendError::Unsupported)` for every kind when none of them
+    /// are enabled (a bare `cargo check -p quadraui` with no features).
+    /// No in-tree backend overrides this — there is nothing
+    /// backend-specific left to override.
+    ///
+    /// The returned directory is not created; callers that need it to
+    /// exist on disk must create it themselves, same as every other
+    /// `AppPathKind`-scoped location below.
+    fn app_path(&self, kind: AppPathKind) -> ServiceResult<PathBuf> {
+        crate::paths::resolve(kind)
     }
 
     /// Enumerate every connected display — bounds, usable work area, DPI
@@ -4386,9 +4489,445 @@ pub trait PlatformServices {
         Err(BackendError::Unsupported)
     }
 
+    /// The auto-update seam — check a feed, download and stage a new
+    /// build, apply it on the next quit. See [`UpdateService`]'s own doc
+    /// for the three-method contract and [`crate::update`]'s module doc
+    /// for which backends are expected to override which piece.
+    ///
+    /// Default: an [`UpdateService`] whose every method returns
+    /// [`BackendError::Unsupported`] — no in-tree backend has a real
+    /// updater yet (Sparkle/WinSparkle/AppImage integrations are
+    /// separate, backend-specific follow-ons). TUI overrides
+    /// [`UpdateService::download_and_stage`] with a truthful degrade
+    /// that surfaces an "update available" diagnostic rather than
+    /// staying silent — see
+    /// [`crate::tui::services::TuiPlatformServices::update_service`].
+    fn update_service(&self) -> &dyn UpdateService {
+        static SERVICE: crate::update::NoUpdateService = crate::update::NoUpdateService;
+        &SERVICE
+    }
+
+    /// Whether the machine is currently running on battery power, as
+    /// opposed to mains/AC. See [`crate::power`]'s module doc for which
+    /// backends are expected to supply a real answer.
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend queries
+    /// this yet (IOKit's power-source API on macOS,
+    /// `GetSystemPowerStatus` on Win-GUI, `org.freedesktop.UPower` on
+    /// GTK/Linux are separate, backend-specific follow-ons).
+    fn on_battery(&self) -> ServiceResult<bool> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// The OS's current thermal-pressure classification. See
+    /// [`crate::power`]'s module doc for which backends are expected to
+    /// supply a real answer.
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend queries
+    /// this yet. Optional: a backend with no thermal signal of its own
+    /// (every in-tree backend as of this method landing) is expected to
+    /// leave this at its default rather than guess.
+    fn thermal_state(&self) -> ServiceResult<ThermalState> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Start a sleep/suspend inhibitor of the given `kind`, returning a
+    /// [`BlockerId`] to later pass to [`Self::end_power_save_block`]. See
+    /// [`crate::power`]'s module doc for which backends are expected to
+    /// supply a real inhibitor.
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend has a
+    /// real inhibitor yet (`IOPMAssertionCreateWithName` on macOS,
+    /// `SetThreadExecutionState` on Win-GUI, `org.freedesktop.login1`'s
+    /// `Inhibit` call on GTK/Linux are separate, backend-specific
+    /// follow-ons). TUI overrides this with an honest no-op blocker — see
+    /// [`crate::tui::services::TuiPlatformServices::begin_power_save_block`].
+    fn begin_power_save_block(&self, kind: PowerSaveKind) -> ServiceResult<BlockerId> {
+        let _ = kind;
+        Err(BackendError::Unsupported)
+    }
+
+    /// End a sleep/suspend inhibitor previously started by
+    /// [`Self::begin_power_save_block`].
+    ///
+    /// Default: [`BackendError::Unsupported`] — mirrors
+    /// [`Self::begin_power_save_block`]'s default; a backend that doesn't
+    /// override one is expected to not override the other either.
+    fn end_power_save_block(&self, id: BlockerId) -> ServiceResult<()> {
+        let _ = id;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Register `accel` as an OS-wide global shortcut: unlike
+    /// [`Accelerator`]s registered on [`Backend::register_accelerator`],
+    /// which only fire while this app's window has focus, a global
+    /// shortcut fires regardless of which app is focused — the OS
+    /// delivers it directly. On success, the backend emits
+    /// [`crate::UiEvent::GlobalShortcut`] carrying the returned
+    /// [`GlobalShortcutId`] each time the OS reports the hotkey.
+    ///
+    /// Rejects with [`BackendError::PlatformFailure`] when `accel`'s
+    /// binding is already claimed by another registration — see
+    /// [`crate::accelerator::GlobalShortcutRegistry::register`].
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
+    /// real OS hotkey registration yet (Win32 `RegisterHotKey`,
+    /// Carbon/Cocoa `RegisterEventHotKey`, the
+    /// `org.freedesktop.portal.GlobalShortcuts` XDG portal on GTK/Linux
+    /// are separate, backend-specific follow-ons). TUI has no OS-wide
+    /// hotkey mechanism to register against and is expected to leave
+    /// this at its default rather than fake one — an OS-wide hotkey is
+    /// physically absent on a terminal, the same way a tray icon or dock
+    /// badge is.
+    fn register_global_shortcut(&self, accel: Accelerator) -> ServiceResult<GlobalShortcutId> {
+        let _ = accel;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Unregister a global shortcut previously returned by
+    /// [`Self::register_global_shortcut`], freeing its key binding.
+    ///
+    /// A stale `id` (already unregistered, or never valid) is `Ok(())`,
+    /// not an error — see
+    /// [`crate::accelerator::GlobalShortcutRegistry::unregister`], which
+    /// every per-backend override is expected to wrap. Callers may
+    /// unregister unconditionally (e.g. on shutdown) without tracking
+    /// which ids are still live.
+    ///
+    /// Default: [`BackendError::Unsupported`] — mirrors
+    /// [`Self::register_global_shortcut`]'s default; a backend that
+    /// doesn't override one is expected to not override the other
+    /// either.
+    fn unregister_global_shortcut(&self, id: GlobalShortcutId) -> ServiceResult<()> {
+        let _ = id;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Unregister every global shortcut this backend currently holds.
+    ///
+    /// Default: [`BackendError::Unsupported`] — see
+    /// [`Self::register_global_shortcut`].
+    fn unregister_all_global_shortcuts(&self) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Start an OS-level drag of `items` *out* of this app's window —
+    /// Electron's `webContents.startDrag`. The counterpart to
+    /// [`crate::UiEvent::FilesDropped`]'s drag-*in*: this initiates a
+    /// drag session the OS then carries to whatever window — Finder,
+    /// Explorer, another app, or nowhere (the user may cancel) — the
+    /// user drops it on. See [`DragOutPayload`]'s own doc for what it
+    /// carries and [`crate::drag`]'s module doc for why this is a seam
+    /// rather than a full implementation.
+    ///
+    /// `items.is_empty()` is a caller bug — nothing to drag — pinned here
+    /// so the three per-backend follow-ons don't each guess differently:
+    /// a real session-starting implementation rejects it rather than
+    /// silently no-opping `Ok(())` or starting a session with nothing
+    /// attached. Concretely, verbatim so all three agree:
+    ///
+    /// ```ignore
+    /// Err(BackendError::PlatformFailure {
+    ///     context: "begin_drag_out: empty payload".into(),
+    /// })
+    /// ```
+    ///
+    /// [`BackendError::PlatformFailure`] is the closest fit rather than
+    /// a perfect one — there is no failing native call for its `context`
+    /// to name here, because the rejection happens before any native
+    /// drag API is reached, and `BackendError` carries no
+    /// argument-validation variant (adding one is a breaking change to
+    /// a public enum, which this seam does not earn). Hence the fixed
+    /// string: it names the rejected call instead of a native API, and
+    /// no follow-on has to invent its own.
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
+    /// real OS drag-out session yet (`NSView::beginDraggingSession` on
+    /// macOS, `IDropSource`/`DoDragDrop` on Win-GUI, `gtk4::DragSource`
+    /// on GTK are separate, backend-specific follow-ons). TUI has no OS
+    /// drag-and-drop surface to initiate a session on and is expected to
+    /// leave this at its default rather than fake one — an OS drag
+    /// session is physically absent on a terminal, the same way a tray
+    /// icon or dock badge is.
+    fn begin_drag_out(&self, items: DragOutPayload) -> ServiceResult<()> {
+        let _ = items;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Register (`enabled: true`) or unregister (`enabled: false`) this
+    /// app to launch automatically when the user logs in — Electron's
+    /// `app.setLoginItemSettings`. See [`LoginItemOptions`]'s own doc for
+    /// what `opts` carries and [`crate::login_item`]'s module doc for
+    /// which backends are expected to supply a real registration.
+    ///
+    /// Two calling-convention rules pinned here so the per-backend
+    /// follow-ons (`SMAppService`/registry/XDG autostart) implement the
+    /// same contract rather than each inventing its own:
+    ///
+    /// - When `enabled` is `false`, `opts` carries nothing that applies
+    ///   (there is no launch left to configure) — a real implementation
+    ///   must ignore it rather than rejecting a non-default `opts`
+    ///   accompanying an unregister call.
+    /// - The call is idempotent in both directions: `set_login_item(true,
+    ///   opts)` called again with the same `opts` while already
+    ///   registered re-asserts the same registration and returns `Ok(())`
+    ///   rather than erroring on "already registered"; likewise
+    ///   `set_login_item(false, _)` while already unregistered returns
+    ///   `Ok(())` rather than erroring on "not registered".
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
+    /// real login-item registration yet (`SMAppService` on macOS, an
+    /// `HKCU\...\Run` registry value on Win-GUI, an XDG autostart
+    /// `.desktop` file on GTK/Linux are separate, backend-specific
+    /// follow-ons). TUI has no OS login/session-start hook to register
+    /// against and is expected to leave this at its default rather than
+    /// fake one.
+    fn set_login_item(&self, enabled: bool, opts: LoginItemOptions) -> ServiceResult<()> {
+        let _ = (enabled, opts);
+        Err(BackendError::Unsupported)
+    }
+
+    /// Whether this app is currently registered to launch at login — the
+    /// read-back counterpart to [`Self::set_login_item`], Electron's
+    /// `app.getLoginItemSettings().openAtLogin`.
+    ///
+    /// Default: [`BackendError::Unsupported`], mirroring
+    /// [`Self::set_login_item`]'s default. TUI overrides this with an
+    /// honest no-op that always reports `false` rather than staying
+    /// `Unsupported` — see
+    /// [`crate::tui::services::TuiPlatformServices::login_item_enabled`]
+    /// and [`crate::login_item`]'s module doc for why the query and the
+    /// mutation get different defaults.
+    fn login_item_enabled(&self) -> ServiceResult<bool> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Register this app as the OS-level default handler for `scheme`
+    /// (e.g. `"myapp"` for `myapp://...` links) — Electron's
+    /// `app.setAsDefaultProtocolClient`. No validation of `scheme` is
+    /// performed here (no leading colon or `://` — callers pass the bare
+    /// scheme name, matching Electron's own argument shape); a real
+    /// registration is free to reject a scheme its own platform forbids
+    /// (reserved names, invalid characters).
+    ///
+    /// Default: [`BackendError::Unsupported`] on every in-tree backend,
+    /// including TUI. Unlike [`Self::set_login_item`]/
+    /// [`Self::login_item_enabled`] — where TUI can answer
+    /// `login_item_enabled` honestly with `false` because a terminal
+    /// binary's own code path could never have created that registration —
+    /// there is no safe uniform default here on *any* backend: this
+    /// scheme may already be claimed by a different installation of this
+    /// same app, a different app entirely, or nothing at all, and that
+    /// fact lives in OS state (`LSSetDefaultHandlerForURLScheme`'s
+    /// Launch Services database, the `HKCR\<scheme>` registry key,
+    /// `xdg-mime`'s `.desktop` default) this seam does not read. Wiring a
+    /// real registration per backend is a separate, backend-specific
+    /// follow-on; this method only has to give each of those a contract
+    /// to implement against.
+    fn set_as_default_protocol_client(&self, scheme: &str) -> ServiceResult<()> {
+        let _ = scheme;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Whether this app is currently registered as the OS-level default
+    /// handler for `scheme` — the read-back counterpart to
+    /// [`Self::set_as_default_protocol_client`], Electron's
+    /// `app.isDefaultProtocolClient`.
+    ///
+    /// Default: [`BackendError::Unsupported`], mirroring
+    /// [`Self::set_as_default_protocol_client`]'s default and for the
+    /// same reason: answering this query honestly requires reading real
+    /// OS registration state this seam does not yet touch on any
+    /// backend, and a blanket `false` would be actively misleading for a
+    /// scheme a previous run, a packaging step, or a different app
+    /// already claimed — not merely incomplete, the way
+    /// [`Self::login_item_enabled`]'s TUI override is.
+    fn is_default_protocol_client(&self, scheme: &str) -> ServiceResult<bool> {
+        let _ = scheme;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Unregister this app as the OS-level default handler for `scheme`
+    /// — Electron's `app.removeAsDefaultProtocolClient`. Idempotent by
+    /// contract: calling this for a scheme that was never registered (or
+    /// already unregistered) is expected to return `Ok(())` once a real
+    /// backend implements it, not an error on "nothing to remove" — the
+    /// same idempotence [`Self::set_login_item`]'s own doc pins for its
+    /// `enabled: false` call.
+    ///
+    /// Default: [`BackendError::Unsupported`], mirroring
+    /// [`Self::set_as_default_protocol_client`]'s default.
+    fn remove_as_default_protocol_client(&self, scheme: &str) -> ServiceResult<()> {
+        let _ = scheme;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Add `path` to the OS "recent documents" list — Electron's
+    /// `app.addRecentDocument`. This is what surfaces a file this app
+    /// just opened in the platform's own recency UI: macOS's Dock icon
+    /// right-click "Open Recent" menu (`NSDocumentController`) and
+    /// Windows' taskbar jump list "Recent" group (`SHAddToRecentDocs`).
+    /// No validation of `path` is performed here — a real registration
+    /// is free to reject a path that doesn't exist or isn't readable;
+    /// this seam just forwards whatever the caller passes.
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
+    /// real recent-documents registration yet; wiring one into
+    /// `NSDocumentController` on macOS or `SHAddToRecentDocs` on Win-GUI
+    /// is a separate, backend-specific follow-on. TUI keeps this default
+    /// too: a terminal has no OS-level recent-documents list of its own
+    /// to add to, and there is no honest "success" value for a mutation
+    /// with nothing in this backend to mutate. GTK/Linux has no single
+    /// desktop-standard recent-documents API the way clipboard or trash
+    /// are standardised across desktop environments (`GtkRecentManager`
+    /// is GTK-specific, not a cross-desktop contract), so it
+    /// intentionally stays at this `Unsupported` default rather than
+    /// guessing at one desktop's own mechanism; a real GTK implementation
+    /// is a separate follow-on, not an oversight.
+    fn add_recent_document(&self, path: &Path) -> ServiceResult<()> {
+        let _ = path;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Clear the OS "recent documents" list this app has contributed to
+    /// via [`Self::add_recent_document`] — Electron's
+    /// `app.clearRecentDocuments`.
+    ///
+    /// Default: [`BackendError::Unsupported`], mirroring
+    /// [`Self::add_recent_document`]'s default and story on every
+    /// in-tree backend, TUI included: nothing was ever added on a
+    /// backend with no such list, so there is no honest "success" value
+    /// for clearing it either.
+    fn clear_recent_documents(&self) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Attach (or replace) this app's Dock icon menu — Electron's
+    /// `app.dock.setMenu`, macOS-only in Electron but exposed here as a
+    /// cross-platform seam the way [`TrayService::set_menu`] is. Reuses
+    /// [`ContextMenu`], the same menu primitive [`TrayService::set_menu`]
+    /// and [`Backend::show_context_menu`] already use, so there is one
+    /// menu vocabulary and one `WidgetId` activation path
+    /// (`UiEvent::ContextMenuItemActivated`) shared across a right-click
+    /// context menu, a tray menu, and a dock menu, rather than a
+    /// fourth bespoke menu type. Passing a menu with no items is not the
+    /// same as never calling this method — a backend that models "no
+    /// menu attached" and "menu attached with zero items" differently
+    /// should treat an empty [`ContextMenu::items`] as detaching the
+    /// menu, mirroring [`TrayService::set_menu`]'s own contract exactly.
+    ///
+    /// Default: [`BackendError::Unsupported`] — no in-tree backend owns a
+    /// real Dock menu attachment yet (`NSApplication.shared.dockTile`'s
+    /// `NSMenu` on macOS is the only platform with a literal "Dock" to
+    /// attach one to; a Windows follow-on would instead route through
+    /// [`Self::set_jump_list`]'s taskbar "Tasks" group, not this
+    /// method). TUI keeps this default too: a terminal has no Dock icon
+    /// of its own to attach a menu to, and there is no honest "success"
+    /// value for attaching one. GTK/Linux has no standard cross-desktop
+    /// equivalent of a Dock icon menu, so it intentionally stays at this
+    /// `Unsupported` default rather than guessing at one desktop's own
+    /// mechanism.
+    fn set_dock_menu(&self, menu: &ContextMenu) -> ServiceResult<()> {
+        let _ = menu;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Set this app's Windows taskbar jump list — Electron's
+    /// `app.setJumpList`. Windows-only in Electron (`ICustomDestinationList`);
+    /// exposed here as an optional seam method so a caller can target it
+    /// uniformly rather than branching on [`Self::platform_name`].
+    ///
+    /// Default: [`BackendError::Unsupported`] on every in-tree backend,
+    /// including TUI, mirroring [`Self::add_recent_document`]/
+    /// [`Self::set_dock_menu`]: a caller that builds a jump list expects
+    /// it to eventually appear on a real Windows taskbar, and there is
+    /// no equivalent surface on a terminal to redirect it to, so staying
+    /// `Unsupported` is the honest answer. Wiring a real
+    /// `ICustomDestinationList` implementation on Win-GUI is a separate,
+    /// backend-specific follow-on; this method only has to give it a
+    /// contract to implement against.
+    fn set_jump_list(&self, items: &[JumpListItem]) -> ServiceResult<()> {
+        let _ = items;
+        Err(BackendError::Unsupported)
+    }
+
     /// Platform identifier — matches the `BackendNative.backend` field.
     /// One of `"tui"`, `"gtk"`, `"win-gui"`, `"macos"`.
     fn platform_name(&self) -> &'static str;
+}
+
+/// One task entry in a Windows jump list — [`PlatformServices::
+/// set_jump_list`]'s element type, mirroring the handful of fields
+/// Electron's `app.setJumpList` `JumpListItem` carries that make sense
+/// without pulling in the rest of that type's Windows-specific grab-bag
+/// (`iconPath`, `iconIndex`, custom categories). A plain data holder —
+/// the real `ICustomDestinationList` construction is entirely a Win-GUI
+/// backend follow-on's job, not this seam's.
+///
+/// `#[non_exhaustive]`: there are no consumers of this type yet, and a
+/// per-backend follow-on is likely to want more fields (an icon, a
+/// custom category name) later; `#[non_exhaustive]` keeps that additive
+/// rather than a semver-major break on a type with no consumers to break
+/// today. Construct with [`JumpListItem::new`] and the `with_*` builders,
+/// mirroring [`LoginItemOptions`]'s shape.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JumpListItem {
+    /// The task's visible label in the jump list.
+    #[serde(default)]
+    pub title: String,
+    /// The program to launch (typically this app's own executable path)
+    /// when the user activates this task.
+    #[serde(default)]
+    pub program: PathBuf,
+    /// Command-line arguments to pass on launch. Stored verbatim; quoting
+    /// for `CreateProcess`'s command-line splitting rules is the
+    /// responsibility of whichever backend follow-on writes this into a
+    /// real `ICustomDestinationList`.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Tooltip description shown for this task.
+    #[serde(default)]
+    pub description: String,
+}
+
+impl JumpListItem {
+    /// A new jump-list item with an empty title, program, args, and
+    /// description. Equivalent to [`JumpListItem::default`], spelled as
+    /// a constructor for symmetry with the `with_*` builders.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets [`Self::title`].
+    #[must_use]
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
+        self
+    }
+
+    /// Sets [`Self::program`].
+    #[must_use]
+    pub fn with_program(mut self, program: impl Into<PathBuf>) -> Self {
+        self.program = program.into();
+        self
+    }
+
+    /// Sets [`Self::args`], *replacing* any set by a previous call — this
+    /// is not an appender.
+    #[must_use]
+    pub fn with_args(mut self, args: impl IntoIterator<Item = String>) -> Self {
+        self.args = args.into_iter().collect();
+        self
+    }
+
+    /// Sets [`Self::description`].
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
 }
 
 /// A single named entry in the OS credential store, keyed by `service` +
@@ -4557,8 +5096,8 @@ pub struct Display {
 ///
 /// Deliberately flat and small, mirroring [`Notification`]'s shape: this is
 /// a snapshot an app reads once per query (or once per
-/// [`crate::UiEvent::SystemThemeChanged`], once some backend emits it), not
-/// a live-updating handle. `Serialize`/`Deserialize` (unlike the other
+/// [`crate::UiEvent::SystemThemeChanged`]), not a live-updating handle.
+/// `Serialize`/`Deserialize` (unlike the other
 /// `PlatformServices` option/config structs in this module) because it also
 /// travels inside [`crate::UiEvent::SystemThemeChanged`], and every
 /// `UiEvent` payload satisfies that bound — see `event.rs`'s module doc.
@@ -4579,6 +5118,34 @@ pub struct SystemTheme {
     /// Always `false` on TUI — a terminal has no equivalent OS-level
     /// setting to query.
     pub high_contrast: bool,
+    /// `true` when the OS "reduce motion" accessibility preference is
+    /// active (macOS `accessibilityDisplayShouldReduceMotion`, Windows
+    /// `SPI_GETCLIENTAREAANIMATION` inverted, GTK's `gtk-enable-animations`
+    /// inverted). An app honouring this should skip hover fades, slide/fade
+    /// transitions, and similar motion, falling back to an instant state
+    /// change. Always `false` on TUI — a terminal has no animation concept
+    /// to reduce in the first place. Defaults to `false` so existing struct
+    /// literals built before this field existed keep compiling.
+    #[serde(default)]
+    pub reduce_motion: bool,
+}
+
+#[cfg(test)]
+mod system_theme_tests {
+    use super::SystemTheme;
+
+    /// `SystemTheme` JSON serialized before `reduce_motion` existed (e.g. a
+    /// persisted `UiEvent::SystemThemeChanged` fixture) still deserializes,
+    /// with the field defaulting to `false` — the `#[serde(default)]`
+    /// contract this additive field relies on to stay non-breaking.
+    #[test]
+    fn deserializing_json_without_reduce_motion_defaults_it_to_false() {
+        let json = r#"{"dark":true,"accent":null,"high_contrast":false}"#;
+        let theme: SystemTheme = serde_json::from_str(json).expect("legacy shape should parse");
+        assert!(theme.dark);
+        assert!(!theme.high_contrast);
+        assert!(!theme.reduce_motion);
+    }
 }
 
 /// Decoded RGBA8 pixel buffer for a clipboard image round-trip
@@ -4852,8 +5419,9 @@ impl Notification {
     /// Attach an icon. The same [`ImageSource`] shape
     /// [`TrayService::set_icon`] takes — raw encoded bytes or a
     /// filesystem path, sniffed/decoded by whichever backend can honor
-    /// it. Backends with no icon facility (TUI's toast degrade, today's
-    /// macOS `osascript` path) ignore this.
+    /// it. Backends with no icon facility (TUI's toast degrade, the
+    /// macOS `osascript` fallback used by an unbundled process) ignore
+    /// this.
     #[must_use]
     pub fn with_icon(mut self, icon: ImageSource) -> Self {
         self.icon = Some(icon);
@@ -4874,12 +5442,13 @@ impl Notification {
     }
 
     /// Suppress the notification sound, on backends that have a sound to
-    /// suppress: Win's balloon sets `NIIF_NOSOUND` when this is `true`,
-    /// and macOS's `osascript` fallback only adds a `sound name` clause
-    /// when this is `false` (see `win::services`/`macos::services`'s
-    /// `send_notification` docs). GTK's `gio::Notification` has no sound
-    /// control of its own at all — the desktop shell decides — so this
-    /// has nothing to bind to there.
+    /// suppress: Win's primary WinRT toast path emits `<audio
+    /// silent="true"/>` and its `Shell_NotifyIconW` balloon fallback sets
+    /// `NIIF_NOSOUND` when this is `true`, and macOS's `osascript`
+    /// fallback only adds a `sound name` clause when this is `false` (see
+    /// `win::services`/`macos::services`'s `send_notification` docs).
+    /// GTK's `gio::Notification` has no sound control of its own at all —
+    /// the desktop shell decides — so this has nothing to bind to there.
     #[must_use]
     pub fn with_silent(mut self, silent: bool) -> Self {
         self.silent = silent;
@@ -5434,5 +6003,230 @@ mod secret_store_unsupported_tests {
             Err(BackendError::Unsupported)
         );
         assert_eq!(store.delete("svc", "acct"), Err(BackendError::Unsupported));
+    }
+}
+
+#[cfg(test)]
+mod service_default_tests {
+    //! Coverage for [`PlatformServices`]'s *trait* defaults —
+    //! [`PlatformServices::begin_drag_out`], [`PlatformServices::
+    //! set_login_item`], [`PlatformServices::login_item_enabled`],
+    //! [`PlatformServices::set_as_default_protocol_client`],
+    //! [`PlatformServices::is_default_protocol_client`], and
+    //! [`PlatformServices::remove_as_default_protocol_client`] — a
+    //! minimal fake that overrides only the methods with no default of
+    //! its own (same "stands in for a backend that hasn't touched this
+    //! surface at all" reasoning [`clipboard_default_tests`] already
+    //! documents for [`Clipboard`]'s defaulted methods) stands in for "no
+    //! in-tree backend overrides this yet", which is exactly today's
+    //! state per each method's own doc.
+    use super::*;
+
+    #[derive(Default)]
+    struct FakeNoopClipboard;
+
+    impl Clipboard for FakeNoopClipboard {
+        fn read_text(&self) -> Option<String> {
+            None
+        }
+
+        fn write_text(&self, _text: &str) {}
+    }
+
+    #[derive(Default)]
+    struct FakePlatformServices {
+        clipboard: FakeNoopClipboard,
+    }
+
+    impl PlatformServices for FakePlatformServices {
+        fn clipboard(&self) -> &dyn Clipboard {
+            &self.clipboard
+        }
+
+        fn show_file_open_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
+            None
+        }
+
+        fn show_file_save_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
+            None
+        }
+
+        fn show_folder_open_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
+            None
+        }
+
+        fn show_message_dialog(&self, _opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
+            None
+        }
+
+        fn send_notification(&self, _n: Notification) {}
+
+        fn open_url(&self, _url: &str) {}
+
+        fn platform_name(&self) -> &'static str {
+            "fake"
+        }
+    }
+
+    #[test]
+    fn begin_drag_out_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        let payload = DragOutPayload::new().with_files([PathBuf::from("/tmp/a.txt")]);
+        assert_eq!(
+            services.begin_drag_out(payload),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn set_login_item_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.set_login_item(true, LoginItemOptions::default()),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn login_item_enabled_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.login_item_enabled(),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn set_as_default_protocol_client_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.set_as_default_protocol_client("myapp"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn is_default_protocol_client_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.is_default_protocol_client("myapp"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn remove_as_default_protocol_client_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.remove_as_default_protocol_client("myapp"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn add_recent_document_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.add_recent_document(Path::new("/tmp/report.pdf")),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn clear_recent_documents_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        assert_eq!(
+            services.clear_recent_documents(),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn set_dock_menu_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        let menu = ContextMenu {
+            id: WidgetId::new("dock-menu"),
+            items: Vec::new(),
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+        };
+        assert_eq!(
+            services.set_dock_menu(&menu),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn set_jump_list_defaults_to_unsupported() {
+        let services = FakePlatformServices::default();
+        let items = [JumpListItem::new().with_title("Recent project")];
+        assert_eq!(
+            services.set_jump_list(&items),
+            Err(BackendError::Unsupported)
+        );
+    }
+}
+
+#[cfg(test)]
+mod jump_list_item_tests {
+    use super::JumpListItem;
+    use std::path::PathBuf;
+
+    #[test]
+    fn new_is_empty_in_every_field() {
+        let item = JumpListItem::new();
+        assert_eq!(item, JumpListItem::default());
+        assert!(item.title.is_empty());
+        assert_eq!(item.program, PathBuf::new());
+        assert!(item.args.is_empty());
+        assert!(item.description.is_empty());
+    }
+
+    #[test]
+    fn builders_set_every_field() {
+        let item = JumpListItem::new()
+            .with_title("Open recent")
+            .with_program("my-app")
+            .with_description("Reopen the last project");
+        assert_eq!(item.title, "Open recent");
+        assert_eq!(item.program, PathBuf::from("my-app"));
+        assert_eq!(item.description, "Reopen the last project");
+        assert!(item.args.is_empty());
+    }
+
+    #[test]
+    fn with_args_replaces_rather_than_appends() {
+        let item = JumpListItem::new()
+            .with_args(["--first".to_string()])
+            .with_args(["--second".to_string(), "--third".to_string()]);
+        assert_eq!(item.args, vec!["--second", "--third"]);
+    }
+
+    #[test]
+    fn round_trips_through_json() {
+        let item = JumpListItem::new()
+            .with_title("Open recent")
+            .with_program("my-app")
+            .with_args(["--open".to_string(), "last".to_string()])
+            .with_description("Reopen the last project");
+        let json = serde_json::to_string(&item).unwrap();
+        let back: JumpListItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(item, back);
+    }
+
+    #[test]
+    fn deserializes_from_empty_json() {
+        let item: JumpListItem = serde_json::from_str("{}").unwrap();
+        assert_eq!(item, JumpListItem::default());
+    }
+
+    #[test]
+    fn deserializes_from_partial_json() {
+        let item: JumpListItem = serde_json::from_str(r#"{"title":"Open recent"}"#).unwrap();
+        assert_eq!(item.title, "Open recent");
+        assert_eq!(item.program, PathBuf::new());
+        assert!(item.args.is_empty());
+        assert!(item.description.is_empty());
     }
 }

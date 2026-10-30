@@ -62,7 +62,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::accelerator::KeyBinding;
-use crate::event::{Key, NamedKey, Rect};
+use crate::backend::PointerShape;
+use crate::event::{Key, NamedKey, Point, Rect};
 use crate::types::{Modifiers, WidgetId};
 use crate::undo::UndoStack;
 
@@ -873,6 +874,24 @@ impl TextInputLayout {
         }
         TextInputHit::EmptyArea
     }
+
+    /// Pointer glyph a backend should request while the mouse sits at
+    /// surface-native coordinates `(x, y)` — an I-beam over editable text
+    /// and over the blank band inside [`Self::content_bounds`] below the
+    /// last visible line (still part of the editable box, same as every
+    /// native multi-line text editor), the default arrow outside
+    /// `content_bounds` entirely.
+    ///
+    /// Coordinate frame: **ABSOLUTE**, same as [`Self::hit_test`].
+    pub fn pointer_shape(&self, x: f32, y: f32) -> PointerShape {
+        match self.hit_test(x, y) {
+            TextInputHit::Line { .. } => PointerShape::Text,
+            TextInputHit::EmptyArea if self.content_bounds.contains(Point::new(x, y)) => {
+                PointerShape::Text
+            }
+            TextInputHit::EmptyArea => PointerShape::Default,
+        }
+    }
 }
 
 /// Per-line measurement supplied by the backend.
@@ -1488,6 +1507,33 @@ mod tests {
         let ti = input(vec!["only"]);
         let l = ti.layout(rect(20.0, 10.0), measure());
         assert_eq!(l.hit_test(-5.0, -5.0), TextInputHit::EmptyArea);
+    }
+
+    #[test]
+    fn pointer_shape_is_text_over_a_line_and_default_outside_content_bounds() {
+        let ti = input(vec!["a", "b", "c"]);
+        let l = ti.layout(rect(20.0, 10.0), measure());
+        assert_eq!(l.pointer_shape(5.0, 2.0), PointerShape::Text);
+        assert_eq!(l.pointer_shape(-5.0, -5.0), PointerShape::Default);
+    }
+
+    #[test]
+    fn pointer_shape_is_text_over_the_in_content_empty_band_below_last_line() {
+        // 3 lines in a tall box: the `EmptyArea` hit region below the last
+        // visible line (y in [4, 9) here) still falls inside
+        // `content_bounds` (y in [1, 9)) — a native multi-line editor
+        // shows the I-beam there too, not an arrow, even though
+        // `hit_test` still reports `EmptyArea` for click routing.
+        let ti = input(vec!["a", "b", "c"]);
+        let l = ti.layout(rect(20.0, 10.0), measure());
+        assert_eq!(l.hit_test(5.0, 6.0), TextInputHit::EmptyArea);
+        assert!(l.content_bounds.contains(Point::new(5.0, 6.0)));
+        assert_eq!(l.pointer_shape(5.0, 6.0), PointerShape::Text);
+
+        // Below `content_bounds` entirely (y = 9 is outside [1, 9)): back
+        // to the default arrow.
+        assert!(!l.content_bounds.contains(Point::new(5.0, 9.0)));
+        assert_eq!(l.pointer_shape(5.0, 9.0), PointerShape::Default);
     }
 
     #[test]

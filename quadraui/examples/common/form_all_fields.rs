@@ -1,13 +1,13 @@
-//! Backend-agnostic [`Form`] demo covering all 15 [`FieldKind`] variants
+//! Backend-agnostic [`Form`] demo covering all 16 [`FieldKind`] variants
 //!
 //! Exercises every `FieldKind` variant to verify all backends render them.
 //! Static display only — no field in this form needs interactive state
 //! for the parity check, so `handle` only wires up quit.
 
 use quadraui::{
-    AppLogic, Backend, ButtonRowItem, CalendarDate, Color, DatePicker, FieldKind, Form, FormField,
-    Key, NamedKey, Reaction, Rect, StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent,
-    WidgetId,
+    AppLogic, Backend, ButtonRowItem, CalendarDate, Color, ComboBox, DatePicker, FieldKind, Form,
+    FormField, Key, NamedKey, Reaction, Rect, StyledText, ToggleGroupItem, Toolbar, ToolbarButton,
+    UiEvent, WidgetId,
 };
 
 pub struct FormAllFieldsApp;
@@ -28,6 +28,10 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("line-numbers"),
@@ -36,6 +40,10 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("name"),
@@ -49,6 +57,10 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("save"),
@@ -57,6 +69,10 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("version"),
@@ -67,6 +83,10 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 // These four variants must render on all backends:
                 FormField {
@@ -81,6 +101,10 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("accent"),
@@ -91,6 +115,10 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("theme"),
@@ -105,6 +133,10 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("notes"),
@@ -118,6 +150,10 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 // ── Remaining variants ──────────────────────────────────
                 FormField {
@@ -132,6 +168,10 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("scope"),
@@ -143,6 +183,10 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("flags"),
@@ -157,6 +201,10 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("actions"),
@@ -172,6 +220,10 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("toolbar"),
@@ -192,6 +244,10 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("due-date"),
@@ -203,11 +259,38 @@ impl FormAllFieldsApp {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
+                },
+                FormField {
+                    id: WidgetId::new("fruit"),
+                    label: StyledText::plain("Fruit"),
+                    kind: FieldKind::ComboBox({
+                        let mut combo = ComboBox::new(
+                            WidgetId::new("fruit-combo"),
+                            vec!["Apple".into(), "Banana".into(), "Cherry".into()],
+                        );
+                        combo.text = "Banana".into();
+                        combo.committed = "Banana".into();
+                        combo
+                    }),
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
             ],
             focused_field: None,
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 }

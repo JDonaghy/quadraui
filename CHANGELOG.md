@@ -59,6 +59,493 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-30
+### Added
+
+This tranche adds a wide Electron-parity API surface. Most of it is real,
+backend-implemented behaviour; a meaningful slice is contract-only — the
+seam, types and backend-neutral bookkeeping land now, but every method
+still answers `BackendError::Unsupported` on every GUI backend (TUI
+included, except where a backend installs an honest no-op) until a later
+PR wires up the per-platform implementation. The two groups below separate
+"this works today" from "this compiles and type-checks against a future
+backend, but calling it on 0.7.0 does nothing."
+
+#### New platform capabilities (implemented on at least one real backend)
+
+- `SystemTheme::reduce_motion` — the reduced-motion accessibility-preference
+  query (macOS `accessibilityDisplayShouldReduceMotion`, Windows
+  `SPI_GETCLIENTAREAANIMATION` inverted, GTK's `gtk-enable-animations`
+  inverted). Defaults to `false`; always `false` on TUI, which has no
+  animation concept to reduce. Additive field — existing `SystemTheme`
+  construction sites across all backends are updated in the same PR, and
+  `Default`/serde-based consumers see no change. A consumer that builds
+  `SystemTheme` from a struct literal without `..Default::default()` does
+  break; see the breaking-changes list under `### Changed` below.
+- `PlatformServices::app_path` resolves standard, per-app filesystem
+  locations — Electron's `app.getPath` parity target (`AppPathKind::
+  UserData`/`AppConfig`/`AppCache`/`Logs`/`Temp`/`Downloads`/`Documents`/
+  `Home`), backed by the `directories` crate and new `quadraui::paths`
+  module. `UserData`/`AppConfig`/`AppCache`/`Logs` are scoped by an app
+  identifier (`paths::set_app_identifier`/`clear_app_identifier`, defaulting
+  to the running binary's file stem). `Documents`/`Downloads` fall back to
+  `<home>/Documents`/`<home>/Downloads` on a headless Linux host with no
+  XDG `user-dirs.dirs` file. One cross-platform implementation serves
+  every backend, including TUI, with no degrade. Exposed over the FFI
+  surface as `qui_app_path`/`qui_set_app_identifier` plus the `QUI_PATH_*`
+  constants and a new `QUI_ERR_UNSUPPORTED` error code
+  (`quadraui-ffi/src/lib.rs`).
+- `crash::install_crash_handler` — the crash-reporter seam (Electron's
+  `crashReporter` parity target). A standalone free function (panic-hook
+  logic is identical on every backend, so there is no per-backend override
+  to make), with a new `CrashReporterConfig` (`app_version`,
+  `upload_endpoint`, `metadata`, `log_dir`) and `CrashRecord` type in
+  `quadraui::crash`. Chains onto the previously installed panic hook and
+  writes a structured JSON record (message, thread, location, backtrace,
+  app version, metadata) to the configured `log_dir`, falling back to
+  `paths::resolve(AppPathKind::Logs)` when unset. Compiled unconditionally
+  on every backend, including TUI. Native minidump capture and crash
+  upload are out of scope — deferred to per-platform follow-ons.
+- Windows `PlatformServices::send_notification` (`win::services`) now raises a
+  WinRT `ToastNotificationManager`/`ToastNotification` toast instead of a
+  transient `Shell_NotifyIconW` balloon. The toast XML carries the
+  `Notification`'s title, body, `actions` and `is_silent` (as `<audio
+  silent="true"/>`; icon is intentionally dropped, matching the macOS
+  `osascript` fallback); a repeated `tag` replaces the prior toast via
+  `CreateToastNotifierWithId` rather than stacking a new one. `win::run`
+  registers a per-title AppUserModelID
+  (`SetCurrentProcessExplicitAppUserModelID`) before the app's `setup` runs,
+  so the toast is attributed to the app in Action Center instead of showing
+  as a generic process name. The call initializes COM
+  (`ensure_com_initialized`) before activating the WinRT toast types, and
+  retains the live `ToastNotifier`/`ToastNotification` pair in
+  `WinPlatformServices` for as long as the toast can still be activated —
+  including the ordinary popup timeout, which only moves it into Action
+  Center rather than ending it — pruning the entry once the user acts on
+  it, dismisses it outright, `Failed` fires, a same-`tag` toast replaces
+  it, or `Show` itself errors. Clicking the toast body or an action button
+  now fires `UiEvent::NotificationActivated` through the existing event loop
+  (`ToastNotification::Activated` posts `WM_QUADRAUI_USER_EVENT` to the
+  window, which drains `drain_notification_events()`), matching the GTK
+  backend's existing click-through behavior. When WinRT/AUMID registration
+  is unavailable, `send_notification` still falls back to the legacy
+  `Shell_NotifyIconW` balloon, which (like the macOS fallback) has no
+  click-through channel and does not emit `NotificationActivated`.
+- Windows `Clipboard` implements `read_image`/`write_image`/`write_html`
+  (`win::services`), matching the macOS/GTK backends instead of returning
+  `Unsupported`. Images round-trip through `CF_DIBV5` (classic `CF_DIB` as a
+  read fallback for non-alpha producers) and decode/encode to the same
+  `RgbaImage` shape the other backends use; `write_html` publishes the
+  `CF_HTML` ("HTML Format") clipboard format with the required
+  `StartHTML`/`EndHTML`/`StartFragment`/`EndFragment` byte offsets and a
+  trailing NUL, plus a plain-text `CF_UNICODETEXT` fallback for HTML-unaware
+  paste targets. Reads accept both `BI_BITFIELDS` mask layouts — the four
+  in-header masks of a `BITMAPV4HEADER`/`BITMAPV5HEADER` and the three
+  colour-table masks of a 40-byte `BITMAPINFOHEADER`.
+- macOS `PlatformServices` sends real system notifications through
+  `UNUserNotificationCenter` instead of the earlier delegate-only stub.
+  Action buttons and "silent" (no system sound) forward to the framework,
+  and `Notification::with_icon` becomes a `UNNotificationAttachment`: the
+  image is copied to a temp file whose extension matches the detected
+  encoding, because the framework attaches *files* and takes ownership of
+  the one it is handed. `UNNotificationAttachment` itself accepts only
+  PNG, JPEG and GIF, so an icon in any other encoding is reported through
+  `quadraui::diagnostics` and the notification is shown without it. A
+  notification carrying a `tag` is delivered under that tag as its
+  `UNNotificationRequest` identifier, so a second send with the same tag
+  replaces the first instead of stacking a duplicate banner, while an
+  untagged notification gets a synthetic per-call identifier. Clicking
+  the body or an action button surfaces as the existing
+  `UiEvent::NotificationActivated { tag, action }`, with `action` set to
+  the clicked button's `WidgetId` (`None` for the default
+  click-to-open); merely dismissing a banner fires nothing, matching GTK.
+  A notification delivered while its own app is frontmost is still shown
+  as a banner (and listed in Notification Center): the delegate
+  implements `userNotificationCenter:willPresentNotification:`, which
+  macOS requires for a foreground delivery to be visible at all, and adds
+  the sound only when the notification is not silent. Every send is
+  re-dispatched from `requestAuthorizationWithOptions:completionHandler:`
+  rather than only the first, so neither the very first notification of a
+  fresh install nor a second one issued while the prompt is still up gets
+  dropped; a denial is reported through `quadraui::diagnostics`.
+  The delegate is installed when the backend's notification sink is set
+  (not lazily on first send, so a cold-launch activation is not missed)
+  and its callback is bounced back onto the main thread through the same
+  GCD `DispatchQueue::main().exec_async` pattern `MacBackend::waker`
+  already uses, since AppKit can invoke the delegate on an arbitrary
+  thread. `Notification::urgent` has no macOS mapping: the AppKit
+  analogue (`setInterruptionLevel`) is macOS 12+ and objc2 performs no
+  runtime availability check.
+- GTK backend implements `TrayService` (`Backend::tray`, `backend_caps().tray`
+  now `true`) via the `org.kde.StatusNotifierItem` / `com.canonical.dbusmenu`
+  D-Bus protocol (`gtk::tray`, behind the existing `gtk` feature's new
+  Linux-only `zbus` dependency). `tray()` attempts to register with a running
+  `org.kde.StatusNotifierWatcher` on each call and honestly returns `None`
+  when no watcher is reachable (e.g. stock GNOME without a tray extension),
+  rather than caching that failure or fabricating success. Icon, tooltip and
+  `ContextMenu` set on the tray forward to the SNI/dbusmenu properties; clicks
+  and menu activations surface as the usual `UiEvent::TrayClicked` /
+  `UiEvent::ContextMenuItemActivated` events, matching the macOS and Windows
+  tray backends.
+- `PointerShape` (`backend::PointerShape`, itself `#[non_exhaustive]`) gains
+  nine new variants — `Text`, `Pointer`, `Grab`, `Grabbing`, `Crosshair`,
+  `Wait`, `NotAllowed`, `ColResize`, `RowResize` — alongside the existing
+  `Default`/`Resize`. `TextInputLayout::pointer_shape` and
+  `ButtonLayout::pointer_shape` request `Text`/`Pointer` from hit-test
+  results; each backend's `PointerShape` → native-cursor mapping falls back
+  to its plain arrow/`"default"` for every new variant until that backend
+  wires up a native glyph for it. `desktop::all_pointer_shapes()`, the
+  enum-walk scaffold every backend's exhaustive mapping test is built on,
+  now lists all 18 shapes, so each backend's test asserts the fallback for
+  every new variant rather than only the original 9.
+- `ButtonLayout::pointer_shape_for` — like `pointer_shape`, but also takes
+  the `Button` so a disabled button's body reports `Default` instead of a
+  hand cursor.
+- `TextInputLayout::pointer_shape` now reports `Text` (not `Default`) over
+  the blank band inside `content_bounds` below the last visible line,
+  matching how native multi-line editors still show an I-beam there.
+- `WindowControl::is_fullscreen` — queries the window's current fullscreen
+  state, alongside the existing `is_maximized`, so a backend-neutral caller
+  can read both chrome flags without tracking its own shadow state.
+- Windows event producers for `UiEvent::WindowStateChanged`,
+  `UiEvent::SystemThemeChanged` and `UiEvent::DisplaysChanged` — previously
+  declared variants with zero producers on any backend. `win::run`'s
+  `wndproc` now dispatches `WindowStateChanged` off `WM_SIZE`'s live
+  `IsZoomed`/`IsIconic` state (deduplicated against the window's previous
+  tri-state so an ordinary resize drag doesn't re-fire it), `SystemThemeChanged`
+  off `WM_SETTINGCHANGE` filtered to the `ImmersiveColorSet` setting name or
+  the `SPI_SETHIGHCONTRAST` action code, and `DisplaysChanged` off
+  `WM_DISPLAYCHANGE`. `WindowStateChanged` is documented as an idempotent
+  state snapshot rather than a delta, including the Win32 detail that
+  minimizing a maximized window reports `maximized` and `minimized` together.
+  GTK and macOS producers are tracked separately.
+- `FieldKind::Dropdown` TUI popup: the TUI backend now paints an in-canvas
+  option list under a focused `Dropdown` field, instead of leaving the
+  selected value and the rest of the options invisible between Enter
+  presses. No new fields on `FieldKind::Dropdown` — `focused` (derived from
+  the existing `Form::focused_field`/`Form::has_focus`) is the sole
+  visibility signal, matching the GUI backends' existing popup. `Up`/`Down`
+  live-commit `selected_idx` on every keystroke via `FormEvent::DropdownChanged`,
+  with no separate open/close step; `FormController::handle_dropdown_key`
+  routes them, falling back to the generic Tab/BackTab handling other fields
+  share once the first/last option is reached. Covered by `tui::form`'s
+  paint tests, `compose::form_controller`'s routing tests, and a dedicated
+  `examples/tui_form_dropdown.rs` demo (`examples/common/form_dropdown.rs`)
+  with `TuiDriver` end-to-end tests.
+- `FieldKind::ComboBox`: a searchable / type-to-filter combobox form field,
+  wrapping the existing `ComboBox` primitive. `FormEvent::ComboBoxTextChanged`
+  / `ComboBoxHighlightChanged` / `ComboBoxCommitted` / `ComboBoxCancelled`
+  surface its edits through the same `FormController`/`FormEvent` dispatch
+  every other field kind uses; `FormController::handle_combo_box_key` routes
+  typed characters, arrow-key highlight movement, and commit/cancel to the
+  focused field's embedded `ComboBox::handle_key`, falling back to the
+  generic Tab/BackTab/Escape handling other fields already share. TUI paints
+  the compact field row (live filter text + chevron) via a new
+  `src/tui/form.rs` arm; GTK renders it through the existing
+  backend-generic `primitives::form::paint` path with no GTK-specific code
+  needed. Both backends are covered by `examples/common/form_all_fields.rs`
+  and its cross-backend parity/driver tests. A dedicated
+  `examples/tui_form_combo_box.rs` demo (`examples/common/form_combo_box.rs`)
+  shows the full apply contract end to end — the field row paints only the
+  compact filter text, the app itself paints the open dropdown overlay via
+  `Backend::draw_combo_box`, mirroring `FieldKind::ColorPicker`'s popup
+  contract — covered by `TuiDriver` tests exercising type-to-filter,
+  highlight navigation, commit, cancel, and quit routing.
+- `Form`/`FormField` label placement and explicit tab order: a new
+  `LabelPosition` (`Left`/`Top`/`Inline`/`Hidden`) and `LabelAlign`
+  (`Start`/`Center`/`End`) enum, settable per-form (`Form::label_position`,
+  `Form::label_align`, `Form::label_width`) and overridden per-field
+  (`FormField::label_position`, `FormField::label_align`,
+  `FormField::label_width`), resolved via `Form::resolved_label_position` /
+  `resolved_label_align` / `resolved_label_width`. `FormField::tab_index`
+  lets a form declare a custom tab order, consulted by
+  `FormController::move_focus`; fields that leave it unset keep their
+  declaration order. The TUI backend renders all four label positions:
+  `Left` aligns every such field's label into one shared column sized to
+  the widest label (or an explicit `label_width` override), `Top` paints
+  the label on its own row above the input, `Hidden` suppresses the label
+  entirely, and `Inline` keeps each row's own per-label width unshared.
+  All fields are additive with `serde` defaults, so a form that never sets
+  them deserializes and reads exactly as before. The TUI paint path does
+  shift: every field that resolves to the default `Left` position now
+  shares one label column sized to the widest such label, so an existing
+  multi-field form's inputs (including `ToggleGroup`/`ButtonRow`/
+  `Toolbar`/`SegmentedControl` item columns) can move right to line up
+  with that shared column. `GTK`/`macOS`/`Win` compile against the new
+  fields but don't yet have their own rasteriser support for them.
+- `quadraui::expr`: a serializable, binding-neutral expression AST (`Expr`,
+  `Value`, `Context`) for form rules (conditional visibility, validation).
+  Field references, string/number/bool/null literals, comparisons
+  (`==`/`!=`/`<`/`<=`/`>`/`>=`), membership (`in`), `present`/`empty`,
+  boolean combinators (`and`/`or`/`not`), and a regex `matches` test — no
+  function calls, loops, or side effects. `Expr::eval`/`eval_bool` are
+  total (never panic or error); a dangling field reference or malformed
+  regex degrades to a safe default instead of failing. The `Expr`/`Value`
+  enums serialize with serde's default representation unmodified, so that
+  *is* the wire shape every language binding (Lua, Python, a future
+  C-ABI) emits.
+- `quadraui::validation`: declarative field/form validation rules —
+  `Validator` built-ins (`Required`, `Pattern`, `Min`/`Max`,
+  `MinLength`/`MaxLength`, `OneOf`) plus cross-field rules via
+  `Validator::Expr(quadraui::expr::Expr)`, grouped per field into a
+  serializable `FormRules` (`BTreeMap<String, Vec<Rule>>` keyed by
+  `WidgetId::as_str()`) and applied with `validate(&mut Form, &FormRules)`.
+  Same binding-neutral rationale as `quadraui::expr`: rules are data, so
+  every language binding gets identical `Error`/`Warning`
+  `FormField::validation` state with no host-side validation logic.
+  `FormController::set_rules` attaches a `FormRules` that
+  `FormController::set_form` evaluates automatically on every pushed
+  `Form`; fields with no declared rules are left untouched, so the
+  existing imperative `ValidationState` escape hatch still works unchanged.
+- `quadraui::visibility`: declarative `visible_when`/`enabled_when`
+  conditions per field, evaluated with `quadraui::expr` against the same
+  `Context` `quadraui::validation` builds. `FieldVisibility` holds each
+  field's optional `visible_when` (removes the field from the rendered
+  `Form` when false) and `enabled_when` (drives `FormField::disabled`),
+  grouped per field into a serializable `FormVisibility`
+  (`BTreeMap<String, FieldVisibility>` keyed by `WidgetId::as_str()`) and
+  applied with `apply_visibility(&mut Form, &FormVisibility)`. Binding-
+  neutral for the same reason as `quadraui::expr`/`quadraui::validation`:
+  conditions are plain serializable data, not a host callback.
+  `FormController::set_visibility` attaches a `FormVisibility` that
+  `FormController::set_form` evaluates automatically on every pushed
+  `Form`, after validation and before the field list is rendered, so a
+  field hides/shows or enables/disables declaratively with no per-keystroke
+  host round-trip; fields with no declared rule are left untouched.
+- `WindowControl::set_document_edited`/`set_represented_filename` — the
+  dirty-document / represented-file seam
+  (`BrowserWindow.setDocumentEdited`/`setRepresentedFilename` parity
+  target). Both default to `BackendError::Unsupported`; macOS implements
+  them for real with `NSWindow::setDocumentEdited:`/
+  `setRepresentedFilename:` (the modified dot in the close button and the
+  titlebar proxy icon). No other in-tree backend has equivalent chrome.
+
+#### New capability contracts (Electron-parity API surface, not yet implemented)
+
+No in-tree backend implements the methods below yet; each one defaults to
+`BackendError::Unsupported` on every GUI backend, TUI included except
+where a bullet notes an honest no-op override.
+
+- `PlatformServices::set_as_default_protocol_client`/
+  `is_default_protocol_client`/`remove_as_default_protocol_client` — the
+  protocol/file-association registration seam (`app.setAsDefaultProtocolClient`/
+  `isDefaultProtocolClient`/`removeAsDefaultProtocolClient` parity target).
+  All three take a bare URL scheme (e.g. `"myapp"`) and default to
+  `BackendError::Unsupported` on every in-tree backend, including TUI — no
+  backend has a safe default answer for OS-level registration state it
+  doesn't read. Per-backend registration (`LSSetDefaultHandlerForURLScheme`/
+  `HKCR` writes/`xdg-mime default`) is a separate, backend-specific
+  follow-on.
+- `PlatformServices::set_login_item`/`login_item_enabled` — the
+  launch-at-login seam (`app.setLoginItemSettings`/`getLoginItemSettings`
+  parity target), with a new `LoginItemOptions` type (`open_hidden`,
+  `args`) in `quadraui::login_item`. Both default to
+  `BackendError::Unsupported`; TUI overrides `login_item_enabled` with an
+  honest no-op that always reports `false`. Per-backend registration
+  (`SMAppService`/registry/XDG autostart) is a separate follow-on.
+- `PlatformServices::begin_drag_out` and `DragOutPayload` (`drag::DragOutPayload`,
+  also re-exported at the crate root) — the seam for dragging an item *out* of
+  a quadraui window to the OS (Finder / Explorer / another app), Electron's
+  `webContents.startDrag` parity and the counterpart to the existing drag-*in*
+  `UiEvent::FilesDropped`. `DragOutPayload` carries file paths, free-text (a
+  `text/uri-list` fallback, renderable via `DragOutPayload::to_uri_list`), or
+  both. `begin_drag_out` defaults to `BackendError::Unsupported` with no
+  in-tree backend overriding it yet — the per-backend OS drag session
+  (`NSView::beginDraggingSession` on macOS, `IDropSource`/`DoDragDrop` on
+  Win-GUI, `gtk4::DragSource` on GTK) is a separate follow-on.
+  `DragOutPayload::to_uri_list` renders each path through the shared,
+  now-uncfg'd `desktop::path_to_file_uri` — percent-encoded per RFC 3986,
+  correct for Windows drive-letter, UNC and verbatim (`\\?\`) paths (not
+  just POSIX ones), lossless for non-UTF-8 Unix paths, and CRLF-terminated
+  on every line including the last per RFC 2483. A relative path, the one
+  shape with no well-defined `file://` URI, is skipped.
+- `PlatformServices::register_global_shortcut`/`unregister_global_shortcut`/
+  `unregister_all_global_shortcuts`, `GlobalShortcutId`,
+  `GlobalShortcutRegistry` and `UiEvent::GlobalShortcut` — the seam for an
+  OS-wide hotkey that fires even when the app isn't focused, distinct from
+  the in-window-only `Accelerator`/`register_accelerator`. Backend-neutral
+  bookkeeping (id lifecycle, double-registration rejection) only; the three
+  `PlatformServices` methods default to `BackendError::Unsupported` with no
+  in-tree backend overriding them yet — per-backend OS hotkey registration
+  (Win32 `RegisterHotKey`, Carbon/Cocoa `RegisterEventHotKey`, the
+  `org.freedesktop.portal.GlobalShortcuts` XDG portal) is a separate
+  follow-on.
+- `PlatformServices::update_service` — an auto-update seam. The new
+  `UpdateService` trait (`check_for_update`, `download_and_stage`,
+  `apply_on_quit`) plus its `UpdateFeed`/`UpdateInfo`/`StagedUpdate` types
+  give every backend a contract to implement an updater against, without
+  requiring one yet: the default `UpdateService` returns
+  `BackendError::Unsupported` from every method. The TUI backend overrides
+  `download_and_stage` to emit an `"update available: <version>"`
+  diagnostic through `quadraui::diagnostics` before degrading to the same
+  `Unsupported`, since a terminal app has no package format of its own to
+  stage. `UpdateInfo::builder` offers a named-field alternative to `new`'s
+  four same-typed positional arguments. Sparkle/WinSparkle/AppImage
+  implementations are separate follow-ons.
+- `PlatformServices::on_battery`/`thermal_state` and
+  `begin_power_save_block`/`end_power_save_block` — a power-monitor and
+  sleep-blocker seam, plus the new `UiEvent::PowerStateChanged` event (not
+  yet emitted by any backend) and the `power` module's `PowerSaveKind`/
+  `ThermalState`/`BlockerId`/`PowerEventKind` types. All four methods
+  default to `BackendError::Unsupported`. The TUI backend overrides the
+  blocker pair with an honest no-op implementation — it mints and tracks a
+  real `BlockerId` so a begin/end lifecycle behaves consistently, it just
+  never asks the OS to stay awake — while leaving `on_battery`/
+  `thermal_state` at the default, since a terminal has no battery/thermal
+  signal of its own. IOKit/Win32/`org.freedesktop.login1` implementations
+  are separate, backend-specific follow-ons.
+- `PlatformServices::add_recent_document`/`clear_recent_documents`/
+  `set_dock_menu`/`set_jump_list` — the recent-documents/jump-list/Dock-menu
+  seam (`app.addRecentDocument`/`app.setJumpList`/`app.dock.setMenu` parity
+  target). `set_dock_menu` reuses the existing menu model
+  (`&quadraui::primitives::context_menu::ContextMenu`), mirroring
+  `TrayService::set_menu`'s signature and "empty items = detach" semantics.
+  `set_jump_list` takes a new `JumpListItem` type (`title`, `program`,
+  `args`, `description`) in `quadraui::backend`. All four default to
+  `BackendError::Unsupported`; TUI overrides `add_recent_document`/
+  `clear_recent_documents`/`set_dock_menu` with an honest no-op that always
+  reports success (no stale-state risk from discarding them), while
+  `set_jump_list` keeps the `Unsupported` default even on TUI since a jump
+  list has no equivalent "discard it silently" story. Per-backend
+  implementation (macOS `NSDocumentController`/Dock menu,
+  Windows `SHAddToRecentDocs`/`ICustomDestinationList`) is a separate,
+  backend-specific follow-on.
+
+### Changed
+
+**Breaking** (see "Downstream impact" below). The entries in this tranche
+that are not safe for an existing downstream to pick up on a `0.6.x` ->
+`0.7.0` bump without source changes:
+
+- `Form`/`FormField` gained new, non-optional-by-shim fields — three on
+  `Form` (`label_position`, `label_align`, `label_width`) and four on
+  `FormField` (`label_position`, `label_align`, `label_width`,
+  `tab_index`) — and neither struct is `#[non_exhaustive]`
+  (`quadraui/src/primitives/form.rs`). `#[serde(default)]` makes this
+  non-breaking for deserialization and for any construction that already
+  uses `..Default::default()`, but any downstream building `Form { .. }`/
+  `FormField { .. }` as an exhaustive struct literal fails to compile.
+  coord-tui does this at roughly 10 sites; vimcode at roughly 7, and
+  vimcode pins `quadraui = "0.6"` from crates.io, so this would otherwise
+  break on its next `cargo update`.
+- `PointerShape` (`quadraui::backend::PointerShape`) is now
+  `#[non_exhaustive]`, on top of gaining nine new variants — breaking for
+  any downstream `match`ing it exhaustively (without a wildcard arm),
+  independent of the new variants themselves.
+- `SystemTheme::reduce_motion` — the new field is `#[serde(default)]` and
+  every in-tree construction site is updated, so `Default`/serde-based
+  consumers see no change, but a downstream building `SystemTheme` from a
+  struct literal without `..Default::default()` fails to compile. This is
+  the accurate, qualified claim; unqualified "non-breaking" wording for
+  this field is wrong and does not appear above.
+- The TUI `Form`/`FormField` label-placement paint path (see the
+  `### Added` entry above): every field that resolves to the default
+  `Left` label position now shares one label column sized to the widest
+  such label, so an existing multi-field form's inputs — including
+  `ToggleGroup`/`ButtonRow`/`Toolbar`/`SegmentedControl` item columns —
+  can move right to line up with that shared column. No API changed, but
+  the rendered layout of an unmodified form does.
+
+**Downstream impact.** coord-tui
+(TODO(link): coord-tui consumer-migration issue) and vimcode
+(TODO(link): vimcode consumer-migration issue) both construct `Form`/
+`FormField` via struct literals and need to switch to
+`..Default::default()` (or a builder, once one exists) before adopting
+`0.7.0`; vimcode additionally needs to widen its `quadraui = "0.6"`
+crates.io dependency to `"0.7"` deliberately rather than picking it up on
+an unattended `cargo update`.
+
+### Fixed
+
+- `PlatformServices::reveal_in_file_manager` on Linux/BSD no longer reports a
+  false success for a path with no `file://` URI. A relative path (the method
+  is public and forwards the consumer's `&Path` verbatim) used to be sent to
+  `org.freedesktop.FileManager1.ShowItems` as a one-element array holding the
+  empty string, which a session with a real `FileManager1` listener answers
+  with a success exit. The D-Bus leg now declines such a path outright so the
+  `xdg-open`-the-parent fallback still gets its shot.
+- Windows `WindowStateChanged` now also fires from the deferred resize-replay
+  path (`resync_pending_resize`), not only from a live `WM_SIZE`. A reentrant
+  `WM_SIZE` ceded to `DefWindowProcW` while a `guarded_call` was on the stack
+  (a `toggle_window_maximize` triggered from inside `AppLogic::handle`, or a
+  user maximizing the window while a modal pump runs) was dropped outright,
+  and left the dedup cache (`WindowState::window_tristate`) stale so that the
+  *next* live `WM_SIZE` compared against the pre-transition state and was
+  swallowed too. The classification itself also moved off `WM_SIZE`'s `wParam`
+  (which conflates this window's own `SIZE_MAXIMIZED`/`SIZE_MINIMIZED` with
+  another window's `SIZE_MAXSHOW`/`SIZE_MAXHIDE`) to live
+  `IsZoomed`/`IsIconic` queries.
+- Windows `WM_SETTINGCHANGE` messages that are not a theme flip are forwarded
+  to `DefWindowProcW` instead of being answered `LRESULT(0)`, so the default
+  handling of the other setting areas (`"Policy"`, `"Environment"`, system
+  metrics, ...) is no longer suppressed by the theme producer.
+- `WinBackend::is_fullscreen` now guards on an attached `self.hwnd`, the same
+  way `is_maximized` already does, instead of answering `Ok(false)` for a
+  backend with no window at all.
+- `FormController::handle_cached`'s backend-free fallback layout (used when
+  no live `Backend` is attached) now gives `FieldKind::Toolbar` fields the
+  same per-button hit regions the pixel backends and TUI already compute: it
+  was missing a `Toolbar` arm entirely, so every click anywhere in a toolbar
+  row resolved to the field's own id (`FormEvent::FocusChanged`) instead of
+  the specific button clicked (`FormEvent::ToolbarButtonClicked`).
+- A Cmd-modified letter key (`Key::Char` with `Modifiers::cmd` set — the shape
+  every backend, including macOS, delivers an accelerator in, rather than a
+  dedicated key variant) is no longer typed as a literal character or
+  interpreted as a vim-style shortcut by `compose::ChatController`,
+  `compose::HelpOverlayController`, `compose::FilePickerController`,
+  `compose::FolderPickerController`, or `compose::DualModePaletteController`.
+  Each now excludes `cmd` alongside `ctrl` the same way `FormController`
+  already did, so the event falls through (`Ignored`/`KeyPressed`) for the
+  app's own Cmd-shortcut dispatch instead of being consumed as input.
+- `PlatformServices::show_folder_open_dialog` on TUI drives a real
+  `compose::FolderPickerController` through the same nested draw-and-read
+  loop as `show_file_open_dialog`/`show_file_save_dialog`, instead of
+  unconditionally returning `None`. `BackendCaps::folder_dialogs` stays
+  `false` on `TuiBackend` — that flag means a real *native* OS directory
+  chooser, which a terminal cannot show regardless of how faithful the
+  in-canvas replacement is; callers after a real path rather than OS-native
+  chrome can ignore the flag and just call the method.
+- Windows `PlatformServices::send_notification` no longer silently drops a
+  notification for an unregistered `AppUserModelID` — the state every
+  unpackaged/`cargo run`/xcopy-deployed app starts in, where the WinRT toast
+  APIs return `Ok` but render nothing. A failed or skipped AUMID registration
+  leaves `send_notification` with no toast to attempt, so it falls through to
+  the `Shell_NotifyIconW` balloon instead of showing nothing, once a window
+  has attached.
+- `set_aumid` writes the `HKCU\Software\Classes\AppUserModelId\<aumid>\DisplayName`
+  registry value an unpackaged Win32 app needs before the OS will surface a
+  toast for that AUMID, using the window title as the human-readable name
+  shown in the toast header, Action Center, and Settings → Notifications
+  (not the opaque AUMID string). The AUMID is only recorded as usable once
+  that write succeeds.
+- GTK/Linux tray (`StatusNotifierItem`): a bare `Backend::tray()` capability
+  probe that never calls `set_icon` now reports `Status = "Passive"` instead
+  of a permanently-registered, visibly blank item — matching
+  `TrayService::set_icon`'s "a host that never calls this shows nothing"
+  contract and the lazy creation `macos::tray`'s `NSStatusItem` already gets.
+  The first `set_icon` flips it to `"Active"` and emits `NewStatus` once.
+  `ItemIsMenu` now mirrors whether a menu is actually attached instead of a
+  hard-coded `false`, and `set_menu` emits a `PropertiesChanged` refresh for
+  it, so KDE Plasma and waybar open the dbusmenu on left-click instead of
+  sending a dead `Activate`. A background thread polls
+  `org.kde.StatusNotifierWatcher`'s own name ownership on its own short-lived
+  connections and re-registers the item whenever a new owner takes it,
+  recovering from a plasmashell restart or a GNOME AppIndicator-extension
+  toggle instead of silently losing the icon for the rest of the process's
+  life while `set_icon`/`set_menu` keep reporting `Ok`. The watch holds only a
+  weak reference to the item's own state, so it cannot keep the item's D-Bus
+  connection alive past the item itself being dropped.
+- `TuiPlatformServices::add_recent_document`, `clear_recent_documents`, and
+  `set_dock_menu` now return `Err(BackendError::Unsupported)` instead of
+  discarding their input and reporting `Ok(())`. A terminal has no OS
+  recent-documents list or dock to attach a menu to, so the honest answer is
+  the same typed degrade `set_jump_list` already used for the same reasoning;
+  the previous bare `Ok(())` was the "returns success, did nothing"
+  anti-pattern `PlatformServices` honesty (`PRIMITIVE_RULES.md` rule 9)
+  forbids. Covered by a new `examples/tui_platform_seams.rs` demo (exercising
+  every `PlatformServices` seam from app code) and its
+  `tests/tui_example_driver.rs` driver tests.
+
 ## [0.6.1] - 2026-10-26
 ### Added
 

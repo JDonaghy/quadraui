@@ -87,7 +87,71 @@
 //!   ever overlaid onto the field that is still focused, so a click that
 //!   moves focus elsewhere can't leave a stale scrub position visible on
 //!   the field it left.
+//!
+//! ## ComboBox fields
+//!
+//! `FieldKind::ComboBox` needs no shadow-state struct the way
+//! `DatePicker` needs `DateEditState`: its `text`/`open`/`highlighted`
+//! fields are already the live state, supplied fresh by the app each
+//! frame, with no separate cursor/position concept to cache across
+//! keystrokes. `handle_combo_box_key` clones the focused field's
+//! `ComboBox`, forces its `focused` flag to match `Form::focused_field`
+//! (the app isn't expected to mirror that onto the embedded primitive
+//! itself), and calls its own `handle_key` directly.
+//!
+//! - Unlike `DatePicker`'s `date_picker_key_name` pre-filter,
+//!   `handle_combo_box_key` must see every key — digits/letters and
+//!   `Backspace` edit `text`, not just navigation — so it returns
+//!   `Option` instead of an unconditional event: a `None` (Tab/BackTab,
+//!   `Escape` while closed, `Up`/`Down` over an empty filtered list)
+//!   falls through to the generic dispatch below it. For Tab/BackTab that
+//!   dispatch has a dedicated arm (focus traversal keeps working off a
+//!   `ComboBox` field normally); for `Escape`/`Up`/`Down` there is no such
+//!   arm, so they fall all the way through to `EditOp::from_key`, which
+//!   doesn't recognize them either, and resolve to
+//!   `FormControllerEvent::Ignored` — the same outcome as a disabled
+//!   focused field's keys, not a second layer of dedicated handling.
+//! - The compact field row (live `text` plus a chevron) is the only
+//!   thing `Form`/`FormController` paint; the open dropdown is the app's
+//!   own popup overlay, mirroring `ColorPicker`'s contract — see
+//!   `FieldKind::ComboBox`'s doc.
+//! - A disabled focused `ComboBox` does not intercept its keys at all,
+//!   the same as a disabled `DatePicker`.
+//!
+//! ## Declarative validation
+//!
+//! [`FormController::set_rules`] attaches a [`crate::validation::FormRules`]
+//! to the controller. From then on, every [`FormController::set_form`] call
+//! evaluates those rules against the pushed `Form` via
+//! [`crate::validation::validate`] before storing it — so the app gets
+//! `required`/`pattern`/cross-field `Error`/`Warning` state on
+//! `FormField::validation` for free, with no per-keystroke validation logic
+//! of its own. A controller with no rules set (`FormRules::default()`,
+//! the starting state) behaves exactly as before: `set_form` stores the
+//! `Form` unchanged.
+//!
+//! ## Declarative visibility
+//!
+//! [`FormController::set_visibility`] attaches a
+//! [`crate::visibility::FormVisibility`] to the controller. From then on,
+//! every [`FormController::set_form`] call evaluates those rules against
+//! the pushed `Form` via [`crate::visibility::apply_visibility`] — *after*
+//! [`Self::set_rules`]'s validation, so cross-field validation still sees
+//! every field's value before any of them are hidden — removing fields
+//! whose `visible_when` is false and setting `disabled` for fields with an
+//! `enabled_when`. A controller with no visibility rules set
+//! (`FormVisibility::default()`, the starting state) behaves exactly as
+//! before: `set_form` stores the `Form` unchanged beyond validation.
+//!
+//! `apply_visibility` clears `Form::focused_field` when the field it named
+//! is hidden, but `self.text_edit` / `self.date_edit` are left pointing at
+//! that field's in-flight edit state. This is deliberate: `build_form`
+//! looks the edit state up by id via `.find()`, so it is simply inert
+//! while the field stays hidden, and if the field reappears with the same
+//! id the cached cursor/scrub position resuming is the desired behaviour
+//! rather than a reset.
 
+use crate::primitives::combo_box::ComboBoxEvent;
 use crate::primitives::date_picker::{CalendarDate, DatePickerEvent};
 use crate::primitives::form::{
     FieldKind, Form, FormEvent, FormFieldMeasure, FormHit, FormItemMeasure,
@@ -95,6 +159,8 @@ use crate::primitives::form::{
 use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
 use crate::primitives::text_input::{EditOp, TextEditor, TextInput};
 use crate::text_util::snap_to_char_boundary;
+use crate::validation::{validate, FormRules};
+use crate::visibility::{apply_visibility, FormVisibility};
 use crate::{
     Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar, UiEvent,
     WidgetId,
@@ -146,6 +212,8 @@ pub struct FormController {
     cached_lh: Option<f32>,
     text_edit: Option<TextEditState>,
     date_edit: Option<DateEditState>,
+    rules: FormRules,
+    visibility: FormVisibility,
 }
 
 impl FormController {
@@ -159,13 +227,48 @@ impl FormController {
             cached_lh: None,
             text_edit: None,
             date_edit: None,
+            rules: FormRules::default(),
+            visibility: FormVisibility::default(),
         }
     }
 
     // ── Per-frame data ────────────────────────────────────────────────
 
-    pub fn set_form(&mut self, form: Form) {
+    /// Store `form`, applying [`Self::set_rules`]'s declarative validation
+    /// and then [`Self::set_visibility`]'s declarative visibility/
+    /// enablement — see this module's "Declarative validation" and
+    /// "Declarative visibility" doc sections.
+    pub fn set_form(&mut self, mut form: Form) {
+        validate(&mut form, &self.rules);
+        apply_visibility(&mut form, &self.visibility);
         self.form = Some(form);
+    }
+
+    /// Set the declarative rules [`Self::set_form`] evaluates against every
+    /// `Form` pushed from then on. Pass `FormRules::default()` to clear
+    /// them (equivalent to never having called this).
+    pub fn set_rules(&mut self, rules: FormRules) {
+        self.rules = rules;
+    }
+
+    /// The rules most recently set via [`Self::set_rules`] (empty/default
+    /// if never called).
+    pub fn rules(&self) -> &FormRules {
+        &self.rules
+    }
+
+    /// Set the declarative visibility/enablement rules [`Self::set_form`]
+    /// evaluates against every `Form` pushed from then on. Pass
+    /// `FormVisibility::default()` to clear them (equivalent to never
+    /// having called this).
+    pub fn set_visibility(&mut self, visibility: FormVisibility) {
+        self.visibility = visibility;
+    }
+
+    /// The visibility rules most recently set via [`Self::set_visibility`]
+    /// (empty/default if never called).
+    pub fn visibility(&self) -> &FormVisibility {
+        &self.visibility
     }
 
     // ── State accessors ───────────────────────────────────────────────
@@ -398,6 +501,9 @@ impl FormController {
                 focused_field: None,
                 scroll_offset: self.scroll_offset,
                 has_focus: self.has_focus,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                label_width: None,
             },
         }
     }
@@ -428,6 +534,34 @@ impl FormController {
             if let Some(key_name) = date_picker_key_name(key) {
                 if self.focused_field_is_enabled_date_picker() {
                     return self.handle_date_picker_key(key_name);
+                }
+            }
+            // `ComboBox` has no pre-filtered key set the way
+            // `date_picker_key_name` gives `DatePicker` above — it needs
+            // Char/Backspace too, not just navigation keys — so
+            // `handle_combo_box_key` returns `Option` instead and a
+            // `None` here (Tab/BackTab, Escape while closed, Up/Down
+            // over an empty filtered list) falls through to the match
+            // below rather than being swallowed outright. Tab/BackTab have
+            // a dedicated arm there; Escape and Up/Down don't, so those
+            // fall all the way to `EditOp::from_key` and resolve to
+            // `FormControllerEvent::Ignored`, not a second round of
+            // combo-box-specific handling.
+            if self.focused_field_is_enabled_combo_box() {
+                if let Some(result) = self.handle_combo_box_key(key, modifiers) {
+                    return result;
+                }
+            }
+            // `Dropdown` has no open/close step to track (unlike
+            // `ComboBox`'s `open`/`highlighted`) — Up/Down move and commit
+            // `selected_idx` in the same keystroke, so `handle_dropdown_key`
+            // only ever claims those two keys and returns `None` for
+            // everything else (Tab/BackTab, Enter), which falls through to
+            // the generic dispatch below exactly like an unclaimed
+            // combo-box key does.
+            if self.focused_field_is_enabled_dropdown() {
+                if let Some(result) = self.handle_dropdown_key(key) {
+                    return result;
                 }
             }
         }
@@ -555,6 +689,147 @@ impl FormController {
         }
     }
 
+    /// Whether the currently-focused field is a non-disabled `ComboBox`
+    /// — gates `handle_key`'s combo-box-key interception. Mirrors
+    /// [`Self::focused_field_is_enabled_date_picker`].
+    fn focused_field_is_enabled_combo_box(&self) -> bool {
+        let Some(form) = &self.form else {
+            return false;
+        };
+        let Some(focused_id) = &form.focused_field else {
+            return false;
+        };
+        form.fields
+            .iter()
+            .find(|f| &f.id == focused_id)
+            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::ComboBox(_)))
+    }
+
+    /// Route `key`/`modifiers` into the focused `ComboBox`'s own
+    /// [`crate::primitives::combo_box::ComboBox::handle_key`] and
+    /// translate the result into a `FormEvent::ComboBox*` variant.
+    /// Unlike [`Self::handle_date_picker_key`], this returns `Option`
+    /// rather than an unconditional [`FormControllerEvent`]: there is no
+    /// `DateEditState`-style shadow cache to maintain here (the field's
+    /// own `text`/`open`/`highlighted` are already the live state, fed
+    /// back fresh by the app each frame), so a plain `None` is enough to
+    /// tell `handle_key` to fall through to its generic dispatch for any
+    /// key the combo box doesn't recognise.
+    fn handle_combo_box_key(
+        &mut self,
+        key: &Key,
+        modifiers: &Modifiers,
+    ) -> Option<FormControllerEvent> {
+        let form = self.form.as_ref()?;
+        let focused_id = form.focused_field?;
+        let field = form.fields.iter().find(|f| f.id == focused_id)?;
+        if field.disabled {
+            return None;
+        }
+        let FieldKind::ComboBox(combo) = &field.kind else {
+            return None;
+        };
+
+        // `ComboBox::focused` is documented as "set by the host's
+        // focus-traversal logic" — `Form::focused_field` already
+        // singled this field out above, so force it here rather than
+        // depending on the app to have mirrored that onto the embedded
+        // primitive itself.
+        let mut combo = combo.clone();
+        combo.focused = true;
+
+        // `FormEvent::ComboBox*` carries the *field's* id (`focused_id`),
+        // not the embedded `ComboBox`'s own id from `ComboBoxEvent` —
+        // mirroring `FormEvent::DateChanged`'s `id: focused_id` shape so
+        // a consumer can always resolve the event back to a `FormField`
+        // with `form.fields.iter().find(|f| f.id == id)`.
+        match combo.handle_key(key, modifiers)? {
+            ComboBoxEvent::TextChanged { text, .. } => Some(FormControllerEvent::FormAction(
+                FormEvent::ComboBoxTextChanged {
+                    id: focused_id,
+                    value: text,
+                },
+            )),
+            ComboBoxEvent::HighlightChanged { index, .. } => Some(FormControllerEvent::FormAction(
+                FormEvent::ComboBoxHighlightChanged {
+                    id: focused_id,
+                    index,
+                },
+            )),
+            ComboBoxEvent::Committed { value, .. } => Some(FormControllerEvent::FormAction(
+                FormEvent::ComboBoxCommitted {
+                    id: focused_id,
+                    value,
+                },
+            )),
+            ComboBoxEvent::Cancelled { .. } => Some(FormControllerEvent::FormAction(
+                FormEvent::ComboBoxCancelled { id: focused_id },
+            )),
+        }
+    }
+
+    /// Whether the currently-focused field is a non-disabled, non-empty
+    /// `Dropdown` — gates `handle_key`'s Up/Down interception. Mirrors
+    /// [`Self::focused_field_is_enabled_combo_box`]; an empty `options`
+    /// list excludes itself so Up/Down fall through to the generic
+    /// dispatch rather than being swallowed with nothing to move between.
+    fn focused_field_is_enabled_dropdown(&self) -> bool {
+        let Some(form) = &self.form else {
+            return false;
+        };
+        let Some(focused_id) = &form.focused_field else {
+            return false;
+        };
+        form.fields
+            .iter()
+            .find(|f| &f.id == focused_id)
+            .is_some_and(|f| {
+                !f.disabled
+                    && matches!(&f.kind, FieldKind::Dropdown { options, .. } if !options.is_empty())
+            })
+    }
+
+    /// Up/Down moves the focused `Dropdown`'s `selected_idx` by one,
+    /// clamped (not wrapping) to `[0, options.len() - 1]`, and emits
+    /// [`FormEvent::DropdownChanged`] immediately — there's no separate
+    /// open/highlight/commit sequence the way `ComboBox` has, so unlike
+    /// [`Self::handle_combo_box_key`] there's no `FormControllerEvent`
+    /// variant for an in-progress-but-uncommitted move. Any other key
+    /// (including Up/Down already at an end of the list) returns `None`,
+    /// which `handle_key` falls through to its generic dispatch — a
+    /// no-op there, since a `Dropdown` has no text to edit.
+    fn handle_dropdown_key(&mut self, key: &Key) -> Option<FormControllerEvent> {
+        let form = self.form.as_ref()?;
+        let focused_id = form.focused_field?;
+        let field = form.fields.iter().find(|f| f.id == focused_id)?;
+        if field.disabled {
+            return None;
+        }
+        let FieldKind::Dropdown {
+            options,
+            selected_idx,
+        } = &field.kind
+        else {
+            return None;
+        };
+        let delta: i32 = match key {
+            Key::Named(NamedKey::Up) => -1,
+            Key::Named(NamedKey::Down) => 1,
+            _ => return None,
+        };
+        let max_idx = options.len().saturating_sub(1) as i32;
+        let new_idx = (*selected_idx as i32 + delta).clamp(0, max_idx) as usize;
+        if new_idx == *selected_idx {
+            return None;
+        }
+        Some(FormControllerEvent::FormAction(
+            FormEvent::DropdownChanged {
+                id: focused_id,
+                selected_idx: new_idx,
+            },
+        ))
+    }
+
     /// Move focus to the next/previous non-`Label`, non-`ReadOnly`,
     /// non-disabled field, wrapping around, and scroll it into view.
     /// Emits [`FormEvent::FocusChanged`] — the app persists the new
@@ -564,12 +839,19 @@ impl FormController {
         let Some(form) = &self.form else {
             return FormControllerEvent::Ignored;
         };
-        let stops: Vec<&WidgetId> = form
+        // Explicit `tab_index` wins; a field that leaves it `None` keeps
+        // its natural position in `fields` as its sort key, so a form
+        // where nobody sets `tab_index` still traverses in plain `Vec`
+        // order (see `FormField::tab_index`'s doc).
+        let mut ordered: Vec<(i32, usize, &WidgetId)> = form
             .fields
             .iter()
-            .filter(|f| field_is_focusable(f))
-            .map(|f| &f.id)
+            .enumerate()
+            .filter(|(_, f)| field_is_focusable(f))
+            .map(|(i, f)| (f.tab_index.unwrap_or(i as i32), i, &f.id))
             .collect();
+        ordered.sort_by_key(|&(tab_index, i, _)| (tab_index, i));
+        let stops: Vec<&WidgetId> = ordered.into_iter().map(|(_, _, id)| id).collect();
         if stops.is_empty() {
             return FormControllerEvent::Ignored;
         }
@@ -1098,6 +1380,15 @@ fn build_scrollbar_lh(
     sb
 }
 
+/// Backend-free item layout for [`FormController::handle_cached`]'s
+/// fallback path (used when no live [`Backend`] is available to hit-test
+/// against, e.g. vimcode's TUI mouse handler). Approximates the pixel
+/// backends' `GtkBackend::form_layout` / `primitives::layout_metrics`
+/// geometry proportionally to `char_w`/`row_h` — it is not cell-accurate
+/// for the TUI grid's own `line_height() == 1.0` regime, where a
+/// [`FieldKind::Toolbar`]'s pixel-unit button padding (`ACTION_H_PAD`,
+/// `SEPARATOR_PX`) measures far wider than the cells `tui::toolbar`
+/// actually paints.
 fn form_field_measure(
     field: &crate::primitives::form::FormField,
     row_h: f32,
@@ -1167,6 +1458,41 @@ fn form_field_measure(
                 .collect();
             FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
         }
+        FieldKind::Toolbar(toolbar) => {
+            use crate::primitives::toolbar::{measure_button, ToolbarButton};
+            let measure = CharWidthMeasure(char_w);
+            let label_w = field.label.visible_width() as f32 * char_w;
+            // Mirrors the pixel backends' `items_start_x` (see
+            // `primitives::layout_metrics::items_start_x`): a labelled
+            // row reserves `label_w + 2 * char_w`, same as the sibling
+            // arms above; an unlabelled toolbar still reserves the
+            // backends' fixed 6px row inset — approximated here as
+            // `char_w` (== 6.0 at this fallback's `lh = 10.0` convention),
+            // the same approximation the sibling arms use for their own
+            // no-label case.
+            let start_x = if label_w > 0.0 {
+                label_w + char_w * 2.0
+            } else {
+                char_w
+            };
+            let items = toolbar
+                .buttons
+                .iter()
+                .map(|btn| {
+                    let id = match btn {
+                        ToolbarButton::Action { id, .. } => *id,
+                        _ => field.id,
+                    };
+                    FormItemMeasure {
+                        id,
+                        width: measure_button(&measure, btn),
+                    }
+                })
+                .collect();
+            // item_gap = 0: buttons pack edge-to-edge, same as
+            // `Toolbar::layout`'s own placement.
+            FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
+        }
         FieldKind::TextArea { visible_rows, .. } => {
             FormFieldMeasure::new(row_h * *visible_rows as f32)
         }
@@ -1174,9 +1500,24 @@ fn form_field_measure(
     }
 }
 
+/// [`crate::primitives::layout_metrics::TextMeasure`] adapter used only by
+/// [`form_field_measure`]'s backend-free fallback: approximates every
+/// glyph as `char_w` wide (the same `lh * 0.6` estimate `click_inner`
+/// already uses for the other row-item kinds) so it can call
+/// [`crate::primitives::toolbar::measure_button`] — the same formula
+/// every pixel backend's real `TextMeasure` feeds — without a live font.
+struct CharWidthMeasure(f32);
+
+impl crate::primitives::layout_metrics::TextMeasure for CharWidthMeasure {
+    fn width_of(&self, text: &str) -> f32 {
+        text.chars().count() as f32 * self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::combo_box::ComboBox;
     use crate::primitives::form::{FieldKind, FormField};
     use crate::types::StyledText;
 
@@ -1189,6 +1530,10 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             })
             .collect()
     }
@@ -1200,6 +1545,9 @@ mod tests {
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 
@@ -1226,6 +1574,99 @@ mod tests {
         fc.set_form(make_form(5));
         assert!(fc.form().is_some());
         assert_eq!(fc.field_count(), 5);
+    }
+
+    #[test]
+    fn set_rules_validates_on_every_set_form_call() {
+        use crate::validation::{Rule, Severity, Validator};
+
+        let mut fc = FormController::new("fc".into());
+        let mut rules = FormRules::default();
+        rules.fields.insert(
+            "field-0".to_string(),
+            vec![Rule {
+                check: Validator::Required,
+                message: "Required".to_string(),
+                severity: Severity::Error,
+            }],
+        );
+        fc.set_rules(rules);
+        assert_eq!(fc.rules().fields.len(), 1);
+
+        // Empty text field fails `Required`.
+        let mut form = make_form(1);
+        form.fields[0].kind = FieldKind::TextInput {
+            value: String::new(),
+            placeholder: String::new(),
+            cursor: None,
+            selection_anchor: None,
+        };
+        fc.set_form(form);
+        assert_eq!(
+            fc.form().unwrap().fields[0].validation,
+            Some(crate::primitives::form::ValidationState::Error(
+                "Required".to_string()
+            ))
+        );
+
+        // Filling it in and pushing the next frame clears the error with no
+        // host-side validation call.
+        let mut form = make_form(1);
+        form.fields[0].kind = FieldKind::TextInput {
+            value: "Ada".to_string(),
+            placeholder: String::new(),
+            cursor: Some(3),
+            selection_anchor: None,
+        };
+        fc.set_form(form);
+        assert_eq!(fc.form().unwrap().fields[0].validation, None);
+
+        // A field with no declared rules is left untouched even when the
+        // controller has other rules set.
+        let mut form = make_form(2);
+        form.fields[1].validation = Some(crate::primitives::form::ValidationState::Warning(
+            "host-set".to_string(),
+        ));
+        fc.set_form(form);
+        assert_eq!(
+            fc.form().unwrap().fields[1].validation,
+            Some(crate::primitives::form::ValidationState::Warning(
+                "host-set".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn set_visibility_applies_on_every_set_form_call() {
+        use crate::expr::{Expr, Value};
+        use crate::visibility::{FieldVisibility, FormVisibility};
+
+        let mut fc = FormController::new("fc".into());
+        let mut visibility = FormVisibility::default();
+        visibility.fields.insert(
+            "field-1".to_string(),
+            FieldVisibility {
+                visible_when: Some(Expr::Eq(
+                    Box::new(Expr::Field("field-0".into())),
+                    Box::new(Expr::Lit(Value::Bool(true))),
+                )),
+                enabled_when: None,
+            },
+        );
+        fc.set_visibility(visibility);
+        assert_eq!(fc.visibility().fields.len(), 1);
+
+        // `field-0` toggled off hides `field-1` from the pushed form.
+        let form = make_form(2);
+        fc.set_form(form);
+        assert_eq!(fc.field_count(), 1);
+
+        // Flipping `field-0` back on and pushing the next frame restores
+        // `field-1` with no host-side rebuild of the field list.
+        let mut form = make_form(2);
+        form.fields[0].kind = FieldKind::Toggle { value: true };
+        fc.set_form(form);
+        assert_eq!(fc.field_count(), 2);
     }
 
     #[test]
@@ -1557,6 +1998,222 @@ mod tests {
         }
     }
 
+    #[test]
+    fn handle_cached_click_on_second_toolbar_button_resolves_that_button() {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+
+        let mut fc = test_controller(1);
+        fc.set_form({
+            let mut form = make_form(1);
+            form.fields[0].label = StyledText::default();
+            form.fields[0].kind = FieldKind::Toolbar(Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![
+                    ToolbarButton::Action {
+                        id: WidgetId::new("btn-a"),
+                        label: "A".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    },
+                    ToolbarButton::Action {
+                        id: WidgetId::new("btn-b"),
+                        label: "BB".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    },
+                ],
+                bg: None,
+                focused_index: None,
+            });
+            form
+        });
+        // lh=10.0 → row_h=14.0, char_w=6.0. An unlabelled toolbar still
+        // reserves `char_w` (6.0) for the row inset, so items_start_x =
+        // 6.0, not 0.0 (see `form_field_measure`'s `FieldKind::Toolbar`
+        // arm): "A" button is 1*6.0 + 2*8.0 = 22.0 wide, spanning x in
+        // [6, 28); the "BB" button follows immediately (no item gap),
+        // spanning x in [28, 56). x=30 lands inside the second button.
+        fc.set_backend_info(10.0);
+
+        // A click left of items_start_x must miss both buttons and fall
+        // through to the row's own hit region (FocusChanged on the
+        // field), pinning that items_start_x is 6.0 and not 0.0 -
+        // GtkBackend::form_layout's pixel-unit row inset, not
+        // tui_form_layout's flush-left TUI cell convention.
+        let miss = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 3.0, y: 5.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            miss,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("field-0"),
+            }),
+            "a click left of items_start_x must miss both buttons"
+        );
+
+        let ev = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 30.0, y: 5.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ToolbarButtonClicked {
+                field_id: WidgetId::new("field-0"),
+                button_id: WidgetId::new("btn-b"),
+            }),
+            "click on the second toolbar button must resolve to its own id, \
+             not fall back to the field's generic FocusChanged"
+        );
+    }
+
+    #[test]
+    fn handle_cached_click_on_toolbar_separator_falls_back_to_field_focus() {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+
+        let mut fc = test_controller(1);
+        fc.set_form({
+            let mut form = make_form(1);
+            form.fields[0].label = StyledText::default();
+            form.fields[0].kind = FieldKind::Toolbar(Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![
+                    ToolbarButton::Action {
+                        id: WidgetId::new("btn-a"),
+                        label: "A".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    },
+                    ToolbarButton::Separator,
+                    ToolbarButton::Action {
+                        id: WidgetId::new("btn-b"),
+                        label: "B".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    },
+                ],
+                bg: None,
+                focused_index: None,
+            });
+            form
+        });
+        // lh=10.0 → row_h=14.0, char_w=6.0, items_start_x=6.0. "A" is
+        // 1*6.0 + 2*8.0 = 22.0 wide, spanning [6, 28); the separator is a
+        // fixed SEPARATOR_PX=12.0 regardless of char_w, spanning [28, 40);
+        // "B" follows at [40, 62). A `Separator` has no id of its own, so
+        // `form_field_measure` falls back to `field.id` for its item - a
+        // click inside the separator's zone must resolve the same way a
+        // click outside every item does: FocusChanged on the field, not a
+        // ToolbarButtonClicked for either neighbouring button.
+        fc.set_backend_info(10.0);
+
+        let ev = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 34.0, y: 5.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("field-0"),
+            }),
+            "a click on a separator's hit-zone must fall back to the field's \
+             generic FocusChanged, not resolve to either neighbouring button"
+        );
+    }
+
+    #[test]
+    fn handle_cached_toolbar_items_start_x_accounts_for_the_label() {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+
+        let mut fc = test_controller(1);
+        fc.set_form({
+            let mut form = make_form(1);
+            form.fields[0].label = StyledText::plain("Lbl"); // 3 chars
+            form.fields[0].kind = FieldKind::Toolbar(Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![ToolbarButton::Action {
+                    id: WidgetId::new("btn-a"),
+                    label: "A".into(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                }],
+                bg: None,
+                focused_index: None,
+            });
+            form
+        });
+        // lh=10.0 → row_h=14.0, char_w=6.0. A labelled toolbar row uses the
+        // same `label_w + 2 * char_w` reservation as every sibling arm:
+        // label_w = 3*6.0 = 18.0, so items_start_x = 18.0 + 12.0 = 30.0,
+        // and "A" (1*6.0 + 2*8.0 = 22.0 wide) spans [30, 52).
+        fc.set_backend_info(10.0);
+
+        let miss = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 20.0, y: 5.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            miss,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("field-0"),
+            }),
+            "a click inside the label's reserved space must miss the button"
+        );
+
+        let hit = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 40.0, y: 5.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            hit,
+            FormControllerEvent::FormAction(FormEvent::ToolbarButtonClicked {
+                field_id: WidgetId::new("field-0"),
+                button_id: WidgetId::new("btn-a"),
+            }),
+            "a click past the label's reserved space must resolve to the button"
+        );
+    }
+
     // ── Pure helper tests ───────────────────────────────────────────
 
     #[test]
@@ -1618,6 +2275,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -1629,6 +2290,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -1640,6 +2305,10 @@ mod tests {
             hint: StyledText::default(),
             disabled,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -1654,6 +2323,74 @@ mod tests {
             hint: StyledText::default(),
             disabled,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+        }
+    }
+
+    fn combo_field(
+        id: &str,
+        options: &[&str],
+        text: &str,
+        open: bool,
+        disabled: bool,
+    ) -> FormField {
+        combo_field_with_ids(id, id, options, text, open, disabled)
+    }
+
+    /// Like [`combo_field`], but lets the `FormField`'s id and the
+    /// embedded `ComboBox`'s own id differ, so a test can assert which
+    /// one a `FormEvent::ComboBox*` variant actually carries.
+    fn combo_field_with_ids(
+        field_id: &str,
+        combo_id: &str,
+        options: &[&str],
+        text: &str,
+        open: bool,
+        disabled: bool,
+    ) -> FormField {
+        let mut combo = ComboBox::new(
+            WidgetId::new(combo_id),
+            options.iter().map(|s| s.to_string()).collect(),
+        );
+        combo.text = text.to_string();
+        combo.open = open;
+        FormField {
+            id: WidgetId::new(field_id),
+            label: StyledText::plain("Combo"),
+            kind: FieldKind::ComboBox(combo),
+            hint: StyledText::default(),
+            disabled,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+        }
+    }
+
+    fn dropdown_field(
+        id: &str,
+        options: &[&str],
+        selected_idx: usize,
+        disabled: bool,
+    ) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::plain("Dropdown"),
+            kind: FieldKind::Dropdown {
+                options: options.iter().map(|s| StyledText::plain(*s)).collect(),
+                selected_idx,
+            },
+            hint: StyledText::default(),
+            disabled,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -1665,6 +2402,9 @@ mod tests {
             focused_field: focused.map(WidgetId::new),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         });
         // The controller's own `has_focus` gates `KeyPressed`/`CharTyped`/
         // `ClipboardPaste` (not `Form.has_focus` above, which only
@@ -1775,6 +2515,30 @@ mod tests {
     }
 
     #[test]
+    fn tab_follows_explicit_tab_index_over_declaration_order() {
+        // Declared "a", "b", "c" but `tab_index` reorders the visit to
+        // "c", "a", "b" — tabbing from "c" must land on "a", not "b".
+        let mut a = text_field("a", "", None);
+        a.tab_index = Some(1);
+        let mut b = text_field("b", "", None);
+        b.tab_index = Some(2);
+        let mut c = text_field("c", "", None);
+        c.tab_index = Some(0);
+        let mut fc = controller_with(vec![a, b, c], Some("c"));
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("a")
+            }),
+            "tab_index should override declaration order"
+        );
+    }
+
+    #[test]
     fn typing_char_appends_and_updates_value() {
         let mut fc = controller_with(vec![text_field("name", "ab", Some(2))], Some("name"));
         let ev = fc.handle_cached(&key_event(Key::Char('c'), Modifiers::default()), RECT);
@@ -1807,6 +2571,9 @@ mod tests {
             focused_field: Some(WidgetId::new("name")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         });
 
         let ev2 = fc.handle_cached(&key_event(Key::Char('d'), Modifiers::default()), RECT);
@@ -1881,6 +2648,10 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: true,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             Some("name"),
         );
@@ -1934,6 +2705,9 @@ mod tests {
             focused_field: Some(WidgetId::new("name")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         });
 
         let rendered = fc.build_form(RECT);
@@ -1968,6 +2742,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let mut fc = controller_with(vec![field], Some("notes"));
         let ev = fc.handle_cached(&key_event(Key::Char('X'), Modifiers::default()), RECT);
@@ -2041,6 +2819,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let mut fc = controller_with(vec![field], Some("name"));
         // Must not panic. `EditOp::MoveRight` with `extend: false` drops
@@ -2096,6 +2878,9 @@ mod tests {
             focused_field: Some(WidgetId::new("d")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         });
 
         let ev2 = fc.handle_cached(
@@ -2210,6 +2995,9 @@ mod tests {
             focused_field: Some(WidgetId::new("d2")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         });
 
         let ev = fc.handle_cached(
@@ -2329,6 +3117,9 @@ mod tests {
             focused_field: Some(WidgetId::new("d2")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         });
 
         let form = fc.build_form(RECT);
@@ -2339,6 +3130,419 @@ mod tests {
                  once focus has moved to \"d2\""
             ),
             other => panic!("expected DatePicker, got {other:?}"),
+        }
+    }
+
+    // ── ComboBox routing ──────────────────────────────────────────
+
+    #[test]
+    fn typed_char_on_a_focused_combo_box_updates_its_text() {
+        let mut fc = controller_with(
+            vec![combo_field(
+                "c",
+                &["Apple", "Banana", "Cherry"],
+                "",
+                false,
+                false,
+            )],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Char('b'), Modifiers::default()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxTextChanged {
+                id: WidgetId::new("c"),
+                value: "b".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn down_arrow_moves_combo_box_highlight() {
+        let mut fc = controller_with(
+            vec![combo_field(
+                "c",
+                &["Apple", "Banana", "Cherry"],
+                "",
+                true,
+                false,
+            )],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxHighlightChanged {
+                id: WidgetId::new("c"),
+                index: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn down_arrow_over_an_empty_filtered_list_falls_through_instead_of_navigating() {
+        // "xyz" matches none of these options, so `move_highlight` returns
+        // `None` and `handle_combo_box_key` must fall through to the
+        // generic dispatch (which has nothing else to do with a bare Down
+        // either, so this resolves as `Ignored`) rather than returning
+        // some synthetic event.
+        let mut fc = controller_with(
+            vec![combo_field("c", &["Apple", "Banana"], "xyz", true, false)],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn enter_commits_the_focused_combo_box_text() {
+        let mut fc = controller_with(
+            vec![combo_field(
+                "c",
+                &["Apple", "Banana", "Cherry"],
+                "Ban",
+                false,
+                false,
+            )],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxCommitted {
+                id: WidgetId::new("c"),
+                value: "Ban".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn escape_while_open_cancels_the_combo_box() {
+        let mut fc = controller_with(
+            vec![combo_field("c", &["Apple", "Banana"], "a", true, false)],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Escape), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxCancelled {
+                id: WidgetId::new("c"),
+            })
+        );
+    }
+
+    #[test]
+    fn escape_while_closed_falls_through_instead_of_cancelling() {
+        let mut fc = controller_with(
+            vec![combo_field("c", &["Apple", "Banana"], "a", false, false)],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Escape), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn disabled_combo_box_field_ignores_its_keys() {
+        let mut fc = controller_with(
+            vec![combo_field("c", &["Apple", "Banana"], "", false, true)],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Char('a'), Modifiers::default()), RECT);
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn tab_moves_focus_away_from_a_focused_combo_box_field_normally() {
+        let mut fc = controller_with(
+            vec![
+                combo_field("c", &["Apple", "Banana"], "", false, false),
+                toggle_field("t", false),
+            ],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("t")
+            }),
+            "Tab isn't one of ComboBox's claimed keys, so focus traversal \
+             off a focused ComboBox field still works"
+        );
+    }
+
+    #[test]
+    fn ctrl_modified_combo_box_key_falls_through_instead_of_editing() {
+        let mut fc = controller_with(
+            vec![combo_field("c", &["Apple", "Banana"], "ab", false, false)],
+            Some("c"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Char('a'), ctrl()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::Ignored,
+            "Ctrl+A is a host accelerator candidate, not combo-box text \
+             entry, so it must not be swallowed by the ComboBox"
+        );
+        let form = fc.build_form(RECT);
+        match &form.fields[0].kind {
+            FieldKind::ComboBox(combo) => {
+                assert_eq!(combo.text, "ab", "the text must not have changed")
+            }
+            other => panic!("expected ComboBox, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn combo_box_events_carry_the_field_id_not_the_embedded_combo_box_id() {
+        // The `FormField` and its embedded `ComboBox` are given distinct
+        // ids here, mirroring `examples/common/form_all_fields.rs`'s
+        // "fruit" field / "fruit-combo" primitive split. Every
+        // `FormEvent::ComboBox*` below must carry the *field* id
+        // ("field"), not the primitive's own id ("combo") — otherwise a
+        // consumer resolving the event back to its `FormField` via
+        // `form.fields.iter().find(|f| f.id == id)` would silently find
+        // nothing.
+        let mut fc = controller_with(
+            vec![combo_field_with_ids(
+                "field",
+                "combo",
+                &["Apple", "Banana", "Cherry"],
+                "Ban",
+                false,
+                false,
+            )],
+            Some("field"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Char('b'), Modifiers::default()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxTextChanged {
+                id: WidgetId::new("field"),
+                value: "Banb".to_string(),
+            })
+        );
+
+        let mut fc = controller_with(
+            vec![combo_field_with_ids(
+                "field",
+                "combo",
+                &["Apple", "Banana", "Cherry"],
+                "",
+                true,
+                false,
+            )],
+            Some("field"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxHighlightChanged {
+                id: WidgetId::new("field"),
+                index: 0,
+            })
+        );
+
+        let mut fc = controller_with(
+            vec![combo_field_with_ids(
+                "field",
+                "combo",
+                &["Apple", "Banana", "Cherry"],
+                "Ban",
+                false,
+                false,
+            )],
+            Some("field"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxCommitted {
+                id: WidgetId::new("field"),
+                value: "Ban".to_string(),
+            })
+        );
+
+        let mut fc = controller_with(
+            vec![combo_field_with_ids(
+                "field",
+                "combo",
+                &["Apple", "Banana"],
+                "a",
+                true,
+                false,
+            )],
+            Some("field"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Escape), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ComboBoxCancelled {
+                id: WidgetId::new("field"),
+            })
+        );
+    }
+
+    // ── Dropdown routing ───────────────────────────────────────────
+
+    #[test]
+    fn down_arrow_moves_and_commits_dropdown_selection() {
+        let mut fc = controller_with(
+            vec![dropdown_field(
+                "d",
+                &["Apple", "Banana", "Cherry"],
+                0,
+                false,
+            )],
+            Some("d"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::DropdownChanged {
+                id: WidgetId::new("d"),
+                selected_idx: 1,
+            }),
+            "Down must move AND commit in the same keystroke — Dropdown \
+             has no separate open/highlight step"
+        );
+    }
+
+    #[test]
+    fn up_arrow_moves_dropdown_selection_back() {
+        let mut fc = controller_with(
+            vec![dropdown_field(
+                "d",
+                &["Apple", "Banana", "Cherry"],
+                2,
+                false,
+            )],
+            Some("d"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Up), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::DropdownChanged {
+                id: WidgetId::new("d"),
+                selected_idx: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn up_arrow_at_first_option_falls_through_instead_of_wrapping() {
+        let mut fc = controller_with(
+            vec![dropdown_field("d", &["Apple", "Banana"], 0, false)],
+            Some("d"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Up), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn down_arrow_at_last_option_falls_through_instead_of_wrapping() {
+        let mut fc = controller_with(
+            vec![dropdown_field("d", &["Apple", "Banana"], 1, false)],
+            Some("d"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn disabled_dropdown_field_ignores_arrow_keys() {
+        let mut fc = controller_with(
+            vec![dropdown_field("d", &["Apple", "Banana"], 0, true)],
+            Some("d"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn tab_moves_focus_away_from_a_focused_dropdown_field_normally() {
+        let mut fc = controller_with(
+            vec![
+                dropdown_field("d", &["Apple", "Banana"], 0, false),
+                toggle_field("t", false),
+            ],
+            Some("d"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("t")
+            }),
+            "Tab isn't one of Dropdown's claimed keys, so focus traversal \
+             off a focused Dropdown field still works"
+        );
+    }
+
+    #[test]
+    fn ctrl_modified_dropdown_key_falls_through_instead_of_navigating() {
+        let mut fc = controller_with(
+            vec![dropdown_field("d", &["Apple", "Banana"], 0, false)],
+            Some("d"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Named(NamedKey::Down), ctrl()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::Ignored,
+            "Ctrl+Down is a host accelerator candidate, not dropdown \
+             navigation, so it must not be swallowed"
+        );
+        let form = fc.build_form(RECT);
+        match &form.fields[0].kind {
+            FieldKind::Dropdown { selected_idx, .. } => {
+                assert_eq!(*selected_idx, 0, "selection must not have changed")
+            }
+            other => panic!("expected Dropdown, got {other:?}"),
         }
     }
 }

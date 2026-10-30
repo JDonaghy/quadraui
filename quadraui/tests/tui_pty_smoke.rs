@@ -10,9 +10,9 @@
 //! uses for the embedded-terminal primitive) and parsing its emitted byte
 //! stream with `vt100` into a screen model.
 //!
-//! Deliberately thin — 2 representative examples, not broad coverage. The
-//! deterministic in-process `TuiDriver` remains the primary tool; see the
-//! "Tier-3 pty smoke" section of `quadraui/docs/TESTING.md`.
+//! Deliberately thin — a handful of representative examples, not broad
+//! coverage. The deterministic in-process `TuiDriver` remains the primary
+//! tool; see the "Tier-3 pty smoke" section of `quadraui/docs/TESTING.md`.
 #![cfg(all(feature = "tui", feature = "terminal"))]
 
 use std::io::{Read, Write};
@@ -171,8 +171,56 @@ impl PtyExample {
         self.send(s.as_bytes());
     }
 
+    /// Sends a real SGR mouse left-click (press immediately followed by
+    /// release) at 0-indexed screen cell `(col, row)` — the xterm
+    /// `ESC [ < Cb ; Px ; Py (M|m)` encoding, translated to the protocol's
+    /// 1-indexed column/row. `Cb=0` is the left button with no modifiers.
+    ///
+    /// This is what a real terminal (or, on Windows, conhost's VT input
+    /// state machine translating its own synthesized `INPUT_RECORD`s back
+    /// into the stream `portable-pty` hands this test) emits for a single
+    /// left click — the same bytes [`Self::find`] locates a target for.
+    fn click(&mut self, col: u16, row: u16) {
+        let press = format!("\x1b[<0;{};{}M", col + 1, row + 1);
+        let release = format!("\x1b[<0;{};{}m", col + 1, row + 1);
+        self.send(press.as_bytes());
+        self.send(release.as_bytes());
+    }
+
     fn screen_text(&self) -> String {
         self.parser.lock().unwrap().screen().contents()
+    }
+
+    /// Cell coordinates (0-indexed) of the first screen row containing
+    /// `needle`, or `None` if no row contains it — the pty equivalent of
+    /// [`quadraui::tui::testing::TuiDriver::find`], for locating a widget
+    /// (e.g. an activity-bar icon) before sending a real mouse click at
+    /// its exact cell.
+    fn find(&self, needle: &str) -> Option<(u16, u16)> {
+        let parser = self.parser.lock().unwrap();
+        let screen = parser.screen();
+        let (_, cols) = screen.size();
+        for (row, text) in screen.rows(0, cols).enumerate() {
+            if let Some(byte_idx) = text.find(needle) {
+                let col = text[..byte_idx].chars().count() as u16;
+                return Some((col, row as u16));
+            }
+        }
+        None
+    }
+
+    /// Polls [`Self::find`] until it locates `needle`, or times out.
+    fn wait_for_find(&self, needle: &str, timeout: Duration) -> Option<(u16, u16)> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(pos) = self.find(needle) {
+                return Some(pos);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
     }
 
     /// Polls the emulated screen until it contains `needle`, or times out.
@@ -366,6 +414,70 @@ fn tui_chat_sgr_mouse_motion_does_not_leak_into_input() {
     assert!(
         ex.wait_exit(WAIT),
         "chat example did not exit after Ctrl+C — raw-mode teardown or event loop may be hanging"
+    );
+}
+
+/// Clicks every activity-bar icon of `tui_appshell_demo` over a real pty
+/// (ConPTY on Windows) with raw SGR mouse-click bytes and confirms each
+/// click opens its panel. This is the content-level conformance check for
+/// a real mouse *click* (press immediately followed by release at the same
+/// cell) decoding into `UiEvent::MouseDown`/`Up` and routing to the right
+/// widget — [`tui_chat_sgr_mouse_motion_does_not_leak_into_input`] above
+/// only exercises a motion report, never a click.
+///
+/// Deliberately **not** `#[cfg(unix)]`: on Windows the raw bytes
+/// [`PtyExample::click`] writes never reach the child verbatim — conhost's
+/// VT input state machine parses them and hands the child native
+/// `INPUT_RECORD`s, which crossterm's Windows event source reads through
+/// the console API — but the content-level assertions below (panel titles
+/// and status text, not raw bytes) survive that round-trip intact, the same
+/// way the motion-leak test above does. A failure here on Windows pins the
+/// defect to the conhost-to-crossterm hand-off rather than to quadraui's
+/// own (platform-neutral) `UiEvent` translation layer.
+#[test]
+fn tui_appshell_demo_sgr_mouse_click_opens_activity_bar_panel() {
+    let mut ex = PtyExample::spawn("tui_appshell_demo", 80, 24);
+
+    assert!(
+        ex.wait_for("EXPLORER", WAIT),
+        "appshell demo did not render its default Explorer panel over the pty; screen:\n{}",
+        ex.screen_text()
+    );
+
+    // (icon-row needle, expected panel/header text, expected status text)
+    let items: [(&str, &str, &str); 4] = [
+        ("S │", "SEARCH", "Panel: panel:search"),
+        ("G │", "SOURCE CONTROL", "Panel: panel:git"),
+        ("* │", "Settings", "Bottom: panel:settings"),
+        ("E │", "EXPLORER", "Panel: panel:explorer"),
+    ];
+
+    for (needle, header, status) in items {
+        let (col, row) = ex.wait_for_find(needle, WAIT).unwrap_or_else(|| {
+            panic!(
+                "could not locate activity-bar icon `{needle}` over the pty; screen:\n{}",
+                ex.screen_text()
+            )
+        });
+
+        ex.click(col, row);
+
+        assert!(
+            ex.wait_for(header, WAIT),
+            "clicking activity-bar icon `{needle}` at ({col}, {row}) did not open its panel (expected `{header}`); screen:\n{}",
+            ex.screen_text()
+        );
+        assert!(
+            ex.wait_for(status, WAIT),
+            "clicking activity-bar icon `{needle}` did not raise the expected status line `{status}`; screen:\n{}",
+            ex.screen_text()
+        );
+    }
+
+    ex.send(b"q");
+    assert!(
+        ex.wait_exit(WAIT),
+        "appshell demo did not exit after 'q' — raw-mode teardown or event loop may be hanging"
     );
 }
 

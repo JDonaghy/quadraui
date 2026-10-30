@@ -362,6 +362,35 @@ pub fn win_focus_to_uievent(focused: bool) -> UiEvent {
     UiEvent::WindowFocused(focused)
 }
 
+/// Win32's `SPI_SETHIGHCONTRAST` `SystemParametersInfo` action code —
+/// `<winuser.h>`'s value, defined locally rather than pulled from the
+/// `windows` crate to match this module's existing constant pattern (see
+/// e.g. `MK_LBUTTON` in `win::run`). A high-contrast toggle (Ease of
+/// Access) delivers `WM_SETTINGCHANGE` with this in `wParam` and no
+/// setting name in `lParam` at all, unlike a light/dark or accent-color
+/// flip, which names `"ImmersiveColorSet"` and leaves `wParam` zero.
+pub(crate) const SPI_SETHIGHCONTRAST: usize = 67;
+
+/// Whether a `WM_SETTINGCHANGE` notification is a system-appearance
+/// change: either `wParam` names the high-contrast action
+/// (`SPI_SETHIGHCONTRAST`) or `lParam`'s setting name is
+/// `"ImmersiveColorSet"` (compared case-insensitively — Windows itself
+/// doesn't document the name's casing as stable).
+///
+/// `WM_SETTINGCHANGE` fires for dozens of unrelated `SystemParametersInfo`
+/// settings (fonts, metrics, `Environment`, ...); this is the filter that
+/// keeps [`UiEvent::SystemThemeChanged`](crate::event::UiEvent::SystemThemeChanged)
+/// from firing on every one of them instead of only on a light/dark,
+/// accent-color, or high-contrast flip.
+///
+/// `#[cfg_attr(not(target_os = "windows"), allow(dead_code))]`: this
+/// predicate's only caller lives in `win::run`'s `#[cfg(target_os =
+/// "windows")]`-gated `wndproc`, so every other host sees it as unused.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn is_theme_setting_change(wparam: usize, name: &str) -> bool {
+    wparam == SPI_SETHIGHCONTRAST || name.eq_ignore_ascii_case("ImmersiveColorSet")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -957,5 +986,31 @@ mod tests {
     fn focus_translation() {
         assert_eq!(win_focus_to_uievent(true), UiEvent::WindowFocused(true));
         assert_eq!(win_focus_to_uievent(false), UiEvent::WindowFocused(false));
+    }
+
+    // ── Settings change (system theme) ─────────────────────────────────
+
+    #[test]
+    fn setting_change_immersive_color_set_is_theme_change() {
+        assert!(is_theme_setting_change(0, "ImmersiveColorSet"));
+    }
+
+    #[test]
+    fn setting_change_immersive_color_set_is_case_insensitive() {
+        assert!(is_theme_setting_change(0, "immersivecolorset"));
+    }
+
+    #[test]
+    fn setting_change_high_contrast_wparam_is_theme_change() {
+        // High-contrast toggles carry no setting name at all — only
+        // `wParam == SPI_SETHIGHCONTRAST` (67).
+        assert!(is_theme_setting_change(67, ""));
+    }
+
+    #[test]
+    fn setting_change_unrelated_setting_is_not_theme_change() {
+        assert!(!is_theme_setting_change(0, "Environment"));
+        assert!(!is_theme_setting_change(0, ""));
+        assert!(!is_theme_setting_change(0, "intl"));
     }
 }

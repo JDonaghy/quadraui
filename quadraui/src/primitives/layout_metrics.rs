@@ -1018,6 +1018,10 @@ mod tests {
             hint: crate::types::StyledText::plain(""),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -1287,6 +1291,13 @@ mod tests {
                 FieldKind::DatePicker(crate::primitives::date_picker::DatePicker::new(
                     WidgetId::new("dp"),
                     crate::primitives::date_picker::CalendarDate::new(2024, 3, 15),
+                )),
+            ),
+            (
+                "combo-box",
+                FieldKind::ComboBox(crate::primitives::combo_box::ComboBox::new(
+                    WidgetId::new("cb"),
+                    vec!["Apple".into(), "Banana".into(), "Cherry".into()],
                 )),
             ),
         ];

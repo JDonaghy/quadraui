@@ -778,6 +778,30 @@ impl WinBackend {
         out
     }
 
+    /// Drain pending [`UiEvent::NotificationActivated`] events queued by
+    /// [`WinPlatformServices::send_notification`]'s WinRT toast
+    /// `Activated` handler — mirrors
+    /// [`Self::drain_user_events`]'s shape so `win::run`'s
+    /// `WM_QUADRAUI_USER_EVENT` handler can drain-and-dispatch this queue
+    /// the same way.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub(crate) fn drain_notification_events(&self) -> Vec<UiEvent> {
+        self.services.drain_notification_events()
+    }
+
+    /// Store this process's AppUserModelID, computed by
+    /// `win32::create_window` from `RunConfig::title`, so
+    /// [`WinPlatformServices::send_notification`] can pass it to
+    /// `ToastNotificationManager::CreateToastNotifierWithId` — mirrors
+    /// [`Self::attach_surface`] calling `self.services.set_window`.
+    /// `display_name` is the human-readable name registered alongside
+    /// `aumid` and shown as the toast header, Action Center group label,
+    /// and Settings → Notifications entry.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub(crate) fn set_aumid(&self, aumid: String, display_name: String) {
+        self.services.set_aumid(aumid, display_name);
+    }
+
     /// Update the cached DirectWrite line height (in DIPs). Mirrors
     /// `GtkBackend::set_current_line_height` — normally set once by
     /// [`Self::attach_surface`] from real font metrics, but exposed
@@ -1622,6 +1646,12 @@ fn pointer_shape_to_win32_cursor(shape: PointerShape) -> windows::core::PCWSTR {
         | PointerShape::Resize(ResizeEdge::SouthWest) => IDC_SIZENESW,
         PointerShape::Resize(ResizeEdge::NorthWest)
         | PointerShape::Resize(ResizeEdge::SouthEast) => IDC_SIZENWSE,
+        // Win32 has native cursors for several of these (`IDC_IBEAM`,
+        // `IDC_HAND`, `IDC_CROSS`, `IDC_WAIT`, `IDC_NO`, `IDC_SIZEWE`/
+        // `IDC_SIZENS` for col/row-resize) but none are wired up yet, so
+        // falling back to the plain arrow is the deliberate no-regression
+        // default.
+        _ => IDC_ARROW,
     }
 }
 
@@ -5494,6 +5524,27 @@ impl WindowControl for WinBackend {
         }
     }
 
+    /// Whether the window is currently fullscreen. Win-GUI has no live OS
+    /// query distinct from the toggle itself, so this answers from
+    /// `Self::fullscreen_saved` — the same rect/style snapshot
+    /// [`Self::set_fullscreen`] stashes on entry and clears on exit.
+    /// Guards on `self.hwnd` the same way [`Self::is_maximized`] does, so
+    /// an unattached backend gets `Unsupported` rather than a misleading
+    /// `Ok(false)`.
+    fn is_fullscreen(&self) -> ServiceResult<bool> {
+        #[cfg(target_os = "windows")]
+        {
+            if self.hwnd.is_none() {
+                return Err(BackendError::Unsupported);
+            }
+            Ok(self.fullscreen_saved.is_some())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+
     /// `SetWindowPos(HWND_TOPMOST/HWND_NOTOPMOST)` — the one always-on-top
     /// mechanism among the four in-tree backends that actually works
     /// (contrast [`crate::gtk::backend::GtkBackend`]'s `Unsupported` on
@@ -7876,7 +7927,10 @@ mod tests {
     #[test]
     fn pointer_shape_to_win32_cursor_maps_every_variant() {
         // Uses the shared `desktop::all_pointer_shapes()` scaffold instead of
-        // hand-listing all 9 `Default` + `Resize(edge)` combinations.
+        // hand-listing all 18 `Default`/`Resize(edge)`/rest combinations.
+        // The non-`Resize` variants beyond `Default` have no Win32 cursor
+        // wired up yet, so they all fall back to `IDC_ARROW` — see
+        // `pointer_shape_to_win32_cursor`'s doc.
         let expected = [
             IDC_ARROW,
             IDC_SIZENS,   // North
@@ -7887,11 +7941,24 @@ mod tests {
             IDC_SIZENWSE, // NorthWest
             IDC_SIZENWSE, // SouthEast
             IDC_SIZENESW, // SouthWest
+            IDC_ARROW,    // Text
+            IDC_ARROW,    // Pointer
+            IDC_ARROW,    // Grab
+            IDC_ARROW,    // Grabbing
+            IDC_ARROW,    // Crosshair
+            IDC_ARROW,    // Wait
+            IDC_ARROW,    // NotAllowed
+            IDC_ARROW,    // ColResize
+            IDC_ARROW,    // RowResize
         ];
-        for (shape, expected) in crate::desktop::all_pointer_shapes()
-            .iter()
-            .zip(expected.iter())
-        {
+        let shapes = crate::desktop::all_pointer_shapes();
+        assert_eq!(
+            shapes.len(),
+            expected.len(),
+            "every PointerShape must have an expected Win32 cursor — a new variant means a new \
+             row here, not a silently-truncated zip"
+        );
+        for (shape, expected) in shapes.iter().zip(expected.iter()) {
             assert_eq!(pointer_shape_to_win32_cursor(*shape), *expected);
         }
     }
@@ -9983,10 +10050,17 @@ mod tests {
                 hint: crate::types::StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let diff = chrome_font_diff_pixel_count(
             200,
@@ -10326,10 +10400,17 @@ mod tests {
                 hint: crate::types::StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let (small, big) = chrome_font_diff_layout(
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),

@@ -1,11 +1,18 @@
 //! Win-GUI implementation of [`quadraui::PlatformServices`].
 //!
 //! - **Clipboard** — Win32 `OpenClipboard`/`GetClipboardData`/
-//!   `SetClipboardData` against `CF_UNICODETEXT`, with the payload backed
-//!   by a `GlobalAlloc(GMEM_MOVEABLE)` block per the classic Win32
-//!   clipboard contract (the system takes ownership of the block once
+//!   `SetClipboardData`, with every payload backed by a
+//!   `GlobalAlloc(GMEM_MOVEABLE)` block per the classic Win32 clipboard
+//!   contract (the system takes ownership of the block once
 //!   `SetClipboardData` succeeds — it must never be `GlobalFree`d by the
-//!   caller after that point).
+//!   caller after that point). `read_text`/`write_text` use
+//!   `CF_UNICODETEXT`; `read_image` decodes `CF_DIBV5` (preferred,
+//!   alpha-capable) or classic `CF_DIB` (24bpp, always opaque) and
+//!   `write_image` always encodes `CF_DIBV5` — see `decode_dib`/
+//!   `encode_dibv5`'s own docs for the exact pixel-format subset;
+//!   `write_html` registers and writes `CF_HTML` ("HTML Format")'s
+//!   byte-offset text header (see `build_cf_html`'s own doc) alongside a
+//!   `CF_UNICODETEXT` plain-text fallback in the same open/close session.
 //! - **File dialogs** — the Vista+ common file dialog: `IFileOpenDialog`
 //!   / `IFileSaveDialog` via COM (`CoCreateInstance`), parented to the
 //!   live `HWND` [`WinBackend::attach_surface`][super::backend::WinBackend::attach_surface]
@@ -15,22 +22,49 @@
 //!   `FOS_PICKFOLDERS` set on its options: Windows has no separate
 //!   directory-picker COM object, so this is the documented way to turn
 //!   the file-open dialog into one.
-//! - **Notifications** — a transient `Shell_NotifyIconW` balloon tip:
-//!   add a tray icon with `NIF_INFO` set, then remove it a few seconds
-//!   later from a spawned thread (a balloon has no lifetime of its own
-//!   independent of the icon it's attached to, and this backend has no
-//!   persistent tray icon to hang it off). Issue #955's `silent` field
-//!   maps onto `NIIF_NOSOUND`; `icon`/`actions`/`tag` don't fit a
-//!   balloon's shape and are dropped — see `win_send_notification`'s own
-//!   doc. A real fix is WinRT `ToastNotificationManager` (needs an
-//!   AUMID/shortcut), kept as a documented follow-up rather than
-//!   implemented blind — this module has no Windows host to build/verify
-//!   the WinRT toast XML + activation-token plumbing against beyond
-//!   `cargo check`'s type-check, and a toast's click-through is exactly
-//!   the kind of behavioural correctness `cargo check` can't see (see
-//!   `CLAUDE.md`'s "Win-GUI: building and testing for real" section).
-//!   The balloon stays the fallback either way, per this issue's own
-//!   note.
+//! - **Notifications** — WinRT `ToastNotificationManager`/
+//!   `ToastNotification`: `send_notification` builds a `ToastGeneric` XML
+//!   document from the `Notification`'s title/body/action buttons (see
+//!   [`build_toast_xml`]), registers it under this process's
+//!   AppUserModelID (set once in `win::run` at window creation via
+//!   [`WinPlatformServices::set_aumid`], which also writes the window
+//!   title into the `HKCU\Software\Classes\AppUserModelId\<aumid>\DisplayName`
+//!   registry value an unpackaged app needs before Windows will render a
+//!   toast for that AUMID at all, and that Windows itself shows as the
+//!   toast header, Action Center group label, and Settings → Notifications
+//!   entry — see [`win_register_aumid_display_name`]), and
+//!   shows it through a `ToastNotifier`. `tag()` maps onto the
+//!   toast's own `Tag` property, so Windows itself replaces a prior toast
+//!   that shares a tag rather than stacking a new one in Action Center.
+//!   `silent` maps onto `ToastGeneric`'s own `<audio silent="true"/>`
+//!   element (see [`build_toast_xml`]). `icon` has no straightforward
+//!   WinRT toast equivalent on this API surface (an icon needs a file URI
+//!   the toast renderer can read back out-of-process, which
+//!   `ImageSource::Bytes` doesn't carry) and is dropped, same as
+//!   `macos::services`'s `osascript` path. Clicking the toast or one of
+//!   its action buttons fires the WinRT `Activated` event on an arbitrary
+//!   COM thread; the handler decodes the clicked action from the toast
+//!   XML's per-button `arguments` and pushes a
+//!   [`crate::event::UiEvent::NotificationActivated`] onto
+//!   [`WinPlatformServices`]'s own notification queue, then wakes the UI
+//!   thread with the same `WM_QUADRAUI_USER_EVENT` message
+//!   [`crate::backend::Backend::waker`] uses — `win::run`'s `wndproc`
+//!   drains and dispatches it from there (see
+//!   [`WinPlatformServices::drain_notification_events`]). If the AUMID
+//!   registry write never succeeded, or `CreateToastNotifierWithId`/`Show`
+//!   fails for any other reason (WinRT unavailable), `send_notification`
+//!   falls back to the legacy transient `Shell_NotifyIconW` balloon tip —
+//!   never both paths at once, once a window has attached (the balloon
+//!   fallback needs an `HWND` to host the tray icon on, so a
+//!   `send_notification` call from inside `AppLogic::setup`, before any
+//!   window exists, still has neither path available). The fallback adds a tray
+//!   icon with `NIF_INFO` set, then removes it a few seconds later from a
+//!   spawned thread (a balloon has no lifetime of its own independent of
+//!   the icon it's attached to, and this backend has no persistent tray
+//!   icon to hang it off). The balloon's `silent` maps onto
+//!   `NIIF_NOSOUND`; its `icon`/`actions`/`tag` don't fit a balloon's
+//!   shape and are dropped — see `win_send_notification_balloon`'s own
+//!   doc.
 //! - **Message dialogs** — `TaskDialogIndirect`, the modern
 //!   common-controls v6 alert (preferred over the legacy `MessageBoxW`
 //!   for its richer, arbitrarily-labelled button row — `MessageDialogOptions`
@@ -96,22 +130,34 @@ use std::path::{Path, PathBuf};
 use crate::backend::MessageDialogButton;
 use crate::backend::{
     BackendError, Clipboard, Display, FileDialogOptions, MessageDialogChoice, MessageDialogOptions,
-    Notification, PlatformServices, ServiceResult, SystemTheme,
+    Notification, PlatformServices, RgbaImage, ServiceResult, SystemTheme,
 };
-use crate::event::{Point, Rect};
+use crate::event::{Point, Rect, UiEvent};
 #[cfg(target_os = "windows")]
 use crate::primitives::dialog::DialogSeverity;
 use crate::types::Color;
+#[cfg(target_os = "windows")]
+use crate::types::WidgetId;
 
 #[cfg(target_os = "windows")]
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 #[cfg(target_os = "windows")]
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::collections::{HashMap, VecDeque};
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+#[cfg(target_os = "windows")]
+use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "windows")]
-use windows::core::{IUnknown, BOOL, PCWSTR};
+use windows::core::{IUnknown, Interface, BOOL, HSTRING, PCWSTR};
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM, POINT, RECT};
+use windows::Data::Xml::Dom::XmlDocument;
+#[cfg(target_os = "windows")]
+use windows::Foundation::TypedEventHandler;
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{
+    GlobalFree, ERROR_SUCCESS, HANDLE, HGLOBAL, HWND, LPARAM, POINT, RECT, WPARAM,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
@@ -123,7 +169,7 @@ use windows::Win32::System::Com::{
 #[cfg(target_os = "windows")]
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
-    SetClipboardData,
+    RegisterClipboardFormatW, SetClipboardData,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
@@ -132,7 +178,16 @@ use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
 };
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
+use windows::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT};
+// `HKCU\Software\Classes\AppUserModelId\<aumid>\DisplayName` — the
+// registration `win_register_aumid_display_name` writes so WinRT will
+// actually surface a toast attributed to an unpackaged app's AUMID; see
+// that function's doc for why this key, specifically, is load-bearing.
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Registry::{
+    RegCloseKey, RegCreateKeyExW, RegDeleteKeyW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+    KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Controls::{
     TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TASKDIALOG_BUTTON,
@@ -152,8 +207,9 @@ use windows::Win32::UI::Shell::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, LoadIconW, HICON, IDI_ERROR, IDI_INFORMATION, MB_OK, MONITORINFOF_PRIMARY,
-    USER_DEFAULT_SCREEN_DPI,
+    GetCursorPos, LoadIconW, PostMessageW, SystemParametersInfoW, HICON, IDI_ERROR,
+    IDI_INFORMATION, MB_OK, MONITORINFOF_PRIMARY, SPI_GETCLIENTAREAANIMATION,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, USER_DEFAULT_SCREEN_DPI,
 };
 // WinRT (not Win32) — `system_theme`. `UISettings` is the
 // same class the issue names (`UISettings::GetColorValue`); `AccessibilitySettings`
@@ -163,6 +219,21 @@ use windows::Win32::UI::WindowsAndMessaging::{
 // `Win32_UI_Accessibility` Cargo feature) needed.
 #[cfg(target_os = "windows")]
 use windows::UI::ViewManagement::{AccessibilitySettings, UIColorType, UISettings};
+// WinRT toast notifications — `ToastNotification`/`ToastNotificationManager`
+// build and show the `ToastGeneric` XML document `build_toast_xml` produces;
+// `ToastActivatedEventArgs` is what `Activated`'s generic `IInspectable`
+// argument casts to for the clicked action's `arguments` string.
+#[cfg(target_os = "windows")]
+use windows::UI::Notifications::{
+    ToastActivatedEventArgs, ToastDismissalReason, ToastDismissedEventArgs, ToastFailedEventArgs,
+    ToastNotification, ToastNotificationManager, ToastNotifier,
+};
+
+/// Live toasts keyed by notification id: the toast's `tag` plus the
+/// `ToastNotifier`/`ToastNotification` COM pair kept alive until the toast
+/// is activated, dismissed or fails.
+#[cfg(target_os = "windows")]
+type ActiveToasts = Arc<Mutex<HashMap<u64, (Option<String>, ToastNotifier, ToastNotification)>>>;
 
 /// System clipboard via raw Win32 calls. Stateless — every
 /// call opens, does one thing, and closes the clipboard, matching the
@@ -209,23 +280,10 @@ impl Clipboard for WinClipboard {
         }
     }
 
-    /// `CF_HDROP` file-path list — a Finder/Explorer copy.
-    /// `read_image`/`write_image`/`write_html` stay at the trait's
-    /// `Unsupported` default here: unlike `CF_HDROP` (one well-known
-    /// fixed-layout struct, `DROPFILES` + a `\0`-separated `\0\0`-terminated
-    /// path list, decoded below with no format ambiguity), `CF_DIB`
-    /// (bottom-up, row-padded, BGR-order pixels, no alpha in the classic
-    /// 24bpp case) and `CF_HTML` (a registered format —
-    /// `RegisterClipboardFormatW(L"HTML Format")` — wrapping the payload
-    /// in a byte-offset text header, not a `CF_*` constant at all) are
-    /// real reverse-engineering-adjacent native formats this crate has no
-    /// way to exercise against a live clipboard from this repo's Linux
-    /// CI (`cargo check`/`cargo test --features win` type-check the
-    /// `cfg(target_os = "windows")` arms but never execute them — see
-    /// `CLAUDE.md`'s Win-GUI section) or, in this dispatch, a live
-    /// Windows host either. Landing untested byte-level clipboard parsing
-    /// that only ever *compiles* is worse than an honest `Unsupported`;
-    /// left for a follow-up dispatched to Win-GUI's real-hardware lane.
+    /// `CF_HDROP` file-path list — a Finder/Explorer copy. One
+    /// well-known fixed-layout struct (`DROPFILES` + a `\0`-separated,
+    /// `\0\0`-terminated path list), decoded below with no format
+    /// ambiguity.
     fn read_file_list(&self) -> ServiceResult<Vec<PathBuf>> {
         #[cfg(target_os = "windows")]
         {
@@ -248,6 +306,51 @@ impl Clipboard for WinClipboard {
             Ok(())
         }
     }
+
+    /// Decoded RGBA pixels from `CF_DIBV5` (preferred, alpha-capable) or
+    /// classic `CF_DIB` (24bpp, always opaque) — see [`decode_dib`]'s own
+    /// doc for the supported pixel-format subset.
+    fn read_image(&self) -> ServiceResult<RgbaImage> {
+        #[cfg(target_os = "windows")]
+        {
+            win_clipboard_read_image()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// Always written as `CF_DIBV5` (32bpp `BI_BITFIELDS`, alpha-capable)
+    /// — see [`encode_dibv5`]'s own doc.
+    fn write_image(&self, image: &RgbaImage) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            win_clipboard_write_image(image)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = image;
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// `RegisterClipboardFormatW(L"HTML Format")` plus the `CF_HTML`
+    /// byte-offset text header — see [`build_cf_html`]'s own doc. Also
+    /// writes `alt_text` as `CF_UNICODETEXT` in the same open/close
+    /// session, the plain-text degrade this trait method's own doc
+    /// requires.
+    fn write_html(&self, html: &str, alt_text: &str) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            win_clipboard_write_html(html, alt_text)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (html, alt_text);
+            Err(BackendError::Unsupported)
+        }
+    }
 }
 
 pub struct WinPlatformServices {
@@ -259,6 +362,42 @@ pub struct WinPlatformServices {
     /// `RefCell<Option<_>>`, since `HWND` is `Copy`.
     #[cfg(target_os = "windows")]
     window: Cell<Option<HWND>>,
+    /// This process's AppUserModelID, set once by `win::run` at window
+    /// creation via [`Self::set_aumid`] — but only once that call has also
+    /// registered `aumid` under `HKCU\Software\Classes\AppUserModelId` (see
+    /// [`win_register_aumid_display_name`]), which an unpackaged Win32 app
+    /// needs before WinRT will render a toast for it at all. `None` means
+    /// either `set_aumid` hasn't run yet or that registration failed, and
+    /// either way `send_notification` has no choice but the
+    /// `Shell_NotifyIconW` balloon fallback.
+    #[cfg(target_os = "windows")]
+    aumid: RefCell<Option<String>>,
+    /// `UiEvent::NotificationActivated` events queued by a toast's
+    /// `Activated` handler (fired on an arbitrary COM thread) for
+    /// `win::run`'s `wndproc` to drain and dispatch back on the UI thread —
+    /// see [`Self::drain_notification_events`]. `Arc`-wrapped so the
+    /// `Send + 'static` `Activated` closure can hold its own clone without
+    /// borrowing `self`.
+    #[cfg(target_os = "windows")]
+    notification_events: Arc<Mutex<VecDeque<UiEvent>>>,
+    /// Live toasts shown by [`win_send_notification_toast`], keyed by a
+    /// monotonic id private to this map (see [`NEXT_TOAST_ID`]). A toast's
+    /// `ToastNotifier`/`ToastNotification` are ordinary refcounted COM
+    /// wrappers: dropping them unregisters the `Activated`/`Dismissed`/
+    /// `Failed` handlers that were just wired up, which would silently
+    /// break click-through the instant `send_notification` returns. An
+    /// entry is removed once the toast can no longer be activated: by the
+    /// `Activated` handler itself once the user has acted on it, by the
+    /// `Dismissed` handler when the dismissal reason is `UserCanceled` or
+    /// `ApplicationHidden` (but *not* `TimedOut` — that just means the
+    /// toast moved from the popup banner into Action Center, where it is
+    /// still live and awaiting activation), by the `Failed` handler, or
+    /// immediately if `Show` itself errors synchronously. Any earlier
+    /// entry sharing the new toast's `tag` is pruned before the new one is
+    /// inserted — same "replace, don't stack" rule `Tag` itself gives
+    /// Action Center.
+    #[cfg(target_os = "windows")]
+    active_toasts: ActiveToasts,
 }
 
 impl WinPlatformServices {
@@ -267,6 +406,12 @@ impl WinPlatformServices {
             clipboard: WinClipboard,
             #[cfg(target_os = "windows")]
             window: Cell::new(None),
+            #[cfg(target_os = "windows")]
+            aumid: RefCell::new(None),
+            #[cfg(target_os = "windows")]
+            notification_events: Arc::new(Mutex::new(VecDeque::new())),
+            #[cfg(target_os = "windows")]
+            active_toasts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -278,6 +423,75 @@ impl WinPlatformServices {
     #[cfg(target_os = "windows")]
     pub(crate) fn set_window(&self, hwnd: HWND) {
         self.window.set(Some(hwnd));
+    }
+
+    /// Store this process's AppUserModelID, computed by `win::run` at
+    /// window creation from `RunConfig::title`, so `send_notification` can
+    /// pass it to `ToastNotificationManager::CreateToastNotifierWithId`.
+    /// `CreateToastNotifierWithId` succeeding is not enough on its own: an
+    /// unpackaged app's AUMID has to also be registered under
+    /// `HKCU\Software\Classes\AppUserModelId\<aumid>` with a `DisplayName`,
+    /// or the OS accepts the toast call but renders nothing — see
+    /// [`win_register_aumid_display_name`]. `display_name` is the
+    /// human-readable string Windows shows as the toast header, Action
+    /// Center group label, and Settings → Notifications entry — callers
+    /// pass the window title, not `aumid` itself, which is an opaque
+    /// `Quadraui.App.<hex>` identifier with no meaning to a user. This only
+    /// stores `aumid` (and so only lets `send_notification` attempt the
+    /// toast path) once that registration succeeds; on failure `self.aumid`
+    /// stays `None` so `send_notification` falls straight through to the
+    /// `Shell_NotifyIconW` balloon instead of silently showing nothing.
+    /// Ungated signature: `WinBackend::set_aumid` calls this unconditionally
+    /// from `wndproc`'s `#[cfg(target_os = "windows")]` block, but the
+    /// delegate itself still needs to type-check on every platform.
+    pub(crate) fn set_aumid(&self, aumid: String, display_name: String) {
+        #[cfg(target_os = "windows")]
+        {
+            self.apply_aumid_registration(aumid, display_name, win_register_aumid_display_name);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (aumid, display_name);
+        }
+    }
+
+    /// [`Self::set_aumid`]'s gate, with the registry write taken as a
+    /// parameter rather than called directly: stores `aumid` only if
+    /// `register(&aumid, &display_name)` reports success, otherwise leaves
+    /// `self.aumid` untouched (so still `None`, if this is the first call).
+    /// Split out so the decision — never store an AUMID `send_notification`
+    /// can't actually use — is exercised in tests below without a live
+    /// registry write; [`Self::set_aumid`] always passes the real
+    /// [`win_register_aumid_display_name`].
+    #[cfg(target_os = "windows")]
+    fn apply_aumid_registration(
+        &self,
+        aumid: String,
+        display_name: String,
+        register: impl FnOnce(&str, &str) -> bool,
+    ) {
+        if register(&aumid, &display_name) {
+            *self.aumid.borrow_mut() = Some(aumid);
+        }
+    }
+
+    /// Drain every `UiEvent::NotificationActivated` a toast's `Activated`
+    /// handler has queued since the last drain. Called from `win::run`'s
+    /// `wndproc` on `WM_QUADRAUI_USER_EVENT`, alongside
+    /// `WinBackend::drain_user_events`.
+    pub(crate) fn drain_notification_events(&self) -> Vec<UiEvent> {
+        #[cfg(target_os = "windows")]
+        {
+            let mut queue = self
+                .notification_events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            queue.drain(..).collect()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Vec::new()
+        }
     }
 }
 
@@ -347,10 +561,35 @@ impl PlatformServices for WinPlatformServices {
         }
     }
 
+    /// Try the WinRT toast path first — only available once [`Self::
+    /// set_aumid`] has both stored an AUMID and registered it under
+    /// `HKCU\Software\Classes\AppUserModelId` for this process; otherwise
+    /// `self.aumid` is `None` and there's nothing to try. Falls back to the
+    /// legacy [`win_send_notification_balloon`] either way: no AUMID
+    /// registered, or `CreateToastNotifierWithId`/`Show` erroring out. Once
+    /// a window has attached, one of the two paths always runs, so the
+    /// notification is never silently dropped — but the balloon fallback
+    /// needs the owning `HWND` [`Self::set_window`] stores, so a call made
+    /// from inside `AppLogic::setup`, before any window exists, still
+    /// produces nothing if AUMID registration also failed.
     fn send_notification(&self, n: Notification) {
         #[cfg(target_os = "windows")]
         {
-            win_send_notification(self.window.get(), &n);
+            let aumid = self.aumid.borrow().clone();
+            let shown = match aumid {
+                Some(aumid) => win_send_notification_toast(
+                    self.window.get(),
+                    &aumid,
+                    Arc::clone(&self.notification_events),
+                    Arc::clone(&self.active_toasts),
+                    &n,
+                )
+                .is_ok(),
+                None => false,
+            };
+            if !shown {
+                win_send_notification_balloon(self.window.get(), &n);
+            }
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -723,6 +962,540 @@ fn win_clipboard_clear() -> ServiceResult<()> {
     }
 }
 
+// `BI_RGB`/`BI_BITFIELDS` as plain `u32`s rather than the `windows` crate's
+// `BI_COMPRESSION` newtype — the DIB codec below works entirely on raw
+// `&[u8]` byte buffers (see its module doc) and never touches a
+// `windows`-crate struct, so pulling in the typed constant would be the
+// only reason to depend on that module at all.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const BI_RGB_VALUE: u32 = 0;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const BI_BITFIELDS_VALUE: u32 = 3;
+// `LCS_sRGB` FourCC and `LCS_GM_IMAGES` — `BITMAPV5HEADER`'s
+// `bV5CSType`/`bV5Intent` fields. No named constant for either exists in
+// the `windows` crate's `Gdi` module; these are the raw values from the
+// Win32 SDK headers.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const LCS_SRGB: u32 = 0x7352_4742;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const LCS_GM_IMAGES: u32 = 4;
+
+/// Byte length of one scanline of a `width`-pixel-wide, `bits_per_pixel`
+/// DIB row, padded up to the next 4-byte boundary — every DIB row,
+/// regardless of bit depth, is stored at this stride.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn dib_stride_bytes(width: u32, bits_per_pixel: u32) -> usize {
+    let bits_per_row = width as usize * bits_per_pixel as usize;
+    bits_per_row.div_ceil(32) * 4
+}
+
+/// Scale a `mask`-selected bitfield out of `pixel` to a full 0..=255
+/// channel value. Widens/narrows proportionally
+/// (`raw * 255 / max_value`, rounded to nearest) rather than assuming an
+/// 8-bit-wide mask, but an 8-bit-wide mask (this module's own
+/// [`encode_dibv5`] output) round-trips through this exactly: `raw` and
+/// the result are numerically identical for every `raw` in `0..=255`.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn extract_channel(pixel: u32, mask: u32) -> u8 {
+    if mask == 0 {
+        return 0;
+    }
+    let shift = mask.trailing_zeros();
+    let width_bits = mask.count_ones();
+    let max_value = (1u64 << width_bits) - 1;
+    let raw = ((pixel & mask) >> shift) as u64;
+    ((raw * 255 + max_value / 2) / max_value) as u8
+}
+
+/// Locate a `BI_BITFIELDS` DIB's channel masks and the byte offset its
+/// pixel data starts at. The DIB contract puts them in one of two places
+/// depending on the header version, and the two disagree about both the
+/// mask count and where the pixels begin:
+/// - A `BITMAPV4HEADER` (108 bytes) or `BITMAPV5HEADER` (124 bytes)
+///   declares all four R/G/B/A masks as header fields at offsets
+///   40..56, so the pixels start at `header_size`.
+/// - A plain 40-byte `BITMAPINFOHEADER` has no mask fields; it stores
+///   three R/G/B mask `DWORD`s at offsets 40..52, in the space a
+///   paletted DIB would use for its color table, which pushes the pixels
+///   out to offset 52. There is no fourth `DWORD`, so the alpha mask is
+///   reported as `0` — [`decode_32bpp`] reads that as "no alpha channel"
+///   and forces those pixels opaque.
+///
+/// Returns `None` for a buffer too short to hold the masks it claims, or
+/// a header size matching neither shape.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn dib_bitfield_masks(data: &[u8], header_size: u32) -> Option<((u32, u32, u32, u32), usize)> {
+    let mask = |offset: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(
+            data.get(offset..offset + 4)?.try_into().ok()?,
+        ))
+    };
+    if header_size >= 56 {
+        let masks = (mask(40)?, mask(44)?, mask(48)?, mask(52)?);
+        Some((masks, header_size as usize))
+    } else if header_size == 40 {
+        let masks = (mask(40)?, mask(44)?, mask(48)?, 0);
+        Some((masks, 52))
+    } else {
+        None
+    }
+}
+
+/// Decode a `CF_DIB`/`CF_DIBV5` byte buffer (the shared 40-byte
+/// `BITMAPINFOHEADER`-shaped prefix, optionally followed by the
+/// `BITMAPV4HEADER`/`BITMAPV5HEADER` extension, then the pixel data) into
+/// an [`RgbaImage`]. Supports exactly three shapes, each decoded with no
+/// format-detection ambiguity, and returns `None` for anything else
+/// (paletted, RLE-compressed, 16bpp, …) rather than guess at a byte
+/// layout this module can't verify:
+/// - 32bpp `BI_BITFIELDS` with arbitrary channel masks (this module's own
+///   [`encode_dibv5`] output, and any well-formed external producer).
+///   Both mask placements the DIB contract allows are read: the four
+///   in-header masks of a `BITMAPV4HEADER`/`BITMAPV5HEADER`, and the
+///   three R/G/B mask `DWORD`s a 40-byte `BITMAPINFOHEADER` stores in
+///   place of its color table (alpha then has no mask at all, so those
+///   pixels decode fully opaque) — see [`dib_bitfield_masks`].
+/// - 32bpp `BI_RGB` — the 4th byte is producer-defined, not real alpha,
+///   so every pixel decodes fully opaque.
+/// - 24bpp `BI_RGB` — BGR, no alpha, rows padded to a 4-byte stride.
+///
+/// All three are bottom-up (`height > 0`) or top-down (`height < 0`) per
+/// the standard DIB convention; row order is normalized away here so
+/// every [`RgbaImage`] this function returns is top-to-bottom regardless
+/// of which the source used.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn decode_dib(data: &[u8]) -> Option<RgbaImage> {
+    if data.len() < 40 {
+        return None;
+    }
+    let header_size = u32::from_le_bytes(data[0..4].try_into().ok()?);
+    let width = i32::from_le_bytes(data[4..8].try_into().ok()?);
+    let height = i32::from_le_bytes(data[8..12].try_into().ok()?);
+    let bit_count = u16::from_le_bytes(data[14..16].try_into().ok()?);
+    let compression = u32::from_le_bytes(data[16..20].try_into().ok()?);
+    if width <= 0 || height == 0 || header_size as usize > data.len() {
+        return None;
+    }
+    let width = width as u32;
+    let top_down = height < 0;
+    let abs_height = height.unsigned_abs();
+
+    let (masks, pixel_offset) = if compression == BI_BITFIELDS_VALUE {
+        let (masks, offset) = dib_bitfield_masks(data, header_size)?;
+        (Some(masks), offset)
+    } else {
+        (None, header_size as usize)
+    };
+    if pixel_offset > data.len() {
+        return None;
+    }
+
+    let pixel_data = &data[pixel_offset..];
+    let image = match (bit_count, compression, masks) {
+        (32, c, Some((r, g, b, a))) if c == BI_BITFIELDS_VALUE => {
+            decode_32bpp(pixel_data, width, abs_height, Some((r, g, b, a)))?
+        }
+        (32, c, None) if c == BI_RGB_VALUE => decode_32bpp(pixel_data, width, abs_height, None)?,
+        (24, c, _) if c == BI_RGB_VALUE => decode_24bpp(pixel_data, width, abs_height)?,
+        _ => return None,
+    };
+
+    Some(if top_down {
+        image
+    } else {
+        flip_vertical(image)
+    })
+}
+
+/// Decode a bottom-up-stored 32bpp pixel region. `masks` of `Some`
+/// selects `BI_BITFIELDS` channel extraction via [`extract_channel`];
+/// `None` means `BI_RGB` — conventional `BGRX` byte order, alpha forced
+/// fully opaque since the 4th byte carries no defined meaning.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn decode_32bpp(
+    pixel_data: &[u8],
+    width: u32,
+    height: u32,
+    masks: Option<(u32, u32, u32, u32)>,
+) -> Option<RgbaImage> {
+    let stride = dib_stride_bytes(width, 32);
+    if pixel_data.len() < stride * height as usize {
+        return None;
+    }
+    let mut pixels = vec![0u8; width as usize * height as usize * 4];
+    for row in 0..height {
+        let src_row = &pixel_data[row as usize * stride..][..width as usize * 4];
+        for col in 0..width as usize {
+            let px = u32::from_le_bytes(src_row[col * 4..col * 4 + 4].try_into().ok()?);
+            let (r, g, b, a) = match masks {
+                Some((rm, gm, bm, am)) => (
+                    extract_channel(px, rm),
+                    extract_channel(px, gm),
+                    extract_channel(px, bm),
+                    if am == 0 {
+                        255
+                    } else {
+                        extract_channel(px, am)
+                    },
+                ),
+                None => {
+                    let bytes = px.to_le_bytes();
+                    (bytes[2], bytes[1], bytes[0], 255)
+                }
+            };
+            let out = (row as usize * width as usize + col) * 4;
+            pixels[out] = r;
+            pixels[out + 1] = g;
+            pixels[out + 2] = b;
+            pixels[out + 3] = a;
+        }
+    }
+    Some(RgbaImage {
+        width,
+        height,
+        pixels,
+    })
+}
+
+/// Decode a bottom-up-stored 24bpp `BI_RGB` pixel region — BGR triples,
+/// rows padded to a 4-byte stride, always fully opaque.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn decode_24bpp(pixel_data: &[u8], width: u32, height: u32) -> Option<RgbaImage> {
+    let stride = dib_stride_bytes(width, 24);
+    if pixel_data.len() < stride * height as usize {
+        return None;
+    }
+    let mut pixels = vec![0u8; width as usize * height as usize * 4];
+    for row in 0..height {
+        let src_row = &pixel_data[row as usize * stride..][..width as usize * 3];
+        for col in 0..width as usize {
+            let b = src_row[col * 3];
+            let g = src_row[col * 3 + 1];
+            let r = src_row[col * 3 + 2];
+            let out = (row as usize * width as usize + col) * 4;
+            pixels[out] = r;
+            pixels[out + 1] = g;
+            pixels[out + 2] = b;
+            pixels[out + 3] = 255;
+        }
+    }
+    Some(RgbaImage {
+        width,
+        height,
+        pixels,
+    })
+}
+
+/// Flip an [`RgbaImage`]'s rows top-to-bottom — [`decode_dib`]'s one
+/// normalization step for the bottom-up (positive-height) DIB case.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn flip_vertical(image: RgbaImage) -> RgbaImage {
+    let row_bytes = image.width as usize * 4;
+    let mut pixels = vec![0u8; image.pixels.len()];
+    for row in 0..image.height as usize {
+        let src = &image.pixels[row * row_bytes..][..row_bytes];
+        let dst_row = image.height as usize - 1 - row;
+        pixels[dst_row * row_bytes..][..row_bytes].copy_from_slice(src);
+    }
+    RgbaImage {
+        width: image.width,
+        height: image.height,
+        pixels,
+    }
+}
+
+/// Encode an [`RgbaImage`] as a top-down `CF_DIBV5` byte buffer: a
+/// 124-byte `BITMAPV5HEADER` (`BI_BITFIELDS`, standard 8-bit-wide
+/// `0x00FF0000`/`0x0000FF00`/`0x000000FF`/`0xFF000000` R/G/B/A masks,
+/// `LCS_sRGB` color space) followed by 32bpp `BGRA` pixel data, no row
+/// padding needed since 32bpp rows are always a multiple of 4 bytes.
+/// Negative height marks the buffer top-down, matching
+/// [`encode_32bpp_bgra`]'s row order and letting [`decode_dib`] skip the
+/// bottom-up flip on this module's own output.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn encode_dibv5(image: &RgbaImage) -> Vec<u8> {
+    let mut header = vec![0u8; 124];
+    header[0..4].copy_from_slice(&124u32.to_le_bytes());
+    header[4..8].copy_from_slice(&(image.width as i32).to_le_bytes());
+    header[8..12].copy_from_slice(&(-(image.height as i32)).to_le_bytes());
+    header[12..14].copy_from_slice(&1u16.to_le_bytes()); // planes
+    header[14..16].copy_from_slice(&32u16.to_le_bytes()); // bit_count
+    header[16..20].copy_from_slice(&BI_BITFIELDS_VALUE.to_le_bytes());
+    let pixel_bytes = image.width as usize * image.height as usize * 4;
+    header[20..24].copy_from_slice(&(pixel_bytes as u32).to_le_bytes()); // size_image
+    header[40..44].copy_from_slice(&0x00FF_0000u32.to_le_bytes()); // red mask
+    header[44..48].copy_from_slice(&0x0000_FF00u32.to_le_bytes()); // green mask
+    header[48..52].copy_from_slice(&0x0000_00FFu32.to_le_bytes()); // blue mask
+    header[52..56].copy_from_slice(&0xFF00_0000u32.to_le_bytes()); // alpha mask
+    header[56..60].copy_from_slice(&LCS_SRGB.to_le_bytes());
+    header[108..112].copy_from_slice(&LCS_GM_IMAGES.to_le_bytes());
+    let mut out = header;
+    out.extend_from_slice(&encode_32bpp_bgra(image));
+    out
+}
+
+/// Row-major, top-to-bottom 32bpp `BGRA` pixel bytes for `image` — the
+/// pixel-data half of [`encode_dibv5`]'s output, matching the R/G/B/A
+/// masks it writes into the header.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn encode_32bpp_bgra(image: &RgbaImage) -> Vec<u8> {
+    let mut out = Vec::with_capacity(image.pixels.len());
+    for px in image.pixels.chunks_exact(4) {
+        out.push(px[2]); // B
+        out.push(px[1]); // G
+        out.push(px[0]); // R
+        out.push(px[3]); // A
+    }
+    out
+}
+
+/// Build the `CF_HTML` ("HTML Format") payload for `html`: a text header
+/// (`Version:0.9`, then `StartHTML`/`EndHTML`/`StartFragment`/
+/// `EndFragment`, each a `{:010}`-padded decimal byte offset into the
+/// whole buffer, `\r\n`-terminated) followed by
+/// `<html><body><!--StartFragment-->html<!--EndFragment--></body></html>`.
+/// Every offset field is the same fixed width regardless of its value, so
+/// the header's total length never depends on what the real offsets turn
+/// out to be — computed once from a placeholder of that same width, then
+/// reused for the real offsets. (Realistic buffer sizes never reach the
+/// 10-digit field's ~10GB ceiling, so this holds unconditionally here.)
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn build_cf_html(html: &str) -> String {
+    fn header(
+        start_html: usize,
+        end_html: usize,
+        start_fragment: usize,
+        end_fragment: usize,
+    ) -> String {
+        format!(
+            "Version:0.9\r\nStartHTML:{:010}\r\nEndHTML:{:010}\r\nStartFragment:{:010}\r\nEndFragment:{:010}\r\n",
+            start_html, end_html, start_fragment, end_fragment
+        )
+    }
+    let placeholder = header(0, 0, 0, 0);
+    let header_len = placeholder.len();
+    // `{:010}` only pads up to 10 digits — it doesn't truncate wider
+    // values — so the "fixed header length" assumption this function
+    // relies on only holds for offsets that actually fit in 10 digits
+    // (anything under 10 billion, far past any realistic clipboard
+    // payload). `9_999_999_999` is the largest value that still fits.
+    debug_assert_eq!(
+        header_len,
+        header(9_999_999_999, 9_999_999_999, 9_999_999_999, 9_999_999_999).len()
+    );
+
+    let prefix = "<html>\r\n<body>\r\n<!--StartFragment-->";
+    let suffix = "<!--EndFragment-->\r\n</body>\r\n</html>";
+
+    let start_fragment = header_len + prefix.len();
+    let end_fragment = start_fragment + html.len();
+    let end_html = end_fragment + suffix.len();
+
+    let mut out = header(header_len, end_html, start_fragment, end_fragment);
+    out.push_str(prefix);
+    out.push_str(html);
+    out.push_str(suffix);
+    out
+}
+
+/// The exact `CF_HTML` clipboard block for `html`: [`build_cf_html`]'s
+/// UTF-8 payload plus the trailing NUL every registered text format's
+/// block carries. The header offsets [`build_cf_html`] computes
+/// deliberately exclude that terminator — `EndHTML` is the length of the
+/// payload proper, so a consumer slicing `StartHTML..EndHTML` never sees
+/// it.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn cf_html_block(html: &str) -> Vec<u8> {
+    let payload = build_cf_html(html);
+    let mut block = Vec::with_capacity(payload.len() + 1);
+    block.extend_from_slice(payload.as_bytes());
+    block.push(0);
+    block
+}
+
+/// Read `CF_DIBV5` (preferred) or classic `CF_DIB` off the clipboard and
+/// decode it via [`decode_dib`].
+#[cfg(target_os = "windows")]
+fn win_clipboard_read_image() -> ServiceResult<RgbaImage> {
+    // SAFETY: `OpenClipboard`/`CloseClipboard` are paired on every path —
+    // both early `Err` returns are before `OpenClipboard`; every other
+    // exit falls through the trailing `CloseClipboard()`. `GlobalLock`'s
+    // pointer is checked for null before the slice built through it, and
+    // the slice is bounded by `GlobalSize`.
+    unsafe {
+        let format = if IsClipboardFormatAvailable(CF_DIBV5.0 as u32).is_ok() {
+            CF_DIBV5.0 as u32
+        } else if IsClipboardFormatAvailable(CF_DIB.0 as u32).is_ok() {
+            CF_DIB.0 as u32
+        } else {
+            return Err(BackendError::PlatformFailure {
+                context: "IsClipboardFormatAvailable(CF_DIBV5/CF_DIB)".to_string(),
+            });
+        };
+        if OpenClipboard(None).is_err() {
+            return Err(BackendError::PlatformFailure {
+                context: "OpenClipboard".to_string(),
+            });
+        }
+        let result = (|| {
+            let handle = GetClipboardData(format).map_err(|_| BackendError::PlatformFailure {
+                context: "GetClipboardData(CF_DIB)".to_string(),
+            })?;
+            let hglobal = HGLOBAL(handle.0);
+            let ptr = GlobalLock(hglobal) as *const u8;
+            if ptr.is_null() {
+                return Err(BackendError::PlatformFailure {
+                    context: "GlobalLock".to_string(),
+                });
+            }
+            let len = GlobalSize(hglobal);
+            let slice = std::slice::from_raw_parts(ptr, len);
+            let image = decode_dib(slice);
+            let _ = GlobalUnlock(hglobal);
+            image.ok_or_else(|| BackendError::PlatformFailure {
+                context: "decode_dib: unsupported DIB pixel format".to_string(),
+            })
+        })();
+        let _ = CloseClipboard();
+        result
+    }
+}
+
+/// Encode `image` via [`encode_dibv5`] and write it to the clipboard as
+/// `CF_DIBV5`.
+#[cfg(target_os = "windows")]
+fn win_clipboard_write_image(image: &RgbaImage) -> ServiceResult<()> {
+    // SAFETY: `OpenClipboard`/`CloseClipboard` are paired on every path
+    // (the early `Err` return is before `OpenClipboard`); `GlobalLock`'s
+    // pointer is checked for null before the `copy_nonoverlapping` write,
+    // bounded by `bytes.len()` — the exact size just passed to the paired
+    // `GlobalAlloc`. `hglobal` ownership after `SetClipboardData` follows
+    // the same rule as `win_clipboard_write`.
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return Err(BackendError::PlatformFailure {
+                context: "OpenClipboard".to_string(),
+            });
+        }
+        let _ = EmptyClipboard();
+        let bytes = encode_dibv5(image);
+        let result = match GlobalAlloc(GMEM_MOVEABLE, bytes.len()) {
+            Ok(hglobal) => {
+                let ptr = GlobalLock(hglobal) as *mut u8;
+                if ptr.is_null() {
+                    let _ = GlobalFree(Some(hglobal));
+                    Err(BackendError::PlatformFailure {
+                        context: "GlobalLock".to_string(),
+                    })
+                } else {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+                    let _ = GlobalUnlock(hglobal);
+                    // On success the system now owns `hglobal` — it must NOT
+                    // be `GlobalFree`d here. On failure nothing took
+                    // ownership, so this is the only chance to release it.
+                    if SetClipboardData(CF_DIBV5.0 as u32, Some(HANDLE(hglobal.0))).is_err() {
+                        let _ = GlobalFree(Some(hglobal));
+                        Err(BackendError::PlatformFailure {
+                            context: "SetClipboardData".to_string(),
+                        })
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+            Err(_) => Err(BackendError::PlatformFailure {
+                context: "GlobalAlloc".to_string(),
+            }),
+        };
+        let _ = CloseClipboard();
+        result
+    }
+}
+
+/// Register "HTML Format" and write [`build_cf_html`]'s payload to the
+/// clipboard, plus `alt_text` as a `CF_UNICODETEXT` fallback in the same
+/// open/close session — the plain-text degrade
+/// [`Clipboard::write_html`](crate::backend::Clipboard::write_html)'s own
+/// doc requires for a target with no HTML-aware paste path.
+#[cfg(target_os = "windows")]
+fn win_clipboard_write_html(html: &str, alt_text: &str) -> ServiceResult<()> {
+    // SAFETY: `OpenClipboard`/`CloseClipboard` are paired on every path
+    // (the early `Err` returns are before `OpenClipboard`). Both
+    // `GlobalAlloc`/`GlobalLock`/`SetClipboardData` sequences below follow
+    // the identical null-check/bounded-copy/ownership-transfer pattern as
+    // `win_clipboard_write` and `win_clipboard_write_image`.
+    unsafe {
+        // `RegisterClipboardFormatW` returns `0` on failure rather than a
+        // `Result` — checked explicitly since it isn't a `windows`-crate
+        // typed API.
+        let html_format = RegisterClipboardFormatW(windows::core::w!("HTML Format"));
+        if html_format == 0 {
+            return Err(BackendError::PlatformFailure {
+                context: "RegisterClipboardFormatW(HTML Format)".to_string(),
+            });
+        }
+        if OpenClipboard(None).is_err() {
+            return Err(BackendError::PlatformFailure {
+                context: "OpenClipboard".to_string(),
+            });
+        }
+        let _ = EmptyClipboard();
+        let result = (|| {
+            // `CF_HTML` is a registered *text* format: its block carries
+            // a trailing NUL, and the header's byte offsets describe the
+            // payload without it. `GlobalAlloc(GMEM_MOVEABLE)` hands back
+            // uninitialized bytes, so the terminator has to be written
+            // explicitly rather than assumed.
+            let html_payload = cf_html_block(html);
+            set_clipboard_bytes(html_format, &html_payload)?;
+            let wide = wide_nul_terminated(alt_text);
+            let alt_bytes = wide.len() * std::mem::size_of::<u16>();
+            set_clipboard_bytes(
+                CF_UNICODETEXT.0 as u32,
+                std::slice::from_raw_parts(wide.as_ptr() as *const u8, alt_bytes),
+            )
+        })();
+        let _ = CloseClipboard();
+        result
+    }
+}
+
+/// `GlobalAlloc`/`GlobalLock`/copy/`SetClipboardData` for a raw byte
+/// payload — the shared tail of [`win_clipboard_write_html`]'s two
+/// `SetClipboardData` calls (`CF_HTML`-registered format, then the
+/// `CF_UNICODETEXT` fallback), each needing its own allocation since
+/// `SetClipboardData` takes ownership of exactly one block per call.
+/// Caller must already hold the clipboard open.
+#[cfg(target_os = "windows")]
+unsafe fn set_clipboard_bytes(format: u32, bytes: &[u8]) -> ServiceResult<()> {
+    match GlobalAlloc(GMEM_MOVEABLE, bytes.len()) {
+        Ok(hglobal) => {
+            let ptr = GlobalLock(hglobal) as *mut u8;
+            if ptr.is_null() {
+                let _ = GlobalFree(Some(hglobal));
+                return Err(BackendError::PlatformFailure {
+                    context: "GlobalLock".to_string(),
+                });
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+            let _ = GlobalUnlock(hglobal);
+            // On success the system now owns `hglobal` — it must NOT be
+            // `GlobalFree`d here. On failure nothing took ownership, so
+            // this is the only chance to release it.
+            if SetClipboardData(format, Some(HANDLE(hglobal.0))).is_err() {
+                let _ = GlobalFree(Some(hglobal));
+                return Err(BackendError::PlatformFailure {
+                    context: "SetClipboardData".to_string(),
+                });
+            }
+            Ok(())
+        }
+        Err(_) => Err(BackendError::PlatformFailure {
+            context: "GlobalAlloc".to_string(),
+        }),
+    }
+}
+
 // ─── File dialogs ───────────────────────────────────────────────────────
 
 /// `CoInitializeEx(COINIT_APARTMENTTHREADED)`, once per thread. File
@@ -1058,12 +1831,397 @@ static NEXT_NOTIFICATION_ID: AtomicU32 = AtomicU32::new(1);
 #[cfg(target_os = "windows")]
 const NOTIFICATION_ICON_LIFETIME: std::time::Duration = std::time::Duration::from_secs(8);
 
-/// Add a transient tray icon carrying `n`'s title/body as an `NIF_INFO`
-/// balloon, then remove it again after [`NOTIFICATION_ICON_LIFETIME`]
-/// (see that constant's docs). A no-op if no window has attached yet
-/// (`owner` is `None`) — there's no `HWND` to own the tray icon.
+/// Escape the five XML-significant characters so `n.title`/`n.body`/an
+/// action's label can't break a `<text>`/`arguments` attribute they're
+/// interpolated into in [`build_toast_xml`] — `XmlDocument::LoadXml` would
+/// otherwise reject (or misparse) a title containing e.g. `&` or `<`. Also
+/// drops C0 control characters other than tab/`\n`/`\r` (none of which are
+/// legal in well-formed XML 1.0, escaped or not) rather than let one poison
+/// `LoadXml` and demote the whole call to the balloon fallback.
+///
+/// Host-independent (no Windows types involved) — unit-tested off Windows,
+/// same as [`decode_dib`]/[`encode_dibv5`].
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            '\u{9}' | '\u{a}' | '\u{d}' => out.push(c),
+            '\u{fffe}' | '\u{ffff}' => {}
+            c if c.is_control() => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Build the `ToastGeneric` XML [`win_send_notification_toast`] loads into
+/// an `XmlDocument`. Each registered action becomes an `<action>` button
+/// whose `arguments` attribute is that action's `WidgetId::as_str()`; the
+/// toast's own `launch` attribute (what `Activated` reports when the body
+/// itself, not a button, is clicked) is left empty. Empty-string-means-
+/// `None` is the same convention `gtk::services::decode_notification_target`
+/// uses for its `(ss)` variant, so the `Activated` handler below can tell
+/// "body click" and "button click" apart with one `is_empty` check on
+/// whatever `ToastActivatedEventArgs::Arguments` returns. `is_silent()`
+/// becomes a `<audio silent="true"/>` sibling of `<visual>`/`<actions>` —
+/// `ToastGeneric`'s documented way to suppress the notification sound,
+/// the toast-path equivalent of the balloon fallback's `NIIF_NOSOUND`.
+///
+/// Host-independent (no Windows types involved) — unit-tested off Windows,
+/// same as [`decode_dib`]/[`encode_dibv5`].
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn build_toast_xml(n: &Notification) -> String {
+    use std::fmt::Write as _;
+
+    let mut actions = String::new();
+    for (id, label) in n.actions() {
+        let _ = write!(
+            actions,
+            "<action content=\"{}\" arguments=\"{}\" activationType=\"foreground\"/>",
+            xml_escape(label),
+            xml_escape(id.as_str()),
+        );
+    }
+    let actions_block = if actions.is_empty() {
+        String::new()
+    } else {
+        format!("<actions>{actions}</actions>")
+    };
+    let audio_block = if n.is_silent() {
+        "<audio silent=\"true\"/>"
+    } else {
+        ""
+    };
+    format!(
+        "<toast launch=\"\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual>{audio_block}{actions_block}</toast>",
+        xml_escape(&n.title),
+        xml_escape(&n.body),
+    )
+}
+
+/// `HKEY_CURRENT_USER`-relative subkey path a given `aumid` registers its
+/// toast `DisplayName` under. Shared by [`win_register_aumid_display_name`]
+/// and its round-trip test below, so the two can't drift apart.
 #[cfg(target_os = "windows")]
-fn win_send_notification(owner: Option<HWND>, n: &Notification) {
+fn aumid_registry_subkey(aumid: &str) -> String {
+    format!("Software\\Classes\\AppUserModelId\\{aumid}")
+}
+
+/// Register `aumid` as a notification-capable app identity by writing
+/// `display_name` as its `DisplayName` under
+/// `HKCU\Software\Classes\AppUserModelId\<aumid>`.
+///
+/// `SetCurrentProcessExplicitAppUserModelID` (called separately, in
+/// `win::run`) only tags *this process* with `aumid`; it does not make
+/// Windows treat `aumid` as a toast-capable identity. For a packaged
+/// (MSIX) app that identity comes from the package manifest, but an
+/// unpackaged `cargo run`/xcopy-deployed binary has no manifest —
+/// without this registry key, `ToastNotificationManager::
+/// CreateToastNotifierWithId(aumid)` and `ToastNotifier::Show` both
+/// return `Ok`, and the toast is still silently discarded by the shell.
+/// Writing `DisplayName` here is the same minimal registration the
+/// Windows Community Toolkit's `DesktopNotificationManagerCompat` and the
+/// `winrt-notification` crate rely on to make unpackaged-app toasts
+/// render at all; it does not need a Start-menu shortcut or a COM
+/// `ToastActivatorCLSID`, since [`win_send_notification_toast`] only
+/// needs `Activated`/`Dismissed`/`Failed` to fire on this already-running
+/// process, never a relaunch-after-close.
+///
+/// `display_name` is what Windows shows as the toast header, the Action
+/// Center group label, and the Settings → Notifications entry — callers
+/// pass the window title, not `aumid` itself (an opaque
+/// `Quadraui.App.<hex>` string with no meaning to a user).
+///
+/// Returns `false` on any registry failure, in which case
+/// [`WinPlatformServices::set_aumid`] leaves `self.aumid` as `None` so
+/// [`WinPlatformServices::send_notification`] goes straight to the
+/// [`win_send_notification_balloon`] fallback instead of attempting a
+/// toast that would again render nothing. A failure after the key was
+/// created but before `DisplayName` could be written removes the
+/// now-useless empty key again, rather than leaving a stray
+/// `AppUserModelId\<aumid>` entry behind for a future registration attempt
+/// to trip over.
+#[cfg(target_os = "windows")]
+fn win_register_aumid_display_name(aumid: &str, display_name: &str) -> bool {
+    let subkey = wide_nul_terminated(&aumid_registry_subkey(aumid));
+    let mut hkey = HKEY::default();
+    // SAFETY: `subkey` is a UTF-16, NUL-terminated buffer kept alive for
+    // the duration of this call; `phkresult`/`lpdwdisposition` point at a
+    // local and `None`, both valid per `RegCreateKeyExW`'s contract.
+    let created = unsafe {
+        RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR::from_raw(subkey.as_ptr()),
+            None,
+            PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_WRITE,
+            None,
+            &mut hkey,
+            None,
+        )
+    };
+    if created != ERROR_SUCCESS {
+        crate::diagnostics::emit(format!(
+            "quadraui: RegCreateKeyExW failed for AppUserModelId\\{aumid} \
+             ({created:?}); toast notifications will fall back to the balloon tray icon"
+        ));
+        return false;
+    }
+
+    let value_name = wide_nul_terminated("DisplayName");
+    let display_name_wide = wide_nul_terminated(display_name);
+    // SAFETY: REG_SZ data is the raw UTF-16LE bytes, NUL terminator
+    // included; `display_name_wide` is a `Vec<u16>` from the same helper
+    // every other wide Win32 string argument in this module uses, so the
+    // byte length is exactly twice its `u16` length and the buffer is live
+    // for the duration of this reinterpretation.
+    let display_name_bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            display_name_wide.as_ptr().cast::<u8>(),
+            display_name_wide.len() * 2,
+        )
+    };
+    // SAFETY: `hkey` was just opened above and is closed below regardless
+    // of outcome; `value_name`/`display_name_bytes` are both kept alive
+    // for the duration of this call.
+    let set = unsafe {
+        RegSetValueExW(
+            hkey,
+            PCWSTR::from_raw(value_name.as_ptr()),
+            None,
+            REG_SZ,
+            Some(display_name_bytes),
+        )
+    };
+    // SAFETY: `hkey` is a key this function opened and has not yet closed.
+    unsafe {
+        let _ = RegCloseKey(hkey);
+    }
+    if set != ERROR_SUCCESS {
+        crate::diagnostics::emit(format!(
+            "quadraui: RegSetValueExW(DisplayName) failed for AppUserModelId\\{aumid} \
+             ({set:?}); toast notifications will fall back to the balloon tray icon"
+        ));
+        // SAFETY: `subkey` is the same UTF-16, NUL-terminated buffer used
+        // to create this key above; deleting it removes the
+        // now-DisplayName-less key this call just created rather than
+        // leaving it behind for a future registration attempt to find.
+        unsafe {
+            let _ = RegDeleteKeyW(HKEY_CURRENT_USER, PCWSTR::from_raw(subkey.as_ptr()));
+        }
+        return false;
+    }
+    true
+}
+
+/// Id [`WinPlatformServices::active_toasts`] is keyed on — private to this
+/// module, since a toast's own `Tag` is caller-supplied and optional and
+/// so can't serve as the map key by itself.
+#[cfg(target_os = "windows")]
+static NEXT_TOAST_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Longest `Tag` string `ToastNotification::SetTag` accepts (Windows 10
+/// version 1709+; older releases cap at 16). `SetTag` errors outright
+/// above this, which would otherwise demote the whole call to the
+/// balloon fallback — losing action buttons and click-through — just
+/// because a caller passed a longer tag than Windows' own `Tag` property
+/// can hold.
+#[cfg(target_os = "windows")]
+const TOAST_TAG_MAX_LEN: usize = 64;
+
+/// Primary path for [`WinPlatformServices::send_notification`]: build a
+/// `ToastGeneric` toast from `n` (see [`build_toast_xml`]), show it
+/// through a notifier scoped to `aumid`, and wire its `Activated` event to
+/// push a [`UiEvent::NotificationActivated`] onto `queue` and wake the UI
+/// thread with the same `WM_QUADRAUI_USER_EVENT` nudge
+/// [`crate::backend::Backend::waker`] uses — `Activated` fires on an
+/// arbitrary COM thread, not the window's own.
+///
+/// The notifier and toast are inserted into `active_toasts` *before*
+/// `Show` is called, and removed again once the toast can no longer be
+/// activated — see that field's own doc for the exact rule (it survives
+/// an ordinary popup timeout, since the toast is then still live in
+/// Action Center). Dropping either COM object immediately unregisters
+/// the `Activated` handler just wired up below, which would otherwise
+/// break click-through the instant this function returns. Any earlier
+/// entry sharing the new toast's `tag` is pruned first, mirroring the
+/// same "replace, don't stack" behavior Windows itself gives `Tag` in
+/// Action Center.
+///
+/// Errors (the caller falls back to [`win_send_notification_balloon`] on
+/// any of them) if WinRT toast notifications aren't available on this
+/// system, or if `aumid` isn't a notifier id WinRT recognizes —
+/// `CreateToastNotifierWithId` is the call here most likely to fail that
+/// way.
+#[cfg(target_os = "windows")]
+fn win_send_notification_toast(
+    owner: Option<HWND>,
+    aumid: &str,
+    queue: Arc<Mutex<VecDeque<UiEvent>>>,
+    active_toasts: ActiveToasts,
+    n: &Notification,
+) -> windows::core::Result<()> {
+    // WinRT activation (`RoActivateInstance`, underneath every call below)
+    // needs COM initialized on this thread first, or it fails outright
+    // with `CO_E_NOTINITIALIZED`.
+    ensure_com_initialized();
+
+    let doc = XmlDocument::new()?;
+    doc.LoadXml(&HSTRING::from(build_toast_xml(n)))?;
+    let toast = ToastNotification::CreateToastNotification(&doc)?;
+
+    // `tag` is what `UiEvent::NotificationActivated` must report and what
+    // the same-tag `retain` below matches against — both documented to
+    // round-trip the caller's `Notification::tag()` unchanged. Only the
+    // `SetTag` call itself needs the length-capped copy, since Windows
+    // errors outright above `TOAST_TAG_MAX_LEN`.
+    let tag = n.tag().map(str::to_string);
+    if let Some(tag) = &tag {
+        let truncated_tag = tag.chars().take(TOAST_TAG_MAX_LEN).collect::<String>();
+        toast.SetTag(&HSTRING::from(truncated_tag.as_str()))?;
+    }
+
+    let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(aumid))?;
+    let id = NEXT_TOAST_ID.fetch_add(1, Ordering::Relaxed);
+
+    // `HWND` isn't `Send`; carry its raw value into the closures below and
+    // reconstruct it there, same as the balloon-removal thread does.
+    let hwnd_value = owner.map(|h| h.0 as isize);
+
+    let activated_tag = tag.clone();
+    let activated_toasts = Arc::clone(&active_toasts);
+    let activated_handler =
+        TypedEventHandler::<ToastNotification, windows::core::IInspectable>::new(
+            move |_sender, args| -> windows::core::Result<()> {
+                // The user has acted on this toast, so it is no longer
+                // live in Action Center either way — safe to release the
+                // retained `ToastNotifier`/`ToastNotification` pair now.
+                activated_toasts
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&id);
+
+                let Some(args) = args.as_ref() else {
+                    return Ok(());
+                };
+                let Ok(args) = args.cast::<ToastActivatedEventArgs>() else {
+                    return Ok(());
+                };
+                let arguments = args.Arguments().unwrap_or_default().to_string();
+                let action = if arguments.is_empty() {
+                    None
+                } else {
+                    Some(WidgetId::new(arguments))
+                };
+                queue
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push_back(UiEvent::NotificationActivated {
+                        tag: activated_tag.clone(),
+                        action,
+                    });
+                if let Some(hwnd_value) = hwnd_value {
+                    // SAFETY: `hwnd_value` is a raw `HWND` value captured by
+                    // value before the toast was shown; `PostMessageW` only
+                    // enqueues a message for the window identified by that
+                    // handle, it never dereferences anything beyond it.
+                    unsafe {
+                        let _ = PostMessageW(
+                            Some(HWND(hwnd_value as *mut core::ffi::c_void)),
+                            crate::win::backend::WM_QUADRAUI_USER_EVENT,
+                            WPARAM(0),
+                            LPARAM(0),
+                        );
+                    }
+                }
+                Ok(())
+            },
+        );
+    toast.Activated(&activated_handler)?;
+
+    // `Dismissed` fires whenever the toast *leaves the screen*, which
+    // includes the ordinary popup timeout (`ToastDismissalReason::
+    // TimedOut`) as well as the user explicitly closing it
+    // (`UserCanceled`) or the notification platform hiding it
+    // (`ApplicationHidden`). A `TimedOut` dismissal just means the toast
+    // has moved from the popup banner into Action Center — it is still
+    // live there, waiting for a click, so the retained pair must survive
+    // it. Only `UserCanceled`/`ApplicationHidden` mean the toast is truly
+    // gone with no further chance of activation; those are the only
+    // reasons this handler prunes `active_toasts`. The remaining case —
+    // the user activating the toast — is pruned by the `Activated`
+    // handler above instead, so every live toast still ends up bounded.
+    let dismissed_toasts = Arc::clone(&active_toasts);
+    let dismissed_handler = TypedEventHandler::<ToastNotification, ToastDismissedEventArgs>::new(
+        move |_sender, args| -> windows::core::Result<()> {
+            let timed_out = args
+                .as_ref()
+                .and_then(|args| args.Reason().ok())
+                .is_some_and(|reason| reason == ToastDismissalReason::TimedOut);
+            if !timed_out {
+                dismissed_toasts
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&id);
+            }
+            Ok(())
+        },
+    );
+    toast.Dismissed(&dismissed_handler)?;
+
+    let failed_toasts = Arc::clone(&active_toasts);
+    let failed_handler = TypedEventHandler::<ToastNotification, ToastFailedEventArgs>::new(
+        move |_sender, _args| -> windows::core::Result<()> {
+            failed_toasts
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&id);
+            Ok(())
+        },
+    );
+    toast.Failed(&failed_handler)?;
+
+    {
+        let mut toasts = active_toasts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(tag) = &tag {
+            toasts.retain(|_, (existing_tag, ..)| existing_tag.as_deref() != Some(tag.as_str()));
+        }
+        toasts.insert(id, (tag.clone(), notifier.clone(), toast.clone()));
+    }
+
+    // A toast that never shows will never fire `Dismissed`/`Activated`/
+    // `Failed` either, so on a synchronous `Show` error the entry just
+    // inserted above has to be removed here instead — otherwise it (and
+    // the two COM objects it holds) leaks for the rest of the process.
+    if let Err(e) = notifier.Show(&toast) {
+        active_toasts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&id);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Fallback path for [`WinPlatformServices::send_notification`]: add a
+/// transient tray icon carrying `n`'s title/body as an `NIF_INFO` balloon,
+/// then remove it again after [`NOTIFICATION_ICON_LIFETIME`] (see that
+/// constant's docs). A no-op if no window has attached yet (`owner` is
+/// `None`) — there's no `HWND` to own the tray icon. Used only when the
+/// WinRT toast path ([`win_send_notification_toast`]) isn't available
+/// (`self.aumid` is `None` — see [`WinPlatformServices::set_aumid`] and
+/// [`win_register_aumid_display_name`]) or fails.
+#[cfg(target_os = "windows")]
+fn win_send_notification_balloon(owner: Option<HWND>, n: &Notification) {
     let Some(hwnd) = owner else {
         return;
     };
@@ -1087,8 +2245,9 @@ fn win_send_notification(owner: Option<HWND>, n: &Notification) {
         // documented `dwInfoFlags` bit. `icon`, `actions`, and `tag` are
         // dropped: a balloon has no caller-supplied icon slot beyond the
         // severity icon, no button/action UI, and no click-through channel
-        // to report an activation — see this module's doc for what a real
-        // fix (WinRT `ToastNotificationManager`) would need.
+        // to report an activation. `win_send_notification_toast` covers all
+        // three when a toast notifier is available; this path only runs as
+        // its fallback.
         let mut severity_flags = if n.urgent { NIIF_ERROR } else { NIIF_INFO };
         if n.is_silent() {
             severity_flags |= NIIF_NOSOUND;
@@ -1241,20 +2400,50 @@ fn win_system_theme() -> ServiceResult<SystemTheme> {
     let high_contrast = AccessibilitySettings::new()
         .and_then(|a| a.HighContrast())
         .unwrap_or(false);
+    // Same best-effort posture as `high_contrast` above: a failure to read
+    // the client-area-animation setting degrades to "animations on" (i.e.
+    // `reduce_motion: false`) rather than failing the whole query.
+    let reduce_motion = !win_client_area_animation_enabled().unwrap_or(true);
     Ok(system_theme_from_ui_colors(
         (bg.R, bg.G, bg.B),
         (accent.R, accent.G, accent.B),
         high_contrast,
+        reduce_motion,
     ))
 }
 
+/// `SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION)` — Windows' own
+/// reduce-motion signal (Settings → Accessibility → Visual effects →
+/// "Animation effects"). `true` means animations are enabled (motion is
+/// *not* reduced); [`win_system_theme`] inverts this into
+/// [`SystemTheme::reduce_motion`].
+#[cfg(target_os = "windows")]
+fn win_client_area_animation_enabled() -> ServiceResult<bool> {
+    let mut enabled = BOOL(0);
+    // SAFETY: `SPI_GETCLIENTAREAANIMATION` is a `BOOL`-out query — `pvparam`
+    // must point at a writable `BOOL`, which `enabled` is; `fwinini` is
+    // ignored for "get" actions so `0` (no `SPIF_*` flags) is correct here.
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            Some(&mut enabled as *mut _ as *mut core::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    }
+    .map_err(|e| BackendError::PlatformFailure {
+        context: format!("SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION): {e}"),
+    })?;
+    Ok(enabled.as_bool())
+}
+
 /// Pure mapping from `UISettings`' background/accent RGB triples plus the
-/// high-contrast flag to [`SystemTheme`] — split out so it's unit-testable
-/// without the real WinRT `UISettings`/`AccessibilitySettings` classes,
-/// which this crate can't construct on a non-Windows host (same
-/// cross-platform-testable-helper posture as [`wide_nul_terminated`]
-/// above; see that function's doc for why this is `allow`-gated rather
-/// than `cfg`-gated).
+/// high-contrast and reduce-motion flags to [`SystemTheme`] — split out so
+/// it's unit-testable without the real WinRT
+/// `UISettings`/`AccessibilitySettings` classes, which this crate can't
+/// construct on a non-Windows host (same cross-platform-testable-helper
+/// posture as [`wide_nul_terminated`] above; see that function's doc for
+/// why this is `allow`-gated rather than `cfg`-gated).
 ///
 /// `dark` is derived from `bg`'s perceptual luminance (ITU-R BT.601 luma,
 /// integer arithmetic) rather than a dedicated "is dark mode" WinRT
@@ -1267,6 +2456,7 @@ fn system_theme_from_ui_colors(
     bg: (u8, u8, u8),
     accent: (u8, u8, u8),
     high_contrast: bool,
+    reduce_motion: bool,
 ) -> SystemTheme {
     let (r, g, b) = bg;
     let luma = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
@@ -1274,6 +2464,7 @@ fn system_theme_from_ui_colors(
         dark: luma < 128,
         accent: Some(Color::rgb(accent.0, accent.1, accent.2)),
         high_contrast,
+        reduce_motion,
     }
 }
 
@@ -1429,21 +2620,30 @@ mod tests {
 
     #[test]
     fn system_theme_from_ui_colors_black_background_is_dark() {
-        let theme = system_theme_from_ui_colors((0, 0, 0), (0, 120, 215), false);
+        let theme = system_theme_from_ui_colors((0, 0, 0), (0, 120, 215), false, false);
         assert!(theme.dark);
         assert_eq!(theme.accent, Some(Color::rgb(0, 120, 215)));
         assert!(!theme.high_contrast);
+        assert!(!theme.reduce_motion);
     }
 
     #[test]
     fn system_theme_from_ui_colors_white_background_is_light() {
-        let theme = system_theme_from_ui_colors((255, 255, 255), (0, 120, 215), false);
+        let theme = system_theme_from_ui_colors((255, 255, 255), (0, 120, 215), false, false);
         assert!(!theme.dark);
     }
 
     #[test]
     fn system_theme_from_ui_colors_reports_high_contrast() {
-        assert!(system_theme_from_ui_colors((0, 0, 0), (255, 255, 0), true).high_contrast);
+        assert!(system_theme_from_ui_colors((0, 0, 0), (255, 255, 0), true, false).high_contrast);
+    }
+
+    #[test]
+    fn system_theme_from_ui_colors_reports_reduce_motion() {
+        let theme = system_theme_from_ui_colors((0, 0, 0), (255, 255, 0), false, true);
+        assert!(theme.reduce_motion);
+        let theme = system_theme_from_ui_colors((0, 0, 0), (255, 255, 0), false, false);
+        assert!(!theme.reduce_motion);
     }
 
     // ── display_from_monitor_rects ───────────────────────────────────────
@@ -1519,6 +2719,209 @@ mod tests {
         copy_wide_truncated(&mut dst, "anything");
     }
 
+    // ── extract_channel ──────────────────────────────────────────────────
+
+    #[test]
+    fn extract_channel_8bit_mask_round_trips_every_byte_value() {
+        // `encode_dibv5`'s own masks are all 8 bits wide — confirm the
+        // scaling formula is an exact identity for that width, not just
+        // approximately right, for every possible byte.
+        for value in 0u32..=255 {
+            let pixel = value << 16; // placed at the red mask's position
+            assert_eq!(extract_channel(pixel, 0x00FF_0000), value as u8);
+        }
+    }
+
+    #[test]
+    fn extract_channel_zero_mask_is_zero() {
+        assert_eq!(extract_channel(0xFFFF_FFFF, 0), 0);
+    }
+
+    // ── decode_dib / encode_dibv5 ────────────────────────────────────────
+
+    fn sample_image() -> RgbaImage {
+        // 2x2, every pixel a distinct RGBA combination so a transposed
+        // row/column or channel swap would be caught.
+        RgbaImage {
+            width: 2,
+            height: 2,
+            pixels: vec![
+                255, 0, 0, 255, // top-left: opaque red
+                0, 255, 0, 128, // top-right: half-alpha green
+                0, 0, 255, 64, // bottom-left: quarter-alpha blue
+                10, 20, 30, 0, // bottom-right: fully transparent
+            ],
+        }
+    }
+
+    #[test]
+    fn encode_dibv5_round_trips_through_decode_dib() {
+        let image = sample_image();
+        let bytes = encode_dibv5(&image);
+        let decoded =
+            decode_dib(&bytes).expect("decode_dib should accept its own encode_dibv5 output");
+        assert_eq!(decoded, image);
+    }
+
+    #[test]
+    fn decode_dib_handles_bottom_up_bi_bitfields() {
+        // `encode_dibv5` always writes top-down (negative height); flip
+        // the sign and reverse the row order by hand to exercise
+        // `decode_dib`'s bottom-up branch too.
+        let image = sample_image();
+        let mut bytes = encode_dibv5(&image);
+        // Height is a little-endian i32 at byte offset 8.
+        let height = i32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        assert!(height < 0);
+        bytes[8..12].copy_from_slice(&(-height).to_le_bytes());
+        let row_bytes = image.width as usize * 4;
+        let pixel_start = 124;
+        let mut rows: Vec<&[u8]> = bytes[pixel_start..].chunks_exact(row_bytes).collect();
+        rows.reverse();
+        let flipped_pixels: Vec<u8> = rows.into_iter().flatten().copied().collect();
+        bytes[pixel_start..].copy_from_slice(&flipped_pixels);
+
+        let decoded = decode_dib(&bytes).expect("bottom-up BI_BITFIELDS should decode");
+        assert_eq!(decoded, image);
+    }
+
+    #[test]
+    fn decode_dib_classic_24bpp_bi_rgb_is_opaque() {
+        // Hand-build a minimal bottom-up 24bpp BI_RGB buffer: a 1x2 image,
+        // bottom row red, top row green — classic Explorer/Paint
+        // image-copy shape.
+        let width = 1u32;
+        let height = 2i32;
+        let stride = dib_stride_bytes(width, 24);
+        let mut buf = vec![0u8; 40 + stride * 2];
+        buf[0..4].copy_from_slice(&40u32.to_le_bytes());
+        buf[4..8].copy_from_slice(&(width as i32).to_le_bytes());
+        buf[8..12].copy_from_slice(&height.to_le_bytes());
+        buf[14..16].copy_from_slice(&24u16.to_le_bytes());
+        buf[16..20].copy_from_slice(&BI_RGB_VALUE.to_le_bytes());
+        // Bottom-up: row 0 in the buffer is the image's bottom row (red,
+        // BGR order), row 1 is the top row (green).
+        buf[40..43].copy_from_slice(&[0, 0, 255]); // bottom row: red
+        buf[40 + stride..40 + stride + 3].copy_from_slice(&[0, 255, 0]); // top row: green
+
+        let decoded = decode_dib(&buf).expect("classic 24bpp BI_RGB should decode");
+        assert_eq!(decoded.width, 1);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(&decoded.pixels[0..4], &[0, 255, 0, 255]); // top row: opaque green
+        assert_eq!(&decoded.pixels[4..8], &[255, 0, 0, 255]); // bottom row: opaque red
+    }
+
+    #[test]
+    fn decode_dib_rejects_unsupported_bit_depth() {
+        let mut buf = vec![0u8; 40];
+        buf[0..4].copy_from_slice(&40u32.to_le_bytes());
+        buf[4..8].copy_from_slice(&1i32.to_le_bytes());
+        buf[8..12].copy_from_slice(&1i32.to_le_bytes());
+        buf[14..16].copy_from_slice(&8u16.to_le_bytes()); // 8bpp paletted
+        assert_eq!(decode_dib(&buf), None);
+    }
+
+    #[test]
+    fn decode_dib_rejects_truncated_buffer() {
+        assert_eq!(decode_dib(&[0u8; 10]), None);
+    }
+
+    /// Build the other `BI_BITFIELDS` layout a producer may hand over: a
+    /// plain 40-byte `BITMAPINFOHEADER` with three R/G/B mask `DWORD`s in
+    /// place of a color table, so the pixel data starts at offset 52.
+    fn bitfields_40_byte_header_dib(image: &RgbaImage) -> Vec<u8> {
+        let mut buf = vec![0u8; 52];
+        buf[0..4].copy_from_slice(&40u32.to_le_bytes());
+        buf[4..8].copy_from_slice(&(image.width as i32).to_le_bytes());
+        // Negative height: top-down, matching `encode_32bpp_bgra`'s rows.
+        buf[8..12].copy_from_slice(&(-(image.height as i32)).to_le_bytes());
+        buf[12..14].copy_from_slice(&1u16.to_le_bytes());
+        buf[14..16].copy_from_slice(&32u16.to_le_bytes());
+        buf[16..20].copy_from_slice(&BI_BITFIELDS_VALUE.to_le_bytes());
+        buf[40..44].copy_from_slice(&0x00FF_0000u32.to_le_bytes());
+        buf[44..48].copy_from_slice(&0x0000_FF00u32.to_le_bytes());
+        buf[48..52].copy_from_slice(&0x0000_00FFu32.to_le_bytes());
+        buf.extend_from_slice(&encode_32bpp_bgra(image));
+        buf
+    }
+
+    #[test]
+    fn decode_dib_reads_bitfields_masks_from_a_40_byte_header() {
+        // The three-mask layout has no alpha mask at all, so every pixel
+        // must come back opaque regardless of the source alpha byte —
+        // but the colour channels still have to land in the right place,
+        // which only happens if the pixel data is read from offset 52
+        // (past the masks) and not from offset 40.
+        let image = sample_image();
+        let buf = bitfields_40_byte_header_dib(&image);
+        let decoded = decode_dib(&buf).expect("40-byte-header BI_BITFIELDS should decode");
+        assert_eq!(decoded.width, image.width);
+        assert_eq!(decoded.height, image.height);
+        for (decoded_px, source_px) in decoded
+            .pixels
+            .chunks_exact(4)
+            .zip(image.pixels.chunks_exact(4))
+        {
+            assert_eq!(
+                decoded_px,
+                [source_px[0], source_px[1], source_px[2], 255].as_slice()
+            );
+        }
+    }
+
+    #[test]
+    fn decode_dib_rejects_bitfields_header_with_truncated_masks() {
+        // 40-byte header claiming `BI_BITFIELDS` but no room for the
+        // three mask `DWORD`s that layout requires.
+        let image = sample_image();
+        let mut buf = bitfields_40_byte_header_dib(&image);
+        buf.truncate(48);
+        assert_eq!(decode_dib(&buf), None);
+    }
+
+    // ── build_cf_html ────────────────────────────────────────────────────
+
+    #[test]
+    fn build_cf_html_offsets_point_at_the_right_bytes() {
+        let out = build_cf_html("<b>hi</b>");
+        let get_offset = |field: &str| -> usize {
+            let start = out.find(field).unwrap() + field.len();
+            out[start..start + 10].parse().unwrap()
+        };
+        let start_html = get_offset("StartHTML:");
+        let end_html = get_offset("EndHTML:");
+        let start_fragment = get_offset("StartFragment:");
+        let end_fragment = get_offset("EndFragment:");
+
+        // `StartHTML`/`EndHTML` bound the `<html>...</html>` document,
+        // which sits after the CF_HTML header itself — not at byte 0.
+        assert_eq!(&out[start_html..start_html + 6], "<html>");
+        assert_eq!(end_html, out.len());
+        assert_eq!(&out[start_fragment..end_fragment], "<b>hi</b>");
+        assert!(out.contains("<!--StartFragment-->"));
+        assert!(out.contains("<!--EndFragment-->"));
+    }
+
+    #[test]
+    fn cf_html_block_is_nul_terminated_past_the_declared_end_html() {
+        let block = cf_html_block("<b>hi</b>");
+        let payload = build_cf_html("<b>hi</b>");
+        assert_eq!(block.last(), Some(&0));
+        assert_eq!(&block[..block.len() - 1], payload.as_bytes());
+        // `EndHTML` still measures the payload without the terminator, so
+        // a consumer honouring it never reads the NUL as document bytes.
+        let field = "EndHTML:";
+        let start = payload.find(field).unwrap() + field.len();
+        let end_html: usize = payload[start..start + 10].parse().unwrap();
+        assert_eq!(end_html, block.len() - 1);
+    }
+
+    #[test]
+    fn build_cf_html_handles_empty_html() {
+        let out = build_cf_html("");
+        assert!(out.contains("<!--StartFragment--><!--EndFragment-->"));
+    }
+
     /// Off-Windows, every `PlatformServices` method degrades to the
     /// original graceful no-op — mirrors `TuiPlatformServices`'s
     /// unconditional `None`/no-op shape so a plain `cargo test` (no `win`
@@ -1529,12 +2932,23 @@ mod tests {
         let svc = WinPlatformServices::new();
         assert!(svc.clipboard().read_text().is_none());
         svc.clipboard().write_text("ignored");
-        // `read_image`/`write_image`/`write_html` are the trait's
-        // own `Unsupported` default (`WinClipboard` never overrides
-        // them — see `read_file_list`'s doc for why); `read_file_list`
-        // and `clear` are overridden but degrade the same way off
-        // Windows.
+        // Every `WinClipboard` method that returns a `ServiceResult`
+        // degrades to `Unsupported`/`Ok(())` off Windows — `clear` is the
+        // one exception, since it has nothing platform-specific to fail
+        // on when there's no real clipboard to clear.
         assert_eq!(svc.clipboard().read_image(), Err(BackendError::Unsupported));
+        assert_eq!(
+            svc.clipboard().write_image(&RgbaImage {
+                width: 1,
+                height: 1,
+                pixels: vec![0, 0, 0, 255],
+            }),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(
+            svc.clipboard().write_html("<b>hi</b>", "hi"),
+            Err(BackendError::Unsupported)
+        );
         assert_eq!(
             svc.clipboard().read_file_list(),
             Err(BackendError::Unsupported)
@@ -1652,5 +3066,218 @@ mod tests {
         // resolve to a distinct id rather than colliding with the first.
         let buttons = [win_button("a", false, true), win_button("b", false, true)];
         assert_eq!(assign_button_ids(&buttons), vec![TASKDIALOG_IDCANCEL, 101]);
+    }
+
+    // ── xml_escape / build_toast_xml ─────────────────────────────────────
+
+    #[test]
+    fn xml_escape_escapes_every_reserved_character() {
+        assert_eq!(
+            xml_escape("<a>&\"'b\""),
+            "&lt;a&gt;&amp;&quot;&apos;b&quot;"
+        );
+    }
+
+    #[test]
+    fn xml_escape_leaves_plain_text_untouched() {
+        assert_eq!(xml_escape("plain text 123"), "plain text 123");
+    }
+
+    #[test]
+    fn xml_escape_drops_c0_control_characters_but_keeps_tab_and_newlines() {
+        assert_eq!(xml_escape("a\u{0}b\u{7}\tc\nd\re"), "ab\tc\nd\re");
+    }
+
+    #[test]
+    fn build_toast_xml_has_no_actions_block_without_actions() {
+        let n = Notification::new("Title", "Body");
+        let xml = build_toast_xml(&n);
+        assert!(xml.contains("<text>Title</text>"));
+        assert!(xml.contains("<text>Body</text>"));
+        assert!(!xml.contains("<actions>"));
+    }
+
+    #[test]
+    fn build_toast_xml_has_no_audio_element_by_default() {
+        let n = Notification::new("Title", "Body");
+        assert!(!build_toast_xml(&n).contains("<audio"));
+    }
+
+    #[test]
+    fn build_toast_xml_adds_silent_audio_element_when_requested() {
+        let n = Notification::new("Title", "Body").with_silent(true);
+        assert!(build_toast_xml(&n).contains("<audio silent=\"true\"/>"));
+    }
+
+    #[test]
+    fn build_toast_xml_adds_one_action_per_registered_action() {
+        let n = Notification::new("Title", "Body")
+            .with_action(crate::types::WidgetId::new("snooze"), "Snooze")
+            .with_action(crate::types::WidgetId::new("dismiss"), "Dismiss");
+        let xml = build_toast_xml(&n);
+        assert!(xml.contains("<actions>"));
+        assert!(xml.contains("content=\"Snooze\" arguments=\"snooze\""));
+        assert!(xml.contains("content=\"Dismiss\" arguments=\"dismiss\""));
+    }
+
+    #[test]
+    fn build_toast_xml_escapes_title_body_and_action_label() {
+        let n = Notification::new("<Title>", "Body & more")
+            .with_action(crate::types::WidgetId::new("a&b"), "Snooze <5m>");
+        let xml = build_toast_xml(&n);
+        assert!(xml.contains("<text>&lt;Title&gt;</text>"));
+        assert!(xml.contains("<text>Body &amp; more</text>"));
+        assert!(xml.contains("content=\"Snooze &lt;5m&gt;\""));
+        assert!(xml.contains("arguments=\"a&amp;b\""));
+    }
+
+    // ── apply_aumid_registration ─────────────────────────────────────────
+    //
+    // `send_notification` reads `self.aumid` to decide toast vs. balloon
+    // (`Some` => try the toast, `None` => balloon straight away — see that
+    // method's body, unchanged by this gate). These drive
+    // `apply_aumid_registration` with a fake `register` closure instead of
+    // the real [`win_register_aumid_display_name`], so the "an unregistered
+    // AUMID must never leave both paths silent" invariant is checked as a
+    // deterministic, host-independent unit test rather than depending on
+    // a live `HKCU` write succeeding or failing.
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn apply_aumid_registration_stores_aumid_when_registration_succeeds() {
+        let svc = WinPlatformServices::new();
+        svc.apply_aumid_registration(
+            "Quadraui.Test.Registered".to_string(),
+            "Test App".to_string(),
+            |_, _| true,
+        );
+        assert_eq!(
+            svc.aumid.borrow().as_deref(),
+            Some("Quadraui.Test.Registered")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn apply_aumid_registration_leaves_aumid_none_when_registration_fails() {
+        // If the `AppUserModelId` registry write fails or never ran,
+        // `send_notification` must have no toast to attempt, so it falls
+        // straight through to the `Shell_NotifyIconW` balloon — never
+        // silently showing nothing.
+        let svc = WinPlatformServices::new();
+        svc.apply_aumid_registration(
+            "Quadraui.Test.Unregistered".to_string(),
+            "Test App".to_string(),
+            |_, _| false,
+        );
+        assert!(svc.aumid.borrow().is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn apply_aumid_registration_does_not_overwrite_a_prior_success_on_later_failure() {
+        // Documents current behavior, not a guaranteed contract: this
+        // backend only ever registers one AUMID per process (computed once
+        // in `win::run` from `RunConfig::title`), so a second, different
+        // `aumid` never reaches `set_aumid` in practice. If that changes,
+        // revisit whether "keep the stale value" is still the right call.
+        let svc = WinPlatformServices::new();
+        svc.apply_aumid_registration(
+            "Quadraui.Test.First".to_string(),
+            "Test App".to_string(),
+            |_, _| true,
+        );
+        svc.apply_aumid_registration(
+            "Quadraui.Test.Second".to_string(),
+            "Test App".to_string(),
+            |_, _| false,
+        );
+        assert_eq!(svc.aumid.borrow().as_deref(), Some("Quadraui.Test.First"));
+    }
+
+    // ── win_register_aumid_display_name ──────────────────────────────────
+    //
+    // Live `HKCU` round-trip: exercises the actual registry write this
+    // function performs, confirming it both succeeds and leaves the
+    // human-readable `display_name` — not `aumid` itself — as a
+    // `DisplayName` WinRT can read back, not just that
+    // `RegCreateKeyExW`/`RegSetValueExW` returned success codes. `HKCU` is
+    // always writable for the account running the test, including on a CI
+    // runner, so this needs no elevation. A guard cleans up the key it
+    // creates on drop, so an early `assert!` panic still leaves no stale
+    // entry under `AppUserModelId` for the next run to collide with.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_register_aumid_display_name_writes_a_readable_display_name() {
+        use windows::Win32::System::Registry::{RegOpenKeyExW, RegQueryValueExW, KEY_READ};
+
+        /// Deletes `AppUserModelId\<aumid>` on drop, so the key this test
+        /// creates is removed even if an `assert!` in between panics.
+        struct CleanupGuard<'a>(&'a str);
+        impl Drop for CleanupGuard<'_> {
+            fn drop(&mut self) {
+                let subkey = wide_nul_terminated(&aumid_registry_subkey(self.0));
+                // SAFETY: `subkey` is a live, NUL-terminated wide buffer
+                // for the duration of this call.
+                unsafe {
+                    let _ = RegDeleteKeyW(HKEY_CURRENT_USER, PCWSTR::from_raw(subkey.as_ptr()));
+                }
+            }
+        }
+
+        let aumid = format!(
+            "Quadraui.Test.RegistryRoundTrip.{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let display_name = "Readable Test App Name";
+        let _cleanup = CleanupGuard(&aumid);
+
+        assert!(win_register_aumid_display_name(&aumid, display_name));
+
+        let subkey = wide_nul_terminated(&aumid_registry_subkey(&aumid));
+        let mut hkey = HKEY::default();
+        // SAFETY: `subkey` is a live, NUL-terminated wide buffer for the
+        // duration of this call; `phkresult` points at a local.
+        let opened = unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR::from_raw(subkey.as_ptr()),
+                Some(0),
+                KEY_READ,
+                &mut hkey,
+            )
+        };
+        assert_eq!(opened, ERROR_SUCCESS);
+
+        let value_name = wide_nul_terminated("DisplayName");
+        // `u16`-typed (not `[u8; _]`) so the buffer is already correctly
+        // aligned to read back as wide chars below — no re-cast of a
+        // `u8` buffer to `*const u16`, which wouldn't have that guarantee.
+        let mut buf = [0u16; 256];
+        let mut buf_len = (buf.len() * 2) as u32;
+        // SAFETY: `hkey` was just opened above; `buf.as_mut_ptr().cast()`
+        // and `buf_len` describe a live destination buffer sized in bytes,
+        // matching `RegQueryValueExW`'s `lpdata`/`lpcbdata` contract.
+        let queried = unsafe {
+            RegQueryValueExW(
+                hkey,
+                PCWSTR::from_raw(value_name.as_ptr()),
+                None,
+                None,
+                Some(buf.as_mut_ptr().cast::<u8>()),
+                Some(&mut buf_len as *mut u32),
+            )
+        };
+        assert_eq!(queried, ERROR_SUCCESS);
+        let read_wide = &buf[..buf_len as usize / 2];
+        assert_eq!(decode_wide_nul_terminated(read_wide), display_name);
+
+        // SAFETY: `hkey` is a key this test opened and has not yet closed.
+        unsafe {
+            let _ = RegCloseKey(hkey);
+        }
     }
 }

@@ -7,14 +7,15 @@
 //!   the user picks a file/location/folder or cancels. The native dialog is
 //!   parented to the demo window, and the status bar reflects the picked
 //!   path (or "cancelled" on Escape/close).
-//! - **TUI** (`tui_file_dialog`): `show_file_open_dialog` and
-//!   `show_file_save_dialog` drive a real in-canvas
-//!   `compose::FilePickerController` through a nested draw-and-read loop
+//! - **TUI** (`tui_file_dialog`): `show_file_open_dialog`,
+//!   `show_file_save_dialog`, and `show_folder_open_dialog` each drive a
+//!   real in-canvas controller (`compose::FilePickerController` /
+//!   `compose::FolderPickerController`) through a nested draw-and-read loop
 //!   (see `tui::services`'s module doc) and return a genuine chosen path.
-//!   `show_folder_open_dialog` always returns `None` on TUI; apps should
-//!   provide an in-canvas picker instead (see the separate `tui_folder_picker`
-//!   / `gtk_folder_picker` examples). Both the open/save real-path round trip
-//!   and the folder `None` degrade are covered by the `TuiDriver` tests in
+//!   The `tui_folder_picker` / `gtk_folder_picker` examples show the same
+//!   controller driven directly by an app rather than through
+//!   `PlatformServices`. The open/save/folder real-path round trips, and
+//!   cancellation returning `None`, are covered by the `TuiDriver` tests in
 //!   `tests/tui_example_driver.rs`.
 //!
 //! ```sh

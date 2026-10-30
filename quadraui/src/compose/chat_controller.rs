@@ -1055,10 +1055,17 @@ impl ChatController {
                 hint: StyledText::plain(""),
                 disabled,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 
@@ -1406,8 +1413,14 @@ impl ChatController {
                 ChatControllerEvent::Consumed
             }
 
-            // ── Regular char: insert (no ctrl/alt) ────────────────────
-            Key::Char(c) if !modifiers.ctrl && !modifiers.alt => {
+            // ── Regular char: insert (no ctrl/alt/cmd) ─────────────────
+            // `cmd` is excluded alongside `ctrl`/`alt` so a Cmd-modified
+            // letter (the macOS accelerator convention — every backend
+            // delivers it as `Key::Char` with the modifier set, not a
+            // dedicated key variant) falls through to the `KeyPressed`
+            // event below instead of being typed into the input buffer as
+            // a literal character.
+            Key::Char(c) if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd => {
                 self.focus_input();
                 self.input_insert_char(*c);
                 // Any typing resets history navigation.
@@ -2174,6 +2187,32 @@ mod tests {
         // Ctrl+E moves to the end of the current line (end of buffer here).
         cc.handle(&ctrl_key('e'), &RecordingBackend::new(), make_rect());
         assert_eq!(cc.input_cursor, 11);
+    }
+
+    // macOS delivers a Cmd-modified letter as a plain `Key::Char` with
+    // `modifiers.cmd` set, the same shape Ctrl uses on every other
+    // backend. It must fall through to `KeyPressed` for the app's own
+    // hotkey dispatch rather than being typed into the input buffer.
+    #[test]
+    fn cmd_char_is_not_inserted_and_passes_through_as_key_pressed() {
+        let mut cc = ChatController::new("c");
+        let event = UiEvent::KeyPressed {
+            key: Key::Char('x'),
+            modifiers: Modifiers {
+                cmd: true,
+                ..Default::default()
+            },
+            repeat: false,
+        };
+        let ev = cc.handle(&event, &RecordingBackend::new(), make_rect());
+        assert_eq!(cc.input_text(), "");
+        match ev {
+            ChatControllerEvent::KeyPressed { key, modifiers } => {
+                assert_eq!(key, "Char('x')");
+                assert!(modifiers.cmd);
+            }
+            other => panic!("expected KeyPressed fallthrough, got {other:?}"),
+        }
     }
 
     // ── Serde round-trips ─────────────────────────────────────────────

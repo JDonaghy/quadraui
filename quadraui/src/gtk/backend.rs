@@ -455,6 +455,11 @@ pub struct GtkBackend {
     /// drains it into `UiEvent::User` alongside `events`, on the GTK main
     /// thread, same as any other queued event.
     user_events: Arc<crate::runtime::UserEventQueue>,
+    /// StatusNotifierItem/dbusmenu connection state backing
+    /// [`Backend::tray`] — see [`super::tray`]'s module doc. `None`
+    /// until [`super::tray::GtkTrayState::ensure_connected`] first
+    /// succeeds against a reachable `org.kde.StatusNotifierWatcher`.
+    tray: super::tray::GtkTrayState,
     /// This backend's slot in [`WAKE_CALLBACKS`], filled once by
     /// `gtk::run::run_with` via [`Self::set_wake_callback`] right after
     /// the periodic event-drain closure exists — see that closure's call
@@ -624,6 +629,7 @@ impl GtkBackend {
             focus: crate::focus::FocusManager::new(),
             caret_blink: crate::caret_blink::CaretBlinkState::default(),
             user_events: crate::runtime::UserEventQueue::new(),
+            tray: super::tray::GtkTrayState::default(),
             wake_id: WakeId::next(),
         }
     }
@@ -1707,6 +1713,12 @@ fn pointer_shape_cursor_name(shape: PointerShape) -> &'static str {
         PointerShape::Resize(ResizeEdge::NorthWest) => "nw-resize",
         PointerShape::Resize(ResizeEdge::SouthEast) => "se-resize",
         PointerShape::Resize(ResizeEdge::SouthWest) => "sw-resize",
+        // GTK's CSS cursor-name spec already has first-class names for
+        // several of these ("text", "pointer", "grab", "grabbing",
+        // "crosshair", "wait", "not-allowed", "col-resize", "row-resize")
+        // but none are wired up yet, so falling back to "default" is the
+        // deliberate no-regression default.
+        _ => "default",
     }
 }
 
@@ -1922,6 +1934,7 @@ impl Backend for GtkBackend {
         // This drain is called every tick regardless of whether `events`
         // had anything in it.
         self.user_events.drain_into(&mut out);
+        super::tray::drain_tray_wake(&mut out);
         out
     }
 
@@ -1941,6 +1954,7 @@ impl Backend for GtkBackend {
         let mut out: Vec<UiEvent> = self.events.borrow_mut().drain(..).collect();
         self.apply_accelerators(&mut out);
         self.user_events.drain_into(&mut out);
+        super::tray::drain_tray_wake(&mut out);
         out
     }
 
@@ -2133,7 +2147,33 @@ impl Backend for GtkBackend {
             // `bounds`/`set_bounds`/`center` — and `set_always_on_top`,
             // both structurally absent on GTK4/Wayland).
             window_control: true,
+            // `tray`: `fn tray` is overridden below and returns `Some`
+            // once a `StatusNotifierItem`/dbusmenu pair has registered
+            // with a reachable `org.kde.StatusNotifierWatcher` — see
+            // [`super::tray`]'s module doc. Declaring this `true`
+            // unconditionally mirrors `window_control`'s own doc: it
+            // promises the surface exists on this backend, not that
+            // every call (or even `tray()` itself, on a desktop with no
+            // watcher) succeeds.
+            tray: true,
             ..crate::backend::BackendCaps::empty()
+        }
+    }
+
+    /// Unlike [`Self::window`], which only needs to report whether
+    /// `set_window` has already stashed a handle, this must attempt a
+    /// real connection on every call: a Linux desktop's tray
+    /// availability is an external, runtime fact (is a
+    /// `StatusNotifierWatcher` running right now?), not backend state
+    /// this type constructs up front. See [`super::tray::GtkTrayState::
+    /// ensure_connected`]'s doc for why a failed attempt here is never
+    /// cached as permanent.
+    fn tray(&mut self) -> Option<&mut dyn crate::backend::TrayService> {
+        let waker = self.waker();
+        if self.tray.ensure_connected(waker) {
+            Some(self)
+        } else {
+            None
         }
     }
 
@@ -5072,6 +5112,30 @@ impl Backend for GtkBackend {
     }
 }
 
+/// Thin forward to [`super::tray::GtkTrayState`]'s inherent methods —
+/// unlike `MacBackend`'s equivalent block, there's no free-function-plus-
+/// events-argument indirection needed here, since `GtkTrayState` already
+/// captures its own waker/connection at [`Backend::tray`]-call time.
+impl crate::backend::TrayService for GtkBackend {
+    fn set_icon(
+        &mut self,
+        icon: crate::primitives::image::ImageSource,
+    ) -> crate::backend::ServiceResult<()> {
+        self.tray.set_icon(icon)
+    }
+
+    fn set_tooltip(&mut self, tooltip: &str) -> crate::backend::ServiceResult<()> {
+        self.tray.set_tooltip(tooltip)
+    }
+
+    fn set_menu(
+        &mut self,
+        menu: &crate::primitives::context_menu::ContextMenu,
+    ) -> crate::backend::ServiceResult<()> {
+        self.tray.set_menu(menu)
+    }
+}
+
 /// GTK's `WindowControl` surface. Backed by `gtk4::Window`'s
 /// own methods wherever GTK4 exposes one; everything GTK4 structurally
 /// can't do reports [`BackendError::Unsupported`] honestly rather than
@@ -5862,30 +5926,41 @@ mod tests {
         );
     }
 
-    // `GtkBackend` has no `fn tray` override, so both halves of the
-    // trait default apply: `tray()` returns `None` and
-    // `backend_caps().tray` is `false`.
-
-    /// There is no `gtk/tray.rs` and `GtkBackend` has no `fn tray`
-    /// override, so both halves of the trait default apply: `tray()`
-    /// returns `None` and `backend_caps().tray` is `false`. The 2026-09-26
-    /// framework audit flagged this pair as unverified; this pins the
-    /// honest answer as a concrete runtime assertion, on top of (not
+    /// `GtkBackend` overrides `fn tray`, so `backend_caps().tray` is
+    /// `true`: the capability exists regardless of the host. Whether a
+    /// given call to `tray()` returns `Some` depends on a real
+    /// `org.kde.StatusNotifierWatcher` being reachable over the session
+    /// D-Bus — see [`super::tray`]'s module doc. `tray()` must match that
+    /// reality honestly (`Some` when a watcher answered, `None`
+    /// otherwise) rather than fabricate a connection, on top of (not
     /// instead of) `tests/conformance/caps.rs`'s generic source-parsed
     /// "declared ⇔ overridden" check for the `tray` capability across
     /// every backend.
     #[test]
-    fn gtk_backend_reports_no_tray_support() {
+    fn gtk_backend_reports_tray_support_matching_watcher_availability() {
         let mut b = GtkBackend::new();
         assert!(
-            !b.backend_caps().tray,
-            "#1131: GtkBackend has no tray() override, so backend_caps().tray must stay false"
+            b.backend_caps().tray,
+            "GtkBackend overrides tray(), so backend_caps().tray must be true"
         );
-        assert!(
-            b.tray().is_none(),
-            "#1131: GtkBackend::tray() must honestly report Unsupported (None) — \
-             there is no gtk/tray.rs backing it"
-        );
+
+        #[cfg(target_os = "linux")]
+        {
+            let expected = crate::gtk::tray::tests::watcher_is_reachable();
+            assert_eq!(
+                b.tray().is_some(),
+                expected,
+                "GtkBackend::tray() must agree with a direct probe of watcher availability"
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert!(
+                b.tray().is_none(),
+                "GtkBackend::tray() must report Unsupported (None) off Linux, where no \
+                 StatusNotifierWatcher implementation exists"
+            );
+        }
     }
 
     /// Garbage bytes are not a font Fontconfig's FreeType backend can
@@ -6409,7 +6484,10 @@ mod tests {
     #[test]
     fn pointer_shape_cursor_name_maps_every_variant() {
         // Iterates `desktop::all_pointer_shapes()` instead of
-        // hand-listing all 9 `Default` + `Resize(edge)` combinations.
+        // hand-listing all 18 `Default`/`Resize(edge)`/rest combinations.
+        // The non-`Resize` variants beyond `Default` have no GTK cursor
+        // name wired up yet, so they all fall back to "default" — see
+        // `pointer_shape_cursor_name`'s doc.
         let expected = [
             "default",
             "n-resize",
@@ -6420,11 +6498,24 @@ mod tests {
             "nw-resize",
             "se-resize",
             "sw-resize",
+            "default", // Text
+            "default", // Pointer
+            "default", // Grab
+            "default", // Grabbing
+            "default", // Crosshair
+            "default", // Wait
+            "default", // NotAllowed
+            "default", // ColResize
+            "default", // RowResize
         ];
-        for (shape, expected) in crate::desktop::all_pointer_shapes()
-            .iter()
-            .zip(expected.iter())
-        {
+        let shapes = crate::desktop::all_pointer_shapes();
+        assert_eq!(
+            shapes.len(),
+            expected.len(),
+            "every PointerShape must have an expected cursor name — a new variant means a new \
+             row here, not a silently-truncated zip"
+        );
+        for (shape, expected) in shapes.iter().zip(expected.iter()) {
             assert_eq!(pointer_shape_cursor_name(*shape), *expected);
         }
     }
@@ -6584,6 +6675,10 @@ mod tests {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("enabled"),
@@ -6592,11 +6687,18 @@ mod tests {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
             ],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
 
         let rect = QRect::new(0.0, 0.0, 400.0, 200.0);
@@ -6676,10 +6778,17 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
 
         let rect = QRect::new(0.0, 0.0, 400.0, 80.0);
@@ -9177,10 +9286,17 @@ mod tests {
                 hint: StyledText::plain(""),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }],
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
 
         let backend = GtkBackend::new();

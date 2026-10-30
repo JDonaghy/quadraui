@@ -1138,6 +1138,11 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
     // returns `ServiceResult<...>` (including the no-feature build's
     // always-`Unsupported` store). Nothing for this method to report.
     ("secret_store", ServiceHonesty::Delegates("SecretStore")),
+    // `app_path` returns `ServiceResult<PathBuf>` directly — same
+    // reasoning as `system_theme`/`displays` above: the `Result` type
+    // itself already carries the "unsupported" signal, so there is no
+    // separate `BackendCaps` flag or `_result` twin to check.
+    ("app_path", ServiceHonesty::AlwaysReal),
     // `displays`/`cursor_screen_point` both return
     // `ServiceResult<...>` directly — same reasoning as `system_theme`
     // above: the `Result` type itself already carries the "unsupported"
@@ -1145,6 +1150,57 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
     // there is no separate `BackendCaps` flag or `_result` twin to check.
     ("displays", ServiceHonesty::AlwaysReal),
     ("cursor_screen_point", ServiceHonesty::AlwaysReal),
+    // `update_service` vends a `&dyn UpdateService` rather than answering
+    // anything itself — same shape as `clipboard`/`secret_store` above, so
+    // the honesty story lives on the vended trait's own methods, each of
+    // which returns `ServiceResult<...>` (including the default
+    // always-`Unsupported` service).
+    ("update_service", ServiceHonesty::Delegates("UpdateService")),
+    // `on_battery`/`thermal_state`/`begin_power_save_block`/
+    // `end_power_save_block` all return `ServiceResult<...>` and default to
+    // `Err(BackendError::Unsupported)` — same always-real-`Result` shape as
+    // `displays`/`cursor_screen_point`/`system_theme` above.
+    ("on_battery", ServiceHonesty::AlwaysReal),
+    ("thermal_state", ServiceHonesty::AlwaysReal),
+    ("begin_power_save_block", ServiceHonesty::AlwaysReal),
+    ("end_power_save_block", ServiceHonesty::AlwaysReal),
+    // `register_global_shortcut`/`unregister_global_shortcut`/
+    // `unregister_all_global_shortcuts` all return `ServiceResult<...>` and
+    // default to `Err(BackendError::Unsupported)` — same always-real-`Result`
+    // shape as the power-seam methods just above.
+    ("register_global_shortcut", ServiceHonesty::AlwaysReal),
+    ("unregister_global_shortcut", ServiceHonesty::AlwaysReal),
+    (
+        "unregister_all_global_shortcuts",
+        ServiceHonesty::AlwaysReal,
+    ),
+    // `begin_drag_out` returns `ServiceResult<()>` directly — same
+    // always-real-`Result` shape as the global-shortcut methods just
+    // above.
+    ("begin_drag_out", ServiceHonesty::AlwaysReal),
+    // `set_login_item`/`login_item_enabled` both return `ServiceResult<...>`
+    // directly — same always-real-`Result` shape as `begin_drag_out` just
+    // above.
+    ("set_login_item", ServiceHonesty::AlwaysReal),
+    ("login_item_enabled", ServiceHonesty::AlwaysReal),
+    // `set_as_default_protocol_client`/`is_default_protocol_client`/
+    // `remove_as_default_protocol_client` all return `ServiceResult<...>`
+    // directly — same always-real-`Result` shape as the login-item methods
+    // just above.
+    ("set_as_default_protocol_client", ServiceHonesty::AlwaysReal),
+    ("is_default_protocol_client", ServiceHonesty::AlwaysReal),
+    (
+        "remove_as_default_protocol_client",
+        ServiceHonesty::AlwaysReal,
+    ),
+    // `add_recent_document`/`clear_recent_documents`/`set_dock_menu`/
+    // `set_jump_list` all return `ServiceResult<()>` directly — same
+    // always-real-`Result` shape as the protocol-client methods just
+    // above.
+    ("add_recent_document", ServiceHonesty::AlwaysReal),
+    ("clear_recent_documents", ServiceHonesty::AlwaysReal),
+    ("set_dock_menu", ServiceHonesty::AlwaysReal),
+    ("set_jump_list", ServiceHonesty::AlwaysReal),
     ("platform_name", ServiceHonesty::AlwaysReal),
 ];
 

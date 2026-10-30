@@ -39,12 +39,11 @@
 //!
 //! ## Dialogs
 //!
-//! `show_file_open_dialog`, `show_file_save_dialog`, and
-//! `show_message_dialog` used to return `None` unconditionally — a
-//! terminal has no native file picker or alert facility, and nothing in
-//! this crate drove an in-canvas replacement's show → block → return-a-
-//! choice contract. All three now drive a real in-canvas controller
-//! ([`crate::compose::FilePickerController`] /
+//! A terminal has no native file picker, directory chooser, or alert
+//! facility, so `show_file_open_dialog`, `show_file_save_dialog`,
+//! `show_folder_open_dialog`, and `show_message_dialog` all drive a real
+//! in-canvas controller ([`crate::compose::FilePickerController`] /
+//! [`crate::compose::FolderPickerController`] /
 //! [`crate::compose::MessageDialogController`]) through a **nested
 //! draw-and-read loop**: draw one frame, block for the next input event,
 //! feed it to the controller, repeat until it resolves. This is the TUI
@@ -66,15 +65,15 @@
 //! [`Self::queue_dialog_events`] (also reachable through
 //! [`crate::tui::testing::TuiDriver::queue_dialog_events`] for tests
 //! outside this crate) so the whole round trip — real
-//! `FilePickerController`/`MessageDialogController` state machine, real
-//! `TuiBackend` paint — is exercised with **no** live terminal, purely
-//! against `ratatui::backend::TestBackend` (see this module's own
-//! `dialog_tests` for the PlatformServices-level round trips this makes
-//! possible: file-open confirms a path, file-open cancels, file-save
-//! confirms a typed name, file-save seeds an initial filename,
-//! message-dialog resolves a button, message-dialog Escape resolves the
-//! cancel button, and an exhausted scripted queue still resolves rather
-//! than hanging).
+//! `FilePickerController`/`FolderPickerController`/`MessageDialogController`
+//! state machine, real `TuiBackend` paint — is exercised with **no** live
+//! terminal, purely against `ratatui::backend::TestBackend` (see this
+//! module's own `dialog_tests` for the PlatformServices-level round trips
+//! this makes possible: file-open confirms a path, file-open cancels,
+//! file-save confirms a typed name, file-save seeds an initial filename,
+//! folder-open confirms a path, folder-open cancels, message-dialog
+//! resolves a button, message-dialog Escape resolves the cancel button,
+//! and an exhausted scripted queue still resolves rather than hanging).
 //!
 //! The one thing this nested loop cannot do without help is share the
 //! *live* runner's `Terminal` instance — using a second, independently
@@ -88,12 +87,13 @@
 //! diff cache always reflects exactly what was last written, dialog
 //! frames included.
 //!
-//! `show_folder_open_dialog` is deliberately **not** touched here —
-//! issue #965 scopes to the three dialogs above; `FolderPickerController`
-//! stays an app-driven compose controller with no `PlatformServices`
-//! integration of its own (see that controller's module doc for why, and
-//! `crate::compose::file_picker`'s module doc for why the analogous file
-//! picker doesn't repeat one of its keybinding trade-offs).
+//! None of this flips `BackendCaps::file_dialogs` / `::folder_dialogs` /
+//! `::native_dialogs` to `true` on `TuiBackend`: those flags mean a real
+//! **native** OS dialog, which a terminal physically cannot show, no
+//! matter how faithful the in-canvas replacement is. Callers that care
+//! only about getting a real path or button choice back, rather than
+//! about the dialog being OS-native, can ignore the flag and just call
+//! the method.
 //!
 //! ## `shell.*` parity (issues #956, #1092) — every method now genuinely real
 //!
@@ -260,9 +260,51 @@
 //! has no synchronous cursor-position query at all. See
 //! [`TuiPlatformServices::displays`]/
 //! [`TuiPlatformServices::cursor_screen_point`]'s own docs.
+//!
+//! ## Auto-update
+//!
+//! `check_for_update` keeps the [`crate::update::UpdateService`] trait's
+//! own `Unsupported` default: a terminal has no HTTP client or feed-polling
+//! loop of its own, so this backend cannot discover an update itself.
+//! [`TuiUpdateService::download_and_stage`] is the actual degrade: a host
+//! that discovers an [`crate::update::UpdateInfo`] through its own feed
+//! check (an update channel this seam deliberately leaves to the host —
+//! see `update`'s module doc) and reports it through this backend's
+//! `update_service().download_and_stage(&info)` gets an "update available:
+//! …" line on [`crate::diagnostics`] before the same `Unsupported` every
+//! other backend's default returns. `apply_on_quit` stays `Unsupported`
+//! too: a terminal has no package format of its own to install into.
+//!
+//! ## Login items
+//!
+//! `login_item_enabled` overrides the trait default with an honest
+//! no-op that always reports `false`, since a terminal has no OS
+//! login-item registration of its own to query and `set_login_item`
+//! itself stays `Unsupported` on this backend — quadraui itself can
+//! never have created a registration here. This `false` only reflects
+//! that: it says nothing about a registration a host or packaging step
+//! may have created out of band (e.g. a cron/systemd-user entry that
+//! happens to launch this binary), so a settings screen built on this
+//! query can display "off" for an app that does, in fact, start at
+//! login by some other mechanism. `set_login_item` stays at the trait's
+//! `Unsupported` default: there is no honest "success" value for a
+//! mutation with nothing in this backend to mutate. See
+//! [`TuiPlatformServices::login_item_enabled`]'s own doc and
+//! `login_item`'s module doc.
+//!
+//! ## Recent documents / Dock menu
+//!
+//! `add_recent_document`, `clear_recent_documents`, `set_dock_menu`, and
+//! `set_jump_list` all keep the trait's `Unsupported` default on TUI: a
+//! terminal has no OS-level recent-documents list, Dock icon, or jump
+//! list of its own, and a caller building one of these expects it to
+//! eventually surface on a real Dock or taskbar — silently discarding
+//! the call and reporting success would tell that caller a feature
+//! exists here when it does not. `Unsupported` is the honest answer for
+//! all four.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -271,11 +313,14 @@ use crate::backend::{
     MessageDialogOptions, Notification, PlatformServices, ServiceResult, SystemTheme,
 };
 use crate::compose::{
-    FilePickerController, FilePickerEvent, FilePickerMode, MessageDialogController,
-    MessageDialogEvent,
+    FilePickerController, FilePickerEvent, FilePickerMode, FolderPickerController,
+    FolderPickerEvent, MessageDialogController, MessageDialogEvent,
 };
+use crate::diagnostics;
 use crate::event::{Point, Rect, UiEvent};
+use crate::power::{BlockerId, PowerSaveKind};
 use crate::tui::backend::TuiBackend;
+use crate::update::{StagedUpdate, UpdateInfo, UpdateService};
 use crate::{Key, Modifiers, NamedKey};
 
 // ── Nested dialog loop ──────────────────────────────────────────────────────────
@@ -1475,6 +1520,11 @@ pub struct TuiPlatformServices {
     /// empty queue — means "test mode, never touch the real terminal".
     /// Set via [`Self::queue_dialog_events`].
     scripted_dialog_events: RefCell<Option<VecDeque<UiEvent>>>,
+    /// Ids minted by [`Self::begin_power_save_block`] and not yet passed
+    /// to [`Self::end_power_save_block`] — see `power`'s module doc for
+    /// why TUI tracks this honestly instead of leaving the pair
+    /// `Unsupported`.
+    power_save_blocks: RefCell<HashSet<BlockerId>>,
 }
 
 impl TuiPlatformServices {
@@ -1483,6 +1533,7 @@ impl TuiPlatformServices {
             clipboard: TuiClipboard::new(),
             dialog_surface: RefCell::new(None),
             scripted_dialog_events: RefCell::new(None),
+            power_save_blocks: RefCell::new(HashSet::new()),
         }
     }
 
@@ -1713,13 +1764,42 @@ impl PlatformServices for TuiPlatformServices {
         )
     }
 
-    /// No native directory chooser on TUI — unconditionally `None`, same
-    /// as the file-dialog methods above. Apps should
-    /// provide an in-canvas picker instead (see
-    /// `BackendCaps::folder_dialogs`'s doc for why this is a distinct
-    /// flag from `file_dialogs`).
-    fn show_folder_open_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
-        None
+    /// Nested draw-and-read loop over
+    /// [`crate::compose::FolderPickerController`] — see
+    /// [`Self::show_file_open_dialog`]'s doc for the shared shape.
+    /// `opts.initial_dir` seeds the browsing root (falling back to the
+    /// process's current directory); `opts.initial_filename`/
+    /// `opts.filters` don't apply to a directory chooser and are ignored,
+    /// matching [`crate::backend::FileDialogOptions`]'s own doc on those
+    /// two fields. `opts.title` *does* apply on GTK/Win/macOS, but TUI
+    /// ignores it too: `FolderPickerController::build_palette` always
+    /// titles the palette `"Open Folder {root}"` with no override. This
+    /// does not make `BackendCaps::folder_dialogs` `true` on
+    /// `TuiBackend` — see the module doc's "Dialogs" section for why.
+    /// Every key reaches `FolderPickerController::handle` first, which
+    /// intercepts `-`, `j` and `k` as navigation before the generic
+    /// typing arm (see its `handle_key` preamble), so a folder named
+    /// e.g. `my-app` can't be typed into the filter — arrow keys still
+    /// reach it.
+    fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
+        let root = opts
+            .initial_dir
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let picker = RefCell::new(FolderPickerController::new(root, Vec::new(), false));
+        self.run_nested_dialog_loop(
+            |backend, viewport| picker.borrow().render(viewport, backend),
+            |event, _backend, viewport| {
+                let visible_rows = (viewport.height as usize)
+                    .saturating_sub(crate::compose::folder_picker::PALETTE_CHROME_ROWS);
+                match picker.borrow_mut().handle(event, visible_rows) {
+                    FolderPickerEvent::Confirmed { path } => NestedDialogStep::Resolved(path),
+                    FolderPickerEvent::Cancelled => NestedDialogStep::Cancelled,
+                    FolderPickerEvent::Consumed | FolderPickerEvent::Ignored => {
+                        NestedDialogStep::Continue
+                    }
+                }
+            },
+        )
     }
 
     /// Nested draw-and-read loop over
@@ -1900,8 +1980,241 @@ impl PlatformServices for TuiPlatformServices {
         Err(BackendError::Unsupported)
     }
 
+    /// A truthful degrade, not a silent `Unsupported`: a terminal app has
+    /// no package format this backend controls, so it can't actually
+    /// download or stage anything, but it can still tell a host an
+    /// update exists. [`TuiUpdateService::download_and_stage`] emits an
+    /// "update available: …" diagnostic through [`crate::diagnostics`]
+    /// before returning the same `Unsupported` every other backend's
+    /// default does.
+    fn update_service(&self) -> &dyn UpdateService {
+        static SERVICE: TuiUpdateService = TuiUpdateService;
+        &SERVICE
+    }
+
+    /// An honest no-op blocker, not `Unsupported`: a terminal has no
+    /// sleep-inhibitor API to call into, but it can still mint and track
+    /// a real [`BlockerId`] so a TUI app's begin/end lifecycle behaves
+    /// consistently rather than failing on the very first call. See
+    /// `power`'s module doc.
+    fn begin_power_save_block(&self, kind: PowerSaveKind) -> ServiceResult<BlockerId> {
+        let _ = kind;
+        let id = BlockerId::next();
+        self.power_save_blocks.borrow_mut().insert(id);
+        Ok(id)
+    }
+
+    /// Ends a blocker previously started by [`Self::begin_power_save_block`].
+    /// Errors on an unknown or already-ended id rather than silently
+    /// succeeding — the bookkeeping is the whole point of the no-op
+    /// degrade, so it stays honest about what it actually tracked.
+    fn end_power_save_block(&self, id: BlockerId) -> ServiceResult<()> {
+        if self.power_save_blocks.borrow_mut().remove(&id) {
+            Ok(())
+        } else {
+            Err(BackendError::PlatformFailure {
+                context: "end_power_save_block: unknown or already-ended blocker id".to_string(),
+            })
+        }
+    }
+
+    /// An honest no-op, not `Unsupported`: this backend itself never
+    /// creates a login-item registration (`set_login_item` stays
+    /// `Unsupported` on TUI), so `false` is always truthful about *this
+    /// backend's own* state — see this module's "Login items" doc
+    /// section for the caveat that a host or packaging step can still
+    /// have registered the binary out of band, in which case this call
+    /// reports `false` for an app that does start at login some other
+    /// way. `login_item`'s module doc has why `set_login_item` keeps the
+    /// trait's `Unsupported` default while this query does not.
+    fn login_item_enabled(&self) -> ServiceResult<bool> {
+        Ok(false)
+    }
+
+    // `add_recent_document`, `clear_recent_documents`, and `set_dock_menu`
+    // all fall through to the trait's own `Unsupported` default — see
+    // this module's "Recent documents / Dock menu" doc section above for
+    // why a terminal has no honest "success" value for any of the three.
+    // Left unoverridden (rather than restated here) so that default is
+    // the one place this behavior lives.
+
     fn platform_name(&self) -> &'static str {
         "tui"
+    }
+}
+
+/// [`UpdateService`] for the TUI backend. Every method falls back to the
+/// trait's own `Unsupported` default except [`Self::download_and_stage`],
+/// which first surfaces the update as a diagnostic — see this type's
+/// use in [`TuiPlatformServices::update_service`].
+struct TuiUpdateService;
+
+impl UpdateService for TuiUpdateService {
+    fn download_and_stage(&self, info: &UpdateInfo) -> ServiceResult<StagedUpdate> {
+        diagnostics::emit(format!("update available: {}", info.version));
+        Err(BackendError::Unsupported)
+    }
+}
+
+#[cfg(test)]
+mod update_service_tests {
+    use super::*;
+    use crate::update::UpdateFeed;
+    use std::sync::{Arc, Mutex};
+
+    // Shares the process-global diagnostics sink slot with every other
+    // test that calls `set_sink`/`clear_sink` — see
+    // `diagnostics::test_guard`'s doc.
+    fn guard() -> std::sync::MutexGuard<'static, ()> {
+        diagnostics::test_guard()
+    }
+
+    #[test]
+    fn check_for_update_and_apply_on_quit_stay_unsupported() {
+        let service = TuiPlatformServices::new();
+        let feed = UpdateFeed::new("https://example.com/appcast.xml");
+        assert_eq!(
+            service.update_service().check_for_update(&feed),
+            Err(BackendError::Unsupported)
+        );
+
+        let info = UpdateInfo::new("1.2.3", "notes", "https://example.com/v1.2.3", "sig");
+        let staged = StagedUpdate::new(info);
+        assert_eq!(
+            service.update_service().apply_on_quit(staged),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn download_and_stage_emits_the_available_version_then_degrades() {
+        let _g = guard();
+        let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let received_in_sink = Arc::clone(&received);
+        diagnostics::set_sink(move |msg: &str| {
+            received_in_sink.lock().unwrap().push(msg.to_string());
+        });
+
+        let service = TuiPlatformServices::new();
+        let info = UpdateInfo::new("1.2.3", "notes", "https://example.com/v1.2.3", "sig");
+        let result = service.update_service().download_and_stage(&info);
+
+        assert_eq!(result, Err(BackendError::Unsupported));
+        assert_eq!(
+            received.lock().unwrap().as_slice(),
+            ["update available: 1.2.3"]
+        );
+        diagnostics::clear_sink();
+    }
+}
+
+#[cfg(test)]
+mod power_save_block_tests {
+    use super::*;
+
+    #[test]
+    fn begin_mints_distinct_ids() {
+        let service = TuiPlatformServices::new();
+        let a = service
+            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
+            .unwrap();
+        let b = service
+            .begin_power_save_block(PowerSaveKind::PreventAppSuspension)
+            .unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn end_succeeds_on_a_just_begun_id() {
+        let service = TuiPlatformServices::new();
+        let id = service
+            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
+            .unwrap();
+        assert_eq!(service.end_power_save_block(id), Ok(()));
+    }
+
+    #[test]
+    fn end_fails_on_an_unknown_or_already_ended_id() {
+        let service = TuiPlatformServices::new();
+        let id = service
+            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
+            .unwrap();
+        assert_eq!(service.end_power_save_block(id), Ok(()));
+        assert_eq!(
+            service.end_power_save_block(id),
+            Err(BackendError::PlatformFailure {
+                context: "end_power_save_block: unknown or already-ended blocker id".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn on_battery_and_thermal_state_stay_unsupported() {
+        let service = TuiPlatformServices::new();
+        assert_eq!(service.on_battery(), Err(BackendError::Unsupported));
+        assert_eq!(service.thermal_state(), Err(BackendError::Unsupported));
+    }
+
+    #[test]
+    fn global_shortcuts_stay_unsupported() {
+        use crate::accelerator::KeyBinding;
+        use crate::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, GlobalShortcutId};
+
+        let service = TuiPlatformServices::new();
+        let accel = Accelerator {
+            id: AcceleratorId::new("app.summon"),
+            binding: KeyBinding::Literal("<C-S-space>".to_string()),
+            scope: AcceleratorScope::Global,
+            label: None,
+        };
+        assert_eq!(
+            service.register_global_shortcut(accel),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(
+            service.unregister_global_shortcut(GlobalShortcutId::next()),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(
+            service.unregister_all_global_shortcuts(),
+            Err(BackendError::Unsupported)
+        );
+    }
+}
+
+/// Pins [`crate::backend::PlatformServices::app_path`]'s default body end
+/// to end through [`TuiPlatformServices`], which — like every other
+/// backend — overrides nothing and relies entirely on that default. See
+/// `paths`'s own module doc for why the TUI story is full support, not a
+/// degrade.
+#[cfg(test)]
+mod app_path_tests {
+    use super::*;
+    use crate::backend::PlatformServices;
+    use crate::paths::{self, AppPathKind};
+
+    fn guard() -> std::sync::MutexGuard<'static, ()> {
+        paths::test_guard()
+    }
+
+    #[test]
+    fn resolves_a_user_data_path_scoped_by_the_app_identifier() {
+        let _g = guard();
+        paths::clear_app_identifier();
+        paths::set_app_identifier("quadraui-tui-services-app-path-test");
+
+        let service = TuiPlatformServices::new();
+        let resolved = service
+            .app_path(AppPathKind::UserData)
+            .expect("UserData should resolve on every platform this crate supports");
+        assert!(
+            resolved
+                .to_string_lossy()
+                .contains("quadraui-tui-services-app-path-test"),
+            "{resolved:?} should be scoped by the app identifier"
+        );
+
+        paths::clear_app_identifier();
     }
 }
 
@@ -1930,12 +2243,13 @@ mod message_dialog_tests {
         assert!(services.show_message_dialog(opts).is_none());
     }
 
-    /// TUI has no native directory chooser, so
-    /// `show_folder_open_dialog` unconditionally returns `None` — same
-    /// shape as `show_message_dialog` above, and matching
-    /// `BackendCaps::folder_dialogs` being `false` on `TuiBackend`.
+    /// `show_folder_open_dialog` drives the same kind of nested
+    /// draw-and-read loop as `show_message_dialog` above, over
+    /// `FolderPickerController` instead — same "no surface wired yet"
+    /// degrade applies. See `dialog_tests` below for the real, wired
+    /// confirm/cancel round trips.
     #[test]
-    fn show_folder_open_dialog_always_returns_none() {
+    fn show_folder_open_dialog_returns_none_when_no_surface_wired() {
         let services = TuiPlatformServices::new();
         assert!(services
             .show_folder_open_dialog(FileDialogOptions::default())
@@ -2011,6 +2325,77 @@ mod message_dialog_tests {
             }
         }
     }
+
+    /// A terminal has no OS login-item registration to query — this pins
+    /// the honest no-op degrade: always `Ok(false)`, on every host this
+    /// runs on (no environment dependency, unlike `displays` above).
+    /// See the module doc's "Login items" section for why `false` here
+    /// is not the same claim as "this app is not registered to start at
+    /// login by any mechanism".
+    #[test]
+    fn login_item_enabled_always_reports_false_on_tui() {
+        let services = TuiPlatformServices::new();
+        assert_eq!(services.login_item_enabled(), Ok(false));
+    }
+
+    /// A terminal has no OS-level recent-documents list to add to — this
+    /// pins the typed degrade documented in the module doc's "Recent
+    /// documents / Dock menu" section: the call stays `Unsupported`
+    /// rather than discarding the path and reporting success.
+    #[test]
+    fn add_recent_document_stays_unsupported_on_tui() {
+        let services = TuiPlatformServices::new();
+        assert_eq!(
+            services.add_recent_document(std::path::Path::new("/tmp/report.pdf")),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    /// Same typed-degrade story as [`add_recent_document_stays_unsupported_on_tui`]:
+    /// there is no list on this backend to clear.
+    #[test]
+    fn clear_recent_documents_stays_unsupported_on_tui() {
+        let services = TuiPlatformServices::new();
+        assert_eq!(
+            services.clear_recent_documents(),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    /// A terminal has no Dock icon to attach a menu to, mirroring
+    /// [`add_recent_document_stays_unsupported_on_tui`] above.
+    #[test]
+    fn set_dock_menu_stays_unsupported_on_tui() {
+        use crate::primitives::context_menu::{ContextMenu, ContextMenuPlacement};
+        use crate::types::WidgetId;
+
+        let services = TuiPlatformServices::new();
+        let menu = ContextMenu {
+            id: WidgetId::new("dock-menu"),
+            items: Vec::new(),
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::AnchorPoint,
+        };
+        assert_eq!(
+            services.set_dock_menu(&menu),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    /// Same typed-degrade story as the three methods above — see the
+    /// module doc's "Recent documents / Dock menu" section.
+    #[test]
+    fn set_jump_list_stays_unsupported_on_tui() {
+        use crate::backend::JumpListItem;
+
+        let services = TuiPlatformServices::new();
+        let items = [JumpListItem::new().with_title("Recent project")];
+        assert_eq!(
+            services.set_jump_list(&items),
+            Err(BackendError::Unsupported)
+        );
+    }
 }
 
 /// Issue #965 acceptance bar: prove the nested dialog loop returns a real
@@ -2019,9 +2404,9 @@ mod message_dialog_tests {
 /// `ratatui::Terminal<TestBackend>` via `set_dialog_surface` and a
 /// scripted `UiEvent` sequence via `queue_dialog_events`, then calls the
 /// `PlatformServices` method exactly as an app would — the *same*
-/// `FilePickerController`/`MessageDialogController` state machine and
-/// `TuiBackend` paint path production uses, with no live terminal
-/// involved. See the module doc's "Dialogs" section.
+/// `FilePickerController`/`FolderPickerController`/`MessageDialogController`
+/// state machine and `TuiBackend` paint path production uses, with no live
+/// terminal involved. See the module doc's "Dialogs" section.
 #[cfg(test)]
 mod dialog_tests {
     use super::*;
@@ -2130,6 +2515,41 @@ mod dialog_tests {
         };
         let result = services.show_file_save_dialog(opts);
         assert_eq!(result, Some(tmp.path().join("untitled.txt")));
+    }
+
+    #[test]
+    fn show_folder_open_dialog_confirms_a_selected_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(tmp.path().join("targetdir")).expect("create dir");
+        let services = wired_services(60, 20);
+        // Filter down to the one subdirectory whose name contains "targ",
+        // then confirm it.
+        services.queue_dialog_events(vec![
+            key_char('t'),
+            key_char('a'),
+            key_char('r'),
+            key_char('g'),
+            key_named(NamedKey::Enter),
+        ]);
+        let opts = FileDialogOptions {
+            initial_dir: Some(tmp.path().to_path_buf()),
+            ..Default::default()
+        };
+        let result = services.show_folder_open_dialog(opts);
+        assert_eq!(result, Some(tmp.path().join("targetdir")));
+    }
+
+    #[test]
+    fn show_folder_open_dialog_cancelled_returns_none() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(tmp.path().join("targetdir")).expect("create dir");
+        let services = wired_services(60, 20);
+        services.queue_dialog_events(vec![key_named(NamedKey::Escape)]);
+        let opts = FileDialogOptions {
+            initial_dir: Some(tmp.path().to_path_buf()),
+            ..Default::default()
+        };
+        assert_eq!(services.show_folder_open_dialog(opts), None);
     }
 
     #[test]

@@ -696,6 +696,50 @@ fn window_class_name_string(title: &str) -> String {
     format!("{CLASS_NAME_PREFIX}-{:016x}", instance_identity(title))
 }
 
+/// Prefix for [`aumid_string`]'s per-title AppUserModelID.
+///
+/// `#[allow(dead_code)]`: same rationale as [`window_class_name_string`]
+/// — its only use (`win32::create_window`, wiring the AUMID into
+/// `SetCurrentProcessExplicitAppUserModelID` and [`WinBackend::set_aumid`])
+/// is Windows-only.
+#[allow(dead_code)]
+const AUMID_PREFIX: &str = "Quadraui.App";
+
+/// AppUserModelID (AUMID) for `title`'s instance family, keyed off the
+/// same [`instance_identity`] the window class name and
+/// single-instance mutex already use — same rationale: Win has no
+/// `app_id` concept the way `gtk::RunConfig` does, so the window title
+/// doubles as this backend's identity everywhere one is needed. Kept
+/// well under the documented 129-character AUMID limit and free of
+/// characters an arbitrary `title` might carry that AUMIDs can't.
+///
+/// `win32::run` registers this once via
+/// `SetCurrentProcessExplicitAppUserModelID` before any window exists —
+/// needed so a WinRT toast is attributed to this process at all — and
+/// `win32::create_window` hands the same string to
+/// [`WinBackend::set_aumid`], which also writes the
+/// `HKCU\Software\Classes\AppUserModelId\<aumid>\DisplayName` registry
+/// key an unpackaged app needs before Windows will actually render a
+/// toast for that AUMID (see `services::win_register_aumid_display_name`).
+/// `SetCurrentProcessExplicitAppUserModelID` alone does not guarantee a
+/// toast shows — without that registry key the WinRT calls still return
+/// `Ok` and the toast is discarded — so `set_aumid` only lets
+/// `send_notification` attempt the toast path once that write succeeds,
+/// falling back to the legacy balloon otherwise.
+///
+/// Pure string formatting, no WinAPI dependency, so it's unit-tested off
+/// Windows below.
+///
+/// `#[allow(dead_code)]`: same rationale as [`window_class_name_string`]
+/// — its only callers (`win32::run`'s
+/// `SetCurrentProcessExplicitAppUserModelID` call and
+/// `win32::create_window`'s [`WinBackend::set_aumid`] call) are
+/// Windows-only.
+#[allow(dead_code)]
+fn aumid_string(title: &str) -> String {
+    format!("{AUMID_PREFIX}.{:016x}", instance_identity(title))
+}
+
 // `ModalPumpDepth`/`ModalPumpGuard`/`RefCell` are only reachable from
 // `guarded_call` and its test module below — both `#[cfg(any(target_os
 // = "windows", test))]`, matching `win32`'s own `target_os = "windows"`
@@ -747,7 +791,7 @@ mod win32 {
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
-    use windows::core::{Error as WinError, PCWSTR};
+    use windows::core::{Error as WinError, HSTRING, PCWSTR};
     use windows::Win32::Foundation::{
         GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
     };
@@ -769,25 +813,36 @@ mod win32 {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW,
-        GetClientRect, GetWindowLongPtrW, KillTimer, LoadCursorW, MsgWaitForMultipleObjects,
-        PeekMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetForegroundWindow,
-        SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW,
-        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, HTCAPTION, HTCLIENT, ICON_BIG,
-        ICON_SMALL, IDC_ARROW, MSG, NCCALCSIZE_PARAMS, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE,
-        SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_COPYDATA,
-        WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
-        WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-        WM_NCCALCSIZE, WM_NCCREATE, WM_NCHITTEST, WM_PAINT, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-        WM_SETCURSOR, WM_SETFOCUS, WM_SETICON, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER,
-        WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+        GetClientRect, GetWindowLongPtrW, IsIconic, IsZoomed, KillTimer, LoadCursorW,
+        MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage, RegisterClassExW, SendMessageW,
+        SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+        TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA,
+        HTCAPTION, HTCLIENT, ICON_BIG, ICON_SMALL, IDC_ARROW, MSG, NCCALCSIZE_PARAMS, PM_REMOVE,
+        QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR,
+        WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DROPFILES,
+        WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+        WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCCREATE, WM_NCHITTEST,
+        WM_PAINT, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETICON,
+        WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN,
+        WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
     };
+    // `SW_MAXIMIZE`/`SW_MINIMIZE`/`WM_NULL` are only referenced from
+    // `os_change_event_tests` below, which drives real window-state
+    // transitions through `ShowWindow` rather than forging a `WM_SIZE`
+    // wparam, so they're imported only for `#[cfg(test)]` builds to avoid
+    // an unused-import warning on a normal (non-test) build.
+    #[cfg(test)]
+    use windows::Win32::UI::WindowsAndMessaging::{SW_MAXIMIZE, SW_MINIMIZE, WM_NULL};
     // `WM_DROPFILES` decode (`HDROP`, `DragAcceptFiles`/
     // `DragQueryFileW`/`DragQueryPoint`/`DragFinish`) — all real Shell32
     // calls against a live drag session, so (unlike `super::events`'
     // pure translators) this stays inside `mod win32` rather than a
-    // cross-platform-testable module.
+    // cross-platform-testable module. `SetCurrentProcessExplicitAppUserModelID`
+    // registers this process's AUMID so WinRT toast
+    // notifications are attributed to it rather than silently dropped.
     use windows::Win32::UI::Shell::{
-        DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint, HDROP,
+        DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint,
+        SetCurrentProcessExplicitAppUserModelID, HDROP,
     };
 
     use crate::backend::Backend;
@@ -806,10 +861,17 @@ mod win32 {
     // be unit-tested off Windows (pure functions over already-decoded
     // ints/floats/bools) — see that module's docs.
     use crate::win::events::{
-        win_button_down, win_button_up, win_files_dropped, win_focus_to_uievent, win_modifiers,
-        win_mouse_button_for_message, win_mouse_moved, win_wheel_to_uievent, wm_char_to_uievent,
-        wm_keydown_to_uievent,
+        is_theme_setting_change, win_button_down, win_button_up, win_files_dropped,
+        win_focus_to_uievent, win_modifiers, win_mouse_button_for_message, win_mouse_moved,
+        win_wheel_to_uievent, wm_char_to_uievent, wm_keydown_to_uievent,
     };
+    // The high-contrast action code is only named by
+    // `os_change_event_tests` below, which forges the `WM_SETTINGCHANGE`
+    // that carries it; production code reaches it through
+    // `is_theme_setting_change`, so importing it unconditionally would
+    // warn as unused on a normal build.
+    #[cfg(test)]
+    use crate::win::events::SPI_SETHIGHCONTRAST;
     // Payload decoding lives in `super::msg` so it can be unit-tested off
     // Windows — see that module's docs for why the shifts aren't inlined
     // here.
@@ -958,6 +1020,15 @@ mod win32 {
         /// ordering a posted `WM_APP` message would give for free, without
         /// needing one.
         pending_resize_resync: Cell<bool>,
+        /// Last `(maximized, fullscreen, minimized)` tri-state dispatched
+        /// via [`UiEvent::WindowStateChanged`]. `WM_SIZE` fires on every
+        /// resize, including an ordinary drag that leaves all three flags
+        /// at `SIZE_RESTORED`/unmaximized/non-fullscreen — comparing
+        /// against this field before dispatching keeps the event to actual
+        /// maximize/restore/minimize/fullscreen transitions, matching the
+        /// "OS toggled one of the window's tri-state chrome flags" framing
+        /// in the variant's own doc.
+        window_tristate: Cell<(bool, bool, bool)>,
     }
 
     /// Encode a Rust `&str` (already `\0`-terminated by its caller) as
@@ -1161,6 +1232,29 @@ mod win32 {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }
 
+        // Attributes this process to an AppUserModelID so a
+        // WinRT toast notification shows up in Action Center under this
+        // app rather than being silently dropped or attributed to a
+        // generic host. Best-effort, same idiom as the DPI call above:
+        // this call alone is not enough to make an unpackaged app's toast
+        // render (see `create_window`'s `backend.set_aumid` call below,
+        // which also registers the AUMID in the registry), and
+        // `WinPlatformServices::send_notification` falls back to the
+        // legacy balloon tip whenever that registration or the WinRT
+        // toast call itself doesn't pan out, so a failure here isn't
+        // fatal to the app.
+        //
+        // SAFETY: `SetCurrentProcessExplicitAppUserModelID` takes an
+        // owned, null-terminated wide string (via `HSTRING`'s `Param`
+        // impl) and has no precondition beyond "call before creating any
+        // window that wants to be attributed to this AUMID", which this
+        // function does.
+        unsafe {
+            let _ = SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(super::aumid_string(
+                &config.title,
+            )));
+        }
+
         // Checked *before* any window/backend/`A` setup below — if
         // another instance already holds the single-instance mutex, this
         // process's only job is to forward its own `argv` to that
@@ -1292,6 +1386,15 @@ mod win32 {
         // see the real window size yet, matching the other two runners'
         // same limitation.
         let mut backend = WinBackend::new();
+        // Needs no `HWND` (unlike `attach_surface` below), so this can — and
+        // must — run before `app.setup`: a `send_notification` call from
+        // inside `AppLogic::setup` needs the AUMID already set and
+        // registered, or it falls straight through to the balloon
+        // fallback. Same string `win32::run` separately registers
+        // process-wide via `SetCurrentProcessExplicitAppUserModelID`;
+        // recomputed here rather than threaded through `RunConfig` since
+        // `aumid_string` is pure and cheap.
+        backend.set_aumid(super::aumid_string(title), title.to_string());
         app.setup(&mut backend);
 
         // `None` (zero runtime cost — no timer ever armed below)
@@ -1307,6 +1410,7 @@ mod win32 {
             smoke_failed: smoke_failed.clone(),
             resize_debouncer: RefCell::new(ResizeDebouncer::new()),
             pending_resize_resync: Cell::new(false),
+            window_tristate: Cell::new((false, false, false)),
         }));
 
         // SAFETY: `class_name`/`window_title` are `Vec<u16>`s that outlive
@@ -2125,6 +2229,136 @@ mod win32 {
             )
         };
         apply_resize(ws, hwnd, width, height);
+        // The `WM_SIZE`/`WM_DPICHANGED` being replayed is the one ceded
+        // while re-entrant (see this function's doc), so
+        // `ws.window_tristate` still holds the state from *before* the
+        // transition it announced. Dispatch from here, exactly as the live
+        // `WM_SIZE` arm does: the ceded message may have been
+        // WM-initiated (a user double-clicking the title bar while a
+        // modal pump is running), and dropping it would swallow that
+        // transition entirely. `dispatch_window_state_change` compares
+        // against the cached tri-state first, so an app-initiated
+        // transition reports the snapshot the app just asked for and a
+        // no-op resize reports nothing at all.
+        dispatch_window_state_change(ws, hwnd);
+    }
+
+    /// Re-queries the window's current `(maximized, fullscreen, minimized)`
+    /// tri-state directly from Win32 — `IsZoomed`/`IsIconic`, not `WM_SIZE`'s
+    /// `wParam` — and stores it in `ws.window_tristate` unconditionally.
+    /// Returns the new tri-state so [`dispatch_window_state_change`] can
+    /// compare it against the prior value without a second read.
+    ///
+    /// `IsZoomed`/`IsIconic` rather than `wParam`: `WM_SIZE` also delivers
+    /// `SIZE_MAXSHOW`/`SIZE_MAXHIDE` (an *other* window's maximize/restore
+    /// affecting this one's visibility) alongside `SIZE_MAXIMIZED`/
+    /// `SIZE_MINIMIZED`/`SIZE_RESTORED`; treating those as "not maximized,
+    /// not minimized" via a live state query is correct for all five cases
+    /// a plain wparam-equality check would not be.
+    ///
+    /// `IsZoomed` reports `WS_MAXIMIZE`, which Win32 keeps set while a
+    /// maximized window is minimized (so that restoring it returns it to
+    /// maximized). Minimizing a maximized window therefore yields
+    /// `(maximized: true, minimized: true)` — both flags true at once, as
+    /// [`UiEvent::WindowStateChanged`]'s own doc records.
+    fn refresh_window_tristate<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND) -> (bool, bool, bool) {
+        // SAFETY: `hwnd` is this dispatch's own window; `IsZoomed`/
+        // `IsIconic` take only a handle.
+        let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
+        // SAFETY: same as the `IsZoomed` query above.
+        let minimized = unsafe { IsIconic(hwnd) }.as_bool();
+        // `window()` takes `&mut self`, so this borrow must be dropped
+        // (the block ends here) before any later borrow (e.g. `dispatch`'s
+        // `app.handle`) is taken.
+        let fullscreen = {
+            let mut s = ws.state.borrow_mut();
+            s.backend
+                .window()
+                .and_then(|w| w.is_fullscreen().ok())
+                .unwrap_or(false)
+        };
+        let tristate = (maximized, fullscreen, minimized);
+        ws.window_tristate.set(tristate);
+        tristate
+    }
+
+    /// Dispatches [`UiEvent::WindowStateChanged`] when the window's live
+    /// `(maximized, fullscreen, minimized)` tri-state (see
+    /// [`refresh_window_tristate`]) crossed a boundary the app hasn't
+    /// already seen — skipping the dispatch for an ordinary resize drag
+    /// that leaves all three flags unchanged.
+    ///
+    /// Called from the top-level `WM_SIZE` match arm below and from
+    /// [`resync_pending_resize`], which replays a `WM_SIZE` that arrived
+    /// re-entrantly while `pump_depth` was pumping. Both paths are
+    /// dispatching paths because a deferred `WM_SIZE` can be either
+    /// app-initiated (`WinBackend::toggle_window_maximize` /
+    /// `WindowControl::set_fullscreen` calling `ShowWindow` from inside
+    /// `app.handle`) or WM-initiated (the user double-clicking the title
+    /// bar while a modal pump runs), and the two are indistinguishable
+    /// once the message has been ceded to `DefWindowProcW`. The event is
+    /// a state snapshot, so emitting it for an app-initiated transition
+    /// is accurate rather than spurious, and the tri-state comparison
+    /// keeps a plain resize drag from emitting anything at all.
+    fn dispatch_window_state_change<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND) {
+        let previous = ws.window_tristate.get();
+        let tristate = refresh_window_tristate(ws, hwnd);
+        if previous == tristate {
+            return;
+        }
+        let (maximized, fullscreen, minimized) = tristate;
+        dispatch(
+            ws,
+            hwnd,
+            UiEvent::WindowStateChanged {
+                maximized,
+                fullscreen,
+                minimized,
+            },
+        );
+    }
+
+    /// Longest setting name this decodes before giving up. Every real
+    /// `SystemParametersInfo` area name (`"ImmersiveColorSet"`,
+    /// `"Environment"`, `"intl"`, ...) is a handful of ASCII characters;
+    /// this exists only to bound how far a forged, non-OS-originated
+    /// `WM_SETTINGCHANGE` (any process in this session can `SendMessageW`
+    /// one) can walk looking for a terminator it may never provide.
+    const MAX_SETTING_NAME_LEN: usize = 256;
+
+    /// Decodes `WM_SETTINGCHANGE`'s `lParam` — a pointer to a
+    /// nul-terminated UTF-16 string naming the `SystemParametersInfo`
+    /// area that changed — into an owned `String`. Returns an empty
+    /// string for a null pointer (some `WM_SETTINGCHANGE` sends carry no
+    /// name at all) or once [`MAX_SETTING_NAME_LEN`] `u16`s have been read
+    /// without finding a terminator.
+    ///
+    /// # Safety
+    ///
+    /// `ptr`, if non-null, must be valid for reads of at least
+    /// `min(MAX_SETTING_NAME_LEN, distance to its nul terminator)` `u16`s
+    /// — the contract a genuine `WM_SETTINGCHANGE`'s `lParam` satisfies
+    /// (OS-originated setting names are short and always terminated), and
+    /// the one a forged same-session `SendMessageW` can still violate by
+    /// pointing at fewer than `MAX_SETTING_NAME_LEN` readable `u16`s with
+    /// no nul among them; the cap bounds how far such a message can read,
+    /// it does not make an arbitrary pointer safe.
+    unsafe fn decode_setting_name(ptr: *const u16) -> String {
+        if ptr.is_null() {
+            return String::new();
+        }
+        let mut len = 0usize;
+        // SAFETY: per this function's contract, within `MAX_SETTING_NAME_LEN`
+        // `u16`s this either hits the nul terminator the contract
+        // guarantees or the loop bound below stops the walk first.
+        while len < MAX_SETTING_NAME_LEN && unsafe { *ptr.add(len) } != 0 {
+            len += 1;
+        }
+        // SAFETY: `len` is at most `MAX_SETTING_NAME_LEN` and is either the
+        // distance to the nul terminator just found or the loop bound
+        // above, so `[ptr, ptr + len)` is in-bounds per the same contract.
+        let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+        String::from_utf16_lossy(slice)
     }
 
     /// The Win32 window procedure. Monomorphized once per concrete `A`
@@ -2238,6 +2472,7 @@ mod win32 {
                 // in pixels — the standard `WM_SIZE` payload shape.
                 let (width, height) = size_from_lparam(lparam.0);
                 apply_resize(ws, hwnd, width, height);
+                dispatch_window_state_change(ws, hwnd);
                 LRESULT(0)
             }
             WM_DPICHANGED => {
@@ -2753,12 +2988,20 @@ mod win32 {
             }
             WM_QUADRAUI_USER_EVENT => {
                 // Woke by `WinBackend::waker()` after a background
-                // thread queued one or more `UiEvent::User` payloads.
-                // `wndproc` already holds everything a live producer
-                // would need (`ws`, `hwnd`), so this drains and
+                // thread queued one or more `UiEvent::User` payloads, or
+                // by a toast's `Activated` handler
+                // (`win::services::win_send_notification_toast`) after
+                // queueing a `UiEvent::NotificationActivated`. `wndproc`
+                // already holds everything a live producer would need
+                // (`ws`, `hwnd`), so this drains both queues and
                 // dispatches directly, the same `dispatch` helper every
                 // other message in this match uses.
-                let events = ws.state.borrow_mut().backend.drain_user_events();
+                let events = {
+                    let mut state = ws.state.borrow_mut();
+                    let mut events = state.backend.drain_user_events();
+                    events.extend(state.backend.drain_notification_events());
+                    events
+                };
                 for event in events {
                     // `dispatch` acts on `Reaction::Exit` itself (see
                     // `dispatch_with`'s doc); this `break` just stops
@@ -2900,6 +3143,52 @@ mod win32 {
                 unsafe {
                     PostQuitMessage(0);
                 }
+                LRESULT(0)
+            }
+            WM_SETTINGCHANGE => {
+                // `lParam` points to the (possibly null) nul-terminated
+                // UTF-16 name of the `SystemParametersInfo` area that
+                // changed, and `wParam` carries the raw `SPI_*` action
+                // code for settings (high-contrast, chiefly) that change
+                // with no name at all; Windows sends this for dozens of
+                // unrelated settings (fonts, metrics, `Environment`,
+                // ...), so `is_theme_setting_change` filters it down to
+                // the ones that mean a light/dark, accent-color, or
+                // high-contrast flip, keeping `SystemThemeChanged` from
+                // firing on every other settings change too.
+                //
+                // SAFETY: `lparam.0` is the raw `WM_SETTINGCHANGE` payload
+                // Windows just delivered to this `wndproc` call; per that
+                // message's documented contract it is either null or a
+                // valid pointer to a nul-terminated UTF-16 string, which
+                // is exactly `decode_setting_name`'s precondition.
+                let name = unsafe { decode_setting_name(lparam.0 as *const u16) };
+                if !is_theme_setting_change(wparam.0, &name) {
+                    // Not a theme flip, so this dispatch did not process
+                    // the message: hand it to the default handler, which
+                    // owns the behaviour attached to the other areas
+                    // (`"Policy"`, `"Environment"`, metrics, ...).
+                    // SAFETY: forwarding the `wndproc` arguments verbatim
+                    // to `DefWindowProcW`, which is what every unhandled
+                    // message in this dispatch does.
+                    return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+                }
+                let theme = ws.state.borrow().backend.services().system_theme().ok();
+                if let Some(theme) = theme {
+                    dispatch(ws, hwnd, UiEvent::SystemThemeChanged(theme));
+                }
+                // Per `WM_SETTINGCHANGE`'s own docs: an application that
+                // processes this message should return zero — matching
+                // `WM_DPICHANGED`'s handling above.
+                LRESULT(0)
+            }
+            WM_DISPLAYCHANGE => {
+                // Fired on monitor connect/disconnect and on a resolution
+                // or scale change; no payload to decode — an app that
+                // cares re-reads `PlatformServices::displays()`.
+                dispatch(ws, hwnd, UiEvent::DisplaysChanged);
+                // Per `WM_DISPLAYCHANGE`'s own docs: an application that
+                // processes this message should return zero.
                 LRESULT(0)
             }
             // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW` (top of
@@ -3688,6 +3977,447 @@ mod win32 {
                         SendMessageW(hwnd, WM_KEYDOWN, Some(WPARAM(VK_ESCAPE)), Some(LPARAM(0)));
                     }
                 },
+            );
+        }
+    }
+
+    /// Proves the OS-change producers actually fire through a real
+    /// `wndproc`, not just through `dispatch`'s own plumbing:
+    /// `WindowStateChanged` off a real `ShowWindow`
+    /// maximize/minimize/restore transition, `SystemThemeChanged` off a real
+    /// `WM_SETTINGCHANGE` carrying `"ImmersiveColorSet"`, and
+    /// `DisplaysChanged` off a real `WM_DISPLAYCHANGE`. `WinDriver` can't
+    /// cover any of this — it calls `dispatch_event` directly and never
+    /// visits these `wndproc` match arms (see that module's docs) — so,
+    /// same posture as `live_window_nchittest_tests`/
+    /// `idle_poll_fallback_tests`/`mouse_and_key_exit_tests` above, this
+    /// needs a real message loop.
+    #[cfg(test)]
+    mod os_change_event_tests {
+        use super::*;
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        /// Records every `UiEvent` `wndproc` dispatches to it, and exits
+        /// on `WindowClose` so the probe's own `WM_CLOSE` teardown (same
+        /// pattern as `mouse_and_key_exit_tests::ExitOnInputApp`) can
+        /// destroy the window regardless of which assertion runs.
+        struct RecordingApp {
+            events: Arc<Mutex<Vec<UiEvent>>>,
+        }
+
+        impl AppLogic for RecordingApp {
+            type AreaId = ();
+
+            fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+            fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                if event == UiEvent::WindowClose {
+                    return Reaction::Exit;
+                }
+                self.events.lock().unwrap().push(event);
+                Reaction::Continue
+            }
+        }
+
+        /// Spins up a real window running `RecordingApp`, waits for it to
+        /// become findable (self-guarding — stderr diagnostic + early
+        /// return, same posture as this module's siblings above — if
+        /// there's no interactive window station on this host), calls
+        /// `drive` with the live `HWND`, tears the window down via
+        /// `WM_CLOSE`, then hands back whatever got recorded for the
+        /// caller to assert on.
+        #[allow(clippy::print_stderr)]
+        fn probe_os_change_event(
+            test_name: &str,
+            drive: impl FnOnce(HWND),
+        ) -> Option<Vec<UiEvent>> {
+            probe_os_change_event_with(test_name, |events| RecordingApp { events }, drive)
+        }
+
+        /// [`probe_os_change_event`]'s generalisation: builds the probe's
+        /// app via `make_app` (handed the same `events` sink
+        /// `RecordingApp` itself records into) instead of always using
+        /// `RecordingApp` directly — lets a test exercise custom
+        /// `handle` logic (e.g. reentrantly calling
+        /// `Backend::toggle_window_maximize`) while still getting every
+        /// dispatched `UiEvent` back to assert on.
+        #[allow(clippy::print_stderr)]
+        fn probe_os_change_event_with<A: AppLogic + Send + 'static>(
+            test_name: &str,
+            make_app: impl FnOnce(Arc<Mutex<Vec<UiEvent>>>) -> A,
+            drive: impl FnOnce(HWND),
+        ) -> Option<Vec<UiEvent>> {
+            let title = format!(
+                "quadraui-os-change-probe-{test_name}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            );
+            let config = crate::win::run::RunConfig::new(title.clone());
+            let events: Arc<Mutex<Vec<UiEvent>>> = Arc::new(Mutex::new(Vec::new()));
+            let app = make_app(events.clone());
+
+            let runner = std::thread::spawn(move || run(app, config));
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let class_name = window_class_name(&title);
+            let hwnd = loop {
+                // SAFETY: `class_name` is a live `Vec<u16>` for the
+                // duration of this call.
+                let found = unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) };
+                if let Ok(hwnd) = found {
+                    break Some(hwnd);
+                }
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let Some(hwnd) = hwnd else {
+                eprintln!(
+                    "quadraui: skipping {test_name} — the test window never \
+                     became findable within 10s (no interactive window \
+                     station on this host?)"
+                );
+                return None;
+            };
+
+            drive(hwnd);
+
+            // SAFETY: `hwnd` is the live test window found above;
+            // `WM_CLOSE` is its normal close path, and `RecordingApp`
+            // exits on the `WindowClose` it produces.
+            unsafe {
+                SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+            }
+            let _ = runner.join();
+
+            let recorded = events.lock().unwrap().clone();
+            Some(recorded)
+        }
+
+        /// Every `WindowStateChanged` in `recorded`, as
+        /// `(maximized, minimized)` pairs in dispatch order — the shape
+        /// these tests assert on (`fullscreen` stays `false` throughout:
+        /// nothing here calls `set_fullscreen`).
+        fn window_state_sequence(recorded: &[UiEvent]) -> Vec<(bool, bool)> {
+            recorded
+                .iter()
+                .filter_map(|e| match e {
+                    UiEvent::WindowStateChanged {
+                        maximized,
+                        minimized,
+                        ..
+                    } => Some((*maximized, *minimized)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        #[test]
+        fn maximize_dispatches_window_state_changed() {
+            let test_name = "maximize_dispatches_window_state_changed";
+            let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
+                // A real maximize, not a forged `WM_SIZE` wparam: the
+                // handler classifies from live `IsZoomed`/`IsIconic`
+                // queries, so only an actual state change is visible to
+                // it. `ShowWindow` from this (non-owning) thread is
+                // synchronous with respect to the owning thread
+                // processing the `WM_SIZE` it generates, exactly as
+                // `SendMessageW` is.
+                //
+                // SAFETY: `hwnd` is the live test window from the
+                // caller's `FindWindowW` poll; `ShowWindow` takes only a
+                // handle and a command.
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_MAXIMIZE);
+                }
+            }) else {
+                return;
+            };
+
+            assert!(
+                window_state_sequence(&recorded).contains(&(true, false)),
+                "{test_name}: a real ShowWindow(SW_MAXIMIZE) never produced \
+                 a UiEvent::WindowStateChanged{{maximized: true, \
+                 minimized: false, ..}}, got {recorded:?}"
+            );
+        }
+
+        #[test]
+        fn theme_setting_change_dispatches_system_theme_changed() {
+            let test_name = "theme_setting_change_dispatches_system_theme_changed";
+            let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
+                // `WM_SETTINGCHANGE`'s `lParam` is a pointer to a
+                // nul-terminated UTF-16 string naming the
+                // `SystemParametersInfo` area that changed —
+                // `"ImmersiveColorSet"` is the one name
+                // `is_theme_setting_change` recognises as a light/dark or
+                // accent-color flip.
+                let mut name: Vec<u16> = "ImmersiveColorSet".encode_utf16().collect();
+                name.push(0);
+                let lparam = LPARAM(name.as_ptr() as isize);
+                // SAFETY: `name` is a live `Vec<u16>` for the duration of
+                // this call; `SendMessageW` blocks until `wndproc`
+                // returns, so `name` outlives the read `wndproc`'s
+                // `decode_setting_name` call performs inside it.
+                unsafe {
+                    SendMessageW(hwnd, WM_SETTINGCHANGE, Some(WPARAM(0)), Some(lparam));
+                }
+            }) else {
+                return;
+            };
+
+            assert!(
+                recorded
+                    .iter()
+                    .any(|e| matches!(e, UiEvent::SystemThemeChanged(_))),
+                "{test_name}: a real WM_SETTINGCHANGE(\"ImmersiveColorSet\") \
+                 never produced a UiEvent::SystemThemeChanged"
+            );
+        }
+
+        #[test]
+        fn display_change_dispatches_displays_changed() {
+            let test_name = "display_change_dispatches_displays_changed";
+            let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
+                // SAFETY: `WM_DISPLAYCHANGE` carries no pointer payload —
+                // both `wparam`/`lparam` are plain integers (new bit
+                // depth / packed width+height), unused by this arm.
+                unsafe {
+                    SendMessageW(hwnd, WM_DISPLAYCHANGE, Some(WPARAM(0)), Some(LPARAM(0)));
+                }
+            }) else {
+                return;
+            };
+
+            assert!(
+                recorded.contains(&UiEvent::DisplaysChanged),
+                "{test_name}: a real WM_DISPLAYCHANGE never produced a \
+                 UiEvent::DisplaysChanged"
+            );
+        }
+
+        #[test]
+        fn minimize_dispatches_window_state_changed() {
+            let test_name = "minimize_dispatches_window_state_changed";
+            let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
+                // A real minimize of a window that was never maximized,
+                // so `IsZoomed` stays false and only `minimized` flips.
+                // SAFETY: same as `maximize_dispatches_window_state_changed`
+                // above.
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_MINIMIZE);
+                }
+            }) else {
+                return;
+            };
+
+            assert!(
+                window_state_sequence(&recorded).contains(&(false, true)),
+                "{test_name}: a real ShowWindow(SW_MINIMIZE) never produced \
+                 a UiEvent::WindowStateChanged{{maximized: false, \
+                 minimized: true, ..}}, got {recorded:?}"
+            );
+        }
+
+        #[test]
+        fn repeated_maximize_dispatches_window_state_changed_once() {
+            let test_name = "repeated_maximize_dispatches_window_state_changed_once";
+            let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
+                // Maximize twice: the second call finds the window
+                // already maximized, so it reports the same live
+                // tri-state and `dispatch_window_state_change`'s dedup
+                // cache (`WindowState::window_tristate`) must swallow it.
+                for _ in 0..2 {
+                    // SAFETY: same as
+                    // `maximize_dispatches_window_state_changed` above.
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_MAXIMIZE);
+                    }
+                }
+                // Windows may coalesce the redundant maximize away before
+                // it ever reaches `wndproc`, which would make the count
+                // below pass without the dedup cache doing any work. So
+                // force the `WM_SIZE` arm to run one more time with a
+                // forged `SIZE_RESTORED` wparam on a window that is
+                // really still maximized: the arm definitely executes,
+                // and the only two things that can keep it quiet are
+                // classifying from `IsZoomed` (not from the wparam) and
+                // the dedup cache.
+                //
+                // SAFETY: `lParam` is `0` (no pointer payload), so
+                // there's no pointee lifetime to uphold.
+                unsafe {
+                    SendMessageW(hwnd, WM_SIZE, Some(WPARAM(0)), Some(LPARAM(0)));
+                }
+            }) else {
+                return;
+            };
+
+            assert_eq!(
+                window_state_sequence(&recorded),
+                vec![(true, false)],
+                "{test_name}: a maximize, a redundant maximize and a \
+                 redundant WM_SIZE should dispatch WindowStateChanged \
+                 exactly once, for the first maximize only; got {recorded:?}"
+            );
+        }
+
+        #[test]
+        fn maximize_then_restore_twice_dispatches_each_transition_once() {
+            let test_name = "maximize_then_restore_twice_dispatches_each_transition_once";
+            let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
+                // Maximize, restore, then restore again. The first two
+                // are genuine transitions and each must be reported; the
+                // third asks an already-restored window to restore, so it
+                // must report nothing.
+                for command in [SW_MAXIMIZE, SW_RESTORE, SW_RESTORE] {
+                    // SAFETY: same as
+                    // `maximize_dispatches_window_state_changed` above.
+                    unsafe {
+                        let _ = ShowWindow(hwnd, command);
+                    }
+                }
+            }) else {
+                return;
+            };
+
+            assert_eq!(
+                window_state_sequence(&recorded),
+                vec![(true, false), (false, false)],
+                "{test_name}: a real maximize → restore → restore should \
+                 dispatch WindowStateChanged for the maximize and the \
+                 restore and nothing for the redundant restore; got \
+                 {recorded:?}"
+            );
+        }
+
+        #[test]
+        fn high_contrast_setting_change_dispatches_system_theme_changed() {
+            let test_name = "high_contrast_setting_change_dispatches_system_theme_changed";
+            let Some(recorded) = probe_os_change_event(test_name, |hwnd| {
+                // `SPI_SETHIGHCONTRAST` arrives as a raw `wParam` action
+                // code with no setting name at all in `lParam` — unlike
+                // `"ImmersiveColorSet"`, which is a named setting.
+                // SAFETY: `lParam` is `0` (no setting-name pointer), so
+                // there's no pointee lifetime to uphold.
+                unsafe {
+                    SendMessageW(
+                        hwnd,
+                        WM_SETTINGCHANGE,
+                        Some(WPARAM(SPI_SETHIGHCONTRAST)),
+                        Some(LPARAM(0)),
+                    );
+                }
+            }) else {
+                return;
+            };
+
+            assert!(
+                recorded
+                    .iter()
+                    .any(|e| matches!(e, UiEvent::SystemThemeChanged(_))),
+                "{test_name}: a real WM_SETTINGCHANGE(SPI_SETHIGHCONTRAST) \
+                 never produced a UiEvent::SystemThemeChanged"
+            );
+        }
+
+        /// Toggles the window's maximized state via
+        /// `Backend::toggle_window_maximize` on the first `KeyPressed` it
+        /// sees, then just records everything else — lets a test drive a
+        /// *reentrant* `WM_SIZE` (the synchronous `ShowWindow` inside
+        /// `toggle_window_maximize`, called from inside this very
+        /// `handle`, which is itself already running inside the
+        /// `guarded_call` `dispatch_with` wraps it in) instead of only
+        /// ever seeing resizes injected from outside `wndproc`.
+        struct ToggleOnKeyApp {
+            events: Arc<Mutex<Vec<UiEvent>>>,
+        }
+
+        impl AppLogic for ToggleOnKeyApp {
+            type AreaId = ();
+
+            fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+            fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+                if event == UiEvent::WindowClose {
+                    return Reaction::Exit;
+                }
+                if matches!(event, UiEvent::KeyPressed { .. }) {
+                    backend.toggle_window_maximize();
+                }
+                self.events.lock().unwrap().push(event);
+                Reaction::Continue
+            }
+        }
+
+        #[test]
+        fn reentrant_maximize_then_live_restore_dispatches_the_restore() {
+            let test_name = "reentrant_maximize_then_live_restore_dispatches_the_restore";
+            let Some(recorded) = probe_os_change_event_with(
+                test_name,
+                |events| ToggleOnKeyApp { events },
+                |hwnd| {
+                    const VK_ESCAPE: usize = 0x1B;
+                    // Step 1: `WM_KEYDOWN` dispatches through
+                    // `dispatch_with`'s `guarded_call`, and
+                    // `ToggleOnKeyApp::handle` reentrantly calls
+                    // `toggle_window_maximize` from *inside* that
+                    // `guarded_call` — its synchronous `ShowWindow`
+                    // produces a `WM_SIZE` that `pump_depth.is_pumping()`
+                    // catches and cedes to `DefWindowProcW`, setting
+                    // `pending_resize_resync` instead of handling it
+                    // here.
+                    //
+                    // SAFETY: `hwnd` is the live test window; `SendMessageW`
+                    // blocks until `wndproc` (and everything reentrant it
+                    // triggers) returns.
+                    unsafe {
+                        SendMessageW(hwnd, WM_KEYDOWN, Some(WPARAM(VK_ESCAPE)), Some(LPARAM(0)));
+                    }
+
+                    // Step 2: any further non-reentrant message makes
+                    // `resync_pending_resize` run at the top of the next
+                    // `wndproc` call, replaying the ceded resize — which
+                    // both reports the maximize to the app and brings
+                    // `window_tristate` up to date. `WM_NULL` carries no
+                    // payload and every arm here ignores it, so it
+                    // exercises exactly that resync path with no side
+                    // effect of its own.
+                    // SAFETY: `lParam` is `0` (no pointer payload), so there's
+                    // no pointee lifetime to uphold.
+                    unsafe {
+                        SendMessageW(hwnd, WM_NULL, Some(WPARAM(0)), Some(LPARAM(0)));
+                    }
+
+                    // Step 3: a genuine restore, issued directly (not
+                    // through `SendMessageW`) so it's a first-class,
+                    // non-reentrant call on this test thread; Win32
+                    // marshals it across to the window's owning thread the
+                    // same way `SendMessageW` does. This produces a real
+                    // `WM_SIZE`, which must compare against the maximize
+                    // `window_tristate` was brought up to date with in
+                    // step 2 — not the stale "never maximized" state from
+                    // window creation, which would make the restore look
+                    // like no change at all and swallow it.
+                    //
+                    // SAFETY: `hwnd` is the live test window.
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_RESTORE);
+                    }
+                },
+            ) else {
+                return;
+            };
+
+            assert_eq!(
+                window_state_sequence(&recorded),
+                vec![(true, false), (false, false)],
+                "{test_name}: a reentrant maximize (ceded to a deferred \
+                 resync) followed by a live restore should report the \
+                 maximize from the resync path and then the restore; got \
+                 {recorded:?}"
             );
         }
     }
@@ -4530,6 +5260,34 @@ mod tests {
             window_class_name_string("kubeui"),
             window_class_name_string("vimcode")
         );
+    }
+
+    /// [`aumid_string`] must embed [`instance_identity`] verbatim (as
+    /// lowercase hex), same rationale as [`window_class_name_string`]: the
+    /// AUMID registered once in `win32::run` and the one stored per-backend
+    /// in `win32::create_window` must agree for the same `title`.
+    #[test]
+    fn aumid_string_embeds_instance_identity() {
+        let title = "kubeui";
+        let expected = format!("{AUMID_PREFIX}.{:016x}", instance_identity(title));
+        assert_eq!(aumid_string(title), expected);
+    }
+
+    /// Two different titles must produce two different AUMIDs, or a toast
+    /// from one app family could be attributed to — or collapse a tag
+    /// alongside — another app's notifications.
+    #[test]
+    fn aumid_string_differs_across_titles() {
+        assert_ne!(aumid_string("kubeui"), aumid_string("vimcode"));
+    }
+
+    /// [`aumid_string`] is a pure function of `title`, called independently
+    /// from both `win32::run` (process-wide registration) and
+    /// `win32::create_window` (per-backend storage) — they must agree
+    /// without sharing state.
+    #[test]
+    fn aumid_string_is_deterministic() {
+        assert_eq!(aumid_string("kubeui"), aumid_string("kubeui"));
     }
 
     /// Reproduces the exact hazard `guarded_call` guards against: a

@@ -1,6 +1,6 @@
 [package]
 name = "quadraui"
-version = "0.6.1"
+version = "0.7.0"
 edition.workspace = true
 description = "Cross-platform Rust UI toolkit: write one AppLogic and run it unmodified on TUI, GTK4 (Linux), macOS, and Windows backends"
 license.workspace = true
@@ -223,7 +223,19 @@ terminal = ["dep:portable-pty", "dep:vt100"]
 # server, and no desktop session).
 # `dep:libc` (quadraui#1048): unix-only, see the `[target.'cfg(unix)'.dependencies]`
 # table below for why — a no-op reference on every other target.
-tui = ["dep:ratatui", "dep:arboard", "dep:trash", "dep:keyring", "dep:libc"]
+# `dep:directories` (issue #1781): `PlatformServices::app_path` — see
+# `paths`'s module doc for why the same cross-platform `directories` crate
+# backs every backend's default, TUI included (same "needs only a
+# filesystem and env vars, not a live desktop session" reasoning as
+# `trash`'s and `keyring`'s own comments above).
+tui = [
+    "dep:ratatui",
+    "dep:arboard",
+    "dep:trash",
+    "dep:keyring",
+    "dep:libc",
+    "dep:directories",
+]
 
 # Public GTK rasterisers in `quadraui::gtk`. Pulls in gtk4 + pangocairo.
 # `arboard/image-data` (issue #954): `GtkClipboard::read_image`/
@@ -286,10 +298,18 @@ gtk = [
     "arboard/image-data",
     "dep:trash",
     "dep:keyring",
+    # `dep:directories` (issue #1781): see `tui`'s own comment above —
+    # same crate, same reasons.
+    "dep:directories",
     "dep:objc2",
     "dep:objc2-app-kit",
     "dep:core-text",
     "dep:core-foundation",
+    # Issue #1786 (tray via StatusNotifierItem): see the
+    # `[target.'cfg(target_os = "linux")'.dependencies]` table's `zbus`
+    # entry below — a no-op off Linux, same as the objc2/core-text pair
+    # above is a no-op off macOS.
+    "dep:zbus",
 ]
 
 # Public Win-GUI rasterisers in `quadraui::win`. `windows` is a
@@ -308,9 +328,16 @@ gtk = [
 # column (`tests/conformance.rs`, quadraui#708/#722) rather than a
 # blocking one while per-primitive paint/click parity with the other
 # backends is still being closed out.
-# `dep:trash` (issue #956) / `dep:keyring` (issue #958): see the `tui`
-# feature's comments above — same crates, same reasons.
-win = ["dep:windows", "dep:windows-numerics", "dep:trash", "dep:keyring"]
+# `dep:trash` (issue #956) / `dep:keyring` (issue #958) / `dep:directories`
+# (issue #1781): see the `tui` feature's comments above — same crates,
+# same reasons.
+win = [
+    "dep:windows",
+    "dep:windows-numerics",
+    "dep:trash",
+    "dep:keyring",
+    "dep:directories",
+]
 
 # Public macOS rasterisers in `quadraui::macos` (AppKit + Core Graphics + Core Text).
 # The objc2-family deps are platform-gated below, but that's not the only
@@ -334,10 +361,16 @@ macos = [
     # matching comment above; same reasoning, same arboard feature.
     "arboard/image-data",
     "dep:dispatch2",
-    # `dep:trash` (issue #956) / `dep:keyring` (issue #958): see the `tui`
-    # feature's comments above — same crates, same reasons.
+    # `dep:trash` (issue #956) / `dep:keyring` (issue #958) / `dep:directories`
+    # (issue #1781): see the `tui` feature's comments above — same crates,
+    # same reasons.
     "dep:trash",
     "dep:keyring",
+    "dep:directories",
+    # macOS notification fidelity (`UNUserNotificationCenter`,
+    # `src/macos/services.rs`): see the dependency's own comment above.
+    "dep:objc2-user-notifications",
+    "dep:block2",
 ]
 # Optional flex/grid layout module, `quadraui::flex`. Pulls in `taffy` —
 # unit-agnostic (plain `f32` in, plain `f32` out, same as `event::Rect`),
@@ -438,6 +471,17 @@ trash = { version = "5", optional = true }
 # session, not a live desktop" reasoning as `trash`'s own comment above,
 # which is why this pulls in on TUI too instead of degrading.
 keyring = { version = "4", optional = true }
+# Optional — pulled in by `tui`, `gtk`, `macos`, and `win` (issue #1781):
+# `PlatformServices::app_path`'s one shared implementation across every
+# backend (`paths` module) — see that module's own doc for why no backend
+# needs its own override. Resolves the per-OS user-data/config/cache
+# directories (macOS `~/Library/Application Support`, Linux
+# `$XDG_CONFIG_HOME`/`$XDG_CACHE_HOME`, Windows `%APPDATA%`/`%LOCALAPPDATA%`)
+# from only a filesystem and environment variables, not a live
+# desktop/window-server session — same "genuinely needs no desktop
+# session" reasoning as `trash`'s and `keyring`'s own comments above,
+# which is why this pulls in on TUI too instead of degrading.
+directories = { version = "6", optional = true }
 # Optional — pulled in by the `layout` feature:
 # `quadraui::flex`'s flex/grid layout engine. `default-features = false`
 # drops taffy's own `serde`/`parse`/`profile`/`debug` extras this crate
@@ -460,6 +504,15 @@ taffy = { version = "0.14.0", default-features = false, features = ["taffy_tree"
 # `Toggled`/`Live` enums, so plain `optional = true` with no feature list
 # pulls in exactly that.
 accesskit = { version = "0.25", optional = true }
+
+# Unconditional (not feature-gated), same reasoning as `serde_json` above:
+# `quadraui::expr::Expr::Matches` needs a real regex engine for every
+# backend feature, not just `tui`/`gtk` — the expression AST is
+# binding-neutral core, evaluated the same way regardless of which
+# rasteriser (if any) is compiled in. Pure Rust, no system library, no
+# `pkg-config` probe, so it adds no platform-specific build step on top of
+# what this crate already requires everywhere.
+regex = "1"
 
 [build-dependencies]
 # `build.rs`'s `pangoft2` probe (`gtk` feature only): the hand-declared
@@ -587,6 +640,11 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
 ] }
 objc2-foundation = { version = "0.3", optional = true, features = [
     "NSArray",
+    # macOS notification fidelity (`UNUserNotificationCenter`,
+    # `src/macos/services.rs`): `NSBundle::mainBundle().bundleIdentifier()`
+    # gates the `UNUserNotificationCenter` path (needs a bundled `.app`)
+    # vs. the `osascript` fallback (works unbundled too).
+    "NSBundle",
     # Issue #953 (tray/status-bar icon): `NSData::with_bytes` feeds
     # `NSImage::initWithData` when `TrayService::set_icon` is handed an
     # `ImageSource::Bytes`.
@@ -602,11 +660,43 @@ objc2-foundation = { version = "0.3", optional = true, features = [
     "NSObjCRuntime",
     "NSProcessInfo",
     "NSRunLoop",
+    # macOS notification fidelity: `UNUserNotificationCenter::
+    # setNotificationCategories` takes an `NSSet<UNNotificationCategory>`.
+    "NSSet",
     "NSString",
     "NSThread",
     "NSTimer",
     "NSURL",
 ] }
+# macOS notification fidelity (`UNUserNotificationCenter`,
+# `src/macos/services.rs`): full-fidelity notifications — icon, action
+# buttons, tag-based replace, and a click-through activation callback —
+# matching GTK's `gio::Notification` path. `default-features = false`
+# because the crate's default pulls in `objc2-core-location` and
+# `UNNotificationServiceExtension`, neither of which this crate needs.
+objc2-user-notifications = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "UNUserNotificationCenter",
+    "UNNotificationRequest",
+    "UNNotificationContent",
+    "UNNotificationAction",
+    # `Notification::with_icon`: an icon reaches a `UNUserNotificationCenter`
+    # alert only as a `UNNotificationAttachment`, which is built from a file
+    # URL (`attachmentWithIdentifier:URL:options:error:`) — hence the temp-file
+    # hop in `MacPlatformServices::send_notification_via_notification_center`.
+    "UNNotificationAttachment",
+    "UNNotificationCategory",
+    "UNNotificationSound",
+    "UNNotificationResponse",
+    "UNNotificationTrigger",
+    "UNNotification",
+    "block2",
+] }
+# Needed directly (not just transitively via `objc2-user-notifications`'s
+# "block2" feature) to build the completion-handler blocks
+# `requestAuthorizationWithOptions:completionHandler:` and
+# `addNotificationRequest:withCompletionHandler:` take.
+block2 = { version = "0.6", optional = true }
 core-graphics = { version = "0.23", optional = true }
 core-text = { version = "20.1", optional = true }
 core-foundation = { version = "0.9", optional = true }
@@ -628,6 +718,20 @@ foreign-types = { version = "0.5", optional = true }
 # (also from this crate) is what lets `waker()`'s `Send + Sync` closure
 # carry a handle to the `!Send` `QuadraView` across that boundary soundly.
 dispatch2 = { version = "0.3", optional = true }
+
+# Linux-only optional dep. Gated on `target_os = "linux"` so the `gtk`
+# feature is a no-op on other platforms (mirrors the macOS block above).
+# Issue #1786 (tray via StatusNotifierItem): `gtk::tray` registers a
+# `org.kde.StatusNotifierItem` + `com.canonical.dbusmenu` object on the
+# session bus — the de-facto Linux desktop tray protocol (KDE, most
+# GNOME setups via an extension, Sway/waybar, etc). `zbus` is already
+# resolved transitively at the same major version via `keyring`'s own
+# Linux Secret Service backend (see that dependency's comment above), so
+# naming it directly here adds no new version to the dependency graph,
+# only a direct name for `gtk::tray` to reach its blocking client/
+# `#[interface]` macros through.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", optional = true }
 
 # Windows-only optional dep. Gated on `target_os = "windows"` so the `win`
 # feature is a no-op on other platforms (mirrors the macOS block above).
@@ -714,6 +818,30 @@ windows = { version = "0.62", optional = true, features = [
     # separate `Win32_UI_Accessibility`/SPI feature needed: both classes
     # live in this one WinRT namespace.
     "UI_ViewManagement",
+    # Toast notifications: WinRT `Windows.UI.Notifications`
+    # (`ToastNotification`/`ToastNotificationManager`/`ToastNotifier`) in
+    # `send_notification`, replacing the pre-Win8-style `Shell_NotifyIconW`
+    # balloon as the primary path (the balloon stays as a fallback for
+    # whenever the toast path isn't usable — see `Win32_System_Registry`
+    # below for why the AUMID has to be registered, not just set, before
+    # that's true).
+    "UI_Notifications",
+    # `windows::Data::Xml::Dom::XmlDocument`: the toast
+    # content is built as a `ToastGeneric` XML document and handed to
+    # `ToastNotification::CreateToastNotification`, which — per the
+    # `windows` crate's own cfg-gating of that method — requires this
+    # feature even though no other `Data::Xml::Dom` type is used directly.
+    "Data_Xml_Dom",
+    # `windows::Foundation::TypedEventHandler`: `ToastNotification::Activated`
+    # takes one to deliver the click-through callback.
+    "Foundation",
+    # `RegCreateKeyExW`/`RegSetValueExW`/`RegCloseKey`
+    # (`win_register_aumid_display_name`): writes
+    # `HKCU\Software\Classes\AppUserModelId\<aumid>\DisplayName` — the
+    # minimal registration an unpackaged app needs before WinRT will render
+    # a toast for its AUMID at all. Without this, `CreateToastNotifierWithId`
+    # and `Show` both return `Ok` while the OS discards the toast.
+    "Win32_System_Registry",
 ] }
 # `windows_numerics::Vector2` — the point type `ID2D1RenderTarget::DrawLine`/
 # `DrawEllipse`'s `D2D1_ELLIPSE` take (issue #26's chart line paths and hover
@@ -992,6 +1120,16 @@ required-features = ["tui"]
 name = "gtk_form_all_fields"
 path = "examples/gtk_form_all_fields.rs"
 required-features = ["gtk"]
+
+[[example]]
+name = "tui_form_combo_box"
+path = "examples/tui_form_combo_box.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "tui_form_dropdown"
+path = "examples/tui_form_dropdown.rs"
+required-features = ["tui"]
 
 [[example]]
 name = "tui_form_date_picker"
@@ -1487,6 +1625,17 @@ name = "gtk_platform_services"
 path = "examples/gtk_platform_services.rs"
 required-features = ["gtk"]
 
+# PlatformServices Rule 9 typed-degrade demo — drives app_path,
+# update_service, begin_power_save_block, register_global_shortcut,
+# begin_drag_out, set_login_item, set_as_default_protocol_client,
+# add_recent_document, set_jump_list, set_dock_menu and reduce_motion
+# through the headless TUI backend so each documented degrade has a
+# driver-tested assertion.
+[[example]]
+name = "tui_platform_seams"
+path = "examples/tui_platform_seams.rs"
+required-features = ["tui"]
+
 [[example]]
 name = "tui_message_dialog"
 path = "examples/tui_message_dialog.rs"
@@ -1840,3 +1989,27 @@ required-features = ["gtk"]
 name = "win_controls"
 path = "examples/win_controls.rs"
 required-features = ["win"]
+
+# Declarative `visible_when`/`enabled_when` field conditions demo. Both
+# entries are mandatory (see the note above): without an explicit
+# `[[example]]`, `gtk_form_visibility.rs` gets autodiscovered with no
+# `required-features` and fails `cargo test --features tui` on
+# `quadraui::gtk` being configured out.
+[[example]]
+name = "tui_form_visibility"
+path = "examples/tui_form_visibility.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_form_visibility"
+path = "examples/gtk_form_visibility.rs"
+required-features = ["gtk"]
+
+# Label placement/alignment/width demo. TUI-only for now (see the module
+# doc in examples/common/form_label_placement.rs for the GTK/macOS/Win
+# follow-up); the explicit `required-features` keeps this file out of
+# non-`tui` example builds the way the note above describes.
+[[example]]
+name = "tui_form_label_placement"
+path = "examples/tui_form_label_placement.rs"
+required-features = ["tui"]

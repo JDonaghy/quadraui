@@ -1126,9 +1126,21 @@ fn windows_explorer_select_parameters(path: &std::path::Path) -> String {
 /// through a linked `gio::DBusConnection::call_sync`, at the CLI-tool
 /// level instead — see [`reveal_in_file_manager`]'s doc for why TUI can't
 /// link `gio` directly.
+///
+/// `None` when `path` has no well-defined `file://` URI — see
+/// [`path_to_file_uri`] — because `ShowItems` takes URIs and there is no
+/// honest invocation to build without one.
 #[cfg(all(unix, not(target_os = "macos"), feature = "tui"))]
-fn linux_show_items_via_dbus_command(path: &std::path::Path) -> std::process::Command {
-    let uri = path_to_file_uri(path);
+fn linux_show_items_via_dbus_command(path: &std::path::Path) -> Option<std::process::Command> {
+    // `PlatformServices::reveal_in_file_manager` is public and forwards
+    // the consumer's `&Path` verbatim, so a relative path reaches here.
+    // Bail out rather than substituting an empty URI: `array:string:`
+    // with an empty value is a one-element array holding the empty
+    // string, which a session that *does* have a `FileManager1` listener
+    // answers with a success exit — a false `Ok(())` for a reveal that
+    // never happened. Reporting `None` lets the caller fall through to
+    // the `xdg-open`-the-parent leg instead.
+    let uri = path_to_file_uri(path)?;
     let mut cmd = std::process::Command::new("dbus-send");
     cmd.args([
         "--session",
@@ -1141,7 +1153,7 @@ fn linux_show_items_via_dbus_command(path: &std::path::Path) -> std::process::Co
     .arg("string:")
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null());
-    cmd
+    Some(cmd)
 }
 
 /// Run [`linux_show_items_via_dbus_command`], reporting whether
@@ -1150,41 +1162,257 @@ fn linux_show_items_via_dbus_command(path: &std::path::Path) -> std::process::Co
 /// `FileManager1` listener) exactly the way a failed native
 /// `gio::DBusConnection::call_sync` would, so an exit-status check is
 /// enough; there is no reply payload this call needs to read back.
+///
+/// `false` when there is no command to run at all (an un-URI-able path),
+/// which reads the same way to the caller as a failed D-Bus call: this
+/// leg didn't reveal anything, try the next one.
 #[cfg(all(unix, not(target_os = "macos"), feature = "tui"))]
 fn linux_show_items_via_dbus(path: &std::path::Path) -> bool {
     linux_show_items_via_dbus_command(path)
-        .status()
+        .and_then(|mut cmd| cmd.status().ok())
         .map(|status| status.success())
         .unwrap_or(false)
 }
 
-/// Percent-encode `path` into a `file://` URI: every byte outside RFC
-/// 3986's unreserved set (`ALPHA` / `DIGIT` / `-._~`) plus the path
-/// separator `/` is escaped as `%XX`. Good enough for
-/// `ShowItems`'s `as` (array-of-strings) argument — not a full RFC 3986
-/// implementation — but in particular escapes `,` (which would otherwise
-/// be misread as a `dbus-send` `array:string:` element separator) and
-/// whitespace, both of which a real filesystem path can easily contain.
+/// Percent-encode `path` into a `file://` URI (RFC 8089), honoring the
+/// host's native path flavor rather than assuming POSIX:
+///
+/// - **Unix** (including macOS): every byte outside RFC 3986's
+///   unreserved set (`ALPHA` / `DIGIT` / `-._~`) plus the path separator
+///   `/` is escaped as `%XX`. Operates on the path's raw `OsStr` bytes,
+///   not a lossy `&str` conversion, so it is lossless for a path with no
+///   valid UTF-8 representation. In particular escapes `,` (which would
+///   otherwise be misread as a `dbus-send` `array:string:` element
+///   separator — [`linux_show_items_via_dbus_command`]'s use) and
+///   whitespace, both of which a real filesystem path can easily carry.
+/// - **Windows**: routed through [`file_uri_from_windows_path_str`] for
+///   drive-letter (`C:\a\b.txt` -> `file:///C:/a/b.txt`) and UNC
+///   (`\\server\share\f` -> `file://server/share/f`) handling — a raw
+///   `file://{backslash-path}` concatenation is not a parseable URI.
+///
+/// Returns `None` for a path with no well-defined `file://` form: a
+/// relative path (no leading `/` on Unix, no drive letter or UNC prefix
+/// on Windows) would otherwise render with its first path segment read
+/// back as the URI *authority* instead of as part of the path. A host
+/// that is neither Unix nor Windows has no native path flavor this crate
+/// knows how to render and gets `None` for everything.
+///
 /// [`gtk::services::GtkPlatformServices::reveal_in_file_manager`] gets
-/// the same encoding for free from `gio::File::for_path(path).uri()`;
-/// TUI has no `gio` to call, so this is the minimal hand-rolled
-/// equivalent.
-#[cfg(all(unix, not(target_os = "macos"), feature = "tui"))]
-fn path_to_file_uri(path: &std::path::Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
-
-    let mut out = String::from("file://");
-    for byte in path.as_os_str().as_bytes() {
-        let b = *byte;
-        let is_unreserved =
-            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/');
-        if is_unreserved {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
+/// the Unix encoding for free from `gio::File::for_path(path).uri()`;
+/// TUI has no `gio` to call, so this is the hand-rolled equivalent, also
+/// reused unconditionally by [`crate::drag::DragOutPayload::to_uri_list`]
+/// — which is why this function itself carries no backend/feature `cfg`.
+pub(crate) fn path_to_file_uri(path: &std::path::Path) -> Option<String> {
+    #[cfg(windows)]
+    {
+        file_uri_from_windows_path_str(&path.to_string_lossy())
     }
-    out
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+
+        let bytes = path.as_os_str().as_bytes();
+        if !bytes.starts_with(b"/") {
+            return None;
+        }
+        let mut out = String::from("file://");
+        for byte in bytes {
+            percent_encode_byte(&mut out, *byte, true);
+        }
+        Some(out)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Percent-encode one byte into `out` per RFC 3986's unreserved set
+/// (`ALPHA` / `DIGIT` / `-._~`); `keep_slash` additionally passes `/`
+/// through literally, for a caller encoding a whole `/`-separated path
+/// body in one pass rather than per-segment.
+fn percent_encode_byte(out: &mut String, b: u8, keep_slash: bool) {
+    let is_unreserved = b.is_ascii_alphanumeric()
+        || matches!(b, b'-' | b'.' | b'_' | b'~')
+        || (keep_slash && b == b'/');
+    if is_unreserved {
+        out.push(b as char);
+    } else {
+        out.push_str(&format!("%{b:02X}"));
+    }
+}
+
+/// Percent-encode a single Windows path segment (no `/` passthrough —
+/// the caller has already split on separators).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn encode_windows_segment(out: &mut String, segment: &str) {
+    for b in segment.bytes() {
+        percent_encode_byte(out, b, false);
+    }
+}
+
+/// Pure string-level translation of a Windows-flavored path string into
+/// its `file://` form — factored out of [`path_to_file_uri`] (rather
+/// than operating on a host `&Path`) so the drive-letter and UNC shapes
+/// can be pinned by a test on any host, not only a real Windows one:
+/// `Path`'s own component parsing is host-dependent (a Linux host treats
+/// a backslash as an ordinary filename byte, not a separator), so
+/// driving this logic through `Path` there would silently test nothing.
+///
+/// - A UNC prefix (`\\server\share\path`, or `//server/share/path`)
+///   becomes `file://server/share/path` — the server name is the URI
+///   authority.
+/// - A drive letter (`C:\a\b.txt`, or `C:/a/b.txt`) becomes
+///   `file:///C:/a/b.txt` — empty authority, drive letter as the first
+///   path segment, and a bare drive root (`C:\`) keeps its trailing
+///   slash (`file:///C:/`). The colon is kept literal (RFC 8089
+///   Appendix A convention) rather than percent-encoded.
+/// - A verbatim prefix (`\\?\C:\a`, `\\?\UNC\server\share\f`) is
+///   stripped first and the remainder classified as the drive-letter or
+///   UNC form it names. This is the shape `std::fs::canonicalize`
+///   returns on Windows, and therefore the obvious way a caller
+///   satisfies this function's absolute-path requirement.
+/// - Anything else (no drive letter, no UNC prefix — a relative path)
+///   returns `None`; see [`path_to_file_uri`]'s doc for why.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn file_uri_from_windows_path_str(raw: &str) -> Option<String> {
+    // `\\?\UNC\` names a UNC path whose body no longer carries the
+    // leading `\\`, so remember that the UNC branch still applies;
+    // without this pre-pass both verbatim forms take the UNC branch
+    // below with `?` read back as the server name.
+    let (raw, verbatim_unc) = if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        (rest, true)
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        (rest, false)
+    } else {
+        (raw, false)
+    };
+
+    let unc = if verbatim_unc {
+        Some(raw)
+    } else {
+        raw.strip_prefix(r"\\").or_else(|| raw.strip_prefix("//"))
+    };
+    if let Some(unc) = unc {
+        let mut parts = unc.splitn(2, ['\\', '/']);
+        let server = parts.next().filter(|s| !s.is_empty())?;
+        let share_and_path = parts.next().unwrap_or("");
+
+        let mut out = String::from("file://");
+        encode_windows_segment(&mut out, server);
+        for segment in share_and_path.split(['\\', '/']).filter(|s| !s.is_empty()) {
+            out.push('/');
+            encode_windows_segment(&mut out, segment);
+        }
+        return Some(out);
+    }
+
+    let mut chars = raw.chars();
+    let drive = chars.next().filter(char::is_ascii_alphabetic)?;
+    if chars.next() != Some(':') {
+        return None;
+    }
+
+    let mut out = format!("file:///{drive}:/");
+    for (i, segment) in raw[2..]
+        .split(['\\', '/'])
+        .filter(|s| !s.is_empty())
+        .enumerate()
+    {
+        if i > 0 {
+            out.push('/');
+        }
+        encode_windows_segment(&mut out, segment);
+    }
+    Some(out)
+}
+
+/// Covers [`path_to_file_uri`] and its Windows string-level half. Not
+/// gated on `feature = "tui"` — unlike
+/// [`reveal_in_file_manager_tests`], whose subjects are TUI-only — so
+/// these also run under the real-Windows command
+/// (`tools/win-test.sh`, `--features win`), the host they describe.
+#[cfg(test)]
+mod file_uri_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn path_to_file_uri_percent_encodes_spaces_and_commas() {
+        assert_eq!(
+            path_to_file_uri(std::path::Path::new("/tmp/a,b c/d.txt")),
+            Some("file:///tmp/a%2Cb%20c/d.txt".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_to_file_uri_is_none_for_a_relative_path() {
+        // A relative path has no well-defined `file://` form: rendering
+        // it anyway would read its first segment back as the URI
+        // authority instead of as part of the path.
+        assert_eq!(path_to_file_uri(std::path::Path::new("a.txt")), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_to_file_uri_renders_a_windows_drive_letter_path() {
+        assert_eq!(
+            path_to_file_uri(std::path::Path::new(r"C:\dir\a b.txt")),
+            Some("file:///C:/dir/a%20b.txt".to_string())
+        );
+        assert_eq!(path_to_file_uri(std::path::Path::new(r"dir\a.txt")), None);
+    }
+
+    /// Pure string-level logic, no WinAPI — runs on every host, same
+    /// posture as
+    /// [`reveal_in_file_manager_tests::windows_explorer_select_parameters_quotes_the_path`].
+    #[test]
+    fn file_uri_from_windows_path_str_handles_a_drive_letter() {
+        assert_eq!(
+            file_uri_from_windows_path_str(r"C:\dir\a b.txt"),
+            Some("file:///C:/dir/a%20b.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn file_uri_from_windows_path_str_keeps_a_bare_drive_root_slash() {
+        assert_eq!(
+            file_uri_from_windows_path_str(r"C:\"),
+            Some("file:///C:/".to_string())
+        );
+        assert_eq!(
+            file_uri_from_windows_path_str("C:"),
+            Some("file:///C:/".to_string())
+        );
+    }
+
+    #[test]
+    fn file_uri_from_windows_path_str_handles_a_unc_share() {
+        assert_eq!(
+            file_uri_from_windows_path_str(r"\\server\share\a b.txt"),
+            Some("file://server/share/a%20b.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn file_uri_from_windows_path_str_strips_a_verbatim_prefix() {
+        // `std::fs::canonicalize` hands back these forms on Windows.
+        assert_eq!(
+            file_uri_from_windows_path_str(r"\\?\C:\dir\a b.txt"),
+            Some("file:///C:/dir/a%20b.txt".to_string())
+        );
+        assert_eq!(
+            file_uri_from_windows_path_str(r"\\?\UNC\server\share\f.txt"),
+            Some("file://server/share/f.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn file_uri_from_windows_path_str_is_none_for_a_relative_path() {
+        assert_eq!(file_uri_from_windows_path_str(r"dir\a.txt"), None);
+    }
 }
 
 #[cfg(all(test, feature = "tui"))]
@@ -1235,7 +1463,8 @@ mod reveal_in_file_manager_tests {
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn linux_show_items_via_dbus_command_targets_file_manager1() {
-        let cmd = linux_show_items_via_dbus_command(std::path::Path::new("/tmp/quadraui 1092"));
+        let cmd = linux_show_items_via_dbus_command(std::path::Path::new("/tmp/quadraui 1092"))
+            .expect("an absolute path has a file:// URI to show");
         assert_eq!(cmd.get_program(), "dbus-send");
         assert_eq!(
             cmd.get_args().collect::<Vec<_>>(),
@@ -1251,13 +1480,14 @@ mod reveal_in_file_manager_tests {
         );
     }
 
+    /// A relative path has no `file://` URI, so there is no `ShowItems`
+    /// invocation to build; the caller reads that as "this leg found
+    /// nothing" and falls through to the `xdg-open`-the-parent leg
+    /// rather than sending a one-element array holding the empty string.
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
-    fn path_to_file_uri_percent_encodes_spaces_and_commas() {
-        assert_eq!(
-            path_to_file_uri(std::path::Path::new("/tmp/a,b c/d.txt")),
-            "file:///tmp/a%2Cb%20c/d.txt"
-        );
+    fn linux_show_items_via_dbus_command_is_none_for_a_relative_path() {
+        assert!(linux_show_items_via_dbus_command(std::path::Path::new("a.txt")).is_none());
     }
 
     /// Acceptance bar: when neither the D-Bus leg nor the
@@ -1329,6 +1559,241 @@ pub(crate) fn display_notification_script(title: &str, body: &str, silent: bool)
         script.push_str(" sound name \"\"");
     }
     script
+}
+
+/// Sniff the file extension that matches an encoded image's magic
+/// bytes, for naming a temp copy a native API will re-decode from disk.
+///
+/// `UNNotificationAttachment` (macOS) picks its decoder from the
+/// attached file's *extension*, not from its content, so an
+/// [`crate::ImageSource::Bytes`] icon needs a plausible extension before it
+/// will render. `None` means "not a format recognised here" — callers
+/// skip the icon rather than guess an extension that would make the
+/// platform decoder fail on a correctly-encoded image.
+#[cfg(any(all(target_os = "macos", feature = "macos"), test))]
+#[cfg_attr(not(all(target_os = "macos", feature = "macos")), allow(dead_code))]
+pub(crate) fn encoded_image_extension(bytes: &[u8]) -> Option<&'static str> {
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.starts_with(PNG) {
+        return Some("png");
+    }
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        return Some("jpg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("gif");
+    }
+    if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
+        return Some("tiff");
+    }
+    if bytes.starts_with(b"BM") {
+        return Some("bmp");
+    }
+    if bytes.starts_with(b"RIFF") && bytes.len() >= 12 && &bytes[8..12] == b"WEBP" {
+        return Some("webp");
+    }
+    // SVG has no magic number; the two openings a serialiser emits are
+    // an XML prolog and a bare root element, either possibly preceded
+    // by whitespace or a UTF-8 BOM. A prolog alone is any XML document,
+    // so the `<svg` root element has to turn up inside the sniffed
+    // window too — a plist or an SVG whose prolog and doctype run past
+    // it both sniff as "unrecognised", which costs an icon rather than
+    // writing an `.svg` the platform decoder would choke on.
+    let text = bytes
+        .strip_prefix(b"\xef\xbb\xbf".as_slice())
+        .unwrap_or(bytes);
+    let window = text.get(..text.len().min(512))?;
+    let text = match std::str::from_utf8(window) {
+        Ok(text) => text,
+        // The window can land mid-character; the valid prefix is still
+        // enough to spot a root element.
+        Err(e) => std::str::from_utf8(&window[..e.valid_up_to()]).ok()?,
+    };
+    let text = text.trim_start();
+    if text.starts_with("<svg") || (text.starts_with("<?xml") && text.contains("<svg")) {
+        return Some("svg");
+    }
+    None
+}
+
+/// Copy a notification icon into `dir` as `<stem>.<ext>` and return the
+/// path written, so a native notification API that can only attach a
+/// *file* has one to point at.
+///
+/// Always copies, never hands over the caller's own file: macOS's
+/// `UNNotificationAttachment` **moves** the attached file into the
+/// system attachment data store, so attaching a consumer-owned path
+/// directly would delete that file out from under them.
+///
+/// The extension comes from the source path when it has one (a
+/// consumer naming `logo.png` knows the format better than any sniffer)
+/// and otherwise from [`encoded_image_extension`]; an unrecognised
+/// encoding is an [`std::io::ErrorKind::InvalidData`] error so the
+/// caller can skip the icon instead of writing a file the platform
+/// cannot decode. `dir` is created if missing.
+#[cfg(any(all(target_os = "macos", feature = "macos"), test))]
+#[cfg_attr(not(all(target_os = "macos", feature = "macos")), allow(dead_code))]
+pub(crate) fn materialize_notification_icon(
+    source: &crate::primitives::image::ImageSource,
+    dir: &std::path::Path,
+    stem: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    use crate::primitives::image::ImageSource;
+
+    let (bytes, source_extension) = match source {
+        ImageSource::Bytes(bytes) => (bytes.clone(), None),
+        ImageSource::Path(path) => {
+            let extension = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .filter(|e| !e.is_empty())
+                .map(str::to_ascii_lowercase);
+            (std::fs::read(path)?, extension)
+        }
+    };
+    let extension = match source_extension {
+        Some(extension) => extension,
+        None => encoded_image_extension(&bytes)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "notification icon is not a recognised image encoding",
+                )
+            })?
+            .to_string(),
+    };
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(format!("{stem}.{extension}"));
+    std::fs::write(&path, &bytes)?;
+    Ok(path)
+}
+
+#[cfg(test)]
+mod notification_icon_tests {
+    use super::{encoded_image_extension, materialize_notification_icon};
+    use crate::primitives::image::ImageSource;
+
+    const PNG_HEADER: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
+
+    /// A scratch directory that cleans itself up when the returned
+    /// guard drops. `icons` is deliberately *not* created, so a test can
+    /// assert `materialize_notification_icon` created (or didn't create)
+    /// the directory it was handed.
+    fn scratch_dir() -> (tempfile::TempDir, std::path::PathBuf) {
+        let root = tempfile::tempdir().expect("scratch dir");
+        let icons = root.path().join("icons");
+        (root, icons)
+    }
+
+    #[test]
+    fn encoded_image_extension_recognises_common_encodings() {
+        assert_eq!(encoded_image_extension(PNG_HEADER), Some("png"));
+        assert_eq!(
+            encoded_image_extension(b"\xff\xd8\xff\xe0JFIF"),
+            Some("jpg")
+        );
+        assert_eq!(encoded_image_extension(b"GIF89a....."), Some("gif"));
+        assert_eq!(encoded_image_extension(b"II*\0\x08\0\0\0"), Some("tiff"));
+        assert_eq!(encoded_image_extension(b"MM\0*\0\0\0\x08"), Some("tiff"));
+        assert_eq!(encoded_image_extension(b"BM\x8a\x02\0\0"), Some("bmp"));
+        assert_eq!(
+            encoded_image_extension(b"RIFF\x1a\0\0\0WEBPVP8 "),
+            Some("webp")
+        );
+    }
+
+    #[test]
+    fn encoded_image_extension_recognises_svg_with_prolog_bom_or_bare_root() {
+        assert_eq!(
+            encoded_image_extension(b"<?xml version=\"1.0\"?><svg/>"),
+            Some("svg")
+        );
+        assert_eq!(
+            encoded_image_extension(b"  \n<svg width=\"8\"/>"),
+            Some("svg")
+        );
+        assert_eq!(encoded_image_extension(b"\xef\xbb\xbf<svg/>"), Some("svg"));
+    }
+
+    #[test]
+    fn encoded_image_extension_rejects_unrecognised_bytes() {
+        assert_eq!(encoded_image_extension(b""), None);
+        assert_eq!(encoded_image_extension(b"not an image at all"), None);
+        // A truncated PNG signature is not a PNG.
+        assert_eq!(encoded_image_extension(b"\x89PNG"), None);
+    }
+
+    #[test]
+    fn encoded_image_extension_rejects_xml_that_is_not_svg() {
+        assert_eq!(
+            encoded_image_extension(b"<?xml version=\"1.0\"?><plist version=\"1.0\"></plist>"),
+            None
+        );
+    }
+
+    #[test]
+    fn materialize_bytes_icon_sniffs_extension_and_creates_the_directory() {
+        let (_root, dir) = scratch_dir();
+        let written =
+            materialize_notification_icon(&ImageSource::Bytes(PNG_HEADER.to_vec()), &dir, "icon-7")
+                .expect("png bytes materialize");
+
+        assert_eq!(written, dir.join("icon-7.png"));
+        assert_eq!(std::fs::read(&written).unwrap(), PNG_HEADER);
+    }
+
+    #[test]
+    fn materialize_path_icon_copies_and_keeps_the_source_extension() {
+        let (_root, dir) = scratch_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("logo.PNG");
+        std::fs::write(&original, PNG_HEADER).unwrap();
+
+        let written =
+            materialize_notification_icon(&ImageSource::Path(original.clone()), &dir, "icon-1")
+                .expect("path icon materializes");
+
+        assert_eq!(written, dir.join("icon-1.png"));
+        // The consumer's own file is copied, never moved away.
+        assert!(original.exists());
+    }
+
+    #[test]
+    fn materialize_path_icon_without_extension_falls_back_to_sniffing() {
+        let (_root, dir) = scratch_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("logo");
+        std::fs::write(&original, PNG_HEADER).unwrap();
+
+        let written = materialize_notification_icon(&ImageSource::Path(original), &dir, "icon-2")
+            .expect("extensionless icon materializes");
+
+        assert_eq!(written, dir.join("icon-2.png"));
+    }
+
+    #[test]
+    fn materialize_unrecognised_bytes_reports_invalid_data_and_writes_nothing() {
+        let (_root, dir) = scratch_dir();
+        let err = materialize_notification_icon(
+            &ImageSource::Bytes(b"definitely not an image".to_vec()),
+            &dir,
+            "icon-3",
+        )
+        .expect_err("unrecognised encoding is rejected");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn materialize_missing_path_reports_not_found() {
+        let (_root, dir) = scratch_dir();
+        let err =
+            materialize_notification_icon(&ImageSource::Path(dir.join("nope.png")), &dir, "icon-4")
+                .expect_err("a missing icon file is an error");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
 }
 
 /// Build the `osascript -e <script>` command
@@ -1713,16 +2178,19 @@ pub(crate) const ALL_RESIZE_EDGES: [crate::backend::ResizeEdge; 8] = [
 ];
 
 /// Every [`crate::backend::PointerShape`] variant, in a stable order —
-/// [`crate::backend::PointerShape::Default`] plus one
-/// [`crate::backend::PointerShape::Resize`] per [`ALL_RESIZE_EDGES`]
-/// edge (9 total). Each backend still owns its own `PointerShape` →
-/// native cursor table (cursor names/objects are inherently native —
-/// GTK's are CSS cursor-name strings, AppKit's are `NSCursor` objects,
-/// and AppKit in particular has no public diagonal-resize cursor, so
-/// backends may legitimately map more than one `PointerShape` to the
-/// same native cursor) — this is the enum-walk *scaffold* that was
-/// missing: a canonical list backends' own mapping tests iterate
-/// against instead of hand-duplicating the variant list per backend.
+/// [`crate::backend::PointerShape::Default`], one
+/// [`crate::backend::PointerShape::Resize`] per [`ALL_RESIZE_EDGES`] edge
+/// (8), and one of each remaining non-exhaustive variant (`Text`,
+/// `Pointer`, `Grab`, `Grabbing`, `Crosshair`, `Wait`, `NotAllowed`,
+/// `ColResize`, `RowResize`) — 18 total. Each backend still owns its own
+/// `PointerShape` → native cursor table (cursor names/objects are
+/// inherently native — GTK's are CSS cursor-name strings, AppKit's are
+/// `NSCursor` objects, and AppKit in particular has no public diagonal-
+/// resize cursor, so backends may legitimately map more than one
+/// `PointerShape` to the same native cursor) — this is the enum-walk
+/// *scaffold* that was missing: a canonical list backends' own mapping
+/// tests iterate against instead of hand-duplicating the variant list
+/// per backend.
 #[cfg(all(
     test,
     any(
@@ -1731,7 +2199,7 @@ pub(crate) const ALL_RESIZE_EDGES: [crate::backend::ResizeEdge; 8] = [
         feature = "win"
     )
 ))]
-pub(crate) fn all_pointer_shapes() -> [crate::backend::PointerShape; 9] {
+pub(crate) fn all_pointer_shapes() -> [crate::backend::PointerShape; 18] {
     use crate::backend::PointerShape;
     [
         PointerShape::Default,
@@ -1743,6 +2211,15 @@ pub(crate) fn all_pointer_shapes() -> [crate::backend::PointerShape; 9] {
         PointerShape::Resize(ALL_RESIZE_EDGES[5]),
         PointerShape::Resize(ALL_RESIZE_EDGES[6]),
         PointerShape::Resize(ALL_RESIZE_EDGES[7]),
+        PointerShape::Text,
+        PointerShape::Pointer,
+        PointerShape::Grab,
+        PointerShape::Grabbing,
+        PointerShape::Crosshair,
+        PointerShape::Wait,
+        PointerShape::NotAllowed,
+        PointerShape::ColResize,
+        PointerShape::RowResize,
     ]
 }
 
@@ -2337,12 +2814,24 @@ mod pointer_shape_scaffold_tests {
     }
 
     #[test]
-    fn all_pointer_shapes_is_default_plus_one_resize_per_edge() {
+    fn all_pointer_shapes_is_default_plus_one_resize_per_edge_plus_rest() {
+        const REST: [PointerShape; 9] = [
+            PointerShape::Text,
+            PointerShape::Pointer,
+            PointerShape::Grab,
+            PointerShape::Grabbing,
+            PointerShape::Crosshair,
+            PointerShape::Wait,
+            PointerShape::NotAllowed,
+            PointerShape::ColResize,
+            PointerShape::RowResize,
+        ];
         let shapes = all_pointer_shapes();
-        assert_eq!(shapes.len(), ALL_RESIZE_EDGES.len() + 1);
+        assert_eq!(shapes.len(), ALL_RESIZE_EDGES.len() + 1 + REST.len());
         assert_eq!(shapes[0], PointerShape::Default);
-        for (shape, edge) in shapes[1..].iter().zip(ALL_RESIZE_EDGES.iter()) {
+        for (shape, edge) in shapes[1..9].iter().zip(ALL_RESIZE_EDGES.iter()) {
             assert_eq!(*shape, PointerShape::Resize(*edge));
         }
+        assert_eq!(&shapes[9..], &REST);
     }
 }

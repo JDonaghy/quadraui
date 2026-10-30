@@ -100,7 +100,7 @@
 //!
 //! ## Status
 //!
-//! `0.6.x` — pre-1.0, published on crates.io. Breaking changes are
+//! `0.7.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
 //! `quadraui/docs/decisions/DECISIONS.md`. 49 primitives shipped. The TUI
@@ -185,6 +185,14 @@ pub mod caret_blink;
 pub mod descriptor_store;
 pub mod diagnostics;
 pub mod diff;
+// Not under `primitives/`, same reasoning as `font_role`/`generic_font`
+// below: a serializable rule AST is not a widget — no `Layout`, no
+// `hit_test`, no `Backend::draw_*` method of its own — so it must not
+// inflate the primitive count `readme_truth.rs` derives from
+// `primitives/mod.rs`'s `pub mod` list. Binding-neutral by design: see the
+// module doc for why the `Expr`/`Value` types, not a Rust closure, are the
+// thing every Lua/Python/C-ABI binding emits.
+pub mod expr;
 pub mod focus;
 // Not under `primitives/`, for the same reason `a11y` isn't (see the
 // comment above `mod a11y`): `font_role` classifies *which font* each
@@ -206,6 +214,12 @@ pub mod frame;
 pub mod generic_font;
 pub mod interaction;
 pub mod layout;
+// Not under `primitives/`, same reasoning as `font_role`/`generic_font`
+// above: app-identity-scoped filesystem locations are not a widget — no
+// `Layout`, no `hit_test`, no `Backend::draw_*` method of its own — so this
+// must not inflate the primitive count `readme_truth.rs` derives from
+// `primitives/mod.rs`'s `pub mod` list.
+pub mod paths;
 pub mod prelude;
 pub mod primitives;
 pub mod shell;
@@ -222,6 +236,24 @@ pub mod theme;
 pub mod transition;
 pub mod types;
 pub mod undo;
+// Not under `primitives/`, same reasoning as `expr` above: declarative
+// form-validation rules are not a widget — no `Layout`, no `hit_test`, no
+// `Backend::draw_*` method of its own; they compute the `ValidationState`
+// that `primitives::form::FormField::validation` already renders — so this
+// must not inflate the primitive count `readme_truth.rs` derives from
+// `primitives/mod.rs`'s `pub mod` list. Built on `expr::Expr` for
+// cross-field rules, so it stays binding-neutral the same way: plain
+// serializable data, not a Rust callback.
+pub mod validation;
+// Not under `primitives/`, same reasoning as `validation` above: declarative
+// show/hide and enable/disable rules are not a widget — no `Layout`, no
+// `hit_test`, no `Backend::draw_*` method of its own; they decide which
+// `primitives::form::FormField`s `compose::FormController` keeps in its
+// rendered `Form` and whether each is `disabled` — so this must not inflate
+// the primitive count `readme_truth.rs` derives from `primitives/mod.rs`'s
+// `pub mod` list. Built on `expr::Expr`, so it stays binding-neutral the
+// same way: plain serializable data, not a Rust callback.
+pub mod visibility;
 
 // ── Terminal engine (PTY + vt100 + scrollback) ───────────────────────────────
 // Gated behind the `terminal` feature so non-terminal consumers don't pull in
@@ -310,7 +342,45 @@ pub mod compose;
 // free-function draw pattern; no migration yet (that's Phase B.2).
 pub mod accelerator;
 pub mod backend;
+
+// Drag-out-to-the-OS seam: the `DragOutPayload` type
+// `PlatformServices::begin_drag_out` trades in. Compiled unconditionally
+// — the contract and its `Unsupported` default need no backend feature;
+// see `drag`'s module doc.
+pub mod drag;
 pub mod event;
+
+// Power monitor + sleep-blocker seam: the `PowerSaveKind`/`BlockerId`/
+// `ThermalState`/`PowerEventKind` types `PlatformServices`'
+// battery/thermal queries and sleep-blocker methods, and
+// `UiEvent::PowerStateChanged`, trade in. Compiled unconditionally — the
+// contract and its `Unsupported` default need no backend feature; see
+// `power`'s module doc.
+pub mod power;
+
+// Launch-at-login seam: `LoginItemOptions`, the type
+// `PlatformServices::set_login_item` trades in, reached off
+// `PlatformServices::set_login_item`/`PlatformServices::login_item_enabled`
+// the same way `power`'s types sit alongside its `PlatformServices`
+// methods above. Compiled unconditionally — the contract and its
+// `Unsupported` default need no backend feature; see `login_item`'s
+// module doc.
+pub mod login_item;
+
+// Crash reporter seam: `CrashReporterConfig`/`CrashRecord`, the types
+// `install_crash_handler` trades in. A standalone free function, not a
+// `PlatformServices` method — a panic hook is identical logic on every
+// backend, so there is no backend-varying implementation to override.
+// Compiled unconditionally — the panic hook and on-disk record need no
+// backend feature; see `crash`'s module doc.
+pub mod crash;
+
+// Auto-update seam: `UpdateService` + the feed/info/staged types it
+// trades in, reached off `PlatformServices::update_service` the same way
+// `PlatformServices::secret_store` exposes `SecretStore`. Compiled
+// unconditionally — the contract and its `Unsupported` default need no
+// backend feature; see `update`'s module doc.
+pub mod update;
 
 // ── PaintSurface ────────────────────────────────────────────────────────
 // The ~15-verb drawing trait underneath the three pixel backends —
@@ -471,7 +541,8 @@ pub use primitives::find_replace::{
 pub use primitives::float::{Float, FloatHit, FloatLayout, FloatMeasure};
 pub use primitives::form::{
     ButtonRowItem, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
-    FormItemMeasure, FormLayout, ToggleGroupItem, ValidationState, VisibleFormField,
+    FormItemMeasure, FormLayout, LabelAlign, LabelPosition, ToggleGroupItem, ValidationState,
+    VisibleFormField,
 };
 pub use primitives::image::{Image, ImageFit, ImageHit, ImageLayout, ImageSource};
 pub use primitives::list::{
@@ -590,7 +661,8 @@ pub use undo::UndoStack;
 // Phase B.1 re-exports.
 pub use accelerator::{
     parse_key_binding, render_accelerator, render_binding, Accelerator, AcceleratorId,
-    AcceleratorScope, KeyBinding, ParsedBinding, Platform,
+    AcceleratorScope, GlobalShortcutId, GlobalShortcutRegistry, KeyBinding, ParsedBinding,
+    Platform,
 };
 pub use backend::{
     Backend, BackendCaps, BackendError, Clipboard, ClipboardFormat, ColorDepth, Display,
@@ -599,10 +671,28 @@ pub use backend::{
     PointerShape, ResizeEdge, ResolvedMenuStyle, RgbaImage, SecretStore, ServiceResult,
     SystemTheme, WindowControl,
 };
+// `PlatformServices::update_service`'s vended trait and types — same
+// service-seam shape as `Clipboard`/`SecretStore` above; see `update`'s
+// module doc.
 pub use event::{
     mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,
     MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent, UserPayload, Viewport,
 };
+pub use update::{StagedUpdate, UpdateFeed, UpdateInfo, UpdateInfoBuilder, UpdateService};
+// `PlatformServices::on_battery`/`thermal_state`/`begin_power_save_block`/
+// `end_power_save_block`'s types and `UiEvent::PowerStateChanged`'s
+// payload — see `power`'s module doc.
+pub use power::{BlockerId, PowerEventKind, PowerSaveKind, ThermalState};
+// `PlatformServices::begin_drag_out`'s argument type — see `drag`'s
+// module doc.
+pub use drag::DragOutPayload;
+// `PlatformServices::set_login_item`'s argument type — see `login_item`'s
+// module doc.
+pub use login_item::LoginItemOptions;
+// `PlatformServices::app_path`'s argument type, same precedent as
+// `DragOutPayload` above. The app-identifier getter/setters stay reachable
+// at `quadraui::paths::*` only — call sites there, not here.
+pub use paths::AppPathKind;
 // The public paint-verb seam — see `paint_surface`'s module doc.
 pub use frame::{
     check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,

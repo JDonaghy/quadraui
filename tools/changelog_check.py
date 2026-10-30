@@ -37,7 +37,16 @@ A changed `quadraui/src/**` file is exempt from needing an entry when:
     under any `tests/` directory.
 
 The PR as a whole is exempt, regardless of its diff, when it carries the
-`no-changelog` label.
+`no-changelog` label, or when the diff has the release-promotion shape:
+this diff's own changed files include `quadraui/Cargo.toml`, the manifest
+version there is strictly newer at HEAD than at BASE, and HEAD's
+`CHANGELOG.md` already matches what `scripts/release.py prepare` leaves
+behind for that version -- `[Unreleased]` empty and a `## [X.Y.Z]` section
+holding that content. This is keyed on diff shape alone, not on which
+branches the PR runs between, so it matches both the `develop -> main`
+promotion PR and the `release-X.Y.Z -> develop` bump PR that precedes it.
+A promotion PR legitimately moves every entry out of `[Unreleased]`
+instead of adding one.
 
 Usage: tools/changelog_check.py [--labels L1,L2,...] [BASE] [HEAD]
        (default: no labels, origin/develop, HEAD)
@@ -52,11 +61,19 @@ import subprocess
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import comment_only_check  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# release_decide's version/section parsing is reused here rather than
+# reimplemented, which couples this module's imports to scripts/
+# release_decide.py's location.
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+import release_decide  # noqa: E402
+
 CHANGELOG_PATH = "CHANGELOG.md"
+MANIFEST_PATH = "quadraui/Cargo.toml"
 
 NO_CHANGELOG_LABEL = "no-changelog"
 
@@ -283,6 +300,91 @@ def has_unreleased_entry(base: str, head: str, repo_root: Path) -> bool:
     return False
 
 
+def _version_tuple(version: str) -> tuple[int, ...] | None:
+    """Parse the dotted-numeric prefix of a semver-ish string into a
+    comparable tuple, e.g. `"0.6.1"` -> `(0, 6, 1)`, `"0.2.0-rc1"` ->
+    `(0, 2, 0)`. Returns None if any dot-separated component before a
+    `-`/`+` suffix isn't purely digits, so an unparsable version can't be
+    silently treated as comparable."""
+    core = version.split("-", 1)[0].split("+", 1)[0]
+    parts = core.split(".")
+    if not parts or not all(p.isdigit() for p in parts):
+        return None
+    return tuple(int(p) for p in parts)
+
+
+def _is_version_bump(new_version: str, old_version: str | None) -> bool:
+    """True if `new_version` is strictly newer than `old_version`.
+
+    Falls back to a plain inequality when either side doesn't parse as a
+    dotted-numeric version, so an unparsable manifest version doesn't
+    silently disable the gate. When both sides do parse, this also rules
+    out a reverted/downgraded version matching the promotion shape.
+    """
+    if old_version is None:
+        return True
+    new_tuple = _version_tuple(new_version)
+    old_tuple = _version_tuple(old_version)
+    if new_tuple is None or old_tuple is None:
+        return new_version != old_version
+    return new_tuple > old_tuple
+
+
+def release_promotion_version(base: str, head: str, repo_root: Path) -> str | None:
+    """`quadraui/Cargo.toml`'s version at `head`, if this diff has the
+    release-promotion shape `scripts/release.py prepare` leaves a develop
+    -> main PR (or a `release-X.Y.Z` -> develop bump PR) in: `base...head`
+    itself changes `quadraui/Cargo.toml`, the manifest version there is
+    strictly newer at `head` than at `base`, HEAD's `[Unreleased]` body is
+    empty (every line blank or the section absent entirely), and a
+    `## [<version>]` section matching the new version already holds
+    non-blank content.
+
+    Requiring the manifest bump to be part of *this* diff -- not just
+    "the versions differ between base and head" -- rules out a stale
+    feature branch forked after a bump already landed on `develop`: that
+    branch's own diff never touches the manifest, so a later bump on
+    `develop` moving `base`'s version ahead must not make this function
+    match. The strictly-newer comparison (not just "changed") also rules
+    out a downgrade, e.g. a reverted bump.
+
+    Returns None for any other shape, including a promotion PR that also
+    picked up an unrelated `[Unreleased]` addition after `prepare` ran --
+    that case still needs the ordinary entry check.
+    """
+    if MANIFEST_PATH not in changed_files(base, head, repo_root):
+        return None
+
+    head_manifest_src = show(head, MANIFEST_PATH, repo_root)
+    changelog_src = show(head, CHANGELOG_PATH, repo_root)
+    if head_manifest_src is None or changelog_src is None:
+        return None
+
+    version = release_decide.manifest_version(head_manifest_src)
+    if not version:
+        return None
+
+    base_manifest_src = show(base, MANIFEST_PATH, repo_root)
+    base_version = (
+        release_decide.manifest_version(base_manifest_src)
+        if base_manifest_src is not None
+        else None
+    )
+    if not _is_version_bump(version, base_version):
+        return None
+
+    bounds = unreleased_section_bounds(changelog_src)
+    if bounds is not None:
+        start, end = bounds
+        unreleased_lines = changelog_src.splitlines()[start - 1 : end - 1]
+        if any(line.strip() for line in unreleased_lines):
+            return None
+
+    if not release_decide.changelog_section(changelog_src, version).strip():
+        return None
+    return version
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     labels: set[str] = set()
@@ -302,6 +404,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if NO_CHANGELOG_LABEL in labels:
         print(f"exempt: PR carries the '{NO_CHANGELOG_LABEL}' label")
+        return 0
+
+    promotion_version = release_promotion_version(base, head, REPO_ROOT)
+    if promotion_version is not None:
+        print(
+            f"exempt: CHANGELOG.md's [Unreleased] section is empty and its "
+            f"[{promotion_version}] section already holds that content -- "
+            "release-promotion PR shape"
+        )
         return 0
 
     required = requires_changelog_entry(base, head, REPO_ROOT)

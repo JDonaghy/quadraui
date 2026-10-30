@@ -88,12 +88,20 @@ mod focus_demo;
 mod folder_picker_app;
 #[path = "../examples/common/form_all_fields.rs"]
 mod form_all_fields;
+#[path = "../examples/common/form_combo_box.rs"]
+mod form_combo_box;
 #[path = "../examples/common/form_date_picker.rs"]
 mod form_date_picker;
+#[path = "../examples/common/form_dropdown.rs"]
+mod form_dropdown;
 #[path = "../examples/common/form_groups.rs"]
 mod form_groups;
+#[path = "../examples/common/form_label_placement.rs"]
+mod form_label_placement;
 #[path = "../examples/common/form_scroll.rs"]
 mod form_scroll;
+#[path = "../examples/common/form_visibility.rs"]
+mod form_visibility;
 #[path = "../examples/common/frame_demo.rs"]
 mod frame_demo;
 #[path = "../examples/common/full_chrome_demo.rs"]
@@ -132,6 +140,8 @@ mod palette_dual_mode_app;
 mod panel_app;
 #[path = "../examples/common/pipeline_app.rs"]
 mod pipeline_app;
+#[path = "../examples/common/platform_seams_demo.rs"]
+mod platform_seams_demo;
 #[path = "../examples/common/search_panel.rs"]
 mod search_panel;
 #[path = "../examples/common/selection_app.rs"]
@@ -205,9 +215,13 @@ use float_app::FloatApp;
 use focus_demo::{FocusDemo, LEFT_ID, RIGHT_ID, STATUS_ID};
 use folder_picker_app::FolderPickerApp;
 use form_all_fields::FormAllFieldsApp;
+use form_combo_box::FormComboBoxApp;
 use form_date_picker::FormDatePickerApp;
+use form_dropdown::FormDropdownApp;
 use form_groups::FormGroupsApp;
+use form_label_placement::FormLabelPlacementApp;
 use form_scroll::FormScrollApp;
+use form_visibility::FormVisibilityApp;
 use frame_demo::FrameDemo;
 use full_chrome_demo::FullChromeDemo;
 use help_layer_demo::HelpLayerDemo;
@@ -227,6 +241,7 @@ use multi_tree::DebugSidebar;
 use palette_dual_mode_app::PaletteDualModeApp;
 use panel_app::PanelApp;
 use pipeline_app::PipelineApp;
+use platform_seams_demo::PlatformSeamsDemo;
 use search_panel::SearchPanelApp;
 use selection_app::SelectionDemo;
 use shell_menu_demo::ShellMenuDemo;
@@ -826,6 +841,184 @@ fn window_control_demo_escape_exits() {
     assert!(driver.exited(), "Escape should exit the demo");
 }
 
+// ─── PlatformSeamsDemo: `Backend::services()` / `PlatformServices` ─────────
+//
+// `services()` returns `&dyn PlatformServices` directly (never `None`),
+// unlike `WindowControlDemo`'s `window()`, so there's no "no window yet"
+// case to fold in. TUI gives honest real answers for `app_path`, the
+// power-save-block round trip, and `login_item_enabled`, reports a
+// host-dependent real `SystemTheme`/`Unsupported` for `system_theme`, and
+// reports `Unsupported` for everything else — all outcomes are
+// deterministic and assertable headlessly with no live desktop required.
+
+#[test]
+fn platform_seams_demo_shows_starting_hint() {
+    let driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    assert!(
+        driver.screen_contains("p=path"),
+        "status bar should hint at the key bindings:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_app_path_succeeds_on_tui() {
+    // `app_path` resolves a per-app user-data directory under the host's
+    // home directory, so this asserts the `Ok("...")` shape rather than a
+    // specific path — it only needs a resolvable home directory, which
+    // holds on every CI runner and dev machine this test runs on.
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('p');
+    assert!(
+        driver.screen_contains("app_path: \""),
+        "TUI genuinely supports a per-app user-data path:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_system_theme_surfaces_a_typed_answer_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('t');
+    // `system_theme` is host-dependent (`detect_system_theme()` reads the
+    // running terminal/desktop), so the value itself isn't pinned here —
+    // only that the seam answers with a typed result rather than nothing.
+    assert!(
+        driver.screen_contains("system_theme: "),
+        "TUI should surface a typed SystemTheme/Unsupported answer:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_power_save_block_round_trips_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('w');
+    assert!(
+        driver.screen_contains("power_save_block: ()"),
+        "TUI tracks a real (bookkeeping-only) blocker id end to end:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_login_item_enabled_reports_false_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('e');
+    assert!(
+        driver.screen_contains("login_item_enabled: false"),
+        "TUI has no login-item registry, so it is honestly never enabled:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_global_shortcut_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('g');
+    assert!(
+        driver.screen_contains("register_global_shortcut: Unsupported"),
+        "TUI has no OS global-shortcut registry:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_drag_out_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('d');
+    assert!(
+        driver.screen_contains("begin_drag_out: Unsupported"),
+        "TUI has no OS drag source:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_set_login_item_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('l');
+    assert!(
+        driver.screen_contains("set_login_item: Unsupported"),
+        "TUI has no login-item registry to write to:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_default_protocol_client_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('o');
+    assert!(
+        driver.screen_contains("set_as_default_protocol_client: Unsupported"),
+        "TUI has no protocol-handler registry:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_add_recent_document_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('r');
+    assert!(
+        driver.screen_contains("add_recent_document: Unsupported"),
+        "TUI has no OS recent-documents list:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_clear_recent_documents_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('c');
+    assert!(
+        driver.screen_contains("clear_recent_documents: Unsupported"),
+        "TUI has no OS recent-documents list to clear:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_dock_menu_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('k');
+    assert!(
+        driver.screen_contains("set_dock_menu: Unsupported"),
+        "TUI has no desktop-shell dock to attach a menu to:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_jump_list_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('j');
+    assert!(
+        driver.screen_contains("set_jump_list: Unsupported"),
+        "TUI has no taskbar jump list:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_update_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    driver.type_char('u');
+    assert!(
+        driver.screen_contains("download_and_stage: Unsupported"),
+        "TUI has no native update mechanism to stage into:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn platform_seams_demo_escape_exits() {
+    let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
+    assert!(!driver.exited());
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Escape should exit the demo");
+}
+
 // ─── CaretShapeDemo: `Backend::set_caret_shape` ────────────────────────────
 //
 // The DECSCUSR write itself lands on real `std::io::stdout()`, so there is
@@ -901,14 +1094,14 @@ fn caret_shape_demo_escape_exits() {
     assert!(driver.exited(), "Escape should exit the demo");
 }
 
-// ─── FileDialogDemo: TUI open/save now return a real path ──────────────────
+// ─── FileDialogDemo: TUI open/save/folder all return a real path ───────────
 //
-// `show_file_open_dialog` / `show_file_save_dialog` drive a real
-// `compose::FilePickerController` through a nested draw-and-read loop and
+// `show_file_open_dialog` / `show_file_save_dialog` / `show_folder_open_dialog`
+// each drive a real `compose::FilePickerController` /
+// `compose::FolderPickerController` through a nested draw-and-read loop and
 // resolve to whichever path the (scripted, via
 // `TuiDriver::queue_dialog_events`) input actually picked. These tests
-// pin that positive contract. `show_folder_open_dialog` keeps the
-// unconditional-`None` contract. The GTK path (a real, modal,
+// pin that positive contract. The GTK path (a real, modal,
 // nested-mainloop-pumped `gtk4::FileDialog`) can't be driven by
 // `TuiDriver` — it's covered by the `gtk_file_dialog` example's manual
 // smoke test instead.
@@ -927,10 +1120,10 @@ fn file_dialog_demo_shows_starting_hint() {
     );
 }
 
-/// `FileDialogDemo`'s `o` handler has no way to override
-/// `FileDialogOptions::initial_dir`, so `show_file_open_dialog` roots at
-/// `std::env::current_dir()` — this test's own process cwd, which `cargo
-/// test` sets to the package root (`quadraui/`, this crate's own
+/// Uses the plain `FileDialogDemo::new()` (no
+/// `FileDialogDemo::with_initial_dir` override), so `show_file_open_dialog`
+/// roots at `std::env::current_dir()` — this test's own process cwd, which
+/// `cargo test` sets to the package root (`quadraui/`, this crate's own
 /// `CARGO_MANIFEST_DIR`) for every integration-test binary. `build.rs`
 /// lives there and always matches the demo's `*.rs` filter, so typing
 /// "build" then Enter is a stable, layout-independent way to confirm a
@@ -1084,18 +1277,64 @@ fn file_dialog_demo_confirmed_status_survives_a_path_longer_than_the_screen() {
     );
 }
 
-// `show_folder_open_dialog` is deliberately outside scope and keeps the
-// original unconditional-`None` TUI contract — same reasoning, same test
-// shape as before, so a future change can't silently make the TUI folder
-// path block waiting on something that will never resolve headlessly.
+/// Roots the demo at a tempdir this test controls (via
+/// `FileDialogDemo::with_initial_dir`, which feeds every dialog's
+/// `FileDialogOptions::initial_dir` through `base_opts`) rather than
+/// `std::env::current_dir()`, so the assertion below pins the exact leaf
+/// confirmed instead of a substring any checkout path might satisfy
+/// vacuously.
 #[test]
-fn file_dialog_demo_folder_reports_unsupported_on_tui() {
+fn file_dialog_demo_folder_confirms_a_real_path_on_tui() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(tmp.path().join("targetdir")).expect("create dir");
+    let mut driver = TuiDriver::new(FileDialogDemo::with_initial_dir(tmp.path()), 100, 20);
+    driver.queue_dialog_events(vec![
+        UiEvent::KeyPressed {
+            key: Key::Char('t'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+        UiEvent::KeyPressed {
+            key: Key::Char('a'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+        UiEvent::KeyPressed {
+            key: Key::Char('r'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+        UiEvent::KeyPressed {
+            key: Key::Char('g'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+        UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+    ]);
+    driver.type_char('f');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Folder:") && screen.contains("✓ targetdir"),
+        "typing a filter that narrows to targetdir then Enter must confirm that real folder path:\n{screen}"
+    );
+}
+
+/// With no scripted input, the nested loop's very first event synthesizes
+/// Escape to cancel the picker — proves cancellation still reaches the app
+/// as `None`, distinct from unsupported (TUI genuinely has a working
+/// folder picker now; `None` here means "the user backed out").
+#[test]
+fn file_dialog_demo_folder_cancelled_returns_none_on_tui() {
     let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
     driver.type_char('f');
     let screen = driver.screen();
     assert!(
-        screen.contains("unsupported"),
-        "folder dialog must report None as unsupported on TUI:\n{screen}"
+        screen.contains("Folder pick cancelled"),
+        "an un-driven folder dialog must cancel (None), not hang or silently confirm:\n{screen}"
     );
 }
 
@@ -5228,6 +5467,134 @@ fn form_scroll_typing_q_while_editing_name_does_not_quit() {
     );
 }
 
+// ─── FormVisibilityApp: declarative visible_when / enabled_when ───────────
+//
+// `FormVisibilityApp` declares its `FormVisibility` rules exactly once, in
+// `new()`; every assertion below exercises `FormController::set_form`
+// re-evaluating those same rules against the latest `ship`/`agree` values
+// on each event — there is no app-side rebuild of the field list per
+// keystroke (see `quadraui::visibility`'s module doc).
+
+#[test]
+fn form_visibility_toggling_ship_shows_and_hides_the_address_field() {
+    let mut driver = TuiDriver::new(FormVisibilityApp::new(), 100, 24);
+    // Two deliberate single clicks on the same cell, not a double-click.
+    driver.set_double_click_folding(false);
+    let before = driver.screen();
+    assert!(
+        !before.contains("Shipping address"),
+        "the address field's visible_when (ship == true) should keep it out \
+         of Form::fields while 'ship' starts off:\n{before}"
+    );
+
+    let (x, y) = driver
+        .find("Ship to a different address")
+        .unwrap_or_else(|| panic!("ship toggle not painted:\n{before}"));
+    driver.click(x, y);
+
+    let after_on = driver.screen();
+    assert!(
+        after_on.contains("Shipping address"),
+        "turning 'ship' on should reveal the address field via \
+         apply_visibility, with no app-side field-list rebuild:\n{after_on}"
+    );
+
+    driver.click(x, y);
+    let after_off = driver.screen();
+    assert!(
+        !after_off.contains("Shipping address"),
+        "turning 'ship' back off should hide the address field again:\n{after_off}"
+    );
+}
+
+#[test]
+fn form_visibility_agree_toggle_enables_submit_render_and_click_action() {
+    let mut driver = TuiDriver::new(FormVisibilityApp::new(), 100, 24);
+    // The agree-toggle click and the later Submit click land one row
+    // apart; without disabling folding a second close click could be
+    // read as a DoubleClick, which `handle_inner` ignores.
+    driver.set_double_click_folding(false);
+
+    let (sx, sy) = driver
+        .find("Submit")
+        .unwrap_or_else(|| panic!("submit button not painted:\n{}", driver.screen()));
+    let disabled_fg = driver
+        .style_at(sx as u16, sy as u16)
+        .expect("Submit cell should be inside the screen")
+        .fg;
+
+    // FormController's click routing emits FormEvent::ButtonClicked
+    // regardless of `disabled` (the same posture a disabled toolbar
+    // button takes) — this pins that the *app* declines to honor it
+    // while enabled_when (agree == true) is false.
+    driver.click(sx, sy);
+    let after_disabled_click = driver.screen();
+    assert!(
+        after_disabled_click.contains("submits=0")
+            && after_disabled_click.contains("submit ignored (disabled)"),
+        "clicking Submit while 'agree' is off must not count as a submit:\n{after_disabled_click}"
+    );
+
+    let (ax, ay) = driver
+        .find("I agree to the terms")
+        .unwrap_or_else(|| panic!("agree toggle not painted:\n{}", driver.screen()));
+    driver.click(ax, ay);
+
+    let (sx2, sy2) = driver.find("Submit").unwrap_or_else(|| {
+        panic!(
+            "submit button not painted after agree flip:\n{}",
+            driver.screen()
+        )
+    });
+    let enabled_fg = driver
+        .style_at(sx2 as u16, sy2 as u16)
+        .expect("Submit cell should be inside the screen")
+        .fg;
+    assert_ne!(
+        enabled_fg,
+        disabled_fg,
+        "enabled_when flipping true should repaint Submit out of its muted \
+         disabled colour:\n{}",
+        driver.screen()
+    );
+
+    driver.click(sx2, sy2);
+    let after_enabled_click = driver.screen();
+    assert!(
+        after_enabled_click.contains("submits=1") && after_enabled_click.contains("submitted"),
+        "clicking Submit while 'agree' is on should count as a submit:\n{after_enabled_click}"
+    );
+}
+
+#[test]
+fn form_visibility_typing_q_while_editing_address_does_not_quit() {
+    let mut driver = TuiDriver::new(FormVisibilityApp::new(), 100, 24);
+
+    // Reveal the address field, then Tab from "ship" onto it.
+    let (x, y) = driver
+        .find("Ship to a different address")
+        .unwrap_or_else(|| panic!("ship toggle not painted:\n{}", driver.screen()));
+    driver.click(x, y);
+    driver.press_named(quadraui::NamedKey::Tab);
+
+    let focused = driver.screen();
+    assert!(
+        focused.contains("focus → address"),
+        "Tab from 'ship' should land on the now-visible address field:\n{focused}"
+    );
+
+    driver.type_char('q');
+    assert!(
+        !driver.exited(),
+        "'q' while the address field is focused should type a 'q', not quit"
+    );
+    let after = driver.screen();
+    assert!(
+        after.contains("address = \"q\""),
+        "the typed 'q' should land in the address field:\n{after}"
+    );
+}
+
 // ─── FormAllFieldsApp: every FieldKind variant paints ─────────────────────
 //
 // Baseline: TUI's `tui::form` rasteriser paints all `FieldKind` variants,
@@ -5252,12 +5619,286 @@ fn form_all_fields_paints_every_field_kind_value() {
         "Runaction",
         "Buildaction",
         "2024-03-15",
+        "Banana",
     ] {
         assert!(
             screen.contains(needle),
             "expected {needle:?} painted somewhere on screen:\n{screen}"
         );
     }
+}
+
+// ─── FormComboBoxApp: FieldKind::ComboBox routed through FormController ──────
+//
+// `FormController` forwards every key straight into the embedded
+// `ComboBox` and translates its `ComboBoxEvent` into one of the four
+// `FormEvent::ComboBox*` events (see `compose::form_controller`'s
+// "ComboBox fields" doc section). The app only *applies* those events —
+// these tests exercise that routing, and the app's own dropdown-overlay
+// paint, end to end through the real example and the TUI renderer.
+//
+// The demo starts with an empty, uncommitted combo box (no seeded text),
+// so the status bar's `fruit=` echo stays blank until a value is
+// committed — `screen_contains` assertions below never collide with it.
+
+#[test]
+fn form_combo_box_starts_closed_with_nothing_committed() {
+    let driver = TuiDriver::new(FormComboBoxApp::new(), 60, 14);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("fruit= |"),
+        "nothing is committed until Enter is pressed:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Apple"),
+        "the dropdown must stay closed (and painting no options) until a \
+         key opens it:\n{screen}"
+    );
+}
+
+#[test]
+fn form_combo_box_typing_narrows_the_filtered_dropdown() {
+    let mut driver = TuiDriver::new(FormComboBoxApp::new(), 60, 14);
+    driver.type_char('c');
+    let after_c = driver.screen();
+    for needle in ["Apricot", "Cherry", "Cranberry"] {
+        assert!(
+            after_c.contains(needle),
+            "typing 'c' should open the dropdown filtered to every option \
+             whose name contains a 'c':\n{after_c}"
+        );
+    }
+
+    driver.type_char('h');
+    let after_ch = driver.screen();
+    assert!(
+        after_ch.contains("Cherry"),
+        "typing 'ch' should keep 'Cherry' in the narrowed list:\n{after_ch}"
+    );
+    for needle in ["Apricot", "Cranberry"] {
+        assert!(
+            !after_ch.contains(needle),
+            "typing 'ch' should filter {needle:?} out of the dropdown, \
+             since it doesn't contain that substring:\n{after_ch}"
+        );
+    }
+}
+
+#[test]
+fn form_combo_box_arrow_keys_move_the_highlight_between_filtered_rows() {
+    let mut driver = TuiDriver::new(FormComboBoxApp::new(), 60, 14);
+    driver.type_char('a');
+    driver.type_char('n');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Banana") && screen.contains("Cranberry"),
+        "typing 'an' should filter the dropdown down to exactly 'Banana' \
+         and 'Cranberry':\n{screen}"
+    );
+
+    let banana_pos = driver.find_bounds("Banana").expect("Banana row painted");
+    let baseline_banana = driver
+        .style_at(banana_pos.x as u16, banana_pos.y as u16)
+        .expect("Banana row has a style");
+
+    driver.press_named(quadraui::NamedKey::Down);
+    let banana_pos = driver.find_bounds("Banana").expect("Banana row painted");
+    let cranberry_pos = driver
+        .find_bounds("Cranberry")
+        .expect("Cranberry row painted");
+    let highlighted_banana = driver
+        .style_at(banana_pos.x as u16, banana_pos.y as u16)
+        .expect("Banana row has a style");
+    let unhighlighted_cranberry = driver
+        .style_at(cranberry_pos.x as u16, cranberry_pos.y as u16)
+        .expect("Cranberry row has a style");
+    assert_ne!(
+        highlighted_banana, baseline_banana,
+        "the first Down press should highlight 'Banana', the first \
+         filtered row, changing its row style"
+    );
+
+    driver.press_named(quadraui::NamedKey::Down);
+    let banana_pos = driver.find_bounds("Banana").expect("Banana row painted");
+    let cranberry_pos = driver
+        .find_bounds("Cranberry")
+        .expect("Cranberry row painted");
+    let banana_after_second_down = driver
+        .style_at(banana_pos.x as u16, banana_pos.y as u16)
+        .expect("Banana row has a style");
+    let cranberry_after_second_down = driver
+        .style_at(cranberry_pos.x as u16, cranberry_pos.y as u16)
+        .expect("Cranberry row has a style");
+    assert_eq!(
+        banana_after_second_down, baseline_banana,
+        "the second Down press should move the highlight off 'Banana', \
+         restoring its unhighlighted row style"
+    );
+    assert_ne!(
+        cranberry_after_second_down, unhighlighted_cranberry,
+        "the second Down press should move the highlight onto \
+         'Cranberry', changing its row style"
+    );
+}
+
+#[test]
+fn form_combo_box_enter_commits_the_highlighted_option_and_closes_the_dropdown() {
+    let mut driver = TuiDriver::new(FormComboBoxApp::new(), 60, 14);
+    driver.type_char('a');
+    driver.type_char('n');
+    driver.press_named(quadraui::NamedKey::Down);
+    driver.press_named(quadraui::NamedKey::Down);
+    driver.press_named(quadraui::NamedKey::Enter);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("fruit=Cranberry"),
+        "Enter should commit the highlighted option ('Cranberry', the \
+         second Down's target) and the app should persist + echo it:\n{after}"
+    );
+    assert!(
+        !after.contains("Apple"),
+        "committing should close the dropdown, so no option rows paint \
+         any more:\n{after}"
+    );
+}
+
+#[test]
+fn form_combo_box_escape_cancels_back_to_the_committed_value() {
+    let mut driver = TuiDriver::new(FormComboBoxApp::new(), 60, 14);
+    driver.type_char('a');
+    driver.type_char('n');
+    let mid = driver.screen();
+    assert!(
+        mid.contains("Banana") && mid.contains("Cranberry"),
+        "setup: typing 'an' should open the dropdown filtered to 'Banana' \
+         and 'Cranberry':\n{mid}"
+    );
+
+    driver.press_named(quadraui::NamedKey::Escape);
+    let after = driver.screen();
+    assert!(
+        after.contains("fruit= |"),
+        "Escape should cancel the in-flight edit, reverting the field to \
+         its (still-empty) committed value:\n{after}"
+    );
+    assert!(
+        !after.contains("Banana") && !after.contains("Cranberry"),
+        "Escape should close the dropdown, so filtered rows stop \
+         painting:\n{after}"
+    );
+}
+
+#[test]
+fn form_combo_box_q_quits_only_when_the_dropdown_is_closed() {
+    let mut driver = TuiDriver::new(FormComboBoxApp::new(), 60, 14);
+    driver.type_char('c');
+    assert!(
+        !driver.exited(),
+        "typing 'c' opens the dropdown and must not quit"
+    );
+
+    driver.type_char('q');
+    assert!(
+        !driver.exited(),
+        "'q' while the dropdown is open should type into the combo box's \
+         filter text, not quit — the field consumes it just like any \
+         other character"
+    );
+
+    driver.press_named(quadraui::NamedKey::Escape);
+    assert!(
+        !driver.exited(),
+        "Escape while the dropdown is open should cancel the edit, not \
+         quit"
+    );
+
+    driver.type_char('q');
+    assert!(
+        driver.exited(),
+        "'q' should quit once the dropdown is closed and nothing is being \
+         edited"
+    );
+}
+
+// ─── FormDropdownApp: FieldKind::Dropdown routed through FormController ─────
+//
+// Unlike `FieldKind::ComboBox`, a `Dropdown`'s popup is drawn by the TUI
+// backend itself (`draw_form`) the instant the field is focused — there's
+// no app-owned overlay-draw call, and no open/close toggle: `focused` is
+// the only visibility signal, and `Up`/`Down` live-commit `selected_idx`
+// via `FormEvent::DropdownChanged` on every keystroke (see
+// `compose::form_controller`'s "Dropdown fields" doc section).
+
+#[test]
+fn form_dropdown_shows_the_popup_for_the_initially_focused_field() {
+    let driver = TuiDriver::new(FormDropdownApp::new(), 60, 14);
+    let screen = driver.screen();
+    for needle in ["One Dark", "Solarized Light", "Gruvbox"] {
+        assert!(
+            screen.contains(needle),
+            "the dropdown field starts focused, so its popup listing every \
+             option should already be painted:\n{screen}"
+        );
+    }
+    assert!(
+        screen.contains("theme=One Dark"),
+        "the status bar should echo the initially-selected option:\n{screen}"
+    );
+}
+
+#[test]
+fn form_dropdown_down_arrow_live_commits_the_next_option() {
+    let mut driver = TuiDriver::new(FormDropdownApp::new(), 60, 14);
+    let solarized_pos = driver
+        .find_bounds("Solarized Light")
+        .expect("Solarized Light row painted");
+    let baseline_solarized = driver
+        .style_at(solarized_pos.x as u16, solarized_pos.y as u16)
+        .expect("Solarized Light row has a style");
+
+    driver.press_named(quadraui::NamedKey::Down);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("theme=Solarized Light"),
+        "Down should immediately commit the next option — no separate \
+         open/close step — and the status bar should reflect it:\n{screen}"
+    );
+
+    let solarized_pos = driver
+        .find_bounds("Solarized Light")
+        .expect("Solarized Light row still painted");
+    let highlighted_solarized = driver
+        .style_at(solarized_pos.x as u16, solarized_pos.y as u16)
+        .expect("Solarized Light row has a style");
+    assert_ne!(
+        highlighted_solarized, baseline_solarized,
+        "the newly-selected row's style should change to the popup's \
+         selected-row highlight"
+    );
+}
+
+#[test]
+fn form_dropdown_up_arrow_at_the_first_option_does_not_wrap() {
+    let mut driver = TuiDriver::new(FormDropdownApp::new(), 60, 14);
+    driver.press_named(quadraui::NamedKey::Up);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("theme=One Dark"),
+        "Up at the first option must not wrap around to the last one:\n{screen}"
+    );
+}
+
+#[test]
+fn form_dropdown_q_quits() {
+    let mut driver = TuiDriver::new(FormDropdownApp::new(), 60, 14);
+    assert!(!driver.exited());
+    driver.type_char('q');
+    assert!(
+        driver.exited(),
+        "'q' should quit — a Dropdown field has no text to type into, \
+         unlike ComboBox's filter box"
+    );
 }
 
 // ─── FormDatePickerApp: FieldKind::DatePicker routed through FormController ──
@@ -9025,9 +9666,12 @@ fn form_fields_stack_and_group_items_pack() {
 
     // Items inside a `ToggleGroup` / `ButtonRow` pack left-to-right with
     // the field's own gap, which is the other half of `Form`'s packing.
+    // "Scope" sits in the shared `Left` label column, sized to the
+    // widest label in the form ("Replace"), so it is padded out before
+    // the toolbar items begin.
     assert_eq!(
         row_containing(&screen, "Workspace").trim(),
-        "Scope [ Workspace ][ File ][ Selection ]"
+        "Scope   [ Workspace ][ File ][ Selection ]"
     );
     assert_eq!(
         row_containing(&screen, "Find Next").trim(),
@@ -9129,6 +9773,88 @@ fn submenu_app_nested_level_keeps_its_border_and_activates_leaf() {
     assert!(
         !driver.screen_contains("Cut"),
         "activating a leaf must close every level:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_label_placement_top_label_sits_above_its_value() {
+    let driver = TuiDriver::new(FormLabelPlacementApp::new(), 100, 20);
+
+    // `label_position: Top` on "Role": the label and its value share a
+    // column but sit on consecutive rows, label first.
+    let label = driver.find_bounds("Role").expect("'Role' label is painted");
+    let value = driver
+        .find_bounds("Operator")
+        .expect("'Operator' value is painted");
+    assert_eq!(
+        label.x,
+        value.x,
+        "a Top label and its value should share a column:\n{}",
+        driver.screen()
+    );
+    assert_eq!(
+        value.y,
+        label.y + 1.0,
+        "a Top label's value should render on the row directly below it:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_label_placement_hidden_label_omits_text_but_keeps_the_value() {
+    let driver = TuiDriver::new(FormLabelPlacementApp::new(), 100, 20);
+
+    // `label_position: Hidden` on "Internal key": the label text never
+    // appears, but its value still renders.
+    assert!(
+        !driver.screen_contains("Internal key"),
+        "a Hidden label's text must not be painted:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("xk-9f21"),
+        "a Hidden label's value must still be painted:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_label_placement_aligned_label_column_shares_a_right_edge() {
+    let driver = TuiDriver::new(FormLabelPlacementApp::new(), 100, 20);
+
+    // "ID" and "Owner" both use the form-level default `label_position:
+    // Left` + `label_align: End` + `label_width: Some(14.0)`: their label
+    // text should end flush against the same right edge, even though "ID"
+    // and "Owner" are different lengths.
+    let id_label = driver.find_bounds("ID").expect("'ID' label is painted");
+    let owner_label = driver
+        .find_bounds("Owner")
+        .expect("'Owner' label is painted");
+    assert_eq!(
+        id_label.x + id_label.width,
+        owner_label.x + owner_label.width,
+        "End-aligned labels sharing a label_width column should end at the \
+         same x:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_label_placement_tab_order_follows_tab_index_not_declaration_order() {
+    let mut driver = TuiDriver::new(FormLabelPlacementApp::new(), 100, 20);
+
+    // Declaration order is "Role, ID, Owner, Notes, Internal key", but
+    // `tab_index` makes it "ID"(0) → "Owner"(1) → "Role"(2) → "Notes"(3) →
+    // "Internal key"(4). Initial focus is "ID" (tab_index 0); one `Tab`
+    // press must land on "Owner" (tab_index 1), not "Role" (declared right
+    // after "ID").
+    driver.press_named(quadraui::NamedKey::Tab);
+
+    assert!(
+        driver.screen_contains("focus → owner"),
+        "Tab from the tab_index-0 field should move to the tab_index-1 \
+         field (\"owner\"), not the next-declared field (\"role\"):\n{}",
         driver.screen()
     );
 }

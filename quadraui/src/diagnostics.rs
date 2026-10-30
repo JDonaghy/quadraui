@@ -93,48 +93,59 @@ pub fn clear_sink() {
 /// Library-internal call sites only (not `pub`): the small, named set of
 /// places in modal-paint tracking, vt100 panic recovery, the GTK/macOS
 /// siblings of the same modal-paint check, `win/backend.rs`'s `end_frame`
-/// reporting a dropped render target, and `desktop.rs`'s
+/// reporting a dropped render target, `macos/services.rs`'s
+/// `UNUserNotificationCenter` path (where a rejected request, a refused
+/// authorization, or an unreadable icon attachment is otherwise
+/// completely silent), `desktop.rs`'s
 /// `report_caught_panic_once` (the dedup wrapper `macos::run`/`win::run`
 /// call after a `catch_unwind` guard catches a panic at their C-ABI
-/// entry points). Genuinely CLI-shaped tools (examples, the GTK
-/// headless-smoke harness) print directly and carry their own justified
-/// `#[allow(clippy::print_stderr)]` instead of going through this sink —
-/// they *are* the host, not a library embedded in one.
+/// entry points), and `tui/services.rs`'s `TuiUpdateService` — the
+/// auto-update seam's TUI degrade, which has no package format a
+/// terminal app can stage, so it surfaces "update available: …" through
+/// this sink instead of going silent. Genuinely CLI-shaped tools
+/// (examples, the GTK headless-smoke harness) print directly and carry
+/// their own justified `#[allow(clippy::print_stderr)]` instead of going
+/// through this sink — they *are* the host, not a library embedded in
+/// one.
 ///
 /// Every one of those call sites lives in a feature-gated module —
-/// `tui/backend.rs`, `gtk/backend.rs`, `macos/backend.rs` (itself
-/// additionally `target_os = "macos"`-gated in `lib.rs`, so on Linux the
-/// `macos` feature compiles none of it), `win/backend.rs`'s `end_frame`
+/// `tui/backend.rs`, `gtk/backend.rs`, `macos/backend.rs` and
+/// `macos/services.rs` (both additionally `target_os = "macos"`-gated in
+/// `lib.rs`, so on Linux the `macos` feature compiles none of them),
+/// `win/backend.rs`'s `end_frame`
 /// (itself additionally `target_os = "windows"`-gated, so on Linux the
 /// `win` feature compiles none of it either — mirrors the `macos` case
 /// exactly), `desktop.rs`'s `report_caught_panic_once` (live under plain
 /// `feature = "win"` on any OS — unlike `end_frame`'s call site, its
 /// callers `win::run::dispatch_event`/`render_frame` are deliberately
 /// *not* `target_os`-gated, see those functions' docs — or under
-/// `all(feature = "macos", target_os = "macos")`), and
-/// `terminal_engine.rs`. This module is not gated, so a configuration
-/// that enables none of them — a plain `cargo check -p quadraui` with no
-/// features, or `--features macos` on a non-macOS host — compiles `emit`
-/// with zero callers and trips `dead_code`. The allow is scoped by
-/// `cfg_attr` to precisely that case rather than applied unconditionally,
-/// so dead-code detection stays live in every configuration where a call
-/// site actually compiles.
+/// `all(feature = "macos", target_os = "macos")`), `terminal_engine.rs`,
+/// and `tui/services.rs`'s `TuiUpdateService` (live under plain
+/// `feature = "tui"`, in every profile). This module is not gated, so a
+/// configuration that enables none of them — a plain `cargo check -p
+/// quadraui` with no features, or `--features macos` on a non-macOS
+/// host — compiles `emit` with zero callers and trips `dead_code`. The
+/// allow is scoped by `cfg_attr` to precisely that case rather than
+/// applied unconditionally, so dead-code detection stays live in every
+/// configuration where a call site actually compiles.
 ///
 /// **The gate is per-profile as well as per-feature.** The three
 /// modal-paint call sites (`tui`/`gtk`/`macos` `end_frame`) are each
 /// additionally `#[cfg(debug_assertions)]` — the modal-paint check is a
 /// debug-build-only diagnostic — so `--features tui` alone (or
-/// `--features gtk,tui`) compiles *zero* `emit` callers in any profile
-/// with assertions off. That is exactly what `cargo bench` does, and
-/// CI's benchmark steps hit it in both the `tui` and `gtk` jobs. Hence
-/// `all(debug_assertions, any(feature = "tui", feature = "gtk"))`
-/// rather than a bare `any(…)` for those two. `terminal`, `win` and
-/// macOS-on-macOS stay profile-independent because `terminal_engine.rs`'s
-/// vt100-panic reporting and `desktop.rs`'s `report_caught_panic_once`
-/// are live in release builds too.
+/// `--features gtk,tui`) with assertions off would compile *zero* `emit`
+/// callers if not for the auto-update seam's TUI degrade, which is
+/// profile-independent like `terminal`, `win` and macOS-on-macOS: a host
+/// should learn about an available update in a release build too, not
+/// only in `cargo bench`'s debug-assertions-off profile. Hence a bare
+/// `feature = "tui"` disjunct alongside `all(debug_assertions, feature =
+/// "gtk")` — `tui`'s own debug-only callers (the modal-paint check) are
+/// already covered by the bare `feature = "tui"` disjunct, so the debug-only
+/// clause only needs to carry `gtk`.
 #[cfg_attr(
     not(any(
-        all(debug_assertions, any(feature = "tui", feature = "gtk")),
+        all(debug_assertions, feature = "gtk"),
+        feature = "tui",
         feature = "terminal",
         feature = "win",
         all(feature = "macos", target_os = "macos")

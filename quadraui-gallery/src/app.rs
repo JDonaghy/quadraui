@@ -616,6 +616,8 @@ fn describe_event(event: &UiEvent) -> (&'static str, Option<WidgetId>) {
         UiEvent::WindowFocused(_) => ("WindowFocused", None),
         UiEvent::DpiChanged(_) => ("DpiChanged", None),
         UiEvent::WindowStateChanged { .. } => ("WindowStateChanged", None),
+        UiEvent::SystemThemeChanged(_) => ("SystemThemeChanged", None),
+        UiEvent::DisplaysChanged => ("DisplaysChanged", None),
         UiEvent::FilesDropped { .. } => ("FilesDropped", None),
         UiEvent::ClipboardPaste(_) => ("ClipboardPaste", None),
         UiEvent::StatusBar(id, _) => ("StatusBar", Some(*id)),

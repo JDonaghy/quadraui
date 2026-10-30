@@ -4,9 +4,9 @@
 //! `gio::Notification` (through the window's `gtk4::Application`) with a
 //! tag and one action button, and reports
 //! `UiEvent::NotificationActivated` to stderr when the user clicks the
-//! notification body or its action button — GTK is the only backend
-//! that delivers that event today (see that variant's own doc for why
-//! macOS/Win-GUI don't yet).
+//! notification body or its action button — GTK and Win's WinRT toast
+//! path both deliver that event (see that variant's own doc for why
+//! macOS doesn't).
 //!
 //! Also covers the four `shell.*`-style methods
 //! (`reveal_in_file_manager`, `open_path`, `move_to_trash`, `beep`) —

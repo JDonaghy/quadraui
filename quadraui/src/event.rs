@@ -30,6 +30,7 @@
 //! | Mouse (`MouseDown`, `MouseUp`, `MouseMoved`, `MouseEntered`, `MouseLeft`, `DoubleClick`, `Scroll`) | Hit-test at cursor position |
 //! | Keyboard (`KeyPressed`, `CharTyped`) | Focus |
 //! | Accelerator | [`AcceleratorScope`][crate::AcceleratorScope] |
+//! | `GlobalShortcut` | Broadcast (no target) — the OS delivered it outside focus entirely |
 //! | Window (`WindowResized`, `WindowClose`, `WindowFocused`, `DpiChanged`) | Application-global |
 //! | `FilesDropped` | Hit-test at drop position |
 //! | `ClipboardPaste` | Focus |
@@ -38,6 +39,7 @@
 //! | `OpenRequested` | Broadcast (no target) |
 //! | `SystemThemeChanged` | Broadcast (no target) |
 //! | `DisplaysChanged` | Broadcast (no target) |
+//! | `PowerStateChanged` | Broadcast (no target) |
 //!
 //! The consequence apps rely on: **scroll wheel events dispatch to the
 //! widget under the cursor, regardless of which widget has keyboard focus.**
@@ -116,6 +118,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::backend::SystemTheme;
+use crate::power::PowerEventKind;
 use crate::types::{Modifiers, WidgetId};
 use crate::{
     ActivityBarEvent, ChartEvent, DataTableEvent, FormEvent, ListViewEvent, PaletteEvent,
@@ -443,6 +446,62 @@ pub enum UiEvent {
     /// accelerators and is reporting the ID.
     Accelerator(crate::AcceleratorId, Modifiers),
 
+    /// The OS delivered a global shortcut — a key combination registered
+    /// through
+    /// [`PlatformServices::register_global_shortcut`][crate::PlatformServices::register_global_shortcut]
+    /// that fires regardless of whether this app's window has focus. The
+    /// payload is the [`GlobalShortcutId`][crate::GlobalShortcutId]
+    /// returned at registration time; unlike [`Self::Accelerator`] there is
+    /// no [`Modifiers`] snapshot, since the OS-level hotkey APIs this wraps
+    /// (Win32 `RegisterHotKey`, Carbon/Cocoa `RegisterEventHotKey`, the
+    /// `org.freedesktop.portal.GlobalShortcuts` XDG portal) report only
+    /// that the registered combination fired, not a live modifier state.
+    ///
+    /// **No backend emits this yet.** Same "declare the gap, don't fake
+    /// it" posture as [`Self::PowerStateChanged`]: per-backend
+    /// registration is a separate, backend-specific follow-on; see
+    /// [`crate::accelerator`]'s module doc for what this seam does and
+    /// doesn't cover. TUI has no OS-wide hotkey mechanism to register
+    /// against — an OS global shortcut is physically absent on a
+    /// terminal, the same way a tray icon or dock badge is — so it will
+    /// never emit this variant.
+    ///
+    /// Routing: broadcast, like [`Self::PowerStateChanged`] — the OS
+    /// delivered it outside the normal focus/hit-test path entirely.
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
+    /// exhaustively `match`es every variant with no wildcard arm would
+    /// fail to compile the moment this variant landed. Blast-radius grep,
+    /// per CLAUDE.md's mandatory rule 1 (this covers the new
+    /// `PlatformServices::register_global_shortcut`/
+    /// `unregister_global_shortcut`/`unregister_all_global_shortcuts`
+    /// methods and the `GlobalShortcutId`/`GlobalShortcutRegistry` types
+    /// as well as this variant — all landed together):
+    ///
+    /// ```text
+    /// $ grep -rn 'GlobalShortcut\|register_global_shortcut\|unregister_global_shortcut\|unregister_all_global_shortcuts' \
+    ///     ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both)
+    /// ```
+    ///
+    /// Zero hits means neither consumer references any of the new items
+    /// yet, but the real question for a *new enum variant* is whether
+    /// either consumer's existing `match`es over `UiEvent` are exhaustive
+    /// (no wildcard arm) — same two dispatch sites checked for
+    /// [`Self::PowerStateChanged`]:
+    ///
+    /// - `vimcode`'s `src/app/dispatch.rs` top-level `UiEvent` dispatch
+    ///   ends in a wildcard `_ => {}` arm (`dispatch.rs:1067`).
+    /// - `coord-tui`'s `src/app/events.rs` has two top-level `UiEvent`
+    ///   dispatches, both wildcard-terminated (`events.rs:6326` and
+    ///   `events.rs:6386`, each `_ => false`).
+    ///
+    /// Adding `GlobalShortcut` compiles clean against both `develop`-tip
+    /// checkouts with no consumer changes required.
+    GlobalShortcut(crate::GlobalShortcutId),
+
     /// A raw key was pressed. Routes to the focused widget. Apps that only
     /// want keybindings should prefer `Accelerator` — the backend handles
     /// match-and-dispatch for them.
@@ -534,18 +593,38 @@ pub enum UiEvent {
     /// re-measure of any DPI-dependent layout) always follows receipt.
     DpiChanged(f32),
 
-    /// Optional capability — the OS toggled one of the window's tri-state
-    /// chrome flags (maximize/restore, fullscreen enter/exit,
-    /// minimize/restore) other than through [`Backend::toggle_window_maximize`]
-    /// or [`WindowControl::set_fullscreen`][crate::backend::WindowControl::set_fullscreen]
-    /// themselves — a window-manager keyboard shortcut, a title-bar
-    /// double-click GTK/macOS handle natively, `Cmd+Ctrl+F`, etc. Backends
-    /// that wire this connect to their native "state changed" signal
-    /// and push this with the window's fresh tri-state snapshot; apps use
-    /// it to keep their own "is maximized" UI in sync with state the user
-    /// changed outside the app's own controls. Not applicable to TUI: a
-    /// terminal has no OS-level maximize/fullscreen/minimize state
-    /// distinct from the alt-screen it already occupies.
+    /// Optional capability — one of the window's tri-state chrome flags
+    /// (maximize/restore, fullscreen enter/exit, minimize/restore)
+    /// changed: a window-manager keyboard shortcut, a title-bar
+    /// double-click GTK/macOS handle natively, `Cmd+Ctrl+F`, or the app's
+    /// own [`Backend::toggle_window_maximize`] /
+    /// [`WindowControl::set_fullscreen`][crate::backend::WindowControl::set_fullscreen]
+    /// call. Backends that wire this connect to their native "state
+    /// changed" signal and push the window's fresh tri-state snapshot;
+    /// apps use it to keep their own "is maximized" UI in sync. Not
+    /// applicable to TUI: a terminal has no OS-level
+    /// maximize/fullscreen/minimize state distinct from the alt-screen it
+    /// already occupies.
+    ///
+    /// **This is a state snapshot, not a delta.** Treat it as idempotent:
+    /// all three fields describe the window as it is now, so an app that
+    /// assigns them (rather than toggling on receipt) stays correct even
+    /// when the transition was one it requested itself. Producers
+    /// deduplicate against the previously reported tri-state, so an
+    /// ordinary resize drag — which changes none of the three — emits
+    /// nothing.
+    ///
+    /// Win wires this off `WM_SIZE`, classifying from live `IsZoomed` /
+    /// `IsIconic` queries plus
+    /// [`WindowControl::is_fullscreen`][crate::backend::WindowControl::is_fullscreen]
+    /// rather than from `WM_SIZE`'s `wParam`. One Win32 quirk surfaces
+    /// through that: `IsZoomed` reports the `WS_MAXIMIZE` style, which
+    /// Windows keeps set while a *maximized* window is minimized (so
+    /// restoring it returns it to maximized rather than to its original
+    /// size). Minimizing a maximized window therefore reports
+    /// `maximized: true, minimized: true` together, and an app that
+    /// renders a maximize/restore affordance should check `minimized`
+    /// first. GTK and macOS have no producer yet.
     WindowStateChanged {
         maximized: bool,
         fullscreen: bool,
@@ -657,15 +736,17 @@ pub enum UiEvent {
     /// theme at startup call `system_theme()` once instead of waiting for
     /// this to fire.
     ///
-    /// **No backend emits this yet.** Same "declare the gap, don't fake
-    /// it" posture as [`Self::WindowStateChanged`] (also zero producers
-    /// today): the variant exists so app code and the event vocabulary are
-    /// ready before a backend wires the native change notification (GTK's
-    /// `Settings::connect_gtk_application_prefer_dark_theme_notify`,
-    /// macOS KVO on `effectiveAppearance`, Win's
-    /// `WM_SETTINGCHANGE("ImmersiveColorSet")`) into it. TUI has no
-    /// equivalent OS notification at all — a terminal can't push, only
-    /// answer a query — so it will never emit this variant.
+    /// Win wires this off `WM_SETTINGCHANGE`, filtered to the
+    /// `ImmersiveColorSet` setting name so it doesn't fire on every other
+    /// unrelated settings change Windows bundles into that message. GTK
+    /// and macOS have no producer yet — same "declare the gap, don't fake
+    /// it" posture as [`Self::WindowStateChanged`]: the variant exists so
+    /// app code and the event vocabulary are ready before each backend
+    /// wires its own native change notification (GTK's
+    /// `Settings::connect_gtk_application_prefer_dark_theme_notify`, macOS
+    /// KVO on `effectiveAppearance`). TUI has no equivalent OS notification
+    /// at all — a terminal can't push, only answer a query — so it will
+    /// never emit this variant.
     ///
     /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`].
     ///
@@ -714,16 +795,18 @@ pub enum UiEvent {
     /// cover (a monitor unplugged behind the window, say, with the
     /// window's own scale unaffected).
     ///
-    /// **No backend emits this yet.** Same "declare the gap, don't fake
-    /// it" posture as [`Self::SystemThemeChanged`]/[`Self::WindowStateChanged`]
-    /// (also zero producers today): the variant exists so app code and the
-    /// event vocabulary are ready before a backend wires the native
-    /// change notification (GTK's `gdk::Display::monitors`
-    /// `items-changed` signal on the returned `gio::ListModel`, macOS's
-    /// `NSApplicationDidChangeScreenParametersNotification`, Win's
-    /// `WM_DISPLAYCHANGE`) into it. TUI has no equivalent OS notification
-    /// — a terminal resize arrives as [`Self::WindowResized`], not a
-    /// display-topology change — so it will never emit this variant.
+    /// Win wires this off `WM_DISPLAYCHANGE` — no payload to decode, so
+    /// every receipt just pokes apps to re-read `displays()`. GTK and
+    /// macOS have no producer yet — same "declare the gap, don't fake it"
+    /// posture as [`Self::SystemThemeChanged`]/[`Self::WindowStateChanged`]:
+    /// the variant exists so app code and the event vocabulary are ready
+    /// before each backend wires its own native change notification
+    /// (GTK's `gdk::Display::monitors` `items-changed` signal on the
+    /// returned `gio::ListModel`, macOS's
+    /// `NSApplicationDidChangeScreenParametersNotification`). TUI has no
+    /// equivalent OS notification — a terminal resize arrives as
+    /// [`Self::WindowResized`], not a display-topology change — so it will
+    /// never emit this variant.
     ///
     /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`].
     ///
@@ -749,6 +832,69 @@ pub enum UiEvent {
     /// arm. Adding `DisplaysChanged` compiles clean with no consumer
     /// changes required.
     DisplaysChanged,
+
+    // ── Power state change ──────────────────────────────────────────────
+    /// A power-state transition occurred: the system is suspending or
+    /// resumed, switched between battery and AC, or the screen locked or
+    /// unlocked. Payload names which one — see
+    /// [`PowerEventKind`]. The live counterpart to
+    /// [`PlatformServices::on_battery`][crate::PlatformServices::on_battery]/
+    /// [`PlatformServices::thermal_state`][crate::PlatformServices::thermal_state]'s
+    /// poll-on-demand queries.
+    ///
+    /// **No backend emits this yet.** Same "declare the gap, don't fake
+    /// it" posture as [`Self::SystemThemeChanged`]/[`Self::DisplaysChanged`]
+    /// (also zero producers today): the variant exists so app code and the
+    /// event vocabulary are ready before a backend wires the native
+    /// notification (macOS's `NSWorkspace` sleep/wake/battery
+    /// notifications and `CGSessionDidLock`/`DidUnlock`, Win's
+    /// `WM_POWERBROADCAST`/`WTSRegisterSessionNotification`, GTK/Linux's
+    /// `org.freedesktop.login1` `PrepareForSleep` signal and
+    /// `org.freedesktop.UPower`'s `OnBattery` property) into it. TUI has
+    /// no equivalent OS notification to forward — a terminal process isn't
+    /// told when the host suspends, resumes, or changes power source — so
+    /// it will never emit this variant; see [`crate::power`]'s module doc.
+    ///
+    /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`].
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
+    /// exhaustively `match`es every variant with no wildcard arm would
+    /// fail to compile the moment this variant landed. Blast-radius grep,
+    /// per CLAUDE.md's mandatory rule 1 (this covers the new
+    /// `PlatformServices::on_battery`/`thermal_state`/
+    /// `begin_power_save_block`/`end_power_save_block` methods and the
+    /// `PowerSaveKind`/`BlockerId`/`ThermalState`/`PowerEventKind` types as
+    /// well as this variant — all landed together):
+    ///
+    /// ```text
+    /// $ grep -rn 'PowerStateChanged\|PowerSaveKind\|PowerEventKind\|BlockerId\|ThermalState\|on_battery\|power_save_block\|thermal_state' \
+    ///     ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both)
+    /// ```
+    ///
+    /// Zero hits means neither consumer references any of the new items
+    /// yet, but the real question for a *new enum variant* is whether
+    /// either consumer's existing `match`es over `UiEvent` are exhaustive
+    /// (no wildcard arm):
+    ///
+    /// - `vimcode`'s `src/app/dispatch.rs` top-level `UiEvent` dispatch
+    ///   (`dispatch.rs:630`–`1067`) already ends in a wildcard `_ => {}`
+    ///   arm (`dispatch.rs:1067`).
+    /// - `coord-tui`'s `src/app/events.rs` has two top-level `UiEvent`
+    ///   dispatches: the keyboard/window one (`events.rs:1391`–`4007`)
+    ///   ends in a wildcard `_ => {}` arm (`events.rs:4007`), and
+    ///   `handle_mouse`'s (`events.rs:4031`–`5003`) ends in a wildcard
+    ///   `_ => false` arm (`events.rs:5003`).
+    ///
+    /// Every other `UiEvent` match in both consumers is either an `if
+    /// let` on one specific variant or itself wildcard-terminated. Adding
+    /// `PowerStateChanged` compiles clean against both `develop`-tip
+    /// checkouts with no consumer changes required.
+    PowerStateChanged {
+        kind: PowerEventKind,
+    },
 
     // ── Cross-primitive scroll event ──────────────────────────────────
     /// A scrollbar drag or click resolved to a new offset. Generic
@@ -880,18 +1026,21 @@ pub enum UiEvent {
     /// without inventing its own out-of-band id scheme. `None` when the
     /// firing `Notification` carried no tag.
     ///
-    /// **Not every backend can produce this.** Only GTK has a native
-    /// click-through channel today — `gio::Notification`'s action/
-    /// default-action `GAction`s, wired in `gtk::services` (see that
-    /// module's doc). macOS's unbundled `osascript` fallback and Win's
-    /// `Shell_NotifyIconW` balloon fallback have no click-through
-    /// mechanism to report through and honestly never emit this variant
-    /// — see each backend's `send_notification` doc for what a real
-    /// implementation there (`UNUserNotificationCenter`, WinRT
-    /// `ToastNotificationManager`) would need. TUI (and any other
-    /// backend with `BackendCaps::notifications == false`) degrades
-    /// notifications to the in-canvas `Toast` primitive instead (see
-    /// `compose::notification::notify_or_toast`); a toast's own action
+    /// **Not every backend can produce this.** GTK's `gio::Notification`
+    /// action/default-action `GAction`s (wired in `gtk::services`),
+    /// macOS's bundled `.app` path (`UNUserNotificationCenter`'s delegate,
+    /// wired in `macos::services`) and Win's WinRT
+    /// `ToastNotificationManager` toast (wired in `win::services`,
+    /// `ToastNotification::Activated`) all have a native click-through
+    /// channel and emit this variant. macOS falls back to `osascript
+    /// display notification` for an unbundled host (no
+    /// `CFBundleIdentifier` to authorize against), and Win falls back to a
+    /// `Shell_NotifyIconW` balloon when no AUMID/WinRT path is available;
+    /// neither fallback can report an activation — see each backend's
+    /// `send_notification` doc for what each path covers. TUI
+    /// (and any other backend with `BackendCaps::notifications == false`)
+    /// degrades notifications to the in-canvas `Toast` primitive instead
+    /// (see `compose::notification::notify_or_toast`); a toast's own action
     /// button click resolves through
     /// [`crate::primitives::toast::ToastStackLayout::hit_test`] /
     /// [`crate::primitives::toast::ToastHit`] from an ordinary

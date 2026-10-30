@@ -137,6 +137,7 @@ use std::os::raw::{c_char, c_void};
 use std::panic::{self, AssertUnwindSafe};
 use std::slice;
 
+use quadraui::paths::{self, AppPathKind};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
     AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, Reaction, Rect, TabBar,
@@ -176,6 +177,9 @@ pub const QUI_ERR_POISONED: i32 = -11;
 /// A bug in this crate — a failure that is not the caller's fault, such as
 /// an event that would not serialize.
 pub const QUI_ERR_INTERNAL: i32 = -12;
+/// The `kind` passed to [`qui_app_path`] was not one of the `QUI_PATH_*`
+/// values, or this platform or build could not resolve it.
+pub const QUI_ERR_UNSUPPORTED: i32 = -13;
 
 /// [`qui_step`] advanced the app and it is still running.
 pub const QUI_STEP_CONTINUE: i32 = QUI_OK;
@@ -195,6 +199,31 @@ pub const QUI_SLOT_TREE: i32 = 3;
 pub const QUI_SLOT_DATA_TABLE: i32 = 4;
 /// Slot id of the app's `TabBar` descriptor.
 pub const QUI_SLOT_TAB_BAR: i32 = 5;
+
+/// `kind` for [`qui_app_path`]: durable, app-scoped data (Electron's
+/// `userData`), scoped by [`qui_set_app_identifier`].
+pub const QUI_PATH_USER_DATA: i32 = 0;
+/// `kind` for [`qui_app_path`]: app-scoped configuration, scoped by
+/// [`qui_set_app_identifier`].
+pub const QUI_PATH_APP_CONFIG: i32 = 1;
+/// `kind` for [`qui_app_path`]: app-scoped cache, scoped by
+/// [`qui_set_app_identifier`].
+pub const QUI_PATH_APP_CACHE: i32 = 2;
+/// `kind` for [`qui_app_path`]: app-scoped log directory, scoped by
+/// [`qui_set_app_identifier`].
+pub const QUI_PATH_LOGS: i32 = 3;
+/// `kind` for [`qui_app_path`]: the OS-wide temporary directory, unscoped
+/// by app identity.
+pub const QUI_PATH_TEMP: i32 = 4;
+/// `kind` for [`qui_app_path`]: the user's Downloads folder, unscoped by
+/// app identity.
+pub const QUI_PATH_DOWNLOADS: i32 = 5;
+/// `kind` for [`qui_app_path`]: the user's Documents folder, unscoped by
+/// app identity.
+pub const QUI_PATH_DOCUMENTS: i32 = 6;
+/// `kind` for [`qui_app_path`]: the user's home directory, unscoped by
+/// app identity.
+pub const QUI_PATH_HOME: i32 = 7;
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -1092,6 +1121,88 @@ pub unsafe extern "C" fn qui_screen(app: *const QuiApp) -> *mut c_char {
     })
 }
 
+/// Resolve a standard, per-app filesystem location —
+/// `quadraui::PlatformServices::app_path` surfaced over FFI. `kind` is one
+/// of the `QUI_PATH_*` constants.
+///
+/// Needs no [`QuiApp`] handle: resolving a standard path needs no window,
+/// display server or driver, only the filesystem and environment
+/// (`quadraui::paths`'s module doc has the full rationale).
+///
+/// Returns a caller-owned, null-terminated UTF-8 string the caller must
+/// free with [`qui_free`], or null on failure — [`QUI_ERR_UNSUPPORTED`] for
+/// a `kind` outside the `QUI_PATH_*` set, or one this platform or build
+/// cannot resolve; [`QUI_ERR_INTERNAL`] if the resolved path is not valid
+/// UTF-8 (possible on Unix, where paths are arbitrary bytes) rather than
+/// silently mangling it with `to_string_lossy` — with [`qui_last_error`]
+/// set to why.
+#[no_mangle]
+pub extern "C" fn qui_app_path(kind: i32) -> *mut c_char {
+    const NAME: &str = "qui_app_path";
+    clear_last_error();
+    boundary(NAME, || {
+        let mapped = match kind {
+            QUI_PATH_USER_DATA => AppPathKind::UserData,
+            QUI_PATH_APP_CONFIG => AppPathKind::AppConfig,
+            QUI_PATH_APP_CACHE => AppPathKind::AppCache,
+            QUI_PATH_LOGS => AppPathKind::Logs,
+            QUI_PATH_TEMP => AppPathKind::Temp,
+            QUI_PATH_DOWNLOADS => AppPathKind::Downloads,
+            QUI_PATH_DOCUMENTS => AppPathKind::Documents,
+            QUI_PATH_HOME => AppPathKind::Home,
+            _ => {
+                fail(
+                    QUI_ERR_UNSUPPORTED,
+                    format!("{NAME}: {kind} is not one of the QUI_PATH_* values"),
+                );
+                return std::ptr::null_mut();
+            }
+        };
+        match paths::resolve(mapped) {
+            Ok(path) => match path.to_str() {
+                Some(s) => into_owned_c_string(NAME, s.to_owned()),
+                None => {
+                    fail(
+                        QUI_ERR_INTERNAL,
+                        format!("{NAME}: {mapped:?} resolved to a non-UTF-8 path"),
+                    );
+                    std::ptr::null_mut()
+                }
+            },
+            Err(_) => {
+                fail(
+                    QUI_ERR_UNSUPPORTED,
+                    format!("{NAME}: {mapped:?} could not be resolved on this platform or build"),
+                );
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// Set the app identifier that scopes [`QUI_PATH_USER_DATA`],
+/// [`QUI_PATH_APP_CONFIG`], [`QUI_PATH_APP_CACHE`] and [`QUI_PATH_LOGS`] —
+/// `quadraui::paths::set_app_identifier` surfaced over FFI.
+///
+/// Process-global, not per-[`QuiApp`] handle: call this once at startup,
+/// before the first [`qui_app_path`] call that needs it.
+///
+/// # Safety
+/// `ptr` must be either null or valid for reads of `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn qui_set_app_identifier(ptr: *const u8, len: usize) -> i32 {
+    const NAME: &str = "qui_set_app_identifier";
+    clear_last_error();
+    boundary(NAME, || {
+        let identifier = match borrow_utf8(NAME, "identifier", ptr, len) {
+            Ok(identifier) => identifier,
+            Err(code) => return code,
+        };
+        paths::set_app_identifier(identifier);
+        QUI_OK
+    })
+}
+
 /// Return the error code of the last call on the current thread: [`QUI_OK`]
 /// if it succeeded, otherwise the same negative `QUI_ERR_*` code that call
 /// returned. Lets a host read the machine-checkable half of the error
@@ -1167,6 +1278,7 @@ pub extern "C" fn qui_error_name(code: i32) -> *const c_char {
             QUI_ERR_PANIC => c"QUI_ERR_PANIC",
             QUI_ERR_POISONED => c"QUI_ERR_POISONED",
             QUI_ERR_INTERNAL => c"QUI_ERR_INTERNAL",
+            QUI_ERR_UNSUPPORTED => c"QUI_ERR_UNSUPPORTED",
             _ => return std::ptr::null(),
         };
         name.as_ptr()
@@ -1946,6 +2058,7 @@ mod tests {
             (QUI_ERR_PANIC, "QUI_ERR_PANIC"),
             (QUI_ERR_POISONED, "QUI_ERR_POISONED"),
             (QUI_ERR_INTERNAL, "QUI_ERR_INTERNAL"),
+            (QUI_ERR_UNSUPPORTED, "QUI_ERR_UNSUPPORTED"),
         ];
         for (code, name) in expected {
             let ptr = qui_error_name(code);
@@ -1955,6 +2068,83 @@ mod tests {
         }
         assert!(qui_error_name(-999).is_null());
         assert!(qui_error_name(12345).is_null());
+    }
+
+    /// Every `QUI_PATH_*` kind resolves to a non-empty, caller-freeable
+    /// path on this host, mirroring `quadraui`'s own
+    /// `paths::tests::every_kind_resolves_to_a_non_empty_path`.
+    #[test]
+    fn qui_app_path_resolves_every_known_kind() {
+        for kind in [
+            QUI_PATH_USER_DATA,
+            QUI_PATH_APP_CONFIG,
+            QUI_PATH_APP_CACHE,
+            QUI_PATH_LOGS,
+            QUI_PATH_TEMP,
+            QUI_PATH_DOWNLOADS,
+            QUI_PATH_DOCUMENTS,
+            QUI_PATH_HOME,
+        ] {
+            clear_last_error();
+            let ptr = qui_app_path(kind);
+            assert!(!ptr.is_null(), "kind {kind} should resolve on this host");
+            let resolved = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
+            assert!(
+                !resolved.is_empty(),
+                "kind {kind} resolved to an empty path"
+            );
+            unsafe { qui_free(ptr) };
+        }
+    }
+
+    #[test]
+    fn qui_app_path_rejects_an_unknown_kind() {
+        clear_last_error();
+        let ptr = qui_app_path(999);
+        assert!(ptr.is_null());
+        assert_eq!(qui_last_error_code(), QUI_ERR_UNSUPPORTED);
+    }
+
+    #[test]
+    fn qui_set_app_identifier_rejects_a_null_pointer() {
+        clear_last_error();
+        let code = unsafe { qui_set_app_identifier(std::ptr::null(), 5) };
+        assert_eq!(code, QUI_ERR_NULL_POINTER);
+        assert_eq!(qui_last_error_code(), QUI_ERR_NULL_POINTER);
+    }
+
+    /// Setting a new identifier moves `QUI_PATH_USER_DATA`/`QUI_PATH_APP_CONFIG`
+    /// to a different path, mirroring `quadraui`'s own
+    /// `paths::tests::app_identifier_scopes_user_data_and_config`. No other
+    /// test in this module touches the process-global identifier, so this
+    /// one is safe to run alongside them without its own lock.
+    #[test]
+    fn qui_set_app_identifier_scopes_user_data_and_config() {
+        unsafe fn resolved(kind: i32) -> String {
+            clear_last_error();
+            let ptr = qui_app_path(kind);
+            assert!(!ptr.is_null());
+            let text = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+            qui_free(ptr);
+            text
+        }
+
+        unsafe {
+            let one = b"quadraui-ffi-test-one";
+            assert_eq!(qui_set_app_identifier(one.as_ptr(), one.len()), QUI_OK);
+            let data_one = resolved(QUI_PATH_USER_DATA);
+            let config_one = resolved(QUI_PATH_APP_CONFIG);
+
+            let two = b"quadraui-ffi-test-two";
+            assert_eq!(qui_set_app_identifier(two.as_ptr(), two.len()), QUI_OK);
+            let data_two = resolved(QUI_PATH_USER_DATA);
+            let config_two = resolved(QUI_PATH_APP_CONFIG);
+
+            assert_ne!(data_one, data_two);
+            assert_ne!(config_one, config_two);
+
+            paths::clear_app_identifier();
+        }
     }
 
     /// Dispatching an event repaints when the host's `handle` asks for a

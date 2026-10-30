@@ -40,6 +40,14 @@
 //!   other field); a consumer going through `FormController` gets
 //!   arrow/page-key day/month navigation and Enter-to-confirm for free,
 //!   emitting `FormEvent::DateChanged` on confirm.
+//! - `ComboBox` — render the live `text` buffer plus a chevron as a
+//!   compact single-line field (the row stays one `row_h` tall); a
+//!   consumer going through `FormController` gets type-to-filter and
+//!   Enter-to-commit for free, emitting `FormEvent::ComboBoxTextChanged`
+//!   per keystroke and `ComboBoxCommitted` on confirm. The *app* is
+//!   responsible for painting the open dropdown overlay itself, mirroring
+//!   `ColorPicker`'s popup contract, since `Form` doesn't grow the row to
+//!   show it.
 //!
 //! Tab / Shift-Tab move `focused_field` forward/backward through
 //! interactive fields (skip `Label`, skip disabled fields); emit
@@ -76,10 +84,17 @@ use serde::{Deserialize, Serialize};
 ///         hint: StyledText::plain(""),
 ///         disabled: false,
 ///         validation: None,
+///         label_position: None,
+///         label_align: None,
+///         label_width: None,
+///         tab_index: None,
 ///     }],
 ///     focused_field: None,
 ///     scroll_offset: 0,
 ///     has_focus: true,
+///     label_position: Default::default(),
+///     label_align: Default::default(),
+///     label_width: None,
 /// };
 ///
 /// let layout = form.layout(40.0, 10.0, |_| FormFieldMeasure::new(1.0));
@@ -102,6 +117,64 @@ pub struct Form {
     pub scroll_offset: usize,
     #[serde(default)]
     pub has_focus: bool,
+    /// Form-wide default for where a field's label renders. A
+    /// [`FormField::label_position`] override, when set, wins over this.
+    /// `Left` reproduces today's only behaviour (label beside the
+    /// input); `Top` is Ant Design's "vertical" form layout; `Inline`
+    /// is its "inline" layout; `Hidden` suppresses labels form-wide.
+    /// Use [`Form::resolved_label_position`] rather than reading this
+    /// field directly so a per-field override is honored.
+    #[serde(default)]
+    pub label_position: LabelPosition,
+    /// Form-wide default alignment for `Left`-positioned labels inside
+    /// their label column. A [`FormField::label_align`] override, when
+    /// set, wins over this. Use [`Form::resolved_label_align`] rather
+    /// than reading this field directly.
+    #[serde(default)]
+    pub label_align: LabelAlign,
+    /// Form-wide fixed width (cells for TUI, device pixels for GTK /
+    /// macOS / Win) reserved for the label column when a field resolves
+    /// to `Left` positioning. `None` lets the backend size the column to
+    /// the widest label, as it does today. A [`FormField::label_width`]
+    /// override, when set, wins over this. Use
+    /// [`Form::resolved_label_width`] rather than reading this field
+    /// directly.
+    #[serde(default)]
+    pub label_width: Option<f32>,
+}
+
+/// Where a field's label renders relative to its input. Set on
+/// [`Form::label_position`] as the form-wide default, or on
+/// [`FormField::label_position`] to override a single field. Modeled on
+/// Ant Design's `Form` `layout` prop (`horizontal` / `vertical` /
+/// `inline`), with `Hidden` added for label-less rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LabelPosition {
+    /// Label beside the input, on the same row. Ant's "horizontal"
+    /// layout; quadraui's only behaviour before this field existed.
+    #[default]
+    Left,
+    /// Label on its own row above the input. Ant's "vertical" layout.
+    Top,
+    /// Label and input share a line with no reserved label column —
+    /// for standalone `Button`/`Toggle` rows or compact single-line
+    /// forms. Ant's "inline" layout.
+    Inline,
+    /// The label is not rendered; the input takes the full row.
+    Hidden,
+}
+
+/// Horizontal alignment of a `Left`-positioned label inside its label
+/// column. Only meaningful when the resolved [`LabelPosition`] is
+/// `Left` and a label column width is established (either an explicit
+/// [`Form::label_width`]/[`FormField::label_width`] or the backend's
+/// own widest-label measurement).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LabelAlign {
+    #[default]
+    Start,
+    Center,
+    End,
 }
 
 /// Validation state rendered as a colored indicator + message.
@@ -130,6 +203,33 @@ pub struct FormField {
     /// Overrides `hint` visually when present.
     #[serde(default)]
     pub validation: Option<ValidationState>,
+    /// Overrides the form-wide [`Form::label_position`] for this field
+    /// only. `None` defers to the form's default — read through
+    /// [`Form::resolved_label_position`], never this field directly.
+    #[serde(default)]
+    pub label_position: Option<LabelPosition>,
+    /// Overrides the form-wide [`Form::label_align`] for this field
+    /// only. `None` defers to the form's default — read through
+    /// [`Form::resolved_label_align`].
+    #[serde(default)]
+    pub label_align: Option<LabelAlign>,
+    /// Overrides the form-wide [`Form::label_width`] for this field.
+    /// `None` defers to the form's default — read through
+    /// [`Form::resolved_label_width`]. Only meaningful when the field's
+    /// resolved label position is [`LabelPosition::Left`]: a backend
+    /// sharing one label column across `Left` fields (as the TUI
+    /// backend does) folds this value into that column's width rather
+    /// than sizing this field's label in isolation.
+    #[serde(default)]
+    pub label_width: Option<f32>,
+    /// Explicit position in the Tab/Shift-Tab focus cycle. Fields are
+    /// visited in ascending `tab_index` order, ties and `None` broken
+    /// by `fields` order (so the Vec order is still the default when no
+    /// field sets this). Consulted by
+    /// [`crate::compose::form_controller::FormController`]'s focus
+    /// traversal; the plain `Form` primitive does not use it itself.
+    #[serde(default)]
+    pub tab_index: Option<i32>,
 }
 
 /// The input variant carried by a `FormField`.
@@ -200,9 +300,12 @@ pub enum FieldKind {
     /// colour assignments.
     ColorPicker { value: crate::Color },
     /// Single-choice selection from a fixed list. `options` is the
-    /// display list; `selected_idx` is the current choice.
-    /// Click / Enter opens the dropdown; arrows select; Enter confirms.
-    /// Emits `FormEvent::DropdownChanged` on commit.
+    /// display list; `selected_idx` is the current choice. While the
+    /// field is focused, backends show the full option list open below
+    /// the compact row (see e.g. `crate::tui::form::draw_form`); Up/Down
+    /// move the selection and commit it immediately, emitting
+    /// `FormEvent::DropdownChanged` on every move — there's no separate
+    /// open/confirm step.
     ///
     /// Use for enum-style settings (theme selection, cursor style,
     /// line-ending preference, language server choice).
@@ -283,6 +386,32 @@ pub enum FieldKind {
     /// only moves focus to it (`FormEvent::FocusChanged`) — day-cell
     /// hit-testing is the keyboard path's job here, not the pointer's.
     DatePicker(crate::primitives::date_picker::DatePicker),
+    /// A searchable / type-to-filter [`crate::primitives::combo_box::ComboBox`]
+    /// embedded as a single field row: a text input backed by a fixed list
+    /// of options, where typing filters the list instead of requiring an
+    /// exact match. The field's row stays the same height as every other
+    /// field — see [`crate::primitives::layout_metrics::form_field_measure`]'s
+    /// doc for why no `FieldKind` grows the row — so only the live `text`
+    /// buffer plus a chevron render in the value column; the open dropdown
+    /// list is not part of this compact row.
+    ///
+    /// A consumer going through
+    /// [`crate::compose::form_controller::FormController`] gets keystroke
+    /// routing (typing filters, arrows move the highlight, Enter commits,
+    /// Escape cancels) for free: the controller calls the embedded combo
+    /// box's own [`crate::primitives::combo_box::ComboBox::handle_key`] and
+    /// translates the result into `FormEvent::ComboBoxTextChanged`,
+    /// `ComboBoxHighlightChanged`, `ComboBoxCommitted`, or
+    /// `ComboBoxCancelled`. Painting and hit-testing the open dropdown
+    /// itself is, like [`FieldKind::ColorPicker`]'s popup, the *app*'s job
+    /// — `Form` doesn't render it — using the combo box's own
+    /// [`crate::primitives::combo_box::ComboBox::layout`] and
+    /// [`crate::primitives::combo_box::ComboBox::click`].
+    ///
+    /// Use for anything picked from a long, fixed-but-searchable list:
+    /// language-server choice, font family, git branch, command palette
+    /// style pickers.
+    ComboBox(crate::primitives::combo_box::ComboBox),
 }
 
 /// One toggle in a [`FieldKind::ToggleGroup`].
@@ -385,7 +514,13 @@ pub struct VisibleFormField {
     pub bounds: Rect,
     /// Resolved per-item rects for `ToggleGroup` / `ButtonRow` fields.
     /// Empty for other field kinds. Rasterisers consume these to paint
-    /// items at the layout-determined positions.
+    /// items at the layout-determined positions. Each rect's height
+    /// matches `bounds`' height, so a field whose label resolves to
+    /// [`LabelPosition::Top`] (which reserves an extra row above the
+    /// items) gets item rects spanning both the label row and the item
+    /// row rather than the item row alone; a hit-test against the top
+    /// of such a rect lands on the item even though that row paints the
+    /// label text.
     pub item_bounds: Vec<(WidgetId, Rect)>,
 }
 
@@ -423,6 +558,28 @@ impl FormLayout {
 }
 
 impl Form {
+    /// The effective label position for `field`: its own
+    /// [`FormField::label_position`] override if set, else this form's
+    /// [`Form::label_position`] default.
+    pub fn resolved_label_position(&self, field: &FormField) -> LabelPosition {
+        field.label_position.unwrap_or(self.label_position)
+    }
+
+    /// The effective label alignment for `field`: its own
+    /// [`FormField::label_align`] override if set, else this form's
+    /// [`Form::label_align`] default.
+    pub fn resolved_label_align(&self, field: &FormField) -> LabelAlign {
+        field.label_align.unwrap_or(self.label_align)
+    }
+
+    /// The effective label column width for `field`: its own
+    /// [`FormField::label_width`] override if set, else this form's
+    /// [`Form::label_width`] default, else `None` (backend sizes the
+    /// column to the widest label).
+    pub fn resolved_label_width(&self, field: &FormField) -> Option<f32> {
+        field.label_width.or(self.label_width)
+    }
+
     /// Compute the full rendering + hit-test layout for this form.
     ///
     /// # Arguments
@@ -1088,6 +1245,29 @@ mod native_surface_paint {
                         surface.surface_draw_text_run(Rect::new(ix, ty, tw, th), &text, field_fg);
                     }
                 }
+                FieldKind::ComboBox(combo) => {
+                    // Compact row only — `text` is the live, possibly
+                    // mid-filter buffer; the open dropdown (if any) is
+                    // painted by the app after this fn returns, per this
+                    // field's doc.
+                    let (tw, th) = surface.surface_measure_text(&combo.text);
+                    let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
+                    let total = tw + 4.0 + chev_w;
+                    let ix = input_right - total;
+                    if ix > label_right + 8.0 {
+                        let ty = row_rect.y + (row_h - th) / 2.0;
+                        surface.surface_draw_text_run(
+                            Rect::new(ix, ty, tw, th),
+                            &combo.text,
+                            field_fg,
+                        );
+                        surface.surface_draw_text_run(
+                            Rect::new(ix + tw + 4.0, ty, chev_w, th),
+                            "\u{25BE}",
+                            theme.muted_fg,
+                        );
+                    }
+                }
             }
 
             if let Some((color, msg)) = validation_info {
@@ -1357,10 +1537,17 @@ mod native_surface_paint {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 }],
                 focused_field: None,
                 scroll_offset: 0,
                 has_focus: false,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                label_width: None,
             }
         }
 
@@ -1706,6 +1893,41 @@ pub enum FormEvent {
     /// A key was pressed while the form had focus and the primitive did
     /// not consume it. The app may interpret it (e.g. `?` opens help).
     KeyPressed { key: String, modifiers: Modifiers },
+    /// A `ComboBox` field's text buffer changed (typing filters the
+    /// dropdown). Fires on every keystroke that modifies the buffer,
+    /// mirroring `TextInputChanged`'s "fires every keystroke" shape.
+    /// `id` is the **`FormField`'s** id, not the embedded `ComboBox`
+    /// primitive's own id — the same `id: focused_id` shape
+    /// `FormEvent::DateChanged` uses — so a consumer can always resolve
+    /// this back to a field via `form.fields.iter().find(|f| f.id ==
+    /// id)`. Applying this event must also set `open = true` on the
+    /// `ComboBox`, per [`crate::primitives::combo_box::ComboBox`]'s
+    /// apply contract: the host owns opening the dropdown on the first
+    /// keystroke, `FormController` does not do it for you.
+    ComboBoxTextChanged { id: WidgetId, value: String },
+    /// A `ComboBox` field's highlighted dropdown item changed (arrow-key
+    /// navigation while the dropdown is open). `id` is the `FormField`'s
+    /// id, as with [`Self::ComboBoxTextChanged`]. `index` is into the
+    /// *filtered* list (`ComboBox::filtered_indices`), not the field's
+    /// raw `options` — index it against the currently-visible dropdown
+    /// items, not the full option list.
+    ComboBoxHighlightChanged { id: WidgetId, index: usize },
+    /// A `ComboBox` field confirmed a value (Enter). Mirrors
+    /// `TextInputCommitted`'s "fires once, on confirm" shape rather than
+    /// `ComboBoxTextChanged`'s "fires every keystroke" shape. `id` is
+    /// the `FormField`'s id, as with [`Self::ComboBoxTextChanged`].
+    /// `Form`/`FormController` route this only from a key press
+    /// (`form_click_event` has no `ComboBox` arm); an app that wants a
+    /// click on a dropdown item to also commit must call
+    /// [`crate::primitives::combo_box::ComboBox::click`] itself and
+    /// apply the resulting event the same way.
+    ComboBoxCommitted { id: WidgetId, value: String },
+    /// A `ComboBox` field's in-progress edit was cancelled (Escape),
+    /// reverting the live `text` buffer back to `committed`. `id` is the
+    /// `FormField`'s id, as with [`Self::ComboBoxTextChanged`]. Applying
+    /// this event means setting `text = committed.clone()` and `open =
+    /// false` on the `ComboBox`.
+    ComboBoxCancelled { id: WidgetId },
 }
 
 #[cfg(test)]
@@ -1725,6 +1947,10 @@ mod tests {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("line-numbers"),
@@ -1733,6 +1959,10 @@ mod tests {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("tabstop"),
@@ -1746,6 +1976,10 @@ mod tests {
                     hint: StyledText::plain("Number of spaces per tab"),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
                 FormField {
                     id: WidgetId::new("save"),
@@ -1754,11 +1988,33 @@ mod tests {
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
+                },
+                FormField {
+                    id: WidgetId::new("language"),
+                    label: StyledText::plain("Language server"),
+                    kind: FieldKind::ComboBox(crate::primitives::combo_box::ComboBox::new(
+                        WidgetId::new("language-combo"),
+                        vec!["rust-analyzer".into(), "pyright".into(), "gopls".into()],
+                    )),
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
                 },
             ],
             focused_field: Some(WidgetId::new("line-numbers")),
             scroll_offset: 0,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
         let json = serde_json::to_string(&form).unwrap();
         let back: Form = serde_json::from_str(&json).unwrap();
@@ -1790,6 +2046,21 @@ mod tests {
                 key: "Escape".to_string(),
                 modifiers: Modifiers::default(),
             },
+            FormEvent::ComboBoxTextChanged {
+                id: WidgetId::new("language"),
+                value: "rust".to_string(),
+            },
+            FormEvent::ComboBoxHighlightChanged {
+                id: WidgetId::new("language"),
+                index: 0,
+            },
+            FormEvent::ComboBoxCommitted {
+                id: WidgetId::new("language"),
+                value: "rust-analyzer".to_string(),
+            },
+            FormEvent::ComboBoxCancelled {
+                id: WidgetId::new("language"),
+            },
         ];
         for event in &events {
             let json = serde_json::to_string(event).unwrap();
@@ -1812,10 +2083,48 @@ mod tests {
             hint: StyledText::plain("Editor font size in px"),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
         assert_eq!(field, back);
+    }
+
+    #[test]
+    fn form_field_legacy_deserialize_without_label_placement_fields() {
+        // JSON written before `label_position`/`label_align`/
+        // `label_width`/`tab_index` existed must still deserialize, with
+        // every new field defaulting to `None`.
+        let json = r#"{
+            "id": "name",
+            "label": {"spans":[{"text":"Name","fg":null,"bg":null}]},
+            "kind": {"TextInput": {"value": "", "cursor": 0, "selection_anchor": null, "placeholder": ""}}
+        }"#;
+        let field: FormField = serde_json::from_str(json).unwrap();
+        assert_eq!(field.label_position, None);
+        assert_eq!(field.label_align, None);
+        assert_eq!(field.label_width, None);
+        assert_eq!(field.tab_index, None);
+    }
+
+    #[test]
+    fn form_legacy_deserialize_without_label_placement_fields() {
+        // JSON written before `label_position`/`label_align`/
+        // `label_width` existed must still deserialize, with every new
+        // field defaulting to its form-wide default (`Left`/`Start`/
+        // `None`) — the same layout an old client always got.
+        let json = r#"{
+            "id": "settings",
+            "fields": [],
+            "focused_field": null
+        }"#;
+        let form: Form = serde_json::from_str(json).unwrap();
+        assert_eq!(form.label_position, LabelPosition::Left);
+        assert_eq!(form.label_align, LabelAlign::Start);
+        assert_eq!(form.label_width, None);
     }
 
     #[test]
@@ -1829,6 +2138,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -1851,6 +2164,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -1895,6 +2212,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -1925,6 +2246,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -1941,6 +2266,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }
     }
 
@@ -1951,6 +2280,9 @@ mod tests {
             focused_field: None,
             scroll_offset: scroll,
             has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         }
     }
 
@@ -2062,6 +2394,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();

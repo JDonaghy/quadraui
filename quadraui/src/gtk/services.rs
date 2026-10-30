@@ -57,27 +57,21 @@
 //! [`Self::show_message_dialog`]'s `opts.severity` having nowhere to go
 //! on `gtk4::AlertDialog`.
 //!
-//! ## Tray / status-bar icon — deliberately not implemented
-//! here
+//! ## Tray / status-bar icon — lives in `gtk::tray`, not here
 //!
-//! `GtkBackend::tray` (see [`crate::backend::Backend::tray`]) is left at
-//! the trait's `None` default rather than gaining a `GtkTrayService` in
-//! this file. Unlike every other gap this module documents, this one
-//! isn't "stubbed pending a trait shape" — it's "no GTK4 API exists at
-//! all": GTK4 itself ships no status-icon widget (`GtkStatusIcon` was
-//! removed in the GTK3→4 transition), so a real implementation needs
-//! StatusNotifierItem over D-Bus (the `ksni` crate, or a hand-rolled
-//! implementation) or `libayatana-appindicator`, and must additionally
-//! report honest `Unsupported`/`None` on desktops with no SNI host
-//! running at all (stock GNOME without an extension, notably) rather
-//! than silently no-oping. That's a materially larger, separate piece of
-//! work than the macOS (`NSStatusBar`) and Win (`Shell_NotifyIconW`)
-//! implementations, which reuse existing in-tree image-decode and
-//! `ContextMenu`-rendering machinery — see `macos::tray`/`win::tray`'s
-//! module docs for those. Tracked as GTK follow-up, not silently
-//! dropped: `Backend::tray` returning `None` here is the honest,
-//! structural "not yet" this crate's docs consistently prefer over a
-//! capability flag nobody set.
+//! `GtkBackend::tray` (see [`crate::backend::Backend::tray`]) does
+//! override the trait's `None` default, but the implementation isn't in
+//! this file: GTK4 itself ships no status-icon widget at all
+//! (`GtkStatusIcon` was removed in the GTK3→4 transition), so there is
+//! no `gio`/`gtk4` call for [`GtkPlatformServices`] to wrap the way it
+//! wraps clipboard, dialogs or notifications above. Instead
+//! `gtk::tray::GtkTrayState` speaks `org.kde.StatusNotifierItem` +
+//! `com.canonical.dbusmenu` directly over the session D-Bus (`zbus`),
+//! and reports honest `Unsupported`/`None` on a desktop with no SNI host
+//! running (stock GNOME without an extension, notably) rather than
+//! silently no-oping — see `gtk::tray`'s module doc for the protocol
+//! detail, and `macos::tray`/`win::tray` for the other two backends'
+//! native equivalents (`NSStatusBar`/`Shell_NotifyIconW`).
 //!
 //! ## Displays
 //!
@@ -659,7 +653,12 @@ impl PlatformServices for GtkPlatformServices {
         let settings = gtk4::Settings::default().ok_or(BackendError::Unsupported)?;
         let dark = settings.is_gtk_application_prefer_dark_theme();
         let theme_name = settings.gtk_theme_name();
-        Ok(system_theme_from_gtk_settings(dark, theme_name.as_deref()))
+        let enable_animations = settings.is_gtk_enable_animations();
+        Ok(system_theme_from_gtk_settings(
+            dark,
+            theme_name.as_deref(),
+            enable_animations,
+        ))
     }
 
     /// `gdk::Display::monitors()` + `Monitor::geometry()`/
@@ -815,7 +814,18 @@ fn decode_gio_icon(source: &ImageSource) -> gio::Icon {
 /// No accent-colour source: GTK4 itself exposes none (that lives on
 /// libadwaita's `AdwStyleManager`, which this crate doesn't depend on), so
 /// `accent` is always `None` here.
-fn system_theme_from_gtk_settings(dark: bool, theme_name: Option<&str>) -> SystemTheme {
+///
+/// `enable_animations` is GTK's own `gtk-enable-animations` setting
+/// (`Settings::is_gtk_enable_animations`) — the desktop's reduce-motion
+/// signal on Linux, surfaced to GTK apps as "animations are off" rather
+/// than a dedicated "reduce motion" property. [`SystemTheme::reduce_motion`]
+/// is its logical inverse: animations disabled means motion should be
+/// reduced.
+fn system_theme_from_gtk_settings(
+    dark: bool,
+    theme_name: Option<&str>,
+    enable_animations: bool,
+) -> SystemTheme {
     let high_contrast = theme_name
         .map(|name| name.to_ascii_lowercase().contains("highcontrast"))
         .unwrap_or(false);
@@ -823,6 +833,7 @@ fn system_theme_from_gtk_settings(dark: bool, theme_name: Option<&str>) -> Syste
         dark,
         accent: None,
         high_contrast,
+        reduce_motion: !enable_animations,
     }
 }
 
@@ -1557,7 +1568,7 @@ mod tests {
 
     #[test]
     fn system_theme_from_gtk_settings_reports_dark() {
-        let theme = system_theme_from_gtk_settings(true, Some("Adwaita-dark"));
+        let theme = system_theme_from_gtk_settings(true, Some("Adwaita-dark"), true);
         assert!(theme.dark);
         assert_eq!(theme.accent, None);
         assert!(!theme.high_contrast);
@@ -1565,21 +1576,29 @@ mod tests {
 
     #[test]
     fn system_theme_from_gtk_settings_reports_light() {
-        let theme = system_theme_from_gtk_settings(false, Some("Adwaita"));
+        let theme = system_theme_from_gtk_settings(false, Some("Adwaita"), true);
         assert!(!theme.dark);
         assert!(!theme.high_contrast);
     }
 
     #[test]
     fn system_theme_from_gtk_settings_detects_high_contrast_case_insensitively() {
-        assert!(system_theme_from_gtk_settings(false, Some("HighContrast")).high_contrast);
-        assert!(system_theme_from_gtk_settings(false, Some("HighContrastInverse")).high_contrast);
-        assert!(system_theme_from_gtk_settings(true, Some("highcontrast")).high_contrast);
+        assert!(system_theme_from_gtk_settings(false, Some("HighContrast"), true).high_contrast);
+        assert!(
+            system_theme_from_gtk_settings(false, Some("HighContrastInverse"), true).high_contrast
+        );
+        assert!(system_theme_from_gtk_settings(true, Some("highcontrast"), true).high_contrast);
     }
 
     #[test]
     fn system_theme_from_gtk_settings_no_theme_name_is_not_high_contrast() {
-        assert!(!system_theme_from_gtk_settings(true, None).high_contrast);
+        assert!(!system_theme_from_gtk_settings(true, None, true).high_contrast);
+    }
+
+    #[test]
+    fn system_theme_from_gtk_settings_reduce_motion_is_inverse_of_enable_animations() {
+        assert!(!system_theme_from_gtk_settings(false, None, true).reduce_motion);
+        assert!(system_theme_from_gtk_settings(false, None, false).reduce_motion);
     }
 
     // ── Native-dialog CSS theming ────────────────────────────────────────

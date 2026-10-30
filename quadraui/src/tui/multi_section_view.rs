@@ -2341,6 +2341,9 @@ mod tests {
                 focused_field: None,
                 scroll_offset: 0,
                 has_focus: false,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                label_width: None,
             }),
             aux: None,
             size,
@@ -2368,6 +2371,10 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
             FormField {
                 id: WidgetId::new("case"),
@@ -2376,6 +2383,10 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             },
         ];
 
@@ -2485,6 +2496,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }];
 
         let v = view_with(vec![form_section("opts", fields, SectionSize::EqualShare)]);
@@ -2542,6 +2557,10 @@ mod tests {
             hint: StyledText::default(),
             disabled: false,
             validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
         }];
 
         let v = view_with(vec![form_section("opts", fields, SectionSize::EqualShare)]);

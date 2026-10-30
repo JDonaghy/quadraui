@@ -33,8 +33,9 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use core_graphics::base::CGFloat;
@@ -357,6 +358,14 @@ pub struct MacBackend {
     /// drains it into `UiEvent::User` alongside `events`, on the AppKit
     /// main thread, same as any other queued event.
     tick_callback: WakeCallback,
+    /// Thread-safe inbox for [`crate::UiEvent::NotificationActivated`],
+    /// filled from `services::NotificationEventSink::deliver` —
+    /// `UNUserNotificationCenterDelegate`'s activation callback is not
+    /// guaranteed to run on the main thread, so it can't push straight
+    /// onto `events` the way GTK's main-thread-only `GAction` callback
+    /// does. [`Self::poll_events`] drains this into its output alongside
+    /// `events` and `user_events`, on the AppKit main thread.
+    notification_events: Arc<Mutex<VecDeque<UiEvent>>>,
     /// Per-toast entrance-slide animation, keyed by [`Toast::id`]. Inserted
     /// in [`Self::draw_toast_overlay`] the first time a toast id is seen and
     /// retained only while that id is still present in the
@@ -600,6 +609,12 @@ fn mac_cursor_kind(shape: PointerShape) -> MacCursorKind {
             | ResizeEdge::SouthEast
             | ResizeEdge::SouthWest,
         ) => MacCursorKind::Arrow,
+        // AppKit has first-class cursors for several of these
+        // (`NSCursor::iBeamCursor`/`pointingHandCursor`/etc.) but none are
+        // wired up yet, so every shape beyond `Default`/`Resize` falls back
+        // to the plain arrow — a deliberate no-regression default, not a
+        // missing case.
+        _ => MacCursorKind::Arrow,
     }
 }
 
@@ -646,14 +661,49 @@ impl MacBackend {
             None,
         );
         let chrome_metrics = super::text::font_metrics(&chrome_font);
+
+        let events = Rc::new(std::cell::RefCell::new(VecDeque::new()));
+        let wake_callback: WakeCallback = Arc::new(std::sync::OnceLock::new());
+        let notification_events: Arc<Mutex<VecDeque<UiEvent>>> =
+            Arc::new(Mutex::new(VecDeque::new()));
+        // `MacPlatformServices` gets its own `NotificationEventSink`
+        // rather than sharing `events` directly — a notification
+        // activation lands on whatever thread AppKit invokes the
+        // `UNUserNotificationCenterDelegate` callback on, which isn't
+        // guaranteed to be the main thread the way GTK's `GAction`
+        // callback is (see `gtk::services`'s matching wiring). The sink
+        // is `Mutex`-backed and nudges this same `wake_callback` via GCD
+        // — see `Self::waker`'s doc for that mechanism.
+        let services = MacPlatformServices::new();
+        let notify_wake_callback = Arc::clone(&wake_callback);
+        let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            // Mirrors `Self::waker`'s own GCD hop (see its doc for the
+            // full rationale): the delegate callback this feeds can land
+            // on any thread AppKit chooses, so the redraw it triggers via
+            // `wake_callback` must first be bounced onto the main thread.
+            let wake_callback = Arc::clone(&notify_wake_callback);
+            DispatchQueue::main().exec_async(move || {
+                if let Some(bound) = wake_callback.get() {
+                    // SAFETY: see `Self::waker`'s matching `exec_async`
+                    // closure — GCD's own contract guarantees this runs
+                    // on the real main thread.
+                    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                    (bound.get(mtm))();
+                }
+            });
+        });
+        services.set_notification_sink(super::services::NotificationEventSink::new(
+            Arc::clone(&notification_events),
+            notify,
+        ));
         Self {
             viewport: Viewport::new(0.0, 0.0, 1.0),
             modal_stack: Rc::new(RefCell::new(ModalStack::new())),
             drag_state: Rc::new(RefCell::new(DragState::new())),
             core: crate::backend_core::BackendCore::default(),
             double_click: DoubleClickDetector::with_radius(MAC_DOUBLE_CLICK_RADIUS),
-            events: Rc::new(std::cell::RefCell::new(VecDeque::new())),
-            services: MacPlatformServices::new(),
+            events,
+            services,
             current_cg_ptr: Cell::new(std::ptr::null()),
             current_theme: Theme::default(),
             current_style: crate::Style::default(),
@@ -685,8 +735,9 @@ impl MacBackend {
             nerd_fonts_enabled: true,
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
-            wake_callback: Arc::new(std::sync::OnceLock::new()),
+            wake_callback,
             tick_callback: Arc::new(std::sync::OnceLock::new()),
+            notification_events,
             toast_enter: HashMap::new(),
             hover_fade: HashMap::new(),
         }
@@ -1559,6 +1610,15 @@ impl Backend for MacBackend {
         // `DispatchQueue::main().exec_async` nudge schedules exactly such
         // a repaint out-of-band the moment a background thread wakes.
         self.user_events.drain_into(&mut out);
+        // Fold in any `UiEvent::NotificationActivated` a notification
+        // delegate callback queued via `NotificationEventSink::deliver`
+        // since the last drain — see `notification_events`'s field doc.
+        let mut notifications = self
+            .notification_events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        out.extend(notifications.drain(..));
+        drop(notifications);
         out
     }
 
@@ -4372,6 +4432,25 @@ impl WindowControl for MacBackend {
         window.makeKeyAndOrderFront(None);
         Ok(())
     }
+
+    /// `NSWindow::setDocumentEdited:` — the modified-dot the close button
+    /// shows when the document has unsaved changes.
+    fn set_document_edited(&mut self, edited: bool) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.setDocumentEdited(edited);
+        Ok(())
+    }
+
+    /// `NSWindow::setRepresentedFilename:` — the titlebar proxy icon tied
+    /// to a file path. `None` clears it: AppKit's own contract for
+    /// `representedFilename` is that an empty string removes the icon
+    /// and its command-click path menu.
+    fn set_represented_filename(&mut self, path: Option<&Path>) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        let filename = path.map(|p| p.to_string_lossy()).unwrap_or_default();
+        window.setRepresentedFilename(&NSString::from_str(&filename));
+        Ok(())
+    }
 }
 
 /// macOS's `TrayService` surface, backed by
@@ -5907,6 +5986,32 @@ mod tests {
         ));
     }
 
+    /// Same no-window guard as `set_decorated` above — no real `NSWindow`
+    /// exists in a headless unit test, so both new `WindowControl` methods
+    /// must report `Unsupported` rather than panic. The live-window case
+    /// (modified dot / proxy icon actually drawn) can't be constructed
+    /// headlessly either — covered by the operator-run smoke tier instead.
+    #[test]
+    fn set_document_edited_err_without_window() {
+        let mut b = MacBackend::new();
+        assert!(matches!(
+            crate::backend::WindowControl::set_document_edited(&mut b, true),
+            Err(BackendError::Unsupported)
+        ));
+    }
+
+    #[test]
+    fn set_represented_filename_err_without_window() {
+        let mut b = MacBackend::new();
+        assert!(matches!(
+            crate::backend::WindowControl::set_represented_filename(
+                &mut b,
+                Some(std::path::Path::new("/tmp/example.txt"))
+            ),
+            Err(BackendError::Unsupported)
+        ));
+    }
+
     #[test]
     fn set_cursor_false_without_window() {
         let mut b = MacBackend::new();
@@ -6090,10 +6195,13 @@ mod tests {
     fn mac_cursor_kind_maps_every_variant() {
         // One expected kind per `desktop::all_pointer_shapes()` entry, in
         // the same order (`Default`, then one `Resize(edge)` per
-        // `desktop::ALL_RESIZE_EDGES`: N, S, E, W, NE, NW, SE, SW). The
-        // four corner edges fall back to the plain arrow — see
+        // `desktop::ALL_RESIZE_EDGES`: N, S, E, W, NE, NW, SE, SW, then
+        // `Text`/`Pointer`/`Grab`/`Grabbing`/`Crosshair`/`Wait`/
+        // `NotAllowed`/`ColResize`/`RowResize`). The four corner edges and
+        // every variant past `Resize` fall back to the plain arrow — see
         // `mac_cursor_kind`'s doc for why there's no public
-        // diagonal-resize `NSCursor` to use instead.
+        // diagonal-resize `NSCursor` to use instead, and no AppKit mapping
+        // wired up yet for the new shapes.
         let expected = [
             MacCursorKind::Arrow,
             MacCursorKind::ResizeUpDown,
@@ -6104,6 +6212,15 @@ mod tests {
             MacCursorKind::Arrow,
             MacCursorKind::Arrow,
             MacCursorKind::Arrow,
+            MacCursorKind::Arrow, // Text
+            MacCursorKind::Arrow, // Pointer
+            MacCursorKind::Arrow, // Grab
+            MacCursorKind::Arrow, // Grabbing
+            MacCursorKind::Arrow, // Crosshair
+            MacCursorKind::Arrow, // Wait
+            MacCursorKind::Arrow, // NotAllowed
+            MacCursorKind::Arrow, // ColResize
+            MacCursorKind::Arrow, // RowResize
         ];
         let shapes = crate::desktop::all_pointer_shapes();
         assert_eq!(
@@ -7257,6 +7374,10 @@ mod tests {
                 hint: StyledText::default(),
                 disabled: false,
                 validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
             }
         }
 
@@ -7305,6 +7426,9 @@ mod tests {
             focused_field: None,
             scroll_offset: 0,
             has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
         };
 
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
