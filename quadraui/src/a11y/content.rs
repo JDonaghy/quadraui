@@ -70,13 +70,27 @@
 //! log into one and rebuilds the tree per frame pays one child per buffer
 //! line per frame; cap `max_lines` to bound it. A `TextDisplay` rendering
 //! [`crate::compose::markdown::RenderedMarkdown`] has no heading/link
-//! structure of its own, since lines carry styled spans, not semantic
-//! markup — [`markdown_a11y_children`] builds that structure separately,
-//! straight from the `RenderedMarkdown` an app already has on hand from
-//! [`crate::compose::markdown::render_markdown_to_styled`], exposing each
-//! heading line as [`A11yRole::Heading`] (with its level from
-//! `line_scales`) and each link span as [`A11yRole::Link`] (with its target
-//! in [`A11yInfo::value`]).
+//! structure of its own, since `TextDisplayLine` carries styled spans, not
+//! semantic markup, so [`A11yPrimitive::a11y_children`] alone can only ever
+//! flatten it to plain labels.
+//! [`markdown_a11y_children`] builds the richer structure instead, straight
+//! from the `RenderedMarkdown` an app already has on hand from
+//! [`crate::compose::markdown::render_markdown_to_styled`]: each heading
+//! line becomes an [`A11yRole::Heading`] (with its level from
+//! `line_scales`) and each link span becomes a nested [`A11yRole::Link`]
+//! (with its target in [`A11yInfo::value`]). Nothing attaches this to a
+//! tree automatically — an app that wants it in the `A11yTree` passes the
+//! `TextDisplay`'s own [`WidgetId`](crate::types::WidgetId) and this
+//! function's output to
+//! [`A11yTreeBuilder::with_children`](super::tree::A11yTreeBuilder::with_children),
+//! which substitutes it for the default line-flattened children on every
+//! `tree`/`update` call afterwards. [`render_markdown_to_styled_wrapped`]
+//! does not preserve the `links` side-channel (the byte ranges would need
+//! remapping after wrapping), so a wrapped `RenderedMarkdown` only ever
+//! produces `Heading`/`Label` children, never `Link` ones — render
+//! unwrapped first if link targets need to reach assistive tech.
+//!
+//! [`render_markdown_to_styled_wrapped`]: crate::compose::markdown::render_markdown_to_styled_wrapped
 //!
 //! [`DiffView`] exposes a single always-read-only [`A11yRole::Document`] pane
 //! in [`crate::primitives::diff_view::DiffMode::Unified`] (there is only one
@@ -216,16 +230,41 @@ impl A11yPrimitive for TextDisplay {
 /// `TextDisplay` itself has no slot for this — it renders plain styled
 /// lines, not [`RenderedMarkdown`]'s side-channels — so an app that renders
 /// markdown through [`crate::compose::markdown::render_markdown_to_styled`]
-/// and wants its heading/link structure exposed to assistive tech calls
-/// this directly on the `RenderedMarkdown` it already has, rather than
-/// going through `TextDisplay::a11y_children`.
+/// passes this function's output to
+/// [`A11yTreeBuilder::with_children`](super::tree::A11yTreeBuilder::with_children),
+/// keyed by the `TextDisplay`'s own widget id, to get the heading/link
+/// structure into the `A11yTree` in place of `TextDisplay::a11y_children`'s
+/// line-flattened default.
+///
+/// Keys use the same `line.{idx}` / `link.{idx}` scheme
+/// `TextDisplay::a11y_children` uses for its own per-line children, so a
+/// consumer that substitutes one for the other keeps stable node ids
+/// across the swap.
 pub fn markdown_a11y_children(rendered: &RenderedMarkdown) -> Vec<A11yChild> {
     let total = rendered.line_text.len();
-    (0..total)
-        .filter_map(|idx| {
-            let text = rendered.line_text.get(idx)?;
+    let mut links_by_line: Vec<Vec<A11yChild>> = vec![Vec::new(); total];
+    for (child_idx, (line_idx, range, url)) in rendered.links.iter().enumerate() {
+        let Some(children) = links_by_line.get_mut(*line_idx) else {
+            continue;
+        };
+        if let Some(link_text) = rendered.line_text[*line_idx].get(range.clone()) {
+            let mut info = A11yInfo::new()
+                .with_role(A11yRole::Link)
+                .with_value(url.clone());
+            if let Some(label) = non_empty(link_text.to_string()) {
+                info = info.with_label(label);
+            }
+            children.push(A11yChild::new(format!("link.{child_idx}"), info));
+        }
+    }
+
+    rendered
+        .line_text
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, text)| {
             let scale = rendered.line_scales.get(idx).copied().unwrap_or(1.0);
-            let links = markdown_link_children(rendered, idx);
+            let links = std::mem::take(&mut links_by_line[idx]);
             let has_text = non_empty(text.clone()).is_some();
             if !has_text && links.is_empty() {
                 return None;
@@ -239,6 +278,8 @@ pub fn markdown_a11y_children(rendered: &RenderedMarkdown) -> Vec<A11yChild> {
                     .with_role(A11yRole::Label)
                     .with_label(text.clone()),
             };
+            // `one of N` counts rendered-markdown lines the same way
+            // `TextDisplay::a11y_children` counts buffer lines, above.
             Some(
                 A11yChild::new(format!("line.{idx}"), in_set(info, idx, total))
                     .with_children(links),
@@ -250,44 +291,18 @@ pub fn markdown_a11y_children(rendered: &RenderedMarkdown) -> Vec<A11yChild> {
 /// The heading level [`RenderedMarkdown::line_scales`] encodes for one
 /// line, or `None` for body text.
 ///
-/// `line_scales` stores a font-scale multiplier, not a level number
-/// (`2.0`/`1.5`/`1.2` for H1/H2/H3, `1.0` for body text) — compared with
-/// `f32::EPSILON` tolerance rather than `==` since it is a float.
+/// `line_scales` stores a font-scale multiplier, not a level number, so this
+/// inverts [`crate::compose::markdown::heading_scale`] by checking levels
+/// `1`..=`3` against it rather than hardcoding its own copy of the
+/// `2.0`/`1.5`/`1.2` table — the two stay in lockstep by construction.
+/// Compared with `f32::EPSILON` tolerance rather than `==` since it is a
+/// float.
 fn heading_level(scale: f32) -> Option<u32> {
-    const LEVELS: [(f32, u32); 3] = [(2.0, 1), (1.5, 2), (1.2, 3)];
-    LEVELS
-        .iter()
-        .find(|(level_scale, _)| (scale - level_scale).abs() < f32::EPSILON)
-        .map(|(_, level)| *level)
-}
-
-/// The [`A11yRole::Link`] children for one line of [`RenderedMarkdown`],
-/// built from its `links` side-channel.
-///
-/// Each entry is `(line_idx, byte_range, url)`, where `byte_range` indexes
-/// into `line_text[line_idx]` — out-of-range or non-UTF-8-boundary ranges
-/// (which should not occur for a `RenderedMarkdown` built by
-/// [`crate::compose::markdown::render_markdown_to_styled`]) are skipped
-/// rather than panicking.
-fn markdown_link_children(rendered: &RenderedMarkdown, line_idx: usize) -> Vec<A11yChild> {
-    let Some(line_text) = rendered.line_text.get(line_idx) else {
-        return Vec::new();
-    };
-    rendered
-        .links
-        .iter()
-        .filter(|(idx, _, _)| *idx == line_idx)
-        .enumerate()
-        .filter_map(|(child_idx, (_, range, url))| {
-            let link_text = line_text.get(range.clone())?;
-            let label = non_empty(link_text.to_string()).unwrap_or_default();
-            let info = A11yInfo::new()
-                .with_role(A11yRole::Link)
-                .with_label(label)
-                .with_value(url.clone());
-            Some(A11yChild::new(format!("link.{child_idx}"), info))
+    (1..=3u8)
+        .find(|&level| {
+            (scale - crate::compose::markdown::heading_scale(level)).abs() < f32::EPSILON
         })
-        .collect()
+        .map(u32::from)
 }
 
 impl A11yPrimitive for Terminal {

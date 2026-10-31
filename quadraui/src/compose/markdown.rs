@@ -613,7 +613,12 @@ fn parse_heading_prefix(line: &str) -> (u8, &str) {
 }
 
 /// Map heading level to font-scale multiplier.
-fn heading_scale(level: u8) -> f32 {
+///
+/// `pub(crate)` so [`crate::a11y::content::markdown_a11y_children`] can
+/// recover the level from [`RenderedMarkdown::line_scales`] without
+/// duplicating the `1`/`2`/`3` → `2.0`/`1.5`/`1.2` mapping as a second,
+/// independently-maintained literal table.
+pub(crate) fn heading_scale(level: u8) -> f32 {
     match level {
         1 => 2.0,
         2 => 1.5,
