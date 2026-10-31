@@ -100,7 +100,7 @@
 //!
 //! ## Status
 //!
-//! `0.7.x` — pre-1.0, published on crates.io. Breaking changes are
+//! `0.8.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
 //! `quadraui/docs/decisions/DECISIONS.md`. 49 primitives shipped. The TUI
