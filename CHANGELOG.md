@@ -201,9 +201,9 @@ only a push to `main` runs this workflow.
   doesn't declare, is logged and dropped rather than panicking. `From<A11yAction>
   for accesskit::Action` (behind the existing `a11y` feature) is the only
   piece gated on accesskit — the action model and routing are always
-  compiled, matching every other a11y seam. `A11yScenario`/`A11ySnapshot`
-  gain `dispatch_action`, the headless black-box seam for injecting an
-  action against a scenario and asserting the resulting `UiEvent`s.
+  compiled, matching every other a11y seam. `A11ySnapshot` gains
+  `dispatch_action`, the headless black-box seam for injecting an action
+  against a scenario's snapshot and asserting the resulting `UiEvent`s.
   Additive: no new `UiEvent` variant, no primitive struct changes shape.
 
 ### Fixed
@@ -219,6 +219,17 @@ only a push to `main` runs this workflow.
   item labelled `"&File"` announces as `File` (and `"&&"` as a literal `&`),
   and tooltip and status-bar text is trimmed, so the padding spaces a bordered
   box needs are not spoken.
+
+- `route_action`'s `ScrollUp`/`ScrollDown` now emit the delta sign the rest of
+  the repo already uses for scrolling (positive `delta.y` moves content up),
+  instead of the inverted pair an assistive-technology scroll request used to
+  produce. `ScrollIntoView` no longer aliases `Focus` — it cannot yet be
+  routed to a real scroll-to-descendant `UiEvent`, so it is a logged no-op and
+  `A11yTreeNode::supported_actions()` no longer advertises it. `SetValue` is
+  now gated on the target node's role instead of on `A11yInfo::value` being
+  present, so read-only roles that merely display a value (links, list-item
+  detail text, combo boxes) no longer advertise an action `route_action`
+  cannot actually perform.
 
 - `A11yTree::to_snapshot()` escapes backslashes and embedded newlines in a
   node's `value=` state token (`\` to `\\`, a real newline to the two-character

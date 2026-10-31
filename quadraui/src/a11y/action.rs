@@ -57,6 +57,10 @@ pub enum A11yAction {
 }
 
 /// The payload a [`A11yAction::SetValue`] action carries.
+///
+/// `#[non_exhaustive]`, like [`A11yAction`], so a future variant does not
+/// break a consumer's `match`.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum A11yActionValue {
     /// A new text value, for a text input or text area.
@@ -68,20 +72,34 @@ pub enum A11yActionValue {
 /// Turns an assistive-technology action against `target` into the
 /// `UiEvent`(s) the owning widget's normal input handling understands.
 ///
+/// `Focus` resolves to [`UiEvent::FocusChanged`] against the owning
+/// *widget* only — it cannot yet name a child (a specific list item or
+/// form field) the way a real keyboard/mouse gesture would, and a
+/// backend still has to apply the change itself via
+/// `focus_manager_mut().set_focus(...)`, since `FocusChanged` is
+/// documented as a notification the runner emits *after* the fact, not a
+/// request. `ScrollIntoView` is a deliberate, logged no-op — it must not
+/// alias `Focus` (no mouse/keyboard gesture moves focus just to scroll
+/// something into view) and this module has no target-offset `UiEvent`
+/// to route it to yet.
+///
 /// Returns an empty `Vec` — after logging why, through
 /// [`crate::diagnostics::emit`] — when:
 /// - `target` is not in `tree`, or its owning widget did not opt into
 ///   action routing (see [`A11yTree::owner`]);
 /// - `action` is not one the target's kind supports;
+/// - `ScrollIntoView` is requested at all (see above);
 /// - a `SetValue`/`Increment`/`Decrement` arrives for a kind this module
 ///   does not yet translate.
 ///
-/// The last case is a deliberate scope boundary: [`super::A11yTreeNode::supported_actions`]
-/// advertises actions by role and state alone, so a role this module has
-/// not been taught to route yet (e.g. a dropdown, color picker or
-/// segmented control field) still advertises `SetValue`-shaped actions an
-/// assistive-technology client could request. Routing those is future
-/// work; until then the request is a safe no-op rather than a panic.
+/// The last case is a deliberate scope boundary:
+/// [`super::A11yTreeNode::supported_actions`] only advertises an action
+/// for roles this module actually translates (e.g. `SetValue` only for
+/// `TextInput`), but a kind it has not been taught to route for a
+/// *different* action can still reach here — e.g. `Increment`/`Decrement`
+/// on a value-range role this module doesn't recognise. Routing those is
+/// future work; until then the request is a safe no-op rather than a
+/// panic.
 pub fn route_action(
     tree: &A11yTree,
     target: A11yNodeId,
@@ -96,13 +114,27 @@ pub fn route_action(
     };
     let widget = *widget;
 
-    // Focus and scroll-into-view only need a `WidgetId`, so every
-    // top-level widget supports them regardless of content kind.
+    // Focus only needs a `WidgetId`, so every top-level widget supports
+    // it regardless of content kind.
     match action {
         A11yAction::Focus => return vec![UiEvent::FocusChanged(Some(widget))],
-        A11yAction::ScrollIntoView => return vec![UiEvent::FocusChanged(Some(widget))],
-        A11yAction::ScrollUp => return vec![scroll_event(widget, -1.0)],
-        A11yAction::ScrollDown => return vec![scroll_event(widget, 1.0)],
+        // No mouse/keyboard gesture moves focus just to bring something
+        // into view, so this must not alias `Focus`. Scrolling a specific
+        // descendant into view needs a target offset this module cannot
+        // compute from a `WidgetId` alone (no generic "scroll to bounds"
+        // `UiEvent` exists yet), so until that lands this is a logged,
+        // deliberate no-op rather than a wrong guess.
+        A11yAction::ScrollIntoView => {
+            crate::diagnostics::emit(format!(
+                "a11y: ScrollIntoView on widget {widget:?} is not yet routed to a UiEvent"
+            ));
+            return Vec::new();
+        }
+        // Positive `delta.y` scrolls content up (`event.rs`'s `Scroll`
+        // doc, `dispatch.rs`), so `ScrollUp` is a positive delta and
+        // `ScrollDown` is negative.
+        A11yAction::ScrollUp => return vec![scroll_event(widget, target, tree, 1.0)],
+        A11yAction::ScrollDown => return vec![scroll_event(widget, target, tree, -1.0)],
         _ => {}
     }
 
@@ -120,15 +152,45 @@ pub fn route_action(
 }
 
 /// A synthetic scroll-wheel event routed at `widget` rather than at
-/// whatever happens to be under the pointer. The position is a
-/// placeholder — `widget` is what decides the target, not `position` —
-/// since an assistive-technology scroll request carries no cursor
-/// location.
-fn scroll_event(widget: WidgetId, dy: f32) -> UiEvent {
+/// whatever happens to be under the pointer — `widget` is what decides
+/// the target, not `position`, since an assistive-technology scroll
+/// request carries no cursor location. `position` is still filled in
+/// with `target`'s own bounds centre, when known, so it is a truthful
+/// point inside the widget rather than an arbitrary `(0, 0)` that lands
+/// outside every widget but the top-left one.
+fn scroll_event(widget: WidgetId, target: A11yNodeId, tree: &A11yTree, dy: f32) -> UiEvent {
+    let position = tree
+        .node(target)
+        .and_then(|node| node.bounds)
+        .map(|bounds| {
+            Point::new(
+                bounds.x + bounds.width / 2.0,
+                bounds.y + bounds.height / 2.0,
+            )
+        })
+        .unwrap_or(Point::new(0.0, 0.0));
     UiEvent::Scroll {
         widget: Some(widget),
         delta: ScrollDelta::new(0.0, dy),
-        position: Point::new(0.0, 0.0),
+        position,
+    }
+}
+
+/// Logs why `action` could not be routed to a child-level event, when
+/// `key` doesn't decode into one. An empty `key` is the container
+/// widget's own owner-table entry (see `A11yTree::owner`'s doc) — an
+/// ordinary "this container itself isn't a per-item action target," not
+/// a malformed key — so it gets a distinct message from an actually
+/// unparseable one.
+fn emit_unroutable_key(kind: &str, widget: WidgetId, key: &str, action: A11yAction) {
+    if key.is_empty() {
+        crate::diagnostics::emit(format!(
+            "a11y: {kind} action {action:?} targets widget {widget:?} itself, not a child item"
+        ));
+    } else {
+        crate::diagnostics::emit(format!(
+            "a11y: {kind} action {action:?} targets malformed key {key:?} on widget {widget:?}"
+        ));
     }
 }
 
@@ -137,9 +199,7 @@ fn route_list_action(widget: WidgetId, key: &str, action: A11yAction) -> Vec<UiE
         .strip_prefix("item.")
         .and_then(|s| s.parse::<usize>().ok())
     else {
-        crate::diagnostics::emit(format!(
-            "a11y: list action {action:?} targets malformed key {key:?} on widget {widget:?}"
-        ));
+        emit_unroutable_key("list", widget, key, action);
         return Vec::new();
     };
     match action {
@@ -155,9 +215,7 @@ fn route_list_action(widget: WidgetId, key: &str, action: A11yAction) -> Vec<UiE
 
 fn route_tree_action(widget: WidgetId, key: &str, action: A11yAction) -> Vec<UiEvent> {
     let Some(path) = key.strip_prefix("row.").and_then(decode_tree_path) else {
-        crate::diagnostics::emit(format!(
-            "a11y: tree action {action:?} targets malformed key {key:?} on widget {widget:?}"
-        ));
+        emit_unroutable_key("tree", widget, key, action);
         return Vec::new();
     };
     match action {
@@ -186,13 +244,11 @@ fn route_form_action(
     value: Option<A11yActionValue>,
 ) -> Vec<UiEvent> {
     let Some(field_key) = key.strip_prefix("field.") else {
-        crate::diagnostics::emit(format!(
-            "a11y: form action {action:?} targets malformed key {key:?} on widget {widget:?}"
-        ));
+        emit_unroutable_key("form", widget, key, action);
         return Vec::new();
     };
     let field_id = WidgetId::new(field_key);
-    let role = tree.node(target).map(A11yTreeNodeRoleExt::role_of);
+    let role = tree.node(target).map(|node| node.role());
 
     let event = match (action, role) {
         (A11yAction::Click, Some(A11yRole::Button)) => {
@@ -263,17 +319,6 @@ fn slider_step(min: f64, max: f64) -> f64 {
         range / 100.0
     } else {
         1.0
-    }
-}
-
-/// Resolves a node's role without borrowing it past the match above.
-trait A11yTreeNodeRoleExt {
-    fn role_of(self) -> A11yRole;
-}
-
-impl A11yTreeNodeRoleExt for &super::A11yTreeNode {
-    fn role_of(self) -> A11yRole {
-        self.role()
     }
 }
 
@@ -573,16 +618,77 @@ mod tests {
             .with_surface(list_surface("files", &["a.rs"], 0))
             .snapshot();
         let node = snapshot.find("Files").expect("list node").id;
+        // The list surface's rect is `(0, 0, 20, 10)`, so its centre is
+        // the truthful `position` a hit-test-routed consumer would see.
+        let centre = Point::new(10.0, 5.0);
 
+        // Positive `delta.y` scrolls content up (`event.rs`'s `Scroll`
+        // doc), so `ScrollUp` must produce a positive delta and
+        // `ScrollDown` a negative one — the opposite sign for each would
+        // scroll the wrong way.
         let up = route_action(snapshot.tree(), node, A11yAction::ScrollUp, None);
         assert_eq!(
             up,
             vec![UiEvent::Scroll {
                 widget: Some(WidgetId::new("files")),
-                delta: ScrollDelta::new(0.0, -1.0),
-                position: Point::new(0.0, 0.0),
+                delta: ScrollDelta::new(0.0, 1.0),
+                position: centre,
             }]
         );
+
+        let down = route_action(snapshot.tree(), node, A11yAction::ScrollDown, None);
+        assert_eq!(
+            down,
+            vec![UiEvent::Scroll {
+                widget: Some(WidgetId::new("files")),
+                delta: ScrollDelta::new(0.0, -1.0),
+                position: centre,
+            }]
+        );
+    }
+
+    #[test]
+    fn scroll_into_view_is_a_safe_no_op_not_a_focus_change() {
+        let snapshot = A11yScenario::new()
+            .with_surface(list_surface("files", &["a.rs"], 0))
+            .snapshot();
+        let node = snapshot.find("Files").expect("list node").id;
+
+        let events = route_action(snapshot.tree(), node, A11yAction::ScrollIntoView, None);
+        assert!(events.is_empty());
+
+        // Not advertised either — `supported_actions` must not promise an
+        // action `route_action` turns into nothing.
+        let list_node = snapshot.tree().node(node).expect("node");
+        assert!(!list_node
+            .supported_actions()
+            .contains(&A11yAction::ScrollIntoView));
+    }
+
+    #[test]
+    fn set_value_is_not_advertised_on_a_non_text_role() {
+        let snapshot = A11yScenario::new()
+            .with_surface(form_surface(
+                "prefs",
+                vec![field(
+                    "theme",
+                    "Theme",
+                    FieldKind::Dropdown {
+                        options: vec![StyledText::plain("Dark")],
+                        selected_idx: 0,
+                    },
+                )],
+            ))
+            .snapshot();
+        let node = snapshot.find("Theme").expect("field").id;
+        let dropdown_node = snapshot.tree().node(node).expect("node");
+
+        // The dropdown's `value` holds its selected option's display
+        // text, not an editable value, so it must not advertise `SetValue`
+        // even though `A11yInfo::value` is populated.
+        assert!(!dropdown_node
+            .supported_actions()
+            .contains(&A11yAction::SetValue));
     }
 
     #[test]
