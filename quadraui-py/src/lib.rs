@@ -1497,15 +1497,19 @@ impl ExtraPaint for ComboBox {
         // assumed since no measurement pass runs outside a real UI loop.
         // The dropdown itself only paints when `self.open` is true with a
         // non-empty filtered list, so a closed/default combo box renders
-        // just its field regardless of these choices.
-        let field_bounds = Rect::new(area.x, area.y, area.width.max(1.0), 1.0);
-        let max_popup_height = (area.height - 1.0).max(1.0);
+        // just its field regardless of these choices. "Row" is one line
+        // scaled by `line_height`, the backend-native unit (cells on TUI,
+        // pixels on native), so the field and its popup rows size correctly
+        // on every backend instead of collapsing to one pixel on native.
+        let line_height = backend.line_height();
+        let field_bounds = Rect::new(area.x, area.y, area.width.max(line_height), line_height);
+        let max_popup_height = (area.height - line_height).max(line_height);
         let layout = self.layout(
             field_bounds,
             area,
-            area.width.max(1.0),
+            area.width.max(line_height),
             max_popup_height,
-            |_| CompletionItemMeasure::new(1.0),
+            |_| CompletionItemMeasure::new(line_height),
         );
         backend.draw_combo_box(self, &layout);
     }
@@ -1515,11 +1519,23 @@ impl ExtraPaint for DatePicker {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         // Standalone (non-`Form`-embedded) display: derive a 7-column,
         // 6-row month grid plus a one-row header (and a one-row time field
-        // when `self.time` is set) out of the given area.
-        let header_height = 1.0_f32;
-        let time_height = if self.time.is_some() { 1.0 } else { 0.0 };
-        let cell_width = (area.width / 7.0).max(1.0);
-        let cell_height = ((area.height - header_height - time_height) / 6.0).max(1.0);
+        // when `self.time` is set), clipped to the given area. The header
+        // and time rows are one line each, scaled by `line_height` (the
+        // backend-native unit: cells on TUI, pixels on native) so they size
+        // correctly on every backend instead of collapsing to one pixel on
+        // native; the grid rows are then whatever is left over divided by
+        // six, floored at one line, so a date picker painted into a band
+        // shorter than 7 lines deliberately overflows the band rather than
+        // shrinking its cells below a usable size.
+        let line_height = backend.line_height();
+        let header_height = line_height;
+        let time_height = if self.time.is_some() {
+            line_height
+        } else {
+            0.0
+        };
+        let cell_width = (area.width / 7.0).max(line_height);
+        let cell_height = ((area.height - header_height - time_height) / 6.0).max(line_height);
         let layout = self.layout(
             area.x,
             area.y,
@@ -1540,8 +1556,10 @@ type ExtraDecoder = fn(&str, &Bound<'_, PyDict>) -> PyResult<Box<dyn ExtraPaint>
 /// primitive painted outside the six fixed slots above (see
 /// [`LeafDescriptor::Extra`], [`PyAppLogic::extra_slots`] and
 /// [`QuiApp::insert_extra`]). Registering a further additive primitive is
-/// exactly one appended line here plus that type's one-line [`ExtraPaint`]
-/// impl above — no enum variant, no central match arm, and no length
+/// exactly one appended line here plus that type's [`ExtraPaint`] impl
+/// above — one line for a whole-area primitive, a little layout derivation
+/// for one that needs a measure pass (`NumberInput`, `ComboBox`,
+/// `DatePicker`) — no enum variant, no central match arm, and no length
 /// literal to bump, unlike the six fixed slots' `SLOT_*`/`LeafDescriptor`
 /// machinery.
 const EXTRA_PRIMITIVES: &[(&str, ExtraDecoder)] = &[
@@ -3171,10 +3189,8 @@ impl QuiApp {
     }
 
     /// Inserts a descriptor for any additive primitive `kind` registered in
-    /// `EXTRA_PRIMITIVES` (currently `"progress"`, `"spinner"`, `"image"`,
-    /// `"form"`, `"text_input"`, `"number_input"`, `"combo_box"`,
-    /// `"date_picker"`, `"radio_group"`, `"switch"`), returning `kind` back.
-    /// Raises `RuntimeError` if `kind` is already
+    /// `EXTRA_PRIMITIVES` (see [`extra_kind_names`] for the current list),
+    /// returning `kind` back. Raises `RuntimeError` if `kind` is already
     /// occupied — call `clear_extra(kind)` first — and
     /// `InvalidDescriptorError` if `kind` isn't registered. Lets a consumer
     /// insert a future additive primitive by name alone, with no new
