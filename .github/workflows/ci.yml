@@ -569,8 +569,8 @@ jobs:
       - name: Build (tui feature)
         # `quadraui-py` is excluded here (and from the `test`/`clippy` steps
         # below): it links against libpython, which this job's runner
-        # doesn't provision, and its own maturin/wheel build is this job's
-        # own dedicated CI job in a later milestone leg.
+        # doesn't provision. Its maturin build + pytest suite run in the
+        # dedicated `quadraui-py-tests` job instead.
         run: cargo build --features tui --workspace --exclude kubeui-gtk --exclude quadraui-py
       - name: Test (tui feature)
         # #823: the sealed `quadraui/tests/acceptance/ms-11/wide_tab_labels.rs`
@@ -608,9 +608,9 @@ jobs:
         # dynamically at import time instead of linking libpython at
         # build time, so this is a cheap compile-and-lint-only check that
         # still exercises the crate on every PR. It is not a substitute
-        # for the maturin/wheel build (that's a dedicated job in a later
-        # milestone leg) or for `pytest`, which does need a real
-        # interpreter to load the extension.
+        # for the `maturin develop` build or `pytest` run, which do need a
+        # real interpreter to load the extension — see the dedicated
+        # `quadraui-py-tests` job.
         run: cargo clippy -p quadraui-py --features pyo3/extension-module -- -D warnings
       # Benches (#1118): `cargo build`/`cargo test` don't build bench
       # targets by default (verified: neither the plain `cargo test
@@ -1140,6 +1140,40 @@ jobs:
           name: conformance-matrix-gtk-tui
           path: target/conformance-matrix.txt
           if-no-files-found: warn
+
+  quadraui-py-tests:
+    # Every other job excludes `quadraui-py` (see the `tui` job's "Build
+    # (tui feature)" step comment) because its default `cdylib` build links
+    # libpython, which those runners don't provision, and the `tui`/`gtk`
+    # jobs' `pyo3/extension-module`-only `cargo check`/`clippy` steps prove
+    # only that the crate compiles — neither loads it into a real
+    # interpreter. This job is the one that does: it builds the extension
+    # with `maturin develop` into a venv with a real CPython, then runs the
+    # `quadraui-py/tests/` pytest suite against it, so a binding that
+    # compiles but misbehaves (wrong return type, dropped GIL guard, panic
+    # across the FFI boundary, ...) actually fails CI. Both this job and a
+    # local/dell64-style run share `scripts/test_quadraui_py.sh` as the one
+    # source of truth for the build+test sequence.
+    #
+    # Whether this job's check is *required* in branch protection is a
+    # repository-settings toggle this file cannot itself set (same
+    # distinction the `changelog-check` job's own comment draws) — the repo
+    # operator adds "quadraui-py-tests" to the required-checks list
+    # separately.
+    name: quadraui-py (maturin develop + pytest)
+    runs-on: ubuntu-latest
+    # Sized generously for a cold Rust + maturin build; a healthy run is a
+    # couple of minutes once dependencies are warm.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (maturin develop) + pytest
+        run: scripts/test_quadraui_py.sh
 
   msrv:
     # `quadraui/Cargo.toml`'s `rust-version` is the oldest compiler a
