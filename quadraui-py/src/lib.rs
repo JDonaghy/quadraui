@@ -96,12 +96,13 @@ use pyo3::types::{PyDict, PyList};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
 use quadraui::{
-    AppLogic, Backend, Button, ButtonHit, ButtonLayout, ComboBox, CompletionItemMeasure, DataTable,
-    DataTableEvent, DataTableHit, DataTableLayout, DatePicker, Form, Image, Key, ListView,
-    ListViewEvent, ListViewHit, ListViewLayout, Modifiers, NamedKey, NumberInput, Point,
-    ProgressBar, RadioGroup, Reaction, Rect, Spinner, Split, SplitDirection, SplitHit, SplitLayout,
-    Switch, TabBar, TabBarEvent, TabBarHit, TabBarLayout, TabItem, TextDisplay, TextInput,
-    TreeEvent, TreePath, TreeView, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    AppLogic, Backend, BoardModel, Button, ButtonHit, ButtonLayout, Chart, ComboBox,
+    CompletionItemMeasure, DataTable, DataTableEvent, DataTableHit, DataTableLayout, DatePicker,
+    DiffView, Form, Image, Key, ListView, ListViewEvent, ListViewHit, ListViewLayout, MessageList,
+    Minimap, Modifiers, MultiSectionView, NamedKey, NumberInput, PipelineView, Point, ProgressBar,
+    RadioGroup, Reaction, Rect, Spinner, Split, SplitDirection, SplitHit, SplitLayout, Switch,
+    TabBar, TabBarEvent, TabBarHit, TabBarLayout, TabItem, TextDisplay, TextInput, TreeEvent,
+    TreePath, TreeView, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
 create_exception!(
@@ -1548,6 +1549,51 @@ impl ExtraPaint for DatePicker {
     }
 }
 
+impl ExtraPaint for Chart {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        // Display-only: no hover/crosshair state is tracked by this
+        // binding, so both are `None` and the returned `ChartLayout` (for
+        // click/nearest-point routing) is discarded.
+        backend.draw_chart(area, self, None, None);
+    }
+}
+
+impl ExtraPaint for MessageList {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_message_list(area, self);
+    }
+}
+
+impl ExtraPaint for BoardModel {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_board(area, self);
+    }
+}
+
+impl ExtraPaint for PipelineView {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_pipeline_view(area, self);
+    }
+}
+
+impl ExtraPaint for Minimap {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_minimap(area, self);
+    }
+}
+
+impl ExtraPaint for MultiSectionView {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_multi_section_view(area, self);
+    }
+}
+
+impl ExtraPaint for DiffView {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_diff_view(area, self);
+    }
+}
+
 /// Decodes one additive primitive descriptor from a Python `dict` into its
 /// boxed [`ExtraPaint`] value. Registered per kind in [`EXTRA_PRIMITIVES`].
 type ExtraDecoder = fn(&str, &Bound<'_, PyDict>) -> PyResult<Box<dyn ExtraPaint>>;
@@ -1592,6 +1638,27 @@ const EXTRA_PRIMITIVES: &[(&str, ExtraDecoder)] = &[
     }),
     ("switch", |what, dict| {
         Ok(Box::new(decode::<Switch>(what, dict)?))
+    }),
+    ("chart", |what, dict| {
+        Ok(Box::new(decode::<Chart>(what, dict)?))
+    }),
+    ("message_list", |what, dict| {
+        Ok(Box::new(decode::<MessageList>(what, dict)?))
+    }),
+    ("board", |what, dict| {
+        Ok(Box::new(decode::<BoardModel>(what, dict)?))
+    }),
+    ("pipeline_view", |what, dict| {
+        Ok(Box::new(decode::<PipelineView>(what, dict)?))
+    }),
+    ("minimap", |what, dict| {
+        Ok(Box::new(decode::<Minimap>(what, dict)?))
+    }),
+    ("multi_section_view", |what, dict| {
+        Ok(Box::new(decode::<MultiSectionView>(what, dict)?))
+    }),
+    ("diff_view", |what, dict| {
+        Ok(Box::new(decode::<DiffView>(what, dict)?))
     }),
 ];
 
