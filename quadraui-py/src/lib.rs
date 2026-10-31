@@ -3,11 +3,15 @@
 //!
 //! [`QuiApp`] wraps a `quadraui::tui::testing::TuiDriver` running an
 //! in-crate [`AppLogic`] that holds one optional descriptor per core
-//! primitive (button, text display, list, tree, data table, tab bar). Each
-//! `insert_*` method takes a Python `dict`, decodes it into the matching
-//! descriptor type via [`pythonize::depythonize`], stores it in that
-//! primitive's slot, and re-renders immediately so `screen()`/
-//! `screen_contains()` reflect it without a separate step.
+//! primitive (button, text display, list, tree, data table, tab bar), plus
+//! any number of additive primitives (`insert_extra`/`insert_progress`/
+//! `insert_spinner`/`insert_image`) registered in [`EXTRA_PRIMITIVES`] —
+//! see that constant's doc for why registering a further additive
+//! primitive never touches the six fixed slots. Each `insert_*` method
+//! takes a Python `dict`, decodes it into the matching descriptor type via
+//! [`pythonize::depythonize`], stores it in that primitive's slot, and
+//! re-renders immediately so `screen()`/`screen_contains()` reflect it
+//! without a separate step.
 //!
 //! `push_event`/`push_key_event` queue a [`UiEvent`] (decoded from a Python
 //! dict, or synthesized from a key code); `step`/`run` drain that queue
@@ -237,7 +241,7 @@ const SLOT_TAB_BAR: i64 = 5;
 /// `render_callback` is registered, in which case each frame asks it for a
 /// fresh set of descriptors instead of reading these static fields. Beyond
 /// the six fixed slots below, `extra_slots` holds any number of additional,
-/// purely-decorative primitives keyed by kind name (see [`ExtraPrimitive`]);
+/// additive primitives keyed by kind name (see [`EXTRA_PRIMITIVES`]);
 /// adding a new one there never touches the six fixed fields or their
 /// `SLOT_*`/`is_known_slot`/`slot_clear` machinery.
 #[derive(Default)]
@@ -250,10 +254,10 @@ struct PyAppLogic {
     tab_bar: Option<TabBar>,
     /// Additive primitive slots, keyed by kind name (`"progress"`,
     /// `"spinner"`, `"image"`, ...). Painted after the six fixed bands in
-    /// [`EXTRA_KIND_KEYS`] order. A new kind here is a self-contained add —
+    /// [`EXTRA_PRIMITIVES`] order. A new kind here is a self-contained add —
     /// unlike the six fields above, it needs no new field on this struct and
     /// no new arm on `slot_occupied`/`is_known_slot`/`clear_slot`.
-    extra_slots: HashMap<String, ExtraPrimitive>,
+    extra_slots: HashMap<String, Box<dyn ExtraPaint>>,
     /// Registered via `QuiApp::set_handler` / the `on_event` constructor
     /// argument; called with the pythonized event payload for every
     /// dispatched `UiEvent`.
@@ -992,8 +996,8 @@ struct RenderRefs<'a> {
     data_table: Option<&'a DataTable>,
     tab_bar: Option<&'a TabBar>,
     /// Additive primitive slots, keyed by kind name. Painted after the six
-    /// fixed bands above, in [`EXTRA_KIND_KEYS`] order.
-    extra: &'a HashMap<String, ExtraPrimitive>,
+    /// fixed bands above, in [`EXTRA_PRIMITIVES`] order.
+    extra: &'a HashMap<String, Box<dyn ExtraPaint>>,
 }
 
 /// Paints each present slot top-to-bottom in a fixed-height band, skipping
@@ -1081,12 +1085,12 @@ fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Vec<Pa
             });
         }
     }
-    // Additive primitives, painted in canonical `EXTRA_KIND_KEYS` order so
+    // Additive primitives, painted in canonical `EXTRA_PRIMITIVES` order so
     // the output is deterministic regardless of `HashMap` iteration order.
-    for kind in EXTRA_KIND_KEYS {
-        if let Some(extra) = refs.extra.get(kind) {
+    for (kind, _) in EXTRA_PRIMITIVES {
+        if let Some(extra) = refs.extra.get(*kind) {
             if let Some(rect) = next_band(3.0) {
-                paint_extra_primitive(backend, rect, extra);
+                extra.paint(backend, rect);
             }
         }
     }
@@ -1232,7 +1236,7 @@ fn paint_leaf(
             let layout = backend.draw_tab_bar_layout(area, tab_bar, None);
             hits.push(PaintedHit::TabBar { id, area, layout });
         }
-        LeafDescriptor::Extra(extra) => paint_extra_primitive(backend, area, extra),
+        LeafDescriptor::Extra(extra) => extra.paint(backend, area),
     }
 }
 
@@ -1248,8 +1252,8 @@ struct RenderFrame {
     data_table: Option<DataTable>,
     tab_bar: Option<TabBar>,
     /// Additive primitive slots present in this frame, keyed by kind name
-    /// (one of [`EXTRA_KIND_KEYS`]).
-    extra: HashMap<String, ExtraPrimitive>,
+    /// (one registered in [`EXTRA_PRIMITIVES`]).
+    extra: HashMap<String, Box<dyn ExtraPaint>>,
 }
 
 impl RenderFrame {
@@ -1271,13 +1275,14 @@ impl RenderFrame {
     /// descriptor type. The exact recognized key set is `"button"`,
     /// `"text_display"`, `"list"`, `"tree"`, `"data_table"`, `"tab_bar"` —
     /// one per fixed slot, same names `insert_*`'s Rust-side `what` argument
-    /// uses — plus any of [`EXTRA_KIND_KEYS`] for an additive primitive. Any
-    /// other key (including a near-miss typo like `"tabbar"`) is ignored
-    /// rather than rejected, so a render callback built against a future
-    /// slot set stays forward-compatible with this one.
+    /// uses — plus any kind registered in [`EXTRA_PRIMITIVES`] for an
+    /// additive primitive. Any other key (including a near-miss typo like
+    /// `"tabbar"`) is ignored rather than rejected, so a render callback
+    /// built against a future slot set stays forward-compatible with this
+    /// one.
     fn from_dict(dict: &Bound<'_, PyDict>) -> PyResult<Self> {
         let mut extra = HashMap::new();
-        for kind in EXTRA_KIND_KEYS {
+        for (kind, _) in EXTRA_PRIMITIVES {
             if let Some(value) = decode_extra_slot_entry(RENDER_CALLBACK_WHAT, dict, kind)? {
                 extra.insert(kind.to_string(), value);
             }
@@ -1321,15 +1326,15 @@ fn decode_slot_entry<T: serde::de::DeserializeOwned>(
 }
 
 /// Reads and decodes one optional additive primitive slot entry, keyed by
-/// `kind` (one of [`EXTRA_KIND_KEYS`]), from a render callback's returned
-/// `dict`. Mirrors [`decode_slot_entry`]'s missing/`None`/dict-or-error
-/// shape, dispatching the decode through [`decode_extra_primitive`] instead
-/// of a single fixed type.
+/// `kind` (one registered in [`EXTRA_PRIMITIVES`]), from a render
+/// callback's returned `dict`. Mirrors [`decode_slot_entry`]'s
+/// missing/`None`/dict-or-error shape, dispatching the decode through
+/// [`decode_extra_primitive`] instead of a single fixed type.
 fn decode_extra_slot_entry(
     what: &str,
     dict: &Bound<'_, PyDict>,
     kind: &str,
-) -> PyResult<Option<ExtraPrimitive>> {
+) -> PyResult<Option<Box<dyn ExtraPaint>>> {
     match dict.get_item(kind)? {
         Some(value) if !value.is_none() => {
             let value_dict = value.cast::<PyDict>().map_err(|_| {
@@ -1401,10 +1406,10 @@ enum LeafDescriptor {
     Tree(TreeView),
     DataTable(DataTable),
     TabBar(TabBar),
-    /// Any additive primitive kind named in [`EXTRA_KIND_KEYS`]. Unlike the
-    /// six variants above, a new additive kind never adds a new
+    /// Any additive primitive kind registered in [`EXTRA_PRIMITIVES`].
+    /// Unlike the six variants above, a new additive kind never adds a new
     /// `LeafDescriptor` variant — it routes through this one.
-    Extra(ExtraPrimitive),
+    Extra(Box<dyn ExtraPaint>),
 }
 
 /// The descriptor keys a layout tree leaf dict may carry, one per
@@ -1419,55 +1424,86 @@ const LEAF_KIND_KEYS: [&str; 6] = [
     "tab_bar",
 ];
 
-/// A purely-decorative primitive painted outside the six fixed slots above.
-/// Each variant is a single wrapped primitive type with no interactive
-/// hit-test entries — matching the existing `TextDisplay` precedent in
-/// [`paint_leaf`]. Adding a new additive primitive means adding one variant
-/// here, one string to [`EXTRA_KIND_KEYS`], and one arm each to
-/// [`decode_extra_primitive`] and [`paint_extra_primitive`] — no edit to the
-/// six-slot machinery (`SLOT_*`, `PyAppLogic`'s fixed fields,
-/// `is_known_slot`/`clear_slot`, [`LeafDescriptor`]'s six-variant set) is
-/// ever required.
-enum ExtraPrimitive {
-    Progress(ProgressBar),
-    Spinner(Spinner),
-    Image(Image),
+/// Paints one additive primitive descriptor painted outside the six fixed
+/// slots above. Implemented once per primitive type (see the `impl`s just
+/// below) so that registering a kind in [`EXTRA_PRIMITIVES`] never needs a
+/// central match arm. These primitives are currently pure-display: no hit
+/// entry is pushed when painting one, matching `TextDisplay`'s precedent in
+/// [`paint_leaf`] — that is a deliberate choice to not wire hit-routing for
+/// them yet, not a structural limitation (`ProgressBar::cancellable`,
+/// `SpinnerHit` and `ImageHit` already exist on the Rust side).
+trait ExtraPaint {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect);
 }
 
-/// The kind-name keys an additive primitive may be registered or decoded
-/// under, one per [`ExtraPrimitive`] variant. This is the one array a new
-/// additive primitive's name is added to.
-const EXTRA_KIND_KEYS: [&str; 3] = ["progress", "spinner", "image"];
+impl ExtraPaint for ProgressBar {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_progress(area, self);
+    }
+}
+
+impl ExtraPaint for Spinner {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_spinner(area, self);
+    }
+}
+
+impl ExtraPaint for Image {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_image(area, self);
+    }
+}
+
+/// Decodes one additive primitive descriptor from a Python `dict` into its
+/// boxed [`ExtraPaint`] value. Registered per kind in [`EXTRA_PRIMITIVES`].
+type ExtraDecoder = fn(&str, &Bound<'_, PyDict>) -> PyResult<Box<dyn ExtraPaint>>;
+
+/// The additive primitive registry: one `(kind name, decoder)` entry per
+/// primitive painted outside the six fixed slots above (see
+/// [`LeafDescriptor::Extra`], [`PyAppLogic::extra_slots`] and
+/// [`QuiApp::insert_extra`]). Registering a further additive primitive is
+/// exactly one appended line here plus that type's one-line [`ExtraPaint`]
+/// impl above — no enum variant, no central match arm, and no length
+/// literal to bump, unlike the six fixed slots' `SLOT_*`/`LeafDescriptor`
+/// machinery.
+const EXTRA_PRIMITIVES: &[(&str, ExtraDecoder)] = &[
+    ("progress", |what, dict| {
+        Ok(Box::new(decode::<ProgressBar>(what, dict)?))
+    }),
+    ("spinner", |what, dict| {
+        Ok(Box::new(decode::<Spinner>(what, dict)?))
+    }),
+    ("image", |what, dict| {
+        Ok(Box::new(decode::<Image>(what, dict)?))
+    }),
+];
+
+/// The registered additive primitive kind names, in registration order —
+/// used to spell out "or one of these" in error messages alongside
+/// [`LEAF_KIND_KEYS`].
+fn extra_kind_names() -> Vec<&'static str> {
+    EXTRA_PRIMITIVES.iter().map(|(kind, _)| *kind).collect()
+}
 
 /// Decodes one additive primitive descriptor from a Python dict, dispatched
-/// by `kind` (one of [`EXTRA_KIND_KEYS`]).
+/// by `kind` through [`EXTRA_PRIMITIVES`]. Raises `InvalidDescriptorError`
+/// if `kind` isn't registered.
 fn decode_extra_primitive(
     what: &str,
     kind: &str,
     dict: &Bound<'_, PyDict>,
-) -> PyResult<ExtraPrimitive> {
-    match kind {
-        "progress" => Ok(ExtraPrimitive::Progress(decode(what, dict)?)),
-        "spinner" => Ok(ExtraPrimitive::Spinner(decode(what, dict)?)),
-        "image" => Ok(ExtraPrimitive::Image(decode(what, dict)?)),
-        _ => unreachable!("EXTRA_KIND_KEYS is exhaustive"),
-    }
-}
-
-/// Paints one additive primitive. These are pure-display: no hit entry is
-/// pushed, matching `TextDisplay`'s precedent in [`paint_leaf`].
-fn paint_extra_primitive(backend: &mut dyn Backend, area: Rect, value: &ExtraPrimitive) {
-    match value {
-        ExtraPrimitive::Progress(bar) => {
-            backend.draw_progress(area, bar);
-        }
-        ExtraPrimitive::Spinner(spinner) => {
-            backend.draw_spinner(area, spinner);
-        }
-        ExtraPrimitive::Image(image) => {
-            backend.draw_image(area, image);
-        }
-    }
+) -> PyResult<Box<dyn ExtraPaint>> {
+    let decoder = EXTRA_PRIMITIVES
+        .iter()
+        .find(|(registered, _)| *registered == kind)
+        .map(|(_, decoder)| *decoder)
+        .ok_or_else(|| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: unknown additive primitive kind {kind:?} (expected one of {:?})",
+                extra_kind_names()
+            ))
+        })?;
+    decoder(what, dict)
 }
 
 /// Decodes one layout tree node from a render callback's returned `dict`:
@@ -1792,8 +1828,11 @@ fn layout_tabs_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<Layou
 }
 
 /// Decodes one `{"id": ..., "<kind>": <descriptor>}` leaf dict. `"id"`
-/// must be present and a string; exactly one of [`LEAF_KIND_KEYS`] must be
-/// present and hold a `dict`.
+/// must be present and a string; exactly one of [`LEAF_KIND_KEYS`] or an
+/// [`EXTRA_PRIMITIVES`] kind must be present and hold a `dict` — a leaf
+/// with two keys from either set (fixed+fixed, fixed+extra, or
+/// extra+extra) is rejected by the single `found` duplicate check shared
+/// across both loops below.
 fn layout_leaf_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutLeaf> {
     let id: String = match dict.get_item("id")? {
         Some(value) if !value.is_none() => value.extract().map_err(|_| {
@@ -1834,10 +1873,10 @@ fn layout_leaf_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<Layou
     }
     // Additive primitive kinds share the same leaf dict shape and the same
     // `found` duplicate-detection as the six fixed kinds above; a new
-    // additive primitive only ever adds a name to `EXTRA_KIND_KEYS`, never a
-    // new loop here.
-    for kind in EXTRA_KIND_KEYS {
-        let Some(value) = dict.get_item(kind)? else {
+    // additive primitive only ever adds a line to `EXTRA_PRIMITIVES`, never
+    // a new loop here.
+    for (kind, _) in EXTRA_PRIMITIVES {
+        let Some(value) = dict.get_item(*kind)? else {
             continue;
         };
         if value.is_none() {
@@ -1858,7 +1897,8 @@ fn layout_leaf_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<Layou
 
     let descriptor = found.ok_or_else(|| {
         InvalidDescriptorError::new_err(format!(
-            "{what}: leaf {id:?} is missing a descriptor (one of {LEAF_KIND_KEYS:?} or {EXTRA_KIND_KEYS:?})"
+            "{what}: leaf {id:?} is missing a descriptor (one of {LEAF_KIND_KEYS:?} or {:?})",
+            extra_kind_names()
         ))
     })?;
 
@@ -3007,31 +3047,46 @@ impl QuiApp {
         )
     }
 
-    /// Inserts a `ProgressBar` descriptor from a Python dict. Raises
-    /// `RuntimeError` if `"progress"` is already occupied — call
-    /// `clear_extra("progress")` first.
-    fn insert_progress(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<()> {
-        self.insert_extra("progress", "insert_progress", descriptor)
+    /// Inserts a `ProgressBar` descriptor from a Python dict, returning
+    /// `"progress"` back. Raises `RuntimeError` if `"progress"` is already
+    /// occupied — call `clear_extra("progress")` first. A thin,
+    /// typed-descriptor convenience over [`Self::insert_extra`].
+    fn insert_progress(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
+        self.store_extra("progress", "insert_progress", descriptor)
     }
 
-    /// Inserts a `Spinner` descriptor from a Python dict. Raises
-    /// `RuntimeError` if `"spinner"` is already occupied — call
-    /// `clear_extra("spinner")` first.
-    fn insert_spinner(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<()> {
-        self.insert_extra("spinner", "insert_spinner", descriptor)
+    /// Inserts a `Spinner` descriptor from a Python dict, returning
+    /// `"spinner"` back. Raises `RuntimeError` if `"spinner"` is already
+    /// occupied — call `clear_extra("spinner")` first. A thin,
+    /// typed-descriptor convenience over [`Self::insert_extra`].
+    fn insert_spinner(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
+        self.store_extra("spinner", "insert_spinner", descriptor)
     }
 
-    /// Inserts an `Image` descriptor from a Python dict. Raises
-    /// `RuntimeError` if `"image"` is already occupied — call
-    /// `clear_extra("image")` first.
-    fn insert_image(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<()> {
-        self.insert_extra("image", "insert_image", descriptor)
+    /// Inserts an `Image` descriptor from a Python dict, returning
+    /// `"image"` back. Raises `RuntimeError` if `"image"` is already
+    /// occupied — call `clear_extra("image")` first. A thin,
+    /// typed-descriptor convenience over [`Self::insert_extra`].
+    fn insert_image(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
+        self.store_extra("image", "insert_image", descriptor)
     }
 
-    /// Empties an additive primitive slot (one of [`EXTRA_KIND_KEYS`]),
-    /// re-rendering so `screen()` no longer shows it. Returns whether the
-    /// slot held anything; an unrecognized `kind` simply has nothing to
-    /// clear (unlike `slot_clear`, this never raises for an unknown key).
+    /// Inserts a descriptor for any additive primitive `kind` registered in
+    /// `EXTRA_PRIMITIVES` (currently `"progress"`, `"spinner"`, `"image"`),
+    /// returning `kind` back. Raises `RuntimeError` if `kind` is already
+    /// occupied — call `clear_extra(kind)` first — and
+    /// `InvalidDescriptorError` if `kind` isn't registered. Lets a consumer
+    /// insert a future additive primitive by name alone, with no new
+    /// pymethod needed on this class.
+    fn insert_extra(&mut self, kind: &str, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
+        self.store_extra(kind, "insert_extra", descriptor)
+    }
+
+    /// Empties an additive primitive slot (one registered in
+    /// `EXTRA_PRIMITIVES`), re-rendering so `screen()` no longer shows it.
+    /// Returns whether the slot held anything; an unrecognized `kind`
+    /// simply has nothing to clear (unlike `slot_clear`, this never raises
+    /// for an unknown key).
     fn clear_extra(&mut self, kind: &str) -> PyResult<bool> {
         self.guarded(|app| {
             let cleared = app.driver.app_mut().clear_extra_slot(kind);
@@ -3148,18 +3203,20 @@ impl QuiApp {
         })
     }
 
-    /// Shared body of every additive-primitive `insert_*` method: reject an
-    /// already-occupied `kind`, decode the dict through
-    /// [`decode_extra_primitive`], store it, then re-render. The additive
-    /// counterpart to [`Self::insert`] — `kind` is a string (one of
-    /// [`EXTRA_KIND_KEYS`]) rather than a fixed `SLOT_*` integer, so a new
-    /// additive primitive never needs a new slot constant.
-    fn insert_extra(
+    /// Shared body of every additive-primitive `insert_*` method (including
+    /// the public `insert_extra` pymethod above): reject an already-occupied
+    /// `kind`, decode the dict through [`decode_extra_primitive`], store it,
+    /// then re-render, returning `kind` back for symmetry with the fixed
+    /// `insert_*` methods' slot-handle return value. The additive
+    /// counterpart to [`Self::insert`] — `kind` is a string (one registered
+    /// in [`EXTRA_PRIMITIVES`]) rather than a fixed `SLOT_*` integer, so a
+    /// new additive primitive never needs a new slot constant.
+    fn store_extra(
         &mut self,
-        kind: &'static str,
+        kind: &str,
         what: &str,
         descriptor: &Bound<'_, PyDict>,
-    ) -> PyResult<()> {
+    ) -> PyResult<String> {
         if self.driver.app().extra_occupied(kind) {
             return Err(SlotOccupiedError::new_err(format!(
                 "{what}: {kind:?} already occupied; call clear_extra({kind:?}) first"
@@ -3173,7 +3230,7 @@ impl QuiApp {
                 .insert(kind.to_string(), value);
             app.driver.render();
             take_pending_error(app.driver.app_mut())?;
-            Ok(())
+            Ok(kind.to_string())
         })
     }
 
