@@ -320,7 +320,11 @@ impl A11yTreeNode {
             return Vec::new();
         }
 
-        let mut actions = vec![A11yAction::Focus, A11yAction::ScrollIntoView];
+        // `ScrollIntoView` is deliberately not declared here:
+        // `route_action` does not yet translate it into a `UiEvent` (see
+        // its doc), and the whole point of this method is to only offer
+        // actions `route_action` can actually act on.
+        let mut actions = vec![A11yAction::Focus];
 
         if matches!(
             self.role(),
@@ -343,7 +347,13 @@ impl A11yTreeNode {
         }
 
         let read_only = self.info.read_only == Some(true);
-        if self.info.value.is_some() && !read_only {
+        // Gated on role, not on `self.info.value.is_some()`: `value` is
+        // this model's generic *readable* value (a link's URL, a list
+        // item's detail text, a dropdown's selected option), not an
+        // editable one. `TextInput` is the only role `route_action`'s
+        // `SetValue` arm translates, so it is the only role allowed to
+        // advertise the action.
+        if matches!(self.role(), A11yRole::TextInput) && !read_only {
             actions.push(A11yAction::SetValue);
         }
         if self.info.value_range.is_some() && !read_only {
