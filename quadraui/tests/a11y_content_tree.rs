@@ -166,6 +166,20 @@ window \"quadraui\" [focused]
     );
 }
 
+/// An editor with no buffer lines has no textual value at all, so it is
+/// announced with just its role rather than an empty `value` token.
+#[test]
+fn editor_with_no_lines_has_no_value_token() {
+    let mut scenario = A11yScenario::new();
+    scenario.push(editor_with(Vec::new()));
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  editor",
+    );
+}
+
 // ------------------------------------------------------------- text input
 
 /// Typed text wins over the placeholder, and the placeholder never
@@ -206,6 +220,25 @@ fn text_input_empty_falls_back_to_the_placeholder_as_its_value() {
         "\
 window \"quadraui\" [focused]
   text_input [value=\"Search\"]",
+    );
+}
+
+/// An empty text box with no placeholder has no value to announce, so it
+/// carries just its role.
+#[test]
+fn text_input_empty_with_no_placeholder_has_no_value() {
+    let ti = TextInput::new(WidgetId::from("search")).with_lines(vec![String::new()]);
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::TextInput {
+        rect: rect(1.0),
+        ti,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  text_input",
     );
 }
 
@@ -298,6 +331,74 @@ fn text_display_line_includes_timestamp_prefix() {
 window \"quadraui\" [focused]
   document
     label \"12:34:56 server started\" [pos=1/1]",
+    );
+}
+
+/// With no title set, the log exposes no accessible label — just its
+/// document role — while still carrying one child per line.
+#[test]
+fn text_display_with_no_title_has_no_label() {
+    let mut td = TextDisplay::new(WidgetId::from("log"));
+    td.lines.push(TextDisplayLine {
+        spans: vec![StyledSpan::plain("first")],
+        decoration: Decoration::default(),
+        timestamp: None,
+    });
+    td.lines.push(TextDisplayLine {
+        spans: vec![StyledSpan::plain("second")],
+        decoration: Decoration::default(),
+        timestamp: None,
+    });
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::TextDisplay {
+        rect: rect(5.0),
+        td,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  document
+    label \"first\" [pos=1/2]
+    label \"second\" [pos=2/2]",
+    );
+}
+
+/// A blank line contributes no child of its own, but every buffer line
+/// still counts toward the `one of N` position — so the line after a blank
+/// keeps the number a sighted user would count to.
+#[test]
+fn text_display_blank_line_counts_toward_position_but_emits_no_child() {
+    let mut td = TextDisplay::new(WidgetId::from("log"));
+    td.lines.push(TextDisplayLine {
+        spans: vec![StyledSpan::plain("before")],
+        decoration: Decoration::default(),
+        timestamp: None,
+    });
+    td.lines.push(TextDisplayLine {
+        spans: Vec::new(),
+        decoration: Decoration::default(),
+        timestamp: None,
+    });
+    td.lines.push(TextDisplayLine {
+        spans: vec![StyledSpan::plain("after")],
+        decoration: Decoration::default(),
+        timestamp: None,
+    });
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::TextDisplay {
+        rect: rect(5.0),
+        td,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  document
+    label \"before\" [pos=1/3]
+    label \"after\" [pos=3/3]",
     );
 }
 
@@ -415,6 +516,29 @@ fn terminal_keeps_spaces_between_narrow_glyphs() {
         "\
 window \"quadraui\" [focused]
   terminal [value=\"a b\"]",
+    );
+}
+
+/// An empty grid has no visible text, so the terminal is announced with
+/// just its role rather than an empty `value`.
+#[test]
+fn terminal_with_empty_grid_has_no_value() {
+    let term = Terminal {
+        id: "term".into(),
+        cells: Vec::new(),
+        scrollbar: None,
+    };
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::Terminal {
+        rect: rect(1.0),
+        term,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  terminal",
     );
 }
 
@@ -687,6 +811,83 @@ fn chart_with_axis_label_prefers_it_over_legend() {
         "\
 window \"quadraui\" [focused]
   chart \"Percent\"",
+    );
+}
+
+/// With no `y_label`, the `x_label` is the next app-authored name in the
+/// fallback chain — preferred over the legend even when it is off.
+#[test]
+fn chart_falls_back_to_x_label_when_no_y_label() {
+    let chart = Chart {
+        id: "cpu".into(),
+        kind: ChartKind::Sparkline,
+        series: vec![Series {
+            label: "cpu".to_string(),
+            data: vec![0.1, 0.4, 0.2],
+            color: None,
+            fill: false,
+        }],
+        x_label: Some("Time".to_string()),
+        y_label: None,
+        y_range: None,
+        x_range: None,
+        show_legend: false,
+        y_ticks: None,
+        x_ticks: None,
+        show_grid: false,
+    };
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::Chart {
+        rect: rect(3.0),
+        chart,
+        hovered_point: None,
+        crosshair_x: None,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  chart \"Time\"",
+    );
+}
+
+/// The legend fallback only contributes names that are actually set:
+/// a legend of blank series labels leaves the chart unlabelled rather
+/// than announcing a run of empty strings.
+#[test]
+fn chart_with_legend_but_blank_series_labels_is_unlabelled() {
+    let chart = Chart {
+        id: "cpu".into(),
+        kind: ChartKind::Sparkline,
+        series: vec![Series {
+            label: String::new(),
+            data: vec![0.1, 0.4, 0.2],
+            color: None,
+            fill: false,
+        }],
+        x_label: None,
+        y_label: None,
+        y_range: None,
+        x_range: None,
+        show_legend: true,
+        y_ticks: None,
+        x_ticks: None,
+        show_grid: false,
+    };
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::Chart {
+        rect: rect(3.0),
+        chart,
+        hovered_point: None,
+        crosshair_x: None,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  chart",
     );
 }
 
