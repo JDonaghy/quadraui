@@ -21,11 +21,26 @@
 
 set -euo pipefail
 
+# Echo each command under CI so an admin-gated Actions log pinpoints the exact
+# failing step; stays quiet for a local/dell64 run.
+[ -n "${CI:-}" ] && set -x
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-venv_dir="${QUADRAUI_PY_VENV:-$repo_root/target/quadraui-py-venv}"
+
+# The venv must not live under `target/`: that directory is saved and restored
+# by `Swatinem/rust-cache@v2`, and a restored cache carries a venv skeleton
+# whose interpreter symlinks and `pyvenv.cfg` point at a different runner's
+# Python, which makes `python3 -m venv` abort. On CI a fresh `$RUNNER_TEMP`
+# sidesteps the cache entirely; a local run (no `RUNNER_TEMP`) still defaults
+# under `target/`, and `QUADRAUI_PY_VENV` overrides both.
+default_venv_parent="${RUNNER_TEMP:-$repo_root/target}"
+venv_dir="${QUADRAUI_PY_VENV:-$default_venv_parent/quadraui-py-venv}"
 
 cd "$repo_root"
 
+# Recreate from scratch so no leftover or restored-from-cache venv state can
+# break creation or shadow a rebuilt interpreter.
+rm -rf "$venv_dir"
 python3 -m venv "$venv_dir"
 if [ -x "$venv_dir/bin/python" ]; then
   venv_python="$venv_dir/bin/python"
