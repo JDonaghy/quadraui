@@ -190,6 +190,21 @@ only a push to `main` runs this workflow.
   the new `A11yTreeBuilder::with_children` override seam (also exposed on
   the headless test harness as `A11yScenario::with_children`); nothing
   attaches it automatically. Additive throughout.
+- `A11yAction` + `route_action` — map an incoming assistive-technology action
+  (press/click, focus, expand, collapse, scroll into view, scroll up/down,
+  set value, increment, decrement) onto the same `UiEvent`s a mouse or
+  keyboard user would produce for the `A11yTree` node it targets, so the app
+  sees one dispatch path regardless of input modality. Routing uses the
+  owner side-table `build_tree` already populates per node (list item, tree
+  row or form field) to resolve the target `WidgetId`; a node with no
+  routable owner, or an action a node's `A11yTreeNode::supported_actions()`
+  doesn't declare, is logged and dropped rather than panicking. `From<A11yAction>
+  for accesskit::Action` (behind the existing `a11y` feature) is the only
+  piece gated on accesskit — the action model and routing are always
+  compiled, matching every other a11y seam. `A11yScenario`/`A11ySnapshot`
+  gain `dispatch_action`, the headless black-box seam for injecting an
+  action against a scenario and asserting the resulting `UiEvent`s.
+  Additive: no new `UiEvent` variant, no primitive struct changes shape.
 
 ### Fixed
 
