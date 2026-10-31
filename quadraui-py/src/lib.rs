@@ -100,10 +100,11 @@ use quadraui::{
     CommandCenter, CommandLine, CompletionItemMeasure, DataTable, DataTableEvent, DataTableHit,
     DataTableLayout, DatePicker, DiffView, Form, Image, InteractionState, Key, ListView,
     ListViewEvent, ListViewHit, ListViewLayout, MenuBar, MessageList, Minimap, Modifiers,
-    MultiSectionView, NamedKey, NumberInput, Palette, PipelineView, Point, ProgressBar, RadioGroup,
-    Reaction, Rect, Spinner, Split, SplitDirection, SplitHit, SplitLayout, StatusBar, Switch,
-    TabBar, TabBarEvent, TabBarHit, TabBarLayout, TabItem, TextDisplay, TextInput, Toolbar,
-    TreeEvent, TreePath, TreeView, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    MultiSectionView, NamedKey, NumberInput, Palette, Panel, PipelineView, Point, ProgressBar,
+    RadioGroup, Reaction, Rect, Scrollbar, SidebarPanel, Spinner, Split, SplitDirection, SplitHit,
+    SplitLayout, SplitTree, StatusBar, Switch, TabBar, TabBarEvent, TabBarHit, TabBarLayout,
+    TabItem, TextDisplay, TextInput, Toolbar, TreeEvent, TreePath, TreeView, TreeViewHit,
+    TreeViewLayout, UiEvent, WidgetId,
 };
 
 create_exception!(
@@ -1136,7 +1137,18 @@ fn paint_layout(
         }
         LayoutNode::Leaf(leaf) => paint_leaf(backend, area, leaf, hits),
         LayoutNode::Split(split) => {
-            let layout = backend.draw_split(area, &split.split);
+            // `split.split.first_min`/`second_min` are decoded as portable
+            // line counts (see `layout_split_from_dict`); scale them into
+            // the backend's native unit here, right before painting, so
+            // every backend gets a minimum pane size of the same visual
+            // weight from the same Python-supplied number.
+            let line_height = backend.line_height();
+            let native_split = Split {
+                first_min: split.split.first_min * line_height,
+                second_min: split.split.second_min * line_height,
+                ..split.split.clone()
+            };
+            let layout = backend.draw_split(area, &native_split);
             // Pushed before recursing so the divider/pane hit only wins
             // over a descendant primitive's own, more specific hit when
             // nothing painted inside either pane claims the point first —
@@ -1164,6 +1176,24 @@ fn paint_layout(
             );
             if let Some(selected) = tabs.entries.get(tabs.selected) {
                 paint_layout(backend, content_rect, &selected.content, hits);
+            }
+        }
+        LayoutNode::Panel(panel_node) => {
+            let layout = backend.draw_panel(area, &panel_node.panel);
+            paint_layout(backend, layout.content_bounds, &panel_node.content, hits);
+        }
+        LayoutNode::SidebarPanel(sidebar_node) => {
+            let layout = backend.draw_sidebar_panel_interactive(
+                area,
+                &sidebar_node.sidebar_panel,
+                &InteractionState::default(),
+            );
+            paint_layout(backend, layout.content_bounds, &sidebar_node.content, hits);
+        }
+        LayoutNode::SplitTree(split_tree) => {
+            let layout = backend.draw_split_tree(area, &split_tree.tree);
+            for ((_, rect), content) in layout.leaves.iter().zip(split_tree.leaves.iter()) {
+                paint_layout(backend, *rect, content, hits);
             }
         }
     }
@@ -1352,14 +1382,20 @@ fn decode_extra_slot_entry(
 /// One node of a render callback's layout tree: a `Row`/`Column` container
 /// holding child nodes, a `Leaf` wrapping one id-addressable primitive
 /// descriptor, a `Split` holding exactly two named child nodes divided by a
-/// draggable ratio, or a `Tabs` holding a tab strip plus one content subtree
-/// per tab, of which only the selected one paints.
+/// draggable ratio, a `Tabs` holding a tab strip plus one content subtree
+/// per tab (of which only the selected one paints), a `Panel` or
+/// `SidebarPanel` holding one chrome descriptor plus a single content
+/// subtree, or a `SplitTree` holding an arbitrarily nested divider tree of
+/// content subtrees.
 enum LayoutNode {
     Row(Vec<LayoutNode>),
     Column(Vec<LayoutNode>),
     Leaf(LayoutLeaf),
     Split(LayoutSplit),
     Tabs(LayoutTabs),
+    Panel(LayoutPanel),
+    SidebarPanel(LayoutSidebarPanel),
+    SplitTree(LayoutSplitTree),
 }
 
 /// A [`LayoutNode::Split`]'s decoded shape: the `quadraui::Split` descriptor
@@ -1388,6 +1424,37 @@ struct LayoutTabs {
 struct LayoutTabEntry {
     id: String,
     content: Box<LayoutNode>,
+}
+
+/// A [`LayoutNode::Panel`]'s decoded shape: the `quadraui::Panel` chrome
+/// descriptor (title/actions/accent/collapsed) paired with the single
+/// content subtree it frames. `content` is a full [`LayoutNode`], not a
+/// leaf-only slot, so a panel may itself hold a nested row/column/split.
+struct LayoutPanel {
+    panel: Panel,
+    content: Box<LayoutNode>,
+}
+
+/// A [`LayoutNode::SidebarPanel`]'s decoded shape: the `quadraui::SidebarPanel`
+/// chrome descriptor (optional toolbar) paired with the single content
+/// subtree painted beneath the toolbar slot.
+struct LayoutSidebarPanel {
+    sidebar_panel: SidebarPanel,
+    content: Box<LayoutNode>,
+}
+
+/// A [`LayoutNode::SplitTree`]'s decoded shape: the `quadraui::SplitTree`
+/// geometry tree (every leaf position holding a synthetic, internal-only
+/// `WidgetId`) paired with `leaves`, the matching content subtree for each
+/// leaf position in the same pre-order [`SplitTree::leaf_ids`] would
+/// produce. [`paint_layout`]'s `LayoutNode::SplitTree` arm zips
+/// `SplitTreeLayout::leaves`' resolved rects back against `leaves` by
+/// position — the synthetic ids in `tree` are never user-facing and never
+/// checked for uniqueness; `id` is the node's own user-supplied id instead.
+struct LayoutSplitTree {
+    id: String,
+    tree: SplitTree,
+    leaves: Vec<LayoutNode>,
 }
 
 /// One id-addressable primitive inside a layout tree, decoded from a
@@ -1637,6 +1704,12 @@ impl ExtraPaint for Palette {
     }
 }
 
+impl ExtraPaint for Scrollbar {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_scrollbar(area, self);
+    }
+}
+
 /// Decodes one additive primitive descriptor from a Python `dict` into its
 /// boxed [`ExtraPaint`] value. Registered per kind in [`EXTRA_PRIMITIVES`].
 type ExtraDecoder = fn(&str, &Bound<'_, PyDict>) -> PyResult<Box<dyn ExtraPaint>>;
@@ -1724,6 +1797,9 @@ const EXTRA_PRIMITIVES: &[(&str, ExtraDecoder)] = &[
     ("palette", |what, dict| {
         Ok(Box::new(decode::<Palette>(what, dict)?))
     }),
+    ("scrollbar", |what, dict| {
+        Ok(Box::new(decode::<Scrollbar>(what, dict)?))
+    }),
 ];
 
 /// The registered additive primitive kind names, in registration order —
@@ -1788,6 +1864,36 @@ fn layout_node_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<Layou
             return Ok(LayoutNode::Tabs(layout_tabs_from_dict(what, tabs_dict)?));
         }
     }
+    if let Some(value) = dict.get_item("panel")? {
+        if !value.is_none() {
+            let panel_dict = value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!("{what}: \"panel\" must be a dict"))
+            })?;
+            return Ok(LayoutNode::Panel(layout_panel_from_dict(what, panel_dict)?));
+        }
+    }
+    if let Some(value) = dict.get_item("sidebar_panel")? {
+        if !value.is_none() {
+            let sidebar_panel_dict = value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!("{what}: \"sidebar_panel\" must be a dict"))
+            })?;
+            return Ok(LayoutNode::SidebarPanel(layout_sidebar_panel_from_dict(
+                what,
+                sidebar_panel_dict,
+            )?));
+        }
+    }
+    if let Some(value) = dict.get_item("split_tree")? {
+        if !value.is_none() {
+            let split_tree_dict = value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!("{what}: \"split_tree\" must be a dict"))
+            })?;
+            return Ok(LayoutNode::SplitTree(layout_split_tree_from_dict(
+                what,
+                split_tree_dict,
+            )?));
+        }
+    }
     Ok(LayoutNode::Leaf(layout_leaf_from_dict(what, dict)?))
 }
 
@@ -1798,8 +1904,13 @@ const SPLIT_ORIENTATIONS: [&str; 2] = ["horizontal", "vertical"];
 
 /// Decodes a `"split"` node: `{"id", "orientation", "ratio", "first",
 /// "second"}`, with `"first_min"`/`"second_min"` optional (defaulting to
-/// `0.0`, same as `quadraui::Split`). `"first"`/`"second"` are full child
-/// node dicts, recursively decoded by [`layout_node_from_dict`].
+/// `0.0`). Unlike `quadraui::Split::first_min`/`second_min`, which are in
+/// the backend's native unit, these two fields are portable line counts —
+/// [`paint_layout`]'s `LayoutNode::Split` arm scales them by
+/// `Backend::line_height()` before constructing the `Split` it paints, so a
+/// Python caller names a minimum pane size the same way on every backend.
+/// `"first"`/`"second"` are full child node dicts, recursively decoded by
+/// [`layout_node_from_dict`].
 fn layout_split_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutSplit> {
     let id: String = match dict.get_item("id")? {
         Some(value) if !value.is_none() => value.extract().map_err(|_| {
@@ -1923,6 +2034,215 @@ fn layout_children_from_value(what: &str, value: &Bound<'_, PyAny>) -> PyResult<
         .collect()
 }
 
+/// Reads a container node's required single `"content"` child dict and
+/// recursively decodes it via [`layout_node_from_dict`]. Shared by
+/// `"panel"` and `"sidebar_panel"` nodes, which each hold exactly one child
+/// subtree — unlike `"split"`'s two named panes or `"row"`/`"column"`'s list.
+fn layout_required_child_node(
+    what: &str,
+    node_label: &str,
+    node_id: &str,
+    key: &str,
+    dict: &Bound<'_, PyDict>,
+) -> PyResult<LayoutNode> {
+    let value = dict
+        .get_item(key)?
+        .filter(|v| !v.is_none())
+        .ok_or_else(|| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: {node_label} {node_id:?} is missing required {key:?}"
+            ))
+        })?;
+    let child_dict = value.cast::<PyDict>().map_err(|_| {
+        InvalidDescriptorError::new_err(format!(
+            "{what}: {node_label} {node_id:?} {key:?} must be a dict"
+        ))
+    })?;
+    layout_node_from_dict(what, child_dict)
+}
+
+/// Decodes a `"panel"` node: the chrome dict decoded generically via
+/// `decode::<Panel>` (`title`/`actions`/`accent`/`collapsed`, each
+/// `#[serde(default)]`, so a minimal `{"id": ...}` is enough) plus a
+/// required `"content"` child node, recursively decoded by
+/// [`layout_node_from_dict`]. The `"content"` key is harmless noise to
+/// `decode::<Panel>` itself — `Panel` has no `deny_unknown_fields`.
+fn layout_panel_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutPanel> {
+    let panel: Panel = decode(what, dict)?;
+    let id = panel.id.as_str().to_owned();
+    let content = layout_required_child_node(what, "panel", &id, "content", dict)?;
+    Ok(LayoutPanel {
+        panel,
+        content: Box::new(content),
+    })
+}
+
+/// Decodes a `"sidebar_panel"` node: the chrome dict decoded generically via
+/// `decode::<SidebarPanel>` (optional `toolbar`/`toolbar_height`) plus a
+/// required `"content"` child node, recursively decoded by
+/// [`layout_node_from_dict`].
+fn layout_sidebar_panel_from_dict(
+    what: &str,
+    dict: &Bound<'_, PyDict>,
+) -> PyResult<LayoutSidebarPanel> {
+    let sidebar_panel: SidebarPanel = decode(what, dict)?;
+    let id = sidebar_panel.id.as_str().to_owned();
+    let content = layout_required_child_node(what, "sidebar_panel", &id, "content", dict)?;
+    Ok(LayoutSidebarPanel {
+        sidebar_panel,
+        content: Box::new(content),
+    })
+}
+
+/// Decodes a `"split_tree"` node: `{"id", "root"}`, where `"root"` is
+/// recursively either `{"leaf": <child node dict>}` or `{"split":
+/// {"orientation", "ratio", "first", "second"}}` (the same `"orientation"`
+/// spelling and values as a top-level `"split"` node — see
+/// [`SPLIT_ORIENTATIONS`]). Each `"leaf"` becomes one position in the
+/// `quadraui::SplitTree` geometry built alongside it, addressed by a
+/// synthetic, internal-only id; its decoded content node is pushed onto the
+/// matching [`LayoutSplitTree::leaves`] in the same pre-order, for
+/// [`paint_layout`] to zip back against [`SplitTreeLayout::leaves`]' resolved
+/// rects at paint time.
+fn layout_split_tree_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutSplitTree> {
+    let id: String = match dict.get_item("id")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!("{what}: split_tree \"id\" must be a string"))
+        })?,
+        _ => {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: split_tree is missing required \"id\""
+            )));
+        }
+    };
+
+    let root_value = dict
+        .get_item("root")?
+        .filter(|v| !v.is_none())
+        .ok_or_else(|| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: split_tree {id:?} is missing required \"root\""
+            ))
+        })?;
+    let root_dict = root_value.cast::<PyDict>().map_err(|_| {
+        InvalidDescriptorError::new_err(format!(
+            "{what}: split_tree {id:?} \"root\" must be a dict"
+        ))
+    })?;
+
+    let mut leaves = Vec::new();
+    let tree = split_tree_node_from_dict(what, &id, root_dict, &mut leaves)?;
+    Ok(LayoutSplitTree { id, tree, leaves })
+}
+
+/// Recursively decodes one node of a `"split_tree"`'s `"root"` tree. A
+/// `{"leaf": <node dict>}` decodes its content via [`layout_node_from_dict`],
+/// pushes it onto `leaves`, and returns a `SplitTree::Leaf` carrying a
+/// synthetic id addressing its position (`"{tree_id}::leaf::{index}"`,
+/// never user-facing, never checked by [`validate_unique_leaf_ids`]). A
+/// `{"split": {...}}` recurses into `"first"`/`"second"` in pre-order,
+/// matching the order [`SplitTreeLayout::leaves`] resolves rects in.
+fn split_tree_node_from_dict(
+    what: &str,
+    tree_id: &str,
+    dict: &Bound<'_, PyDict>,
+    leaves: &mut Vec<LayoutNode>,
+) -> PyResult<SplitTree> {
+    if let Some(value) = dict.get_item("leaf")? {
+        if !value.is_none() {
+            let leaf_dict = value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: split_tree {tree_id:?} \"leaf\" must be a dict"
+                ))
+            })?;
+            let content = layout_node_from_dict(what, leaf_dict)?;
+            let placeholder = WidgetId::new(format!("{tree_id}::leaf::{}", leaves.len()));
+            leaves.push(content);
+            return Ok(SplitTree::leaf(placeholder));
+        }
+    }
+    if let Some(value) = dict.get_item("split")? {
+        if !value.is_none() {
+            let split_dict = value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: split_tree {tree_id:?} \"split\" must be a dict"
+                ))
+            })?;
+
+            let orientation: String = match split_dict.get_item("orientation")? {
+                Some(v) if !v.is_none() => v.extract().map_err(|_| {
+                    InvalidDescriptorError::new_err(format!(
+                        "{what}: split_tree {tree_id:?} split \"orientation\" must be a string"
+                    ))
+                })?,
+                _ => {
+                    return Err(InvalidDescriptorError::new_err(format!(
+                        "{what}: split_tree {tree_id:?} split is missing required \"orientation\""
+                    )));
+                }
+            };
+            let direction = match orientation.as_str() {
+                "horizontal" => SplitDirection::Horizontal,
+                "vertical" => SplitDirection::Vertical,
+                _ => {
+                    return Err(InvalidDescriptorError::new_err(format!(
+                        "{what}: split_tree {tree_id:?} split \"orientation\" must be one of \
+                         {SPLIT_ORIENTATIONS:?}, got {orientation:?}"
+                    )));
+                }
+            };
+
+            let ratio: f32 = match split_dict.get_item("ratio")? {
+                Some(v) if !v.is_none() => v.extract().map_err(|_| {
+                    InvalidDescriptorError::new_err(format!(
+                        "{what}: split_tree {tree_id:?} split \"ratio\" must be a number"
+                    ))
+                })?,
+                _ => {
+                    return Err(InvalidDescriptorError::new_err(format!(
+                        "{what}: split_tree {tree_id:?} split is missing required \"ratio\""
+                    )));
+                }
+            };
+
+            let first_value = split_dict
+                .get_item("first")?
+                .filter(|v| !v.is_none())
+                .ok_or_else(|| {
+                    InvalidDescriptorError::new_err(format!(
+                        "{what}: split_tree {tree_id:?} split is missing required \"first\""
+                    ))
+                })?;
+            let first_dict = first_value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: split_tree {tree_id:?} split \"first\" must be a dict"
+                ))
+            })?;
+            let first = split_tree_node_from_dict(what, tree_id, first_dict, leaves)?;
+
+            let second_value = split_dict
+                .get_item("second")?
+                .filter(|v| !v.is_none())
+                .ok_or_else(|| {
+                    InvalidDescriptorError::new_err(format!(
+                        "{what}: split_tree {tree_id:?} split is missing required \"second\""
+                    ))
+                })?;
+            let second_dict = second_value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: split_tree {tree_id:?} split \"second\" must be a dict"
+                ))
+            })?;
+            let second = split_tree_node_from_dict(what, tree_id, second_dict, leaves)?;
+
+            return Ok(SplitTree::split(direction, ratio, first, second));
+        }
+    }
+    Err(InvalidDescriptorError::new_err(format!(
+        "{what}: split_tree {tree_id:?} node must have a \"leaf\" or \"split\" key"
+    )))
+}
+
 /// Decodes a `"tabs"` node: `{"id", "tabs", "selected", "closable"}`, where
 /// `"tabs"` is a non-empty `list` of `{"id", "title", "content", "closable"}`
 /// entries and `"selected"` is the index of the entry whose `"content"`
@@ -1962,11 +2282,10 @@ fn layout_tabs_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<Layou
     let tabs_list = tabs_value.cast::<PyList>().map_err(|_| {
         InvalidDescriptorError::new_err(format!("{what}: tabs {id:?} \"tabs\" must be a list"))
     })?;
-    if tabs_list.is_empty() {
-        return Err(InvalidDescriptorError::new_err(format!(
-            "{what}: tabs {id:?} \"tabs\" must not be empty"
-        )));
-    }
+    // An empty `"tabs"` list is a valid empty state (no tab strip entries,
+    // no selected content) rather than an error -- a render callback that
+    // starts with zero tabs (e.g. before any file is open) can still return
+    // a `tabs` node instead of special-casing the empty case itself.
 
     let mut items = Vec::with_capacity(tabs_list.len());
     let mut entries = Vec::with_capacity(tabs_list.len());
@@ -2042,14 +2361,20 @@ fn layout_tabs_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<Layou
         })?,
         _ => 0,
     };
-    if selected >= items.len() {
+    // An explicit "selected" is still validated against the tab count when
+    // there are tabs to select; with zero tabs there is nothing to select
+    // and `selected` is ignored (`LayoutNode::Tabs`'s paint arm already
+    // treats an out-of-range/empty `entries.get(selected)` as "no content").
+    if !items.is_empty() && selected >= items.len() {
         return Err(InvalidDescriptorError::new_err(format!(
             "{what}: tabs {id:?} \"selected\" index {selected} is out of range for \
              {len} tab(s)",
             len = items.len()
         )));
     }
-    items[selected].is_active = true;
+    if let Some(item) = items.get_mut(selected) {
+        item.is_active = true;
+    }
 
     let show_tab_close: bool = match dict.get_item("closable")? {
         Some(value) if !value.is_none() => value.extract().map_err(|_| {
@@ -2204,6 +2529,36 @@ fn validate_unique_leaf_ids(node: &LayoutNode) -> PyResult<()> {
                 }
                 Ok(())
             }
+            LayoutNode::Panel(panel_node) => {
+                let id = panel_node.panel.id.as_str().to_owned();
+                if !seen.insert(id.clone()) {
+                    return Err(InvalidDescriptorError::new_err(format!(
+                        "render: duplicate leaf id {id:?}"
+                    )));
+                }
+                walk(&panel_node.content, seen)
+            }
+            LayoutNode::SidebarPanel(sidebar_node) => {
+                let id = sidebar_node.sidebar_panel.id.as_str().to_owned();
+                if !seen.insert(id.clone()) {
+                    return Err(InvalidDescriptorError::new_err(format!(
+                        "render: duplicate leaf id {id:?}"
+                    )));
+                }
+                walk(&sidebar_node.content, seen)
+            }
+            LayoutNode::SplitTree(split_tree) => {
+                if !seen.insert(split_tree.id.clone()) {
+                    return Err(InvalidDescriptorError::new_err(format!(
+                        "render: duplicate leaf id {:?}",
+                        split_tree.id
+                    )));
+                }
+                for leaf in &split_tree.leaves {
+                    walk(leaf, seen)?;
+                }
+                Ok(())
+            }
         }
     }
     let mut seen = HashSet::new();
@@ -2220,9 +2575,10 @@ enum RenderOutput {
 
 /// Invokes a registered render callback with no arguments and decodes its
 /// returned `dict` into a [`RenderOutput`]. A `dict` carrying a `"row"`,
-/// `"column"`, `"split"`, or `"tabs"` key is parsed as a layout tree; any
-/// other `dict` is parsed as the flat per-slot shape, so a render callback
-/// written against the flat shape keeps working unchanged. On any failure
+/// `"column"`, `"split"`, `"tabs"`, `"panel"`, `"sidebar_panel"`, or
+/// `"split_tree"` key is parsed as a layout tree; any other `dict` is
+/// parsed as the flat per-slot shape, so a render callback written against
+/// the flat shape keeps working unchanged. On any failure
 /// — the callback raising,
 /// returning something other than a `dict`, or an entry with the wrong
 /// shape — records the error in `pending_error` and returns `None`, leaving
@@ -2263,7 +2619,10 @@ fn render_output_from_callback(
         let is_tree = matches!(dict.get_item("row"), Ok(Some(ref value)) if !value.is_none())
             || matches!(dict.get_item("column"), Ok(Some(ref value)) if !value.is_none())
             || matches!(dict.get_item("split"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("tabs"), Ok(Some(ref value)) if !value.is_none());
+            || matches!(dict.get_item("tabs"), Ok(Some(ref value)) if !value.is_none())
+            || matches!(dict.get_item("panel"), Ok(Some(ref value)) if !value.is_none())
+            || matches!(dict.get_item("sidebar_panel"), Ok(Some(ref value)) if !value.is_none())
+            || matches!(dict.get_item("split_tree"), Ok(Some(ref value)) if !value.is_none());
         if is_tree {
             let parsed = layout_node_from_dict(RENDER_CALLBACK_WHAT, dict)
                 .and_then(|node| validate_unique_leaf_ids(&node).map(|()| node));
