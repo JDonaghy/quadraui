@@ -971,6 +971,8 @@ fn role_name(role: A11yRole) -> &'static str {
         A11yRole::Canvas => "canvas",
         A11yRole::Group => "group",
         A11yRole::Presentation => "presentation",
+        A11yRole::Heading => "heading",
+        A11yRole::Link => "link",
     }
 }
 
