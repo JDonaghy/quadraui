@@ -258,7 +258,7 @@ impl A11ySnapshot {
 
     /// Routes an assistive-technology action at `node`, the same way a
     /// backend's `accesskit::ActionHandler` turns an incoming
-    /// `ActionRequest` into the [`UiEvent`](crate::event::UiEvent)s the
+    /// `ActionRequest` into the [`UiEvent`]s the
     /// app's own dispatch loop would see from a mouse or keyboard user —
     /// the black-box seam for the "inject an action, assert the
     /// resulting event" tests this harness exists for.

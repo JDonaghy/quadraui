@@ -229,7 +229,11 @@ only a push to `main` runs this workflow.
   now gated on the target node's role instead of on `A11yInfo::value` being
   present, so read-only roles that merely display a value (links, list-item
   detail text, combo boxes) no longer advertise an action `route_action`
-  cannot actually perform.
+  cannot actually perform. `Increment`/`Decrement` are gated the same way, on
+  `A11yRole::Slider`, so a determinate progress bar, a scrollbar and a
+  splitter's ratio — all of which carry a readable `A11yInfo::value_range`
+  with nothing to step — no longer offer assistive technology a stepper that
+  does not exist.
 
 - `A11yTree::to_snapshot()` escapes backslashes and embedded newlines in a
   node's `value=` state token (`\` to `\\`, a real newline to the two-character
