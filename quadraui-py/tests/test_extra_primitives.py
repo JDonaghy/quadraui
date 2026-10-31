@@ -160,6 +160,59 @@ def test_render_callback_tree_leaf_uses_extra_primitive_in_column():
     assert app.screen_contains("[LOGO]")
 
 
+def test_render_callback_tree_split_and_panel_nest_an_extra_primitive():
+    # The container primitives (`Split`, `Panel`, ...) are plain `LayoutNode`
+    # recursion, same as `row`/`column` -- this nests a `split` inside a
+    # `panel`'s content, with one pane holding a `scrollbar` (an
+    # `EXTRA_PRIMITIVES` kind, not one of the six original fixed-slot
+    # leaves) alongside an ordinary `text_display` leaf in the other pane.
+    #
+    # A `Scrollbar` paints from its own absolute `track` rect rather than
+    # the leaf area the layout computes for it (it owns its own layout, same
+    # as a direct `insert_extra` call outside any node tree), so its track
+    # is placed at the second pane's known on-screen column (ratio 0.5 of a
+    # 40-wide screen, i.e. column 21 onward) rather than at the pane-local
+    # origin.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "panel": {
+                "id": "panel:outer",
+                "content": {
+                    "split": {
+                        "id": "split:1",
+                        "orientation": "horizontal",
+                        "ratio": 0.5,
+                        "first": {
+                            "id": "text:left",
+                            "text_display": {
+                                "id": "text:left",
+                                "lines": [
+                                    {"spans": [{"text": "LEFT", "fg": None, "bg": None}]}
+                                ],
+                            },
+                        },
+                        "second": {
+                            "id": "s:1",
+                            "scrollbar": {
+                                "id": "scrollbar:right",
+                                "axis": "Vertical",
+                                "track": {"x": 21, "y": 0, "width": 1, "height": 10},
+                                "thumb_start": 0,
+                                "thumb_len": 4,
+                            },
+                        },
+                    },
+                },
+            },
+        }
+
+    app.set_render(render)
+    assert app.screen_contains("LEFT")
+    assert app.screen_contains("█")  # scrollbar thumb glyph
+
+
 def test_render_callback_tree_leaf_rejects_fixed_and_extra_descriptor_together():
     app = QuiApp(40, 20)
 
