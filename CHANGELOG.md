@@ -59,7 +59,17 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
-## [0.7.1] - 2026-10-31
+## [0.8.0] - 2026-10-31
+### Changed
+- **Breaking (pre-1.0 `MINOR`).** `A11yRole`'s discriminants are renumbered:
+  the accessibility pass below groups the new roles (`Chart`, `Canvas`,
+  `Heading`, `Link`) in with their peers rather than appending them, so the
+  `as isize` value of every later variant shifts. Match on the named
+  variants; do not depend on their numeric cast values.
+- **Breaking (pre-1.0 `MINOR`).** `ShellConfig` gains a `sidebar_visible`
+  field (see the `### Added` entry below), so exhaustive struct-literal
+  construction of `ShellConfig` must name it or spread `..Default::default()`.
+  It defaults to `true`, preserving the prior starting state.
 ### Fixed
 - The shared GUI form painter (`macOS`, `Windows`, `GTK`) now honors
   `FormField`'s `label_position`, `label_align` and `label_width` instead of
