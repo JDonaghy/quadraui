@@ -25,6 +25,19 @@ set -euo pipefail
 # failing step; stays quiet for a local/dell64 run.
 [ -n "${CI:-}" ] && set -x
 
+# Surface a real, scrapeable error whatever fails. A combined "build +
+# pytest" step that dies silently (an extension panic on import, a killed
+# build, a pip resolver error) leaves a CI log the diagnostic scraper can't
+# match. `RUST_BACKTRACE=full` turns any panic crossing the extension's FFI
+# boundary into a printed backtrace; `PYTHONUNBUFFERED` stops the last lines
+# before a crash being swallowed in a buffer; the phase markers localise a
+# failure to pip / maturin / pytest; and `python -VV` + `rustc -vV` pin the
+# exact interpreter and toolchain the run actually used.
+export RUST_BACKTRACE="${RUST_BACKTRACE:-full}"
+export PYTHONUNBUFFERED=1
+
+phase() { echo "::quadraui-py:: ===== $* ====="; }
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # The venv must not live under `target/`: that directory is saved and restored
@@ -38,6 +51,10 @@ venv_dir="${QUADRAUI_PY_VENV:-$default_venv_parent/quadraui-py-venv}"
 
 cd "$repo_root"
 
+phase "toolchain"
+rustc -vV || true
+
+phase "create venv ($venv_dir)"
 # Recreate from scratch so no leftover or restored-from-cache venv state can
 # break creation or shadow a rebuilt interpreter.
 rm -rf "$venv_dir"
@@ -48,6 +65,10 @@ else
   venv_python="$venv_dir/Scripts/python.exe"
 fi
 
+phase "interpreter"
+"$venv_python" -VV
+
+phase "pip install (maturin + pytest)"
 "$venv_python" -m pip install --upgrade pip
 "$venv_python" -m pip install maturin pytest
 
@@ -56,6 +77,10 @@ fi
 # script calls the venv's `python` directly rather than sourcing its
 # `activate` script.
 export VIRTUAL_ENV="$venv_dir"
+phase "maturin develop --release"
 (cd quadraui-py && "$venv_python" -m maturin develop --release)
 
-exec "$venv_python" -m pytest quadraui-py/tests "$@"
+phase "pytest"
+# `-v -rA` prints a line per test (so a silent collection error or crash is
+# visible) and a short reason summary for every outcome, not just failures.
+exec "$venv_python" -m pytest quadraui-py/tests -v -rA "$@"
