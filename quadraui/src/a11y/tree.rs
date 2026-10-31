@@ -59,10 +59,11 @@
 //! splits and panels (mapped in [`super::chrome`]) — and the content
 //! primitives — editor, text input, text display, terminal, diff view,
 //! chart, image, minimap and canvas (mapped in [`super::content`]) — are
-//! mapped fully. Every other primitive (currently just `Float`) goes
-//! through a generic fallback: it still appears, as a [`A11yRole::Group`]
-//! labelled with its kind ("Floating panel", …), so an unmapped primitive
-//! reads as an unhelpful group rather than vanishing from the tree.
+//! mapped fully. Every other primitive (currently `Float` and the opaque
+//! consumer-owned content kind) goes through a generic fallback: it still
+//! appears, as a [`A11yRole::Group`] labelled with its kind ("Floating
+//! panel", "Content", …), so an unmapped primitive reads as an unhelpful
+//! group rather than vanishing from the tree.
 //!
 //! Two kinds of node are deliberate rather than accidental:
 //! a [`A11yRole::Presentation`] node marks a part with no semantics of
@@ -114,15 +115,14 @@ use crate::focus::FocusManager;
 use crate::frame::{OwnedContent, OwnedFrame, OwnedNode};
 use crate::primitives::board::{BoardColumn, BoardModel};
 use crate::primitives::completions::Completions;
-use crate::primitives::data_table::{DataRow, DataTable};
+use crate::primitives::data_table::{DataRow, DataTable, SortDirection};
 use crate::primitives::list::ListView;
 use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{MultiSectionView, Section, SectionBody};
 use crate::primitives::palette::Palette;
 use crate::primitives::pipeline_view::{PipelineStage, PipelineView, StageStatus};
 use crate::primitives::toolbar::{Toolbar, ToolbarButton};
-use crate::primitives::tree::TreeRow;
-use crate::primitives::tree::TreeView;
+use crate::primitives::tree::{TreeRow, TreeView};
 use crate::types::{StyledText, WidgetId};
 
 /// How many rows around the scroll offset get a real [`A11yChild`] node.
@@ -130,17 +130,15 @@ use crate::types::{StyledText, WidgetId};
 const A11Y_WINDOW: usize = 200;
 
 /// The slice of indices `[0, total)` that should get real `A11yChild`
-/// nodes, centred on `scroll_offset`. Callers must still compute
-/// `position_in_set`/`set_size` against the true `total`, not the
-/// returned range's length — see the module doc.
+/// nodes, anchored at `scroll_offset` as the first visible row. Callers
+/// must still compute `position_in_set`/`set_size` against the true
+/// `total`, not the returned range's length — see the module doc.
 fn a11y_window(scroll_offset: usize, total: usize) -> std::ops::Range<usize> {
     if total <= A11Y_WINDOW {
         return 0..total;
     }
-    let half = A11Y_WINDOW / 2;
-    let start = scroll_offset.saturating_sub(half);
+    let start = scroll_offset.min(total);
     let end = (start + A11Y_WINDOW).min(total);
-    let start = end.saturating_sub(A11Y_WINDOW);
     start..end
 }
 
@@ -1183,14 +1181,16 @@ impl A11yPrimitive for DataTable {
     fn a11y_info(&self) -> A11yInfo {
         A11yInfo::new()
             .with_role(A11yRole::Table)
+            .with_label("Table")
             .with_set_size(self.rows.len() as u32)
     }
 
     fn a11y_children(&self) -> Vec<A11yChild> {
         let total = self.rows.len();
-        let mut children: Vec<A11yChild> = a11y_window(self.scroll_offset, total)
-            .map(|idx| data_table_row(self, idx, total))
-            .collect();
+        let mut children: Vec<A11yChild> = vec![data_table_header(self)];
+        children.extend(
+            a11y_window(self.scroll_offset, total).map(|idx| data_table_row(self, idx, total)),
+        );
         if let Some(footer) = &self.footer {
             children.push(data_table_footer(footer));
         }
@@ -1202,6 +1202,56 @@ impl A11yPrimitive for DataTable {
     }
 }
 
+/// The column-header row: one `Cell` per [`Column`], carrying its title
+/// and, when that column is the current sort column, a value describing
+/// the direction — the same pair of signals `chrome.rs`'s `dialog_table`
+/// gives a screen reader in table-navigation mode.
+fn data_table_header(table: &DataTable) -> A11yChild {
+    let total = table.columns.len();
+    let cells = table
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(col, column)| {
+            let mut info = in_set(A11yInfo::new().with_role(A11yRole::Cell), col, total);
+            if let Some(label) = non_empty(column.title.clone()) {
+                info = info.with_label(label);
+            }
+            if let Some((sort_col, direction)) = table.sort {
+                if sort_col == col {
+                    info = info.with_value(match direction {
+                        SortDirection::Ascending => "sorted ascending",
+                        SortDirection::Descending => "sorted descending",
+                    });
+                }
+            }
+            A11yChild::new(format!("cell.{col}"), info)
+        })
+        .collect();
+    A11yChild::new(
+        "header".to_string(),
+        A11yInfo::new()
+            .with_role(A11yRole::Row)
+            .with_label("Header"),
+    )
+    .with_children(cells)
+}
+
+fn row_cells(cells: &[StyledText]) -> Vec<A11yChild> {
+    let total = cells.len();
+    cells
+        .iter()
+        .enumerate()
+        .map(|(col, text)| {
+            let mut cell_info = in_set(A11yInfo::new().with_role(A11yRole::Cell), col, total);
+            if let Some(label) = non_empty(plain_text(text)) {
+                cell_info = cell_info.with_label(label);
+            }
+            A11yChild::new(format!("cell.{col}"), cell_info)
+        })
+        .collect()
+}
+
 fn data_table_row(table: &DataTable, idx: usize, total: usize) -> A11yChild {
     let row = &table.rows[idx];
     let info = in_set(
@@ -1211,36 +1261,12 @@ fn data_table_row(table: &DataTable, idx: usize, total: usize) -> A11yChild {
         idx,
         total,
     );
-    let cells = row
-        .cells
-        .iter()
-        .enumerate()
-        .map(|(col, text)| {
-            let mut cell_info = A11yInfo::new().with_role(A11yRole::Cell);
-            if let Some(label) = non_empty(plain_text(text)) {
-                cell_info = cell_info.with_label(label);
-            }
-            A11yChild::new(format!("row.{idx}.cell.{col}"), cell_info)
-        })
-        .collect();
-    A11yChild::new(format!("row.{idx}"), info).with_children(cells)
+    A11yChild::new(format!("row.{idx}"), info).with_children(row_cells(&row.cells))
 }
 
 fn data_table_footer(footer: &DataRow) -> A11yChild {
     let info = A11yInfo::new().with_role(A11yRole::Row);
-    let cells = footer
-        .cells
-        .iter()
-        .enumerate()
-        .map(|(col, text)| {
-            let mut cell_info = A11yInfo::new().with_role(A11yRole::Cell);
-            if let Some(label) = non_empty(plain_text(text)) {
-                cell_info = cell_info.with_label(label);
-            }
-            A11yChild::new(format!("footer.cell.{col}"), cell_info)
-        })
-        .collect();
-    A11yChild::new("footer".to_string(), info).with_children(cells)
+    A11yChild::new("footer".to_string(), info).with_children(row_cells(&footer.cells))
 }
 
 /// The path of a tree row's parent — everything but its own last
@@ -1255,6 +1281,13 @@ fn parent_path(path: &[u16]) -> &[u16] {
 /// pass must not be limited to the visible window: siblings interleave
 /// with other subtrees' descendants in the flattened row list, so a
 /// window's start is not necessarily a sibling group's true start.
+///
+/// This is `O(rows)` on every call, unlike [`DataTable`]'s windowing,
+/// which only ever touches the windowed slice: a tree's sibling groups
+/// can only be found by scanning every row's parent path, since a
+/// window's boundary can fall in the middle of a subtree. A tree deep
+/// enough for this to matter in practice can revisit this with an
+/// incrementally maintained index instead of a full rescan per frame.
 fn tree_row_positions(rows: &[TreeRow]) -> Vec<(u32, u32)> {
     let mut sizes: HashMap<&[u16], u32> = HashMap::new();
     for row in rows {
@@ -1277,9 +1310,14 @@ fn tree_row_positions(rows: &[TreeRow]) -> Vec<(u32, u32)> {
 
 impl A11yPrimitive for TreeView {
     fn a11y_info(&self) -> A11yInfo {
+        // `set_size` on the container describes the root's own sibling
+        // set — the count a user can actually traverse at the top
+        // level — not every flattened row in the tree (which includes
+        // descendants nested arbitrarily deep).
+        let root_count = self.rows.iter().filter(|row| row.path.len() == 1).count() as u32;
         A11yInfo::new()
             .with_role(A11yRole::Tree)
-            .with_set_size(self.rows.len() as u32)
+            .with_set_size(root_count)
     }
 
     fn a11y_children(&self) -> Vec<A11yChild> {
@@ -1322,6 +1360,7 @@ impl A11yPrimitive for MessageList {
     fn a11y_info(&self) -> A11yInfo {
         A11yInfo::new()
             .with_role(A11yRole::List)
+            .with_label("Message list")
             .with_set_size(self.rows.len() as u32)
     }
 
@@ -1344,6 +1383,7 @@ impl A11yPrimitive for Completions {
     fn a11y_info(&self) -> A11yInfo {
         A11yInfo::new()
             .with_role(A11yRole::List)
+            .with_label("Completions")
             .with_set_size(self.items.len() as u32)
     }
 
@@ -1434,6 +1474,7 @@ impl A11yPrimitive for BoardModel {
     fn a11y_info(&self) -> A11yInfo {
         A11yInfo::new()
             .with_role(A11yRole::Group)
+            .with_label("Board")
             .with_set_size(self.columns.len() as u32)
     }
 
@@ -1447,17 +1488,17 @@ impl A11yPrimitive for BoardModel {
     }
 
     fn a11y_focus_key(&self) -> Option<String> {
+        // `A11yChild`'s key identifies a child within its own parent, and
+        // `build_tree` only resolves a focus key against the primitive's
+        // direct (top-level) children (see `tree.rs`'s `build_tree`), so
+        // the selected card's own key — nested two levels under the board
+        // — can never match here. Point focus at its column instead,
+        // which is a direct child and so does resolve.
         let selected = self.selected_card_id?;
         self.columns
             .iter()
-            .enumerate()
-            .find_map(|(col_idx, column)| {
-                column
-                    .cards
-                    .iter()
-                    .position(|card| card.id == selected)
-                    .map(|row_idx| format!("column.{col_idx}.card.{row_idx}"))
-            })
+            .position(|column| column.cards.iter().any(|card| card.id == selected))
+            .map(|col_idx| format!("column.{col_idx}"))
     }
 }
 
@@ -1469,9 +1510,7 @@ fn board_column_child(
 ) -> A11yChild {
     // `position_in_set`/`set_size` here describe the column's position
     // among sibling columns only — never overwritten with the card
-    // count below, which is a different set entirely (see the module's
-    // `in_set` doc and the sibling-issue lesson about mixing two sets on
-    // one node).
+    // count below, which is a different set entirely.
     let info = in_set(
         A11yInfo::new()
             .with_role(A11yRole::List)
@@ -1481,7 +1520,7 @@ fn board_column_child(
     );
     let total_cards = column.cards.len();
     let cards = a11y_window(column.scroll_offset, total_cards)
-        .map(|card_idx| board_card_child(board, column, idx, card_idx, total_cards))
+        .map(|card_idx| board_card_child(board, column, card_idx, total_cards))
         .collect();
     A11yChild::new(format!("column.{idx}"), info).with_children(cards)
 }
@@ -1489,7 +1528,6 @@ fn board_column_child(
 fn board_card_child(
     board: &BoardModel,
     column: &BoardColumn,
-    col_idx: usize,
     card_idx: usize,
     total_cards: usize,
 ) -> A11yChild {
@@ -1502,13 +1540,14 @@ fn board_card_child(
         card_idx,
         total_cards,
     );
-    A11yChild::new(format!("column.{col_idx}.card.{card_idx}"), info)
+    A11yChild::new(format!("card.{card_idx}"), info)
 }
 
 impl A11yPrimitive for PipelineView {
     fn a11y_info(&self) -> A11yInfo {
         A11yInfo::new()
             .with_role(A11yRole::List)
+            .with_label("Pipeline view")
             .with_set_size(self.stages.len() as u32)
     }
 
@@ -1530,8 +1569,7 @@ fn pipeline_stage_child(stage: &PipelineStage, idx: usize, total: usize) -> A11y
     let mut info = in_set(
         A11yInfo::new()
             .with_role(A11yRole::ListItem)
-            .with_label(stage.label.clone())
-            .with_disabled(matches!(stage.status, StageStatus::Skipped)),
+            .with_label(stage.label.clone()),
         idx,
         total,
     );
@@ -1556,6 +1594,7 @@ impl A11yPrimitive for MultiSectionView {
     fn a11y_info(&self) -> A11yInfo {
         A11yInfo::new()
             .with_role(A11yRole::Group)
+            .with_label("Multi-section view")
             .with_set_size(self.sections.len() as u32)
     }
 
@@ -1590,35 +1629,57 @@ fn section_child(section: &Section, idx: usize, total: usize, active: bool) -> A
     let children = if section.collapsed {
         Vec::new()
     } else {
-        section_body_children(&section.body)
+        section_body_child(&section.body).into_iter().collect()
     };
     A11yChild::new(format!("section.{idx}"), info).with_children(children)
 }
 
-fn section_body_children(body: &SectionBody) -> Vec<A11yChild> {
+/// Maps a section's body to a single `"body"` child that carries the body
+/// primitive's own `a11y_info()` (role, label, set size) with its
+/// `a11y_children()` nested underneath — mirroring `chrome.rs`'s
+/// `A11yChild::new("input", bar.a11y_info()).with_children(bar.a11y_children())`
+/// pattern. Dropping the body's own info and re-parenting only its children
+/// directly under the section would strip the container role/label/set-size
+/// (for `Tree`/`List`/`Form`/`MessageList`) and drop the body entirely for
+/// `Terminal`/`Chart`, which expose no children of their own.
+fn section_body_child(body: &SectionBody) -> Option<A11yChild> {
     match body {
-        SectionBody::Tree(tree) => tree.a11y_children(),
-        SectionBody::List(list) => list.a11y_children(),
-        SectionBody::Form(form) => form.a11y_children(),
-        SectionBody::Terminal(terminal) => terminal.a11y_children(),
-        SectionBody::MessageList(list) => list.a11y_children(),
-        SectionBody::Chart(chart) => chart.a11y_children(),
+        SectionBody::Tree(tree) => Some(
+            A11yChild::new("body".to_string(), tree.a11y_info())
+                .with_children(tree.a11y_children()),
+        ),
+        SectionBody::List(list) => Some(
+            A11yChild::new("body".to_string(), list.a11y_info())
+                .with_children(list.a11y_children()),
+        ),
+        SectionBody::Form(form) => Some(
+            A11yChild::new("body".to_string(), form.a11y_info())
+                .with_children(form.a11y_children()),
+        ),
+        SectionBody::Terminal(terminal) => {
+            Some(A11yChild::new("body".to_string(), terminal.a11y_info()))
+        }
+        SectionBody::MessageList(list) => Some(
+            A11yChild::new("body".to_string(), list.a11y_info())
+                .with_children(list.a11y_children()),
+        ),
+        SectionBody::Chart(chart) => Some(A11yChild::new("body".to_string(), chart.a11y_info())),
         SectionBody::Text(lines) => {
             let label = lines.iter().map(plain_text).collect::<Vec<_>>().join("\n");
             let mut info = A11yInfo::new().with_role(A11yRole::Label);
             if let Some(label) = non_empty(label) {
                 info = info.with_label(label);
             }
-            vec![A11yChild::new("text".to_string(), info)]
+            Some(A11yChild::new("body".to_string(), info))
         }
         SectionBody::Empty(empty) => {
             let mut info = A11yInfo::new().with_role(A11yRole::Group);
             if let Some(label) = non_empty(plain_text(&empty.text)) {
                 info = info.with_label(label);
             }
-            vec![A11yChild::new("empty".to_string(), info)]
+            Some(A11yChild::new("body".to_string(), info))
         }
-        SectionBody::Custom(_) => Vec::new(),
+        SectionBody::Custom(_) => None,
     }
 }
 
@@ -1629,11 +1690,13 @@ mod tests {
     use crate::layout::{Anchor, Side};
     use crate::primitives::board::{BoardCard, BoardColumn, BoardModel};
     use crate::primitives::canvas::Canvas;
+    use crate::primitives::chart::{Chart, ChartKind, Series};
     use crate::primitives::completions::{
         CompletionItem, CompletionKind, CompletionsLayout, CompletionsPlacement,
     };
     use crate::primitives::data_table::{Column, ColumnAlign, ColumnWidth, DataRow};
     use crate::primitives::float::{Float, FloatMeasure};
+    use crate::primitives::form::Form;
     use crate::primitives::list::ListItem;
     use crate::primitives::message_list::MessageRow;
     use crate::primitives::multi_section_view::{
@@ -1642,6 +1705,7 @@ mod tests {
     use crate::primitives::palette::{PaletteItem, PaletteMode};
     use crate::primitives::pipeline_view::{PipelineStage, StageStatus};
     use crate::primitives::scrollbar::Scrollbar;
+    use crate::primitives::terminal::{Terminal, TerminalCell};
     use crate::primitives::toolbar::ToolbarButton;
     use crate::types::{Color, Decoration, SelectionMode, TreeStyle, WidgetId};
 
@@ -2144,12 +2208,12 @@ mod tests {
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
-             list [size=6]\n    \
+             list \"Pipeline view\" [size=6]\n    \
              list_item \"Build\" [value=\"Pending\" pos=1/6]\n    \
              list_item \"Test\" [value=\"Active\" pos=2/6]\n    \
              list_item \"Lint\" [value=\"Done\" pos=3/6]\n    \
              list_item \"Package\" [value=\"Failed\" pos=4/6]\n    \
-             list_item \"Docs\" [disabled value=\"Skipped\" pos=5/6]\n    \
+             list_item \"Docs\" [value=\"Skipped\" pos=5/6]\n    \
              list_item \"Release\" [value=\"Stale\" pos=6/6]\n"
         );
     }
@@ -2161,7 +2225,7 @@ mod tests {
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
-             group [size=2]\n    \
+             group \"Board\" [size=2]\n    \
              list \"Todo\" [pos=1/2]\n      \
              list_item \"Write docs\" [pos=1/3]\n      \
              list_item \"Fix bug\" [selected pos=2/3]\n      \
@@ -2219,16 +2283,19 @@ mod tests {
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
-             table [size=2]\n    \
+             table \"Table\" [size=2]\n    \
+             row \"Header\"\n      \
+             cell \"Name\" [pos=1/2]\n      \
+             cell \"Age\" [pos=2/2]\n    \
              row [pos=1/2]\n      \
-             cell \"Alice\"\n      \
-             cell \"30\"\n    \
+             cell \"Alice\" [pos=1/2]\n      \
+             cell \"30\" [pos=2/2]\n    \
              row [selected pos=2/2]\n      \
-             cell \"Bob\"\n      \
-             cell \"25\"\n    \
+             cell \"Bob\" [pos=1/2]\n      \
+             cell \"25\" [pos=2/2]\n    \
              row\n      \
-             cell \"Total\"\n      \
-             cell \"2\"\n"
+             cell \"Total\" [pos=1/2]\n      \
+             cell \"2\" [pos=2/2]\n"
         );
     }
 
@@ -2267,18 +2334,17 @@ mod tests {
 
         let table_id = A11yNodeId::for_widget(&WidgetId::new("big"));
         let rows = tree.children_of(table_id);
-        assert_eq!(
-            rows.len(),
-            200,
-            "only the 200-row window around scroll_offset is materialised, never the full 100,000"
-        );
+        // The header row is always materialised, on top of the 200-row
+        // window around `scroll_offset` — never the full 100,000 data rows.
+        assert_eq!(rows.len(), 201);
 
-        let first = rows.first().expect("windowed row");
-        assert_eq!(first.info.position_in_set, Some(49_901));
+        let data_rows = &rows[1..];
+        let first = data_rows.first().expect("windowed row");
+        assert_eq!(first.info.position_in_set, Some(50_001));
         assert_eq!(first.info.set_size, Some(100_000));
 
-        let last = rows.last().expect("windowed row");
-        assert_eq!(last.info.position_in_set, Some(50_100));
+        let last = data_rows.last().expect("windowed row");
+        assert_eq!(last.info.position_in_set, Some(50_200));
         assert_eq!(last.info.set_size, Some(100_000));
     }
 
@@ -2342,7 +2408,7 @@ mod tests {
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
-             tree [size=4]\n    \
+             tree [size=2]\n    \
              tree_item \"src\" [expanded level=1 pos=1/2]\n    \
              tree_item \"main.rs\" [level=2 pos=1/2]\n    \
              tree_item \"lib.rs\" [selected level=2 pos=2/2]\n    \
@@ -2369,7 +2435,7 @@ mod tests {
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
-             list [size=3]\n    \
+             list \"Message list\" [size=3]\n    \
              list_item \"Connected\" [pos=1/3]\n    \
              list_item \"Warning: low disk\" [pos=2/3]\n    \
              list_item \"Disconnected\" [pos=3/3]\n"
@@ -2390,7 +2456,7 @@ mod tests {
                         actions: Vec::new(),
                         show_chevron: true,
                     },
-                    body: SectionBody::Text(vec![StyledText::plain("No sections yet")]),
+                    body: SectionBody::Text(vec![StyledText::plain("Build succeeded")]),
                     aux: None,
                     size: SectionSize::Weight(1.0),
                     collapsed: false,
@@ -2435,10 +2501,212 @@ mod tests {
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
-             group [size=2]\n    \
+             group \"Multi-section view\" [size=2]\n    \
              group \"Logs\" [selected expanded pos=1/2]\n      \
-             label \"No sections yet\"\n    \
+             label \"Build succeeded\"\n    \
              group \"Empty\" [collapsed pos=2/2]\n"
+        );
+    }
+
+    #[test]
+    fn multi_section_view_body_delegates_container_role_label_and_children_for_every_variant() {
+        let view = MultiSectionView {
+            id: WidgetId::new("panels"),
+            sections: vec![
+                Section {
+                    id: "tree".to_string(),
+                    header: SectionHeader {
+                        icon: None,
+                        title: StyledText::plain("Tree"),
+                        badge: None,
+                        actions: Vec::new(),
+                        show_chevron: true,
+                    },
+                    body: SectionBody::Tree(TreeView {
+                        id: WidgetId::new("files"),
+                        rows: vec![TreeRow {
+                            path: vec![0],
+                            indent: 0,
+                            icon: None,
+                            text: StyledText::plain("root"),
+                            badge: None,
+                            is_expanded: None,
+                            decoration: Decoration::default(),
+                            edit: None,
+                        }],
+                        selection_mode: SelectionMode::Single,
+                        selected_path: None,
+                        scroll_offset: 0,
+                        style: TreeStyle::default(),
+                        has_focus: false,
+                    }),
+                    aux: None,
+                    size: SectionSize::Weight(1.0),
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                },
+                Section {
+                    id: "list".to_string(),
+                    header: SectionHeader {
+                        icon: None,
+                        title: StyledText::plain("List"),
+                        badge: None,
+                        actions: Vec::new(),
+                        show_chevron: true,
+                    },
+                    body: SectionBody::List(list("notes", Some("Notes"), &["Buy milk"], 1)),
+                    aux: None,
+                    size: SectionSize::Weight(1.0),
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                },
+                Section {
+                    id: "form".to_string(),
+                    header: SectionHeader {
+                        icon: None,
+                        title: StyledText::plain("Form"),
+                        badge: None,
+                        actions: Vec::new(),
+                        show_chevron: true,
+                    },
+                    body: SectionBody::Form(Form {
+                        id: WidgetId::new("settings"),
+                        fields: Vec::new(),
+                        focused_field: None,
+                        scroll_offset: 0,
+                        has_focus: false,
+                        label_position: Default::default(),
+                        label_align: Default::default(),
+                        label_width: None,
+                    }),
+                    aux: None,
+                    size: SectionSize::Weight(1.0),
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                },
+                Section {
+                    id: "terminal".to_string(),
+                    header: SectionHeader {
+                        icon: None,
+                        title: StyledText::plain("Terminal"),
+                        badge: None,
+                        actions: Vec::new(),
+                        show_chevron: true,
+                    },
+                    body: SectionBody::Terminal(Terminal {
+                        id: WidgetId::new("shell"),
+                        cells: vec![vec![TerminalCell {
+                            text: "$".to_string(),
+                            fg: Color::rgb(200, 200, 200),
+                            bg: Color::rgb(0, 0, 0),
+                            bold: false,
+                            italic: false,
+                            underline: false,
+                            dim: false,
+                            selected: false,
+                            is_cursor: false,
+                            cursor_shape: Default::default(),
+                            cursor_blinking: false,
+                            is_find_match: false,
+                            is_find_active: false,
+                        }]],
+                        scrollbar: None,
+                    }),
+                    aux: None,
+                    size: SectionSize::Weight(1.0),
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                },
+                Section {
+                    id: "messages".to_string(),
+                    header: SectionHeader {
+                        icon: None,
+                        title: StyledText::plain("Messages"),
+                        badge: None,
+                        actions: Vec::new(),
+                        show_chevron: true,
+                    },
+                    body: SectionBody::MessageList(MessageList {
+                        id: WidgetId::new("log"),
+                        rows: vec![MessageRow::new("Connected", Color::rgb(0, 200, 0), 0.0)],
+                        scroll_top: 0,
+                    }),
+                    aux: None,
+                    size: SectionSize::Weight(1.0),
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                },
+                Section {
+                    id: "chart".to_string(),
+                    header: SectionHeader {
+                        icon: None,
+                        title: StyledText::plain("Chart"),
+                        badge: None,
+                        actions: Vec::new(),
+                        show_chevron: true,
+                    },
+                    body: SectionBody::Chart(Chart {
+                        id: WidgetId::new("cpu"),
+                        kind: ChartKind::Sparkline,
+                        series: vec![Series {
+                            label: "cpu".to_string(),
+                            data: vec![0.1, 0.4, 0.2],
+                            color: None,
+                            fill: false,
+                        }],
+                        x_label: None,
+                        y_label: None,
+                        y_range: None,
+                        x_range: None,
+                        show_legend: false,
+                        y_ticks: None,
+                        x_ticks: None,
+                        show_grid: false,
+                    }),
+                    aux: None,
+                    size: SectionSize::Weight(1.0),
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                },
+            ],
+            active_section: None,
+            axis: Axis::Vertical,
+            allow_resize: false,
+            allow_collapse: true,
+            scroll_mode: ScrollMode::PerSection,
+            has_focus: false,
+            panel_scroll: 0.0,
+        };
+        let frame = frame_with(vec![Surface::MultiSectionView {
+            rect: Rect::new(0.0, 0.0, 40.0, 30.0),
+            view,
+        }]);
+        let tree = frame_to_tree(&frame, &FocusManager::new());
+        assert_eq!(
+            tree.to_snapshot(),
+            "window \"quadraui\" [focused]\n  \
+             group \"Multi-section view\" [size=6]\n    \
+             group \"Tree\" [expanded pos=1/6]\n      \
+             tree [size=1]\n        \
+             tree_item \"root\" [level=1 pos=1/1]\n    \
+             group \"List\" [expanded pos=2/6]\n      \
+             list \"Notes\" [size=1]\n        \
+             list_item \"Buy milk\" [pos=1/1]\n    \
+             group \"Form\" [expanded pos=3/6]\n      \
+             form \"Form\" [size=0]\n    \
+             group \"Terminal\" [expanded pos=4/6]\n      \
+             terminal [value=\"$\"]\n    \
+             group \"Messages\" [expanded pos=5/6]\n      \
+             list \"Message list\" [size=1]\n        \
+             list_item \"Connected\" [pos=1/1]\n    \
+             group \"Chart\" [expanded pos=6/6]\n      \
+             chart\n"
         );
     }
 
@@ -2487,7 +2755,7 @@ mod tests {
         assert_eq!(
             tree.to_snapshot(),
             "window \"quadraui\" [focused]\n  \
-             list [size=3]\n    \
+             list \"Completions\" [size=3]\n    \
              list_item \"println!\" [value=\"macro\" pos=1/3]\n    \
              list_item \"print\" [selected pos=2/3]\n    \
              list_item \"panic!\" [value=\"macro\" pos=3/3]\n"
