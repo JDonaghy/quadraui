@@ -8,11 +8,13 @@ reach the screen through.
 
 These three primitives prove the additive mechanism described in the
 `EXTRA_PRIMITIVES` doc comment in `quadraui-py/src/lib.rs`: registering a new
-one costs one `ExtraPaint` impl and one line appended to the
-`EXTRA_PRIMITIVES` registry slice -- never an edit to the six-slot machinery
-(`SLOT_*`, `is_known_slot`/`clear_slot`, `LeafDescriptor`'s six-variant
-set) that `test_descriptors.py` exercises, and never a new pymethod, since
-`insert_extra(kind, descriptor)` already covers any registered kind by name.
+one costs an `ExtraPaint` impl (one line for a whole-area primitive like
+these three, a little layout derivation for one that needs a measure pass)
+and one line appended to the `EXTRA_PRIMITIVES` registry slice -- never an
+edit to the six-slot machinery (`SLOT_*`, `is_known_slot`/`clear_slot`,
+`LeafDescriptor`'s six-variant set) that `test_descriptors.py` exercises, and
+never a new pymethod, since `insert_extra(kind, descriptor)` already covers
+any registered kind by name.
 
 Run against a built wheel/extension, e.g.:
 
@@ -217,13 +219,13 @@ def test_insert_extra_radio_group_renders_options():
         {
             "id": "rg:1",
             "options": [
-                {"id": "opt:a", "label": "A"},
-                {"id": "opt:b", "label": "B"},
+                {"id": "opt:a", "label": "Alpha"},
+                {"id": "opt:b", "label": "Beta"},
             ],
         },
     )
-    assert app.screen_contains("A")
-    assert app.screen_contains("B")
+    assert app.screen_contains("Alpha")
+    assert app.screen_contains("Beta")
 
 
 def test_insert_extra_switch_renders_knob_and_responds_to_value():
@@ -234,13 +236,11 @@ def test_insert_extra_switch_renders_knob_and_responds_to_value():
     app_off.insert_extra("switch", {"id": "sw:1", "value": False})
 
     # Switch has no label text -- it paints only a 4-cell `[`/knob/`]`
-    # track, so the black-box assertions are glyph presence plus a
-    # before/after comparison that toggling `value` actually moves the
-    # knob (same two screens would otherwise pass a glyph-only check).
-    assert app_on.screen_contains("[")
-    assert app_on.screen_contains("●")
-    assert app_on.screen_contains("]")
-    assert app_on.screen() != app_off.screen()
+    # track with the knob on the right when `value` is true and on the
+    # left when false, so the black-box assertion pins the knob's
+    # position directly instead of just diffing the two screens.
+    assert app_on.screen_contains("[ ●]")
+    assert app_off.screen_contains("[● ]")
 
 
 def test_insert_extra_combo_box_renders_options_when_open():
