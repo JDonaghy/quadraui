@@ -51,16 +51,19 @@
 //!
 //! A primitive opts into a real mapping by implementing
 //! [`A11yPrimitive`] — role plus state for itself, plus the child nodes
-//! it contains. Collections ([`ListView`]), the application chrome — tab
-//! bars, activity bars, menus, status bars, dialogs, forms, toasts,
-//! tooltips, progress indicators, scrollbars, splits and panels (mapped
-//! in [`super::chrome`]) — and the content primitives — editor, text
-//! input, text display, terminal, diff view, chart, image, minimap and
-//! canvas (mapped in [`super::content`]) — are mapped fully. Every other
-//! primitive (`Board`, `MessageList`, `PipelineView`, …) goes through a
-//! generic fallback: it still appears, as a [`A11yRole::Group`] labelled
-//! with its kind ("Board", "Message list", …), so an unmapped primitive
-//! reads as an unhelpful group rather than vanishing from the tree.
+//! it contains. Collections — [`ListView`], [`crate::primitives::tree::TreeView`],
+//! [`crate::primitives::data_table::DataTable`], `MultiSectionView`,
+//! `MessageList`, `Completions`, `Palette`, `Board`, `PipelineView` (mapped
+//! below) — the application chrome — tab bars, activity bars, menus, status
+//! bars, dialogs, forms, toasts, tooltips, progress indicators, scrollbars,
+//! splits and panels (mapped in [`super::chrome`]) — and the content
+//! primitives — editor, text input, text display, terminal, diff view,
+//! chart, image, minimap and canvas (mapped in [`super::content`]) — are
+//! mapped fully. Every other primitive (currently `Float` and the opaque
+//! consumer-owned content kind) goes through a generic fallback: it still
+//! appears, as a [`A11yRole::Group`] labelled with its kind ("Floating
+//! panel", "Content", …), so an unmapped primitive reads as an unhelpful
+//! group rather than vanishing from the tree.
 //!
 //! Two kinds of node are deliberate rather than accidental:
 //! a [`A11yRole::Presentation`] node marks a part with no semantics of
@@ -91,6 +94,18 @@
 //! **always compiled** — they are plain data and carry no dependency on
 //! accesskit. Only the conversions into `accesskit` types sit behind
 //! `feature = "a11y"`.
+//!
+//! # Virtualisation: off-screen rows report true position/size
+//!
+//! A collection with far more rows than fit on screen (a 100k-row
+//! [`crate::primitives::data_table::DataTable`]) must not materialise an
+//! [`A11yChild`] per row — that would mean walking and allocating 100k
+//! nodes on every frame just to describe the handful actually visible.
+//! [`a11y_window`] caps how many rows around the current scroll offset
+//! get a real child node, but every row's `position_in_set`/`set_size`
+//! (computed before windowing, from the primitive's true row count) stays
+//! correct regardless: row 50,000 of a windowed 100k-row table still
+//! reports "row 50,000 of 100,000", not "of 200".
 
 use std::collections::HashMap;
 
@@ -98,9 +113,34 @@ use crate::a11y::{A11yChecked, A11yInfo, A11yLive, A11yRole};
 use crate::event::Rect;
 use crate::focus::FocusManager;
 use crate::frame::{OwnedContent, OwnedFrame, OwnedNode};
+use crate::primitives::board::{BoardColumn, BoardModel};
+use crate::primitives::completions::Completions;
+use crate::primitives::data_table::{DataRow, DataTable, SortDirection};
 use crate::primitives::list::ListView;
+use crate::primitives::message_list::MessageList;
+use crate::primitives::multi_section_view::{MultiSectionView, Section, SectionBody};
+use crate::primitives::palette::Palette;
+use crate::primitives::pipeline_view::{PipelineStage, PipelineView, StageStatus};
 use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+use crate::primitives::tree::{TreeRow, TreeView};
 use crate::types::{StyledText, WidgetId};
+
+/// How many rows around the scroll offset get a real [`A11yChild`] node.
+/// See the module doc's "Virtualisation" section.
+const A11Y_WINDOW: usize = 200;
+
+/// The slice of indices `[0, total)` that should get real `A11yChild`
+/// nodes, anchored at `scroll_offset` as the first visible row. Callers
+/// must still compute `position_in_set`/`set_size` against the true
+/// `total`, not the returned range's length — see the module doc.
+fn a11y_window(scroll_offset: usize, total: usize) -> std::ops::Range<usize> {
+    if total <= A11Y_WINDOW {
+        return 0..total;
+    }
+    let start = scroll_offset.min(total);
+    let end = (start + A11Y_WINDOW).min(total);
+    start..end
+}
 
 /// Default label for the synthetic root node.
 const DEFAULT_ROOT_LABEL: &str = "quadraui";
@@ -803,6 +843,14 @@ fn describe(content: &OwnedContent) -> Described {
         OwnedContent::Image(image) => Described::from_primitive(image),
         OwnedContent::Minimap(minimap) => Described::from_primitive(minimap),
         OwnedContent::Canvas(canvas) => Described::from_primitive(canvas),
+        OwnedContent::Tree(tree) => Described::from_primitive(tree),
+        OwnedContent::DataTable(table) => Described::from_primitive(table),
+        OwnedContent::MultiSectionView(view) => Described::from_primitive(view),
+        OwnedContent::Palette(palette) => Described::from_primitive(palette),
+        OwnedContent::Completions(completions) => Described::from_primitive(completions),
+        OwnedContent::Board(model) => Described::from_primitive(model),
+        OwnedContent::MessageList(list) => Described::from_primitive(list),
+        OwnedContent::PipelineView(view) => Described::from_primitive(view),
         // Unit variants: the source surface carries no serializable
         // content, so only the role and name survive the frame capture.
         OwnedContent::FindReplace => Described::labelled(A11yRole::Form, "Find and replace"),
@@ -1031,10 +1079,9 @@ impl A11yPrimitive for ListView {
 
     fn a11y_children(&self) -> Vec<A11yChild> {
         let set_size = self.items.len() as u32;
-        self.items
-            .iter()
-            .enumerate()
-            .map(|(idx, item)| {
+        a11y_window(self.scroll_offset, self.items.len())
+            .map(|idx| {
+                let item = &self.items[idx];
                 let mut info = A11yInfo::new()
                     .with_role(A11yRole::ListItem)
                     .with_selected(idx == self.selected_idx)
@@ -1130,16 +1177,537 @@ fn toolbar_child(idx: usize, button: &ToolbarButton) -> A11yChild {
     A11yChild::new(key, info)
 }
 
+impl A11yPrimitive for DataTable {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::new()
+            .with_role(A11yRole::Table)
+            .with_label("Table")
+            .with_set_size(self.rows.len() as u32)
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        let total = self.rows.len();
+        let mut children: Vec<A11yChild> = vec![data_table_header(self)];
+        children.extend(
+            a11y_window(self.scroll_offset, total).map(|idx| data_table_row(self, idx, total)),
+        );
+        if let Some(footer) = &self.footer {
+            children.push(data_table_footer(footer));
+        }
+        children
+    }
+
+    fn a11y_focus_key(&self) -> Option<String> {
+        self.selected_idx.map(|idx| format!("row.{idx}"))
+    }
+}
+
+/// The column-header row: one `Cell` per [`Column`], carrying its title
+/// and, when that column is the current sort column, a value describing
+/// the direction — the same pair of signals `chrome.rs`'s `dialog_table`
+/// gives a screen reader in table-navigation mode.
+fn data_table_header(table: &DataTable) -> A11yChild {
+    let total = table.columns.len();
+    let cells = table
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(col, column)| {
+            let mut info = in_set(A11yInfo::new().with_role(A11yRole::Cell), col, total);
+            if let Some(label) = non_empty(column.title.clone()) {
+                info = info.with_label(label);
+            }
+            if let Some((sort_col, direction)) = table.sort {
+                if sort_col == col {
+                    info = info.with_value(match direction {
+                        SortDirection::Ascending => "sorted ascending",
+                        SortDirection::Descending => "sorted descending",
+                    });
+                }
+            }
+            A11yChild::new(format!("cell.{col}"), info)
+        })
+        .collect();
+    A11yChild::new(
+        "header".to_string(),
+        A11yInfo::new()
+            .with_role(A11yRole::Row)
+            .with_label("Header"),
+    )
+    .with_children(cells)
+}
+
+fn row_cells(cells: &[StyledText]) -> Vec<A11yChild> {
+    let total = cells.len();
+    cells
+        .iter()
+        .enumerate()
+        .map(|(col, text)| {
+            let mut cell_info = in_set(A11yInfo::new().with_role(A11yRole::Cell), col, total);
+            if let Some(label) = non_empty(plain_text(text)) {
+                cell_info = cell_info.with_label(label);
+            }
+            A11yChild::new(format!("cell.{col}"), cell_info)
+        })
+        .collect()
+}
+
+fn data_table_row(table: &DataTable, idx: usize, total: usize) -> A11yChild {
+    let row = &table.rows[idx];
+    let info = in_set(
+        A11yInfo::new()
+            .with_role(A11yRole::Row)
+            .with_selected(table.selected_idx == Some(idx)),
+        idx,
+        total,
+    );
+    A11yChild::new(format!("row.{idx}"), info).with_children(row_cells(&row.cells))
+}
+
+fn data_table_footer(footer: &DataRow) -> A11yChild {
+    let info = A11yInfo::new().with_role(A11yRole::Row);
+    A11yChild::new("footer".to_string(), info).with_children(row_cells(&footer.cells))
+}
+
+/// The path of a tree row's parent — everything but its own last
+/// segment. The root's own parent path is empty.
+fn parent_path(path: &[u16]) -> &[u16] {
+    &path[..path.len().saturating_sub(1)]
+}
+
+/// `(position_in_set, set_size)` for every row in `rows`, grouped by
+/// sibling (same parent path). Computed over the full, unwindowed row
+/// list — see the module doc's "Virtualisation" section for why this
+/// pass must not be limited to the visible window: siblings interleave
+/// with other subtrees' descendants in the flattened row list, so a
+/// window's start is not necessarily a sibling group's true start.
+///
+/// This is `O(rows)` on every call, unlike [`DataTable`]'s windowing,
+/// which only ever touches the windowed slice: a tree's sibling groups
+/// can only be found by scanning every row's parent path, since a
+/// window's boundary can fall in the middle of a subtree. A tree deep
+/// enough for this to matter in practice can revisit this with an
+/// incrementally maintained index instead of a full rescan per frame.
+fn tree_row_positions(rows: &[TreeRow]) -> Vec<(u32, u32)> {
+    let mut sizes: HashMap<&[u16], u32> = HashMap::new();
+    for row in rows {
+        *sizes.entry(parent_path(&row.path)).or_insert(0) += 1;
+    }
+    let mut seen: HashMap<&[u16], u32> = HashMap::new();
+    rows.iter()
+        .map(|row| {
+            let parent = parent_path(&row.path);
+            let size = sizes[parent];
+            let pos = {
+                let entry = seen.entry(parent).or_insert(0);
+                *entry += 1;
+                *entry
+            };
+            (pos, size)
+        })
+        .collect()
+}
+
+impl A11yPrimitive for TreeView {
+    fn a11y_info(&self) -> A11yInfo {
+        // `set_size` on the container describes the root's own sibling
+        // set — the count a user can actually traverse at the top
+        // level — not every flattened row in the tree (which includes
+        // descendants nested arbitrarily deep).
+        let root_count = self.rows.iter().filter(|row| row.path.len() == 1).count() as u32;
+        A11yInfo::new()
+            .with_role(A11yRole::Tree)
+            .with_set_size(root_count)
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        let positions = tree_row_positions(&self.rows);
+        a11y_window(self.scroll_offset, self.rows.len())
+            .map(|idx| {
+                let (pos, size) = positions[idx];
+                tree_row_child(self, idx, pos, size)
+            })
+            .collect()
+    }
+
+    fn a11y_focus_key(&self) -> Option<String> {
+        let selected = self.selected_path.as_ref()?;
+        self.rows
+            .iter()
+            .position(|row| &row.path == selected)
+            .map(|idx| format!("row.{idx}"))
+    }
+}
+
+fn tree_row_child(tree: &TreeView, idx: usize, pos: u32, size: u32) -> A11yChild {
+    let row = &tree.rows[idx];
+    let mut info = A11yInfo::new()
+        .with_role(A11yRole::TreeItem)
+        .with_level(row.indent as u32 + 1)
+        .with_position_in_set(pos)
+        .with_set_size(size)
+        .with_selected(tree.selected_path.as_deref() == Some(row.path.as_slice()));
+    if let Some(expanded) = row.is_expanded {
+        info = info.with_expanded(expanded);
+    }
+    if let Some(label) = non_empty(plain_text(&row.text)) {
+        info = info.with_label(label);
+    }
+    A11yChild::new(format!("row.{idx}"), info)
+}
+
+impl A11yPrimitive for MessageList {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::new()
+            .with_role(A11yRole::List)
+            .with_label("Message list")
+            .with_set_size(self.rows.len() as u32)
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        let total = self.rows.len();
+        a11y_window(self.scroll_top, total)
+            .map(|idx| {
+                let row = &self.rows[idx];
+                let mut info = in_set(A11yInfo::new().with_role(A11yRole::ListItem), idx, total);
+                if let Some(label) = non_empty(row.text.clone()) {
+                    info = info.with_label(label);
+                }
+                A11yChild::new(format!("row.{idx}"), info)
+            })
+            .collect()
+    }
+}
+
+impl A11yPrimitive for Completions {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::new()
+            .with_role(A11yRole::List)
+            .with_label("Completions")
+            .with_set_size(self.items.len() as u32)
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        let total = self.items.len();
+        a11y_window(self.scroll_offset, total)
+            .map(|idx| completion_child(self, idx, total))
+            .collect()
+    }
+
+    fn a11y_focus_key(&self) -> Option<String> {
+        if self.selected_idx < self.items.len() {
+            Some(format!("item.{}", self.selected_idx))
+        } else {
+            None
+        }
+    }
+}
+
+fn completion_child(completions: &Completions, idx: usize, total: usize) -> A11yChild {
+    let item = &completions.items[idx];
+    let mut info = in_set(
+        A11yInfo::new()
+            .with_role(A11yRole::ListItem)
+            .with_selected(idx == completions.selected_idx),
+        idx,
+        total,
+    );
+    if let Some(label) = non_empty(plain_text(&item.label)) {
+        info = info.with_label(label);
+    }
+    if let Some(detail) = item.detail.as_ref().and_then(|d| non_empty(plain_text(d))) {
+        info = info.with_value(detail);
+    }
+    A11yChild::new(format!("item.{idx}"), info)
+}
+
+impl A11yPrimitive for Palette {
+    fn a11y_info(&self) -> A11yInfo {
+        let mut info = A11yInfo::new()
+            .with_role(A11yRole::List)
+            .with_set_size(self.items.len() as u32);
+        if let Some(label) = non_empty(self.title.clone()) {
+            info = info.with_label(label);
+        }
+        info
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        let total = self.items.len();
+        a11y_window(self.scroll_offset, total)
+            .map(|idx| palette_child(self, idx, total))
+            .collect()
+    }
+
+    fn a11y_focus_key(&self) -> Option<String> {
+        if self.selected_idx < self.items.len() {
+            Some(format!("item.{}", self.selected_idx))
+        } else {
+            None
+        }
+    }
+}
+
+fn palette_child(palette: &Palette, idx: usize, total: usize) -> A11yChild {
+    let item = &palette.items[idx];
+    let mut info = in_set(
+        A11yInfo::new()
+            .with_role(A11yRole::ListItem)
+            .with_selected(idx == palette.selected_idx)
+            .with_level(item.depth as u32 + 1),
+        idx,
+        total,
+    );
+    if item.expandable {
+        info = info.with_expanded(item.expanded);
+    }
+    if let Some(label) = non_empty(plain_text(&item.text)) {
+        info = info.with_label(label);
+    }
+    if let Some(detail) = item.detail.as_ref().and_then(|d| non_empty(plain_text(d))) {
+        info = info.with_value(detail);
+    }
+    A11yChild::new(format!("item.{idx}"), info)
+}
+
+impl A11yPrimitive for BoardModel {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::new()
+            .with_role(A11yRole::Group)
+            .with_label("Board")
+            .with_set_size(self.columns.len() as u32)
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        let total = self.columns.len();
+        self.columns
+            .iter()
+            .enumerate()
+            .map(|(idx, column)| board_column_child(self, column, idx, total))
+            .collect()
+    }
+
+    fn a11y_focus_key(&self) -> Option<String> {
+        // `A11yChild`'s key identifies a child within its own parent, and
+        // `build_tree` only resolves a focus key against the primitive's
+        // direct (top-level) children (see `tree.rs`'s `build_tree`), so
+        // the selected card's own key — nested two levels under the board
+        // — can never match here. Point focus at its column instead,
+        // which is a direct child and so does resolve.
+        let selected = self.selected_card_id?;
+        self.columns
+            .iter()
+            .position(|column| column.cards.iter().any(|card| card.id == selected))
+            .map(|col_idx| format!("column.{col_idx}"))
+    }
+}
+
+fn board_column_child(
+    board: &BoardModel,
+    column: &BoardColumn,
+    idx: usize,
+    total: usize,
+) -> A11yChild {
+    // `position_in_set`/`set_size` here describe the column's position
+    // among sibling columns only — never overwritten with the card
+    // count below, which is a different set entirely.
+    let info = in_set(
+        A11yInfo::new()
+            .with_role(A11yRole::List)
+            .with_label(column.title.clone()),
+        idx,
+        total,
+    );
+    let total_cards = column.cards.len();
+    let cards = a11y_window(column.scroll_offset, total_cards)
+        .map(|card_idx| board_card_child(board, column, card_idx, total_cards))
+        .collect();
+    A11yChild::new(format!("column.{idx}"), info).with_children(cards)
+}
+
+fn board_card_child(
+    board: &BoardModel,
+    column: &BoardColumn,
+    card_idx: usize,
+    total_cards: usize,
+) -> A11yChild {
+    let card = &column.cards[card_idx];
+    let info = in_set(
+        A11yInfo::new()
+            .with_role(A11yRole::ListItem)
+            .with_label(card.title.clone())
+            .with_selected(board.selected_card_id == Some(card.id)),
+        card_idx,
+        total_cards,
+    );
+    A11yChild::new(format!("card.{card_idx}"), info)
+}
+
+impl A11yPrimitive for PipelineView {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::new()
+            .with_role(A11yRole::List)
+            .with_label("Pipeline view")
+            .with_set_size(self.stages.len() as u32)
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        let total = self.stages.len();
+        self.stages
+            .iter()
+            .enumerate()
+            .map(|(idx, stage)| pipeline_stage_child(stage, idx, total))
+            .collect()
+    }
+
+    fn a11y_focus_key(&self) -> Option<String> {
+        self.focused_stage.map(|idx| format!("stage.{idx}"))
+    }
+}
+
+fn pipeline_stage_child(stage: &PipelineStage, idx: usize, total: usize) -> A11yChild {
+    let mut info = in_set(
+        A11yInfo::new()
+            .with_role(A11yRole::ListItem)
+            .with_label(stage.label.clone()),
+        idx,
+        total,
+    );
+    if let Some(value) = pipeline_stage_value(&stage.status) {
+        info = info.with_value(value);
+    }
+    A11yChild::new(format!("stage.{idx}"), info)
+}
+
+fn pipeline_stage_value(status: &StageStatus) -> Option<&'static str> {
+    match status {
+        StageStatus::Pending => Some("Pending"),
+        StageStatus::Active => Some("Active"),
+        StageStatus::Done => Some("Done"),
+        StageStatus::Failed => Some("Failed"),
+        StageStatus::Skipped => Some("Skipped"),
+        StageStatus::Stale => Some("Stale"),
+    }
+}
+
+impl A11yPrimitive for MultiSectionView {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::new()
+            .with_role(A11yRole::Group)
+            .with_label("Multi-section view")
+            .with_set_size(self.sections.len() as u32)
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        let total = self.sections.len();
+        self.sections
+            .iter()
+            .enumerate()
+            .map(|(idx, section)| {
+                section_child(section, idx, total, self.active_section == Some(idx))
+            })
+            .collect()
+    }
+
+    fn a11y_focus_key(&self) -> Option<String> {
+        self.active_section.map(|idx| format!("section.{idx}"))
+    }
+}
+
+fn section_child(section: &Section, idx: usize, total: usize, active: bool) -> A11yChild {
+    let mut info = in_set(
+        A11yInfo::new()
+            .with_role(A11yRole::Group)
+            .with_expanded(!section.collapsed)
+            .with_selected(active),
+        idx,
+        total,
+    );
+    if let Some(label) = non_empty(plain_text(&section.header.title)) {
+        info = info.with_label(label);
+    }
+    let children = if section.collapsed {
+        Vec::new()
+    } else {
+        section_body_child(&section.body).into_iter().collect()
+    };
+    A11yChild::new(format!("section.{idx}"), info).with_children(children)
+}
+
+/// Maps a section's body to a single `"body"` child that carries the body
+/// primitive's own `a11y_info()` (role, label, set size) with its
+/// `a11y_children()` nested underneath — mirroring `chrome.rs`'s
+/// `A11yChild::new("input", bar.a11y_info()).with_children(bar.a11y_children())`
+/// pattern. Dropping the body's own info and re-parenting only its children
+/// directly under the section would strip the container role/label/set-size
+/// (for `Tree`/`List`/`Form`/`MessageList`) and drop the body entirely for
+/// `Terminal`/`Chart`, which expose no children of their own.
+fn section_body_child(body: &SectionBody) -> Option<A11yChild> {
+    match body {
+        SectionBody::Tree(tree) => Some(
+            A11yChild::new("body".to_string(), tree.a11y_info())
+                .with_children(tree.a11y_children()),
+        ),
+        SectionBody::List(list) => Some(
+            A11yChild::new("body".to_string(), list.a11y_info())
+                .with_children(list.a11y_children()),
+        ),
+        SectionBody::Form(form) => Some(
+            A11yChild::new("body".to_string(), form.a11y_info())
+                .with_children(form.a11y_children()),
+        ),
+        SectionBody::Terminal(terminal) => {
+            Some(A11yChild::new("body".to_string(), terminal.a11y_info()))
+        }
+        SectionBody::MessageList(list) => Some(
+            A11yChild::new("body".to_string(), list.a11y_info())
+                .with_children(list.a11y_children()),
+        ),
+        SectionBody::Chart(chart) => Some(A11yChild::new("body".to_string(), chart.a11y_info())),
+        SectionBody::Text(lines) => {
+            let label = lines.iter().map(plain_text).collect::<Vec<_>>().join("\n");
+            let mut info = A11yInfo::new().with_role(A11yRole::Label);
+            if let Some(label) = non_empty(label) {
+                info = info.with_label(label);
+            }
+            Some(A11yChild::new("body".to_string(), info))
+        }
+        SectionBody::Empty(empty) => {
+            let mut info = A11yInfo::new().with_role(A11yRole::Group);
+            if let Some(label) = non_empty(plain_text(&empty.text)) {
+                info = info.with_label(label);
+            }
+            Some(A11yChild::new("body".to_string(), info))
+        }
+        SectionBody::Custom(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::frame::{ScreenLayout, Surface};
-    use crate::primitives::board::BoardModel;
+    use crate::layout::{Anchor, Side};
+    use crate::primitives::board::{BoardCard, BoardColumn, BoardModel};
     use crate::primitives::canvas::Canvas;
+    use crate::primitives::chart::{Chart, ChartKind, Series};
+    use crate::primitives::completions::{
+        CompletionItem, CompletionKind, CompletionsLayout, CompletionsPlacement,
+    };
+    use crate::primitives::data_table::{Column, ColumnAlign, ColumnWidth, DataRow};
+    use crate::primitives::float::{Float, FloatMeasure};
+    use crate::primitives::form::Form;
     use crate::primitives::list::ListItem;
+    use crate::primitives::message_list::MessageRow;
+    use crate::primitives::multi_section_view::{
+        Axis, EmptyBody, ScrollMode, Section, SectionBody, SectionHeader, SectionSize,
+    };
+    use crate::primitives::palette::{PaletteItem, PaletteMode};
+    use crate::primitives::pipeline_view::{PipelineStage, StageStatus};
     use crate::primitives::scrollbar::Scrollbar;
+    use crate::primitives::terminal::{Terminal, TerminalCell};
     use crate::primitives::toolbar::ToolbarButton;
-    use crate::types::{Decoration, WidgetId};
+    use crate::types::{Color, Decoration, SelectionMode, TreeStyle, WidgetId};
 
     fn list(id: &str, title: Option<&str>, items: &[&str], selected: usize) -> ListView {
         ListView {
@@ -1215,18 +1783,74 @@ mod tests {
         }
     }
 
-    /// A surface whose primitive has no `a11y_info` hook — the
-    /// generic-fallback case.
+    /// A board with two columns and a selected card, for exercising the
+    /// `BoardModel` mapping (column/card roles and their independent
+    /// position-in-set/set-size pairs).
     fn board_surface() -> Surface {
         Surface::Board {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
             model: BoardModel {
                 id: WidgetId::new("sprint"),
-                columns: Vec::new(),
-                selected_card_id: None,
+                columns: vec![
+                    BoardColumn {
+                        id: WidgetId::new("todo"),
+                        title: "Todo".to_string(),
+                        cards: vec![
+                            BoardCard {
+                                id: WidgetId::new("card-1"),
+                                title: "Write docs".to_string(),
+                                labels: Vec::new(),
+                                badges: Vec::new(),
+                                hint: None,
+                            },
+                            BoardCard {
+                                id: WidgetId::new("card-2"),
+                                title: "Fix bug".to_string(),
+                                labels: Vec::new(),
+                                badges: Vec::new(),
+                                hint: None,
+                            },
+                            BoardCard {
+                                id: WidgetId::new("card-4"),
+                                title: "Plan sprint".to_string(),
+                                labels: Vec::new(),
+                                badges: Vec::new(),
+                                hint: None,
+                            },
+                        ],
+                        scroll_offset: 0,
+                    },
+                    BoardColumn {
+                        id: WidgetId::new("done"),
+                        title: "Done".to_string(),
+                        cards: vec![BoardCard {
+                            id: WidgetId::new("card-3"),
+                            title: "Ship it".to_string(),
+                            labels: Vec::new(),
+                            badges: Vec::new(),
+                            hint: None,
+                        }],
+                        scroll_offset: 0,
+                    },
+                ],
+                selected_card_id: Some(WidgetId::new("card-2")),
                 col_scroll_offset: 0,
             },
         }
+    }
+
+    /// A surface whose primitive has no `a11y_info` hook — the
+    /// generic-fallback case.
+    fn float_surface() -> Surface {
+        let float = Float::new(
+            WidgetId::new("f"),
+            Anchor::new(Rect::new(0.0, 0.0, 5.0, 1.0), Side::Bottom),
+        );
+        let layout = float.layout(
+            Rect::new(0.0, 0.0, 80.0, 24.0),
+            FloatMeasure::new(10.0, 4.0),
+        );
+        Surface::Float { float, layout }
     }
 
     /// A mapped surface whose capture carries no `WidgetId`, and whose
@@ -1289,7 +1913,7 @@ mod tests {
 
     #[test]
     fn unmapped_primitive_is_a_labelled_group() {
-        let frame = frame_with(vec![board_surface()]);
+        let frame = frame_with(vec![float_surface()]);
         let tree = frame_to_tree(&frame, &FocusManager::new());
         let node = tree
             .children_of(tree.root())
@@ -1297,7 +1921,7 @@ mod tests {
             .copied()
             .expect("surface node");
         assert_eq!(node.role(), A11yRole::Group);
-        assert_eq!(node.label(), Some("Board"));
+        assert_eq!(node.label(), Some("Floating panel"));
     }
 
     #[test]
@@ -1536,5 +2160,655 @@ mod tests {
         assert!(unchanged.nodes.is_empty());
         assert!(unchanged.tree.is_none());
         assert_eq!(unchanged.focus, update.focus);
+    }
+
+    #[test]
+    fn pipeline_view_maps_stages_with_status_value_and_position() {
+        let view = PipelineView {
+            id: WidgetId::new("deploy"),
+            stages: vec![
+                PipelineStage {
+                    label: "Build".to_string(),
+                    status: StageStatus::Pending,
+                    action: None,
+                },
+                PipelineStage {
+                    label: "Test".to_string(),
+                    status: StageStatus::Active,
+                    action: None,
+                },
+                PipelineStage {
+                    label: "Lint".to_string(),
+                    status: StageStatus::Done,
+                    action: None,
+                },
+                PipelineStage {
+                    label: "Package".to_string(),
+                    status: StageStatus::Failed,
+                    action: None,
+                },
+                PipelineStage {
+                    label: "Docs".to_string(),
+                    status: StageStatus::Skipped,
+                    action: None,
+                },
+                PipelineStage {
+                    label: "Release".to_string(),
+                    status: StageStatus::Stale,
+                    action: None,
+                },
+            ],
+            focused_stage: None,
+        };
+        let frame = frame_with(vec![Surface::PipelineView {
+            rect: Rect::new(0.0, 0.0, 60.0, 4.0),
+            view,
+        }]);
+        let tree = frame_to_tree(&frame, &FocusManager::new());
+        assert_eq!(
+            tree.to_snapshot(),
+            "window \"quadraui\" [focused]\n  \
+             list \"Pipeline view\" [size=6]\n    \
+             list_item \"Build\" [value=\"Pending\" pos=1/6]\n    \
+             list_item \"Test\" [value=\"Active\" pos=2/6]\n    \
+             list_item \"Lint\" [value=\"Done\" pos=3/6]\n    \
+             list_item \"Package\" [value=\"Failed\" pos=4/6]\n    \
+             list_item \"Docs\" [value=\"Skipped\" pos=5/6]\n    \
+             list_item \"Release\" [value=\"Stale\" pos=6/6]\n"
+        );
+    }
+
+    #[test]
+    fn board_model_maps_columns_and_cards_with_independent_positions() {
+        let frame = frame_with(vec![board_surface()]);
+        let tree = frame_to_tree(&frame, &FocusManager::new());
+        assert_eq!(
+            tree.to_snapshot(),
+            "window \"quadraui\" [focused]\n  \
+             group \"Board\" [size=2]\n    \
+             list \"Todo\" [pos=1/2]\n      \
+             list_item \"Write docs\" [pos=1/3]\n      \
+             list_item \"Fix bug\" [selected pos=2/3]\n      \
+             list_item \"Plan sprint\" [pos=3/3]\n    \
+             list \"Done\" [pos=2/2]\n      \
+             list_item \"Ship it\" [pos=1/1]\n"
+        );
+    }
+
+    #[test]
+    fn data_table_maps_rows_cells_and_a_footer_with_no_position() {
+        let table = DataTable {
+            id: WidgetId::new("people"),
+            columns: vec![
+                Column {
+                    title: "Name".to_string(),
+                    width: ColumnWidth::default(),
+                    align: ColumnAlign::default(),
+                },
+                Column {
+                    title: "Age".to_string(),
+                    width: ColumnWidth::default(),
+                    align: ColumnAlign::default(),
+                },
+            ],
+            rows: vec![
+                DataRow {
+                    cells: vec![StyledText::plain("Alice"), StyledText::plain("30")],
+                    decoration: Decoration::default(),
+                },
+                DataRow {
+                    cells: vec![StyledText::plain("Bob"), StyledText::plain("25")],
+                    decoration: Decoration::default(),
+                },
+            ],
+            selected_idx: Some(1),
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: Some(DataRow {
+                cells: vec![StyledText::plain("Total"), StyledText::plain("2")],
+                decoration: Decoration::default(),
+            }),
+        };
+        let frame = frame_with(vec![Surface::DataTable {
+            rect: Rect::new(0.0, 0.0, 30.0, 10.0),
+            table,
+            hovered: None,
+        }]);
+        let tree = frame_to_tree(&frame, &FocusManager::new());
+        assert_eq!(
+            tree.to_snapshot(),
+            "window \"quadraui\" [focused]\n  \
+             table \"Table\" [size=2]\n    \
+             row \"Header\"\n      \
+             cell \"Name\" [pos=1/2]\n      \
+             cell \"Age\" [pos=2/2]\n    \
+             row [pos=1/2]\n      \
+             cell \"Alice\" [pos=1/2]\n      \
+             cell \"30\" [pos=2/2]\n    \
+             row [selected pos=2/2]\n      \
+             cell \"Bob\" [pos=1/2]\n      \
+             cell \"25\" [pos=2/2]\n    \
+             row\n      \
+             cell \"Total\" [pos=1/2]\n      \
+             cell \"2\" [pos=2/2]\n"
+        );
+    }
+
+    #[test]
+    fn data_table_virtualisation_reports_true_set_size_under_a_100k_row_window() {
+        let total = 100_000usize;
+        let table = DataTable {
+            id: WidgetId::new("big"),
+            columns: vec![Column {
+                title: "Value".to_string(),
+                width: ColumnWidth::default(),
+                align: ColumnAlign::default(),
+            }],
+            rows: (0..total)
+                .map(|i| DataRow {
+                    cells: vec![StyledText::plain(format!("row-{i}"))],
+                    decoration: Decoration::default(),
+                })
+                .collect(),
+            selected_idx: None,
+            scroll_offset: 50_000,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+        };
+        let frame = frame_with(vec![Surface::DataTable {
+            rect: Rect::new(0.0, 0.0, 30.0, 10.0),
+            table,
+            hovered: None,
+        }]);
+        let tree = frame_to_tree(&frame, &FocusManager::new());
+
+        let table_id = A11yNodeId::for_widget(&WidgetId::new("big"));
+        let rows = tree.children_of(table_id);
+        // The header row is always materialised, on top of the 200-row
+        // window around `scroll_offset` — never the full 100,000 data rows.
+        assert_eq!(rows.len(), 201);
+
+        let data_rows = &rows[1..];
+        let first = data_rows.first().expect("windowed row");
+        assert_eq!(first.info.position_in_set, Some(50_001));
+        assert_eq!(first.info.set_size, Some(100_000));
+
+        let last = data_rows.last().expect("windowed row");
+        assert_eq!(last.info.position_in_set, Some(50_200));
+        assert_eq!(last.info.set_size, Some(100_000));
+    }
+
+    #[test]
+    fn tree_view_maps_rows_flat_with_level_token_and_grouped_sibling_position() {
+        let tree_view = TreeView {
+            id: WidgetId::new("files"),
+            rows: vec![
+                TreeRow {
+                    path: vec![0],
+                    indent: 0,
+                    icon: None,
+                    text: StyledText::plain("src"),
+                    badge: None,
+                    is_expanded: Some(true),
+                    decoration: Decoration::default(),
+                    edit: None,
+                },
+                TreeRow {
+                    path: vec![0, 0],
+                    indent: 1,
+                    icon: None,
+                    text: StyledText::plain("main.rs"),
+                    badge: None,
+                    is_expanded: None,
+                    decoration: Decoration::default(),
+                    edit: None,
+                },
+                TreeRow {
+                    path: vec![0, 1],
+                    indent: 1,
+                    icon: None,
+                    text: StyledText::plain("lib.rs"),
+                    badge: None,
+                    is_expanded: None,
+                    decoration: Decoration::default(),
+                    edit: None,
+                },
+                TreeRow {
+                    path: vec![1],
+                    indent: 0,
+                    icon: None,
+                    text: StyledText::plain("docs"),
+                    badge: None,
+                    is_expanded: Some(false),
+                    decoration: Decoration::default(),
+                    edit: None,
+                },
+            ],
+            selection_mode: SelectionMode::Single,
+            selected_path: Some(vec![0, 1]),
+            scroll_offset: 0,
+            style: TreeStyle::default(),
+            has_focus: false,
+        };
+        let frame = frame_with(vec![Surface::Tree {
+            rect: Rect::new(0.0, 0.0, 30.0, 10.0),
+            tree: tree_view,
+        }]);
+        let tree = frame_to_tree(&frame, &FocusManager::new());
+        assert_eq!(
+            tree.to_snapshot(),
+            "window \"quadraui\" [focused]\n  \
+             tree [size=2]\n    \
+             tree_item \"src\" [expanded level=1 pos=1/2]\n    \
+             tree_item \"main.rs\" [level=2 pos=1/2]\n    \
+             tree_item \"lib.rs\" [selected level=2 pos=2/2]\n    \
+             tree_item \"docs\" [collapsed level=1 pos=2/2]\n"
+        );
+    }
+
+    #[test]
+    fn message_list_maps_rows_as_list_items_with_position() {
+        let list = MessageList {
+            id: WidgetId::new("log"),
+            rows: vec![
+                MessageRow::new("Connected", Color::rgb(0, 200, 0), 0.0),
+                MessageRow::new("Warning: low disk", Color::rgb(200, 200, 0), 0.0),
+                MessageRow::new("Disconnected", Color::rgb(200, 0, 0), 0.0),
+            ],
+            scroll_top: 0,
+        };
+        let frame = frame_with(vec![Surface::MessageList {
+            rect: Rect::new(0.0, 0.0, 40.0, 6.0),
+            list,
+        }]);
+        let tree = frame_to_tree(&frame, &FocusManager::new());
+        assert_eq!(
+            tree.to_snapshot(),
+            "window \"quadraui\" [focused]\n  \
+             list \"Message list\" [size=3]\n    \
+             list_item \"Connected\" [pos=1/3]\n    \
+             list_item \"Warning: low disk\" [pos=2/3]\n    \
+             list_item \"Disconnected\" [pos=3/3]\n"
+        );
+    }
+
+    #[test]
+    fn multi_section_view_maps_sections_as_groups_with_expanded_and_active_state() {
+        let view = MultiSectionView {
+            id: WidgetId::new("panels"),
+            sections: vec![
+                Section {
+                    id: "logs".to_string(),
+                    header: SectionHeader {
+                        icon: None,
+                        title: StyledText::plain("Logs"),
+                        badge: None,
+                        actions: Vec::new(),
+                        show_chevron: true,
+                    },
+                    body: SectionBody::Text(vec![StyledText::plain("Build succeeded")]),
+                    aux: None,
+                    size: SectionSize::Weight(1.0),
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                },
+                Section {
+                    id: "empty".to_string(),
+                    header: SectionHeader {
+                        icon: None,
+                        title: StyledText::plain("Empty"),
+                        badge: None,
+                        actions: Vec::new(),
+                        show_chevron: true,
+                    },
+                    body: SectionBody::Empty(EmptyBody {
+                        icon: None,
+                        text: StyledText::plain("Nothing here"),
+                        hint: None,
+                        action: None,
+                    }),
+                    aux: None,
+                    size: SectionSize::Weight(1.0),
+                    collapsed: true,
+                    min_size: None,
+                    max_size: None,
+                },
+            ],
+            active_section: Some(0),
+            axis: Axis::Vertical,
+            allow_resize: false,
+            allow_collapse: true,
+            scroll_mode: ScrollMode::PerSection,
+            has_focus: false,
+            panel_scroll: 0.0,
+        };
+        let frame = frame_with(vec![Surface::MultiSectionView {
+            rect: Rect::new(0.0, 0.0, 40.0, 20.0),
+            view,
+        }]);
+        let tree = frame_to_tree(&frame, &FocusManager::new());
+        assert_eq!(
+            tree.to_snapshot(),
+            "window \"quadraui\" [focused]\n  \
+             group \"Multi-section view\" [size=2]\n    \
+             group \"Logs\" [selected expanded pos=1/2]\n      \
+             label \"Build succeeded\"\n    \
+             group \"Empty\" [collapsed pos=2/2]\n"
+        );
+    }
+
+    #[test]
+    fn multi_section_view_body_delegates_container_role_label_and_children_for_every_variant() {
+        let view = MultiSectionView {
+            id: WidgetId::new("panels"),
+            sections: vec![
+                Section {
+                    id: "tree".to_string(),
+                    header: SectionHeader {
+                        icon: None,
+                        title: StyledText::plain("Tree"),
+                        badge: None,
+                        actions: Vec::new(),
+                        show_chevron: true,
+                    },
+                    body: SectionBody::Tree(TreeView {
+                        id: WidgetId::new("files"),
+                        rows: vec![TreeRow {
+                            path: vec![0],
+                            indent: 0,
+                            icon: None,
+                            text: StyledText::plain("root"),
+                            badge: None,
+                            is_expanded: None,
+                            decoration: Decoration::default(),
+                            edit: None,
+                        }],
+                        selection_mode: SelectionMode::Single,
+                        selected_path: None,
+                        scroll_offset: 0,
+                        style: TreeStyle::default(),
+                        has_focus: false,
+                    }),
+                    aux: None,
+                    size: SectionSize::Weight(1.0),
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                },
+                Section {
+                    id: "list".to_string(),
+                    header: SectionHeader {
+                        icon: None,
+                        title: StyledText::plain("List"),
+                        badge: None,
+                        actions: Vec::new(),
+                        show_chevron: true,
+                    },
+                    body: SectionBody::List(list("notes", Some("Notes"), &["Buy milk"], 1)),
+                    aux: None,
+                    size: SectionSize::Weight(1.0),
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                },
+                Section {
+                    id: "form".to_string(),
+                    header: SectionHeader {
+                        icon: None,
+                        title: StyledText::plain("Form"),
+                        badge: None,
+                        actions: Vec::new(),
+                        show_chevron: true,
+                    },
+                    body: SectionBody::Form(Form {
+                        id: WidgetId::new("settings"),
+                        fields: Vec::new(),
+                        focused_field: None,
+                        scroll_offset: 0,
+                        has_focus: false,
+                        label_position: Default::default(),
+                        label_align: Default::default(),
+                        label_width: None,
+                    }),
+                    aux: None,
+                    size: SectionSize::Weight(1.0),
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                },
+                Section {
+                    id: "terminal".to_string(),
+                    header: SectionHeader {
+                        icon: None,
+                        title: StyledText::plain("Terminal"),
+                        badge: None,
+                        actions: Vec::new(),
+                        show_chevron: true,
+                    },
+                    body: SectionBody::Terminal(Terminal {
+                        id: WidgetId::new("shell"),
+                        cells: vec![vec![TerminalCell {
+                            text: "$".to_string(),
+                            fg: Color::rgb(200, 200, 200),
+                            bg: Color::rgb(0, 0, 0),
+                            bold: false,
+                            italic: false,
+                            underline: false,
+                            dim: false,
+                            selected: false,
+                            is_cursor: false,
+                            cursor_shape: Default::default(),
+                            cursor_blinking: false,
+                            is_find_match: false,
+                            is_find_active: false,
+                        }]],
+                        scrollbar: None,
+                    }),
+                    aux: None,
+                    size: SectionSize::Weight(1.0),
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                },
+                Section {
+                    id: "messages".to_string(),
+                    header: SectionHeader {
+                        icon: None,
+                        title: StyledText::plain("Messages"),
+                        badge: None,
+                        actions: Vec::new(),
+                        show_chevron: true,
+                    },
+                    body: SectionBody::MessageList(MessageList {
+                        id: WidgetId::new("log"),
+                        rows: vec![MessageRow::new("Connected", Color::rgb(0, 200, 0), 0.0)],
+                        scroll_top: 0,
+                    }),
+                    aux: None,
+                    size: SectionSize::Weight(1.0),
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                },
+                Section {
+                    id: "chart".to_string(),
+                    header: SectionHeader {
+                        icon: None,
+                        title: StyledText::plain("Chart"),
+                        badge: None,
+                        actions: Vec::new(),
+                        show_chevron: true,
+                    },
+                    body: SectionBody::Chart(Chart {
+                        id: WidgetId::new("cpu"),
+                        kind: ChartKind::Sparkline,
+                        series: vec![Series {
+                            label: "cpu".to_string(),
+                            data: vec![0.1, 0.4, 0.2],
+                            color: None,
+                            fill: false,
+                        }],
+                        x_label: None,
+                        y_label: None,
+                        y_range: None,
+                        x_range: None,
+                        show_legend: false,
+                        y_ticks: None,
+                        x_ticks: None,
+                        show_grid: false,
+                    }),
+                    aux: None,
+                    size: SectionSize::Weight(1.0),
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                },
+            ],
+            active_section: None,
+            axis: Axis::Vertical,
+            allow_resize: false,
+            allow_collapse: true,
+            scroll_mode: ScrollMode::PerSection,
+            has_focus: false,
+            panel_scroll: 0.0,
+        };
+        let frame = frame_with(vec![Surface::MultiSectionView {
+            rect: Rect::new(0.0, 0.0, 40.0, 30.0),
+            view,
+        }]);
+        let tree = frame_to_tree(&frame, &FocusManager::new());
+        assert_eq!(
+            tree.to_snapshot(),
+            "window \"quadraui\" [focused]\n  \
+             group \"Multi-section view\" [size=6]\n    \
+             group \"Tree\" [expanded pos=1/6]\n      \
+             tree [size=1]\n        \
+             tree_item \"root\" [level=1 pos=1/1]\n    \
+             group \"List\" [expanded pos=2/6]\n      \
+             list \"Notes\" [size=1]\n        \
+             list_item \"Buy milk\" [pos=1/1]\n    \
+             group \"Form\" [expanded pos=3/6]\n      \
+             form \"Form\" [size=0]\n    \
+             group \"Terminal\" [expanded pos=4/6]\n      \
+             terminal [value=\"$\"]\n    \
+             group \"Messages\" [expanded pos=5/6]\n      \
+             list \"Message list\" [size=1]\n        \
+             list_item \"Connected\" [pos=1/1]\n    \
+             group \"Chart\" [expanded pos=6/6]\n      \
+             chart\n"
+        );
+    }
+
+    #[test]
+    fn completions_maps_items_with_detail_value_and_position() {
+        let completions = Completions {
+            id: WidgetId::new("popup"),
+            items: vec![
+                CompletionItem {
+                    label: StyledText::plain("println!"),
+                    detail: Some(StyledText::plain("macro")),
+                    documentation: None,
+                    kind: CompletionKind::Snippet,
+                    icon: None,
+                },
+                CompletionItem {
+                    label: StyledText::plain("print"),
+                    detail: None,
+                    documentation: None,
+                    kind: CompletionKind::Function,
+                    icon: None,
+                },
+                CompletionItem {
+                    label: StyledText::plain("panic!"),
+                    detail: Some(StyledText::plain("macro")),
+                    documentation: None,
+                    kind: CompletionKind::Snippet,
+                    icon: None,
+                },
+            ],
+            selected_idx: 1,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        let frame = frame_with(vec![Surface::Completions {
+            completions,
+            layout: CompletionsLayout {
+                bounds: Rect::new(0.0, 0.0, 30.0, 6.0),
+                placement: CompletionsPlacement::Below,
+                visible_items: Vec::new(),
+                hit_regions: Vec::new(),
+                resolved_scroll_offset: 0,
+            },
+        }]);
+        let tree = frame_to_tree(&frame, &FocusManager::new());
+        assert_eq!(
+            tree.to_snapshot(),
+            "window \"quadraui\" [focused]\n  \
+             list \"Completions\" [size=3]\n    \
+             list_item \"println!\" [value=\"macro\" pos=1/3]\n    \
+             list_item \"print\" [selected pos=2/3]\n    \
+             list_item \"panic!\" [value=\"macro\" pos=3/3]\n"
+        );
+    }
+
+    #[test]
+    fn palette_maps_items_with_level_expanded_and_position() {
+        let palette = Palette {
+            id: WidgetId::new("cmds"),
+            title: "Commands".to_string(),
+            query: String::new(),
+            query_cursor: 0,
+            items: vec![
+                PaletteItem {
+                    text: StyledText::plain("src"),
+                    detail: None,
+                    icon: None,
+                    match_positions: Vec::new(),
+                    depth: 0,
+                    expandable: true,
+                    expanded: true,
+                },
+                PaletteItem {
+                    text: StyledText::plain("main.rs"),
+                    detail: Some(StyledText::plain("12 lines")),
+                    icon: None,
+                    match_positions: Vec::new(),
+                    depth: 1,
+                    expandable: false,
+                    expanded: false,
+                },
+            ],
+            selected_idx: 1,
+            scroll_offset: 0,
+            total_count: 0,
+            has_focus: false,
+            show_query: true,
+            create_label: None,
+            preview: None,
+            mode: PaletteMode::default(),
+        };
+        let frame = frame_with(vec![Surface::Palette {
+            rect: Rect::new(0.0, 0.0, 30.0, 10.0),
+            palette,
+        }]);
+        let tree = frame_to_tree(&frame, &FocusManager::new());
+        assert_eq!(
+            tree.to_snapshot(),
+            "window \"quadraui\" [focused]\n  \
+             list \"Commands\" [size=2]\n    \
+             list_item \"src\" [expanded level=1 pos=1/2]\n    \
+             list_item \"main.rs\" [selected value=\"12 lines\" level=2 pos=2/2]\n"
+        );
     }
 }
