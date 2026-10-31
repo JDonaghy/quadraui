@@ -196,6 +196,17 @@ pub struct ShellConfig {
     ///
     /// Set via [`Self::with_selection_bg`].
     pub selection_bg: Option<Color>,
+    /// Whether the sidebar is visible on the very first render. `true` (the
+    /// default) matches [`AppShell::new`]'s own starting state.
+    ///
+    /// Lets a consumer seed the sidebar hidden declaratively, without
+    /// rendering a first frame visible and then dispatching a hide event.
+    /// [`crate::shell_adapter::build_shell_adapter`] applies this field via
+    /// [`AppShell::hide_sidebar`] before the first frame, the same seam
+    /// [`Self::has_title_bar`] uses for the title bar.
+    ///
+    /// Set via [`Self::with_sidebar_visible`].
+    pub sidebar_visible: bool,
 }
 
 impl ShellConfig {
@@ -231,6 +242,7 @@ impl ShellConfig {
             app_icon: None,
             active_accent: None,
             selection_bg: None,
+            sidebar_visible: true,
         }
     }
 
@@ -423,6 +435,14 @@ impl ShellConfig {
     /// [`Self::selection_bg`] for the full contract.
     pub fn with_selection_bg(mut self, color: Color) -> Self {
         self.selection_bg = Some(color);
+        self
+    }
+
+    /// Seed the sidebar's visibility on the very first render — `true`
+    /// (visible) by default. See [`Self::sidebar_visible`] for why this
+    /// exists instead of dispatching a hide event after the first frame.
+    pub fn with_sidebar_visible(mut self, visible: bool) -> Self {
+        self.sidebar_visible = visible;
         self
     }
 }
@@ -1047,6 +1067,23 @@ mod tests {
         ];
         let config = ShellConfig::new("test", Vec::new()).with_bottom_bands(bands.clone());
         assert_eq!(config.bottom_bands, bands);
+    }
+
+    /// A fresh `ShellConfig` seeds the sidebar visible — matching
+    /// `AppShell::new`'s own hard-coded starting state, so nothing that
+    /// predates this field changes behavior.
+    #[test]
+    fn shell_config_sidebar_visible_defaults_to_true() {
+        let config = ShellConfig::new("test", Vec::new());
+        assert!(config.sidebar_visible);
+    }
+
+    /// `with_sidebar_visible` stores the seed for `build_shell_adapter`
+    /// to apply onto the `AppShell` before the first render.
+    #[test]
+    fn shell_config_with_sidebar_visible_sets_the_seed() {
+        let config = ShellConfig::new("test", Vec::new()).with_sidebar_visible(false);
+        assert!(!config.sidebar_visible);
     }
 
     /// `ShellContext::bottom_band_bounds`/`in_bottom_band` resolve
