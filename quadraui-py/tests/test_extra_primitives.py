@@ -196,6 +196,121 @@ def test_render_callback_tree_leaf_rejects_two_extra_descriptors_together():
         app.screen()
 
 
+def test_insert_extra_text_input_renders_value():
+    app = QuiApp(40, 20)
+    app.insert_extra("text_input", {"id": "ti:1", "lines": ["hello"]})
+    assert app.screen_contains("hello")
+
+
+def test_insert_extra_number_input_renders_value():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "number_input", {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0}
+    )
+    assert app.screen_contains("42")
+
+
+def test_insert_extra_radio_group_renders_options():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "radio_group",
+        {
+            "id": "rg:1",
+            "options": [
+                {"id": "opt:a", "label": "A"},
+                {"id": "opt:b", "label": "B"},
+            ],
+        },
+    )
+    assert app.screen_contains("A")
+    assert app.screen_contains("B")
+
+
+def test_insert_extra_switch_renders_knob_and_responds_to_value():
+    app_on = QuiApp(40, 20)
+    app_on.insert_extra("switch", {"id": "sw:1", "value": True})
+
+    app_off = QuiApp(40, 20)
+    app_off.insert_extra("switch", {"id": "sw:1", "value": False})
+
+    # Switch has no label text -- it paints only a 4-cell `[`/knob/`]`
+    # track, so the black-box assertions are glyph presence plus a
+    # before/after comparison that toggling `value` actually moves the
+    # knob (same two screens would otherwise pass a glyph-only check).
+    assert app_on.screen_contains("[")
+    assert app_on.screen_contains("●")
+    assert app_on.screen_contains("]")
+    assert app_on.screen() != app_off.screen()
+
+
+def test_insert_extra_combo_box_renders_options_when_open():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "combo_box",
+        {"id": "combo:1", "options": ["alpha", "beta", "gamma"], "open": True},
+    )
+    assert app.screen_contains("alpha")
+
+
+def test_insert_extra_date_picker_renders_header():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "date_picker",
+        {
+            "id": "date:1",
+            "visible_month": {"year": 2024, "month": 3, "day": 1},
+            "focused": {"year": 2024, "month": 3, "day": 15},
+            "locale": {"first_weekday": "Sunday", "format": "Iso8601"},
+            "has_focus": True,
+        },
+    )
+    assert app.screen_contains("2024-03")
+
+
+def test_insert_extra_form_renders_mixed_fields_with_label_position_and_validation():
+    # Acceptance criterion: a `Form` with mixed field kinds plus a
+    # `label_position` override and a field `validation` state decodes
+    # and renders without raising.
+    #
+    # Every standalone extra gets a fixed 3-row band (see `next_band` in
+    # `lib.rs`), so this stays at `LabelPosition::Left` (one row per field,
+    # label and input share a row) with exactly three fields -- a `Top`
+    # override would cost each field a second row for its label and only
+    # the first field or two would fit in the band.
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "form",
+        {
+            "id": "settings",
+            "label_position": "Left",
+            "focused_field": None,
+            "fields": [
+                {
+                    "id": "header",
+                    "label": {"spans": [{"text": "Settings", "fg": None, "bg": None}]},
+                    "kind": "Label",
+                },
+                {
+                    "id": "name",
+                    "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
+                    "kind": {"TextInput": {"value": "Alice"}},
+                },
+                {
+                    "id": "enabled",
+                    "label": {"spans": [{"text": "Enabled", "fg": None, "bg": None}]},
+                    "kind": {"Toggle": {"value": True}},
+                    "validation": {"Error": "Required"},
+                },
+            ],
+        },
+    )
+    assert app.screen_contains("Settings")
+    assert app.screen_contains("Name")
+    assert app.screen_contains("Alice")
+    assert app.screen_contains("Enabled")
+    assert app.screen_contains("[x]")
+
+
 def test_render_callback_flat_dict_still_works_with_extra_key():
     app = QuiApp(40, 20)
 
