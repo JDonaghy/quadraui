@@ -96,11 +96,12 @@ use pyo3::types::{PyDict, PyList};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
 use quadraui::{
-    AppLogic, Backend, Button, ButtonHit, ButtonLayout, DataTable, DataTableEvent, DataTableHit,
-    DataTableLayout, Image, Key, ListView, ListViewEvent, ListViewHit, ListViewLayout, Modifiers,
-    NamedKey, Point, ProgressBar, Reaction, Rect, Spinner, Split, SplitDirection, SplitHit,
-    SplitLayout, TabBar, TabBarEvent, TabBarHit, TabBarLayout, TabItem, TextDisplay, TreeEvent,
-    TreePath, TreeView, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    AppLogic, Backend, Button, ButtonHit, ButtonLayout, ComboBox, CompletionItemMeasure, DataTable,
+    DataTableEvent, DataTableHit, DataTableLayout, DatePicker, Form, Image, Key, ListView,
+    ListViewEvent, ListViewHit, ListViewLayout, Modifiers, NamedKey, NumberInput, Point,
+    ProgressBar, RadioGroup, Reaction, Rect, Spinner, Split, SplitDirection, SplitHit, SplitLayout,
+    Switch, TabBar, TabBarEvent, TabBarHit, TabBarLayout, TabItem, TextDisplay, TextInput,
+    TreeEvent, TreePath, TreeView, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
 create_exception!(
@@ -1454,6 +1455,83 @@ impl ExtraPaint for Image {
     }
 }
 
+impl ExtraPaint for Form {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_form(area, self);
+    }
+}
+
+impl ExtraPaint for TextInput {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_text_input(area, self);
+    }
+}
+
+impl ExtraPaint for RadioGroup {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_radio_group(area, self);
+    }
+}
+
+impl ExtraPaint for Switch {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_switch(area, self);
+    }
+}
+
+impl ExtraPaint for NumberInput {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        let layout = self.layout(area);
+        backend.draw_number_input(self, &layout);
+    }
+}
+
+impl ExtraPaint for ComboBox {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        // Standalone (non-`Form`-embedded) display: the field itself only
+        // ever needs its own row, so `field_bounds` is the top row of
+        // `area` while the full `area` is passed as the dropdown's
+        // viewport -- otherwise `Completions::layout`'s placement math has
+        // no room above or below the field to open the dropdown into and
+        // always clips it to zero height. A single-row item height is
+        // assumed since no measurement pass runs outside a real UI loop.
+        // The dropdown itself only paints when `self.open` is true with a
+        // non-empty filtered list, so a closed/default combo box renders
+        // just its field regardless of these choices.
+        let field_bounds = Rect::new(area.x, area.y, area.width.max(1.0), 1.0);
+        let max_popup_height = (area.height - 1.0).max(1.0);
+        let layout = self.layout(
+            field_bounds,
+            area,
+            area.width.max(1.0),
+            max_popup_height,
+            |_| CompletionItemMeasure::new(1.0),
+        );
+        backend.draw_combo_box(self, &layout);
+    }
+}
+
+impl ExtraPaint for DatePicker {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        // Standalone (non-`Form`-embedded) display: derive a 7-column,
+        // 6-row month grid plus a one-row header (and a one-row time field
+        // when `self.time` is set) out of the given area.
+        let header_height = 1.0_f32;
+        let time_height = if self.time.is_some() { 1.0 } else { 0.0 };
+        let cell_width = (area.width / 7.0).max(1.0);
+        let cell_height = ((area.height - header_height - time_height) / 6.0).max(1.0);
+        let layout = self.layout(
+            area.x,
+            area.y,
+            cell_width,
+            cell_height,
+            header_height,
+            time_height,
+        );
+        backend.draw_date_picker(self, &layout);
+    }
+}
+
 /// Decodes one additive primitive descriptor from a Python `dict` into its
 /// boxed [`ExtraPaint`] value. Registered per kind in [`EXTRA_PRIMITIVES`].
 type ExtraDecoder = fn(&str, &Bound<'_, PyDict>) -> PyResult<Box<dyn ExtraPaint>>;
@@ -1475,6 +1553,27 @@ const EXTRA_PRIMITIVES: &[(&str, ExtraDecoder)] = &[
     }),
     ("image", |what, dict| {
         Ok(Box::new(decode::<Image>(what, dict)?))
+    }),
+    ("form", |what, dict| {
+        Ok(Box::new(decode::<Form>(what, dict)?))
+    }),
+    ("text_input", |what, dict| {
+        Ok(Box::new(decode::<TextInput>(what, dict)?))
+    }),
+    ("number_input", |what, dict| {
+        Ok(Box::new(decode::<NumberInput>(what, dict)?))
+    }),
+    ("combo_box", |what, dict| {
+        Ok(Box::new(decode::<ComboBox>(what, dict)?))
+    }),
+    ("date_picker", |what, dict| {
+        Ok(Box::new(decode::<DatePicker>(what, dict)?))
+    }),
+    ("radio_group", |what, dict| {
+        Ok(Box::new(decode::<RadioGroup>(what, dict)?))
+    }),
+    ("switch", |what, dict| {
+        Ok(Box::new(decode::<Switch>(what, dict)?))
     }),
 ];
 
@@ -3072,8 +3171,10 @@ impl QuiApp {
     }
 
     /// Inserts a descriptor for any additive primitive `kind` registered in
-    /// `EXTRA_PRIMITIVES` (currently `"progress"`, `"spinner"`, `"image"`),
-    /// returning `kind` back. Raises `RuntimeError` if `kind` is already
+    /// `EXTRA_PRIMITIVES` (currently `"progress"`, `"spinner"`, `"image"`,
+    /// `"form"`, `"text_input"`, `"number_input"`, `"combo_box"`,
+    /// `"date_picker"`, `"radio_group"`, `"switch"`), returning `kind` back.
+    /// Raises `RuntimeError` if `kind` is already
     /// occupied — call `clear_extra(kind)` first — and
     /// `InvalidDescriptorError` if `kind` isn't registered. Lets a consumer
     /// insert a future additive primitive by name alone, with no new
