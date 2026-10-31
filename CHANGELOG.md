@@ -172,6 +172,17 @@ only a push to `main` runs this workflow.
   so a scrolled 100,000-row table still reads as e.g. "row 50,000 of
   100,000". Additive: the mapping is a sidecar `A11yPrimitive` impl per
   primitive, so no primitive struct changes shape.
+- Two new `A11yRole` variants, `Heading` (carrying its level in
+  `A11yInfo::level`) and `Link` (carrying its target in `A11yInfo::value`),
+  plus `markdown_a11y_children`, a standalone function that builds the
+  `A11yChild` tree for a `compose::markdown::RenderedMarkdown` — one node per
+  line, exposing `Heading` for a heading line (level from `line_scales`) and
+  nesting a `Link` child per entry in the `links` side-channel. `TextDisplay`
+  itself has no slot for this, since it renders plain styled lines rather
+  than `RenderedMarkdown`; an app rendering markdown through
+  `render_markdown_to_styled` calls this directly on the `RenderedMarkdown`
+  it already has to expose the heading/link structure to assistive tech.
+  Additive: both variants are new on an already-`#[non_exhaustive]` enum.
 
 ### Fixed
 

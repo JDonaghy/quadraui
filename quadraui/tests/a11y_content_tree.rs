@@ -5,15 +5,20 @@
 //! resulting role/state tree as text. Covers the basic role/label/value
 //! semantics for editor, text input, text display, terminal, diff view,
 //! chart, image, minimap and canvas — see `src/a11y/content.rs`'s module
-//! doc for the known scope limits (markdown structure, chart/canvas/image
-//! labelling, minimap visibility).
+//! doc for the known scope limits (chart/canvas/image labelling, minimap
+//! visibility).
+//!
+//! `markdown_a11y_children` has no `Surface` of its own to push through
+//! `A11yScenario` — it operates directly on a `RenderedMarkdown` — so its
+//! tests at the bottom of this file assert on the returned `Vec<A11yChild>`
+//! fields instead of a snapshot string.
 
 use quadraui::testing::a11y::A11yScenario;
 use quadraui::{
-    Canvas, Chart, ChartKind, Color, Decoration, DiffEditability, DiffMode, DiffPane, DiffView,
-    Editor, EditorLine, Image, ImageFit, ImageSource, Minimap, Rect, Series, StyledSpan,
-    StyledText, Surface, Terminal, TerminalCell, TerminalCursorShape, TextDisplay, TextDisplayLine,
-    TextInput, WidgetId,
+    markdown_a11y_children, render_markdown_to_styled, A11yRole, Canvas, Chart, ChartKind, Color,
+    Decoration, DiffEditability, DiffMode, DiffPane, DiffView, Editor, EditorLine, Image, ImageFit,
+    ImageSource, Minimap, Rect, Series, StyledSpan, StyledText, Surface, Terminal, TerminalCell,
+    TerminalCursorShape, TextDisplay, TextDisplayLine, TextInput, Theme, WidgetId,
 };
 
 const VIEWPORT: Rect = Rect {
@@ -985,4 +990,45 @@ fn canvas_with_no_app_label_is_unlabelled() {
 window \"quadraui\" [focused]
   canvas",
     );
+}
+
+// ----------------------------------------------- markdown a11y children
+
+#[test]
+fn markdown_heading_lines_expose_role_and_level() {
+    let theme = Theme::default();
+    let rendered = render_markdown_to_styled("# Title\n## Section\nbody text", &theme);
+
+    let children = markdown_a11y_children(&rendered);
+    assert_eq!(children.len(), 3);
+
+    assert_eq!(children[0].info.a11y_role, Some(A11yRole::Heading));
+    assert_eq!(children[0].info.level, Some(1));
+    assert_eq!(children[0].info.a11y_label.as_deref(), Some("Title"));
+
+    assert_eq!(children[1].info.a11y_role, Some(A11yRole::Heading));
+    assert_eq!(children[1].info.level, Some(2));
+    assert_eq!(children[1].info.a11y_label.as_deref(), Some("Section"));
+
+    assert_ne!(children[2].info.a11y_role, Some(A11yRole::Heading));
+    assert_eq!(children[2].info.level, None);
+    assert_eq!(children[2].info.a11y_label.as_deref(), Some("body text"));
+}
+
+#[test]
+fn markdown_link_lines_expose_role_and_target() {
+    let theme = Theme::default();
+    let rendered =
+        render_markdown_to_styled("See the [docs](https://example.com/docs) for more.", &theme);
+
+    let children = markdown_a11y_children(&rendered);
+    assert_eq!(children.len(), 1);
+
+    let line = &children[0];
+    assert_eq!(line.children.len(), 1);
+
+    let link = &line.children[0];
+    assert_eq!(link.info.a11y_role, Some(A11yRole::Link));
+    assert_eq!(link.info.a11y_label.as_deref(), Some("docs"));
+    assert_eq!(link.info.value.as_deref(), Some("https://example.com/docs"));
 }

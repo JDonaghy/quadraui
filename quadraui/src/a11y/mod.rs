@@ -76,6 +76,7 @@ mod chrome;
 mod content;
 pub mod tree;
 
+pub use content::markdown_a11y_children;
 pub use tree::{
     frame_to_tree, frame_to_tree_with_modal, A11yChild, A11yNodeId, A11yPrimitive, A11yTree,
     A11yTreeBuilder, A11yTreeNode, A11yUpdate,
@@ -187,6 +188,12 @@ pub enum A11yRole {
     Group,
     /// Decorative content an AT should skip — ARIA's `none`/`presentation`.
     Presentation,
+    /// A section heading. Carries its level (1 for an H1, 2 for an H2, …)
+    /// in [`A11yInfo::level`].
+    Heading,
+    /// A hyperlink to another resource. Carries its target in
+    /// [`A11yInfo::value`], since this enum has no dedicated href field.
+    Link,
 }
 
 /// A tri-state "checked" value for checkboxes, radio buttons, and
@@ -480,6 +487,8 @@ mod accesskit_convert {
                 A11yRole::Canvas => accesskit::Role::Canvas,
                 A11yRole::Group => accesskit::Role::Group,
                 A11yRole::Presentation => accesskit::Role::GenericContainer,
+                A11yRole::Heading => accesskit::Role::Heading,
+                A11yRole::Link => accesskit::Role::Link,
             }
         }
     }
@@ -528,6 +537,11 @@ mod accesskit_convert {
                 accesskit::Role::from(A11yRole::Presentation),
                 accesskit::Role::GenericContainer
             );
+            assert_eq!(
+                accesskit::Role::from(A11yRole::Heading),
+                accesskit::Role::Heading
+            );
+            assert_eq!(accesskit::Role::from(A11yRole::Link), accesskit::Role::Link);
         }
 
         #[test]
