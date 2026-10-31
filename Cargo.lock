@@ -3198,7 +3198,7 @@ dependencies = [
 
 [[package]]
 name = "quadraui"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "accesskit",
  "arboard",
@@ -3262,7 +3262,7 @@ dependencies = [
 
 [[package]]
 name = "quadraui-py"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "objc2",
  "pyo3",
