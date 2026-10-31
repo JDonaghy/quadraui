@@ -347,16 +347,21 @@ impl A11yTreeNode {
         }
 
         let read_only = self.info.read_only == Some(true);
-        // Gated on role, not on `self.info.value.is_some()`: `value` is
-        // this model's generic *readable* value (a link's URL, a list
-        // item's detail text, a dropdown's selected option), not an
-        // editable one. `TextInput` is the only role `route_action`'s
-        // `SetValue` arm translates, so it is the only role allowed to
-        // advertise the action.
+        // Both value actions below are gated on the role, not merely on a
+        // populated value field: `A11yInfo::value` and
+        // `A11yInfo::value_range` are this model's generic *readable*
+        // value and range, not editable ones. `value` holds a link's URL,
+        // a list item's detail text or a dropdown's selected option;
+        // `value_range` holds a progress bar's fraction, a scrollbar's
+        // position and a splitter's ratio. Declaring an edit affordance on
+        // any of those offers assistive technology a control that does not
+        // exist, so each action is advertised only for the role
+        // `route_action` actually translates it for.
         if matches!(self.role(), A11yRole::TextInput) && !read_only {
             actions.push(A11yAction::SetValue);
         }
-        if self.info.value_range.is_some() && !read_only {
+        if matches!(self.role(), A11yRole::Slider) && self.info.value_range.is_some() && !read_only
+        {
             actions.push(A11yAction::Increment);
             actions.push(A11yAction::Decrement);
         }
@@ -844,8 +849,8 @@ fn build_tree(
         }
 
         // Every top-level widget gets an owner-table entry so actions
-        // that only need a `WidgetId` (`Focus`, `ScrollIntoView`) can
-        // resolve against any widget, not just the richly-mapped ones.
+        // that only need a `WidgetId` (`Focus`, `ScrollUp`, `ScrollDown`)
+        // can resolve against any widget, not just the richly-mapped ones.
         // Child-node entries stay scoped to kinds `route_action` knows
         // how to translate into a child-level event (list item, tree
         // row, form field); every other primitive's children are left

@@ -66,6 +66,11 @@ pub enum A11yActionValue {
     /// A new text value, for a text input or text area.
     Text(String),
     /// A new numeric value, for a slider or other ranged control.
+    ///
+    /// Carried for completeness; [`route_action`] does not read it yet —
+    /// its `SetValue` arm accepts [`A11yActionValue::Text`] only, and a
+    /// slider's `Increment`/`Decrement` derive their own step. A ranged
+    /// control reached by `SetValue` is future work.
     Number(f64),
 }
 
@@ -86,7 +91,7 @@ pub enum A11yActionValue {
 /// Returns an empty `Vec` — after logging why, through
 /// [`crate::diagnostics::emit`] — when:
 /// - `target` is not in `tree`, or its owning widget did not opt into
-///   action routing (see [`A11yTree::owner`]);
+///   action routing (`A11yTree`'s crate-internal owner table);
 /// - `action` is not one the target's kind supports;
 /// - `ScrollIntoView` is requested at all (see above);
 /// - a `SetValue`/`Increment`/`Decrement` arrives for a kind this module
@@ -94,12 +99,11 @@ pub enum A11yActionValue {
 ///
 /// The last case is a deliberate scope boundary:
 /// [`super::A11yTreeNode::supported_actions`] only advertises an action
-/// for roles this module actually translates (e.g. `SetValue` only for
-/// `TextInput`), but a kind it has not been taught to route for a
-/// *different* action can still reach here — e.g. `Increment`/`Decrement`
-/// on a value-range role this module doesn't recognise. Routing those is
-/// future work; until then the request is a safe no-op rather than a
-/// panic.
+/// for the roles this module actually translates (`SetValue` for
+/// `TextInput`, `Increment`/`Decrement` for `Slider`), so assistive
+/// technology driving the declared set never lands here. A caller is free
+/// to request any action against any node regardless, and such a request
+/// is a safe, logged no-op rather than a panic.
 pub fn route_action(
     tree: &A11yTree,
     target: A11yNodeId,
@@ -347,6 +351,8 @@ mod tests {
     use crate::frame::Surface;
     use crate::primitives::form::{FieldKind, Form, FormField};
     use crate::primitives::list::{ListItem, ListView};
+    use crate::primitives::progress::ProgressBar;
+    use crate::primitives::split::{Split, SplitDirection};
     use crate::primitives::tree::{TreeRow, TreeView};
     use crate::testing::a11y::A11yScenario;
     use crate::types::{Decoration, SelectionMode, StyledText, TreeStyle};
@@ -689,6 +695,88 @@ mod tests {
         assert!(!dropdown_node
             .supported_actions()
             .contains(&A11yAction::SetValue));
+    }
+
+    #[test]
+    fn increment_is_advertised_for_a_slider_but_not_for_a_progress_bar() {
+        let slider = A11yScenario::new()
+            .with_surface(form_surface(
+                "prefs",
+                vec![field(
+                    "volume",
+                    "Volume",
+                    FieldKind::Slider {
+                        value: 50.0,
+                        min: 0.0,
+                        max: 100.0,
+                        step: 1.0,
+                    },
+                )],
+            ))
+            .snapshot();
+        let slider_node = slider.find("Volume").expect("field").id;
+        let slider_actions = slider
+            .tree()
+            .node(slider_node)
+            .expect("node")
+            .supported_actions();
+        assert!(slider_actions.contains(&A11yAction::Increment));
+        assert!(slider_actions.contains(&A11yAction::Decrement));
+
+        // A determinate progress bar carries a `value_range` for readout
+        // only — there is nothing to increment, and `route_action` drops
+        // the request, so it must not be advertised.
+        let progress = A11yScenario::new()
+            .with_surface(Surface::Progress {
+                rect: Rect::new(0.0, 0.0, 20.0, 1.0),
+                bar: ProgressBar {
+                    id: WidgetId::new("download"),
+                    label: "Downloading".to_string(),
+                    value: Some(0.5),
+                    frame_idx: 0,
+                    cancellable: false,
+                    accent: None,
+                },
+            })
+            .snapshot();
+        let progress_node = progress.find("Downloading").expect("bar").id;
+        let progress_actions = progress
+            .tree()
+            .node(progress_node)
+            .expect("node")
+            .supported_actions();
+        assert!(!progress_actions.contains(&A11yAction::Increment));
+        assert!(!progress_actions.contains(&A11yAction::Decrement));
+
+        assert!(
+            route_action(progress.tree(), progress_node, A11yAction::Increment, None).is_empty()
+        );
+    }
+
+    #[test]
+    fn increment_is_not_advertised_on_a_splitter_ratio() {
+        let snapshot = A11yScenario::new()
+            .with_surface(Surface::Split {
+                rect: Rect::new(0.0, 0.0, 20.0, 10.0),
+                split: Split {
+                    id: WidgetId::new("main-split"),
+                    direction: SplitDirection::Horizontal,
+                    ratio: 0.5,
+                    first_min: 1.0,
+                    second_min: 1.0,
+                },
+            })
+            .snapshot();
+        let node = snapshot.find("Split").expect("split node").id;
+        let actions = snapshot
+            .tree()
+            .node(node)
+            .expect("node")
+            .supported_actions();
+
+        assert!(!actions.contains(&A11yAction::Increment));
+        assert!(!actions.contains(&A11yAction::Decrement));
+        assert!(!actions.contains(&A11yAction::SetValue));
     }
 
     #[test]
