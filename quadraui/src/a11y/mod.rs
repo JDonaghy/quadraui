@@ -72,10 +72,12 @@
 
 use serde::{Deserialize, Serialize};
 
+mod action;
 mod chrome;
 mod content;
 pub mod tree;
 
+pub use action::{route_action, A11yAction, A11yActionValue};
 pub use content::markdown_a11y_children;
 pub use tree::{
     frame_to_tree, frame_to_tree_with_modal, A11yChild, A11yNodeId, A11yPrimitive, A11yTree,

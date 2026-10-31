@@ -309,6 +309,66 @@ impl A11yTreeNode {
         self.info.a11y_label.as_deref()
     }
 
+    /// Which [`crate::a11y::A11yAction`]s this node currently supports —
+    /// derived purely from its role and state, so assistive technology
+    /// only ever offers an action [`crate::a11y::route_action`] can
+    /// actually turn into a `UiEvent`. A disabled node supports none.
+    pub fn supported_actions(&self) -> Vec<crate::a11y::A11yAction> {
+        use crate::a11y::A11yAction;
+
+        if self.info.disabled == Some(true) {
+            return Vec::new();
+        }
+
+        // `ScrollIntoView` is deliberately not declared here:
+        // `route_action` does not yet translate it into a `UiEvent` (see
+        // its doc), and the whole point of this method is to only offer
+        // actions `route_action` can actually act on.
+        let mut actions = vec![A11yAction::Focus];
+
+        if matches!(
+            self.role(),
+            A11yRole::Button
+                | A11yRole::TreeItem
+                | A11yRole::ListItem
+                | A11yRole::MenuItem
+                | A11yRole::Tab
+                | A11yRole::CheckBox
+                | A11yRole::RadioButton
+                | A11yRole::Row
+        ) {
+            actions.push(A11yAction::Click);
+        }
+
+        match self.info.expanded {
+            Some(true) => actions.push(A11yAction::Collapse),
+            Some(false) => actions.push(A11yAction::Expand),
+            None => {}
+        }
+
+        let read_only = self.info.read_only == Some(true);
+        // Both value actions below are gated on the role, not merely on a
+        // populated value field: `A11yInfo::value` and
+        // `A11yInfo::value_range` are this model's generic *readable*
+        // value and range, not editable ones. `value` holds a link's URL,
+        // a list item's detail text or a dropdown's selected option;
+        // `value_range` holds a progress bar's fraction, a scrollbar's
+        // position and a splitter's ratio. Declaring an edit affordance on
+        // any of those offers assistive technology a control that does not
+        // exist, so each action is advertised only for the role
+        // `route_action` actually translates it for.
+        if matches!(self.role(), A11yRole::TextInput) && !read_only {
+            actions.push(A11yAction::SetValue);
+        }
+        if matches!(self.role(), A11yRole::Slider) && self.info.value_range.is_some() && !read_only
+        {
+            actions.push(A11yAction::Increment);
+            actions.push(A11yAction::Decrement);
+        }
+
+        actions
+    }
+
     /// The matching accesskit node.
     ///
     /// ARIA's one-based `level` and `position_in_set` are converted to
@@ -377,6 +437,9 @@ impl A11yTreeNode {
                     .collect::<Vec<_>>(),
             );
         }
+        for action in self.supported_actions() {
+            node.add_action(action.into());
+        }
         node
     }
 }
@@ -388,6 +451,7 @@ pub struct A11yTree {
     root: A11yNodeId,
     focus: A11yNodeId,
     nodes: Vec<A11yTreeNode>,
+    owners: HashMap<A11yNodeId, A11yOwner>,
 }
 
 impl A11yTree {
@@ -434,6 +498,18 @@ impl A11yTree {
     /// The focused node, if the tree still contains it.
     pub fn focused(&self) -> Option<&A11yTreeNode> {
         self.node(self.focus)
+    }
+
+    /// The widget that produced `id`, and the key identifying it within
+    /// that widget (empty for the widget's own top-level node, non-empty
+    /// for one of its direct children) — the side-table
+    /// [`crate::a11y::route_action`] uses to turn an assistive-technology
+    /// action back into the `UiEvent` the owning widget understands. Only
+    /// widgets whose content kind supports action routing are present.
+    pub(crate) fn owner(&self, id: A11yNodeId) -> Option<(&WidgetId, &str, A11yOwnerKind)> {
+        self.owners
+            .get(&id)
+            .map(|owner| (&owner.widget, owner.key.as_str(), owner.kind))
     }
 
     /// A stable, assertable text rendering of the whole tree: one line
@@ -703,6 +779,7 @@ fn build_tree(
     let mut root_children: Vec<A11yNodeId> = Vec::new();
     let mut root_bounds: Option<Rect> = None;
     let mut focus_id = A11yNodeId::ROOT;
+    let mut owners: HashMap<A11yNodeId, A11yOwner> = HashMap::new();
 
     // Reserve the root's slot; its children and bounds are only known
     // once every surface has been walked.
@@ -770,6 +847,38 @@ fn build_tree(
         for child in children {
             push_child(&mut nodes, id, child);
         }
+
+        // Every top-level widget gets an owner-table entry so actions
+        // that only need a `WidgetId` (`Focus`, `ScrollUp`, `ScrollDown`)
+        // can resolve against any widget, not just the richly-mapped ones.
+        // Child-node entries stay scoped to kinds `route_action` knows
+        // how to translate into a child-level event (list item, tree
+        // row, form field); every other primitive's children are left
+        // out so routing against them is a clean "unsupported" lookup
+        // miss rather than a wrong guess.
+        let kind = content_route_kind(&owned.content);
+        if let Some(widget) = &owned.widget_id {
+            owners.insert(
+                id,
+                A11yOwner {
+                    widget: *widget,
+                    key: String::new(),
+                    kind,
+                },
+            );
+            if kind != A11yOwnerKind::Unsupported {
+                for child in &described.children {
+                    owners.insert(
+                        id.child(&child.key),
+                        A11yOwner {
+                            widget: *widget,
+                            key: child.key.clone(),
+                            kind,
+                        },
+                    );
+                }
+            }
+        }
     }
 
     nodes[0].children = root_children;
@@ -779,6 +888,7 @@ fn build_tree(
         root: A11yNodeId::ROOT,
         focus: focus_id,
         nodes,
+        owners,
     }
 }
 
@@ -806,6 +916,60 @@ fn union(a: Rect, b: Rect) -> Rect {
     let right = (a.x + a.width).max(b.x + b.width);
     let bottom = (a.y + a.height).max(b.y + b.height);
     Rect::new(x, y, right - x, bottom - y)
+}
+
+/// Which family of [`crate::event::UiEvent`] a widget's content kind
+/// routes an assistive-technology action onto. Only kinds
+/// [`crate::a11y::route_action`] knows how to translate are named here;
+/// every other primitive is [`Self::Unsupported`] and is left out of the
+/// owner side-table entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum A11yOwnerKind {
+    List,
+    Tree,
+    Form,
+    Unsupported,
+}
+
+/// Which [`A11yOwnerKind`] a node's content maps onto, for owner
+/// side-table population in [`build_tree`].
+fn content_route_kind(content: &OwnedContent) -> A11yOwnerKind {
+    match content {
+        OwnedContent::List(_) => A11yOwnerKind::List,
+        OwnedContent::Tree(_) => A11yOwnerKind::Tree,
+        OwnedContent::Form(_) => A11yOwnerKind::Form,
+        _ => A11yOwnerKind::Unsupported,
+    }
+}
+
+/// One entry in [`A11yTree`]'s owner side-table: which widget produced a
+/// node, and the key identifying it within that widget's own
+/// [`A11yPrimitive::a11y_children`] (empty for the widget's own
+/// top-level node).
+#[derive(Debug, Clone, PartialEq)]
+struct A11yOwner {
+    widget: WidgetId,
+    key: String,
+    kind: A11yOwnerKind,
+}
+
+/// Encodes a [`crate::primitives::tree::TreePath`] as a dot-joined
+/// decimal string, so it survives as an [`A11yChild`] key and round-trips
+/// back through [`decode_tree_path`] when an assistive-technology action
+/// targets a tree row — the row's position in [`crate::primitives::tree::TreeView::rows`]
+/// is not itself stable enough to recover, since only the frozen
+/// [`A11yTree`] is available at routing time.
+pub(crate) fn encode_tree_path(path: &[u16]) -> String {
+    path.iter()
+        .map(|segment| segment.to_string())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// The inverse of [`encode_tree_path`]. `None` when `encoded` is not a
+/// well-formed dot-joined path.
+pub(crate) fn decode_tree_path(encoded: &str) -> Option<Vec<u16>> {
+    encoded.split('.').map(|part| part.parse().ok()).collect()
 }
 
 /// What a primitive contributes to the tree.
@@ -1370,10 +1534,7 @@ impl A11yPrimitive for TreeView {
 
     fn a11y_focus_key(&self) -> Option<String> {
         let selected = self.selected_path.as_ref()?;
-        self.rows
-            .iter()
-            .position(|row| &row.path == selected)
-            .map(|idx| format!("row.{idx}"))
+        Some(format!("row.{}", encode_tree_path(selected)))
     }
 }
 
@@ -1391,7 +1552,10 @@ fn tree_row_child(tree: &TreeView, idx: usize, pos: u32, size: u32) -> A11yChild
     if let Some(label) = non_empty(plain_text(&row.text)) {
         info = info.with_label(label);
     }
-    A11yChild::new(format!("row.{idx}"), info)
+    // Encoded as the row's full path, not its flattened index — the
+    // index shifts as siblings expand/collapse, but the path is what
+    // `route_action` can recover a `TreePath` from.
+    A11yChild::new(format!("row.{}", encode_tree_path(&row.path)), info)
 }
 
 impl A11yPrimitive for MessageList {

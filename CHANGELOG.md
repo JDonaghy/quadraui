@@ -190,6 +190,21 @@ only a push to `main` runs this workflow.
   the new `A11yTreeBuilder::with_children` override seam (also exposed on
   the headless test harness as `A11yScenario::with_children`); nothing
   attaches it automatically. Additive throughout.
+- `A11yAction` + `route_action` — map an incoming assistive-technology action
+  (press/click, focus, expand, collapse, scroll into view, scroll up/down,
+  set value, increment, decrement) onto the same `UiEvent`s a mouse or
+  keyboard user would produce for the `A11yTree` node it targets, so the app
+  sees one dispatch path regardless of input modality. Routing uses the
+  owner side-table `build_tree` already populates per node (list item, tree
+  row or form field) to resolve the target `WidgetId`; a node with no
+  routable owner, or an action a node's `A11yTreeNode::supported_actions()`
+  doesn't declare, is logged and dropped rather than panicking. `From<A11yAction>
+  for accesskit::Action` (behind the existing `a11y` feature) is the only
+  piece gated on accesskit — the action model and routing are always
+  compiled, matching every other a11y seam. `A11ySnapshot` gains
+  `dispatch_action`, the headless black-box seam for injecting an action
+  against a scenario's snapshot and asserting the resulting `UiEvent`s.
+  Additive: no new `UiEvent` variant, no primitive struct changes shape.
 
 ### Fixed
 
@@ -204,6 +219,21 @@ only a push to `main` runs this workflow.
   item labelled `"&File"` announces as `File` (and `"&&"` as a literal `&`),
   and tooltip and status-bar text is trimmed, so the padding spaces a bordered
   box needs are not spoken.
+
+- `route_action`'s `ScrollUp`/`ScrollDown` now emit the delta sign the rest of
+  the repo already uses for scrolling (positive `delta.y` moves content up),
+  instead of the inverted pair an assistive-technology scroll request used to
+  produce. `ScrollIntoView` no longer aliases `Focus` — it cannot yet be
+  routed to a real scroll-to-descendant `UiEvent`, so it is a logged no-op and
+  `A11yTreeNode::supported_actions()` no longer advertises it. `SetValue` is
+  now gated on the target node's role instead of on `A11yInfo::value` being
+  present, so read-only roles that merely display a value (links, list-item
+  detail text, combo boxes) no longer advertise an action `route_action`
+  cannot actually perform. `Increment`/`Decrement` are gated the same way, on
+  `A11yRole::Slider`, so a determinate progress bar, a scrollbar and a
+  splitter's ratio — all of which carry a readable `A11yInfo::value_range`
+  with nothing to step — no longer offer assistive technology a stepper that
+  does not exist.
 
 - `A11yTree::to_snapshot()` escapes backslashes and embedded newlines in a
   node's `value=` state token (`\` to `\\`, a real newline to the two-character
