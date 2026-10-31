@@ -144,6 +144,52 @@ only a push to `main` runs this workflow.
   `build_shell_adapter` applies it via `AppShell::hide_sidebar` before the
   first frame. Defaults to `true`, preserving `AppShell::new`'s existing
   starting state.
+- Accessibility role/state mapping for the collection primitives —
+  `DataTable`, `TreeView`, `MultiSectionView`, `MessageList`, `Completions`,
+  `Palette`, `BoardModel` and `PipelineView` all describe themselves to the
+  `A11yTree` as a container (`table`, `tree`, `list` or `group`) with an
+  accessible name where the primitive carries one (a title, a section
+  header, a column's data) and `position_in_set`/`set_size`-stamped
+  children, carrying `selected`, `expanded`/`collapsed` and `level` state
+  where the primitive has it. `TreeView` rows stay flat children of the
+  `Tree` node — nesting is encoded only by the `level=N` token — grouped
+  into siblings by shared parent path for position/size, and the `Tree`
+  node's own `set_size` counts root-level siblings, not every flattened
+  row. `DataTable` exposes its column headers as a `row` of header cells
+  ahead of the body, and its optional footer row is appended after the
+  body rows; neither carries a `position_in_set`/`set_size` of its own,
+  since neither is a member of the data row set. `MultiSectionView`
+  delegates each section's body to that body's own `A11yPrimitive` impl —
+  a `Tree`/`List`/`Form`/`MessageList` body keeps its own container role,
+  label and children nested one level under the section; a `Terminal`/
+  `Chart` body (with no children of its own) carries just its `a11y_info`.
+  `BoardModel`'s focus key resolves to the card's owning column, the only
+  level `build_tree` can actually look up, rather than a column/card pair
+  the tree never resolves. Virtualised windowing (`DataTable`, any
+  primitive whose rows exceed the 200-row a11y window) anchors the window
+  at the first visible row (`scroll_offset`) and always reports position
+  and set size against the true row count, never the materialised window,
+  so a scrolled 100,000-row table still reads as e.g. "row 50,000 of
+  100,000". Additive: the mapping is a sidecar `A11yPrimitive` impl per
+  primitive, so no primitive struct changes shape.
+- Two new `A11yRole` variants, `Heading` (carrying its level in
+  `A11yInfo::level`) and `Link` (carrying its target in `A11yInfo::value`),
+  plus `markdown_a11y_children`, a standalone function that builds the
+  `A11yChild` tree for a `compose::markdown::RenderedMarkdown` — one node per
+  line, exposing `Heading` for a heading line (level from `line_scales`) and
+  nesting a `Link` child per entry in the `links` side-channel. `TextDisplay`
+  itself has no slot for this, since it renders plain styled lines rather
+  than `RenderedMarkdown`; an app rendering markdown through
+  `render_markdown_to_styled` calls this directly on the `RenderedMarkdown`
+  it already has to expose the heading/link structure to assistive tech.
+  Additive: both variants are new on an already-`#[non_exhaustive]` enum.
+- Two new `A11yRole` variants, `Heading` (level in `A11yInfo::level`) and
+  `Link` (target in `A11yInfo::value`), plus `markdown_a11y_children`,
+  mapping a `compose::markdown::RenderedMarkdown` to an `A11yChild` tree of
+  them. `TextDisplay` has no slot for this itself, so an app wires it in via
+  the new `A11yTreeBuilder::with_children` override seam (also exposed on
+  the headless test harness as `A11yScenario::with_children`); nothing
+  attaches it automatically. Additive throughout.
 
 ### Fixed
 
