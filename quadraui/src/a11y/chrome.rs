@@ -24,7 +24,7 @@
 //! across frames: a widget-owned child is keyed by its `WidgetId`
 //! (`button.save`), an anonymous one by its index (`tab.2`).
 
-use super::tree::{non_empty, plain_text, A11yChild, A11yPrimitive};
+use super::tree::{in_set, non_empty, plain_text, A11yChild, A11yPrimitive};
 use crate::a11y::{A11yChecked, A11yInfo, A11yLive, A11yRole, A11yValueRange};
 use crate::primitives::activity_bar::{ActivityBar, ActivityItem};
 use crate::primitives::combo_box::ComboBox;
@@ -57,12 +57,6 @@ fn presentational(key: impl Into<String>, label: &str) -> A11yChild {
             .with_role(A11yRole::Presentation)
             .with_label(label),
     )
-}
-
-/// `one of N` positioning, 1-based as ARIA defines it.
-fn in_set(info: A11yInfo, idx: usize, total: usize) -> A11yInfo {
-    info.with_position_in_set(idx as u32 + 1)
-        .with_set_size(total as u32)
 }
 
 /// A menu label with its Alt-activation marker removed: `"&File"`

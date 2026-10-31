@@ -47,53 +47,11 @@ fn cell(ch: char) -> TerminalCell {
     }
 }
 
-// ----------------------------------------------------------------- editor
-
-#[test]
-fn editor_exposes_role_and_joined_line_text() {
-    let editor = Editor::new(WidgetId::from("editor"), rect(10.0)).with_lines(vec![EditorLine {
-        raw_text: "fn main() {}\n".to_string(),
-        gutter_text: "  1".to_string(),
-        spans: Vec::new(),
-        line_idx: 0,
-        is_current_line: false,
-        is_fold_header: false,
-        folded_line_count: 0,
-        git_diff: None,
-        diff_status: None,
-        diagnostics: Vec::new(),
-        spell_errors: Vec::new(),
-        is_breakpoint: false,
-        is_conditional_bp: false,
-        is_dap_current: false,
-        is_wrap_continuation: false,
-        segment_col_offset: 0,
-        annotation: None,
-        ghost_suffix: None,
-        is_ghost_continuation: false,
-        indent_guides: Vec::new(),
-        colorcolumns: Vec::new(),
-    }]);
-
-    let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Editor {
-        rect: VIEWPORT,
-        editor,
-    });
-
-    scenario.snapshot().assert_matches(
-        "\
-window \"quadraui\" [focused]
-  editor [value=\"fn main() {}\"]",
-    );
-}
-
-/// `EditorLine::raw_text` is not guaranteed to carry a trailing `\n` —
-/// a buffer whose lines omit it must still read as separate lines, not
-/// one run-together string.
-#[test]
-fn editor_with_newline_free_lines_still_reads_as_separate_lines() {
-    let line = |text: &str, idx: usize| EditorLine {
+/// An `EditorLine` with everything a painter needs but an a11y value
+/// does not care about left at its default — there is no production
+/// convenience constructor for this type either.
+fn editor_line(text: &str, idx: usize) -> EditorLine {
+    EditorLine {
         raw_text: text.to_string(),
         gutter_text: format!("{:>3}", idx + 1),
         spans: Vec::new(),
@@ -115,18 +73,41 @@ fn editor_with_newline_free_lines_still_reads_as_separate_lines() {
         is_ghost_continuation: false,
         indent_guides: Vec::new(),
         colorcolumns: Vec::new(),
-    };
-    let editor = Editor::new(WidgetId::from("editor"), rect(10.0)).with_lines(vec![
-        line("fn main() {", 0),
-        line("    one();", 1),
-        line("}", 2),
-    ]);
+    }
+}
 
-    let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Editor {
+fn editor_with(lines: Vec<EditorLine>) -> Surface {
+    Surface::Editor {
         rect: VIEWPORT,
-        editor,
-    });
+        editor: Editor::new(WidgetId::from("editor"), rect(10.0)).with_lines(lines),
+    }
+}
+
+// ----------------------------------------------------------------- editor
+
+#[test]
+fn editor_exposes_role_and_joined_line_text() {
+    let mut scenario = A11yScenario::new();
+    scenario.push(editor_with(vec![editor_line("fn main() {}\n", 0)]));
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  editor [value=\"fn main() {}\"]",
+    );
+}
+
+/// `EditorLine::raw_text` is not guaranteed to carry a trailing `\n` —
+/// a buffer whose lines omit it must still read as separate lines, not
+/// one run-together string.
+#[test]
+fn editor_with_newline_free_lines_still_reads_as_separate_lines() {
+    let mut scenario = A11yScenario::new();
+    scenario.push(editor_with(vec![
+        editor_line("fn main() {", 0),
+        editor_line("    one();", 1),
+        editor_line("}", 2),
+    ]));
 
     scenario.snapshot().assert_matches(
         "\
@@ -135,10 +116,63 @@ window \"quadraui\" [focused]
     );
 }
 
+/// Soft wrap is a painting decision: the continuation rows of one
+/// buffer line share its `line_idx` and are flagged
+/// `is_wrap_continuation`. They must rejoin the row they wrap from, or a
+/// screen reader announces one logical line as several.
+#[test]
+fn editor_soft_wrap_continuations_rejoin_the_line_they_wrap_from() {
+    let mut wrapped = editor_line("and keeps going", 0);
+    wrapped.is_wrap_continuation = true;
+    wrapped.segment_col_offset = 11;
+    wrapped.gutter_text = "   ".to_string();
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(editor_with(vec![
+        editor_line("a long line", 0),
+        wrapped,
+        editor_line("next();", 1),
+    ]));
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  editor [value=\"a long lineand keeps going\\nnext();\"]",
+    );
+}
+
+/// An inline-completion ghost spills onto `is_ghost_continuation` rows
+/// that carry no buffer text of their own. They are suggestion chrome,
+/// not content: dropping them keeps a blank line out of the value.
+#[test]
+fn editor_ghost_continuation_rows_are_not_read_as_blank_lines() {
+    let mut ghost_host = editor_line("let x = ", 0);
+    ghost_host.ghost_suffix = Some("compute();\nmore();".to_string());
+    let mut ghost_row = editor_line("", 0);
+    ghost_row.is_ghost_continuation = true;
+    ghost_row.gutter_text = "   ".to_string();
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(editor_with(vec![
+        ghost_host,
+        ghost_row,
+        editor_line("done();", 1),
+    ]));
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  editor [value=\"let x = \\ndone();\"]",
+    );
+}
+
 // ------------------------------------------------------------- text input
 
+/// Typed text wins over the placeholder, and the placeholder never
+/// becomes the field's name — it is a value fallback, matching the
+/// convention the form-field text entries in `src/a11y/chrome.rs` use.
 #[test]
-fn text_input_exposes_role_placeholder_label_and_value() {
+fn text_input_typed_text_is_the_value_and_placeholder_is_not_the_label() {
     let ti = TextInput::new(WidgetId::from("search"))
         .with_lines(vec!["needle".to_string()])
         .with_placeholder("Search");
@@ -152,7 +186,26 @@ fn text_input_exposes_role_placeholder_label_and_value() {
     scenario.snapshot().assert_matches(
         "\
 window \"quadraui\" [focused]
-  text_input \"Search\" [value=\"needle\"]",
+  text_input [value=\"needle\"]",
+    );
+}
+
+#[test]
+fn text_input_empty_falls_back_to_the_placeholder_as_its_value() {
+    let ti = TextInput::new(WidgetId::from("search"))
+        .with_lines(vec![String::new()])
+        .with_placeholder("Search");
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::TextInput {
+        rect: rect(1.0),
+        ti,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  text_input [value=\"Search\"]",
     );
 }
 
@@ -183,8 +236,42 @@ fn text_display_exposes_title_label_and_lines_as_children() {
         "\
 window \"quadraui\" [focused]
   document \"Build output\"
-    label \"Compiling quadraui v0.1.0\"
-    label \"Finished in 1.2s\"",
+    label \"Compiling quadraui v0.1.0\" [pos=1/2]
+    label \"Finished in 1.2s\" [pos=2/2]",
+    );
+}
+
+/// The snapshot format quotes both labels and values, so text that
+/// itself contains a quote, a backslash or a newline is escaped — one
+/// node still occupies exactly one line and the delimiters stay
+/// unambiguous.
+#[test]
+fn snapshot_escapes_quotes_backslashes_and_newlines_in_labels_and_values() {
+    let mut td = TextDisplay::new(WidgetId::from("log"));
+    td.title = Some(StyledText::plain("say \"hi\"\\now"));
+    td.lines.push(TextDisplayLine {
+        spans: vec![StyledSpan::plain("a \"quoted\" line")],
+        decoration: Decoration::default(),
+        timestamp: None,
+    });
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::TextDisplay {
+        rect: rect(5.0),
+        td,
+    });
+    scenario.push(Surface::TextInput {
+        rect: rect(1.0),
+        ti: TextInput::new(WidgetId::from("search"))
+            .with_lines(vec!["say \"hi\"".to_string(), "line\\two".to_string()]),
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  document \"say \\\"hi\\\"\\\\now\"
+    label \"a \\\"quoted\\\" line\" [pos=1/1]
+  text_input [value=\"say \\\"hi\\\"\\nline\\\\two\"]",
     );
 }
 
@@ -210,7 +297,7 @@ fn text_display_line_includes_timestamp_prefix() {
         "\
 window \"quadraui\" [focused]
   document
-    label \"12:34:56 server started\"",
+    label \"12:34:56 server started\" [pos=1/1]",
     );
 }
 
@@ -276,6 +363,61 @@ window \"quadraui\" [focused]
     );
 }
 
+/// A fullwidth glyph occupies two grid columns: the glyph's own cell
+/// plus a spacer cell that normalises to a single space. The spacer is
+/// painting geometry, not text — reading it out would turn `日本語` into
+/// `日 本 語`.
+#[test]
+fn terminal_drops_the_spacer_column_after_a_wide_glyph() {
+    let term = Terminal {
+        id: "term".into(),
+        cells: vec![vec![
+            cell('日'),
+            cell(' '),
+            cell('本'),
+            cell(' '),
+            cell('語'),
+            cell(' '),
+        ]],
+        scrollbar: None,
+    };
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::Terminal {
+        rect: rect(1.0),
+        term,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  terminal [value=\"日本語\"]",
+    );
+}
+
+/// The spacer skip is keyed on the preceding cell's width, so a genuine
+/// space between narrow glyphs still reads as a word break.
+#[test]
+fn terminal_keeps_spaces_between_narrow_glyphs() {
+    let term = Terminal {
+        id: "term".into(),
+        cells: vec![vec![cell('a'), cell(' '), cell('b')]],
+        scrollbar: None,
+    };
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::Terminal {
+        rect: rect(1.0),
+        term,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  terminal [value=\"a b\"]",
+    );
+}
+
 // -------------------------------------------------------------- diff view
 
 #[test]
@@ -304,8 +446,8 @@ fn diff_view_exposes_read_only_labelled_panes() {
         "\
 window \"quadraui\" [focused]
   document
-    document \"a/file.rs\" [readonly value=\"old\\n\"]
-    document \"b/file.rs\" [readonly value=\"new\\n\"]",
+    document \"a/file.rs\" [readonly value=\"old\"]
+    document \"b/file.rs\" [readonly value=\"new\"]",
     );
 }
 
@@ -335,8 +477,41 @@ fn diff_view_right_editable_pane_drops_readonly_token() {
         "\
 window \"quadraui\" [focused]
   document
-    document \"Left\" [readonly value=\"old\\n\"]
-    document \"Right\" [value=\"new\\n\"]",
+    document \"Left\" [readonly value=\"old\"]
+    document \"Right\" [value=\"new\"]",
+    );
+}
+
+/// [`DiffEditability::RightEditable`] names the right pane of a
+/// side-by-side diff. Unified mode has no right pane — one interleaved
+/// column of `-`/`+` rows is not typeable — so it stays read-only.
+#[test]
+fn diff_view_unified_pane_stays_read_only_when_right_is_editable() {
+    let view = DiffView {
+        id: "diff".into(),
+        left: "old\n".to_string(),
+        right: "new\n".to_string(),
+        left_label: None,
+        right_label: None,
+        hunks: Vec::new(),
+        mode: DiffMode::Unified,
+        editability: DiffEditability::RightEditable,
+        scroll_offset: 0,
+        focused_pane: DiffPane::Left,
+        has_focus: false,
+    };
+
+    let mut scenario = A11yScenario::new();
+    scenario.push(Surface::DiffView {
+        rect: rect(10.0),
+        view,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  document
+    document [readonly]",
     );
 }
 
