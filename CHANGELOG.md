@@ -58,6 +58,8 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+
+## [0.7.1] - 2026-10-31
 ### Fixed
 - The shared GUI form painter (`macOS`, `Windows`, `GTK`) now honors
   `FormField`'s `label_position`, `label_align` and `label_width` instead of
