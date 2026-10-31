@@ -96,13 +96,14 @@ use pyo3::types::{PyDict, PyList};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
 use quadraui::{
-    AppLogic, Backend, BoardModel, Button, ButtonHit, ButtonLayout, Chart, ComboBox,
-    CompletionItemMeasure, DataTable, DataTableEvent, DataTableHit, DataTableLayout, DatePicker,
-    DiffView, Form, Image, Key, ListView, ListViewEvent, ListViewHit, ListViewLayout, MessageList,
-    Minimap, Modifiers, MultiSectionView, NamedKey, NumberInput, PipelineView, Point, ProgressBar,
-    RadioGroup, Reaction, Rect, Spinner, Split, SplitDirection, SplitHit, SplitLayout, Switch,
-    TabBar, TabBarEvent, TabBarHit, TabBarLayout, TabItem, TextDisplay, TextInput, TreeEvent,
-    TreePath, TreeView, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    ActivityBar, AppLogic, Backend, BoardModel, Button, ButtonHit, ButtonLayout, Chart, ComboBox,
+    CommandCenter, CommandLine, CompletionItemMeasure, DataTable, DataTableEvent, DataTableHit,
+    DataTableLayout, DatePicker, DiffView, Form, Image, InteractionState, Key, ListView,
+    ListViewEvent, ListViewHit, ListViewLayout, MenuBar, MessageList, Minimap, Modifiers,
+    MultiSectionView, NamedKey, NumberInput, Palette, PipelineView, Point, ProgressBar, RadioGroup,
+    Reaction, Rect, Spinner, Split, SplitDirection, SplitHit, SplitLayout, StatusBar, Switch,
+    TabBar, TabBarEvent, TabBarHit, TabBarLayout, TabItem, TextDisplay, TextInput, Toolbar,
+    TreeEvent, TreePath, TreeView, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
 create_exception!(
@@ -1594,6 +1595,48 @@ impl ExtraPaint for DiffView {
     }
 }
 
+impl ExtraPaint for ActivityBar {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_activity_bar(area, self, None);
+    }
+}
+
+impl ExtraPaint for Toolbar {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_toolbar_interactive(area, self, &InteractionState::default());
+    }
+}
+
+impl ExtraPaint for MenuBar {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_menu_bar(area, self);
+    }
+}
+
+impl ExtraPaint for StatusBar {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_status_bar_interactive(area, self, &InteractionState::default());
+    }
+}
+
+impl ExtraPaint for CommandLine {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_command_line(area, self);
+    }
+}
+
+impl ExtraPaint for CommandCenter {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_command_center(area, self);
+    }
+}
+
+impl ExtraPaint for Palette {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_palette(area, self);
+    }
+}
+
 /// Decodes one additive primitive descriptor from a Python `dict` into its
 /// boxed [`ExtraPaint`] value. Registered per kind in [`EXTRA_PRIMITIVES`].
 type ExtraDecoder = fn(&str, &Bound<'_, PyDict>) -> PyResult<Box<dyn ExtraPaint>>;
@@ -1659,6 +1702,27 @@ const EXTRA_PRIMITIVES: &[(&str, ExtraDecoder)] = &[
     }),
     ("diff_view", |what, dict| {
         Ok(Box::new(decode::<DiffView>(what, dict)?))
+    }),
+    ("activity_bar", |what, dict| {
+        Ok(Box::new(decode::<ActivityBar>(what, dict)?))
+    }),
+    ("toolbar", |what, dict| {
+        Ok(Box::new(decode::<Toolbar>(what, dict)?))
+    }),
+    ("menu_bar", |what, dict| {
+        Ok(Box::new(decode::<MenuBar>(what, dict)?))
+    }),
+    ("status_bar", |what, dict| {
+        Ok(Box::new(decode::<StatusBar>(what, dict)?))
+    }),
+    ("command_line", |what, dict| {
+        Ok(Box::new(decode::<CommandLine>(what, dict)?))
+    }),
+    ("command_center", |what, dict| {
+        Ok(Box::new(decode::<CommandCenter>(what, dict)?))
+    }),
+    ("palette", |what, dict| {
+        Ok(Box::new(decode::<Palette>(what, dict)?))
     }),
 ];
 

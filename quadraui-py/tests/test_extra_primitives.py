@@ -482,3 +482,121 @@ def test_chart_renders_x_label_as_tree_leaf():
 
     app.set_render(render)
     assert app.screen_contains("Time")
+
+
+def test_activity_bar_renders_item_fallback_glyph():
+    # The TUI rasteriser paints only the first character of the resolved
+    # glyph/fallback string (see activity_bar.rs), so the fallback here is
+    # a single character.
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "activity_bar",
+        {
+            "id": "activity_bar:main",
+            "top_items": [
+                {
+                    "id": "activity:explorer",
+                    "icon": {"glyph": "", "fallback": "E"},
+                    "tooltip": "Explorer",
+                    "is_active": True,
+                },
+            ],
+        },
+    )
+    assert app.screen_contains("E")
+
+
+def test_toolbar_renders_action_label():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "toolbar",
+        {
+            "id": "toolbar:main",
+            "buttons": [
+                {"Action": {"id": "toolbar:refresh", "label": "Refresh"}},
+            ],
+        },
+    )
+    assert app.screen_contains("Refresh")
+
+
+def test_menu_bar_renders_item_label():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "menu_bar",
+        {
+            "id": "menu_bar:main",
+            "items": [
+                {"id": "menu:file", "label": "&File"},
+            ],
+        },
+    )
+    assert app.screen_contains("File")
+
+
+def test_status_bar_renders_segment_text():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "status_bar",
+        {
+            "id": "status_bar:main",
+            "left_segments": [
+                {
+                    "text": "main",
+                    "fg": {"r": 255, "g": 255, "b": 255, "a": 255},
+                    "bg": {"r": 0, "g": 0, "b": 0, "a": 255},
+                },
+            ],
+            "right_segments": [],
+        },
+    )
+    assert app.screen_contains("main")
+
+
+def test_command_line_renders_text():
+    app = QuiApp(40, 20)
+    app.insert_extra("command_line", {"id": "command_line:main", "text": ":wq"})
+    assert app.screen_contains(":wq")
+
+
+def test_command_center_renders_search_label():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "command_center",
+        {
+            "id": "command_center:main",
+            "back_enabled": True,
+            "forward_enabled": False,
+            "search_label": "my-project",
+        },
+    )
+    assert app.screen_contains("my-project")
+
+
+def test_palette_renders_item_text():
+    # Palette's TUI rasteriser refuses to paint anything below a 4x4 area,
+    # and `insert_extra` only ever gives an additive primitive a fixed
+    # 3-row band, so this one routes through a render-callback `row` leaf
+    # instead, which hands the leaf the full viewport.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "palette:1",
+                    "palette": {
+                        "id": "palette:commands",
+                        "title": "Commands",
+                        "query": "",
+                        "items": [
+                            {"text": {"spans": [{"text": "Save File", "fg": None, "bg": None}]}},
+                        ],
+                        "selected_idx": 0,
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    assert app.screen_contains("Save File")
