@@ -45,7 +45,9 @@
 
 use std::fmt;
 
-use crate::a11y::{A11yInfo, A11yRole, A11yTree, A11yTreeBuilder, A11yTreeNode, A11yUpdate};
+use crate::a11y::{
+    A11yChild, A11yInfo, A11yRole, A11yTree, A11yTreeBuilder, A11yTreeNode, A11yUpdate,
+};
 use crate::focus::FocusManager;
 use crate::frame::{OwnedFrame, ScreenLayout, Surface};
 use crate::WidgetId;
@@ -118,6 +120,15 @@ impl A11yScenario {
     /// it the topmost dialog surface in the frame is used.
     pub fn with_modal(mut self, id: WidgetId) -> Self {
         self.set_modal(Some(id));
+        self
+    }
+
+    /// Overrides the children `widget` would otherwise derive, chainable
+    /// — the per-widget seam [`markdown_a11y_children`](crate::a11y::markdown_a11y_children)
+    /// output attaches through, for a surface whose primitive has no
+    /// descriptor slot of its own for the richer structure.
+    pub fn with_children(mut self, widget: WidgetId, children: Vec<A11yChild>) -> Self {
+        self.builder = std::mem::take(&mut self.builder).with_children(widget, children);
         self
     }
 
