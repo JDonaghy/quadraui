@@ -144,6 +144,22 @@ only a push to `main` runs this workflow.
   `build_shell_adapter` applies it via `AppShell::hide_sidebar` before the
   first frame. Defaults to `true`, preserving `AppShell::new`'s existing
   starting state.
+- Accessibility role/state mapping for the collection primitives —
+  `DataTable`, `TreeView`, `MultiSectionView`, `MessageList`, `Completions`,
+  `Palette`, `BoardModel` and `PipelineView` all describe themselves to the
+  `A11yTree` as a container (`table`, `tree`, `list` or `group`) with
+  `position_in_set`/`set_size`-stamped children, carrying `selected`,
+  `expanded`/`collapsed` and `level` state where the primitive has it.
+  `TreeView` rows stay flat children of the `Tree` node — nesting is encoded
+  only by the `level=N` token — grouped into siblings by shared parent path
+  for position/size. `DataTable`'s optional footer row is appended after the
+  body rows with no `position_in_set`/`set_size` of its own, since it is not
+  a member of the row set. Virtualised windowing (`DataTable`, any primitive
+  whose rows exceed the 200-row a11y window) always reports position and set
+  size against the true row count, never the materialised window, so a
+  scrolled 100,000-row table still reads as e.g. "row 50,000 of 100,000".
+  Additive: the mapping is a sidecar `A11yPrimitive` impl per primitive, so
+  no primitive struct changes shape.
 
 ### Fixed
 
