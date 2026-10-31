@@ -46,8 +46,10 @@
 use std::fmt;
 
 use crate::a11y::{
-    A11yChild, A11yInfo, A11yRole, A11yTree, A11yTreeBuilder, A11yTreeNode, A11yUpdate,
+    A11yAction, A11yActionValue, A11yChild, A11yInfo, A11yNodeId, A11yRole, A11yTree,
+    A11yTreeBuilder, A11yTreeNode, A11yUpdate,
 };
+use crate::event::UiEvent;
 use crate::focus::FocusManager;
 use crate::frame::{OwnedFrame, ScreenLayout, Surface};
 use crate::WidgetId;
@@ -252,6 +254,21 @@ impl A11ySnapshot {
     /// The node holding accessibility focus.
     pub fn focused(&self) -> Option<&A11yTreeNode> {
         self.tree.focused()
+    }
+
+    /// Routes an assistive-technology action at `node`, the same way a
+    /// backend's `accesskit::ActionHandler` turns an incoming
+    /// `ActionRequest` into the [`UiEvent`](crate::event::UiEvent)s the
+    /// app's own dispatch loop would see from a mouse or keyboard user —
+    /// the black-box seam for the "inject an action, assert the
+    /// resulting event" tests this harness exists for.
+    pub fn dispatch_action(
+        &self,
+        node: A11yNodeId,
+        action: A11yAction,
+        value: Option<A11yActionValue>,
+    ) -> Vec<UiEvent> {
+        crate::a11y::route_action(&self.tree, node, action, value)
     }
 
     /// Asserts the whole snapshot equals `expected`, ignoring leading
@@ -479,5 +496,35 @@ window \"quadraui\" [focused]
         A11yScenario::new()
             .snapshot()
             .assert_matches("list \"nope\"");
+    }
+
+    #[test]
+    fn dispatch_action_routes_a_click_to_the_owning_widget() {
+        let snapshot = A11yScenario::new()
+            .with_surface(list_surface("files", "Files", &["a.rs", "b.rs"], 0))
+            .snapshot();
+        let item = snapshot.find("b.rs").expect("list item").id;
+
+        let events = snapshot.dispatch_action(item, A11yAction::Click, None);
+
+        assert_eq!(
+            events,
+            vec![UiEvent::List(
+                WidgetId::new("files"),
+                crate::primitives::list::ListViewEvent::ItemActivated { idx: 1 }
+            )]
+        );
+    }
+
+    #[test]
+    fn dispatch_action_on_an_unknown_node_is_a_safe_no_op() {
+        let snapshot = A11yScenario::new()
+            .with_surface(list_surface("files", "Files", &["a.rs"], 0))
+            .snapshot();
+
+        let events =
+            snapshot.dispatch_action(A11yNodeId::for_key("nonexistent"), A11yAction::Click, None);
+
+        assert!(events.is_empty());
     }
 }
