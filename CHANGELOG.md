@@ -138,6 +138,12 @@ only a push to `main` runs this workflow.
   and the TUI renderer. Non-required fields render unchanged. Additive:
   the marker is injected by `FormController` into the `Form` it already
   builds, so no primitive struct gains a new field.
+- `ShellConfig::sidebar_visible` + `with_sidebar_visible` — seed the
+  sidebar's visibility before the first render, independent of a
+  dispatched event, mirroring the existing `has_title_bar` seam.
+  `build_shell_adapter` applies it via `AppShell::hide_sidebar` before the
+  first frame. Defaults to `true`, preserving `AppShell::new`'s existing
+  starting state.
 
 ### Fixed
 

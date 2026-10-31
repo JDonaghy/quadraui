@@ -171,6 +171,14 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
     }
     shell.set_title_bar_visible(config.has_title_bar);
 
+    // Seed initial sidebar visibility before the first render. `AppShell`
+    // has no `show_sidebar()`/`set_sidebar_visible()` setter — only
+    // `hide_sidebar()`/`toggle_sidebar()` — but `AppShell::new` already
+    // starts visible, so hiding is the only transition this needs.
+    if !config.sidebar_visible {
+        shell.hide_sidebar();
+    }
+
     // Bottom panel does NOT share this defect, despite the parallel shape:
     // `AppShell` has no runtime setter that flips `has_bottom_panel` alone
     // the way `set_title_bar_visible` flips `has_title_bar`. The only way
@@ -512,7 +520,7 @@ fn resized_to_fraction(new_height: f32, viewport_height: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compose::app_shell::AppShellLayout;
+    use crate::compose::app_shell::{AppShellLayout, PanelDefinition};
 
     struct NoopApp;
 
@@ -567,6 +575,52 @@ mod tests {
             .title_bar_bounds
             .expect("row reserved from construction");
         assert_eq!(tb.height, 1.0);
+    }
+
+    /// A `ShellConfig` seeded sidebar-hidden must reach the built
+    /// `AppShell` before the first render — no visible→hidden flicker.
+    #[test]
+    fn sidebar_visible_seeds_hidden_on_first_render() {
+        let config = ShellConfig::new(
+            "t",
+            vec![PanelDefinition {
+                id: WidgetId::new("panel:p"),
+                icon: "P".to_string(),
+                tooltip: "Panel".to_string(),
+                title: "PANEL".to_string(),
+            }],
+        )
+        .with_sidebar_visible(false);
+
+        let adapter = build_shell_adapter(NoopApp, config);
+        assert!(!adapter.shell.sidebar_visible());
+
+        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
+        assert!(
+            layout.sidebar_content_bounds.is_none(),
+            "first render must honour the seeded hidden state, not briefly show the sidebar"
+        );
+    }
+
+    /// Companion case: the default (field unset) still starts visible —
+    /// no behaviour change for existing consumers.
+    #[test]
+    fn sidebar_visible_defaults_to_shown() {
+        let config = ShellConfig::new(
+            "t",
+            vec![PanelDefinition {
+                id: WidgetId::new("panel:p"),
+                icon: "P".to_string(),
+                tooltip: "Panel".to_string(),
+                title: "PANEL".to_string(),
+            }],
+        );
+
+        let adapter = build_shell_adapter(NoopApp, config);
+        assert!(adapter.shell.sidebar_visible());
+
+        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
+        assert!(layout.sidebar_content_bounds.is_some());
     }
 
     /// `ShellConfig::with_title_bar_min_px` reaches the built
