@@ -329,3 +329,156 @@ def test_render_callback_flat_dict_still_works_with_extra_key():
     app.set_render(render)
     assert app.screen_contains("OK")
     assert app.screen_contains("[LOGO]")
+
+
+def test_message_list_renders_row_text():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "message_list",
+        {
+            "id": "messages:1",
+            "rows": [
+                {"text": "Build succeeded", "fg": {"r": 0, "g": 200, "b": 0, "a": 255}},
+            ],
+        },
+    )
+    assert app.screen_contains("Build succeeded")
+
+
+def test_board_renders_column_title():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "board",
+        {
+            "id": "board:1",
+            "columns": [
+                {
+                    "id": "col:backlog",
+                    "title": "Backlog",
+                    "cards": [
+                        {"id": "card:1", "title": "Fix flaky test"},
+                    ],
+                },
+            ],
+        },
+    )
+    assert app.screen_contains("Backlog")
+
+
+def test_diff_view_renders_unified_hunk_header():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "diff_view",
+        {
+            "id": "diff:1",
+            "left": "foo\n",
+            "right": "foo\nbar\n",
+            "left_label": None,
+            "right_label": None,
+            "hunks": [
+                {
+                    "left_start": 1,
+                    "right_start": 1,
+                    "rows": [
+                        {"left": "foo", "right": "foo", "kind": "Same"},
+                        {"left": None, "right": "bar", "kind": "Added"},
+                    ],
+                },
+            ],
+            "mode": "Unified",
+            "editability": "ReadOnly",
+            "scroll_offset": 0,
+            "focused_pane": "Left",
+            "has_focus": False,
+        },
+    )
+    assert app.screen_contains("@@")
+
+
+def test_minimap_renders_braille_cells():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "minimap",
+        {
+            "id": "minimap:1",
+            "lines": [{"text": "fn main() {}", "line_idx": 0}],
+            "syntax_spans": [],
+            "visible_row_start": 0,
+            "visible_row_count": 1,
+            "total_buffer_lines": 1,
+        },
+    )
+    assert app.screen_contains("⠀")
+
+
+def test_multi_section_view_renders_section_header_title():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "multi_section_view",
+        {
+            "id": "sections:1",
+            "sections": [
+                {
+                    "id": "section:explorer",
+                    "header": {
+                        "icon": None,
+                        "title": {"spans": [{"text": "Explorer", "fg": None, "bg": None}]},
+                        "badge": None,
+                    },
+                    "body": {"Text": []},
+                    "size": "EqualShare",
+                },
+            ],
+            "axis": "Vertical",
+            "scroll_mode": "PerSection",
+        },
+    )
+    assert app.screen_contains("Explorer")
+
+
+def test_pipeline_view_renders_stage_labels_as_tree_leaf():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "pl:1",
+                    "pipeline_view": {
+                        "id": "pipeline:1",
+                        "stages": [
+                            {"label": "Build", "status": "Done"},
+                            {"label": "Deploy", "status": "Pending"},
+                        ],
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    assert app.screen_contains("Build")
+    assert app.screen_contains("Deploy")
+
+
+def test_chart_renders_x_label_as_tree_leaf():
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "c:1",
+                    "chart": {
+                        "id": "chart:cpu",
+                        "kind": "Line",
+                        "series": [
+                            {"label": "cpu", "data": [1.0, 2.0, 3.0]},
+                        ],
+                        "x_label": "Time",
+                    },
+                },
+            ]
+        }
+
+    app.set_render(render)
+    assert app.screen_contains("Time")
