@@ -393,9 +393,12 @@ impl A11yTree {
 
     /// A stable, assertable text rendering of the whole tree: one line
     /// per node, two spaces of indent per level, `role "label" [state]`.
-    /// A multi-line `value` (an editor buffer, a terminal grid, a diff
-    /// pane) is escaped — `\n` becomes the two characters `\` `n` — so
-    /// the node it belongs to still occupies exactly one line.
+    /// Both the quoted label and a `value=` token are escaped — `\n`
+    /// becomes the two characters `\` `n`, a literal `"` becomes `\"`,
+    /// and a literal `\` is doubled — so the node a multi-line editor
+    /// buffer, terminal grid or diff pane belongs to still occupies
+    /// exactly one line, and a quote inside the text never looks like
+    /// the end of it.
     ///
     /// Bounds are deliberately **not** included — they depend on the
     /// frame's layout and would make every snapshot brittle. Assert on
@@ -416,7 +419,7 @@ impl A11yTree {
         out.push_str(role_name(node.role()));
         if let Some(label) = node.label() {
             out.push_str(" \"");
-            out.push_str(label);
+            out.push_str(&escape_snapshot_text(label));
             out.push('"');
         }
         let states = state_tokens(node, self.focus == node.id);
@@ -952,7 +955,7 @@ fn state_tokens(node: &A11yTreeNode, focused: bool) -> Vec<String> {
         tokens.push("readonly".to_string());
     }
     if let Some(value) = &info.value {
-        tokens.push(format!("value=\"{}\"", escape_snapshot_value(value)));
+        tokens.push(format!("value=\"{}\"", escape_snapshot_text(value)));
     }
     if let Some(range) = info.value_range {
         tokens.push(format!(
@@ -983,19 +986,28 @@ fn state_tokens(node: &A11yTreeNode, focused: bool) -> Vec<String> {
     tokens
 }
 
-/// Escapes embedded newlines (and the backslash that would make the
-/// escape ambiguous) in a `value=` token so a multi-line value — an
-/// editor buffer, a terminal grid, a diff pane — still renders on the
-/// single snapshot line its node occupies. [`A11yTree::to_snapshot`]
-/// documents one line per node; this is what keeps that true for
-/// primitives whose value is itself multi-line.
-fn escape_snapshot_value(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('\n', "\\n")
+/// Escapes a quoted snapshot string — a node's label or its `value=`
+/// token — so the line stays unambiguous: embedded newlines become `\n`
+/// (keeping a multi-line editor buffer, terminal grid or diff pane on
+/// the single line its node occupies), a literal `"` becomes `\"` so it
+/// cannot be read as the closing delimiter, and a literal `\` is doubled
+/// so neither escape is ambiguous. [`A11yTree::to_snapshot`] documents
+/// one line per node; this is what keeps that true.
+fn escape_snapshot_text(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('"', "\\\"")
 }
 
 /// Plain text of a styled run, for use as an accessible name.
 pub(super) fn plain_text(text: &StyledText) -> String {
     text.spans.iter().map(|span| span.text.as_str()).collect()
+}
+
+/// `one of N` positioning, 1-based as ARIA defines it.
+pub(super) fn in_set(info: A11yInfo, idx: usize, total: usize) -> A11yInfo {
+    info.with_position_in_set(idx as u32 + 1)
+        .with_set_size(total as u32)
 }
 
 pub(super) fn non_empty(text: String) -> Option<String> {

@@ -88,18 +88,26 @@ only a push to `main` runs this workflow.
   per descriptor, so no primitive struct changes shape.
 - Accessibility role/label/value mapping for the content primitives — editor,
   text input, text display, terminal, diff view, chart, image, minimap and
-  canvas all describe themselves to the `A11yTree`. Editor and text input
-  expose their role, label and current text as a value (full cursor/selection
-  semantics are a later issue), joining `EditorLine::raw_text` line-by-line
-  with the trailing `\n` each line may or may not already carry stripped
-  first, so lines read as separate lines either way; text display exposes its
-  title as the label and each line as a child, timestamp-prefixed when the
-  line has one; terminal exposes its visible grid as a value, with each row's
-  vt100 trailing blank padding trimmed first (scrollback is out of scope);
-  diff view exposes a single read-only-aware document pane in `Unified` mode
-  (the hunk's `@@ … @@` header and `+`/`-`/` ` prefixed rows, matching what
-  every backend paints) and its existing two labelled, independently
-  read-only/editable panes in `SideBySide` mode. Chart, image and canvas have
+  canvas all describe themselves to the `A11yTree`. Editor exposes its visible
+  viewport as a value (full cursor/selection semantics are a later issue),
+  joining `EditorLine::raw_text` line-by-line with the trailing `\n` each line
+  may or may not already carry stripped first, so lines read as separate lines
+  either way, and treating the two *visual* row kinds as such: a soft-wrap
+  continuation row rejoins the row it wraps from, and a ghost-completion
+  continuation row is dropped rather than read as a blank line. Text input
+  exposes its current text as a value, falling back to its placeholder only
+  while empty (never as a label), matching the convention the form-field text
+  entries already use. Text display exposes its title as the label and each
+  line as a child carrying its `one of N` position, timestamp-prefixed when
+  the line has one; terminal exposes its visible grid as a value, with each
+  row's vt100 trailing blank padding trimmed and wide-glyph spacer columns
+  dropped so a fullwidth glyph does not read with a space after it (scrollback
+  is out of scope); diff view exposes a single always-read-only document pane
+  in `Unified` mode (the hunk's `@@ … @@` header and `+`/`-`/` ` prefixed
+  rows, matching what every backend paints — the interleaved column is not the
+  right pane `DiffEditability::RightEditable` makes editable) and its existing
+  two labelled, independently read-only/editable panes in `SideBySide` mode.
+  Chart, image and canvas have
   no textual equivalent for their visual content, so they rely on an
   app-supplied label — a chart additionally falls back to `Chart::y_label`,
   then `Chart::x_label`, then (only when `Chart::show_legend` is set) its
@@ -109,10 +117,15 @@ only a push to `main` runs this workflow.
   the editor's own buffer. Adds two new `A11yRole` variants, `Chart` and
   `Canvas`. Additive: the mapping is a sidecar `A11yPrimitive` impl per
   primitive, so no primitive struct changes shape; none of these impls fall
-  back to the generic kind-name label an unmapped primitive gets, so a chart,
-  canvas, editor or minimap with no app-supplied label announces with just
-  its role, not a synthesized name — a behavior change for any consumer that
+  back to the generic kind-name label an unmapped primitive gets, so any of
+  these nine primitives with no app-supplied label announces with just its
+  role (plus minimap's fixed `"Minimap"`, and the label each of chart, image,
+  text display and the side-by-side diff panes derives from its own data),
+  not a synthesized kind name — a behavior change for any consumer that
   relied on the earlier generic fallback.
+- `A11yTree::to_snapshot` escapes a literal `"` in both a node's label and its
+  `value=` token (alongside the newline and backslash escapes), so text
+  containing a quote cannot be read as the end of the quoted string.
 - `quadraui::frame_to_tree_with_modal` and `A11yTreeBuilder::with_modal_top`
   / `set_modal_top` — build an accessibility tree against the backend's
   modal stack, so the surface a modal dialog lives on is marked `modal` and
