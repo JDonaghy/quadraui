@@ -75,7 +75,12 @@
 //! A consumer can override any of this per node:
 //! [`crate::frame::OwnedNode::a11y`] is merged over the primitive's own
 //! info field by field, so setting just a label keeps the derived role
-//! and state.
+//! and state. [`A11yTreeBuilder::with_children`] is the matching override
+//! for children: it replaces a widget's derived children wholesale,
+//! for shapes — markdown headings and links, in particular — a
+//! primitive's own [`A11yPrimitive::a11y_children`] has no way to produce
+//! because the data it would need (a heading level, a link target) does
+//! not live on the primitive's own descriptor.
 //!
 //! # TUI emits no tree
 //!
@@ -526,6 +531,7 @@ pub struct A11yTreeBuilder {
     sent_tree: bool,
     root_label: Option<String>,
     modal_top: Option<WidgetId>,
+    children_overrides: HashMap<WidgetId, Vec<A11yChild>>,
 }
 
 impl A11yTreeBuilder {
@@ -538,6 +544,25 @@ impl A11yTreeBuilder {
     /// the window title). Defaults to `"quadraui"`.
     pub fn with_root_label(mut self, label: impl Into<String>) -> Self {
         self.root_label = Some(label.into());
+        self
+    }
+
+    /// Replaces the children a primitive would otherwise derive for
+    /// `widget`, so an app can substitute a richer structure than the
+    /// primitive's own [`A11yPrimitive::a11y_children`] without a bespoke
+    /// descriptor field. [`super::content::markdown_a11y_children`] is the
+    /// motivating case: a `TextDisplay` rendering
+    /// [`crate::compose::markdown::RenderedMarkdown`] has no slot of its
+    /// own for heading levels or link targets, so an app that rendered the
+    /// markdown attaches that function's output here, keyed by the
+    /// `TextDisplay`'s own [`WidgetId`], and the builder uses it in place of
+    /// the default line-flattened children on every subsequent [`Self::tree`]
+    /// / [`Self::update`] call.
+    ///
+    /// Calling this again for the same `widget` replaces the previous
+    /// override; there is no way to clear one short of a new builder.
+    pub fn with_children(mut self, widget: WidgetId, children: Vec<A11yChild>) -> Self {
+        self.children_overrides.insert(widget, children);
         self
     }
 
@@ -566,6 +591,7 @@ impl A11yTreeBuilder {
             focus,
             self.root_label.as_deref().unwrap_or(DEFAULT_ROOT_LABEL),
             self.modal_top.as_ref(),
+            &self.children_overrides,
         )
     }
 
@@ -619,7 +645,7 @@ impl A11yTreeBuilder {
 /// The full accessibility tree for one frame, with the default root
 /// label — the stateless convenience form of [`A11yTreeBuilder::tree`].
 pub fn frame_to_tree(frame: &OwnedFrame, focus: &FocusManager) -> A11yTree {
-    build_tree(frame, focus, DEFAULT_ROOT_LABEL, None)
+    build_tree(frame, focus, DEFAULT_ROOT_LABEL, None, &HashMap::new())
 }
 
 /// The full accessibility tree for one frame, with the widget on top of
@@ -636,7 +662,7 @@ pub fn frame_to_tree_with_modal(
     focus: &FocusManager,
     modal_top: Option<&WidgetId>,
 ) -> A11yTree {
-    build_tree(frame, focus, DEFAULT_ROOT_LABEL, modal_top)
+    build_tree(frame, focus, DEFAULT_ROOT_LABEL, modal_top, &HashMap::new())
 }
 
 /// The identity a modal stack entry is matched against. Overlay
@@ -670,6 +696,7 @@ fn build_tree(
     focus: &FocusManager,
     root_label: &str,
     modal_top: Option<&WidgetId>,
+    children_overrides: &HashMap<WidgetId, Vec<A11yChild>>,
 ) -> A11yTree {
     let modal_idx = modal_surface(frame, modal_top);
     let mut nodes: Vec<A11yTreeNode> = Vec::with_capacity(frame.nodes().len() + 1);
@@ -698,6 +725,18 @@ fn build_tree(
             Some(override_info) => merge(described.info, override_info),
             None => described.info,
         };
+        // An explicit children override (keyed by widget id, set via
+        // `A11yTreeBuilder::with_children`) replaces the primitive's own
+        // derived children wholesale — there is no per-child merge, since
+        // the override exists precisely for shapes (markdown headings and
+        // links) the primitive cannot derive at all.
+        let children: &[A11yChild] = match &owned.widget_id {
+            Some(widget) => children_overrides
+                .get(widget)
+                .map(Vec::as_slice)
+                .unwrap_or(&described.children),
+            None => &described.children,
+        };
         // An explicit override still wins: modality is derived state,
         // and a consumer that asserted it knows better.
         if let Some(modal_idx) = modal_idx {
@@ -707,11 +746,8 @@ fn build_tree(
                 info.hidden.get_or_insert(true);
             }
         }
-        let child_ids: Vec<A11yNodeId> = described
-            .children
-            .iter()
-            .map(|child| id.child(&child.key))
-            .collect();
+        let child_ids: Vec<A11yNodeId> =
+            children.iter().map(|child| id.child(&child.key)).collect();
 
         if focus.focused() == owned.widget_id.as_ref() && owned.widget_id.is_some() {
             focus_id = match &described.focus_key {
@@ -731,7 +767,7 @@ fn build_tree(
             bounds: Some(owned.rect),
             children: child_ids,
         });
-        for child in &described.children {
+        for child in children {
             push_child(&mut nodes, id, child);
         }
     }

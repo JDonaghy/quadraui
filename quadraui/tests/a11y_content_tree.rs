@@ -8,10 +8,13 @@
 //! doc for the known scope limits (chart/canvas/image labelling, minimap
 //! visibility).
 //!
-//! `markdown_a11y_children` has no `Surface` of its own to push through
-//! `A11yScenario` — it operates directly on a `RenderedMarkdown` — so its
-//! tests at the bottom of this file assert on the returned `Vec<A11yChild>`
-//! fields instead of a snapshot string.
+//! `markdown_a11y_children` builds its `Vec<A11yChild>` straight from a
+//! `RenderedMarkdown`, with no `Surface` of its own to push through
+//! `A11yScenario` — the tests right after it assert on that return value
+//! directly. The tests below those wire that output into a real tree
+//! through `A11yScenario::with_children`, the same seam an app uses to
+//! attach it to a `TextDisplay` rendering markdown, and assert on the
+//! resulting snapshot instead.
 
 use quadraui::testing::a11y::A11yScenario;
 use quadraui::{
@@ -1031,4 +1034,40 @@ fn markdown_link_lines_expose_role_and_target() {
     assert_eq!(link.info.a11y_role, Some(A11yRole::Link));
     assert_eq!(link.info.a11y_label.as_deref(), Some("docs"));
     assert_eq!(link.info.value.as_deref(), Some("https://example.com/docs"));
+}
+
+/// Wires `markdown_a11y_children`'s output into a real `A11yTree` the way
+/// an app renders markdown into a `TextDisplay`: attach it to that
+/// `TextDisplay`'s own widget id via `A11yScenario::with_children`, in
+/// place of the plain per-line labels `TextDisplay::a11y_children` would
+/// otherwise derive. The snapshot carries the heading's level and the
+/// link's target, proving the structure reaches the tree a backend
+/// actually publishes rather than staying a value only the mapping
+/// function's own caller can see.
+#[test]
+fn markdown_a11y_children_wires_into_a_text_display_tree() {
+    let theme = Theme::default();
+    let rendered = render_markdown_to_styled(
+        "# Title\nSee the [docs](https://example.com/docs) for more.",
+        &theme,
+    );
+    let children = markdown_a11y_children(&rendered);
+
+    let td = TextDisplay::new(WidgetId::from("notes"));
+    let widget = td.id;
+
+    let mut scenario = A11yScenario::new().with_children(widget, children);
+    scenario.push(Surface::TextDisplay {
+        rect: rect(5.0),
+        td,
+    });
+
+    scenario.snapshot().assert_matches(
+        "\
+window \"quadraui\" [focused]
+  document
+    heading \"Title\" [level=1 pos=1/2]
+    label \"See the docs for more.\" [pos=2/2]
+      link \"docs\" [value=\"https://example.com/docs\"]",
+    );
 }

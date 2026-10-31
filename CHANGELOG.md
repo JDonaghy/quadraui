@@ -183,6 +183,13 @@ only a push to `main` runs this workflow.
   `render_markdown_to_styled` calls this directly on the `RenderedMarkdown`
   it already has to expose the heading/link structure to assistive tech.
   Additive: both variants are new on an already-`#[non_exhaustive]` enum.
+- Two new `A11yRole` variants, `Heading` (level in `A11yInfo::level`) and
+  `Link` (target in `A11yInfo::value`), plus `markdown_a11y_children`,
+  mapping a `compose::markdown::RenderedMarkdown` to an `A11yChild` tree of
+  them. `TextDisplay` has no slot for this itself, so an app wires it in via
+  the new `A11yTreeBuilder::with_children` override seam (also exposed on
+  the headless test harness as `A11yScenario::with_children`); nothing
+  attaches it automatically. Additive throughout.
 
 ### Fixed
 
