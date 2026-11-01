@@ -657,7 +657,20 @@ def test_palette_renders_item_text():
 
 def _click(app, x, y):
     """Dispatches a left `MouseDown` at `(x, y)` and runs one step, returning
-    the single event the registered handler captured."""
+    the single event the registered handler captured.
+
+    Asserts there was exactly one event: no focusable widget sits under
+    `(x, y)`, so click-to-focus has nothing to do and no `FocusChanged`
+    precedes the click.
+    """
+    received = _click_events(app, x, y)
+    assert len(received) == 1
+    return received[0]
+
+
+def _click_events(app, x, y):
+    """Dispatches a left `MouseDown` at `(x, y)` and runs one step, returning
+    every event the registered handler captured, in order."""
     received = []
     app.set_handler(lambda event: received.append(event))
     app.push_event(
@@ -670,27 +683,35 @@ def _click(app, x, y):
         }
     )
     app.run(1)
-    assert len(received) == 1
-    return received[0]
+    return received
 
 
 def test_clicking_a_switch_routes_a_hit_with_widget_set():
     # `insert_extra`'s own render already populated the hit map, so the
     # switch -- the first (and only) extra, painted into the top 3-line
-    # band -- is hit-testable the moment it's inserted.
+    # band -- is hit-testable the moment it's inserted. `Switch` is also a
+    # tab stop, so the click-to-focus step fires a `FocusChanged` ahead of
+    # the `MouseDown` itself.
     app = QuiApp(40, 20)
     app.insert_extra("switch", {"id": "settings:wrap"})
 
-    event = _click(app, 1.0, 1.0)
+    received = _click_events(app, 1.0, 1.0)
 
+    assert len(received) == 2, (
+        "the click must emit both a FocusChanged (nothing was focused yet) "
+        "and the MouseDown itself"
+    )
+    assert received[0]["FocusChanged"] == "settings:wrap"
+    event = received[1]
     assert event["MouseDown"]["widget"] == "settings:wrap"
     assert event["hit"] == {"kind": "extra_body"}
 
 
 def test_clicking_a_display_only_extra_attaches_no_hit():
-    # `progress` paints but never overrides `ExtraPaint::hit_test`, so a
-    # click lands nowhere: no `widget`, no `hit` -- the "no behavior change
-    # for display-only extras" half of the interaction seam.
+    # `progress` paints but never overrides `ExtraPaint::hit_test` or
+    # `tab_stop`, so a click lands nowhere and focuses nothing: no
+    # `FocusChanged`, no `widget`, no `hit` -- the "no behavior change for
+    # display-only extras" half of the interaction seam.
     app = QuiApp(40, 20)
     app.insert_extra(
         "progress", {"id": "progress:download", "label": "Downloading", "value": 0.5}

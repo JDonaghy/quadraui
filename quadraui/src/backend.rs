@@ -1880,7 +1880,7 @@ pub trait Backend: sealed::Sealed {
     /// click-to-focus to work identically on every backend, so a backend
     /// that forgets to wire this up should fail to compile rather than
     /// silently leave focus unchanged.
-    fn set_focus(&mut self, id: Option<crate::types::WidgetId>) -> bool;
+    fn set_focus(&mut self, id: Option<WidgetId>) -> bool;
 
     /// Paint the focus-ring convention around `rect` — a themed,
     /// border-only stroke (`Theme::accent_fg`) with no fill, so the

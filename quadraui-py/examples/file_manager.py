@@ -467,6 +467,19 @@ class FileManager:
                     node.expanded = not node.expanded
                 return
 
+    def _on_row_toggle_expand(self, path: list[int]) -> None:
+        """A chevron click: toggle that folder's expansion in place, leaving
+        the cursor wherever it already was (a row-body click selects the row
+        too; the chevron is narrower, since it is reachable without first
+        moving the cursor there)."""
+        rows, nodes = folder_rows(self.root)
+        for row, node in zip(rows, nodes):
+            if row["path"] == list(path):
+                ensure_loaded(node)
+                if node.subdirs():
+                    node.expanded = not node.expanded
+                return
+
     def _activate_detail(self, idx: int) -> None:
         """A details-table row was activated (clicked): drill into a subfolder,
         or report a file's size."""
@@ -609,6 +622,8 @@ class FileManager:
             activation = event["Tree"][1]
             if "RowClicked" in activation:
                 self._on_row_click(activation["RowClicked"]["path"])
+            elif "RowToggleExpand" in activation:
+                self._on_row_toggle_expand(activation["RowToggleExpand"]["path"])
         elif "TabBar" in event:
             activation = event["TabBar"][1]
             if "TabActivated" in activation:

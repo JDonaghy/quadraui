@@ -185,6 +185,21 @@ def test_left_collapses_then_climbs_to_parent(fmmod, tree_root):
     assert fm.cursor.name == tree_root.name
 
 
+def test_chevron_click_toggles_expansion_without_moving_the_cursor(fmmod, tree_root):
+    """A `Tree(RowToggleExpand)` event -- what a chevron click resolves to --
+    expands/collapses that row in place; unlike a row-body click, it leaves
+    the cursor (still on the root) untouched."""
+    fm = _manager(fmmod, tree_root)
+
+    _send(fm, {"Tree": ["fm:tree", {"RowToggleExpand": {"path": [0]}}]})  # alpha
+    assert fm.cursor.name == tree_root.name  # cursor never moved
+    assert _folder_names(fmmod, fm) == [tree_root.name, "alpha", "sub", "beta"]
+
+    _send(fm, {"Tree": ["fm:tree", {"RowToggleExpand": {"path": [0]}}]})  # alpha again
+    assert fm.cursor.name == tree_root.name
+    assert _folder_names(fmmod, fm) == [tree_root.name, "alpha", "beta"]  # sub hidden again
+
+
 # --- opening folders as detail tabs ------------------------------------------
 
 
