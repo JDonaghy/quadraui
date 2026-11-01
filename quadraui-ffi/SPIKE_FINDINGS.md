@@ -46,13 +46,15 @@ Reading `quadraui-ffi/src/lib.rs`'s `FfiRtApp` impl shows the "hit-tested
 semantic event" requirement is satisfied by two distinct code paths that
 emit the same payload shape:
 
-- `handle_mouse_down` does **real geometric hit-testing**: it looks up the
-  last-painted rect (`self.last_rect`) and the active list's handle, maps
-  the click position into rect-local coordinates, and calls
-  `list.layout(..).hit_test(local_x, local_y)`. Only a hit on
+- `handle_mouse_down` does **real geometric hit-testing**: it derives the
+  same rect `render` paints into from `backend.viewport()`, looks up the
+  active list's handle, maps the click position into rect-local
+  coordinates, and calls `backend.list_layout(rect, list).hit_test(local_x,
+  local_y)` — the same `Backend` method `draw_list` itself resolves
+  through, so paint and hit-test can't drift apart. Only a hit on
   `ListViewHit::Item(idx)` emits `list_item_activated`; a hit on the
-  title/border/empty area, or no painted rect yet, falls back to `None`
-  (the host gets the raw `MouseDown` instead).
+  title/border/empty area falls back to `None` (the host gets the raw
+  `MouseDown` instead).
 - `handle_key`'s `Enter` branch is a convenience path with no
   hit-testing: it just reads the already-known `selected_idx` out of the
   store and emits the identical payload. `Up`/`Down` mutate
@@ -141,8 +143,12 @@ before building more bindings on this surface:
   across more than one widget — today's spike proves the mechanism works
   for one widget, not that it scales to many.
 - **No handle removal or reuse.** `handles: Vec<Handle<ListView>>` only
-  grows; there's no `qui_rt_list_remove`. Fine for a spike, not fine for
-  a long-running host that creates and destroys widgets.
+  grows; there's no `qui_rt_list_remove`. `DescriptorStore::remove`
+  already exists (`quadraui/src/descriptor_store.rs:217`), so the store
+  itself isn't the gap — it's the missing ABI wrapper and the `handles`
+  index that would need a tombstone instead of a bare `Vec`. Fine for a
+  spike, not fine for a long-running host that creates and destroys
+  widgets.
 - **The semantic-event design is additive, not a replacement.**
   `handle_mouse_down`/`handle_key` return `None` for anything they don't
   specifically recognize, and the raw event still reaches the host in
@@ -154,6 +160,17 @@ before building more bindings on this surface:
   double; every foreign-host integration test will need the same kind of
   pty-emulation workaround used to gather the evidence above (or a real
   human in a real terminal, per `SMOKE_TESTS`).
+- **`qui_rt_list_insert`/`qui_rt_list_update` always request a full
+  repaint**, not a targeted one — `request_full_repaint()` is documented
+  as a last-resort escape hatch, not a per-mutation default. It is
+  correct for this spike (one list, one screen) but a host with several
+  independent widgets would redraw everything on every single mutation;
+  a real binding needs a narrower "this descriptor changed" signal.
+- **`handle_key` ignores `Modifiers`.** It pattern-matches on the key
+  alone, so e.g. Shift+Enter or Ctrl+Up behave identically to their
+  unmodified counterparts — fine for this spike's controls, but a gap
+  for any primitive that wants modifier-sensitive key handling over the
+  ABI.
 
 ## Why this supports "go"
 

@@ -70,10 +70,6 @@ def find_library() -> pathlib.Path:
         candidates.append(pathlib.Path(override))
 
     try:
-        # `-I`: this crate directory is trusted (it is this repo), but `-I`
-        # keeps the one-off interpreter from picking up a same-named stray
-        # module from the current working directory instead of the stdlib,
-        # mirroring smoke/run.sh's own guard for this exact command.
         metadata = subprocess.run(
             ["cargo", "metadata", "--no-deps", "--format-version", "1"],
             cwd=CRATE_DIR,
@@ -294,7 +290,9 @@ def main() -> int:
 
             while pending_activation:
                 idx = pending_activation.pop(0)
-                if 0 <= idx < len(labels) and not labels[idx].endswith(" *"):
+                if not 0 <= idx < len(labels):
+                    continue
+                if not labels[idx].endswith(" *"):
                     labels[idx] = labels[idx] + " *"
                 updated = to_bytes(list_descriptor(labels, selected_idx=idx))
                 code = lib.qui_rt_list_update(app, handle_id, c_buf(updated), len(updated))
