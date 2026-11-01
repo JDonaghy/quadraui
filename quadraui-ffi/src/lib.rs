@@ -9,11 +9,16 @@
 //! failure maps to a documented integer code, and every pointer handed out
 //! has a stated owner.
 //!
-//! Everything runs on the headless `tui` backend
-//! ([`quadraui::tui::testing::TuiDriver`]), so a consumer gets a real
+//! The original, larger half of this surface runs on the headless `tui`
+//! backend ([`quadraui::tui::testing::TuiDriver`]), so a consumer gets a real
 //! `event -> handle -> render` pipeline with no terminal attached: it works
-//! in a sandbox, in CI, and under a foreign-language test runner.
-//! `README.md` records the binding-generator evaluation (cbindgen vs
+//! in a sandbox, in CI, and under a foreign-language test runner. The
+//! `qui_rt_*` group is additive to that and wraps the real, terminal-backed
+//! [`quadraui::tui::TuiRunner`] instead — it needs a real attached terminal
+//! to construct, by that runner's own design, and is covered by
+//! [`spike/list_demo.py`](../spike/list_demo.py) and this crate's
+//! `TuiDriver`-backed hit-testing tests rather than a headless end-to-end
+//! run. `README.md` records the binding-generator evaluation (cbindgen vs
 //! Diplomat vs UniFFI) that led to this shape. Primitives outside the six
 //! above (ComboBox, NumberInput, DatePicker, ScrollView, context menu,
 //! dialog) are not exposed yet.
@@ -39,6 +44,13 @@
 //! - [`qui_last_error_code`] / [`qui_last_error`] / [`qui_error_name`] —
 //!   read back why the previous call failed.
 //! - [`qui_free`] — free any string this crate allocated for the caller.
+//! - `qui_rt_*` — the real-terminal spike surface: [`qui_rt_app_new`] /
+//!   [`qui_rt_app_free`] create and destroy a [`QuiRtApp`] over a real
+//!   [`quadraui::tui::TuiRunner`]; [`qui_rt_list_insert`] /
+//!   [`qui_rt_list_update`] install and in-place mutate a handle-addressed
+//!   [`ListView`] descriptor; [`qui_rt_step`] / [`qui_rt_pump`] /
+//!   [`qui_rt_run`] advance the real event loop and dispatch hit-tested
+//!   semantic events (e.g. `list_item_activated`) to [`QuiVTable::handle`].
 //!
 //! ## Error taxonomy
 //!
@@ -64,6 +76,7 @@
 //! | [`QUI_ERR_PANIC`] | a Rust panic was caught at the boundary |
 //! | [`QUI_ERR_POISONED`] | this handle is unusable after a caught panic |
 //! | [`QUI_ERR_INTERNAL`] | a bug in this crate (serialization failure, …) |
+//! | [`QUI_ERR_IO`] | a `qui_rt_*` call failed talking to the real terminal |
 //!
 //! Each failure is reported exactly once at its own layer: the first check
 //! that fails wins, and no call both fails and leaves a stale success code
@@ -91,6 +104,9 @@
 //!
 //! - [`QuiApp`] from [`qui_app_new`] — freed with [`qui_app_free`], exactly
 //!   once. Never with `free()`.
+//! - [`QuiRtApp`] from [`qui_rt_app_new`] — freed with [`qui_rt_app_free`],
+//!   exactly once. Never with `free()`; [`qui_rt_app_free`] is a no-op on a
+//!   null pointer, so freeing it after a failed [`qui_rt_app_new`] is safe.
 //! - the `char *` from [`qui_last_error`] and [`qui_screen`] — freed with
 //!   [`qui_free`], exactly once. Never with `free()`: the string comes from
 //!   Rust's allocator, which need not be C's.
@@ -143,8 +159,8 @@ use quadraui::paths::{self, AppPathKind};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{StepOutcome, TuiRunner};
 use quadraui::{
-    AppLogic, Backend, Button, DataTable, Key, ListItemMeasure, ListView, ListViewHit, Modifiers,
-    NamedKey, Point, Reaction, Rect, TabBar, TextDisplay, TreeView, UiEvent, Viewport,
+    AppLogic, Backend, Button, DataTable, Key, ListView, ListViewHit, Modifiers, NamedKey, Point,
+    Reaction, Rect, TabBar, TextDisplay, TreeView, UiEvent, Viewport,
 };
 
 /// The call succeeded. Also the "continue" step result of [`qui_step`].
@@ -1329,10 +1345,12 @@ pub unsafe extern "C" fn qui_free(ptr: *mut c_char) {
 
 /// The [`AppLogic`] `QuiRtApp` drives: a handle-addressed store of
 /// [`ListView`] descriptors (only the most recently inserted one is
-/// painted/hit-tested — see `active`), the host's callbacks, and the last
-/// rect the active list was painted into (needed because [`AppLogic::render`]
-/// takes `&self`: hit-testing in `handle` has to recover where things were
-/// drawn without being able to recompute it from scratch).
+/// painted/hit-tested — see `active`), and the host's callbacks.
+///
+/// `render` always paints the active list into the full viewport, so
+/// `handle` recovers the same rect from `backend.viewport()` rather than
+/// caching it — one less piece of state that could drift from what was
+/// actually painted.
 struct FfiRtApp {
     store: DescriptorStore<ListView>,
     /// `handles[id as usize]` is the internal store handle for ffi id `id`.
@@ -1342,10 +1360,6 @@ struct FfiRtApp {
     /// The ffi id of the list currently painted and hit-tested. `None`
     /// until the first insert.
     active: Option<i64>,
-    /// The rect `render` last painted the active list into, in viewport
-    /// coordinates. `handle` translates a `MouseDown` position into this
-    /// rect's local space before hit-testing.
-    last_rect: Cell<Option<Rect>>,
     vtable: QuiVTable,
 }
 
@@ -1355,7 +1369,6 @@ impl FfiRtApp {
             store: DescriptorStore::new(),
             handles: Vec::new(),
             active: None,
-            last_rect: Cell::new(None),
             vtable,
         }
     }
@@ -1393,19 +1406,23 @@ impl FfiRtApp {
     }
 
     /// Hit-tests a `MouseDown` at `position` (viewport coordinates) against
-    /// the active list's last-painted rect. Returns `None` (meaning: fall
-    /// back to forwarding the raw event) when there is no active list, no
-    /// rect has been painted yet, or the click landed on the title/empty
-    /// area rather than an item row.
-    fn handle_mouse_down(&mut self, position: Point) -> Option<Reaction> {
-        let rect = self.last_rect.get()?;
+    /// the active list, painted into the full viewport by `render`.
+    /// Resolves the layout through [`Backend::list_layout`] — the same
+    /// no-paint resolver `render`'s `draw_list` call uses internally — so
+    /// title-row height and scrollbar reservations can never drift between
+    /// paint and hit-test. Returns `None` (meaning: fall back to forwarding
+    /// the raw event) when there is no active list or the click landed on
+    /// the title/empty area rather than an item row.
+    fn handle_mouse_down(&mut self, backend: &dyn Backend, position: Point) -> Option<Reaction> {
         let id = self.active?;
         let handle = *self.handles.get(id as usize)?;
+        let viewport = backend.viewport();
+        let rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
         let hit = {
             let list = self.store.get(handle)?;
             let local_x = position.x - rect.x;
             let local_y = position.y - rect.y;
-            let layout = list.layout(rect.width, rect.height, 0.0, |_| ListItemMeasure::new(1.0));
+            let layout = backend.list_layout(rect, list);
             layout.hit_test(local_x, local_y)
         };
         match hit {
@@ -1468,7 +1485,6 @@ impl AppLogic for FfiRtApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let viewport = backend.viewport();
         let rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-        self.last_rect.set(Some(rect));
         let Some(id) = self.active else {
             return;
         };
@@ -1480,9 +1496,9 @@ impl AppLogic for FfiRtApp {
         }
     }
 
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         let semantic = match &event {
-            UiEvent::MouseDown { position, .. } => self.handle_mouse_down(*position),
+            UiEvent::MouseDown { position, .. } => self.handle_mouse_down(backend, *position),
             UiEvent::KeyPressed { key, .. } => self.handle_key(key),
             _ => None,
         };
@@ -1703,9 +1719,11 @@ pub unsafe extern "C" fn qui_rt_list_update(
     })
 }
 
-/// Advance the app by polling the real terminal for exactly one native
-/// event (input, resize, …) without blocking, dispatch it if one arrived,
-/// and repaint if needed.
+/// Advance the app by polling the real terminal for whatever native events
+/// (input, resize, …) are already queued, without blocking. If any arrived,
+/// every one of them is dispatched, in order, before this returns — not just
+/// the first — and the screen is repainted if a dispatch requested it. If
+/// none arrived, this returns immediately having done nothing.
 ///
 /// Returns [`QUI_STEP_CONTINUE`], [`QUI_STEP_EXITED`] (further calls are a
 /// no-op returning this again), or [`QUI_ERR_IO`] if polling the terminal
@@ -1725,9 +1743,11 @@ pub unsafe extern "C" fn qui_rt_step(app: *mut QuiRtApp) -> i32 {
 }
 
 /// Like [`qui_rt_step`], but blocks up to `timeout_ms` milliseconds waiting
-/// for the first native event to arrive, instead of returning immediately
-/// when there is nothing to dispatch. This is the entry point a host's own
-/// blocking event loop should call at whatever cadence suits it.
+/// for at least one native event to arrive, instead of returning immediately
+/// when there is nothing to dispatch; once one arrives, every other event
+/// already queued alongside it is drained and dispatched too, same as
+/// [`qui_rt_step`]. This is the entry point a host's own blocking event loop
+/// should call at whatever cadence suits it.
 ///
 /// # Safety
 /// `app` must be a live pointer from [`qui_rt_app_new`].
@@ -2682,6 +2702,174 @@ mod tests {
             assert!(take_last_error().contains("qui_button_insert"));
 
             qui_app_free(app);
+        }
+    }
+
+    // ─── qui_rt_* ──────────────────────────────────────────────────────────
+
+    /// A minimal [`ListView`] descriptor: `id`/`items`/`selected_idx` are the
+    /// only fields without `#[serde(default)]`. `with_title` adds a title
+    /// row above the items so a click on row 0 hits the title instead.
+    fn rt_list_descriptor(labels: &[&str], with_title: bool) -> String {
+        let items: Vec<serde_json::Value> = labels
+            .iter()
+            .map(|label| {
+                serde_json::json!({
+                    "text": { "spans": [{ "text": label, "fg": null, "bg": null }] }
+                })
+            })
+            .collect();
+        let mut descriptor = serde_json::json!({
+            "id": "rt:list",
+            "items": items,
+            "selected_idx": 0,
+        });
+        if with_title {
+            descriptor["title"] = serde_json::json!({
+                "spans": [{ "text": "Title", "fg": null, "bg": null }]
+            });
+        }
+        descriptor.to_string()
+    }
+
+    /// Builds an [`FfiRtApp`] with one [`ListView`] already inserted and
+    /// active — the same shape [`qui_rt_list_insert`] leaves behind, minus
+    /// the real terminal `qui_rt_app_new` would otherwise require.
+    fn ffi_rt_app_with_list(labels: &[&str], with_title: bool, vtable: QuiVTable) -> FfiRtApp {
+        let mut app = FfiRtApp::new(vtable);
+        let list: ListView = serde_json::from_str(&rt_list_descriptor(labels, with_title))
+            .expect("list JSON decodes");
+        let handle = app.store.insert(list);
+        app.handles.push(handle);
+        app.active = Some(0);
+        app
+    }
+
+    /// Records every JSON payload [`FfiRtApp`] hands the host's `handle`
+    /// callback, in order, into the `Vec<String>` behind `user_data`.
+    unsafe extern "C" fn record_json_handle(
+        user_data: *mut c_void,
+        json: *const u8,
+        len: usize,
+    ) -> i32 {
+        let bytes = slice::from_raw_parts(json, len);
+        let text = std::str::from_utf8(bytes)
+            .expect("event JSON is valid UTF-8")
+            .to_owned();
+        let out = user_data as *mut Vec<String>;
+        (*out).push(text);
+        0
+    }
+
+    /// A click inside the item area is hit-tested through
+    /// [`Backend::list_layout`] — the same layout [`Backend::draw_list`]
+    /// paints from — and emitted as a `list_item_activated` semantic event
+    /// naming the row index, not forwarded as a raw `UiEvent`.
+    #[test]
+    fn ffi_rt_app_hit_tests_a_mouse_click_to_the_item_row() {
+        let mut received: Vec<String> = Vec::new();
+        let vtable = QuiVTable {
+            user_data: &mut received as *mut Vec<String> as *mut c_void,
+            handle: Some(record_json_handle),
+            tick: None,
+        };
+        let app = ffi_rt_app_with_list(&["Row 0", "Row 1", "Row 2"], false, vtable);
+        let mut driver = TuiDriver::new(app, 20, 10);
+
+        // No title, one cell per row: item 1 sits at y == 1.
+        driver.mouse_down(2.0, 1.0);
+
+        assert_eq!(
+            received.len(),
+            1,
+            "expected exactly one handle callback, got {received:?}"
+        );
+        let payload: serde_json::Value =
+            serde_json::from_str(&received[0]).expect("payload is JSON");
+        assert_eq!(payload["type"], "list_item_activated");
+        assert_eq!(payload["idx"], 1);
+    }
+
+    /// A click on the title row or in the empty space below the last item
+    /// hits [`ListViewHit::Title`]/[`ListViewHit::Empty`], which
+    /// `handle_mouse_down` does not turn into a semantic event — it falls
+    /// through to the raw forwarded `UiEvent` instead.
+    #[test]
+    fn ffi_rt_app_title_and_empty_clicks_fall_through_to_the_raw_event() {
+        let mut received: Vec<String> = Vec::new();
+        let vtable = QuiVTable {
+            user_data: &mut received as *mut Vec<String> as *mut c_void,
+            handle: Some(record_json_handle),
+            tick: None,
+        };
+        let app = ffi_rt_app_with_list(&["Row 0", "Row 1"], true, vtable);
+        let mut driver = TuiDriver::new(app, 20, 10);
+
+        // Row 0 is the title, rows 1-2 are the items, and everything from
+        // row 3 down is empty space below the last item.
+        driver.mouse_down(2.0, 0.0);
+        driver.mouse_down(2.0, 9.0);
+
+        assert_eq!(
+            received.len(),
+            2,
+            "expected both clicks to fall through, got {received:?}"
+        );
+        for payload in &received {
+            assert!(
+                payload.contains("MouseDown"),
+                "expected a forwarded raw MouseDown event, got {payload}"
+            );
+            assert!(
+                !payload.contains("list_item_activated"),
+                "a title/empty click must not be hit-tested as an item, got {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn qui_rt_list_insert_rejects_a_null_app() {
+        unsafe {
+            let json = rt_list_descriptor(&["Row 0"], false);
+            let result = qui_rt_list_insert(std::ptr::null_mut(), json.as_ptr(), json.len());
+            assert_eq!(result, i64::from(QUI_ERR_NULL_HANDLE));
+            assert!(take_last_error().contains("qui_rt_list_insert"));
+        }
+    }
+
+    #[test]
+    fn qui_rt_list_update_rejects_a_null_app() {
+        unsafe {
+            let json = rt_list_descriptor(&["Row 0"], false);
+            let result = qui_rt_list_update(std::ptr::null_mut(), 0, json.as_ptr(), json.len());
+            assert_eq!(result, QUI_ERR_NULL_HANDLE);
+            assert!(take_last_error().contains("qui_rt_list_update"));
+        }
+    }
+
+    #[test]
+    fn qui_rt_step_rejects_a_null_app() {
+        unsafe {
+            assert_eq!(qui_rt_step(std::ptr::null_mut()), QUI_ERR_NULL_HANDLE);
+            assert!(take_last_error().contains("qui_rt_step"));
+        }
+    }
+
+    #[test]
+    fn qui_rt_pump_rejects_a_null_app() {
+        unsafe {
+            assert_eq!(qui_rt_pump(std::ptr::null_mut(), 0), QUI_ERR_NULL_HANDLE);
+            assert!(take_last_error().contains("qui_rt_pump"));
+        }
+    }
+
+    /// `qui_rt_app_free` is documented as a no-op on a null handle — there is
+    /// no real terminal and no `qui_rt_app_new` call to pair it with; the
+    /// only assertion is that this does not panic or crash.
+    #[test]
+    fn qui_rt_app_free_is_a_no_op_on_a_null_app() {
+        unsafe {
+            qui_rt_app_free(std::ptr::null_mut());
         }
     }
 }

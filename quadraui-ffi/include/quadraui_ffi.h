@@ -641,9 +641,11 @@ int32_t qui_rt_list_update(struct QuiRtApp *app,
                            uintptr_t json_len);
 
 /**
- * Advance the app by polling the real terminal for exactly one native
- * event (input, resize, …) without blocking, dispatch it if one arrived,
- * and repaint if needed.
+ * Advance the app by polling the real terminal for whatever native events
+ * (input, resize, …) are already queued, without blocking. If any arrived,
+ * every one of them is dispatched, in order, before this returns — not just
+ * the first — and the screen is repainted if a dispatch requested it. If
+ * none arrived, this returns immediately having done nothing.
  *
  * Returns [`QUI_STEP_CONTINUE`], [`QUI_STEP_EXITED`] (further calls are a
  * no-op returning this again), or [`QUI_ERR_IO`] if polling the terminal
@@ -656,9 +658,11 @@ int32_t qui_rt_step(struct QuiRtApp *app);
 
 /**
  * Like [`qui_rt_step`], but blocks up to `timeout_ms` milliseconds waiting
- * for the first native event to arrive, instead of returning immediately
- * when there is nothing to dispatch. This is the entry point a host's own
- * blocking event loop should call at whatever cadence suits it.
+ * for at least one native event to arrive, instead of returning immediately
+ * when there is nothing to dispatch; once one arrives, every other event
+ * already queued alongside it is drained and dispatched too, same as
+ * [`qui_rt_step`]. This is the entry point a host's own blocking event loop
+ * should call at whatever cadence suits it.
  *
  * # Safety
  * `app` must be a live pointer from [`qui_rt_app_new`].
