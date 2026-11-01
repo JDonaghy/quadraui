@@ -653,3 +653,50 @@ def test_palette_renders_item_text():
 
     app.set_render(render)
     assert app.screen_contains("Save File")
+
+
+def _click(app, x, y):
+    """Dispatches a left `MouseDown` at `(x, y)` and runs one step, returning
+    the single event the registered handler captured."""
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {
+            "MouseDown": {
+                "button": "Left",
+                "position": {"x": x, "y": y},
+                "modifiers": {},
+            }
+        }
+    )
+    app.run(1)
+    assert len(received) == 1
+    return received[0]
+
+
+def test_clicking_a_switch_routes_a_hit_with_widget_set():
+    # `insert_extra`'s own render already populated the hit map, so the
+    # switch -- the first (and only) extra, painted into the top 3-line
+    # band -- is hit-testable the moment it's inserted.
+    app = QuiApp(40, 20)
+    app.insert_extra("switch", {"id": "settings:wrap"})
+
+    event = _click(app, 1.0, 1.0)
+
+    assert event["MouseDown"]["widget"] == "settings:wrap"
+    assert event["hit"] == {"kind": "extra_body"}
+
+
+def test_clicking_a_display_only_extra_attaches_no_hit():
+    # `progress` paints but never overrides `ExtraPaint::hit_test`, so a
+    # click lands nowhere: no `widget`, no `hit` -- the "no behavior change
+    # for display-only extras" half of the interaction seam.
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "progress", {"id": "progress:download", "label": "Downloading", "value": 0.5}
+    )
+
+    event = _click(app, 1.0, 1.0)
+
+    assert event["MouseDown"]["widget"] is None
+    assert "hit" not in event

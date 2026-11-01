@@ -103,36 +103,46 @@ rust-version = "1.92.0"
 # - `docs/TESTING.md` — this repo's own quality-gate commands.
 # - `docs/UI_CRATE_DESIGN.md` — pre-implementation design sketch, kept as
 #   a decision record.
+# - `docs/decisions/BINDING_STRATEGY.md` — which language bindings this
+#   repo invests in next and over which bridge. Written for this repo's
+#   own maintainers planning that work: it is framed in in-repo epic and
+#   milestone numbers, and its subject is the `publish = false` in-tree
+#   `quadraui-ffi` spike crate (plus that crate's `SPIKE_FINDINGS.md`,
+#   which lives outside this crate dir and so cannot ship here at all).
+#   A consumer of the published crate reaches `quadraui-py` from the root
+#   `README.md`; nothing here is needed to use it.
 #
-# `docs/decisions/` (`DECISIONS.md`, `BACKEND_TRAIT_PROPOSAL.md`) is
-# *not* in the list above and keeps shipping. Both files are also read at
-# agent session start, but that doesn't make them maintainer-only:
-# `DECISIONS.md`'s own D-019 entry ("Stability policy before 1.0: what a
-# `0.x` release may change") says explicitly that it is written for "an
-# outside developer deciding whether to depend on the crate" — the most
-# consumer-facing paragraph in the repo, and the one `docs/INSTALL.md`
-# (also shipping) links to as exactly that.
+# `docs/decisions/` is therefore classified per file, not wholesale.
+# `DECISIONS.md` and `BACKEND_TRAIT_PROPOSAL.md` are *not* in the list
+# above and keep shipping. Both files are also read at agent session
+# start, but that doesn't make them maintainer-only: `DECISIONS.md`'s own
+# D-019 entry ("Stability policy before 1.0: what a `0.x` release may
+# change") says explicitly that it is written for "an outside developer
+# deciding whether to depend on the crate" — the most consumer-facing
+# paragraph in the repo, and the one `docs/INSTALL.md` (also shipping)
+# links to as exactly that.
 #
 # Everything else under `docs/` (`GUIDE.md`, `APP_ARCHITECTURE.md`,
 # `CONSUMER_PATTERNS.md`, `TUI_CONSUMER_TOUR.md`, `CLIPBOARD.md`,
 # `COMPOSE.md`, `EVENT_ROUTING_TOUR.md`, `INSTALL.md`,
-# `KITTY_KEYBOARD_PROTOCOL.md`, `decisions/`) is written for app authors
-# consuming this crate and keeps shipping — confirmed with
-# `cargo package --list -p quadraui`: 586 files, 11.9MiB (3.0MiB
-# compressed) with this exclude list in place, vs. 584 files with
-# `docs/decisions/` also excluded, vs. 599 files, 12.3MiB (3.1MiB
-# compressed) with only `tests/`/`benches/` excluded and `docs/` left
-# untouched. None of the excluded files above are reached by a rustdoc
+# `KITTY_KEYBOARD_PROTOCOL.md`) is written for app authors
+# consuming this crate and keeps shipping — exactly those nine files
+# plus `docs/decisions/DECISIONS.md` and
+# `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` are the `docs/` entries
+# `cargo package --list -p quadraui` prints with this exclude list in
+# place, and `tests/package_hygiene.rs`'s `--ignored` layer runs that
+# exact command and asserts it. None of the excluded files above are
+# reached by a rustdoc
 # `#[doc = include_str!(...)]` — confirmed by grepping `src/` for
 # `include_str!` — so excluding them cannot break the docs.rs build.
 # `src/lib.rs`'s own crate rustdoc (the docs.rs front page) names only
 # files that ship with this exclude list in place.
 #
 # Known, accepted dead relative-markdown-links in the packaged tarball:
-# shipping `docs/decisions/` resolves most markdown links from shipping
-# docs into other `docs/` files, but three links remain into files that
-# really are internal-only and are not worth shipping just to keep a
-# link alive. These only affect someone browsing the packaged source on
+# shipping the two `docs/decisions/` files above resolves most markdown
+# links from shipping docs into other `docs/` files, but three links
+# remain into files that really are internal-only and are not worth
+# shipping just to keep a link alive. These only affect someone browsing the packaged source on
 # crates.io/docs.rs's source tab — nothing executable, and nothing a
 # rustdoc `#[doc = include_str!(...)]` reaches (see above), so none of
 # these can break the docs.rs build:
@@ -165,6 +175,7 @@ exclude = [
     "docs/UI_CRATE_DESIGN.md",
     "docs/WEB_BACKEND_PROPOSAL.md",
     "docs/audits/",
+    "docs/decisions/BINDING_STRATEGY.md",
 ]
 
 # docs.rs builds every optional feature (`tui`/`gtk`/`macos`/`win`/`terminal`/
