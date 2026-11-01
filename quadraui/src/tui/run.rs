@@ -5,8 +5,10 @@
 //! piece:
 //! - Terminal raw-mode + alternate screen + mouse + bracketed-paste
 //!   setup / teardown.
-//! - Best-effort kitty keyboard-protocol push (REPORT_ALL_KEYS_AS_ESCAPE_CODES
-//!   so Ctrl+Shift+L is unambiguous from Ctrl+L), with the outcome exposed
+//! - Best-effort kitty keyboard-protocol push
+//!   (`REPORT_ALL_KEYS_AS_ESCAPE_CODES` so Ctrl+Shift+L is unambiguous from
+//!   Ctrl+L, `REPORT_ALTERNATE_KEYS` so a shifted symbol still arrives as
+//!   the glyph the user typed), with the outcome exposed
 //!   via [`crate::backend::BackendCaps::kitty_keyboard`] so
 //!   an app can tell whether it actually worked instead of finding out by
 //!   a gesture silently never firing.
@@ -807,6 +809,15 @@ pub(crate) fn dispatch_event<A: AppLogic>(
 /// [`crate::tui::backend::TuiBackend::set_kitty_keyboard`] so an app can
 /// read it before relying on a gesture that needs it.
 ///
+/// `REPORT_ALTERNATE_KEYS` is part of the set because the other flags on
+/// their own make a shifted symbol *less* usable, not more: with
+/// `REPORT_ALL_KEYS_AS_ESCAPE_CODES` the terminal reports `:` as the base
+/// key `;` plus a `SHIFT` modifier, and the shifted glyph is only
+/// recoverable from the CSI-u `alternate-key-codes` field this flag asks
+/// for — which crossterm reads, substituting the glyph and clearing
+/// `SHIFT` itself. [`super::events::crossterm_key_to_uievent`] brings what
+/// arrives to one shape either way.
+///
 /// The support check itself is [`crate::tui::caps::probe_kitty_keyboard`],
 /// not a direct `supports_keyboard_enhancement()` call — see that
 /// function's doc for why the fallback to the environment heuristic
@@ -824,6 +835,7 @@ fn push_keyboard_enhancement(stdout: &mut io::Stdout) -> bool {
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                 | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
                 | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
         )
     )
     .is_ok()

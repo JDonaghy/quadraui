@@ -638,6 +638,82 @@ fn text_input_ctrl_shift_z_redoes_after_undo() {
     );
 }
 
+/// The same redo gesture, but starting from the `crossterm::event::KeyEvent`
+/// a terminal really delivers rather than a hand-built `UiEvent` — so the
+/// `KeyEvent` -> `crossterm_key_to_uievent` -> accelerator -> render path is
+/// under test end to end.
+///
+/// A terminal reports Ctrl+Shift+Z in one of two shapes depending on which
+/// keyboard protocol is in play: the resolved glyph `Z` with `SHIFT` already
+/// consumed (CSI-u, with the shifted glyph taken from `alternate-key-codes`),
+/// or the base key `z` plus a `SHIFT` modifier (legacy decoding). Both must
+/// redo, and plain Ctrl+Z must still undo rather than redo.
+#[test]
+fn text_input_crossterm_ctrl_shift_z_redoes_in_both_reporting_styles() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use quadraui::tui::events::crossterm_key_to_uievent;
+
+    let redo_shapes: &[(char, KeyModifiers)] = &[
+        ('Z', KeyModifiers::CONTROL),
+        ('z', KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+    ];
+    for (c, ct_mods) in redo_shapes {
+        let mut driver = TuiDriver::new(TextInputDemo::new(), 100, 30);
+        for ch in "hi".chars() {
+            driver.type_char(ch);
+        }
+
+        let undo =
+            crossterm_key_to_uievent(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL))
+                .expect("Ctrl+Z translates to a key press");
+        driver.dispatch(undo);
+        assert!(
+            driver.screen_contains("col 2") && !driver.screen_contains("hi"),
+            "Ctrl+Z from a real crossterm event should undo the second char:\n{}",
+            driver.screen()
+        );
+
+        let redo = crossterm_key_to_uievent(KeyEvent::new(KeyCode::Char(*c), *ct_mods))
+            .expect("Ctrl+Shift+Z translates to a key press");
+        driver.dispatch(redo);
+
+        let after = driver.screen();
+        assert!(
+            after.contains("hi") && after.contains("col 3"),
+            "Ctrl+Shift+Z reported as Char({c:?}) + {ct_mods:?} should redo, restoring \"hi\":\n\
+             {after}"
+        );
+    }
+}
+
+/// A shifted symbol typed on a terminal that negotiated the kitty keyboard
+/// protocol still reaches the focused input as the glyph the user typed.
+/// The press arrives as the resolved glyph plus the physical `SHIFT` bit;
+/// the glyph must be inserted verbatim, not replaced by its unshifted base
+/// key and not dropped.
+#[test]
+fn text_input_crossterm_shifted_symbols_are_typed_verbatim() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use quadraui::tui::events::crossterm_key_to_uievent;
+
+    let mut driver = TuiDriver::new(TextInputDemo::new(), 100, 30);
+    for c in ":%?|".chars() {
+        let event = crossterm_key_to_uievent(KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT))
+            .unwrap_or_else(|| panic!("a {c:?} press translates to a key press"));
+        driver.dispatch(event);
+    }
+
+    let after = driver.screen();
+    assert!(
+        after.contains(":%?|"),
+        "every shifted symbol should be inserted as typed:\n{after}"
+    );
+    assert!(
+        after.contains("col 5"),
+        "four inserted glyphs should leave the cursor at col 5:\n{after}"
+    );
+}
+
 /// The demo's `handle()` only rejects Ctrl/Cmd held on a `Key::Char` (so
 /// Ctrl+<letter> combos don't get typed as literal characters), letting
 /// named keys like Home/End reach `EditOp::from_key` with their modifiers

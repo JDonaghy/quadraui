@@ -6022,6 +6022,92 @@ mod tests {
     }
 
     #[test]
+    fn accelerator_distinguishes_ctrl_shift_from_ctrl_across_reporting_styles() {
+        // Starts from the crossterm events a terminal actually delivers,
+        // so the whole `KeyEvent` → `UiEvent` → accelerator path is under
+        // test. Ctrl+Shift+T is reported either as the resolved glyph `T`
+        // with `SHIFT` already cleared (CSI-u alternate-key-codes) or as
+        // the base key `t` with `SHIFT` set; both must resolve to
+        // `<C-S-T>`, and plain Ctrl+T to `<C-t>`.
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let cases: &[(char, KeyModifiers, &str)] = &[
+            ('T', KeyModifiers::CONTROL, "test.upper"),
+            (
+                't',
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                "test.upper",
+            ),
+            ('t', KeyModifiers::CONTROL, "test.lower"),
+        ];
+        for (c, ct_mods, want) in cases {
+            let mut backend = TuiBackend::new();
+            backend.register_accelerator(&make_acc("test.upper", "<C-S-T>"));
+            backend.register_accelerator(&make_acc("test.lower", "<C-t>"));
+
+            let event = crate::tui::events::crossterm_key_to_uievent(KeyEvent::new(
+                KeyCode::Char(*c),
+                *ct_mods,
+            ))
+            .expect("a press event translates");
+            let mut events = vec![event];
+            backend.apply_accelerators(&mut events);
+
+            match &events[0] {
+                UiEvent::Accelerator(id, _) => {
+                    assert_eq!(id.as_str(), *want, "for Char({c:?}) + {ct_mods:?}")
+                }
+                other => {
+                    panic!("expected Accelerator for Char({c:?}) + {ct_mods:?}, got {other:?}")
+                }
+            }
+        }
+    }
+
+    /// A shifted symbol bound as a bare key (`:`, the vim command-line
+    /// gesture) must reach an app the same way whichever keyboard protocol
+    /// the terminal negotiated: a stray `SHIFT` bit alongside the already
+    /// shifted glyph makes the press miss an unmodified binding, which is
+    /// how a kitty-capable terminal ends up swallowing the keystroke.
+    #[test]
+    fn accelerator_shifted_symbol_matches_unmodified_binding_across_reporting_styles() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let cases: &[(char, KeyModifiers, &str)] = &[
+            // Kitty/CSI-u: the glyph the user typed, plus the physical
+            // SHIFT bit the terminal also reports.
+            (':', KeyModifiers::SHIFT, "app.command_line"),
+            // Legacy decoding (and CSI-u once crossterm has resolved the
+            // glyph from `alternate-key-codes`): glyph, no SHIFT.
+            (':', KeyModifiers::NONE, "app.command_line"),
+            ('%', KeyModifiers::SHIFT, "app.percent"),
+            ('%', KeyModifiers::NONE, "app.percent"),
+        ];
+        for (c, ct_mods, want) in cases {
+            let mut backend = TuiBackend::new();
+            backend.register_accelerator(&make_acc("app.command_line", ":"));
+            backend.register_accelerator(&make_acc("app.percent", "%"));
+
+            let event = crate::tui::events::crossterm_key_to_uievent(KeyEvent::new(
+                KeyCode::Char(*c),
+                *ct_mods,
+            ))
+            .expect("a press event translates");
+            let mut events = vec![event];
+            backend.apply_accelerators(&mut events);
+
+            match &events[0] {
+                UiEvent::Accelerator(id, _) => {
+                    assert_eq!(id.as_str(), *want, "for Char({c:?}) + {ct_mods:?}")
+                }
+                other => {
+                    panic!("expected Accelerator for Char({c:?}) + {ct_mods:?}, got {other:?}")
+                }
+            }
+        }
+    }
+
+    #[test]
     fn accelerator_no_match_stays_keypressed() {
         let mut backend = TuiBackend::new();
         backend.register_accelerator(&make_acc("tui.fuzzy_finder", "<C-p>"));

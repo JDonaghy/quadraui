@@ -67,15 +67,31 @@ only a push to `main` runs this workflow.
   startup state (not just the static `ShellConfig` seed read at construction
   time) on frame 0, on every backend, since `ShellAdapter::setup` is the one
   code path shared across TUI, GTK, macOS and Win.
+
+### Changed
+- TUI: on a kitty-keyboard-capable terminal, a chord whose key is a shifted
+  symbol now arrives as the shifted glyph rather than as the unshifted base
+  key plus `shift` — `Ctrl+Shift+\` reaches `AppLogic` as `Key::Char('|')` +
+  `ctrl`, not `Key::Char('\\')` + `ctrl` + `shift`. That is
+  `REPORT_ALTERNATE_KEYS` semantics: the terminal reports which glyph the
+  layout produces and crossterm resolves it, clearing `SHIFT` as it does.
+  Not a compile break, but a consumer matching such a chord on the base-key
+  glyph plus `shift` has to match the shifted glyph instead.
+
 ### Fixed
 - TUI: a shifted-symbol key (`:`, `!`, `%`, `?`, `|`, `~`, `@`, `#`, …) on a
   kitty-keyboard-capable terminal (iTerm2 with "Report modifiers using CSI u",
-  kitty, WezTerm, foot, Alacritty) now reaches consumers as a plain `Char`
-  with no `shift` modifier, matching legacy-encoding terminals. Those
-  terminals' CSI-u negotiation reported the already-shifted glyph together
-  with a redundant `SHIFT` modifier, which made a vim-style normal-mode
-  router that treats "printable char + modifier" as a chord drop the
-  keystroke entirely (`:` opening the ex command line stopped working).
+  kitty, WezTerm, foot, Alacritty) now reaches consumers as the glyph the user
+  typed with no `shift` modifier, matching legacy-encoding terminals. A
+  vim-style normal-mode router that treats "printable char + modifier" as a
+  chord dropped such a keystroke entirely (`:` opening the ex command line
+  stopped working). Two parts: the kitty progressive-enhancement push now also
+  asks for `REPORT_ALTERNATE_KEYS`, so the terminal reports the CSI-u
+  `alternate-key-codes` field and crossterm resolves the shifted glyph instead
+  of delivering the unshifted base key; and `Key::Char` presses are brought to
+  one `shift` shape whichever protocol is negotiated — an uppercase glyph
+  always carries `shift`, so `Ctrl+Shift+T` stays distinct from `Ctrl+T` and
+  `<C-S-z>` redo keeps matching.
 
 ## [0.8.0] - 2026-10-31
 ### Changed
