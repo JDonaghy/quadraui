@@ -134,8 +134,7 @@ impl Reaction {
     /// arrives after a longer one in the same batch, producing a wake
     /// later than the app explicitly asked for — narrower than this
     /// variant's own doc promise that the backend "never" wakes later.
-    #[cfg_attr(not(any(feature = "tui", feature = "gtk")), allow(dead_code))]
-    pub(crate) fn merge(self, next: Reaction) -> Reaction {
+    pub fn merge(self, next: Reaction) -> Reaction {
         match (self, next) {
             (Reaction::Exit, _) | (_, Reaction::Exit) => Reaction::Exit,
             (Reaction::Redraw, _) | (_, Reaction::Redraw) => Reaction::Redraw,

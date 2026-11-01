@@ -85,6 +85,10 @@ only a push to `main` runs this workflow.
   descriptor's `id` as the event's `widget` plus a `hit` detail. `switch` is the
   first interactive opt-in; display-only extras (`progress`, …) stay
   non-interactive, attaching neither `widget` nor `hit`.
+- `Reaction::merge` is now `pub` (was `pub(crate)`), so a consumer combining
+  `Reaction`s from the same event batch — the way `quadraui-py`'s click-to-focus
+  combines its synthetic `FocusChanged` dispatch with the click's own —
+  reuses this crate's precedence table instead of duplicating it.
 
 ### Changed
 - TUI: on a kitty-keyboard-capable terminal, a chord whose key is a shifted

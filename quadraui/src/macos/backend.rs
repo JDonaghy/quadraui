@@ -1822,7 +1822,7 @@ impl Backend for MacBackend {
         &self.focus
     }
 
-    fn set_focus(&mut self, id: Option<crate::types::WidgetId>) -> bool {
+    fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
         self.focus.set_focus(id)
     }
 

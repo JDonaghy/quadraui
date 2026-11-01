@@ -513,31 +513,36 @@ impl AppLogic for PyAppLogic {
             set_event_widget(&mut event, id);
         }
 
-        // A `MouseDown` landing on a focusable painted leaf moves keyboard
-        // focus there first — matching every native backend's click-to-focus
-        // convention — and, if that actually changed the focused widget,
-        // dispatches a `FocusChanged` event to Python ahead of the click
-        // event itself. Its `Reaction` is combined with the main dispatch's
-        // below (via `merge_reactions`) rather than returned on its own, so a
-        // non-`Continue` result from the `FocusChanged` handler (e.g. a
-        // `Redraw`) never suppresses the click event that follows it.
+        // A `MouseDown` (or a bare `DoubleClick` pushed without the
+        // `MouseDown`/`MouseUp` pair that precedes one on a real backend —
+        // a host synthesizing clicks, e.g. a test, does this) landing on a
+        // focusable painted leaf moves keyboard focus there first — matching
+        // every native backend's click-to-focus convention — and, if that
+        // actually changed the focused widget, dispatches a `FocusChanged`
+        // event to Python ahead of the click event itself. Its `Reaction` is
+        // combined with the main dispatch's below (via `Reaction::merge`)
+        // rather than returned on its own, so a non-`Continue` result from
+        // the `FocusChanged` handler (e.g. a `Redraw`) never suppresses the
+        // click event that follows it.
         let mut focus_reaction = Reaction::Continue;
         if let Some((id, _)) = &hit {
-            let is_focusable = AppLogic::tab_stops(self, ())
-                .iter()
-                .any(|(tid, _)| tid == id);
-            if matches!(event, UiEvent::MouseDown { .. })
-                && is_focusable
-                && backend.set_focus(Some(*id))
-            {
-                focus_reaction = self.dispatch_event(
-                    handler,
-                    &UiEvent::FocusChanged(Some(*id)),
-                    None,
-                    render_callback_present,
-                );
-                if matches!(focus_reaction, Reaction::Exit) {
-                    return focus_reaction;
+            if matches!(
+                event,
+                UiEvent::MouseDown { .. } | UiEvent::DoubleClick { .. }
+            ) {
+                let is_focusable = AppLogic::tab_stops(self, ())
+                    .iter()
+                    .any(|(tid, _)| tid == id);
+                if is_focusable && backend.set_focus(Some(*id)) {
+                    focus_reaction = self.dispatch_event(
+                        handler,
+                        &UiEvent::FocusChanged(Some(*id)),
+                        None,
+                        render_callback_present,
+                    );
+                    if matches!(focus_reaction, Reaction::Exit) {
+                        return focus_reaction;
+                    }
                 }
             }
         }
@@ -583,7 +588,7 @@ impl AppLogic for PyAppLogic {
         };
         let event_reaction =
             self.dispatch_event(handler, &event, hit_detail, render_callback_present);
-        merge_reactions(focus_reaction, event_reaction)
+        focus_reaction.merge(event_reaction)
     }
 
     fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
@@ -664,27 +669,6 @@ impl PyAppLogic {
                 }
             }
         })
-    }
-}
-
-/// Combines two `Reaction`s from the same event batch (the synthetic
-/// `FocusChanged` dispatch and the main event dispatch that follows it) into
-/// the one the backend should actually act on: `Exit` wins over everything,
-/// then `Redraw`, then the earlier of two `RedrawAfter` deadlines, then
-/// `RedrawAfter` over `Continue`. Mirrors `quadraui::runner::Reaction`'s own
-/// `merge` (not usable here — it's `pub(crate)` to that crate).
-fn merge_reactions(a: Reaction, b: Reaction) -> Reaction {
-    match (a, b) {
-        (Reaction::Exit, _) | (_, Reaction::Exit) => Reaction::Exit,
-        (Reaction::Redraw, _) | (_, Reaction::Redraw) => Reaction::Redraw,
-        (Reaction::RedrawAfter(x), Reaction::RedrawAfter(y)) => Reaction::RedrawAfter(x.min(y)),
-        (Reaction::RedrawAfter(d), Reaction::Continue)
-        | (Reaction::Continue, Reaction::RedrawAfter(d)) => Reaction::RedrawAfter(d),
-        (Reaction::Continue, Reaction::Continue) => Reaction::Continue,
-        // `Reaction` is `#[non_exhaustive]`, so a future variant neither arm
-        // above names must still match something; treat it as the stronger
-        // signal, same as this function treats `Redraw`.
-        (_, other) => other,
     }
 }
 
@@ -1023,9 +1007,14 @@ fn tab_bar_for_right_segment(hit_map: &[PaintedHit], button_id: WidgetId) -> Opt
 /// between a variant's single- and double-click shapes where both exist
 /// (e.g. `TreeEvent::RowClicked` vs `RowDoubleClicked`,
 /// `ListViewEvent::SelectionChanged` vs `ItemActivated`). `None` for every
-/// other `HitDetail` (e.g. a data-table header divider, a divider — the
-/// divider is handled separately, via [`ActiveDrag`], since it spans a drag
-/// rather than a single click).
+/// other `HitDetail` — a data-table header divider or a split divider
+/// (handled separately, via [`ActiveDrag`], since either spans a drag rather
+/// than a single click), a tab-bar scroll-left/right arrow (no semantic
+/// event exists for it), [`HitDetail::ExtraBody`] (an extra's own
+/// `ExtraPaint` impl owns its click behavior), or a modified list-item click
+/// (see the `ListItem` arm below, which loses the gesture if folded into
+/// `ListViewEvent::SelectionChanged`) — for which the raw
+/// `MouseDown`/`DoubleClick` and its `"hit"` dict reach Python unchanged.
 fn semantic_event_for_hit(
     id: WidgetId,
     detail: &HitDetail,
@@ -1061,12 +1050,27 @@ fn semantic_event_for_hit(
             Some(UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }))
         }
         HitDetail::ListItem { index } => {
-            let event = if double_click {
-                ListViewEvent::ItemActivated { idx: *index }
+            if double_click {
+                Some(UiEvent::List(
+                    id,
+                    ListViewEvent::ItemActivated { idx: *index },
+                ))
+            } else if modifiers == Modifiers::default() {
+                Some(UiEvent::List(
+                    id,
+                    ListViewEvent::SelectionChanged { idx: *index },
+                ))
             } else {
-                ListViewEvent::SelectionChanged { idx: *index }
-            };
-            Some(UiEvent::List(id, event))
+                // `ListViewEvent::SelectionChanged` carries no modifiers, so a
+                // Ctrl/Shift/Cmd click (a multi-select gesture) can't be
+                // represented by it without losing which gesture it was.
+                // Leaving the raw `MouseDown` (with its `"hit"` dict still
+                // attached, since this returns `None`) lets a Python handler
+                // read `event["modifiers"]` and `event["hit"]["index"]` and
+                // compute the selection itself, the same way it would for any
+                // other modified click.
+                None
+            }
         }
         HitDetail::DataTableHeader { col } => Some(UiEvent::DataTable(
             id,
@@ -5937,7 +5941,10 @@ def handle(event):
     /// Double-clicking a tree row must be replaced by the semantic
     /// `UiEvent::Tree(RowDoubleClicked)` it stands for -- the
     /// semantic-substitution block in `PyAppLogic::handle` runs for
-    /// `UiEvent::DoubleClick` the same way it runs for `MouseDown`.
+    /// `UiEvent::DoubleClick` the same way it runs for `MouseDown`. The tree
+    /// is also a tab stop and nothing is focused yet, so click-to-focus fires
+    /// a `FocusChanged` ahead of it, exactly as it would for a `MouseDown`
+    /// landing in the same spot.
     #[test]
     fn double_click_over_a_tree_row_emits_a_semantic_row_double_clicked_event() {
         Python::attach(|py| {
@@ -6016,10 +6023,29 @@ def handle(event):
                 .expect("dict lookup")
                 .expect("received must be defined");
             let received_list = received.cast::<PyList>().expect("received must be a list");
-            assert_eq!(received_list.len(), 1, "handle must run exactly once");
-            let event_dict = received_list
+            assert_eq!(
+                received_list.len(),
+                2,
+                "click-to-focus must fire a FocusChanged ahead of the double-click"
+            );
+            let focus_dict = received_list
                 .get_item(0)
                 .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let focused: String = focus_dict
+                .get_item("FocusChanged")
+                .expect("dict lookup")
+                .expect("the first event must be a FocusChanged")
+                .extract()
+                .expect("FocusChanged must carry the tree's own id");
+            assert_eq!(
+                focused, "tree:main",
+                "the double-clicked tree must be focused"
+            );
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
             let tree_payload = event_dict
@@ -6252,6 +6278,137 @@ def handle(event):
                 key, "Down",
                 "the raw key must be mapped to its focus-string name"
             );
+        });
+    }
+
+    /// A Ctrl-click on a list item is a multi-select gesture
+    /// `ListViewEvent::SelectionChanged` can't represent (it carries no
+    /// modifiers), so `semantic_event_for_hit` leaves it unmapped: the raw
+    /// `MouseDown` reaches Python with its own `modifiers` and its `"hit"`
+    /// dict still attached, letting the handler compute the selection
+    /// itself. Click-to-focus still runs ahead of it, the same as a plain
+    /// click.
+    #[test]
+    fn ctrl_click_over_a_list_item_leaves_the_raw_mouse_down_and_hit_attached() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'list': {
+        'id': 'list:main',
+        'items': [
+            {'text': {'spans': [{'text': label, 'fg': None, 'bg': None}]}}
+            for label in ['Alpha', 'Beta']
+        ],
+        'selected_idx': 0,
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Beta").expect("render must not raise"),
+                "the second item must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Beta")
+                .expect("second item's label must be on screen");
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                2,
+                "the click must still emit a FocusChanged ahead of the raw MouseDown"
+            );
+
+            let click_event_dict = received_list
+                .get_item(1)
+                .expect("second item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let mouse_down = click_event_dict
+                .get_item("MouseDown")
+                .expect("dict lookup")
+                .expect("a Ctrl-click must dispatch the raw MouseDown, not a List key")
+                .cast_into::<PyDict>()
+                .expect("MouseDown payload must be a dict");
+            let widget: String = mouse_down
+                .get_item("widget")
+                .expect("dict lookup")
+                .expect("widget key must be present")
+                .extract()
+                .expect("widget must be the clicked list's own id");
+            assert_eq!(widget, "list:main");
+            let modifiers = mouse_down
+                .get_item("modifiers")
+                .expect("dict lookup")
+                .expect("modifiers key must be present")
+                .cast_into::<PyDict>()
+                .expect("modifiers payload must be a dict");
+            let ctrl: bool = modifiers
+                .get_item("ctrl")
+                .expect("dict lookup")
+                .expect("ctrl key must be present")
+                .extract()
+                .expect("ctrl must be a bool");
+            assert!(
+                ctrl,
+                "the Ctrl modifier must survive onto the raw MouseDown"
+            );
+            let hit = click_event_dict
+                .get_item("hit")
+                .expect("dict lookup")
+                .expect("the hit dict must still be attached since no semantic event replaced it")
+                .cast_into::<PyDict>()
+                .expect("hit payload must be a dict");
+            let index: usize = hit
+                .get_item("index")
+                .expect("dict lookup")
+                .expect("index key must be present")
+                .extract()
+                .expect("index must be an int");
+            assert_eq!(index, 1, "the clicked item's own index must be reported");
         });
     }
 }
