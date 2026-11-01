@@ -99,13 +99,14 @@ use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
 use quadraui::{
     wheel_row_delta, ActivityBar, AppLogic, Backend, BoardModel, Button, ButtonHit, ButtonLayout,
     Chart, ComboBox, CommandCenter, CommandLine, CompletionItemMeasure, DataTable, DataTableEvent,
-    DataTableHit, DataTableLayout, DatePicker, DiffView, Form, Image, InteractionState, Key,
-    ListView, ListViewEvent, ListViewHit, ListViewLayout, MenuBar, MessageList, Minimap, Modifiers,
-    MultiSectionView, NamedKey, NumberInput, Palette, Panel, PipelineView, Point, PressZone,
-    ProgressBar, RadioGroup, Reaction, Rect, Scrollbar, SidebarPanel, Spinner, Split,
-    SplitDirection, SplitHit, SplitLayout, SplitTree, StatusBar, Switch, SwitchHit, TabBar,
-    TabBarEvent, TabBarHit, TabBarLayout, TabItem, TextDisplay, TextInput, Toolbar, TreeEvent,
-    TreePath, TreeView, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    DataTableHit, DataTableLayout, DatePicker, DiffView, EditOp, Form, FormEvent, Image,
+    InteractionState, Key, ListView, ListViewEvent, ListViewHit, ListViewLayout, MenuBar,
+    MessageList, Minimap, Modifiers, MultiSectionView, NamedKey, NumberInput, Palette, Panel,
+    PipelineView, Point, PressZone, ProgressBar, RadioGroup, Reaction, Rect, Scrollbar,
+    SidebarPanel, Spinner, Split, SplitDirection, SplitHit, SplitLayout, SplitTree, StatusBar,
+    Switch, SwitchEvent, SwitchHit, TabBar, TabBarEvent, TabBarHit, TabBarLayout, TabItem,
+    TextDisplay, TextEditor, TextInput, Toolbar, TreeEvent, TreePath, TreeView, TreeViewHit,
+    TreeViewLayout, UiEvent, WidgetId,
 };
 
 create_exception!(
@@ -525,6 +526,33 @@ impl AppLogic for PyAppLogic {
         if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
             if let Some(focused) = backend.focus_manager().focused().copied() {
                 event = focus_scoped_key_event(focused, key, *modifiers, &self.hit_map.borrow());
+            }
+        }
+
+        // IME/compose and clipboard-paste text has no `KeyPressed` of its
+        // own to route through `focus_scoped_key_event` above — resolve it
+        // the same way, directly against whichever `TextInput` extra
+        // currently holds focus.
+        if let UiEvent::CharTyped(ch) = &event {
+            if let Some(focused) = backend.focus_manager().focused().copied() {
+                if let Some(form_event) = text_input_insert_event(
+                    focused,
+                    &self.hit_map.borrow(),
+                    EditOp::InsertChar(*ch),
+                ) {
+                    event = form_event;
+                }
+            }
+        }
+        if let UiEvent::ClipboardPaste(text) = &event {
+            if let Some(focused) = backend.focus_manager().focused().copied() {
+                if let Some(form_event) = text_input_insert_event(
+                    focused,
+                    &self.hit_map.borrow(),
+                    EditOp::InsertText(text.clone()),
+                ) {
+                    event = form_event;
+                }
             }
         }
 
@@ -1199,11 +1227,13 @@ fn tab_bar_for_right_segment(hit_map: &[PaintedHit], button_id: WidgetId) -> Opt
 /// other `HitDetail` — a data-table header divider or a split divider
 /// (handled separately, via [`ActiveDrag`], since either spans a drag rather
 /// than a single click), a tab-bar scroll-left/right arrow (no semantic
-/// event exists for it), [`HitDetail::ExtraBody`] (an extra's own
-/// `ExtraPaint` impl owns its click behavior), or a modified list-item click
-/// (see the `ListItem` arm below, which loses the gesture if folded into
+/// event exists for it), or a modified list-item click (see the `ListItem`
+/// arm below, which loses the gesture if folded into
 /// `ListViewEvent::SelectionChanged`) — for which the raw
 /// `MouseDown`/`DoubleClick` and its `"hit"` dict reach Python unchanged.
+/// [`HitDetail::ExtraBody`] resolves against the matched extra's own click
+/// semantics (currently [`Switch::click`]); an extra with no recognized
+/// click behavior still falls through to the raw `MouseDown`.
 fn semantic_event_for_hit(
     id: WidgetId,
     detail: &HitDetail,
@@ -1269,6 +1299,16 @@ fn semantic_event_for_hit(
             id,
             DataTableEvent::RowActivated { idx: *row },
         )),
+        HitDetail::ExtraBody => hit_map.iter().find_map(|hit| match hit {
+            PaintedHit::Extra {
+                id: hit_id, extra, ..
+            } if *hit_id == id => {
+                let switch = extra_as::<Switch>(extra)?;
+                let SwitchEvent::Toggled { id, value } = switch.click()?;
+                Some(UiEvent::Form(id, FormEvent::ToggleChanged { id, value }))
+            }
+            _ => None,
+        }),
         _ => None,
     }
 }
@@ -1315,16 +1355,16 @@ fn key_to_focus_string(key: &Key) -> String {
 /// frame's hit map (for example a tree that scrolled out of the render).
 fn focus_scoped_key_event(
     focused: WidgetId,
-    key: &Key,
+    raw_key: &Key,
     modifiers: Modifiers,
     hit_map: &[PaintedHit],
 ) -> UiEvent {
     let fallback = UiEvent::KeyPressed {
-        key: key.clone(),
+        key: raw_key.clone(),
         modifiers,
         repeat: false,
     };
-    let key = key_to_focus_string(key);
+    let key = key_to_focus_string(raw_key);
     hit_map
         .iter()
         .find_map(|hit| match hit {
@@ -1349,9 +1389,84 @@ fn focus_scoped_key_event(
                     modifiers,
                 },
             )),
+            PaintedHit::Extra { id, extra, .. } if *id == focused => {
+                if let Some(text_input) = extra_as::<TextInput>(extra) {
+                    return text_input_key_event(*id, text_input, raw_key, modifiers);
+                }
+                if let Some(switch) = extra_as::<Switch>(extra) {
+                    let SwitchEvent::Toggled { id, value } =
+                        switch.handle_key(raw_key, &modifiers)?;
+                    return Some(UiEvent::Form(id, FormEvent::ToggleChanged { id, value }));
+                }
+                None
+            }
             _ => None,
         })
         .unwrap_or(fallback)
+}
+
+/// Resolves a key focused on a standalone [`TextInput`] extra into the
+/// [`FormEvent`] it should produce: `Enter` always commits (this primitive
+/// has no multiline mode to special-case), a Ctrl/Cmd+letter chord passes
+/// through unclaimed so a host's accelerator still fires, and every other
+/// key goes through [`EditOp::from_key`]/[`TextEditor::apply`]. Returns
+/// `None` when the key isn't one [`EditOp::from_key`] recognizes, or when
+/// applying it doesn't actually change the text — the caller then falls
+/// through to the raw `KeyPressed` fallback.
+fn text_input_key_event(
+    id: WidgetId,
+    text_input: &TextInput,
+    key: &Key,
+    modifiers: Modifiers,
+) -> Option<UiEvent> {
+    if matches!(key, Key::Named(NamedKey::Enter)) {
+        return Some(UiEvent::Form(
+            id,
+            FormEvent::TextInputCommitted {
+                id,
+                value: text_input.lines.join("\n"),
+            },
+        ));
+    }
+    if matches!(key, Key::Char(_)) && (modifiers.ctrl || modifiers.cmd) {
+        return None;
+    }
+    let op = EditOp::from_key(key, modifiers)?;
+    apply_text_input_edit(id, text_input, op)
+}
+
+/// Applies `op` to a scratch [`TextEditor`] seeded from `text_input`'s
+/// current state, returning the [`FormEvent::TextInputChanged`] the edit
+/// produced, or `None` if the resulting text is unchanged (a pure cursor
+/// move, or a key `EditOp::from_key` mapped to a no-op).
+fn apply_text_input_edit(id: WidgetId, text_input: &TextInput, op: EditOp) -> Option<UiEvent> {
+    let before = text_input.lines.join("\n");
+    let mut editor = TextEditor::new(text_input.clone());
+    editor.apply(op);
+    let after = editor.lines.join("\n");
+    if after == before {
+        return None;
+    }
+    Some(UiEvent::Form(
+        id,
+        FormEvent::TextInputChanged { id, value: after },
+    ))
+}
+
+/// Resolves a `CharTyped`/`ClipboardPaste` landing on the currently focused
+/// [`TextInput`] extra into the [`FormEvent::TextInputChanged`] the insert
+/// produced. Returns `None` when nothing is focused, the focused widget
+/// isn't a `TextInput`, or it has scrolled out of this frame's hit map.
+fn text_input_insert_event(
+    focused: WidgetId,
+    hit_map: &[PaintedHit],
+    op: EditOp,
+) -> Option<UiEvent> {
+    let text_input = hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::Extra { id, extra, .. } if *id == focused => extra_as::<TextInput>(extra),
+        _ => None,
+    })?;
+    apply_text_input_edit(focused, text_input, op)
 }
 
 /// One descriptor reference per slot, borrowed either from `PyAppLogic`'s
@@ -1963,7 +2078,7 @@ const LEAF_KIND_KEYS: [&str; 6] = [
 /// `layout`/`hit_test`. Per-kind semantic event synthesis (toggling the
 /// switch's value, etc.) is a separate, later step — this trait only gets a
 /// hit to Python with `widget` set.
-trait ExtraPaint {
+trait ExtraPaint: std::any::Any {
     fn paint(&self, backend: &mut dyn Backend, area: Rect);
 
     /// The widget id this descriptor paints under, used to populate
@@ -1987,6 +2102,16 @@ trait ExtraPaint {
     fn tab_stop(&self) -> bool {
         false
     }
+}
+
+/// Recovers the concrete descriptor (`Switch`, `TextInput`, ...) kept alive
+/// behind the `Rc<dyn ExtraPaint>` in a [`PaintedHit::Extra`] entry, via
+/// trait-upcasting coercion to [`ExtraPaint`]'s `std::any::Any` supertrait.
+/// Used by [`semantic_event_for_hit`] and [`PyAppLogic::handle`] to route a
+/// hit/key to the matched extra's own semantics (`Switch::click`,
+/// `TextEditor::apply`, ...) instead of leaving every extra paint-only.
+fn extra_as<T: 'static>(extra: &Rc<dyn ExtraPaint>) -> Option<&T> {
+    (extra.as_ref() as &dyn std::any::Any).downcast_ref::<T>()
 }
 
 impl ExtraPaint for ProgressBar {
@@ -2036,6 +2161,19 @@ impl ExtraPaint for TextInput {
 
     fn id(&self) -> WidgetId {
         self.id
+    }
+
+    /// Whole-area bounds check: [`ExtraPaint::hit_test`] has no
+    /// backend-metrics parameter to resolve a click to a specific
+    /// character column, so any click inside `area` counts as landing on
+    /// the input (focus/caret placement stays coarse until a metrics-aware
+    /// hit-test is threaded through).
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
     }
 }
 

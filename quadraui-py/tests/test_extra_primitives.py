@@ -691,7 +691,9 @@ def test_clicking_a_switch_routes_a_hit_with_widget_set():
     # switch -- the first (and only) extra, painted into the top 3-line
     # band -- is hit-testable the moment it's inserted. `Switch` is also a
     # tab stop, so the click-to-focus step fires a `FocusChanged` ahead of
-    # the `MouseDown` itself.
+    # the click itself, and `semantic_event_for_hit` rewrites the click into
+    # a `Form`/`ToggleChanged` event rather than leaving it as a raw
+    # `MouseDown` with a `"hit"` dict.
     app = QuiApp(40, 20)
     app.insert_extra("switch", {"id": "settings:wrap"})
 
@@ -699,12 +701,104 @@ def test_clicking_a_switch_routes_a_hit_with_widget_set():
 
     assert len(received) == 2, (
         "the click must emit both a FocusChanged (nothing was focused yet) "
-        "and the MouseDown itself"
+        "and the toggle itself"
     )
     assert received[0]["FocusChanged"] == "settings:wrap"
-    event = received[1]
-    assert event["MouseDown"]["widget"] == "settings:wrap"
-    assert event["hit"] == {"kind": "extra_body"}
+    widget_id, form_event = received[1]["Form"]
+    assert widget_id == "settings:wrap"
+    assert form_event == {"ToggleChanged": {"id": "settings:wrap", "value": True}}
+
+
+def test_text_input_char_typed_and_paste_produce_form_events():
+    # Click focuses the `text_input` first (it's a tab stop, like `Switch`),
+    # then a `CharTyped` and a `ClipboardPaste` are each resolved against the
+    # currently-focused widget's current descriptor snapshot, producing a
+    # `Form`/`TextInputChanged` carrying the edited value and leaving the
+    # cursor position implicit in that value. The two edits are independent:
+    # each is computed from the original `insert_extra` snapshot, since
+    # nothing re-renders between them -- a real host would call
+    # `insert_extra` again with the new value before the next keystroke.
+    app = QuiApp(40, 20)
+    app.insert_extra("text_input", {"id": "ti:1", "lines": ["hello"], "cursor_col": 5})
+
+    focus_and_click = _click_events(app, 1.0, 1.0)
+    assert focus_and_click[0]["FocusChanged"] == "ti:1"
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event({"CharTyped": "!"})
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "ti:1"
+    assert form_event == {"TextInputChanged": {"id": "ti:1", "value": "hello!"}}
+
+    received.clear()
+    app.push_event({"ClipboardPaste": " world"})
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "ti:1"
+    assert form_event == {"TextInputChanged": {"id": "ti:1", "value": "hello world"}}
+
+
+def test_text_input_enter_commits_current_value():
+    # `Enter` on a focused `text_input` always commits -- this primitive has
+    # no multiline mode to special-case -- carrying whatever value the
+    # current descriptor snapshot holds.
+    app = QuiApp(40, 20)
+    app.insert_extra("text_input", {"id": "ti:1", "lines": ["hello"]})
+
+    _click_events(app, 1.0, 1.0)
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {
+            "KeyPressed": {
+                "key": {"Named": "Enter"},
+                "modifiers": {},
+                "repeat": False,
+            }
+        }
+    )
+    app.run(1)
+
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "ti:1"
+    assert form_event == {"TextInputCommitted": {"id": "ti:1", "value": "hello"}}
+
+
+def test_switch_enter_toggles_once_host_echoes_focus_onto_the_descriptor():
+    # `Switch::handle_key` gates on the switch's OWN `focused` field, not on
+    # the app-level `FocusManager`'s notion of "what has focus" -- so
+    # keyboard activation needs the host to have echoed the `FocusChanged`
+    # it received back onto the descriptor (`"focused": True`) before the
+    # `Enter`/`Space` arrives, same as any other per-frame extra state.
+    app = QuiApp(40, 20)
+    app.insert_extra("switch", {"id": "sw:1", "focused": True})
+
+    focus_and_click = _click_events(app, 1.0, 1.0)
+    assert focus_and_click[0]["FocusChanged"] == "sw:1"
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {
+            "KeyPressed": {
+                "key": {"Named": "Enter"},
+                "modifiers": {},
+                "repeat": False,
+            }
+        }
+    )
+    app.run(1)
+
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "sw:1"
+    assert form_event == {"ToggleChanged": {"id": "sw:1", "value": True}}
 
 
 def test_clicking_a_display_only_extra_attaches_no_hit():
