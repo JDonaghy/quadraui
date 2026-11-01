@@ -739,7 +739,7 @@ mod sgr_color_depth {
 /// **`#[cfg(unix)]` — deliberately, for the same transport reason as
 /// `sgr_color_depth` above, and this gate must not be removed.** Both
 /// fixtures below assert on the exact raw bytes `PushKeyboardEnhancementFlags`
-/// writes (`ESC[>11u`), and ConPTY's re-serialising terminal emulator sits
+/// writes (`ESC[>15u`), and ConPTY's re-serialising terminal emulator sits
 /// between the child and the master handle on Windows exactly as
 /// `sgr_color_depth`'s doc describes — a byte-exact match there proves
 /// nothing about quadraui's own logic.
@@ -759,14 +759,18 @@ mod kitty_keyboard_protocol {
     /// The exact bytes `PushKeyboardEnhancementFlags` writes for the flag
     /// set `crate::tui::run::push_keyboard_enhancement` requests —
     /// `DISAMBIGUATE_ESCAPE_CODES (1) | REPORT_EVENT_TYPES (2) |
-    /// REPORT_ALL_KEYS_AS_ESCAPE_CODES (8) = 11`.
-    const PUSH_KITTY_FLAGS: &[u8] = b"\x1b[>11u";
+    /// REPORT_ALTERNATE_KEYS (4) | REPORT_ALL_KEYS_AS_ESCAPE_CODES (8)
+    /// = 15`. `REPORT_ALTERNATE_KEYS` is what makes the terminal fill in
+    /// the CSI-u `alternate-key-codes` field, so crossterm can resolve a
+    /// shifted symbol (`:`, `%`, `|`) to the glyph the user typed rather
+    /// than reporting the unshifted base key plus a `SHIFT` modifier.
+    const PUSH_KITTY_FLAGS: &[u8] = b"\x1b[>15u";
 
     /// `TERM=xterm-kitty` — kitty's own terminfo name, and the first signal
     /// `detect_kitty_keyboard_from` checks. With the live query unanswered
     /// (see the module doc), detection falls through to this heuristic,
     /// which must land on `true` — so the example pushes the enhancement
-    /// flags, observable as the exact `ESC[>11u` sequence on the wire.
+    /// flags, observable as the exact `ESC[>15u` sequence on the wire.
     #[test]
     fn tui_pipeline_under_kitty_term_pushes_enhancement_flags() {
         let mut ex =

@@ -81,6 +81,35 @@ Two layers, in `quadraui/src/tui/caps.rs`:
    `TERM`/`TERM_PROGRAM` or which terminal is actually hosting the
    session. See the Windows Terminal row below.
 
+## Which flags are pushed, and why `REPORT_ALTERNATE_KEYS` is one of them
+
+`crate::tui::run::push_keyboard_enhancement` requests
+`DISAMBIGUATE_ESCAPE_CODES | REPORT_EVENT_TYPES | REPORT_ALTERNATE_KEYS |
+REPORT_ALL_KEYS_AS_ESCAPE_CODES` — the bytes `ESC[>15u`, pinned by the pty
+fixtures in `tests/tui_pty_smoke.rs`.
+
+`REPORT_ALTERNATE_KEYS` is load-bearing rather than a nicety. Under
+`REPORT_ALL_KEYS_AS_ESCAPE_CODES` a terminal reports a *shifted symbol* by
+its unshifted base key plus a `SHIFT` modifier — `:` arrives as `;` +
+`SHIFT`, `%` as `5` + `SHIFT`. The glyph the user actually typed is only
+recoverable from the CSI-u `alternate-key-codes` field, which this flag is
+what asks for; crossterm reads that field, substitutes the shifted glyph,
+and clears `SHIFT` as it does so. Without the flag, enabling the protocol
+makes shifted symbols *less* usable than a legacy-encoding terminal, not
+more.
+
+Terminals still disagree about the result — some report the resolved glyph
+*and* leave the physical `SHIFT` bit set. `crate::tui::events::crossterm_key_to_uievent`
+normalises what arrives to one shape before it reaches `AppLogic`: a
+`Key::Char` always carries `shift` when its glyph is an uppercase letter,
+and never carries it when the glyph is an already-shifted symbol pressed
+with no other modifier. That keeps `Ctrl+Shift+T` distinguishable from
+`Ctrl+T` while letting a consumer that reads "printable char + modifier"
+as a chord (a vim-style normal-mode router) treat `:` as text. A shifted
+symbol *inside* a chord keeps whatever the terminal reported — the bit is
+the only record that shift was held when the glyph could not be resolved,
+so it is never erased.
+
 ## Degrade table
 
 Every row states what `BackendCaps::kitty_keyboard` resolves to and how
