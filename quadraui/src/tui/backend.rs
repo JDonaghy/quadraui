@@ -2183,6 +2183,10 @@ impl Backend for TuiBackend {
         &self.focus
     }
 
+    fn set_focus(&mut self, id: Option<crate::types::WidgetId>) -> bool {
+        self.focus.set_focus(id)
+    }
+
     fn draw_focus_ring(&mut self, rect: QRect) {
         let theme = self.current_theme;
         let area = q_rect_to_ratatui(rect);
@@ -4656,6 +4660,9 @@ mod tests {
         }
         fn focus_manager(&self) -> &crate::focus::FocusManager {
             &self.focus
+        }
+        fn set_focus(&mut self, id: Option<crate::types::WidgetId>) -> bool {
+            self.focus.set_focus(id)
         }
         fn draw_focus_ring(&mut self, _r: QRect) {}
         fn services(&self) -> &dyn PlatformServices {

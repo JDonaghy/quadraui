@@ -2252,6 +2252,10 @@ impl Backend for WinBackend {
         &self.focus
     }
 
+    fn set_focus(&mut self, id: Option<crate::types::WidgetId>) -> bool {
+        self.focus.set_focus(id)
+    }
+
     fn draw_focus_ring(&mut self, rect: Rect) {
         let theme = self.current_theme;
         let stroke_width = self.current_style.focus_ring_width;
