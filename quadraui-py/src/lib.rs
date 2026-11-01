@@ -93,18 +93,19 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use pyo3::types::{PyDict, PyList};
 
+use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
 use quadraui::{
-    ActivityBar, AppLogic, Backend, BoardModel, Button, ButtonHit, ButtonLayout, Chart, ComboBox,
-    CommandCenter, CommandLine, CompletionItemMeasure, DataTable, DataTableEvent, DataTableHit,
-    DataTableLayout, DatePicker, DiffView, Form, Image, InteractionState, Key, ListView,
-    ListViewEvent, ListViewHit, ListViewLayout, MenuBar, MessageList, Minimap, Modifiers,
-    MultiSectionView, NamedKey, NumberInput, Palette, Panel, PipelineView, Point, ProgressBar,
-    RadioGroup, Reaction, Rect, Scrollbar, SidebarPanel, Spinner, Split, SplitDirection, SplitHit,
-    SplitLayout, SplitTree, StatusBar, Switch, SwitchHit, TabBar, TabBarEvent, TabBarHit,
-    TabBarLayout, TabItem, TextDisplay, TextInput, Toolbar, TreeEvent, TreePath, TreeView,
-    TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    wheel_row_delta, ActivityBar, AppLogic, Backend, BoardModel, Button, ButtonHit, ButtonLayout,
+    Chart, ComboBox, CommandCenter, CommandLine, CompletionItemMeasure, DataTable, DataTableEvent,
+    DataTableHit, DataTableLayout, DatePicker, DiffView, Form, Image, InteractionState, Key,
+    ListView, ListViewEvent, ListViewHit, ListViewLayout, MenuBar, MessageList, Minimap, Modifiers,
+    MultiSectionView, NamedKey, NumberInput, Palette, Panel, PipelineView, Point, PressZone,
+    ProgressBar, RadioGroup, Reaction, Rect, Scrollbar, SidebarPanel, Spinner, Split,
+    SplitDirection, SplitHit, SplitLayout, SplitTree, StatusBar, Switch, SwitchHit, TabBar,
+    TabBarEvent, TabBarHit, TabBarLayout, TabItem, TextDisplay, TextInput, Toolbar, TreeEvent,
+    TreePath, TreeView, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
 create_exception!(
@@ -310,6 +311,13 @@ struct PyAppLogic {
     /// raw move, so a Python handler never has to recompute split geometry
     /// itself to support divider dragging.
     active_drag: RefCell<Option<ActiveDrag>>,
+    /// Armed by a `MouseDown` landing on `HitDetail::TreeScrollbarThumb`
+    /// (per [`hit_map`]'s [`PaintedHit::Tree`] hit-testing) and cleared on
+    /// the matching `MouseUp`. While armed, [`handle`] turns every
+    /// `MouseMoved` into a synthesized `UiEvent::ScrollOffsetChanged`
+    /// instead of forwarding the raw move, mirroring [`active_drag`]'s
+    /// divider-drag handling for the tree's own scrollbar thumb.
+    scrollbar_drag: RefCell<Option<ScrollbarDrag>>,
 }
 
 impl PyAppLogic {
@@ -482,6 +490,10 @@ impl AppLogic for PyAppLogic {
         // A move while a divider drag is armed becomes the drag itself —
         // checked before the hit-test below, since `MouseMoved` has no
         // `widget` field for `event_position`/`set_event_widget` to touch.
+        // A move while a tree scrollbar thumb drag is armed instead becomes
+        // a `ScrollOffsetChanged`, mirroring the divider case; the two
+        // drags are mutually exclusive, so only one of these branches ever
+        // fires for a given move.
         if let UiEvent::MouseMoved { position, .. } = &event {
             if let Some(drag) = self.active_drag.borrow().as_ref() {
                 let new_ratio = drag.ratio_at(*position);
@@ -490,10 +502,19 @@ impl AppLogic for PyAppLogic {
                     split_index: 0,
                     new_ratio,
                 };
+            } else if let Some(drag) = self.scrollbar_drag.borrow().as_ref() {
+                if let Some(new_offset) = drag.drag.offset_at(position.y) {
+                    let new_offset = new_offset.round() as usize;
+                    event = UiEvent::ScrollOffsetChanged {
+                        widget: drag.widget,
+                        new_offset,
+                    };
+                }
             }
         }
         if matches!(event, UiEvent::MouseUp { .. }) {
             *self.active_drag.borrow_mut() = None;
+            *self.scrollbar_drag.borrow_mut() = None;
         }
 
         // A plain `KeyPressed` (Tab/Shift+Tab already claimed upstream by
@@ -511,6 +532,43 @@ impl AppLogic for PyAppLogic {
             .and_then(|position| hit_test_painted(&self.hit_map.borrow(), position));
         if let Some((id, _)) = hit {
             set_event_widget(&mut event, id);
+        }
+
+        // A wheel `Scroll` landing anywhere over a tree (its rows, its
+        // chevrons, or its scrollbar) replaces the raw event outright with
+        // the `ScrollOffsetChanged` it resolves to — never dispatched
+        // alongside it — mirroring the `MouseDown`/`DoubleClick` semantic
+        // replacement below, including suppressing the `"hit"` attachment
+        // via `scroll_translated`, below. A tree with nothing to scroll
+        // (all rows fit the viewport) has no scrollbar, so
+        // `tree_scroll_state` returns `None` and the raw `Scroll` passes
+        // through untouched.
+        let mut scroll_translated = false;
+        if let UiEvent::Scroll { delta, .. } = &event {
+            if let Some((id, detail)) = &hit {
+                let over_tree = matches!(
+                    detail,
+                    HitDetail::TreeRow { .. }
+                        | HitDetail::TreeChevron { .. }
+                        | HitDetail::TreeScrollbarThumb
+                        | HitDetail::TreeScrollbarTrackBefore
+                        | HitDetail::TreeScrollbarTrackAfter
+                );
+                if over_tree {
+                    if let Some((_, total_rows, viewport_rows, scroll_offset)) =
+                        tree_scroll_state(&self.hit_map.borrow(), *id)
+                    {
+                        let max_offset = total_rows.saturating_sub(viewport_rows);
+                        let rows = wheel_row_delta(delta.y, 1.0);
+                        let new_offset = scroll_by_clamped(scroll_offset, rows, max_offset);
+                        event = UiEvent::ScrollOffsetChanged {
+                            widget: *id,
+                            new_offset,
+                        };
+                        scroll_translated = true;
+                    }
+                }
+            }
         }
 
         // A `MouseDown` (or a bare `DoubleClick` pushed without the
@@ -552,7 +610,7 @@ impl AppLogic for PyAppLogic {
         // hit, is replaced outright by the semantic event it stands for — in
         // which case the raw `MouseDown`/`DoubleClick` (and its `"hit"` dict)
         // never reaches Python at all.
-        let mut attach_hit = hit.is_some();
+        let mut attach_hit = hit.is_some() && !scroll_translated;
         if let Some((id, detail)) = &hit {
             let modifiers_and_double_click = match &event {
                 UiEvent::MouseDown { modifiers, .. } => Some((*modifiers, false)),
@@ -568,6 +626,58 @@ impl AppLogic for PyAppLogic {
                             *self.active_drag.borrow_mut() = Some(ActiveDrag { tree: *id, layout });
                         }
                     }
+                } else if !double_click && matches!(detail, HitDetail::TreeScrollbarThumb) {
+                    // A press on the thumb itself arms a drag (consumed by
+                    // the `MouseMoved` branch above on later moves) rather
+                    // than scrolling immediately — matching
+                    // `compose::TreeController::click_scrollbar`'s
+                    // `PressZone::Thumb` arm. The raw `MouseDown` (and its
+                    // `"hit"` dict) stops here either way, so this never
+                    // falls through to row selection.
+                    if let UiEvent::MouseDown { position, .. } = &event {
+                        if let Some((scrollbar, total_rows, viewport_rows, scroll_offset)) =
+                            tree_scroll_state(&self.hit_map.borrow(), *id)
+                        {
+                            let max_offset = total_rows.saturating_sub(viewport_rows);
+                            if max_offset > 0 {
+                                *self.scrollbar_drag.borrow_mut() = Some(ScrollbarDrag {
+                                    widget: *id,
+                                    drag: ThumbDrag::begin(
+                                        position.y,
+                                        scroll_offset as f32,
+                                        scrollbar.travel(),
+                                        max_offset as f32,
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    attach_hit = false;
+                } else if !double_click
+                    && matches!(
+                        detail,
+                        HitDetail::TreeScrollbarTrackBefore | HitDetail::TreeScrollbarTrackAfter
+                    )
+                {
+                    // A press on the track pages by one viewport, matching
+                    // `click_scrollbar`'s `PressZone::Before`/`After` arms
+                    // (`page_scroll`). Never falls through to row selection.
+                    if let Some((_, total_rows, viewport_rows, scroll_offset)) =
+                        tree_scroll_state(&self.hit_map.borrow(), *id)
+                    {
+                        let max_offset = total_rows.saturating_sub(viewport_rows);
+                        let page = if matches!(detail, HitDetail::TreeScrollbarTrackBefore) {
+                            -(viewport_rows as isize)
+                        } else {
+                            viewport_rows as isize
+                        };
+                        let new_offset = scroll_by_clamped(scroll_offset, page, max_offset);
+                        event = UiEvent::ScrollOffsetChanged {
+                            widget: *id,
+                            new_offset,
+                        };
+                    }
+                    attach_hit = false;
                 } else if let Some(semantic) = semantic_event_for_hit(
                     *id,
                     detail,
@@ -692,12 +802,24 @@ enum PaintedHit {
     /// (i.e. `TreeView::rows[i].path`), kept alongside the layout so a
     /// `TreeViewHit::Row(i)` can be turned into a semantic
     /// `UiEvent::Tree(RowClicked)` without re-borrowing the `TreeView`
-    /// itself.
+    /// itself. `area` is already narrowed to exclude `scrollbar`'s own
+    /// gutter (see `draw_tree_with_scrollbar`), so a row hit-test never
+    /// sees a point that landed on the scrollbar. `scrollbar` is `None`
+    /// when the tree's rows fit without scrolling. `scroll_offset` is the
+    /// tree's own offset as painted; `viewport_rows` is how many rows fit
+    /// in `area` at a zero offset (snapshotted at paint time, since a
+    /// `Scrollbar`'s `thumb_len` alone can't be inverted back to it once
+    /// `min_thumb_len` clamping has applied). Both feed the scrollbar
+    /// drag/page/wheel math in `PyAppLogic::handle` without needing to
+    /// re-borrow the `TreeView` or re-touch the backend.
     Tree {
         id: WidgetId,
         area: Rect,
         layout: TreeViewLayout,
         row_paths: Vec<TreePath>,
+        scrollbar: Option<Scrollbar>,
+        scroll_offset: usize,
+        viewport_rows: usize,
     },
     List {
         id: WidgetId,
@@ -775,6 +897,19 @@ enum HitDetail {
     SplitFirstPane,
     SplitSecondPane,
     SplitDivider,
+    /// Landed before the thumb on a tree's vertical scrollbar track
+    /// (page-up zone). Handled directly in `PyAppLogic::handle`, which
+    /// replaces the raw click with `UiEvent::ScrollOffsetChanged` — never
+    /// reaches `semantic_event_for_hit`.
+    TreeScrollbarTrackBefore,
+    /// Landed on a tree's vertical scrollbar thumb. Arms a drag in
+    /// `PyAppLogic::handle` (mirroring `SplitDivider`'s `ActiveDrag`); never
+    /// reaches `semantic_event_for_hit`.
+    TreeScrollbarThumb,
+    /// Landed after the thumb on a tree's vertical scrollbar track
+    /// (page-down zone). Handled directly in `PyAppLogic::handle`, same as
+    /// `TreeScrollbarTrackBefore`.
+    TreeScrollbarTrackAfter,
     /// Landed on an additive primitive's interactive region (currently only
     /// [`Switch`]). Carries no sub-region detail yet — just enough for
     /// [`PyAppLogic::handle`] to set `widget` and attach this as `hit`, so a
@@ -803,8 +938,24 @@ fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetId, H
                 }
             }
             PaintedHit::Tree {
-                id, area, layout, ..
+                id,
+                area,
+                layout,
+                scrollbar,
+                ..
             } => {
+                if let Some(scrollbar) = scrollbar {
+                    if scrollbar.track.contains(point) {
+                        return Some((
+                            *id,
+                            match scrollbar.press_zone(point.y) {
+                                PressZone::Before => HitDetail::TreeScrollbarTrackBefore,
+                                PressZone::Thumb => HitDetail::TreeScrollbarThumb,
+                                PressZone::After => HitDetail::TreeScrollbarTrackAfter,
+                            },
+                        ));
+                    }
+                }
                 if !area.contains(point) {
                     continue;
                 }
@@ -974,6 +1125,44 @@ fn tree_row_path(hit_map: &[PaintedHit], id: WidgetId, row: usize) -> Option<Tre
             row_paths,
             ..
         } if *hit_id == id => row_paths.get(row).cloned(),
+        _ => None,
+    })
+}
+
+/// A tree scrollbar thumb drag in progress: armed by [`PyAppLogic::handle`]
+/// on a `MouseDown` landing on `HitDetail::TreeScrollbarThumb`, and cleared
+/// on the matching `MouseUp` — mirrors [`ActiveDrag`]'s divider-drag
+/// bookkeeping. `drag` is the [`ThumbDrag`] snapshotted the frame the drag
+/// started, so a later re-render shifting the thumb under the cursor never
+/// retargets a drag already in progress.
+struct ScrollbarDrag {
+    widget: WidgetId,
+    drag: ThumbDrag,
+}
+
+/// The `(Scrollbar, total_rows, viewport_rows, scroll_offset)` of the
+/// `Tree` hit painted under id `id` this frame, or `None` if that tree
+/// isn't in the current hit map or has no scrollbar (its rows fit without
+/// scrolling). Used both to arm a thumb drag (needs [`Scrollbar::travel`]
+/// and the current `scroll_offset` as the drag's origin) and to compute a
+/// track-click page or a wheel notch (needs `total_rows`/`viewport_rows`
+/// for the `max_offset` clamp and `scroll_offset` as the value to move
+/// from).
+fn tree_scroll_state(
+    hit_map: &[PaintedHit],
+    id: WidgetId,
+) -> Option<(Scrollbar, usize, usize, usize)> {
+    hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::Tree {
+            id: hit_id,
+            scrollbar,
+            row_paths,
+            viewport_rows,
+            scroll_offset,
+            ..
+        } if *hit_id == id => scrollbar
+            .clone()
+            .map(|sb| (sb, row_paths.len(), *viewport_rows, *scroll_offset)),
         _ => None,
     })
 }
@@ -1234,13 +1423,17 @@ fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Vec<Pa
     }
     if let Some(tree) = refs.tree {
         if let Some(rect) = next_band(4.0) {
-            draw_tree_with_scrollbar(backend, rect, tree);
-            let layout = backend.tree_layout(rect, tree);
+            let (content_rect, scrollbar, viewport_rows) =
+                draw_tree_with_scrollbar(backend, rect, tree);
+            let layout = backend.tree_layout(content_rect, tree);
             hits.push(PaintedHit::Tree {
                 id: tree.id,
-                area: rect,
+                area: content_rect,
                 layout,
                 row_paths: tree.rows.iter().map(|row| row.path.clone()).collect(),
+                scrollbar,
+                scroll_offset: tree.scroll_offset,
+                viewport_rows,
             });
         }
     }
@@ -1402,22 +1595,74 @@ fn split_rects(area: Rect, n: usize, horizontal: bool) -> Vec<Rect> {
         .collect()
 }
 
-/// Paints `tree` into `area`, then -- on a backend that doesn't paint its
-/// own tree scrollbar inside `draw_tree` (the TUI backend; the GUI backends
-/// paint theirs inline, reporting [`Backend::tree_paints_own_scrollbar`]) --
-/// composes the vertical scrollbar from the backend's own
-/// [`Backend::tree_vscrollbar`] geometry and paints it over the pane's right
-/// edge. This is the layout-then-paint two-step a Rust consumer runs by
-/// hand, so a declarative tree gets a working scrollbar on every backend.
-/// `tree_vscrollbar` returns `None` when the rows fit, so a short tree paints
-/// no scrollbar.
-fn draw_tree_with_scrollbar(backend: &mut dyn Backend, area: Rect, tree: &TreeView) {
-    backend.draw_tree(area, tree);
-    if !backend.tree_paints_own_scrollbar() {
-        if let Some(scrollbar) = backend.tree_vscrollbar(area, tree) {
-            backend.draw_scrollbar(area, &scrollbar);
-        }
+/// How many rows of `tree` fit in `rect` at a zero scroll offset — the
+/// viewport's true row capacity, as distinct from `TreeViewLayout`'s own
+/// `visible_rows.len()` at the tree's ACTUAL offset, which can be shorter
+/// near the end of a long list. Paints into a scratch clone rather than
+/// `tree` itself, so computing this never disturbs the real paint below.
+fn tree_viewport_rows(backend: &mut dyn Backend, rect: Rect, tree: &TreeView) -> usize {
+    let mut shadow = tree.clone();
+    shadow.scroll_offset = 0;
+    backend.tree_layout(rect, &shadow).visible_rows.len()
+}
+
+/// Paints `tree` into `area`, reserving a right-hand gutter for its
+/// vertical scrollbar when one is needed, and returns `(content_rect,
+/// scrollbar, viewport_rows)` so the caller can hit-test against the SAME
+/// geometry that was actually painted (mirrors
+/// [`crate::compose::TreeController::split_rect`] in `quadraui`, minus its
+/// drag/selection state) and drive drag/page/wheel scrolling without
+/// re-touching the backend.
+///
+/// On a backend that paints its own scrollbar overlay inside `draw_tree`
+/// ([`Backend::tree_paints_own_scrollbar`] — GTK, macOS, Win), `tree` is
+/// painted into the full `area` and the returned `Scrollbar` exists purely
+/// for hit-testing; painting it again here would double it. On a backend
+/// with no overlay (TUI), a `line_height`-wide column is reserved on the
+/// right, `tree` is painted into the narrowed rect, and the scrollbar is
+/// built and painted explicitly into the reserved column. Either way,
+/// `None` is returned (and the full `area` painted) when the rows fit
+/// without scrolling.
+fn draw_tree_with_scrollbar(
+    backend: &mut dyn Backend,
+    area: Rect,
+    tree: &TreeView,
+) -> (Rect, Option<Scrollbar>, usize) {
+    if backend.tree_paints_own_scrollbar() {
+        backend.draw_tree(area, tree);
+        let scrollbar = backend.tree_vscrollbar(area, tree);
+        let viewport_rows = tree_viewport_rows(backend, area, tree);
+        return (area, scrollbar, viewport_rows);
     }
+    let track_width = backend.line_height();
+    if area.width <= track_width {
+        backend.draw_tree(area, tree);
+        let viewport_rows = tree_viewport_rows(backend, area, tree);
+        return (area, None, viewport_rows);
+    }
+    let content_rect = Rect::new(area.x, area.y, area.width - track_width, area.height);
+    let viewport_rows = tree_viewport_rows(backend, content_rect, tree);
+    if tree.rows.len() <= viewport_rows {
+        backend.draw_tree(area, tree);
+        return (area, None, viewport_rows);
+    }
+    backend.draw_tree(content_rect, tree);
+    let track_rect = Rect::new(
+        area.x + content_rect.width,
+        area.y,
+        track_width,
+        area.height,
+    );
+    let scrollbar = Scrollbar::vertical(
+        format!("{}-scrollbar", tree.id),
+        track_rect,
+        tree.scroll_offset as f32,
+        tree.rows.len() as f32,
+        viewport_rows as f32,
+        track_width.max(1.0),
+    );
+    backend.draw_scrollbar(track_rect, &scrollbar);
+    (content_rect, Some(scrollbar), viewport_rows)
 }
 
 /// Paints one leaf's descriptor into the whole `area` its container gave
@@ -1446,13 +1691,17 @@ fn paint_leaf(
             hits.push(PaintedHit::List { id, area, layout });
         }
         LeafDescriptor::Tree(tree) => {
-            draw_tree_with_scrollbar(backend, area, tree);
-            let layout = backend.tree_layout(area, tree);
+            let (content_rect, scrollbar, viewport_rows) =
+                draw_tree_with_scrollbar(backend, area, tree);
+            let layout = backend.tree_layout(content_rect, tree);
             hits.push(PaintedHit::Tree {
                 id,
-                area,
+                area: content_rect,
                 layout,
                 row_paths: tree.rows.iter().map(|row| row.path.clone()).collect(),
+                scrollbar,
+                scroll_offset: tree.scroll_offset,
+                viewport_rows,
             });
         }
         LeafDescriptor::DataTable(data_table) => {
@@ -4259,7 +4508,7 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quadraui::MouseButton;
+    use quadraui::{ButtonMask, MouseButton, ScrollDelta};
 
     /// A Rust panic raised from inside `guarded`'s body is caught and
     /// re-raised as `PanicError`, and poisons the app so a later call
@@ -6409,6 +6658,476 @@ def handle(event):
                 .extract()
                 .expect("index must be an int");
             assert_eq!(index, 1, "the clicked item's own index must be reported");
+        });
+    }
+
+    /// Builds a 30-row tree (`QuiApp::new(40, 10, ...)` can't fit all of
+    /// them in its viewport, so a scrollbar is always painted) whose
+    /// `handle` tracks the live `scroll_offset` in a Python global so a
+    /// later `render()` reflects whatever `ScrollOffsetChanged` the drag
+    /// produced. Returns `(app, received-list accessor via `locals`)`.
+    fn tree_with_scrollbar_app(py: Python<'_>, locals: &Bound<'_, PyDict>) -> QuiApp {
+        py.run(
+            c"
+received = []
+scroll = 0
+
+def render():
+    rows = []
+    for i in range(30):
+        rows.append({
+            'path': [i], 'indent': 0, 'icon': None,
+            'text': {'spans': [{'text': 'Row%02d' % i, 'fg': None, 'bg': None}]},
+            'badge': None, 'is_expanded': None,
+        })
+    return {'tree': {
+        'id': 'tree:main',
+        'rows': rows,
+        'selection_mode': 'Single', 'selected_path': [0],
+        'scroll_offset': scroll, 'has_focus': True,
+        'style': {
+            'indent': 2, 'show_chevrons': True,
+            'chevron_expanded': '▾', 'chevron_collapsed': '▸',
+            'row_height': 22,
+        },
+    }}
+
+def handle(event):
+    global scroll
+    received.append(event)
+    if isinstance(event, dict) and 'ScrollOffsetChanged' in event:
+        scroll = event['ScrollOffsetChanged']['new_offset']
+",
+            Some(locals),
+            Some(locals),
+        )
+        .expect("python source must execute");
+        let render: Py<PyAny> = locals
+            .get_item("render")
+            .expect("dict lookup")
+            .expect("render must be defined")
+            .unbind();
+        let handle: Py<PyAny> = locals
+            .get_item("handle")
+            .expect("dict lookup")
+            .expect("handle must be defined")
+            .unbind();
+        QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions")
+    }
+
+    /// Reads back the real painted `(Scrollbar, total_rows, viewport_rows,
+    /// scroll_offset)` for `tree:main`, forcing the first render first
+    /// (`QuiApp::new` leaves `hit_map` empty until something actually
+    /// paints) and asserting that 30 rows in a 10-row viewport really did
+    /// paint a scrollbar.
+    fn painted_tree_scrollbar_state(app: &mut QuiApp) -> (Scrollbar, usize, usize, usize) {
+        assert!(
+            app.screen_contains("Row00").expect("render must not raise"),
+            "the top row must be painted before any scroll"
+        );
+        let hit_map = app.driver.app().hit_map.borrow();
+        tree_scroll_state(&hit_map, WidgetId::new("tree:main"))
+            .expect("a 30-row tree in a 10-row viewport must paint a scrollbar")
+    }
+
+    /// Dragging a tree's scrollbar thumb must move the painted window by
+    /// translating the drag's absolute motion through
+    /// [`ThumbDrag::offset_at`] into a semantic `ScrollOffsetChanged`,
+    /// mirroring `compose::TreeController`'s own thumb-drag handling. The
+    /// initial press only arms the drag — the raw `MouseDown` still
+    /// reaches Python (the thumb-press arm never replaces `event`, it only
+    /// strips the `"hit"` payload) — and the window only actually moves
+    /// once the drag-translated `MouseMoved` lands.
+    #[test]
+    fn dragging_a_tree_scrollbar_thumb_moves_the_painted_window() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            let mut app = tree_with_scrollbar_app(py, &locals);
+            let (scrollbar, total_rows, viewport_rows, scroll_offset) =
+                painted_tree_scrollbar_state(&mut app);
+            assert_eq!(total_rows, 30);
+            assert_eq!(scroll_offset, 0);
+            let max_offset = total_rows.saturating_sub(viewport_rows);
+            assert!(
+                max_offset > 0,
+                "the tree must actually overflow its viewport"
+            );
+
+            let track = scrollbar.track;
+            let thumb_center_y = track.y + scrollbar.thumb_start + scrollbar.thumb_len / 2.0;
+            let press_x = track.x + track.width / 2.0;
+
+            let press = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(press_x, thumb_center_y),
+                modifiers: Modifiers::default(),
+            };
+            let press_any = pythonize::pythonize(py, &press).expect("UiEvent must pythonize");
+            let press_dict = press_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(press_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                2,
+                "the first click must emit FocusChanged plus the raw MouseDown — the \
+                 thumb-press arm only arms the drag, it never replaces the event"
+            );
+            let raw_down = received_list
+                .get_item(1)
+                .expect("second item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert!(
+                raw_down
+                    .get_item("MouseDown")
+                    .expect("dict lookup")
+                    .is_some(),
+                "a thumb press must still dispatch the raw MouseDown, not a semantic substitute"
+            );
+            assert!(
+                raw_down.get_item("hit").expect("dict lookup").is_none(),
+                "the thumb-press arm strips the hit payload even though it keeps the raw event"
+            );
+
+            let travel = scrollbar.travel();
+            let target_y = thumb_center_y + travel;
+            let drag = ThumbDrag::begin(
+                thumb_center_y,
+                scroll_offset as f32,
+                travel,
+                max_offset as f32,
+            );
+            let expected_offset = drag
+                .offset_at(target_y)
+                .expect("travel and max_offset are both positive")
+                .round() as usize;
+            assert_eq!(
+                expected_offset, max_offset,
+                "dragging the full travel distance must reach the last valid offset"
+            );
+
+            let drag_move = UiEvent::MouseMoved {
+                position: Point::new(press_x, target_y),
+                buttons: ButtonMask::default(),
+            };
+            let move_any = pythonize::pythonize(py, &drag_move).expect("UiEvent must pythonize");
+            let move_dict = move_any
+                .cast::<PyDict>()
+                .expect("MouseMoved must pythonize to a dict");
+            app.push_event(move_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                3,
+                "the drag-translated MouseMoved must emit exactly one new event"
+            );
+            let scroll_event = received_list
+                .get_item(2)
+                .expect("third item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert!(
+                scroll_event.get_item("hit").expect("dict lookup").is_none(),
+                "a drag-translated ScrollOffsetChanged never carries a hit payload"
+            );
+            let payload = scroll_event
+                .get_item("ScrollOffsetChanged")
+                .expect("dict lookup")
+                .expect(
+                    "the drag-translated MouseMoved must dispatch a semantic ScrollOffsetChanged",
+                )
+                .cast_into::<PyDict>()
+                .expect("ScrollOffsetChanged payload must be a dict");
+            let new_offset: usize = payload
+                .get_item("new_offset")
+                .expect("dict lookup")
+                .expect("new_offset key must be present")
+                .extract()
+                .expect("new_offset must be an int");
+            assert_eq!(
+                new_offset, expected_offset,
+                "the reported offset must match ThumbDrag's own math"
+            );
+
+            assert!(
+                !app.screen_contains("Row00").expect("render must not raise"),
+                "the drag must have scrolled the top row out of view"
+            );
+            // The drag's own MouseDown focuses the tree, so the focus ring
+            // now overlays the band's top and bottom rows with border
+            // glyphs; check a row strictly inside the new window instead of
+            // `new_offset` itself.
+            let expected_row = format!("Row{:02}", new_offset + 1);
+            assert!(
+                app.screen_contains(&expected_row)
+                    .expect("render must not raise"),
+                "a row from the new scroll offset's window must be painted"
+            );
+        });
+    }
+
+    /// Clicking the scrollbar track below the thumb must page the tree
+    /// forward by one viewport — `click_scrollbar`'s `PressZone::After` arm
+    /// — replacing the raw `MouseDown` outright with a semantic
+    /// `ScrollOffsetChanged` (never dispatching the raw click, never
+    /// attaching a `"hit"` payload), so the painted window actually moves.
+    #[test]
+    fn clicking_the_tree_scrollbar_track_pages_the_painted_window() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            let mut app = tree_with_scrollbar_app(py, &locals);
+            let (scrollbar, total_rows, viewport_rows, scroll_offset) =
+                painted_tree_scrollbar_state(&mut app);
+            assert_eq!(scroll_offset, 0);
+            let max_offset = total_rows.saturating_sub(viewport_rows);
+            assert!(
+                max_offset > 0,
+                "the tree must actually overflow its viewport"
+            );
+
+            let track = scrollbar.track;
+            // Just past the thumb's own bottom edge, strictly inside the
+            // track so `Rect::contains`'s half-open bound doesn't miss it.
+            let after_y = (track.y + scrollbar.thumb_start + scrollbar.thumb_len + 0.5)
+                .min(track.y + track.height - 0.5);
+            let press_x = track.x + track.width / 2.0;
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(press_x, after_y),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                2,
+                "a track click must emit FocusChanged plus the semantic ScrollOffsetChanged, \
+                 never the raw MouseDown"
+            );
+            let scroll_event = received_list
+                .get_item(1)
+                .expect("second item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert!(
+                scroll_event
+                    .get_item("MouseDown")
+                    .expect("dict lookup")
+                    .is_none(),
+                "a track click must never dispatch the raw MouseDown"
+            );
+            assert!(
+                scroll_event.get_item("hit").expect("dict lookup").is_none(),
+                "a track-click ScrollOffsetChanged never carries a hit payload"
+            );
+            let payload = scroll_event
+                .get_item("ScrollOffsetChanged")
+                .expect("dict lookup")
+                .expect("a track click must dispatch a semantic ScrollOffsetChanged")
+                .cast_into::<PyDict>()
+                .expect("ScrollOffsetChanged payload must be a dict");
+            let new_offset: usize = payload
+                .get_item("new_offset")
+                .expect("dict lookup")
+                .expect("new_offset key must be present")
+                .extract()
+                .expect("new_offset must be an int");
+            let expected_offset = scroll_by_clamped(0, viewport_rows as isize, max_offset);
+            assert_eq!(
+                new_offset, expected_offset,
+                "a track-after click must page forward by exactly one viewport"
+            );
+            assert!(
+                expected_offset > 0,
+                "paging forward must actually move the offset"
+            );
+
+            // The click's own MouseDown focuses the tree, so the focus ring
+            // now overlays the band's top and bottom rows with border
+            // glyphs; check a row strictly inside the new window instead of
+            // `new_offset` itself.
+            let expected_row = format!("Row{:02}", new_offset + 1);
+            assert!(
+                app.screen_contains(&expected_row)
+                    .expect("render must not raise"),
+                "a row from the page-click's new scroll offset window must be painted"
+            );
+        });
+    }
+
+    /// A wheel notch landing anywhere over the tree — rows, chevrons, or
+    /// the scrollbar itself — must translate straight into a semantic
+    /// `ScrollOffsetChanged` via `wheel_row_delta` + `scroll_by_clamped`,
+    /// replacing the raw `Scroll` outright rather than dispatching both.
+    #[test]
+    fn wheel_over_the_tree_scrolls_the_painted_window() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            let mut app = tree_with_scrollbar_app(py, &locals);
+            let (_, total_rows, viewport_rows, scroll_offset) =
+                painted_tree_scrollbar_state(&mut app);
+            assert_eq!(scroll_offset, 0);
+            let max_offset = total_rows.saturating_sub(viewport_rows);
+            assert!(
+                max_offset > 0,
+                "the tree must actually overflow its viewport"
+            );
+
+            let bounds = app
+                .driver
+                .find_bounds("Row00")
+                .expect("the top row's label must be on screen");
+            let wheel = UiEvent::Scroll {
+                widget: None,
+                delta: ScrollDelta::new(0.0, -3.0),
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+            };
+            let wheel_any = pythonize::pythonize(py, &wheel).expect("UiEvent must pythonize");
+            let wheel_dict = wheel_any
+                .cast::<PyDict>()
+                .expect("Scroll must pythonize to a dict");
+            app.push_event(wheel_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "a wheel notch over the tree must dispatch exactly one event — no FocusChanged \
+                 (a wheel notch doesn't move focus) and no raw Scroll alongside it"
+            );
+            let scroll_event = received_list
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert!(
+                scroll_event
+                    .get_item("Scroll")
+                    .expect("dict lookup")
+                    .is_none(),
+                "the raw Scroll must never reach Python once it's translated"
+            );
+            let payload = scroll_event
+                .get_item("ScrollOffsetChanged")
+                .expect("dict lookup")
+                .expect("a wheel notch over the tree must dispatch a semantic ScrollOffsetChanged")
+                .cast_into::<PyDict>()
+                .expect("ScrollOffsetChanged payload must be a dict");
+            let new_offset: usize = payload
+                .get_item("new_offset")
+                .expect("dict lookup")
+                .expect("new_offset key must be present")
+                .extract()
+                .expect("new_offset must be an int");
+            let rows = wheel_row_delta(-3.0, 1.0);
+            let expected_offset = scroll_by_clamped(0, rows, max_offset);
+            assert_eq!(
+                new_offset, expected_offset,
+                "the reported offset must match wheel_row_delta + scroll_by_clamped"
+            );
+            assert!(
+                expected_offset > 0,
+                "the wheel notch must actually move the offset"
+            );
+
+            let expected_row = format!("Row{:02}", new_offset);
+            assert!(
+                app.screen_contains(&expected_row)
+                    .expect("render must not raise"),
+                "the wheel notch must scroll the row now at the new offset into view"
+            );
+        });
+    }
+
+    /// A click landing in the scrollbar's own gutter — track or thumb —
+    /// must never fall through to tree-row selection: `hit_test_painted`
+    /// resolves a scrollbar hit to a `TreeScrollbarThumb`/
+    /// `TreeScrollbarTrackBefore`/`TreeScrollbarTrackAfter` detail, and
+    /// `handle` never routes any of those through `semantic_event_for_hit`
+    /// (the row-selection path), so no `Tree` event is ever dispatched for
+    /// a gutter click.
+    #[test]
+    fn a_click_in_the_tree_scrollbar_gutter_does_not_select_a_row() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            let mut app = tree_with_scrollbar_app(py, &locals);
+            let (scrollbar, total_rows, viewport_rows, _) = painted_tree_scrollbar_state(&mut app);
+            let max_offset = total_rows.saturating_sub(viewport_rows);
+            assert!(
+                max_offset > 0,
+                "the tree must actually overflow its viewport"
+            );
+
+            let track = scrollbar.track;
+            let thumb_center_y = track.y + scrollbar.thumb_start + scrollbar.thumb_len / 2.0;
+            let press_x = track.x + track.width / 2.0;
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(press_x, thumb_center_y),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            for i in 0..received_list.len() {
+                let event_dict = received_list
+                    .get_item(i)
+                    .expect("item must exist")
+                    .cast_into::<PyDict>()
+                    .expect("event payload must be a dict");
+                assert!(
+                    event_dict.get_item("Tree").expect("dict lookup").is_none(),
+                    "a gutter click must never dispatch a Tree (row-selection) event"
+                );
+            }
         });
     }
 }
