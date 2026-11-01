@@ -46,6 +46,78 @@ fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// The markdown files under `docs/` that git tracks, as paths relative to
+/// the crate root with forward slashes, or `None` when git can't answer.
+///
+/// `None` means "no tracking information available" — git isn't on `PATH`,
+/// or this is an unpacked `.crate` tarball with no repository. Callers fall
+/// back to classifying every `.md` they find, which keeps the guard strict
+/// in exactly the environment where a stray scratch file can't exist.
+fn tracked_docs() -> Option<HashSet<String>> {
+    let output = Command::new("git")
+        .args(["ls-files", "-z", "--", "docs"])
+        .current_dir(crate_root())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    Some(
+        stdout
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .map(|p| p.replace('\\', "/"))
+            .collect(),
+    )
+}
+
+/// Walks `docs/` and returns the markdown files that
+/// [`INTERNAL_DOCS`]/[`CONSUMER_DOCS`] are required to classify, as paths
+/// relative to the crate root with forward slashes.
+///
+/// `tracked` is the repository's view of `docs/` (see [`tracked_docs`]).
+/// When it is `Some`, a markdown file git doesn't track is skipped: a
+/// scratch note or an editor backup dropped under `docs/` is nobody's
+/// published doc, and failing on it would turn a routine `cargo test` red
+/// for a reason that has nothing to do with package hygiene. When it is
+/// `None` every markdown file is classified, so the guard never weakens
+/// itself just because git couldn't be consulted.
+fn docs_to_classify(tracked: Option<&HashSet<String>>) -> HashSet<String> {
+    let mut seen = HashSet::new();
+    let mut stack = vec![crate_root().join("docs")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", dir.display()))
+        {
+            let entry = entry.expect("readable dir entry");
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let is_dotfile = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with('.'));
+            if is_dotfile || path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(crate_root())
+                .expect("entry is under crate_root()/docs")
+                .to_str()
+                .expect("utf8 path")
+                .replace('\\', "/");
+            if tracked.is_some_and(|t| !t.contains(&rel)) {
+                continue;
+            }
+            seen.insert(rel);
+        }
+    }
+    seen
+}
+
 /// Runs `cargo package --list -p quadraui` and returns the set of paths
 /// (relative to the crate root, forward-slash separated, exactly as cargo
 /// prints them) that would end up in the published tarball.
@@ -276,40 +348,7 @@ fn internal_and_consumer_doc_lists_cover_docs_dir_with_no_overlap() {
         "a path appears in both INTERNAL_DOCS and CONSUMER_DOCS"
     );
 
-    let mut seen = HashSet::new();
-    let mut stack = vec![crate_root().join("docs")];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("failed to read {}: {e}", dir.display()))
-        {
-            let entry = entry.expect("readable dir entry");
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            // Only classify tracked markdown docs — a stray `.DS_Store`,
-            // editor swap file, or scratch note dropped under `docs/`
-            // isn't a doc either list needs to know about, and would
-            // otherwise turn a routine `cargo test` red with a
-            // classification failure that has nothing to do with package
-            // hygiene.
-            let is_dotfile = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with('.'));
-            if is_dotfile || path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let rel = path
-                .strip_prefix(crate_root())
-                .expect("entry is under crate_root()/docs")
-                .to_str()
-                .expect("utf8 path")
-                .replace('\\', "/");
-            seen.insert(rel);
-        }
-    }
+    let seen = docs_to_classify(tracked_docs().as_ref());
 
     let known: HashSet<String> = internal
         .iter()
@@ -325,6 +364,46 @@ fn internal_and_consumer_doc_lists_cover_docs_dir_with_no_overlap() {
          quadraui/Cargo.toml's `exclude` comment for the policy) and add \
          them to one of the two lists above"
     );
+}
+
+/// The classification walk must only demand classification of docs the
+/// repository actually tracks, and must fall back to demanding it of every
+/// markdown file when git can't be consulted.
+///
+/// Both directions are asserted against a synthetic `tracked` set rather
+/// than by writing a scratch file into `docs/`, so the test never mutates
+/// the worktree it is checking.
+#[test]
+fn classification_walk_skips_untracked_docs_but_not_when_git_is_unavailable() {
+    let all = docs_to_classify(None);
+    assert!(
+        all.contains("docs/PRIMITIVE_RULES.md"),
+        "unfiltered walk should find every markdown doc under docs/, got {all:?}"
+    );
+
+    // Nothing tracked: every file the walk found is treated as a stray and
+    // skipped, so no classification is demanded.
+    assert!(
+        docs_to_classify(Some(&HashSet::new())).is_empty(),
+        "an empty tracked set should leave nothing to classify"
+    );
+
+    // One doc tracked: that doc, and only that doc, is classified — even
+    // though the walk saw all of them.
+    let one: HashSet<String> = ["docs/PRIMITIVE_RULES.md".to_string()]
+        .into_iter()
+        .collect();
+    assert_eq!(docs_to_classify(Some(&one)), one);
+
+    // When git *is* available — every CI leg and every worktree — it must
+    // report real docs under forward-slash paths, so the filter above
+    // matches the walk's output instead of silently skipping everything.
+    if let Some(tracked) = tracked_docs() {
+        assert!(
+            tracked.contains("docs/PRIMITIVE_RULES.md"),
+            "git ls-files should report tracked docs with forward slashes, got {tracked:?}"
+        );
+    }
 }
 
 /// Parses `Cargo.toml`'s `[package] exclude = [...]` array into a set of
