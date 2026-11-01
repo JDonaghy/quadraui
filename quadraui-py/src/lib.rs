@@ -1057,7 +1057,7 @@ fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Vec<Pa
     }
     if let Some(tree) = refs.tree {
         if let Some(rect) = next_band(4.0) {
-            backend.draw_tree(rect, tree);
+            draw_tree_with_scrollbar(backend, rect, tree);
             let layout = backend.tree_layout(rect, tree);
             hits.push(PaintedHit::Tree {
                 id: tree.id,
@@ -1220,6 +1220,24 @@ fn split_rects(area: Rect, n: usize, horizontal: bool) -> Vec<Rect> {
         .collect()
 }
 
+/// Paints `tree` into `area`, then -- on a backend that doesn't paint its
+/// own tree scrollbar inside `draw_tree` (the TUI backend; the GUI backends
+/// paint theirs inline, reporting [`Backend::tree_paints_own_scrollbar`]) --
+/// composes the vertical scrollbar from the backend's own
+/// [`Backend::tree_vscrollbar`] geometry and paints it over the pane's right
+/// edge. This is the layout-then-paint two-step a Rust consumer runs by
+/// hand, so a declarative tree gets a working scrollbar on every backend.
+/// `tree_vscrollbar` returns `None` when the rows fit, so a short tree paints
+/// no scrollbar.
+fn draw_tree_with_scrollbar(backend: &mut dyn Backend, area: Rect, tree: &TreeView) {
+    backend.draw_tree(area, tree);
+    if !backend.tree_paints_own_scrollbar() {
+        if let Some(scrollbar) = backend.tree_vscrollbar(area, tree) {
+            backend.draw_scrollbar(area, &scrollbar);
+        }
+    }
+}
+
 /// Paints one leaf's descriptor into the whole `area` its container gave
 /// it. Appends a [`PaintedHit`] for it, keyed by the leaf's own tree-address
 /// `id` (not the descriptor's embedded `id`, which a render callback may
@@ -1246,7 +1264,7 @@ fn paint_leaf(
             hits.push(PaintedHit::List { id, area, layout });
         }
         LeafDescriptor::Tree(tree) => {
-            backend.draw_tree(area, tree);
+            draw_tree_with_scrollbar(backend, area, tree);
             let layout = backend.tree_layout(area, tree);
             hits.push(PaintedHit::Tree {
                 id,

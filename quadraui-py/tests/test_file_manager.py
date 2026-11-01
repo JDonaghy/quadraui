@@ -367,6 +367,57 @@ def test_status_bar_reflects_cursor_and_open_tabs(fmmod, tree_root):
 # --- the real-terminal key path ----------------------------------------------
 
 
+# --- scrolling: the view follows the cursor, the scrollbar paints ------------
+
+
+def _deep_root(tmp_path, n):
+    """A root with `n` subfolders -- enough to overflow a short frame so the
+    tree must scroll."""
+    for i in range(n):
+        (tmp_path / f"folder_{i:02d}").mkdir()
+    return tmp_path
+
+
+def test_short_tree_paints_no_scrollbar(fmmod, tree_root):
+    """When every folder row fits the pane, no scrollbar track/thumb paints --
+    `Backend::tree_vscrollbar` returns None and nothing is drawn over it."""
+    fm = fmmod.FileManager(tree_root, width=80, height=30)  # 3 rows, 30 tall
+    assert not fm.app.screen_contains("░")  # track glyph
+    assert not fm.app.screen_contains("█")  # thumb glyph
+
+
+def test_overflowing_tree_paints_a_scrollbar_on_tui(fmmod, tmp_path):
+    """More folder rows than fit makes the headless (TUI) backend paint the
+    vertical scrollbar the tree rasteriser itself doesn't draw -- the binding
+    composes it from `tree_vscrollbar` geometry, so a declarative tree gets a
+    scrollbar with no per-app code."""
+    fm = fmmod.FileManager(_deep_root(tmp_path, 20), width=60, height=12)
+    fm.app.step()
+    assert fm.app.screen_contains("░")  # track
+    assert fm.app.screen_contains("█")  # thumb
+
+
+def test_scroll_follows_cursor_down_and_clamps(fmmod, tmp_path):
+    """Arrowing past the visible window advances `scroll` so the cursor stays
+    painted, and the last page clamps without scrolling past the end."""
+    fm = fmmod.FileManager(_deep_root(tmp_path, 20), width=60, height=12)
+
+    assert fm.scroll == 0
+    for _ in range(15):
+        _press(fmmod, fm, fmmod.DOWN_KEY)
+
+    # The cursor advanced past the first window, so the view scrolled...
+    assert fm.scroll > 0
+    # ...and the cursored folder is actually on screen (not off the bottom).
+    assert fm.app.screen_contains(fm.cursor.name)
+
+    # Arrowing back to the top pulls the window back to the start.
+    for _ in range(20):
+        _press(fmmod, fm, fmmod.UP_KEY)
+    assert fm.scroll == 0
+    assert fm.cursor.name == tmp_path.name
+
+
 def test_focus_scoped_key_event_moves_the_cursor(fmmod, tree_root):
     """On the real backends a focused tree's keys arrive wrapped as
     Tree/KeyPressed, not a plain KeyPressed; the handler must honor both so the

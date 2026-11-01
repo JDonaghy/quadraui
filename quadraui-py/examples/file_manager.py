@@ -188,10 +188,14 @@ def folder_rows(root: Node) -> tuple[list[dict], list[Node]]:
     return rows, nodes
 
 
-def tree_leaf(rows: list[dict], *, selected_path: list[int]) -> dict:
+def tree_leaf(rows: list[dict], *, selected_path: list[int], scroll_offset: int) -> dict:
     """A layout-tree *leaf* wrapping the folders-only tree descriptor. A leaf is
     `{"id", "<kind>": <descriptor>}`; the id is unique across the whole tree.
-    `has_focus` keeps arrow keys / Enter routed here on the real backends."""
+    `has_focus` keeps arrow keys / Enter routed here on the real backends.
+    `scroll_offset` is the index of the first painted row -- the tree is purely
+    declarative (it renders `rows[scroll_offset..]`), so the app owns it and
+    advances it to keep the cursor in view; the backend derives the scrollbar
+    thumb from it."""
     return {
         "id": "fm:tree",
         "tree": {
@@ -199,7 +203,7 @@ def tree_leaf(rows: list[dict], *, selected_path: list[int]) -> dict:
             "rows": rows,
             "selection_mode": "Single",
             "selected_path": selected_path,
-            "scroll_offset": 0,
+            "scroll_offset": scroll_offset,
             "has_focus": True,
             "style": TREE_STYLE,
         },
@@ -348,6 +352,7 @@ class FileManager:
         self.root = build_root(root_path)
         self.height = height
         self.cursor: Node = self.root   # the selected folder node
+        self.scroll = 0                 # index of the first painted tree row
         self.ratio = 0.3                # tree pane width fraction
         self.open: list[Node] = []      # folder nodes shown as tabs, in order
         self.active_tab = 0             # index into self.open
@@ -372,6 +377,27 @@ class FileManager:
         rows, nodes = self._visible()
         i = nodes.index(self.cursor)
         self.cursor = nodes[max(0, min(len(nodes) - 1, i + delta))]
+
+    def _tree_capacity(self) -> int:
+        """Painted tree rows that fit: the frame height less the three chrome
+        lines above/below the tree -- the toolbar row, the outer split's
+        divider, and the bottom status line. An estimate (the real terminal
+        may differ from the configured height, like the status-bar pinning in
+        `_render`); erring one row short only scrolls a touch early, never
+        hides the cursor."""
+        return max(1, self.height - 3)
+
+    def _scroll_to_cursor(self, cursor_index: int, row_count: int) -> None:
+        """Advance `scroll` so the cursor row stays within the painted window,
+        then clamp it so the last page never leaves a blank gap. The tree is
+        declarative -- it renders `rows[scroll..]` -- so without this the view
+        never follows the cursor and the scrollbar thumb never moves."""
+        capacity = self._tree_capacity()
+        if cursor_index < self.scroll:
+            self.scroll = cursor_index
+        elif cursor_index >= self.scroll + capacity:
+            self.scroll = cursor_index - capacity + 1
+        self.scroll = max(0, min(self.scroll, max(0, row_count - capacity)))
 
     def _expand(self) -> None:
         """Expand the cursored folder (loading it on demand); if it is already
@@ -528,13 +554,15 @@ class FileManager:
         body is the resizable tree/details split, wrapped in a `sidebar_panel`
         whose reserved slot paints the toolbar above it. Reads only."""
         rows, nodes = self._visible()
-        selected_path = rows[nodes.index(self.cursor)]["path"]
+        cursor_index = nodes.index(self.cursor)
+        selected_path = rows[cursor_index]["path"]
+        self._scroll_to_cursor(cursor_index, len(rows))
         body = {
             "split": {
                 "id": "fm:split",
                 "orientation": "horizontal",  # panes side by side, vertical divider
                 "ratio": self.ratio,
-                "first": tree_leaf(rows, selected_path=selected_path),
+                "first": tree_leaf(rows, selected_path=selected_path, scroll_offset=self.scroll),
                 "second": self._details_pane(),
             }
         }
