@@ -136,12 +136,15 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::panic::{self, AssertUnwindSafe};
 use std::slice;
+use std::time::Duration;
 
+use quadraui::descriptor_store::{DescriptorStore, Handle};
 use quadraui::paths::{self, AppPathKind};
 use quadraui::tui::testing::TuiDriver;
+use quadraui::tui::{StepOutcome, TuiRunner};
 use quadraui::{
-    AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, Reaction, Rect, TabBar,
-    TextDisplay, TreeView, UiEvent, Viewport,
+    AppLogic, Backend, Button, DataTable, Key, ListItemMeasure, ListView, ListViewHit, Modifiers,
+    NamedKey, Point, Reaction, Rect, TabBar, TextDisplay, TreeView, UiEvent, Viewport,
 };
 
 /// The call succeeded. Also the "continue" step result of [`qui_step`].
@@ -180,6 +183,10 @@ pub const QUI_ERR_INTERNAL: i32 = -12;
 /// The `kind` passed to [`qui_app_path`] was not one of the `QUI_PATH_*`
 /// values, or this platform or build could not resolve it.
 pub const QUI_ERR_UNSUPPORTED: i32 = -13;
+/// A real-terminal [`QuiRtApp`] operation failed at the OS/terminal layer
+/// (negotiating raw mode, polling the input fd, resizing, …). Carries the
+/// underlying `io::Error` message as the last-error text.
+pub const QUI_ERR_IO: i32 = -14;
 
 /// [`qui_step`] advanced the app and it is still running.
 pub const QUI_STEP_CONTINUE: i32 = QUI_OK;
@@ -1279,6 +1286,7 @@ pub extern "C" fn qui_error_name(code: i32) -> *const c_char {
             QUI_ERR_POISONED => c"QUI_ERR_POISONED",
             QUI_ERR_INTERNAL => c"QUI_ERR_INTERNAL",
             QUI_ERR_UNSUPPORTED => c"QUI_ERR_UNSUPPORTED",
+            QUI_ERR_IO => c"QUI_ERR_IO",
             _ => return std::ptr::null(),
         };
         name.as_ptr()
@@ -1307,6 +1315,458 @@ pub unsafe extern "C" fn qui_free(ptr: *mut c_char) {
         drop(CString::from_raw(ptr));
     });
 }
+
+// ─── Real-terminal spike: `QuiRtApp` ────────────────────────────────────────
+//
+// Everything above runs the headless `TuiDriver` — no terminal, fixed slots,
+// one descriptor per primitive type. `QuiRtApp` is a narrow, additive spike
+// proving out the other half: a real terminal driven over `TuiRunner`, a
+// handle-addressed store so a descriptor can be updated in place instead of
+// replaced wholesale, and hit-tested semantic events (a `ListView` row
+// selected/activated) instead of raw mouse coordinates. It covers exactly
+// one primitive (`ListView`) end to end; see `SPIKE_FINDINGS.md` for the
+// go/no-go verdict this was built to answer.
+
+/// The [`AppLogic`] `QuiRtApp` drives: a handle-addressed store of
+/// [`ListView`] descriptors (only the most recently inserted one is
+/// painted/hit-tested — see `active`), the host's callbacks, and the last
+/// rect the active list was painted into (needed because [`AppLogic::render`]
+/// takes `&self`: hit-testing in `handle` has to recover where things were
+/// drawn without being able to recompute it from scratch).
+struct FfiRtApp {
+    store: DescriptorStore<ListView>,
+    /// `handles[id as usize]` is the internal store handle for ffi id `id`.
+    /// Ids are assigned densely by insertion order; there is no removal in
+    /// this spike, so the index never needs reuse bookkeeping.
+    handles: Vec<Handle<ListView>>,
+    /// The ffi id of the list currently painted and hit-tested. `None`
+    /// until the first insert.
+    active: Option<i64>,
+    /// The rect `render` last painted the active list into, in viewport
+    /// coordinates. `handle` translates a `MouseDown` position into this
+    /// rect's local space before hit-testing.
+    last_rect: Cell<Option<Rect>>,
+    vtable: QuiVTable,
+}
+
+impl FfiRtApp {
+    fn new(vtable: QuiVTable) -> Self {
+        Self {
+            store: DescriptorStore::new(),
+            handles: Vec::new(),
+            active: None,
+            last_rect: Cell::new(None),
+            vtable,
+        }
+    }
+
+    /// Forwards a raw, serialized `event` to the host's `handle` callback
+    /// unchanged — the fallback path for anything `handle` doesn't turn
+    /// into a semantic event itself.
+    fn forward_raw(&self, event: &UiEvent) -> Reaction {
+        let Some(handle_fn) = self.vtable.handle else {
+            return Reaction::Continue;
+        };
+        let json = match serde_json::to_string(event) {
+            Ok(json) => json,
+            Err(err) => {
+                set_last_error(
+                    QUI_ERR_INTERNAL,
+                    format!("failed to serialize UiEvent to JSON: {err}"),
+                );
+                return Reaction::Continue;
+            }
+        };
+        let code = unsafe { handle_fn(self.vtable.user_data, json.as_ptr(), json.len()) };
+        reaction_from_code(code)
+    }
+
+    /// Sends a semantic (non-`UiEvent`) payload to the host's `handle`
+    /// callback, e.g. `{"type":"list_item_activated",...}`.
+    fn emit_semantic(&self, payload: &serde_json::Value) -> Reaction {
+        let Some(handle_fn) = self.vtable.handle else {
+            return Reaction::Continue;
+        };
+        let json = payload.to_string();
+        let code = unsafe { handle_fn(self.vtable.user_data, json.as_ptr(), json.len()) };
+        reaction_from_code(code)
+    }
+
+    /// Hit-tests a `MouseDown` at `position` (viewport coordinates) against
+    /// the active list's last-painted rect. Returns `None` (meaning: fall
+    /// back to forwarding the raw event) when there is no active list, no
+    /// rect has been painted yet, or the click landed on the title/empty
+    /// area rather than an item row.
+    fn handle_mouse_down(&mut self, position: Point) -> Option<Reaction> {
+        let rect = self.last_rect.get()?;
+        let id = self.active?;
+        let handle = *self.handles.get(id as usize)?;
+        let hit = {
+            let list = self.store.get(handle)?;
+            let local_x = position.x - rect.x;
+            let local_y = position.y - rect.y;
+            let layout = list.layout(rect.width, rect.height, 0.0, |_| ListItemMeasure::new(1.0));
+            layout.hit_test(local_x, local_y)
+        };
+        match hit {
+            ListViewHit::Item(idx) => {
+                self.store.update(handle, |list| list.selected_idx = idx);
+                let payload = serde_json::json!({
+                    "type": "list_item_activated",
+                    "handle": id,
+                    "idx": idx,
+                });
+                Some(self.emit_semantic(&payload))
+            }
+            ListViewHit::Title | ListViewHit::Empty => None,
+        }
+    }
+
+    /// Handles Up/Down/Enter against the active list's selection directly,
+    /// without a round trip through the host: Up/Down move `selected_idx`
+    /// in place and ask for a redraw; Enter emits the same semantic
+    /// `list_item_activated` payload a mouse click on the selected row
+    /// would. Any other key falls back to forwarding the raw event.
+    fn handle_key(&mut self, key: &Key) -> Option<Reaction> {
+        let id = self.active?;
+        let handle = *self.handles.get(id as usize)?;
+        match key {
+            Key::Named(NamedKey::Up) => {
+                self.store.update(handle, |list| {
+                    if list.selected_idx > 0 {
+                        list.selected_idx -= 1;
+                    }
+                });
+                Some(Reaction::Redraw)
+            }
+            Key::Named(NamedKey::Down) => {
+                self.store.update(handle, |list| {
+                    let len = list.items.len();
+                    if len > 0 && list.selected_idx + 1 < len {
+                        list.selected_idx += 1;
+                    }
+                });
+                Some(Reaction::Redraw)
+            }
+            Key::Named(NamedKey::Enter) => {
+                let idx = self.store.get(handle)?.selected_idx;
+                let payload = serde_json::json!({
+                    "type": "list_item_activated",
+                    "handle": id,
+                    "idx": idx,
+                });
+                Some(self.emit_semantic(&payload))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl AppLogic for FfiRtApp {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let viewport = backend.viewport();
+        let rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+        self.last_rect.set(Some(rect));
+        let Some(id) = self.active else {
+            return;
+        };
+        let Some(handle) = self.handles.get(id as usize) else {
+            return;
+        };
+        if let Some(list) = self.store.get(*handle) {
+            backend.draw_list(rect, list);
+        }
+    }
+
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        let semantic = match &event {
+            UiEvent::MouseDown { position, .. } => self.handle_mouse_down(*position),
+            UiEvent::KeyPressed { key, .. } => self.handle_key(key),
+            _ => None,
+        };
+        semantic.unwrap_or_else(|| self.forward_raw(&event))
+    }
+
+    fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+        let Some(tick_fn) = self.vtable.tick else {
+            return Reaction::Continue;
+        };
+        let code = unsafe { tick_fn(self.vtable.user_data) };
+        reaction_from_code(code)
+    }
+}
+
+/// Opaque handle to one real-terminal app driven over [`TuiRunner`]. Never
+/// constructed or inspected by the caller; only ever passed back into this
+/// crate's `qui_rt_*` functions.
+pub struct QuiRtApp {
+    runner: TuiRunner<FfiRtApp>,
+    /// Set when a panic was caught while this handle was borrowed; see
+    /// [`QuiApp::poisoned`] for the equivalent on the headless handle.
+    poisoned: bool,
+}
+
+/// [`with_app`] for [`QuiRtApp`].
+///
+/// # Safety
+/// `app` must be either null or a live pointer from [`qui_rt_app_new`].
+unsafe fn with_rt_app<T: AbiResult>(
+    name: &str,
+    app: *mut QuiRtApp,
+    body: impl FnOnce(&mut QuiRtApp) -> T,
+) -> T {
+    let Some(borrowed) = app.as_mut() else {
+        return T::from_error(fail(
+            QUI_ERR_NULL_HANDLE,
+            format!("{name}: app handle is null"),
+        ));
+    };
+    if borrowed.poisoned {
+        return T::from_error(fail(
+            QUI_ERR_POISONED,
+            format!(
+                "{name}: app handle is poisoned by an earlier caught panic; free it with qui_rt_app_free"
+            ),
+        ));
+    }
+    match panic::catch_unwind(AssertUnwindSafe(|| body(borrowed))) {
+        Ok(value) => value,
+        Err(payload) => {
+            (*app).poisoned = true;
+            T::from_error(record_panic(name, &*payload))
+        }
+    }
+}
+
+/// Create a new app that negotiates and owns a real terminal (raw mode,
+/// mouse capture, alternate screen) for the lifetime of the handle.
+///
+/// Returns null on failure, with [`qui_last_error_code`] set to
+/// [`QUI_ERR_IO`] if negotiating the terminal failed (not a TTY, no
+/// permission, …) or [`QUI_ERR_PANIC`] if construction itself panicked.
+///
+/// The returned handle is owned by the caller and must be released with
+/// [`qui_rt_app_free`], never with `free()`. Releasing it restores the
+/// terminal to its state before this call.
+///
+/// # Safety
+/// `vtable`'s `user_data` is an opaque pointer this crate never
+/// dereferences; the caller is responsible for its lifetime outliving every
+/// call made with the returned [`QuiRtApp`] handle.
+#[no_mangle]
+pub unsafe extern "C" fn qui_rt_app_new(vtable: QuiVTable) -> *mut QuiRtApp {
+    const NAME: &str = "qui_rt_app_new";
+    clear_last_error();
+    boundary(NAME, || {
+        let app = FfiRtApp::new(vtable);
+        match TuiRunner::new(app) {
+            Ok(runner) => Box::into_raw(Box::new(QuiRtApp {
+                runner,
+                poisoned: false,
+            })),
+            Err(err) => {
+                fail(
+                    QUI_ERR_IO,
+                    format!("{NAME}: failed to open terminal: {err}"),
+                );
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// Destroy an app created by [`qui_rt_app_new`], restoring the terminal.
+/// `app` may be null (no-op). Works even on a handle poisoned by a caught
+/// panic — this is the one function that does.
+///
+/// Leaves the last error untouched, so a host can free the app on its error
+/// path and still report what failed afterwards.
+///
+/// # Safety
+/// `app` must be either null or a still-live pointer returned by
+/// [`qui_rt_app_new`] that has not already been freed.
+#[no_mangle]
+pub unsafe extern "C" fn qui_rt_app_free(app: *mut QuiRtApp) {
+    boundary("qui_rt_app_free", || {
+        if app.is_null() {
+            return;
+        }
+        drop(Box::from_raw(app));
+    });
+}
+
+/// Insert a new [`ListView`] descriptor, decoded from `json`, into the
+/// app's store, make it the active (painted/hit-tested) list, and request a
+/// repaint. Returns the new descriptor's non-negative handle id on success —
+/// pass it back to [`qui_rt_list_update`] to mutate it in place — or a
+/// negative `QUI_ERR_*` code on failure.
+///
+/// Unlike the headless `qui_list_insert`, there is no slot to occupy:
+/// inserting again just adds another descriptor and makes it the active
+/// one, so many lists can be held at once even though only one is painted.
+///
+/// # Safety
+/// `app` must be a live pointer from [`qui_rt_app_new`]; `(json, json_len)`
+/// must name `json_len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn qui_rt_list_insert(
+    app: *mut QuiRtApp,
+    json: *const u8,
+    json_len: usize,
+) -> i64 {
+    const NAME: &str = "qui_rt_list_insert";
+    clear_last_error();
+    with_rt_app(NAME, app, |app| {
+        let text = match borrow_utf8(NAME, "json", json, json_len) {
+            Ok(text) => text,
+            Err(code) => return i64::from(code),
+        };
+        let list: ListView = match serde_json::from_str(text) {
+            Ok(list) => list,
+            Err(err) => {
+                return fail_i64(
+                    QUI_ERR_INVALID_JSON,
+                    format!("{NAME}: json does not decode to a ListView: {err}"),
+                );
+            }
+        };
+        let rt_app = app.runner.app_mut();
+        let handle = rt_app.store.insert(list);
+        let id = rt_app.handles.len() as i64;
+        rt_app.handles.push(handle);
+        rt_app.active = Some(id);
+        app.runner.backend_mut().request_full_repaint();
+        id
+    })
+}
+
+/// Replace the [`ListView`] named by `handle_id` (the id [`qui_rt_list_insert`]
+/// returned) with the descriptor decoded from `json`, in place, and request
+/// a repaint. This is the operation the headless ABI cannot do at all: there,
+/// updating means clearing the slot and inserting again, losing the
+/// old descriptor's identity; here the store handle — and so anything a host
+/// keyed off it — stays valid across the update.
+///
+/// Returns [`QUI_OK`] on success, [`QUI_ERR_UNKNOWN_SLOT`] if `handle_id`
+/// does not name a descriptor this app holds, or another negative
+/// `QUI_ERR_*` code on failure.
+///
+/// # Safety
+/// `app` must be a live pointer from [`qui_rt_app_new`]; `(json, json_len)`
+/// must name `json_len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn qui_rt_list_update(
+    app: *mut QuiRtApp,
+    handle_id: i64,
+    json: *const u8,
+    json_len: usize,
+) -> i32 {
+    const NAME: &str = "qui_rt_list_update";
+    clear_last_error();
+    with_rt_app(NAME, app, |app| {
+        let text = match borrow_utf8(NAME, "json", json, json_len) {
+            Ok(text) => text,
+            Err(code) => return code,
+        };
+        let list: ListView = match serde_json::from_str(text) {
+            Ok(list) => list,
+            Err(err) => {
+                return fail(
+                    QUI_ERR_INVALID_JSON,
+                    format!("{NAME}: json does not decode to a ListView: {err}"),
+                );
+            }
+        };
+        let rt_app = app.runner.app_mut();
+        let Ok(index) = usize::try_from(handle_id) else {
+            return fail(
+                QUI_ERR_UNKNOWN_SLOT,
+                format!("{NAME}: handle {handle_id} is negative"),
+            );
+        };
+        let Some(&handle) = rt_app.handles.get(index) else {
+            return fail(
+                QUI_ERR_UNKNOWN_SLOT,
+                format!("{NAME}: handle {handle_id} does not name a descriptor this app holds"),
+            );
+        };
+        if !rt_app.store.update(handle, |existing| *existing = list) {
+            return fail(
+                QUI_ERR_UNKNOWN_SLOT,
+                format!("{NAME}: handle {handle_id} was removed"),
+            );
+        }
+        app.runner.backend_mut().request_full_repaint();
+        QUI_OK
+    })
+}
+
+/// Advance the app by polling the real terminal for exactly one native
+/// event (input, resize, …) without blocking, dispatch it if one arrived,
+/// and repaint if needed.
+///
+/// Returns [`QUI_STEP_CONTINUE`], [`QUI_STEP_EXITED`] (further calls are a
+/// no-op returning this again), or [`QUI_ERR_IO`] if polling the terminal
+/// failed.
+///
+/// # Safety
+/// `app` must be a live pointer from [`qui_rt_app_new`].
+#[no_mangle]
+pub unsafe extern "C" fn qui_rt_step(app: *mut QuiRtApp) -> i32 {
+    const NAME: &str = "qui_rt_step";
+    clear_last_error();
+    with_rt_app(NAME, app, |app| match app.runner.step() {
+        Ok(StepOutcome::Exited) => QUI_STEP_EXITED,
+        Ok(_) => QUI_STEP_CONTINUE,
+        Err(err) => fail(QUI_ERR_IO, format!("{NAME}: {err}")),
+    })
+}
+
+/// Like [`qui_rt_step`], but blocks up to `timeout_ms` milliseconds waiting
+/// for the first native event to arrive, instead of returning immediately
+/// when there is nothing to dispatch. This is the entry point a host's own
+/// blocking event loop should call at whatever cadence suits it.
+///
+/// # Safety
+/// `app` must be a live pointer from [`qui_rt_app_new`].
+#[no_mangle]
+pub unsafe extern "C" fn qui_rt_pump(app: *mut QuiRtApp, timeout_ms: u32) -> i32 {
+    const NAME: &str = "qui_rt_pump";
+    clear_last_error();
+    with_rt_app(NAME, app, |app| {
+        match app
+            .runner
+            .pump(Duration::from_millis(u64::from(timeout_ms)))
+        {
+            Ok(StepOutcome::Exited) => QUI_STEP_EXITED,
+            Ok(_) => QUI_STEP_CONTINUE,
+            Err(err) => fail(QUI_ERR_IO, format!("{NAME}: {err}")),
+        }
+    })
+}
+
+/// Run [`qui_rt_pump`] in a loop until the app exits, a step fails, or
+/// `max_steps` is reached, blocking up to `timeout_ms` per step. `max_steps`
+/// is clamped to at least `1`.
+///
+/// # Safety
+/// `app` must be a live pointer from [`qui_rt_app_new`].
+#[no_mangle]
+pub unsafe extern "C" fn qui_rt_run(app: *mut QuiRtApp, timeout_ms: u32, max_steps: u32) -> i32 {
+    boundary("qui_rt_run", || {
+        let mut last = QUI_STEP_CONTINUE;
+        for _ in 0..max_steps.max(1) {
+            last = qui_rt_pump(app, timeout_ms);
+            if last != QUI_STEP_CONTINUE {
+                return last;
+            }
+        }
+        last
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2059,6 +2519,7 @@ mod tests {
             (QUI_ERR_POISONED, "QUI_ERR_POISONED"),
             (QUI_ERR_INTERNAL, "QUI_ERR_INTERNAL"),
             (QUI_ERR_UNSUPPORTED, "QUI_ERR_UNSUPPORTED"),
+            (QUI_ERR_IO, "QUI_ERR_IO"),
         ];
         for (code, name) in expected {
             let ptr = qui_error_name(code);
