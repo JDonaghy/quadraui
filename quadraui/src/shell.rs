@@ -783,6 +783,29 @@ pub trait ShellApp {
     /// Called once after the shell is built. Optional.
     fn setup(&mut self, _backend: &mut dyn Backend) {}
 
+    /// Called once, immediately after [`Self::setup`] returns, with a
+    /// [`ShellContext`] already lending `ctx.shell_mut()` access to the
+    /// real, built [`crate::compose::app_shell::AppShell`] — strictly
+    /// before the first [`Self::render_content`] of the run.
+    ///
+    /// [`Self::setup`] alone cannot reach the shell: it only receives a
+    /// `Backend`. The other hooks that do reach it ([`Self::on_shell_event_ctx`],
+    /// [`Self::take_requested_panel`]) are event-driven and only fire once at
+    /// least one event has been dispatched, which is already after the
+    /// first frame has painted. This hook closes that gap for any decision
+    /// that depends on live backend or startup state (not just the static
+    /// [`ShellConfig`] seed read at construction time) — e.g. hiding the
+    /// sidebar because a file argument was passed on the command line.
+    ///
+    /// [`ShellAdapter`](crate::shell_adapter::ShellAdapter) calls this on
+    /// every backend (TUI, GTK, macOS, Win) from the one shared
+    /// `AppLogic::setup` implementation, so a mutation made here reaches
+    /// frame 0 identically regardless of backend.
+    ///
+    /// Default implementation is a no-op: apps that never override it see
+    /// no change in behaviour.
+    fn setup_shell(&mut self, _ctx: &ShellContext) {}
+
     /// Called every frame before the shell reads `chrome_line_height` and
     /// computes its layout.  Apps that update backend font metrics (e.g.
     /// via `set_ui_font` / `set_editor_font` / `set_theme`) should do so
