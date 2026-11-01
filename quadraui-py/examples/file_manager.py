@@ -1,29 +1,45 @@
-"""Cross-backend file manager: a resizable two-pane app built from one set of
-`quadraui` descriptors that run unchanged on TUI, GTK, macOS, and Windows --
-only the final run call differs per platform.
+"""Cross-backend file manager: an interactive two-pane browser built from one
+set of `quadraui` descriptors that run unchanged on TUI, GTK, macOS, and
+Windows -- only the final run call differs per platform.
 
-Layout (the `render` callback returns a *layout tree*, new in the bindings):
+Layout (the `render` callback returns a *layout tree*):
 
-    split (resizable divider, draggable)
-    ├─ first  : a FOLDERS-ONLY tree (navigation)
-    └─ second : the details area -- tabs, one per opened folder, each tab a
-                data_table of that folder's contents (files + subfolders)
+    split (vertical: chrome + body stacked over a status bar)
+    ├─ first  : sidebar_panel
+    │            ├─ toolbar : a key-legend affordance strip (reserved top slot)
+    │            └─ content : split (resizable divider, draggable)
+    │                          ├─ first  : a FOLDERS-ONLY tree (navigation)
+    │                          └─ second : the details area -- tabs, one per
+    │                                      opened folder, each tab a data_table
+    │                                      of that folder's contents
+    └─ second : a live status bar (cursored folder, item count, open tabs)
 
-The UI is *live*: a plain Python `state` dict holds what changes (the tree
-cursor, the split ratio, which folders are open as tabs, the active tab), the
-event handler mutates it, and `render()` rebuilds the whole layout tree from it
-every frame. Neither callback touches `QuiApp` -- the handler only mutates
-`state`, the render callback only reads it and returns descriptors -- the
-`render(state)` seam the bindings use to avoid a reentrant borrow.
+The tree loads lazily: only one directory level is read at a time, so you can
+browse an arbitrarily deep filesystem without scanning it up front. Folders
+expand and collapse; a folder's children are read the first time it is opened.
 
-Keys: Up/Down move the folder cursor; Enter opens the cursored folder as a
-details tab (or focuses it if already open); drag the divider to resize; click
-a tab to switch. `q`/Escape quit the real run loops.
+The UI is *live*: plain Python attributes hold what changes (the cursor node,
+the split ratio, which folders are open as tabs, the active tab, a transient
+status hint), the event handler mutates them, and `render()` rebuilds the whole
+layout tree from them every frame. Neither callback calls back into `QuiApp`.
+
+Interaction (keyboard drives, mouse works too):
+  Up / Down    move the folder cursor
+  Right        expand the cursored folder (load on demand); if already
+               expanded, descend into its first subfolder
+  Left         collapse the cursored folder; if already collapsed, jump to
+               its parent
+  Enter / o    open the cursored folder as a details tab (and expand it)
+  r            reload the cursored folder from disk
+  click a tree row         select it and toggle its expansion
+  activate a details row   drill into that subfolder (or report a file's size)
+  click a tab / its ×      switch to / close that tab
+  q / Escape   quit the real run loops
 
     python quadraui-py/examples/file_manager.py [PATH]            # headless demo
     python quadraui-py/examples/file_manager.py [PATH] --tui      # real terminal
     python quadraui-py/examples/file_manager.py [PATH] --native   # OS window
-    python quadraui-py/examples/file_manager.py [PATH] --dump      # descriptor dump
+    python quadraui-py/examples/file_manager.py [PATH] --dump     # descriptor dump
 """
 
 from __future__ import annotations
@@ -34,57 +50,29 @@ from pathlib import Path
 
 from quadraui import QuiApp
 
-# Root is depth 0. Directories shallower than this are opened and their
-# children included in the model; a directory at exactly this depth is kept as
-# a collapsed branch (we know it is a folder but do not load its children).
-MAX_DEPTH = 2
-
 
 @dataclass
 class Node:
-    """One filesystem entry in the scanned model.
+    """One filesystem entry in the lazily-scanned model.
 
-    `children is None` means "not loaded" -- either a file, or a directory we
-    chose not to open (one sitting at `MAX_DEPTH`). `expanded` is True only for
-    directories we actually recursed into, so it lines up with the tree's
-    chevron state.
+    `children is None` means "not loaded yet" -- a directory whose contents
+    have never been read. After loading, `children` is a (possibly empty)
+    list. Files always keep `children is None` and are never loaded.
+    `expanded` is True only for directories the user has opened in the tree.
     """
 
     name: str
     path: Path
     is_dir: bool
     size_bytes: int | None = None
+    parent: "Node | None" = field(default=None, repr=False)
     children: list["Node"] | None = None
     expanded: bool = False
+    load_error: bool = False
 
-
-def _sort_key(node: Node) -> tuple[bool, str]:
-    """Directories first, then case-insensitive name."""
-    return (not node.is_dir, node.name.lower())
-
-
-def scan(path: Path, depth: int = 0) -> Node:
-    """Scan `path` into a `Node`, recursing into directories until `MAX_DEPTH`.
-
-    Dotfiles are skipped. A directory at `MAX_DEPTH` (or any unreadable one)
-    is returned as a collapsed branch with `children=None`.
-    """
-    is_dir = path.is_dir()
-    size = None if is_dir else _safe_size(path)
-    node = Node(name=path.name or str(path), path=path, is_dir=is_dir, size_bytes=size)
-
-    if is_dir and depth < MAX_DEPTH:
-        try:
-            entries = [child for child in path.iterdir() if not child.name.startswith(".")]
-        except OSError:
-            # Permission denied / vanished: leave it a collapsed branch.
-            return node
-        kids = [scan(child, depth + 1) for child in entries]
-        kids.sort(key=_sort_key)
-        node.children = kids
-        node.expanded = True
-
-    return node
+    def subdirs(self) -> list["Node"]:
+        """Loaded child directories in display order (empty if not loaded)."""
+        return [c for c in (self.children or ()) if c.is_dir]
 
 
 def _safe_size(path: Path) -> int | None:
@@ -94,27 +82,62 @@ def _safe_size(path: Path) -> int | None:
         return None
 
 
-@dataclass
-class Model:
-    """The scanned tree. `root` feeds both panes: the folders-only tree walks
-    its directory nodes; the details tabs list a chosen folder's children."""
-
-    root: Node = field(default=None)  # type: ignore[assignment]
+def _sort_key(node: Node) -> tuple[bool, str]:
+    """Directories first, then case-insensitive name."""
+    return (not node.is_dir, node.name.lower())
 
 
-def build_model(root_path: Path) -> Model:
-    return Model(root=scan(root_path))
+def load_children(node: Node) -> None:
+    """Read `node`'s immediate children (one level only), dotfiles skipped and
+    directories sorted first. On an unreadable directory, leaves it empty and
+    flags `load_error`. Files are a no-op."""
+    if not node.is_dir:
+        return
+    try:
+        entries = [c for c in node.path.iterdir() if not c.name.startswith(".")]
+    except OSError:
+        node.children = []
+        node.load_error = True
+        return
+    kids = [
+        Node(
+            name=child.name,
+            path=child,
+            is_dir=child.is_dir(),
+            size_bytes=None if child.is_dir() else _safe_size(child),
+            parent=node,
+        )
+        for child in entries
+    ]
+    kids.sort(key=_sort_key)
+    node.children = kids
+    node.load_error = False
+
+
+def ensure_loaded(node: Node) -> None:
+    """Load `node`'s children once; cheap no-op if already loaded or a file."""
+    if node.is_dir and node.children is None:
+        load_children(node)
+
+
+def build_root(root_path: Path) -> Node:
+    """The model root: loaded one level deep and expanded, so the tree opens on
+    the root's immediate subfolders."""
+    root = Node(name=root_path.name or str(root_path), path=root_path, is_dir=root_path.is_dir())
+    ensure_loaded(root)
+    root.expanded = True
+    return root
 
 
 # --- model -> folders-only tree descriptor ----------------------------------
 #
 # The tree pane shows *only directories* -- files live in the details tabs. We
-# walk the model depth-first in display order, emitting a row per directory and
-# tagging it with its `path`: the route from the root as a list of child
-# indices among *folders* (a `TreePath`, read on the Rust side as `Vec<u16>`).
-# A folder's path stays a valid prefix of its subfolders' paths, so nesting and
-# selection still line up even though files are omitted. `indent` is folder
-# depth.
+# walk the model depth-first in display order over *expanded* folders only,
+# emitting a row per directory and tagging it with its `path`: the route from
+# the root as a list of child indices among *folders* (a `TreePath`, read on
+# the Rust side as `Vec<u16>`). A folder's path stays a valid prefix of its
+# subfolders' paths, so a click on a row resolves back to its node. `indent` is
+# folder depth.
 
 TREE_STYLE = {
     "indent": 2,  # columns of indent per depth level
@@ -138,47 +161,41 @@ def _styled_text(text: str) -> dict:
     return {"spans": [{"text": text, "fg": None, "bg": None}]}
 
 
-def _flatten_folders(
-    node: Node,
-    path: list[int],
-    indent: int,
-    rows: list[dict],
-    nodes: list[Node],
-) -> None:
-    """Append `node` (a directory) as one tree row, then recurse into its
-    subdirectories only. `rows` and `nodes` stay index-aligned; `path` numbers
-    by folder-sibling index so it addresses the folders-only tree."""
-    rows.append(
-        {
-            "path": path,
-            "indent": indent,
-            "icon": FOLDER_ICON,
-            "text": _styled_text(node.name),
-            "badge": None,
-            # Every row is a folder, so every row is a branch.
-            "is_expanded": node.expanded,
-        }
-    )
-    nodes.append(node)
-    subdirs = [c for c in (node.children or ()) if c.is_dir]
-    for i, child in enumerate(subdirs):
-        _flatten_folders(child, path + [i], indent + 1, rows, nodes)
-
-
-def folder_rows(model: Model) -> tuple[list[dict], list[Node], dict[tuple[int, ...], Node]]:
-    """Walk the model once into index-aligned `(rows, nodes)` plus a
-    `path -> Node` map, directories only. The snapshot is static, so callers
-    flatten once and reuse these across frames, varying only `selected_path`."""
+def folder_rows(root: Node) -> tuple[list[dict], list[Node]]:
+    """Walk the expanded model into index-aligned `(rows, nodes)`, directories
+    only. Recomputed each frame, since expanding/collapsing changes which rows
+    are visible."""
     rows: list[dict] = []
     nodes: list[Node] = []
-    _flatten_folders(model.root, path=[], indent=0, rows=rows, nodes=nodes)
-    by_path = {tuple(r["path"]): n for r, n in zip(rows, nodes)}
-    return rows, nodes, by_path
+
+    def walk(node: Node, path: list[int], indent: int) -> None:
+        rows.append(
+            {
+                "path": path,
+                "indent": indent,
+                "icon": FOLDER_ICON,
+                "text": _styled_text(node.name),
+                "badge": None,
+                "is_expanded": node.expanded,
+            }
+        )
+        nodes.append(node)
+        if node.expanded:
+            for i, child in enumerate(node.subdirs()):
+                walk(child, path + [i], indent + 1)
+
+    walk(root, path=[], indent=0)
+    return rows, nodes
 
 
-def tree_leaf(rows: list[dict], *, selected_path: list[int]) -> dict:
+def tree_leaf(rows: list[dict], *, selected_path: list[int], scroll_offset: int) -> dict:
     """A layout-tree *leaf* wrapping the folders-only tree descriptor. A leaf is
-    `{"id", "<kind>": <descriptor>}`; the id is unique across the whole tree."""
+    `{"id", "<kind>": <descriptor>}`; the id is unique across the whole tree.
+    `has_focus` keeps arrow keys / Enter routed here on the real backends.
+    `scroll_offset` is the index of the first painted row -- the tree is purely
+    declarative (it renders `rows[scroll_offset..]`), so the app owns it and
+    advances it to keep the cursor in view; the backend derives the scrollbar
+    thumb from it."""
     return {
         "id": "fm:tree",
         "tree": {
@@ -186,7 +203,7 @@ def tree_leaf(rows: list[dict], *, selected_path: list[int]) -> dict:
             "rows": rows,
             "selection_mode": "Single",
             "selected_path": selected_path,
-            "scroll_offset": 0,
+            "scroll_offset": scroll_offset,
             "has_focus": True,
             "style": TREE_STYLE,
         },
@@ -198,7 +215,9 @@ def tree_leaf(rows: list[dict], *, selected_path: list[int]) -> dict:
 # Each details tab lists the immediate children (files + subfolders) of one
 # opened folder. `width` is `{"Flex": w}` -- unitless proportional weights that
 # lay out the same on every backend, unlike `{"Fixed": n}` (surface-native
-# units: cells on TUI, *pixels* on native).
+# units: cells on TUI, *pixels* on native). Activating a row emits a
+# `DataTable/RowActivated` event whose `idx` indexes straight into the folder's
+# `children`, so a click on a subfolder row can drill into it.
 
 _SIZE_UNITS = ("B", "KB", "MB", "GB", "TB")
 
@@ -217,8 +236,8 @@ def _human_size(n: int | None) -> str:
 
 def details_table(folder: Node, index: int) -> dict:
     """The data_table descriptor for one opened folder's contents, as the
-    content subtree of tab `index`. Unique id per tab so each instance is
-    independently addressable."""
+    content subtree of tab `index`. Row order matches `folder.children`, so a
+    `RowActivated{idx}` maps straight back to a child node."""
     table_id = f"fm:grid:{index}"
     columns = [
         {"title": "Name", "width": {"Flex": 2.0}, "align": "Left"},
@@ -226,69 +245,252 @@ def details_table(folder: Node, index: int) -> dict:
         {"title": "Kind", "width": {"Flex": 1.0}, "align": "Left"},
     ]
 
-    children = folder.children
-    if children is None:
-        # A folder beyond the scan depth: we know it is a folder but never
-        # loaded its contents (expand-on-demand is a later step).
-        rows = [{"cells": [_styled_text("(not scanned -- beyond depth limit)"),
-                           _styled_text(""), _styled_text("")]}]
+    children = folder.children or []
+    if not children:
+        note = "(unreadable)" if folder.load_error else "(empty folder)"
+        rows = [{"cells": [_styled_text(note), _styled_text(""), _styled_text("")]}]
     else:
         rows = []
         for child in children:
+            # A trailing "/" hints the row is navigable (activate to drill in).
+            name = f"{child.name}/" if child.is_dir else child.name
             kind = "folder" if child.is_dir else "file"
             size = "" if child.is_dir else _human_size(child.size_bytes)
-            rows.append({"cells": [_styled_text(child.name),
-                                   _styled_text(size), _styled_text(kind)]})
+            rows.append(
+                {"cells": [_styled_text(name), _styled_text(size), _styled_text(kind)]}
+            )
 
     return {"id": table_id, "columns": columns, "rows": rows}
 
 
+# --- chrome: toolbar band + status bar ---------------------------------------
+#
+# The toolbar is the body's chrome, carried by a `sidebar_panel` wrapper whose
+# reserved top slot paints it above the content on every backend. The bindings
+# don't route clicks on toolbar buttons to events yet, so it is a *key legend*
+# -- an affordance, not a control; the keyboard and the tree/table clicks drive
+# everything. The status bar is a live bottom band, rebuilt from state each
+# frame.
+
+TOOLBAR = {
+    "id": "fm:toolbar",
+    "buttons": [
+        {"Action": {"id": "fm:k:move", "label": "↑↓ Move"}},
+        {"Action": {"id": "fm:k:expand", "label": "→ Expand"}},
+        {"Action": {"id": "fm:k:collapse", "label": "← Collapse"}},
+        {"Action": {"id": "fm:k:open", "label": "↵ Open"}},
+        {"Action": {"id": "fm:k:refresh", "label": "r Refresh"}},
+    ],
+}
+
+# `StatusBarSegment` requires explicit fg + bg (unlike the theme-driven
+# `StyledText` spans elsewhere); the accent foreground highlights the cursored
+# folder's name.
+_STATUS_FG = {"r": 220, "g": 220, "b": 230, "a": 255}
+_STATUS_BG = {"r": 30, "g": 32, "b": 48, "a": 255}
+_STATUS_ACCENT = {"r": 245, "g": 224, "b": 138, "a": 255}
+
+
+def _segment(text: str, *, accent: bool = False, bold: bool = False) -> dict:
+    """One `StatusBarSegment`: styled text with explicit colors."""
+    return {
+        "text": text,
+        "fg": _STATUS_ACCENT if accent else _STATUS_FG,
+        "bg": _STATUS_BG,
+        "bold": bold,
+    }
+
+
 # --- the live QuiApp ---------------------------------------------------------
 #
-# event -> handler mutates plain Python `state` -> the runner repaints ->
-# `render()` reads `state` and returns the whole frame's layout tree. The
-# things that change: the tree cursor, the split ratio, the list of opened
-# folders (tabs), and the active tab.
+# event -> handler mutates plain Python attributes -> the runner repaints ->
+# `render()` reads them and returns the whole frame's layout tree.
 
 UP_KEY = {"Named": "Up"}
 DOWN_KEY = {"Named": "Down"}
+LEFT_KEY = {"Named": "Left"}
+RIGHT_KEY = {"Named": "Right"}
 ENTER_KEY = {"Named": "Enter"}
 
 
+def _key_name(key) -> str | None:
+    """Canonical name of a raw key. A plain `KeyPressed` carries a tagged dict
+    (`{"Named": "Down"}` / `{"Char": "o"}`); a focus-scoped leaf event carries
+    the already-stringified name (`"Down"` / `"o"`). Both collapse to the name."""
+    if isinstance(key, str):
+        return key
+    if isinstance(key, dict):
+        return key.get("Named") or key.get("Char")
+    return None
+
+
+def _event_key(event: dict) -> str | None:
+    """The canonical key name from a key event in any shape the backends
+    deliver: a plain `KeyPressed`, or a focus-scoped `{"Tree"/"List"/"TabBar":
+    [id, {"KeyPressed": ...}]}` (the focus manager rewrites a focused leaf's
+    keys into its own variant, with the key already stringified). Returns None
+    for a non-key event."""
+    pressed = event.get("KeyPressed")
+    if isinstance(pressed, dict):
+        return _key_name(pressed.get("key"))
+    for wrap in ("Tree", "List", "TabBar"):
+        payload = event.get(wrap)
+        if isinstance(payload, list) and len(payload) == 2 and isinstance(payload[1], dict):
+            inner = payload[1].get("KeyPressed")
+            if isinstance(inner, dict):
+                return _key_name(inner.get("key"))
+            return None
+    return None
+
+
 class FileManager:
-    """Holds the model, the flattened folders-only tree, and the `state` dict
-    the `render` and handler callbacks share. Build one, then call `run_*` for
-    a real backend or drive it headlessly with `push_event`/`step`."""
+    """Holds the lazily-scanned model and the live UI state the `render` and
+    handler callbacks share. Build one, then call `run_*` for a real backend or
+    drive it headlessly with `push_event`/`step`."""
 
     def __init__(self, root_path: Path, width: int = 100, height: int = 30):
-        self.model = build_model(root_path)
-        self.rows, self.nodes, self.by_path = folder_rows(self.model)
-        self.state = {
-            "cursor": 0,       # index into self.rows / self.nodes (folders)
-            "ratio": 0.3,      # tree pane width fraction (first pane of the split)
-            "open": [],        # list of folder Nodes shown as tabs, in tab order
-            "active_tab": 0,   # index into state["open"]
-        }
+        self.root = build_root(root_path)
+        self.height = height
+        self.cursor: Node = self.root   # the selected folder node
+        self.scroll = 0                 # index of the first painted tree row
+        self.ratio = 0.3                # tree pane width fraction
+        self.open: list[Node] = []      # folder nodes shown as tabs, in order
+        self.active_tab = 0             # index into self.open
+        self.message = ""               # transient status hint
         self.app = QuiApp(width, height, render=self._render)
         self.app.set_handler(self._handle)
 
-    def _cursored_folder(self) -> Node:
-        return self.nodes[self.state["cursor"]]
+    # --- navigation helpers --------------------------------------------------
 
-    def _open_folder(self, node: Node) -> None:
-        """Open `node` as a details tab, or focus its tab if already open."""
-        for i, existing in enumerate(self.state["open"]):
+    def _visible(self) -> tuple[list[dict], list[Node]]:
+        """Current folder rows/nodes, with the cursor pulled back to its nearest
+        still-visible ancestor if a collapse hid it."""
+        rows, nodes = folder_rows(self.root)
+        if self.cursor not in nodes:
+            node = self.cursor
+            while node is not None and node not in nodes:
+                node = node.parent
+            self.cursor = node or self.root
+        return rows, nodes
+
+    def _move(self, delta: int) -> None:
+        rows, nodes = self._visible()
+        i = nodes.index(self.cursor)
+        self.cursor = nodes[max(0, min(len(nodes) - 1, i + delta))]
+
+    def _tree_capacity(self) -> int:
+        """Painted tree rows that fit: the frame height less the three chrome
+        lines above/below the tree -- the toolbar row, the outer split's
+        divider, and the bottom status line. An estimate (the real terminal
+        may differ from the configured height, like the status-bar pinning in
+        `_render`); erring one row short only scrolls a touch early, never
+        hides the cursor."""
+        return max(1, self.height - 3)
+
+    def _scroll_to_cursor(self, cursor_index: int, row_count: int) -> None:
+        """Advance `scroll` so the cursor row stays within the painted window,
+        then clamp it so the last page never leaves a blank gap. The tree is
+        declarative -- it renders `rows[scroll..]` -- so without this the view
+        never follows the cursor and the scrollbar thumb never moves."""
+        capacity = self._tree_capacity()
+        if cursor_index < self.scroll:
+            self.scroll = cursor_index
+        elif cursor_index >= self.scroll + capacity:
+            self.scroll = cursor_index - capacity + 1
+        self.scroll = max(0, min(self.scroll, max(0, row_count - capacity)))
+
+    def _expand(self) -> None:
+        """Expand the cursored folder (loading it on demand); if it is already
+        expanded, descend into its first subfolder."""
+        node = self.cursor
+        if not node.is_dir:
+            return
+        ensure_loaded(node)
+        subdirs = node.subdirs()
+        if not node.expanded and subdirs:
+            node.expanded = True
+        elif node.expanded and subdirs:
+            self.cursor = subdirs[0]
+
+    def _collapse(self) -> None:
+        """Collapse the cursored folder; if already collapsed, jump to parent."""
+        node = self.cursor
+        if node.is_dir and node.expanded:
+            node.expanded = False
+        elif node.parent is not None:
+            self.cursor = node.parent
+
+    def _reveal(self, node: Node) -> None:
+        """Expand every ancestor so `node` is a visible tree row."""
+        parent = node.parent
+        while parent is not None:
+            ensure_loaded(parent)
+            parent.expanded = True
+            parent = parent.parent
+
+    def _open(self, node: Node | None = None) -> None:
+        """Open `node` (default: the cursor) as a details tab, expanding it;
+        focus its tab if already open. A file just reports itself."""
+        node = node or self.cursor
+        if not node.is_dir:
+            self.message = f"{node.name} ({_human_size(node.size_bytes)})"
+            return
+        ensure_loaded(node)
+        for i, existing in enumerate(self.open):
             if existing.path == node.path:
-                self.state["active_tab"] = i
+                self.active_tab = i
                 return
-        self.state["open"].append(node)
-        self.state["active_tab"] = len(self.state["open"]) - 1
+        self.open.append(node)
+        self.active_tab = len(self.open) - 1
+
+    def _refresh(self) -> None:
+        node = self.cursor
+        if node.is_dir:
+            node.children = None
+            ensure_loaded(node)
+            self.message = f"reloaded {node.name}"
+
+    def _close_tab(self, index: int) -> None:
+        if 0 <= index < len(self.open):
+            del self.open[index]
+            if self.active_tab >= len(self.open):
+                self.active_tab = max(0, len(self.open) - 1)
+
+    def _on_row_click(self, path: list[int]) -> None:
+        """A tree-row click: select that folder and toggle its expansion."""
+        rows, nodes = folder_rows(self.root)
+        for row, node in zip(rows, nodes):
+            if row["path"] == list(path):
+                self.cursor = node
+                ensure_loaded(node)
+                if node.subdirs():
+                    node.expanded = not node.expanded
+                return
+
+    def _activate_detail(self, idx: int) -> None:
+        """A details-table row was activated (clicked): drill into a subfolder,
+        or report a file's size."""
+        if not self.open:
+            return
+        folder = self.open[self.active_tab]
+        children = folder.children or []
+        if not (0 <= idx < len(children)):
+            return
+        child = children[idx]
+        if child.is_dir:
+            folder.expanded = True
+            self._reveal(child)
+            self.cursor = child
+            self._open(child)
+        else:
+            self.message = f"{child.name} ({_human_size(child.size_bytes)})"
+
+    # --- render + handle -----------------------------------------------------
 
     def _details_pane(self) -> dict:
-        """The split's second pane: a placeholder until a folder is opened,
-        then a tabs container with one data_table tab per opened folder."""
-        open_folders = self.state["open"]
-        if not open_folders:
+        """The body split's second pane: a placeholder until a folder is opened,
+        then a closable tabs container with one data_table tab per open folder."""
+        if not self.open:
             return {
                 "id": "fm:empty",
                 "text_display": {
@@ -300,62 +502,147 @@ class FileManager:
             "id": "fm:tabs",
             "tabs": {
                 "id": "fm:tabs",
-                "selected": self.state["active_tab"],
+                "selected": self.active_tab,
+                "closable": True,
                 "tabs": [
                     {
                         "id": f"tab:{i}",
                         "title": folder.name,
+                        "closable": True,
                         "content": {
                             "id": f"fm:grid:{i}",
                             "data_table": details_table(folder, i),
                         },
                     }
-                    for i, folder in enumerate(open_folders)
+                    for i, folder in enumerate(self.open)
                 ],
             },
         }
 
-    def _render(self) -> dict:
-        """Per-frame: rebuild the whole split from `state`. Reads only; never
-        calls back into `QuiApp`."""
-        selected_path = self.rows[self.state["cursor"]]["path"]
+    def _status_leaf(self) -> dict:
+        """The outer split's bottom pane: a live status bar showing the cursored
+        folder, its item count, the open-tab summary, and any transient hint."""
+        node = self.cursor
+        if node.children is None:
+            count_text = "unopened"
+        else:
+            count_text = f"{len(node.children)} items"
+        left = [
+            _segment(f" {node.name} ", accent=True, bold=True),
+            _segment(f" {count_text} "),
+        ]
+        if self.message:
+            left.append(_segment(f" {self.message} "))
+        open_n = len(self.open)
+        if open_n:
+            right = [_segment(f" tab {self.active_tab + 1}/{open_n} ")]
+        else:
+            right = [_segment(" no tabs ")]
+        right.append(_segment(f" {int(round(self.ratio * 100))}% "))
         return {
+            "id": "fm:status",
+            "status_bar": {
+                "id": "fm:status",
+                "left_segments": left,
+                "right_segments": right,
+            },
+        }
+
+    def _render(self) -> dict:
+        """Per-frame: rebuild the whole frame from state. An outer vertical split
+        stacks the chrome+body (top) over a one-line status bar (bottom); the
+        body is the resizable tree/details split, wrapped in a `sidebar_panel`
+        whose reserved slot paints the toolbar above it. Reads only."""
+        rows, nodes = self._visible()
+        cursor_index = nodes.index(self.cursor)
+        selected_path = rows[cursor_index]["path"]
+        self._scroll_to_cursor(cursor_index, len(rows))
+        body = {
             "split": {
                 "id": "fm:split",
                 "orientation": "horizontal",  # panes side by side, vertical divider
-                "ratio": self.state["ratio"],
-                "first": tree_leaf(self.rows, selected_path=selected_path),
+                "ratio": self.ratio,
+                "first": tree_leaf(rows, selected_path=selected_path, scroll_offset=self.scroll),
                 "second": self._details_pane(),
+            }
+        }
+        chrome = {
+            "sidebar_panel": {
+                "id": "fm:chrome",
+                "toolbar": TOOLBAR,  # reserved top slot, one line per backend
+                "content": body,
+            }
+        }
+        # Pin the status bar to the bottom line: `ratio` derives from the known
+        # height so the bottom pane is ~one line, and `second_min` floors it at
+        # one line if the real terminal is a different size. Drags on this outer
+        # divider are ignored by the handler (it keys on the body split's id).
+        h = max(self.height, 2)
+        return {
+            "split": {
+                "id": "fm:outer",
+                "orientation": "vertical",  # chrome+body stacked over the status bar
+                "ratio": (h - 1) / h,
+                "first_min": 3.0,
+                "second_min": 1.0,
+                "first": chrome,
+                "second": self._status_leaf(),
             }
         }
 
     def _handle(self, event) -> None:
-        """Per-event: move the cursor, open folders, resize, switch tabs.
-        Mutates `state` only; never calls back into `QuiApp`."""
+        """Per-event: move the cursor, expand/collapse, open/close tabs, drill
+        into folders, resize. Mutates state only; never calls into `QuiApp`."""
         if not isinstance(event, dict):
             return
-        if "KeyPressed" in event:
-            key = event["KeyPressed"]["key"]
-            last = len(self.rows) - 1
-            if key == DOWN_KEY:
-                self.state["cursor"] = min(last, self.state["cursor"] + 1)
-            elif key == UP_KEY:
-                self.state["cursor"] = max(0, self.state["cursor"] - 1)
-            elif key == ENTER_KEY:
-                self._open_folder(self._cursored_folder())
-        elif "SplitDividerDragged" in event:
-            self.state["ratio"] = event["SplitDividerDragged"]["new_ratio"]
+
+        key = _event_key(event)
+        if key is not None:
+            self._on_key(key)
+            return
+
+        if "DataTable" in event:
+            activation = event["DataTable"][1]
+            if "RowActivated" in activation:
+                self._activate_detail(activation["RowActivated"]["idx"])
+        elif "Tree" in event:
+            activation = event["Tree"][1]
+            if "RowClicked" in activation:
+                self._on_row_click(activation["RowClicked"]["path"])
         elif "TabBar" in event:
             activation = event["TabBar"][1]
             if "TabActivated" in activation:
-                self.state["active_tab"] = activation["TabActivated"]["index"]
+                self.active_tab = activation["TabActivated"]["index"]
+            elif "TabClosed" in activation:
+                self._close_tab(activation["TabClosed"]["index"])
+        elif "SplitDividerDragged" in event:
+            drag = event["SplitDividerDragged"]
+            # Only the body split is user-resizable; the outer chrome/status
+            # split is fixed, so ignore drags that aren't the body's.
+            if drag.get("tree") == "fm:split":
+                self.ratio = drag["new_ratio"]
+
+    def _on_key(self, name: str) -> None:
+        self.message = ""
+        if name == "Down":
+            self._move(1)
+        elif name == "Up":
+            self._move(-1)
+        elif name == "Right":
+            self._expand()
+        elif name == "Left":
+            self._collapse()
+        elif name in ("Enter", "o"):
+            self._open()
+        elif name == "r":
+            self._refresh()
 
 
 # --- inspection / headless helpers -------------------------------------------
 
 
 def _dump(node: Node, indent: int = 0) -> None:
-    """Human-readable dump of the model."""
+    """Human-readable dump of the loaded model."""
     pad = "  " * indent
     if node.is_dir:
         chevron = "v" if node.expanded else ">"
@@ -392,14 +679,15 @@ def _dump_grid(descriptor: dict) -> None:
         print("  " + _row_text(cells_text))
 
 
-def _dump_steps(model: Model) -> None:
-    print("# model")
-    _dump(model.root)
+def _dump_steps(root_path: Path) -> None:
+    root = build_root(root_path)
+    print("# model (root loaded one level)")
+    _dump(root)
     print("\n# folders-only tree rows")
-    rows, _nodes, _by_path = folder_rows(model)
+    rows, _nodes = folder_rows(root)
     _dump_folder_rows(rows)
     print("\n# details table for the root folder")
-    _dump_grid(details_table(model.root, 0))
+    _dump_grid(details_table(root, 0))
 
 
 class _Quit(Exception):
@@ -414,10 +702,9 @@ def _wrap_quit(fm: FileManager) -> None:
     inner = fm._handle
 
     def handler(event) -> None:
-        if isinstance(event, dict) and "KeyPressed" in event:
-            key = event["KeyPressed"]["key"]
-            if key == {"Char": "q"} or key == {"Named": "Escape"}:
-                raise _Quit
+        key = _event_key(event) if isinstance(event, dict) else None
+        if key in ("q", "Escape"):
+            raise _Quit
         inner(event)
 
     fm.app.set_handler(handler)
@@ -434,17 +721,24 @@ def _key_event(key: dict) -> dict:
 
 
 def _run_headless(fm: FileManager) -> None:
-    """Drive the app with Python owning the loop: walk down to a folder, open
-    it as a tab, open a second one, then print the final screen -- runnable
-    with no feature build."""
-    script = [DOWN_KEY, ENTER_KEY, DOWN_KEY, ENTER_KEY]
-    for key in script:
-        fm.app.push_event(_key_event(key))
+    """Drive the app with Python owning the loop: expand a folder, open it as a
+    tab, drill into a subfolder from its details table, then print the final
+    screen -- runnable with no feature build."""
+    steps = [
+        _key_event(DOWN_KEY),    # cursor onto the first subfolder
+        _key_event(RIGHT_KEY),   # expand it (load on demand)
+        _key_event(ENTER_KEY),   # open it as a details tab
+        # Activate the first details row (a click would deliver this), drilling
+        # into it if it is a subfolder.
+        {"DataTable": ["fm:grid:0", {"RowActivated": {"idx": 0}}]},
+    ]
+    for event in steps:
+        fm.app.push_event(event)
         fm.app.step()
     print(fm.app.screen())
-    open_names = [n.name for n in fm.state["open"]]
-    print(f"\ncursor={fm.state['cursor']}  open_tabs={open_names}  "
-          f"active_tab={fm.state['active_tab']}  ratio={fm.state['ratio']}")
+    open_names = [n.name for n in fm.open]
+    print(f"\ncursor={fm.cursor.name}  open_tabs={open_names}  "
+          f"active_tab={fm.active_tab}  ratio={fm.ratio}")
 
 
 if __name__ == "__main__":
@@ -453,7 +747,7 @@ if __name__ == "__main__":
     root = Path(args[0]) if args else Path.cwd()
 
     if "--dump" in flags:
-        _dump_steps(build_model(root.resolve()))
+        _dump_steps(root.resolve())
         sys.exit(0)
 
     fm = FileManager(root.resolve())
