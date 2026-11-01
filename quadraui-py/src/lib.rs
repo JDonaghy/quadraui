@@ -102,9 +102,9 @@ use quadraui::{
     ListViewEvent, ListViewHit, ListViewLayout, MenuBar, MessageList, Minimap, Modifiers,
     MultiSectionView, NamedKey, NumberInput, Palette, Panel, PipelineView, Point, ProgressBar,
     RadioGroup, Reaction, Rect, Scrollbar, SidebarPanel, Spinner, Split, SplitDirection, SplitHit,
-    SplitLayout, SplitTree, StatusBar, Switch, TabBar, TabBarEvent, TabBarHit, TabBarLayout,
-    TabItem, TextDisplay, TextInput, Toolbar, TreeEvent, TreePath, TreeView, TreeViewHit,
-    TreeViewLayout, UiEvent, WidgetId,
+    SplitLayout, SplitTree, StatusBar, Switch, SwitchHit, TabBar, TabBarEvent, TabBarHit,
+    TabBarLayout, TabItem, TextDisplay, TextInput, Toolbar, TreeEvent, TreePath, TreeView,
+    TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
 create_exception!(
@@ -261,7 +261,7 @@ struct PyAppLogic {
     /// [`EXTRA_PRIMITIVES`] order. A new kind here is a self-contained add —
     /// unlike the six fields above, it needs no new field on this struct and
     /// no new arm on `slot_occupied`/`is_known_slot`/`clear_slot`.
-    extra_slots: HashMap<String, Box<dyn ExtraPaint>>,
+    extra_slots: HashMap<String, Rc<dyn ExtraPaint>>,
     /// Registered via `QuiApp::set_handler` / the `on_event` constructor
     /// argument; called with the pythonized event payload for every
     /// dispatched `UiEvent`.
@@ -453,8 +453,10 @@ impl AppLogic for PyAppLogic {
 
     /// Derives this frame's tab stops directly from the hit map `render`
     /// just painted, in paint order. `Split` carries no `WidgetId` and is
-    /// not a focusable leaf, so it is skipped; every other variant yields
-    /// its id and bounding `Rect`.
+    /// not a focusable leaf, so it is skipped; `Extra` is a tab stop only
+    /// when its descriptor opts in via [`ExtraPaint::tab_stop`] (currently
+    /// just [`Switch`]); every other variant yields its id and bounding
+    /// `Rect`.
     fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
         self.hit_map
             .borrow()
@@ -466,6 +468,7 @@ impl AppLogic for PyAppLogic {
                 | PaintedHit::DataTable { id, area, .. }
                 | PaintedHit::TabBar { id, area, .. } => Some((*id, *area)),
                 PaintedHit::Split { .. } => None,
+                PaintedHit::Extra { id, area, extra } => extra.tab_stop().then_some((*id, *area)),
             })
             .collect()
     }
@@ -654,6 +657,19 @@ enum PaintedHit {
     /// `WidgetId` only matters once a hit is found — carried by
     /// `SplitHit`'s own variants, not stored here.
     Split { layout: SplitLayout },
+    /// One additive primitive (anything registered in [`EXTRA_PRIMITIVES`]),
+    /// painted by `draw_bands`'s extras loop or by a [`LeafDescriptor::Extra`]
+    /// leaf. `area` is the ABSOLUTE rect it was painted into — the same frame
+    /// [`ExtraPaint::hit_test`] expects, so no translation is needed before
+    /// calling it (matching `Button`/`Switch`'s own layout convention: no
+    /// local-frame remap). `extra` is an [`Rc`] clone of the slot's/leaf's
+    /// descriptor, kept alive past this frame's render so a later `handle`
+    /// call can still hit-test and tab-stop against it.
+    Extra {
+        id: WidgetId,
+        area: Rect,
+        extra: Rc<dyn ExtraPaint>,
+    },
 }
 
 /// The sub-region of a primitive an incoming pointer event landed on,
@@ -664,22 +680,45 @@ enum PaintedHit {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum HitDetail {
     ButtonBody,
-    TreeRow { row: usize },
-    TreeChevron { row: usize },
+    TreeRow {
+        row: usize,
+    },
+    TreeChevron {
+        row: usize,
+    },
     ListTitle,
-    ListItem { index: usize },
-    DataTableHeader { col: usize },
-    DataTableHeaderDivider { col: usize },
-    DataTableRow { row: usize },
+    ListItem {
+        index: usize,
+    },
+    DataTableHeader {
+        col: usize,
+    },
+    DataTableHeaderDivider {
+        col: usize,
+    },
+    DataTableRow {
+        row: usize,
+    },
     DataTableFooter,
-    TabBarTab { tab: usize },
-    TabBarTabClose { tab: usize },
+    TabBarTab {
+        tab: usize,
+    },
+    TabBarTabClose {
+        tab: usize,
+    },
     TabBarScrollLeft,
     TabBarScrollRight,
     TabBarRightSegment,
     SplitFirstPane,
     SplitSecondPane,
     SplitDivider,
+    /// Landed on an additive primitive's interactive region (currently only
+    /// [`Switch`]). Carries no sub-region detail yet — just enough for
+    /// [`PyAppLogic::handle`] to set `widget` and attach this as `hit`, so a
+    /// Python handler sees the click reached the primitive. Per-kind
+    /// sub-region detail (e.g. which combo-box row) is a later, separate
+    /// extension of this variant.
+    ExtraBody,
 }
 
 /// Hit-tests `point` (in the backend's native absolute coordinate space,
@@ -776,6 +815,11 @@ fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetId, H
                 SplitHit::Divider(id) => return Some((id, HitDetail::SplitDivider)),
                 SplitHit::Outside => {}
             },
+            PaintedHit::Extra { id, area, extra } => {
+                if extra.hit_test(*area, point) {
+                    return Some((*id, HitDetail::ExtraBody));
+                }
+            }
         }
     }
     None
@@ -1001,7 +1045,7 @@ struct RenderRefs<'a> {
     tab_bar: Option<&'a TabBar>,
     /// Additive primitive slots, keyed by kind name. Painted after the six
     /// fixed bands above, in [`EXTRA_PRIMITIVES`] order.
-    extra: &'a HashMap<String, Box<dyn ExtraPaint>>,
+    extra: &'a HashMap<String, Rc<dyn ExtraPaint>>,
 }
 
 /// Paints each present slot top-to-bottom in a fixed-height band, skipping
@@ -1095,6 +1139,11 @@ fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Vec<Pa
         if let Some(extra) = refs.extra.get(*kind) {
             if let Some(rect) = next_band(3.0) {
                 extra.paint(backend, rect);
+                hits.push(PaintedHit::Extra {
+                    id: extra.id(),
+                    area: rect,
+                    extra: Rc::clone(extra),
+                });
             }
         }
     }
@@ -1287,7 +1336,14 @@ fn paint_leaf(
             let layout = backend.draw_tab_bar_layout(area, tab_bar, None);
             hits.push(PaintedHit::TabBar { id, area, layout });
         }
-        LeafDescriptor::Extra(extra) => extra.paint(backend, area),
+        LeafDescriptor::Extra(extra) => {
+            extra.paint(backend, area);
+            hits.push(PaintedHit::Extra {
+                id,
+                area,
+                extra: Rc::clone(extra),
+            });
+        }
     }
 }
 
@@ -1304,7 +1360,7 @@ struct RenderFrame {
     tab_bar: Option<TabBar>,
     /// Additive primitive slots present in this frame, keyed by kind name
     /// (one registered in [`EXTRA_PRIMITIVES`]).
-    extra: HashMap<String, Box<dyn ExtraPaint>>,
+    extra: HashMap<String, Rc<dyn ExtraPaint>>,
 }
 
 impl RenderFrame {
@@ -1385,7 +1441,7 @@ fn decode_extra_slot_entry(
     what: &str,
     dict: &Bound<'_, PyDict>,
     kind: &str,
-) -> PyResult<Option<Box<dyn ExtraPaint>>> {
+) -> PyResult<Option<Rc<dyn ExtraPaint>>> {
     match dict.get_item(kind)? {
         Some(value) if !value.is_none() => {
             let value_dict = value.cast::<PyDict>().map_err(|_| {
@@ -1497,7 +1553,7 @@ enum LeafDescriptor {
     /// Any additive primitive kind registered in [`EXTRA_PRIMITIVES`].
     /// Unlike the six variants above, a new additive kind never adds a new
     /// `LeafDescriptor` variant — it routes through this one.
-    Extra(Box<dyn ExtraPaint>),
+    Extra(Rc<dyn ExtraPaint>),
 }
 
 /// The descriptor keys a layout tree leaf dict may carry, one per
@@ -1515,18 +1571,49 @@ const LEAF_KIND_KEYS: [&str; 6] = [
 /// Paints one additive primitive descriptor painted outside the six fixed
 /// slots above. Implemented once per primitive type (see the `impl`s just
 /// below) so that registering a kind in [`EXTRA_PRIMITIVES`] never needs a
-/// central match arm. These primitives are currently pure-display: no hit
-/// entry is pushed when painting one, matching `TextDisplay`'s precedent in
-/// [`paint_leaf`] — that is a deliberate choice to not wire hit-routing for
-/// them yet, not a structural limitation (`ProgressBar::cancellable`,
-/// `SpinnerHit` and `ImageHit` already exist on the Rust side).
+/// central match arm.
+///
+/// [`ExtraPaint::id`] is mechanical (`self.id`) on every impl and backs the
+/// [`PaintedHit::Extra`] entry pushed for this descriptor. [`ExtraPaint::hit_test`]
+/// and [`ExtraPaint::tab_stop`] default to "not interactive" so the 24
+/// pure-display primitives keep today's behavior unchanged; [`Switch`]
+/// overrides both to route pointer and keyboard focus through its existing
+/// `layout`/`hit_test`. Per-kind semantic event synthesis (toggling the
+/// switch's value, etc.) is a separate, later step — this trait only gets a
+/// hit to Python with `widget` set.
 trait ExtraPaint {
     fn paint(&self, backend: &mut dyn Backend, area: Rect);
+
+    /// The widget id this descriptor paints under, used to populate
+    /// [`PaintedHit::Extra`] without threading a leaf-tree address through.
+    fn id(&self) -> WidgetId;
+
+    /// Whether `point` lands on an interactive region of this descriptor,
+    /// given the ABSOLUTE `area` it was painted into (the same frame
+    /// `point` itself is in — no translation, matching `Button`/`Split`'s
+    /// own layout convention). `false` by default: most additive
+    /// primitives are pure display and a miss here lets
+    /// [`hit_test_painted`] fall through to whatever painted behind them.
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        let _ = (area, point);
+        false
+    }
+
+    /// Whether this descriptor should be included in [`PyAppLogic::tab_stops`].
+    /// `false` by default, matching [`ExtraPaint::hit_test`]'s "not
+    /// interactive unless overridden" default.
+    fn tab_stop(&self) -> bool {
+        false
+    }
 }
 
 impl ExtraPaint for ProgressBar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_progress(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
     }
 }
 
@@ -1534,11 +1621,19 @@ impl ExtraPaint for Spinner {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_spinner(area, self);
     }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
 }
 
 impl ExtraPaint for Image {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_image(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
     }
 }
 
@@ -1546,11 +1641,19 @@ impl ExtraPaint for Form {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_form(area, self);
     }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
 }
 
 impl ExtraPaint for TextInput {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_text_input(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
     }
 }
 
@@ -1558,11 +1661,27 @@ impl ExtraPaint for RadioGroup {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_radio_group(area, self);
     }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
 }
 
 impl ExtraPaint for Switch {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_switch(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        self.layout(area).hit_test(point) == SwitchHit::Body
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
     }
 }
 
@@ -1570,6 +1689,10 @@ impl ExtraPaint for NumberInput {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         let layout = self.layout(area);
         backend.draw_number_input(self, &layout);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
     }
 }
 
@@ -1599,6 +1722,10 @@ impl ExtraPaint for ComboBox {
             |_| CompletionItemMeasure::new(line_height),
         );
         backend.draw_combo_box(self, &layout);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
     }
 }
 
@@ -1633,6 +1760,10 @@ impl ExtraPaint for DatePicker {
         );
         backend.draw_date_picker(self, &layout);
     }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
 }
 
 impl ExtraPaint for Chart {
@@ -1642,11 +1773,19 @@ impl ExtraPaint for Chart {
         // click/nearest-point routing) is discarded.
         backend.draw_chart(area, self, None, None);
     }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
 }
 
 impl ExtraPaint for MessageList {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_message_list(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
     }
 }
 
@@ -1654,11 +1793,19 @@ impl ExtraPaint for BoardModel {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_board(area, self);
     }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
 }
 
 impl ExtraPaint for PipelineView {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_pipeline_view(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
     }
 }
 
@@ -1666,11 +1813,19 @@ impl ExtraPaint for Minimap {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_minimap(area, self);
     }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
 }
 
 impl ExtraPaint for MultiSectionView {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_multi_section_view(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
     }
 }
 
@@ -1678,11 +1833,19 @@ impl ExtraPaint for DiffView {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_diff_view(area, self);
     }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
 }
 
 impl ExtraPaint for ActivityBar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_activity_bar(area, self, None);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
     }
 }
 
@@ -1690,11 +1853,19 @@ impl ExtraPaint for Toolbar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_toolbar_interactive(area, self, &InteractionState::default());
     }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
 }
 
 impl ExtraPaint for MenuBar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_menu_bar(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
     }
 }
 
@@ -1702,11 +1873,19 @@ impl ExtraPaint for StatusBar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_status_bar_interactive(area, self, &InteractionState::default());
     }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
 }
 
 impl ExtraPaint for CommandLine {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_command_line(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
     }
 }
 
@@ -1714,11 +1893,19 @@ impl ExtraPaint for CommandCenter {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_command_center(area, self);
     }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
 }
 
 impl ExtraPaint for Palette {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_palette(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
     }
 }
 
@@ -1726,11 +1913,15 @@ impl ExtraPaint for Scrollbar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_scrollbar(area, self);
     }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
 }
 
 /// Decodes one additive primitive descriptor from a Python `dict` into its
 /// boxed [`ExtraPaint`] value. Registered per kind in [`EXTRA_PRIMITIVES`].
-type ExtraDecoder = fn(&str, &Bound<'_, PyDict>) -> PyResult<Box<dyn ExtraPaint>>;
+type ExtraDecoder = fn(&str, &Bound<'_, PyDict>) -> PyResult<Rc<dyn ExtraPaint>>;
 
 /// The additive primitive registry: one `(kind name, decoder)` entry per
 /// primitive painted outside the six fixed slots above (see
@@ -1744,79 +1935,79 @@ type ExtraDecoder = fn(&str, &Bound<'_, PyDict>) -> PyResult<Box<dyn ExtraPaint>
 /// machinery.
 const EXTRA_PRIMITIVES: &[(&str, ExtraDecoder)] = &[
     ("progress", |what, dict| {
-        Ok(Box::new(decode::<ProgressBar>(what, dict)?))
+        Ok(Rc::new(decode::<ProgressBar>(what, dict)?))
     }),
     ("spinner", |what, dict| {
-        Ok(Box::new(decode::<Spinner>(what, dict)?))
+        Ok(Rc::new(decode::<Spinner>(what, dict)?))
     }),
     ("image", |what, dict| {
-        Ok(Box::new(decode::<Image>(what, dict)?))
+        Ok(Rc::new(decode::<Image>(what, dict)?))
     }),
     ("form", |what, dict| {
-        Ok(Box::new(decode::<Form>(what, dict)?))
+        Ok(Rc::new(decode::<Form>(what, dict)?))
     }),
     ("text_input", |what, dict| {
-        Ok(Box::new(decode::<TextInput>(what, dict)?))
+        Ok(Rc::new(decode::<TextInput>(what, dict)?))
     }),
     ("number_input", |what, dict| {
-        Ok(Box::new(decode::<NumberInput>(what, dict)?))
+        Ok(Rc::new(decode::<NumberInput>(what, dict)?))
     }),
     ("combo_box", |what, dict| {
-        Ok(Box::new(decode::<ComboBox>(what, dict)?))
+        Ok(Rc::new(decode::<ComboBox>(what, dict)?))
     }),
     ("date_picker", |what, dict| {
-        Ok(Box::new(decode::<DatePicker>(what, dict)?))
+        Ok(Rc::new(decode::<DatePicker>(what, dict)?))
     }),
     ("radio_group", |what, dict| {
-        Ok(Box::new(decode::<RadioGroup>(what, dict)?))
+        Ok(Rc::new(decode::<RadioGroup>(what, dict)?))
     }),
     ("switch", |what, dict| {
-        Ok(Box::new(decode::<Switch>(what, dict)?))
+        Ok(Rc::new(decode::<Switch>(what, dict)?))
     }),
     ("chart", |what, dict| {
-        Ok(Box::new(decode::<Chart>(what, dict)?))
+        Ok(Rc::new(decode::<Chart>(what, dict)?))
     }),
     ("message_list", |what, dict| {
-        Ok(Box::new(decode::<MessageList>(what, dict)?))
+        Ok(Rc::new(decode::<MessageList>(what, dict)?))
     }),
     ("board", |what, dict| {
-        Ok(Box::new(decode::<BoardModel>(what, dict)?))
+        Ok(Rc::new(decode::<BoardModel>(what, dict)?))
     }),
     ("pipeline_view", |what, dict| {
-        Ok(Box::new(decode::<PipelineView>(what, dict)?))
+        Ok(Rc::new(decode::<PipelineView>(what, dict)?))
     }),
     ("minimap", |what, dict| {
-        Ok(Box::new(decode::<Minimap>(what, dict)?))
+        Ok(Rc::new(decode::<Minimap>(what, dict)?))
     }),
     ("multi_section_view", |what, dict| {
-        Ok(Box::new(decode::<MultiSectionView>(what, dict)?))
+        Ok(Rc::new(decode::<MultiSectionView>(what, dict)?))
     }),
     ("diff_view", |what, dict| {
-        Ok(Box::new(decode::<DiffView>(what, dict)?))
+        Ok(Rc::new(decode::<DiffView>(what, dict)?))
     }),
     ("activity_bar", |what, dict| {
-        Ok(Box::new(decode::<ActivityBar>(what, dict)?))
+        Ok(Rc::new(decode::<ActivityBar>(what, dict)?))
     }),
     ("toolbar", |what, dict| {
-        Ok(Box::new(decode::<Toolbar>(what, dict)?))
+        Ok(Rc::new(decode::<Toolbar>(what, dict)?))
     }),
     ("menu_bar", |what, dict| {
-        Ok(Box::new(decode::<MenuBar>(what, dict)?))
+        Ok(Rc::new(decode::<MenuBar>(what, dict)?))
     }),
     ("status_bar", |what, dict| {
-        Ok(Box::new(decode::<StatusBar>(what, dict)?))
+        Ok(Rc::new(decode::<StatusBar>(what, dict)?))
     }),
     ("command_line", |what, dict| {
-        Ok(Box::new(decode::<CommandLine>(what, dict)?))
+        Ok(Rc::new(decode::<CommandLine>(what, dict)?))
     }),
     ("command_center", |what, dict| {
-        Ok(Box::new(decode::<CommandCenter>(what, dict)?))
+        Ok(Rc::new(decode::<CommandCenter>(what, dict)?))
     }),
     ("palette", |what, dict| {
-        Ok(Box::new(decode::<Palette>(what, dict)?))
+        Ok(Rc::new(decode::<Palette>(what, dict)?))
     }),
     ("scrollbar", |what, dict| {
-        Ok(Box::new(decode::<Scrollbar>(what, dict)?))
+        Ok(Rc::new(decode::<Scrollbar>(what, dict)?))
     }),
 ];
 
@@ -1834,7 +2025,7 @@ fn decode_extra_primitive(
     what: &str,
     kind: &str,
     dict: &Bound<'_, PyDict>,
-) -> PyResult<Box<dyn ExtraPaint>> {
+) -> PyResult<Rc<dyn ExtraPaint>> {
     let decoder = EXTRA_PRIMITIVES
         .iter()
         .find(|(registered, _)| *registered == kind)
