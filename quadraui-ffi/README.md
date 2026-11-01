@@ -239,3 +239,16 @@ cargo test -p quadraui-ffi                 # Rust-side round-trip + header-fresh
 ./generate-header.sh                       # regenerate include/quadraui_ffi.h after an ABI change
 cd smoke && ./run.sh                       # Linux-only C smoke harness (see smoke/run.sh's own header)
 ```
+
+## Spike: interactivity over the C ABI
+
+`spike/list_demo.py` and [`SPIKE_FINDINGS.md`](SPIKE_FINDINGS.md) are a
+second, later spike (#1887) answering a narrower question: can a foreign
+host drive a *real, interactive* `TuiRunner` loop — build a widget,
+receive a hit-tested semantic event, update it in place — purely over
+this ABI? Run it in a real terminal with the cdylib already built:
+
+```bash
+cargo build -p quadraui-ffi
+python3 spike/list_demo.py
+```

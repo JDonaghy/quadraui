@@ -84,6 +84,13 @@
 #define QUI_ERR_UNSUPPORTED -13
 
 /**
+ * A real-terminal [`QuiRtApp`] operation failed at the OS/terminal layer
+ * (negotiating raw mode, polling the input fd, resizing, …). Carries the
+ * underlying `io::Error` message as the last-error text.
+ */
+#define QUI_ERR_IO -14
+
+/**
  * [`qui_step`] advanced the app and it is still running.
  */
 #define QUI_STEP_CONTINUE QUI_OK
@@ -177,6 +184,13 @@
  * caller; only ever passed back into this crate's other functions.
  */
 typedef struct QuiApp QuiApp;
+
+/**
+ * Opaque handle to one real-terminal app driven over [`TuiRunner`]. Never
+ * constructed or inspected by the caller; only ever passed back into this
+ * crate's `qui_rt_*` functions.
+ */
+typedef struct QuiRtApp QuiRtApp;
 
 /**
  * Vtable a host passes to [`qui_app_new`]: the `handle`/`tick` callbacks a
@@ -554,3 +568,109 @@ const char *qui_error_name(int32_t code);
  * [`qui_last_error`] or [`qui_screen`], not already freed.
  */
 void qui_free(char *ptr);
+
+/**
+ * Create a new app that negotiates and owns a real terminal (raw mode,
+ * mouse capture, alternate screen) for the lifetime of the handle.
+ *
+ * Returns null on failure, with [`qui_last_error_code`] set to
+ * [`QUI_ERR_IO`] if negotiating the terminal failed (not a TTY, no
+ * permission, …) or [`QUI_ERR_PANIC`] if construction itself panicked.
+ *
+ * The returned handle is owned by the caller and must be released with
+ * [`qui_rt_app_free`], never with `free()`. Releasing it restores the
+ * terminal to its state before this call.
+ *
+ * # Safety
+ * `vtable`'s `user_data` is an opaque pointer this crate never
+ * dereferences; the caller is responsible for its lifetime outliving every
+ * call made with the returned [`QuiRtApp`] handle.
+ */
+struct QuiRtApp *qui_rt_app_new(struct QuiVTable vtable);
+
+/**
+ * Destroy an app created by [`qui_rt_app_new`], restoring the terminal.
+ * `app` may be null (no-op). Works even on a handle poisoned by a caught
+ * panic — this is the one function that does.
+ *
+ * Leaves the last error untouched, so a host can free the app on its error
+ * path and still report what failed afterwards.
+ *
+ * # Safety
+ * `app` must be either null or a still-live pointer returned by
+ * [`qui_rt_app_new`] that has not already been freed.
+ */
+void qui_rt_app_free(struct QuiRtApp *app);
+
+/**
+ * Insert a new [`ListView`] descriptor, decoded from `json`, into the
+ * app's store, make it the active (painted/hit-tested) list, and request a
+ * repaint. Returns the new descriptor's non-negative handle id on success —
+ * pass it back to [`qui_rt_list_update`] to mutate it in place — or a
+ * negative `QUI_ERR_*` code on failure.
+ *
+ * Unlike the headless `qui_list_insert`, there is no slot to occupy:
+ * inserting again just adds another descriptor and makes it the active
+ * one, so many lists can be held at once even though only one is painted.
+ *
+ * # Safety
+ * `app` must be a live pointer from [`qui_rt_app_new`]; `(json, json_len)`
+ * must name `json_len` readable bytes.
+ */
+int64_t qui_rt_list_insert(struct QuiRtApp *app, const uint8_t *json, uintptr_t json_len);
+
+/**
+ * Replace the [`ListView`] named by `handle_id` (the id [`qui_rt_list_insert`]
+ * returned) with the descriptor decoded from `json`, in place, and request
+ * a repaint. This is the operation the headless ABI cannot do at all: there,
+ * updating means clearing the slot and inserting again, losing the
+ * old descriptor's identity; here the store handle — and so anything a host
+ * keyed off it — stays valid across the update.
+ *
+ * Returns [`QUI_OK`] on success, [`QUI_ERR_UNKNOWN_SLOT`] if `handle_id`
+ * does not name a descriptor this app holds, or another negative
+ * `QUI_ERR_*` code on failure.
+ *
+ * # Safety
+ * `app` must be a live pointer from [`qui_rt_app_new`]; `(json, json_len)`
+ * must name `json_len` readable bytes.
+ */
+int32_t qui_rt_list_update(struct QuiRtApp *app,
+                           int64_t handle_id,
+                           const uint8_t *json,
+                           uintptr_t json_len);
+
+/**
+ * Advance the app by polling the real terminal for exactly one native
+ * event (input, resize, …) without blocking, dispatch it if one arrived,
+ * and repaint if needed.
+ *
+ * Returns [`QUI_STEP_CONTINUE`], [`QUI_STEP_EXITED`] (further calls are a
+ * no-op returning this again), or [`QUI_ERR_IO`] if polling the terminal
+ * failed.
+ *
+ * # Safety
+ * `app` must be a live pointer from [`qui_rt_app_new`].
+ */
+int32_t qui_rt_step(struct QuiRtApp *app);
+
+/**
+ * Like [`qui_rt_step`], but blocks up to `timeout_ms` milliseconds waiting
+ * for the first native event to arrive, instead of returning immediately
+ * when there is nothing to dispatch. This is the entry point a host's own
+ * blocking event loop should call at whatever cadence suits it.
+ *
+ * # Safety
+ * `app` must be a live pointer from [`qui_rt_app_new`].
+ */
+int32_t qui_rt_pump(struct QuiRtApp *app, uint32_t timeout_ms);
+
+/**
+ * Run [`qui_rt_pump`] in a loop until the app exits, a step fails, or
+ * `max_steps` is reached, blocking up to `timeout_ms` per step. `max_steps`
+ * is clamped to at least `1`.
+ *
+ * # Safety
+ * `app` must be a live pointer from [`qui_rt_app_new`].
+ */
+int32_t qui_rt_run(struct QuiRtApp *app, uint32_t timeout_ms, uint32_t max_steps);
