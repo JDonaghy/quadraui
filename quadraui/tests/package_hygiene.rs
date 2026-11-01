@@ -118,15 +118,19 @@ const INTERNAL_DOCS: &[&str] = &[
     "docs/UI_CRATE_DESIGN.md",
     "docs/WEB_BACKEND_PROPOSAL.md",
     "docs/audits/FRAMEWORK_AUDIT_2026-09-26.md",
+    "docs/decisions/BINDING_STRATEGY.md",
 ];
 
 /// Consumer-facing docs that must keep shipping — app authors are pointed
 /// at these from the root `README.md` and `src/lib.rs`'s own rustdoc.
-/// `docs/decisions/*` lives here, not in `INTERNAL_DOCS`, even though both
-/// files are also read at agent session start: `DECISIONS.md`'s own D-019
-/// entry says explicitly it is written for an outside developer deciding
-/// whether to depend on the crate — see `Cargo.toml`'s `exclude` comment
-/// for the long form.
+/// `docs/decisions/` is split across both lists, classified per file:
+/// `DECISIONS.md` and `BACKEND_TRAIT_PROPOSAL.md` live here even though
+/// they are also read at agent session start, because `DECISIONS.md`'s own
+/// D-019 entry says explicitly it is written for an outside developer
+/// deciding whether to depend on the crate; `BINDING_STRATEGY.md` is in
+/// [`INTERNAL_DOCS`] because it plans this repo's own binding roadmap in
+/// in-repo epic numbers. See `Cargo.toml`'s `exclude` comment for the long
+/// form.
 const CONSUMER_DOCS: &[&str] = &[
     "docs/APP_ARCHITECTURE.md",
     "docs/CLIPBOARD.md",

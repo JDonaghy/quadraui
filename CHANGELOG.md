@@ -67,6 +67,11 @@ only a push to `main` runs this workflow.
   startup state (not just the static `ShellConfig` seed read at construction
   time) on frame 0, on every backend, since `ShellAdapter::setup` is the one
   code path shared across TUI, GTK, macOS and Win.
+- `quadraui-py`: extra primitives inserted with `insert_extra` take part in the
+  binding's hit map, so a click on one reaches the Python handler with the
+  descriptor's `id` as the event's `widget` plus a `hit` detail. `switch` is the
+  first interactive opt-in; display-only extras (`progress`, …) stay
+  non-interactive, attaching neither `widget` nor `hit`.
 
 ### Changed
 - TUI: on a kitty-keyboard-capable terminal, a chord whose key is a shifted
