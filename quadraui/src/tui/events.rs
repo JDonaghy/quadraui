@@ -87,7 +87,20 @@ pub fn crossterm_key_to_uievent(event: KeyEvent) -> Option<UiEvent> {
         return None;
     }
     let key = crossterm_keycode_to_key(event.code)?;
-    let modifiers = crossterm_modifiers_to_quadraui(event.modifiers);
+    let mut modifiers = crossterm_modifiers_to_quadraui(event.modifiers);
+    // A printable `Char` already encodes the shifted glyph (`:` rather
+    // than `;`, `A` rather than `a`) — that's true whether the terminal
+    // sent a legacy escape sequence or negotiated the kitty keyboard
+    // protocol (`DISAMBIGUATE_ESCAPE_CODES` / `REPORT_ALL_KEYS_AS_ESCAPE_CODES`).
+    // Kitty-capable terminals (iTerm2, kitty, WezTerm, foot, Alacritty)
+    // additionally set the `SHIFT` modifier on the same event, which
+    // double-counts the shift and makes callers that treat "printable
+    // char + modifier" as a chord rather than text (e.g. a vim-style
+    // normal-mode router) drop the keystroke. Clear it so a `Char` event
+    // carries the same modifier set regardless of keyboard negotiation.
+    if matches!(key, Key::Char(_)) {
+        modifiers.shift = false;
+    }
     let repeat = event.kind == KeyEventKind::Repeat;
     Some(UiEvent::KeyPressed {
         key,
@@ -769,9 +782,10 @@ mod tests {
 
     #[test]
     fn key_roundtrips_through_synth() {
+        // `Char` is handled separately below: its shift modifier is
+        // intentionally dropped (the glyph already encodes it), so it
+        // doesn't round-trip bit-for-bit the way named keys do.
         for code in &[
-            KeyCode::Char('a'),
-            KeyCode::Char('Z'),
             KeyCode::Esc,
             KeyCode::Enter,
             KeyCode::Tab,
@@ -803,6 +817,49 @@ mod tests {
             assert_eq!(round.code, *code, "code mismatch for {:?}", code);
             assert_eq!(round.modifiers, original.modifiers);
             assert_eq!(round.kind, KeyEventKind::Press);
+        }
+    }
+
+    #[test]
+    fn char_key_drops_redundant_shift_through_synth() {
+        // Kitty/CSI-u negotiation (iTerm2, kitty, WezTerm, foot,
+        // Alacritty) reports a shifted `Char` together with `SHIFT` set;
+        // `crossterm_key_to_uievent` strips it since the glyph already
+        // carries the shift. `ctrl` still round-trips.
+        for code in &[KeyCode::Char('a'), KeyCode::Char('Z'), KeyCode::Char(':')] {
+            let original = key(*code, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+            let ui = crossterm_key_to_uievent(original).unwrap();
+            let UiEvent::KeyPressed {
+                key: k,
+                modifiers,
+                repeat,
+            } = ui
+            else {
+                panic!("not a key press for {:?}", code);
+            };
+            assert!(!modifiers.shift, "shift should be stripped for {:?}", code);
+            assert!(modifiers.ctrl, "ctrl should survive for {:?}", code);
+            let round = synth_keyevent(&k, modifiers, repeat).unwrap();
+            assert_eq!(round.code, *code, "code mismatch for {:?}", code);
+            assert_eq!(round.modifiers, KeyModifiers::CONTROL);
+            assert_eq!(round.kind, KeyEventKind::Press);
+        }
+    }
+
+    #[test]
+    fn shifted_symbol_char_loses_shift_modifier() {
+        // The colon key under kitty/CSI-u negotiation: crossterm reports
+        // `Char(':')` with `SHIFT` set. Without stripping it, a vim-style
+        // normal-mode router that treats "printable char + modifier" as a
+        // chord (not text) would drop the keystroke instead of opening
+        // the ex command line.
+        let ev = crossterm_key_to_uievent(key(KeyCode::Char(':'), KeyModifiers::SHIFT)).unwrap();
+        match ev {
+            UiEvent::KeyPressed { key, modifiers, .. } => {
+                assert_eq!(key, Key::Char(':'));
+                assert!(!modifiers.shift);
+            }
+            other => panic!("unexpected variant: {:?}", other),
         }
     }
 

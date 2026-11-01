@@ -67,6 +67,15 @@ only a push to `main` runs this workflow.
   startup state (not just the static `ShellConfig` seed read at construction
   time) on frame 0, on every backend, since `ShellAdapter::setup` is the one
   code path shared across TUI, GTK, macOS and Win.
+### Fixed
+- TUI: a shifted-symbol key (`:`, `!`, `%`, `?`, `|`, `~`, `@`, `#`, …) on a
+  kitty-keyboard-capable terminal (iTerm2 with "Report modifiers using CSI u",
+  kitty, WezTerm, foot, Alacritty) now reaches consumers as a plain `Char`
+  with no `shift` modifier, matching legacy-encoding terminals. Those
+  terminals' CSI-u negotiation reported the already-shifted glyph together
+  with a redundant `SHIFT` modifier, which made a vim-style normal-mode
+  router that treats "printable char + modifier" as a chord drop the
+  keystroke entirely (`:` opening the ex command line stopped working).
 
 ## [0.8.0] - 2026-10-31
 ### Changed
