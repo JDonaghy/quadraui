@@ -59,6 +59,19 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `Backend` gains `set_focus(&mut self, id: Option<WidgetId>) -> bool`, so a
+  click landing on a focusable widget can move keyboard focus to it instead
+  of leaving focus wherever Tab/Shift+Tab last left it. `quadraui-py`'s
+  `PyAppLogic::handle` calls it on `MouseDown` for any widget in its own
+  `tab_stops`, emitting a `FocusChanged` event ahead of the click's own
+  semantic event. `Backend` is in-tree-only (no downstream consumer
+  implements it), but every in-tree backend (TUI, GTK, macOS, Win, plus the
+  test/testing recording backends) now implements the method since the
+  trait has no default.
+- `quadraui-py`'s `semantic_event_for_hit` now covers a tree row's chevron
+  (`TreeEvent::RowToggleExpand`) and a double-click on a tree row
+  (`TreeEvent::RowDoubleClicked`); the semantic-substitution pass in
+  `PyAppLogic::handle` runs on `DoubleClick` as well as `MouseDown`.
 - `ShellApp` gains a `setup_shell(&mut self, ctx: &ShellContext)` hook, called
   once right after `ShellApp::setup` with a `ShellContext` already reaching
   the real `AppShell` — strictly before the first `render()`. Non-breaking:

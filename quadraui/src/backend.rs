@@ -1861,14 +1861,26 @@ pub trait Backend: sealed::Sealed {
     /// [`crate::focus`]'s module doc for the full design and the six
     /// ad-hoc representations it replaces.
     ///
-    /// Deliberately `&FocusManager`, not `&mut`: the only code that
-    /// mutates it is the shared Tab/Shift+Tab intercept in
-    /// [`crate::runtime::preprocess_event`], reached through the
-    /// crate-private `PreprocessBackend::focus_manager_mut` — apps read
-    /// the current focus here, they don't set it directly. No default:
-    /// every backend owns exactly one `FocusManager`, constructed
-    /// alongside its other per-frame state.
+    /// Deliberately `&FocusManager`, not `&mut`: the runner itself
+    /// (Tab/Shift+Tab cycling in [`crate::runtime::preprocess_event`])
+    /// mutates it through the crate-private
+    /// `PreprocessBackend::focus_manager_mut`. Apps outside this crate
+    /// request a focus change through [`Self::set_focus`] instead — this
+    /// method stays read-only so every other reader keeps a simple
+    /// borrow. No default: every backend owns exactly one `FocusManager`,
+    /// constructed alongside its other per-frame state.
     fn focus_manager(&self) -> &FocusManager;
+
+    /// Move keyboard focus to `id` (or clear it, for `None`) — e.g. a
+    /// click landing on a focusable widget. Returns whether focus
+    /// actually changed, matching [`FocusManager::set_focus`], which
+    /// every implementer delegates to.
+    ///
+    /// No default: a host holding only `&mut dyn Backend` needs
+    /// click-to-focus to work identically on every backend, so a backend
+    /// that forgets to wire this up should fail to compile rather than
+    /// silently leave focus unchanged.
+    fn set_focus(&mut self, id: Option<crate::types::WidgetId>) -> bool;
 
     /// Paint the focus-ring convention around `rect` — a themed,
     /// border-only stroke (`Theme::accent_fg`) with no fill, so the
