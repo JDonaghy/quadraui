@@ -58,6 +58,15 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Added
+- `ShellApp` gains a `setup_shell(&mut self, ctx: &ShellContext)` hook, called
+  once right after `ShellApp::setup` with a `ShellContext` already reaching
+  the real `AppShell` — strictly before the first `render()`. Non-breaking:
+  it has a no-op default, so existing `ShellApp` implementors are unaffected.
+  This lets a consumer reconcile shell/sidebar state from live backend or
+  startup state (not just the static `ShellConfig` seed read at construction
+  time) on frame 0, on every backend, since `ShellAdapter::setup` is the one
+  code path shared across TUI, GTK, macOS and Win.
 
 ## [0.8.0] - 2026-10-31
 ### Changed

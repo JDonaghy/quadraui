@@ -249,6 +249,25 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             self.shell.set_bottom_panel_height(panel_lh);
         }
         self.app.setup(backend);
+
+        // Give the app a second, `ShellContext`-equipped chance to
+        // reconcile the real `AppShell` before the first `render()` paints.
+        // `self.app.setup` above only received a `Backend` — no shell
+        // access — so any decision depending on live backend/startup
+        // state (not just the static `ShellConfig` seed already applied
+        // above) could previously only reach the shell one frame late, via
+        // the next `on_shell_event_ctx`/`take_requested_panel` dispatch.
+        let viewport = backend.viewport();
+        let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+        let layout = self.shell.layout(area, backend.chrome_line_height());
+        let sidebar_visible = self.shell.sidebar_visible();
+        let ctx = ShellContext::new(
+            self.active_panel_id.as_ref(),
+            sidebar_visible,
+            &layout,
+            &mut self.shell,
+        );
+        self.app.setup_shell(&ctx);
     }
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
@@ -621,6 +640,73 @@ mod tests {
 
         let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
         assert!(layout.sidebar_content_bounds.is_some());
+    }
+
+    /// `ShellApp::setup_shell` fires once, right after `ShellApp::setup`,
+    /// with a `ShellContext` already reaching the real `AppShell` — so a
+    /// mutation made through `ctx.shell_mut()` lands before the very first
+    /// `render()`, with no event dispatch needed first. Unlike the
+    /// `sidebar_visible` tests above (a static `ShellConfig` seed), this
+    /// decision is made by the app at `setup_shell` time, the way a real
+    /// consumer would hide the sidebar based on live startup state (e.g. a
+    /// file argument) that the static config can't see.
+    #[test]
+    fn setup_shell_reaches_the_app_shell_before_the_first_render() {
+        struct HidesSidebarOnSetup;
+
+        impl ShellApp for HidesSidebarOnSetup {
+            fn render_content(&self, _backend: &mut dyn Backend, _layout: &AppShellLayout) {}
+
+            fn handle(
+                &mut self,
+                _event: UiEvent,
+                _backend: &mut dyn Backend,
+                _ctx: &ShellContext,
+            ) -> Reaction {
+                Reaction::Continue
+            }
+
+            fn setup_shell(&mut self, ctx: &ShellContext) {
+                ctx.shell_mut().hide_sidebar();
+            }
+        }
+
+        let config = ShellConfig::new(
+            "t",
+            vec![PanelDefinition {
+                id: WidgetId::new("panel:p"),
+                icon: "P".to_string(),
+                tooltip: "Panel".to_string(),
+                title: "PANEL".to_string(),
+            }],
+        );
+
+        let mut adapter = build_shell_adapter(HidesSidebarOnSetup, config);
+        assert!(
+            adapter.shell.sidebar_visible(),
+            "starts visible: the config did not seed it hidden"
+        );
+
+        let mut backend = crate::testing::RecordingBackend::with_viewport(
+            crate::Viewport {
+                width: 80.0,
+                height: 24.0,
+                scale: 1.0,
+            },
+            1.0,
+            1.0,
+        );
+        AppLogic::setup(&mut adapter, &mut backend);
+
+        assert!(
+            !adapter.shell.sidebar_visible(),
+            "setup_shell's ctx.shell_mut() mutation must land before the first render"
+        );
+        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
+        assert!(
+            layout.sidebar_content_bounds.is_none(),
+            "frame 0 must honour the setup_shell mutation, not render one frame late"
+        );
     }
 
     /// `ShellConfig::with_title_bar_min_px` reaches the built
