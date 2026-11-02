@@ -121,17 +121,17 @@ use quadraui::wheel_row_delta;
 #[cfg(test)]
 use quadraui::NamedKey;
 use quadraui::{
-    mouse_down, mouse_up, ActivityBar, AppLogic, AppShellEvent, AppShellLayout, Backend,
-    BackendCaps, BackendWidget, BoardModel, BottomPanelConfig, BottomPanelEvent, BottomPanelTab,
-    Button, Chart, Color, ColorDepth, ComboBox, CommandCenter, CommandLine, ContextMenu,
-    ContextMenuItem, ContextMenuPlacement, DataTable, DatePicker, Decoration, DialogButton,
-    DialogSeverity, DiffView, FontRole, Form, Image, Key, ListView, MenuBar, MessageDialogButton,
-    MessageDialogOptions, MessageList, Minimap, Modifiers, MouseButton, MultiSectionView,
-    NumberInput, Palette, Panel, PanelDefinition, PipelineView, Point, ProgressBar, RadioGroup,
-    Reaction, Rect, RgbaImage, Scrollbar, ShellApp, ShellConfig, ShellContext, ShellPosition,
-    SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StatusBar, StyledSpan, Switch, TabBar,
-    TabBarSegment, TabItem, TextDisplay, TextDisplayLine, TextInput, Toolbar, TreeView, UiEvent,
-    UserPayload, WidgetId,
+    mouse_down, mouse_up, Accelerator, AcceleratorId, ActivityBar, AppLogic, AppShellEvent,
+    AppShellLayout, Backend, BackendCaps, BackendWidget, BoardModel, BottomPanelConfig,
+    BottomPanelEvent, BottomPanelTab, Button, Chart, Color, ColorDepth, ComboBox, CommandCenter,
+    CommandLine, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTable, DatePicker,
+    Decoration, DialogButton, DialogSeverity, DiffView, FontRole, Form, GlobalShortcutId, Image,
+    Key, ListView, MenuBar, MessageDialogButton, MessageDialogOptions, MessageList, Minimap,
+    Modifiers, MouseButton, MultiSectionView, NumberInput, Palette, Panel, PanelDefinition,
+    PipelineView, Point, ProgressBar, RadioGroup, Reaction, Rect, RgbaImage, Scrollbar, ShellApp,
+    ShellConfig, ShellContext, ShellPosition, SidebarPanel, Spinner, Split, SplitDirection,
+    SplitTree, StatusBar, StyledSpan, Switch, TabBar, TabBarSegment, TabItem, TextDisplay,
+    TextDisplayLine, TextInput, Toolbar, TreeView, UiEvent, UserPayload, WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -4420,6 +4420,111 @@ impl QuiApp {
             dict.set_item("sgr_pixel_mouse", caps.sgr_pixel_mouse)?;
             dict.set_item("color_depth", color_depth_name(caps.color_depth))?;
             Ok(dict.unbind())
+        })
+    }
+
+    // ─── Accelerators & global shortcuts ─────────────────────────────────
+
+    /// Registers `descriptor` (decoded as an [`Accelerator`]) on this
+    /// app's own backend -- [`Backend::register_accelerator`] -- so a
+    /// matching native key event fires `UiEvent::Accelerator(id,
+    /// modifiers)` (see `push_event`'s `{"Accelerator": [id, modifiers]}`
+    /// shape) instead of a plain `KeyPressed`. Re-registering the same
+    /// `descriptor["id"]` replaces its previous binding/scope/label
+    /// wholesale. Registers on the exact backend `step`/`run` dispatch
+    /// through, so a chord pressed via `push_key_event` right after this
+    /// call fires.
+    fn register_accelerator(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<()> {
+        self.guarded(|app| {
+            let acc: Accelerator = decode("register_accelerator", descriptor)?;
+            let (backend, _) = app.driver.parts_mut();
+            backend.register_accelerator(&acc);
+            Ok(())
+        })
+    }
+
+    /// Removes a previously registered accelerator --
+    /// [`Backend::unregister_accelerator`]. A no-op if `id` was never
+    /// registered, or was already unregistered.
+    fn unregister_accelerator(&mut self, id: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            let (backend, _) = app.driver.parts_mut();
+            backend.unregister_accelerator(&AcceleratorId::new(id));
+            Ok(())
+        })
+    }
+
+    /// Registers `descriptor` (decoded as an [`Accelerator`]) as an
+    /// OS-wide global shortcut --
+    /// [`quadraui::PlatformServices::register_global_shortcut`] -- fired
+    /// as `UiEvent::GlobalShortcut(id)` even while this app isn't
+    /// focused. `descriptor["scope"]` is ignored: a global shortcut is
+    /// OS-wide by construction, see
+    /// `quadraui::accelerator::GlobalShortcutRegistry::register`'s doc.
+    /// Returns an opaque handle (a plain Python `int`) to pass back to
+    /// [`Self::unregister_global_shortcut`].
+    ///
+    /// Raises `InternalError` on every backend this binding ships today --
+    /// no in-tree `PlatformServices` override claims a real OS hotkey API
+    /// yet, so every backend inherits this trait method's `Unsupported`
+    /// default. This is a seam a Python app can already call against; the
+    /// success path has no automated coverage here and needs manual
+    /// verification once a backend (GTK's `org.freedesktop.portal.
+    /// GlobalShortcuts`, Win32 `RegisterHotKey`, Cocoa
+    /// `RegisterEventHotKey`) implements it for real.
+    fn register_global_shortcut(
+        &mut self,
+        py: Python<'_>,
+        descriptor: &Bound<'_, PyDict>,
+    ) -> PyResult<Py<PyAny>> {
+        self.guarded(|app| {
+            let acc: Accelerator = decode("register_global_shortcut", descriptor)?;
+            let id = app
+                .driver
+                .backend()
+                .services()
+                .register_global_shortcut(acc)
+                .map_err(|err| {
+                    InternalError::new_err(format!("register_global_shortcut: {err:?}"))
+                })?;
+            pythonize::pythonize(py, &id)
+                .map(|v| v.unbind())
+                .map_err(|err| InternalError::new_err(format!("register_global_shortcut: {err}")))
+        })
+    }
+
+    /// Releases a shortcut returned by [`Self::register_global_shortcut`]
+    /// -- [`quadraui::PlatformServices::unregister_global_shortcut`]. See
+    /// that method's doc for why this raises `InternalError` on every
+    /// backend this binding ships today.
+    fn unregister_global_shortcut(&mut self, py: Python<'_>, id: Py<PyAny>) -> PyResult<()> {
+        self.guarded(|app| {
+            let id: GlobalShortcutId = pythonize::depythonize(id.bind(py)).map_err(|err| {
+                InvalidDescriptorError::new_err(format!("unregister_global_shortcut: {err}"))
+            })?;
+            app.driver
+                .backend()
+                .services()
+                .unregister_global_shortcut(id)
+                .map_err(|err| {
+                    InternalError::new_err(format!("unregister_global_shortcut: {err:?}"))
+                })
+        })
+    }
+
+    /// Releases every currently registered global shortcut --
+    /// [`quadraui::PlatformServices::unregister_all_global_shortcuts`].
+    /// See [`Self::register_global_shortcut`]'s doc for why this raises
+    /// `InternalError` on every backend this binding ships today.
+    fn unregister_all_global_shortcuts(&mut self) -> PyResult<()> {
+        self.guarded(|app| {
+            app.driver
+                .backend()
+                .services()
+                .unregister_all_global_shortcuts()
+                .map_err(|err| {
+                    InternalError::new_err(format!("unregister_all_global_shortcuts: {err:?}"))
+                })
         })
     }
 }
