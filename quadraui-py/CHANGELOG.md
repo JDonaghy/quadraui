@@ -14,13 +14,20 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 - A click on a focused `text_input` extra now places the caret under the
   click (`EditOp::SetCursor`, resolved via `TextInput::layout`'s own
-  metrics-aware hit-test) instead of only moving keyboard focus there.
+  metrics-aware hit-test) instead of only moving keyboard focus there,
+  and the caret is now actually painted there too (`sync_text_input_carets`
+  repaints the extra from the cached editor's live cursor position after
+  the plain paint pass, since the descriptor's own `cursor_col` is
+  normally `0` with nothing to echo it back).
 - `Ctrl`/`Cmd`+`A`, `Ctrl`/`Cmd`+`Z`, and `Ctrl`/`Cmd`+`Shift`+`Z` on a
   focused `text_input` extra now resolve to `EditOp::SelectAll`/`Undo`/
   `Redo` — the per-widget cursor cache now persists the whole
   `TextEditor` session (including its undo history) across keystrokes
   instead of a fresh, empty one every call, so a selection extended with
-  `Shift`+arrows, or an edit undone/redone, is actually reachable.
+  `Shift`+arrows, or an edit undone/redone, is actually reachable. The
+  chord match is exact (`Ctrl+Shift+A`/`Ctrl+Alt+Z` no longer also
+  trigger `SelectAll`/`Undo`), matching the canonical
+  `KeyBinding::SelectAll`/`Undo`/`Redo` chords.
 - `number_input`, `combo_box`, `date_picker`, and `radio_group` extras are
   now hit-testable and tab stops, with their own keyboard/`click`
   semantics routed into `Form` events instead of staying paint-only: a
@@ -29,7 +36,9 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   `FormEvent::SegmentedControlChanged`; a `ComboBox`'s typing/navigation/
   commit/cancel to `FormEvent::ComboBoxTextChanged`/`HighlightChanged`/
   `Committed`/`Cancelled`; and a `DatePicker`'s `Enter` to
-  `FormEvent::DateChanged`.
+  `FormEvent::DateChanged`. Resolving a click to a specific option/item/
+  day cell (rather than just focusing the whole control) is not yet
+  wired.
 - A `"form"` extra is now hit-testable and a tab stop, and is routed
   through its own cached `FormController` instead of staying paint-only:
   a click on a `Toggle`/`Button`/text field, or a keystroke while a field
@@ -39,7 +48,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   ...) — `FormEvent::ButtonClicked` was previously never emitted by any
   path. `Tab`/`Shift`+`Tab` field cycling inside a form is not yet
   reachable this way (the app-level tab order claims it first); a click
-  still moves field focus directly.
+  still moves field focus directly. A descriptor's own `has_focus`/
+  `scroll_offset` seed the controller (so a host painting them directly
+  keeps working), `has_focus` additionally tracks engine-level focus in
+  both directions every frame (the focused-row highlight now appears the
+  render right after a click, and clears once focus moves elsewhere), and
+  a wheel `Scroll`/scrollbar-thumb drag over the form now scrolls it
+  (`MouseUp`/`MouseMoved`/`Scroll` are now routed into the cached
+  `FormController`, not just `MouseDown`).
 - `QuiApp.viewport()`, `line_height()`, `char_width()`,
   `list_char_width()`, `chrome_line_height()`, `scrollbar_reserve()`,
   `scales_text_rows()`, `snap_height(h)`, `measure_text(text, role)`, and

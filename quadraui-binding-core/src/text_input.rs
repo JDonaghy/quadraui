@@ -9,9 +9,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use quadraui::accelerator::{key_to_binding_name, parse_binding};
 use quadraui::{
-    EditOp, FormEvent, Key, Modifiers, NamedKey, Point, TextEditor, TextInput, TextInputHit,
-    TextInputMeasure, UiEvent, WidgetId,
+    EditOp, FormEvent, Key, KeyBinding, Modifiers, NamedKey, Point, TextEditor, TextInput,
+    TextInputHit, TextInputMeasure, UiEvent, WidgetId,
 };
 
 use crate::extra_paint::extra_as;
@@ -30,10 +31,12 @@ pub type TextEditorCache = RefCell<HashMap<WidgetId, TextEditor>>;
 /// cached editor for `id` (this primitive has no multiline mode to
 /// special-case — an app that wants a literal newline needs a different
 /// key, since `Enter` here always means "done"), `Ctrl`/`Cmd`+`A`/`Z`
-/// resolve to this primitive's own `SelectAll`/`Undo`/`Redo` built-ins
-/// (mirroring [`quadraui::accelerator::KeyBinding::SelectAll`]/`Undo`/`Redo`'s
-/// own chords, so a standalone `TextInput` gets them without an app having
-/// to register accelerators itself), any other Ctrl/Cmd+letter chord
+/// resolve to this primitive's own `SelectAll`/`Undo`/`Redo` built-ins via
+/// [`edit_op_from_binding`] (the exact chords
+/// [`quadraui::accelerator::KeyBinding::SelectAll`]/`Undo`/`Redo` parse to,
+/// so a standalone `TextInput` gets them without an app having to register
+/// accelerators itself, and without drifting from those chords the way a
+/// hand-rolled modifier check could), any other Ctrl/Cmd+letter chord
 /// passes through unclaimed so a host's own accelerator still fires, and
 /// every other key goes through [`EditOp::from_key`]/[`TextEditor::apply`].
 /// Returns `None` when the key isn't one any of the above recognizes, or
@@ -57,16 +60,32 @@ pub fn text_input_key_event(
         ));
     }
     if modifiers.ctrl || modifiers.cmd {
-        let op = match key {
-            Key::Char('a') | Key::Char('A') => Some(EditOp::SelectAll),
-            Key::Char('z') | Key::Char('Z') if modifiers.shift => Some(EditOp::Redo),
-            Key::Char('z') | Key::Char('Z') => Some(EditOp::Undo),
-            _ => None,
-        }?;
+        let op = edit_op_from_binding(key, modifiers)?;
         return apply_text_input_edit(id, text_input, op, text_editors);
     }
     let op = EditOp::from_key(key, modifiers)?;
     apply_text_input_edit(id, text_input, op, text_editors)
+}
+
+/// Matches `(key, modifiers)` against [`KeyBinding::Undo`]/`Redo`/
+/// `SelectAll`'s own parsed chord (`<C-z>`/`<C-S-z>`/`<C-a>` —
+/// [`quadraui::accelerator::parse_binding`]) and maps a hit to the
+/// [`EditOp`] it stands for via [`EditOp::from_key_binding`]. Unlike a
+/// hand-rolled `Key::Char('z') | Key::Char('Z')` match, this rejects a
+/// wider chord the canonical binding doesn't cover itself — `Ctrl+Shift+A`
+/// (not `SelectAll`'s `<C-a>`) and `Ctrl+Alt+Z` (not `Undo`'s `<C-z>`) both
+/// fall through to `None` here, the same as `preprocess_event`'s own
+/// `Ctrl+A` gate (`!shift && !alt && !cmd`) and `accelerator.rs`'s own
+/// definitions.
+fn edit_op_from_binding(key: &Key, modifiers: Modifiers) -> Option<EditOp> {
+    let key_name = key_to_binding_name(key);
+    [KeyBinding::Undo, KeyBinding::Redo, KeyBinding::SelectAll]
+        .into_iter()
+        .find_map(|binding| {
+            let parsed = parse_binding(&binding)?;
+            (parsed.modifiers == modifiers && parsed.key == key_name)
+                .then(|| EditOp::from_key_binding(&binding))?
+        })
 }
 
 /// Clamps a cached (or descriptor-seeded) cursor position to `lines`' actual
@@ -209,7 +228,23 @@ pub fn text_input_click_event(
     let layout = text_input.layout(area, measure);
     let line_idx = match layout.hit_test(point.x, point.y) {
         TextInputHit::Line { line_idx } => line_idx,
-        TextInputHit::EmptyArea => text_input.lines.len().saturating_sub(1),
+        // `EmptyArea` covers both a click below the last visible line
+        // (inside `content_bounds`, just past where lines run out) and
+        // one on the border/padding outside `content_bounds` entirely —
+        // nearest visible line by vertical distance handles both: past
+        // the last line that's the last one (as before), but a click
+        // above the first line (e.g. the top border on a multi-line box)
+        // now lands on the first line instead of jumping to the last.
+        TextInputHit::EmptyArea => layout
+            .visible_lines
+            .iter()
+            .min_by(|a, b| {
+                let da = (a.bounds.y - point.y).abs();
+                let db = (b.bounds.y - point.y).abs();
+                da.total_cmp(&db)
+            })
+            .map(|vl| vl.line_idx)
+            .unwrap_or_else(|| text_input.lines.len().saturating_sub(1)),
     };
     let line_len = text_input
         .lines

@@ -667,6 +667,234 @@ def test_form_text_field_click_then_typing_routes_through_form_controller():
     assert state["name"] == "A"
 
 
+def test_form_descriptor_has_focus_seeds_the_controller_highlight():
+    # `FormController::build_form` unconditionally overwrites `has_focus`
+    # with its own cached state -- without `sync_forms` seeding that cached
+    # state from the descriptor first, a form painted with `has_focus:
+    # True` directly (no click, no engine focus at all) would silently
+    # lose its focused-row highlight the moment it's routed through
+    # `FormController` instead of `Form`'s own plain `ExtraPaint::paint`.
+    # `(50, 60, 90)` is `Theme::default()`'s `selected_bg`, paired with the
+    # focused row; an unfocused row uses `tab_bar_bg` (`(20, 22, 30)`).
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "form",
+        {
+            "id": "settings",
+            "has_focus": True,
+            "focused_field": "name",
+            "fields": [
+                {
+                    "id": "name",
+                    "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
+                    "kind": {"TextInput": {"value": "Alice"}},
+                },
+            ],
+        },
+    )
+    assert app.cell_colors(0, 0)[1] == (50, 60, 90)
+
+
+def test_form_descriptor_scroll_offset_seeds_the_controller_view():
+    # Same silent-overwrite risk as `has_focus` above, for
+    # `FormController`'s own `scroll_offset` -- a descriptor-set
+    # `scroll_offset` must still skip straight to the right field with no
+    # click/scroll of any kind. The 3-line band fits exactly 3 rows, so
+    # `scroll_offset: 2` over 5 one-row `Label` fields should show
+    # `Field2`..`Field4` and hide `Field0`/`Field1`.
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "form",
+        {
+            "id": "settings",
+            "scroll_offset": 2,
+            "fields": [
+                {
+                    "id": f"f{i}",
+                    "label": {"spans": [{"text": f"Field{i}", "fg": None, "bg": None}]},
+                    "kind": "Label",
+                }
+                for i in range(5)
+            ],
+        },
+    )
+    assert app.screen_contains("Field2")
+    assert app.screen_contains("Field3")
+    assert app.screen_contains("Field4")
+    assert not app.screen_contains("Field0")
+    assert not app.screen_contains("Field1")
+
+
+def test_form_focus_highlight_tracks_engine_focus_in_both_directions():
+    # Compounding half of the same bug: `set_has_focus(true)` used to be
+    # called from exactly one site (the `KeyPressed` block), so (a) a click
+    # that moved engine focus onto the form showed no highlight at all
+    # until the first keystroke, and (b) once set, it never cleared again
+    # even after focus moved elsewhere, for as long as the host kept
+    # echoing the same `focused_field`. `sync_forms` now ORs the
+    # descriptor's own `has_focus` with whatever `backend`'s focus manager
+    # currently names, every frame, so this round-trips both ways with no
+    # keystroke involved.
+    app = QuiApp(40, 20)
+    state = {"name": "Alice", "focused_field": None}
+
+    def render():
+        return {
+            "form": {
+                "id": "settings",
+                "focused_field": state["focused_field"],
+                "fields": [
+                    {
+                        "id": "name",
+                        "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": state["name"]}},
+                    },
+                ],
+            },
+            # A second focusable extra to move engine focus onto, banded
+            # right after the form (`EXTRA_PRIMITIVE_KINDS` puts `"form"`
+            # before `"switch"`), so the row below proves the highlight
+            # clears once focus actually leaves the form.
+            "switch": {"id": "sw:1", "value": False},
+        }
+
+    def handler(event):
+        if "Form" not in event:
+            return
+        _, form_event = event["Form"]
+        if "FocusChanged" in form_event:
+            state["focused_field"] = form_event["FocusChanged"]["id"]
+
+    app.set_render(render)
+    app.set_handler(handler)
+
+    # Unfocused: plain row background.
+    assert app.cell_colors(0, 0)[1] == (20, 22, 30)
+
+    # Clicking the field moves engine focus onto the form and highlights
+    # the row on the very next render -- no keystroke needed.
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 6.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.run(1)
+    assert state["focused_field"] == "name"
+    assert app.cell_colors(0, 0)[1] == (50, 60, 90)
+
+    # Clicking the switch (a different focusable extra) moves engine focus
+    # off the form -- the highlight clears even though the host keeps
+    # echoing `focused_field: "name"` right back.
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 3.0}, "modifiers": {}}}
+    )
+    app.run(1)
+    assert state["focused_field"] == "name"
+    assert app.cell_colors(0, 0)[1] == (20, 22, 30)
+
+
+def test_form_wheel_scroll_advances_the_controller_scroll_offset():
+    # `InteractionEngine::handle` routes a wheel `Scroll` landing inside a
+    # `"form"` extra's own rect directly through its cached
+    # `FormController`, rather than leaving it a dead raw event the way it
+    # was before the `MouseUp`/`MouseMoved`/`Scroll` routing this test
+    # covers. `FormController`'s own `scroll_offset` is internal state
+    # (same as a text cursor) with no `FormEvent` of its own, so this
+    # resolves silently -- the assertion is on what's painted, not on a
+    # dispatched event.
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "form",
+        {
+            "id": "settings",
+            "fields": [
+                {
+                    "id": f"f{i}",
+                    "label": {"spans": [{"text": f"Field{i}", "fg": None, "bg": None}]},
+                    "kind": "Label",
+                }
+                for i in range(10)
+            ],
+        },
+    )
+    app.set_handler(lambda event: None)
+    assert app.screen_contains("Field0")
+    assert not app.screen_contains("Field3")
+
+    app.push_event(
+        {
+            "Scroll": {
+                "delta": {"x": 0.0, "y": -1.0},
+                "position": {"x": 1.0, "y": 1.0},
+            }
+        }
+    )
+    app.run(1)
+
+    assert app.screen_contains("Field1")
+    assert app.screen_contains("Field2")
+    assert app.screen_contains("Field3")
+    assert not app.screen_contains("Field0")
+
+
+def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
+    # Acceptance criterion: `form`/`number_input`/`combo_box`/`date_picker`/
+    # `radio_group` all newly return `tab_stop() -> true`
+    # (`ExtraPaint::tab_stop`), which changes `Tab` behaviour for any app
+    # painting them -- `runtime::preprocess_event`'s own step 3 cycles
+    # `app.tab_stops()`, built from `InteractionEngine::tab_stops`'s own
+    # paint-order traversal of the hit map. One `Tab` per extra, in
+    # `EXTRA_PRIMITIVE_KINDS`' registration order (`form` < `number_input`
+    # < `combo_box` < `date_picker` < `radio_group`), must focus it.
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "form",
+        {
+            "id": "settings",
+            "fields": [
+                {
+                    "id": "name",
+                    "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
+                    "kind": {"TextInput": {"value": "A"}},
+                },
+            ],
+        },
+    )
+    app.insert_extra(
+        "number_input", {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0}
+    )
+    app.insert_extra(
+        "combo_box", {"id": "combo:1", "options": ["alpha", "beta"], "open": False}
+    )
+    app.insert_extra(
+        "date_picker",
+        {
+            "id": "date:1",
+            "visible_month": {"year": 2024, "month": 3, "day": 1},
+            "focused": {"year": 2024, "month": 3, "day": 15},
+            "locale": {"first_weekday": "Sunday", "format": "Iso8601"},
+        },
+    )
+    app.insert_extra(
+        "radio_group",
+        {"id": "rg:1", "options": [{"id": "opt:a", "label": "Alpha"}]},
+    )
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    for _ in range(5):
+        app.push_event(
+            {"KeyPressed": {"key": {"Named": "Tab"}, "modifiers": {}, "repeat": False}}
+        )
+        app.run(1)
+
+    assert received == [
+        {"FocusChanged": "settings"},
+        {"FocusChanged": "ni:1"},
+        {"FocusChanged": "combo:1"},
+        {"FocusChanged": "date:1"},
+        {"FocusChanged": "rg:1"},
+    ]
+
+
 def test_render_callback_flat_dict_still_works_with_extra_key():
     app = QuiApp(40, 20)
 

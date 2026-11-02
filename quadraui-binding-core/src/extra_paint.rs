@@ -168,9 +168,12 @@ impl ExtraPaint for TextInput {
 
     /// Whole-area bounds check: [`ExtraPaint::hit_test`] has no
     /// backend-metrics parameter to resolve a click to a specific
-    /// character column, so any click inside `area` counts as landing on
-    /// the input (focus/caret placement stays coarse until a metrics-aware
-    /// hit-test is threaded through).
+    /// character column, so this only ever decides whether a click landed
+    /// on the input at all — `InteractionEngine::handle`'s own
+    /// `HitDetail::ExtraBody` arm has `Backend::measure()` in hand at the
+    /// click site and threads it through `text_input_click_event` for the
+    /// metrics-aware part (resolving which character column, and placing
+    /// the caret there).
     fn hit_test(&self, area: Rect, point: Point) -> bool {
         area.contains(point)
     }
@@ -189,13 +192,17 @@ impl ExtraPaint for RadioGroup {
         self.id
     }
 
-    /// Whole-area bounds check, same limitation [`TextInput::hit_test`]
-    /// documents: [`quadraui::RadioGroup::layout`] needs a per-option
-    /// `measure` closure this trait has no parameter to supply (unlike
-    /// [`NumberInput::hit_test`]'s fixed stepper column), so resolving a
-    /// click to a specific option is left to a host with real metrics in
-    /// hand — `Up`/`Down`/`Left`/`Right` still move the selection once
-    /// focused via [`ExtraPaint::tab_stop`].
+    /// Whole-area bounds check: [`ExtraPaint::hit_test`]'s own signature
+    /// has no parameter for the per-option `measure` closure
+    /// [`quadraui::RadioGroup::layout`] needs (unlike
+    /// [`NumberInput::hit_test`]'s fixed stepper column). That alone
+    /// doesn't rule out resolving a click to a specific option —
+    /// `InteractionEngine::handle`'s own click site has a real `backend`
+    /// (and so real metrics) in hand, the same way it does for
+    /// [`TextInput::hit_test`]'s equivalent limitation — it just isn't
+    /// wired there yet, so a click still only focuses the whole group;
+    /// `Up`/`Down`/`Left`/`Right` move the selection once focused via
+    /// [`ExtraPaint::tab_stop`].
     fn hit_test(&self, area: Rect, point: Point) -> bool {
         area.contains(point)
     }
@@ -281,13 +288,15 @@ impl ExtraPaint for ComboBox {
         self.id
     }
 
-    /// Whole-area bounds check, same limitation [`TextInput::hit_test`]
+    /// Whole-area bounds check, same limitation [`RadioGroup::hit_test`]
     /// documents: resolving a click to the field or a specific filtered
     /// dropdown item needs the backend's `line_height` [`ExtraPaint::paint`]
     /// uses to build [`quadraui::ComboBox::layout`]'s `field_bounds`/
-    /// `measure_item`, which this trait has no parameter for — typing,
-    /// `Up`/`Down`/`Enter`/`Escape` still work once focused via
-    /// [`ExtraPaint::tab_stop`].
+    /// `measure_item`, which this trait's `hit_test` has no parameter for
+    /// — `InteractionEngine::handle` has that `backend` in hand at the
+    /// click site, same as it does for `TextInput`, so this is not wired
+    /// yet rather than impossible. Typing, `Up`/`Down`/`Enter`/`Escape`
+    /// still work once focused via [`ExtraPaint::tab_stop`].
     fn hit_test(&self, area: Rect, point: Point) -> bool {
         area.contains(point)
     }
@@ -333,11 +342,12 @@ impl ExtraPaint for DatePicker {
         self.id
     }
 
-    /// Whole-area bounds check, same limitation [`TextInput::hit_test`]
+    /// Whole-area bounds check, same limitation [`RadioGroup::hit_test`]
     /// documents: resolving a click to a prev/next control or a specific
     /// day cell needs the backend's `line_height` [`ExtraPaint::paint`]
     /// uses to derive the grid's `cell_width`/`cell_height`, which this
-    /// trait has no parameter for — `Left`/`Right`/`Up`/`Down`/`PageUp`/
+    /// trait's `hit_test` has no parameter for — not wired yet rather than
+    /// impossible, same caveat. `Left`/`Right`/`Up`/`Down`/`PageUp`/
     /// `PageDown`/`Enter` navigation still works once focused via
     /// [`ExtraPaint::tab_stop`].
     fn hit_test(&self, area: Rect, point: Point) -> bool {
