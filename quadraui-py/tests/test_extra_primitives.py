@@ -782,7 +782,7 @@ def test_clicking_a_switch_routes_a_hit_with_widget_set():
     assert form_event == {"ToggleChanged": {"id": "settings:wrap", "value": True}}
 
 
-def _focused_text_input_app(initial_value, cursor_col=None):
+def _focused_text_input_app(initial_value, click_x=1.0):
     """Builds a `QuiApp` with a single, already-focused `text_input`
     extra wired to the "echo loop" a real host runs: a render callback
     always reflects `state["value"]`, and the returned `handler` (already
@@ -793,27 +793,25 @@ def _focused_text_input_app(initial_value, cursor_col=None):
     before the *next* pushed event is dispatched -- exactly the timing a
     live app gets.
 
-    `cursor_col`, if given, is baked into the render callback and so stays
-    fixed at its initial value across every subsequent render: real
-    `FormEvent::TextInputChanged`/`Committed` carry no cursor for a host to
-    echo, so this reproduces that honestly rather than cheating a correct
-    cursor back in. Returns `(app, state, received)`; `received`
+    The focusing click itself now also places the caret (click-to-caret),
+    so the cursor a subsequent keystroke edits from is whatever column
+    `click_x` resolves to against the field's own layout, not a value the
+    host could set on the descriptor -- real `FormEvent::TextInputChanged`/
+    `Committed` carry no cursor for a host to echo, so there is nothing
+    else for it to seed from. Returns `(app, state, received)`; `received`
     accumulates every event the handler saw, in order.
     """
     app = QuiApp(40, 20)
     state = {"value": initial_value}
 
     def render():
-        descriptor = {"id": "ti:1", "lines": [state["value"]]}
-        if cursor_col is not None:
-            descriptor["cursor_col"] = cursor_col
-        return {"text_input": descriptor}
+        return {"text_input": {"id": "ti:1", "lines": [state["value"]]}}
 
     app.set_render(render)
     # `set_render` itself never repaints -- force the first render so the
     # hit map actually reflects this descriptor before the click below.
     app.screen()
-    focus_and_click = _click_events(app, 1.0, 1.0)
+    focus_and_click = _click_events(app, click_x, 1.0)
     assert focus_and_click[0]["FocusChanged"] == "ti:1"
 
     received = []
@@ -834,16 +832,14 @@ def _focused_text_input_app(initial_value, cursor_col=None):
 
 
 def test_text_input_char_typed_and_paste_produce_form_events():
-    # The host echoes each `TextInputChanged` back as `lines`, but never
-    # learns the resulting cursor position (the event carries none) --
-    # the render callback keeps reporting the ORIGINAL `cursor_col: 5`
-    # every frame. The paste must still land after the "!" the first edit
-    # produced ("hello! world"), not at the stale `cursor_col: 5` the
-    # descriptor keeps reporting (which would insert before the "!",
-    # yielding "hello world!") -- proving the cursor used for the second
-    # edit comes from `apply_text_input_edit`'s own cache, not the
-    # descriptor.
-    app, state, received = _focused_text_input_app("hello", cursor_col=5)
+    # The focusing click (at `click_x=7.0`) places the caret after the
+    # 'o' of "hello" via click-to-caret; the host then echoes each
+    # `TextInputChanged` back as `lines` but never learns the resulting
+    # cursor position (the event carries none). The paste must still land
+    # after the "!" the first edit produced ("hello! world"), not back at
+    # the click position -- proving the cursor used for the second edit
+    # comes from `apply_text_input_edit`'s own cache, not the descriptor.
+    app, state, received = _focused_text_input_app("hello", click_x=7.0)
 
     app.push_event({"CharTyped": "!"})
     app.run(1)
@@ -883,10 +879,12 @@ def test_text_input_multiple_char_typed_appends_in_order():
 
 
 def test_text_input_backspace_deletes_at_cached_cursor():
-    # `Backspace` right after a `CharTyped` must delete the character the
-    # cached cursor says it's after (the "!" just inserted), landing back
-    # on "hi" -- not on a stale pre-edit cursor position.
-    app, state, received = _focused_text_input_app("hi", cursor_col=2)
+    # The focusing click (at `click_x=4.0`) places the caret after the
+    # 'i' of "hi" via click-to-caret. `Backspace` right after a
+    # `CharTyped` must delete the character the cached cursor says it's
+    # after (the "!" just inserted), landing back on "hi" -- not on a
+    # stale pre-edit cursor position.
+    app, state, received = _focused_text_input_app("hi", click_x=4.0)
 
     app.push_event({"CharTyped": "!"})
     app.push_event(
@@ -952,6 +950,151 @@ def test_text_input_arrow_key_falls_through_as_raw_key_pressed():
     assert len(received) == 1
     assert "KeyPressed" in received[0]
     assert received[0]["KeyPressed"]["key"] == {"Named": "Left"}
+
+
+def test_text_input_click_places_the_caret_at_the_clicked_column():
+    # Clicking a focused `text_input` is no longer focus-only -- the same
+    # click that focuses it also resolves a real `(line, col)` via
+    # `TextInput::layout`'s own metrics-aware hit-test and seeds the
+    # cache with it (`EditOp::SetCursor`), so typing right after a click
+    # inserts under the click rather than always at column 0. `click_x =
+    # 4.0` resolves to column 2 -- the end of "hi" -- proving the typed
+    # "!" lands there ("hi!"), not at the start ("!hi").
+    app, state, received = _focused_text_input_app("hi", click_x=4.0)
+
+    app.push_event({"CharTyped": "!"})
+    app.run(1)
+
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "ti:1"
+    assert form_event == {"TextInputChanged": {"id": "ti:1", "value": "hi!"}}
+    assert state["value"] == "hi!"
+
+
+def test_text_input_shift_left_selects_then_backspace_deletes_the_selection():
+    # `Shift+Left` extends a selection from the cached cursor rather than
+    # just moving it (`EditOp::from_key`'s `extend` flag is `modifiers.shift`)
+    # -- it produces no `Form` event itself (the text is unchanged), but
+    # the selection it leaves behind in the cache must still be there for
+    # `Backspace` to delete as a unit afterwards, landing on "hel" rather
+    # than deleting just the one character before the cursor ("hell").
+    app, state, received = _focused_text_input_app("hello", click_x=7.0)
+
+    for _ in range(2):
+        app.push_event(
+            {
+                "KeyPressed": {
+                    "key": {"Named": "Left"},
+                    "modifiers": {"shift": True},
+                    "repeat": False,
+                }
+            }
+        )
+    app.run(2)
+    assert all("KeyPressed" in e for e in received), (
+        "a pure selection extend changes no text, so it falls through as "
+        "the raw KeyPressed -- never a Form event"
+    )
+
+    received.clear()
+    app.push_event(
+        {
+            "KeyPressed": {
+                "key": {"Named": "Backspace"},
+                "modifiers": {},
+                "repeat": False,
+            }
+        }
+    )
+    app.run(1)
+
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "ti:1"
+    assert form_event == {"TextInputChanged": {"id": "ti:1", "value": "hel"}}
+    assert state["value"] == "hel"
+
+
+def test_text_input_ctrl_a_selects_all_then_typing_replaces_it():
+    # `Ctrl+A` on a focused `text_input` resolves to this primitive's own
+    # built-in `EditOp::SelectAll`, not a literal "a". `SelectAll` changes
+    # no text itself, so -- same as a pure cursor move -- it produces no
+    # `Form` event and falls through as the raw `KeyPressed`; what matters
+    # is that the selection it leaves behind in the cache makes the next
+    # typed character replace the whole buffer instead of being inserted
+    # alongside it.
+    app, state, received = _focused_text_input_app("hello", click_x=7.0)
+
+    app.push_event(
+        {
+            "KeyPressed": {
+                "key": {"Char": "a"},
+                "modifiers": {"ctrl": True},
+                "repeat": False,
+            }
+        }
+    )
+    app.run(1)
+    assert len(received) == 1
+    assert received[0]["KeyPressed"]["key"] == {"Char": "a"}
+
+    received.clear()
+    app.push_event({"CharTyped": "X"})
+    app.run(1)
+
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "ti:1"
+    assert form_event == {"TextInputChanged": {"id": "ti:1", "value": "X"}}
+    assert state["value"] == "X"
+
+
+def test_text_input_ctrl_z_undoes_then_ctrl_shift_z_redoes():
+    # `Ctrl+Z`/`Ctrl+Shift+Z` resolve to this primitive's own built-in
+    # `EditOp::Undo`/`Redo`, served from the cached `TextEditor`'s own
+    # history -- which now survives across calls instead of starting
+    # empty every keystroke (see `apply_text_input_edit`'s doc for why a
+    # fresh `TextEditor` per call could never undo anything).
+    app, state, received = _focused_text_input_app("hi", click_x=4.0)
+
+    app.push_event({"CharTyped": "!"})
+    app.run(1)
+    assert state["value"] == "hi!"
+
+    received.clear()
+    app.push_event(
+        {
+            "KeyPressed": {
+                "key": {"Char": "z"},
+                "modifiers": {"ctrl": True},
+                "repeat": False,
+            }
+        }
+    )
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "ti:1"
+    assert form_event == {"TextInputChanged": {"id": "ti:1", "value": "hi"}}
+    assert state["value"] == "hi"
+
+    received.clear()
+    app.push_event(
+        {
+            "KeyPressed": {
+                "key": {"Char": "z"},
+                "modifiers": {"ctrl": True, "shift": True},
+                "repeat": False,
+            }
+        }
+    )
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "ti:1"
+    assert form_event == {"TextInputChanged": {"id": "ti:1", "value": "hi!"}}
+    assert state["value"] == "hi!"
 
 
 def test_disabled_switch_click_falls_through_with_hit_attached():

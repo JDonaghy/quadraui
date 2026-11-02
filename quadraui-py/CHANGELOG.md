@@ -12,6 +12,15 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- A click on a focused `text_input` extra now places the caret under the
+  click (`EditOp::SetCursor`, resolved via `TextInput::layout`'s own
+  metrics-aware hit-test) instead of only moving keyboard focus there.
+- `Ctrl`/`Cmd`+`A`, `Ctrl`/`Cmd`+`Z`, and `Ctrl`/`Cmd`+`Shift`+`Z` on a
+  focused `text_input` extra now resolve to `EditOp::SelectAll`/`Undo`/
+  `Redo` — the per-widget cursor cache now persists the whole
+  `TextEditor` session (including its undo history) across keystrokes
+  instead of a fresh, empty one every call, so a selection extended with
+  `Shift`+arrows, or an edit undone/redone, is actually reachable.
 - `QuiApp.viewport()`, `line_height()`, `char_width()`,
   `list_char_width()`, `chrome_line_height()`, `scrollbar_reserve()`,
   `scales_text_rows()`, `snap_height(h)`, `measure_text(text, role)`, and

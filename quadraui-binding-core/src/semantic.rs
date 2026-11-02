@@ -4,9 +4,6 @@
 //! to re-derive from the raw `MouseDown`/`KeyPressed` plus a `"hit"`
 //! payload itself.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
-
 use quadraui::{
     ActivityBar, ActivityBarEvent, DataTableEvent, FormEvent, Key, ListViewEvent, Modifiers,
     NamedKey, StatusBar, StatusBarEvent, Switch, SwitchEvent, TabBarEvent, TextDisplayEvent,
@@ -16,7 +13,7 @@ use quadraui::{
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
 use crate::extra_paint::extra_as;
 use crate::hit::{HitDetail, PaintedHit};
-use crate::text_input::{text_input_key_event, TextCursorState};
+use crate::text_input::{text_input_key_event, TextEditorCache};
 use crate::tree_edit::tree_row_rename_key_event;
 
 /// Up/Down navigation for a focused `DataTable`: moves the current row
@@ -228,7 +225,7 @@ pub fn focus_scoped_key_event(
     raw_key: &Key,
     modifiers: Modifiers,
     hit_map: &[PaintedHit],
-    text_cursors: &RefCell<HashMap<WidgetId, TextCursorState>>,
+    text_editors: &TextEditorCache,
 ) -> UiEvent {
     let fallback = UiEvent::KeyPressed {
         key: raw_key.clone(),
@@ -284,7 +281,7 @@ pub fn focus_scoped_key_event(
             } if *id == focused => data_table_key_event(*id, raw_key, *selected_idx, *total_rows),
             PaintedHit::Extra { id, extra, .. } if *id == focused => {
                 if let Some(text_input) = extra_as::<TextInput>(extra) {
-                    return text_input_key_event(*id, text_input, raw_key, modifiers, text_cursors);
+                    return text_input_key_event(*id, text_input, raw_key, modifiers, text_editors);
                 }
                 if let Some(switch) = extra_as::<Switch>(extra) {
                     // Route the matched hit id (`*id`), not the

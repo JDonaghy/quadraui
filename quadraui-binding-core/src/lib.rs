@@ -36,6 +36,6 @@ pub use layout::{LayoutSplitTree, LayoutTabEntry, LayoutTabs, LeafDescriptor, LE
 pub use render::{draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf, split_rects};
 pub use render::{tree_viewport_rows, RenderFrame, RenderRefs};
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
-pub use text_input::{apply_text_input_edit, clamp_cursor, text_input_insert_event};
-pub use text_input::{text_input_key_event, TextCursorState};
+pub use text_input::{apply_text_input_edit, clamp_cursor, text_input_click_event};
+pub use text_input::{text_input_insert_event, text_input_key_event, TextEditorCache};
 pub use tree_edit::tree_row_rename_key_event;

@@ -32,7 +32,7 @@ use crate::hit::{
     chrome_hover_hit, event_position, hit_test_painted, set_event_widget, HitDetail, PaintedHit,
 };
 use crate::semantic::{focus_scoped_key_event, semantic_event_for_hit};
-use crate::text_input::{text_input_insert_event, TextCursorState};
+use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
 
 /// The one binding-specific step [`InteractionEngine::handle`] cannot do
 /// itself: handing a resolved [`UiEvent`] (and, for a pointer event that
@@ -85,10 +85,11 @@ pub struct InteractionEngine {
     /// forwarding the raw move, mirroring [`Self::active_drag`]'s divider
     /// handling for a `DataTable`'s own column dividers.
     column_drag: RefCell<Option<DataTableColumnDrag>>,
-    /// Per-`TextInput` cursor/selection state, keyed by `WidgetId`, that
-    /// survives across keystrokes — see [`crate::text_input::apply_text_input_edit`]'s
-    /// own doc for why a cache is needed at all.
-    text_cursors: RefCell<HashMap<WidgetId, TextCursorState>>,
+    /// Per-`TextInput` [`quadraui::TextEditor`] session, keyed by
+    /// `WidgetId`, that survives across keystrokes — see
+    /// [`crate::text_input::apply_text_input_edit`]'s own doc for why a
+    /// cache is needed at all, including its own `undo_stack`.
+    text_editors: TextEditorCache,
     /// Owns the in-window dropdown behind a `"menu_bar"` extra: the
     /// open/close/keyboard-nav/submenu state machine that turns a click on
     /// a top-level item into an open dropdown and a selection into
@@ -513,7 +514,7 @@ impl InteractionEngine {
                     key,
                     *modifiers,
                     &self.hit_map.borrow(),
-                    &self.text_cursors,
+                    &self.text_editors,
                 );
             }
         }
@@ -528,7 +529,7 @@ impl InteractionEngine {
                     focused,
                     &self.hit_map.borrow(),
                     EditOp::InsertChar(*ch),
-                    &self.text_cursors,
+                    &self.text_editors,
                 ) {
                     event = form_event;
                 }
@@ -540,7 +541,7 @@ impl InteractionEngine {
                     focused,
                     &self.hit_map.borrow(),
                     EditOp::InsertText(text.clone()),
-                    &self.text_cursors,
+                    &self.text_editors,
                 ) {
                     event = form_event;
                 }
@@ -661,6 +662,28 @@ impl InteractionEngine {
                 _ => None,
             };
             if let Some((modifiers, double_click)) = modifiers_and_double_click {
+                // A non-double click landing on a standalone `TextInput`
+                // extra's body places the caret under the click — a
+                // side effect on `text_editors` only (a `SetCursor` never
+                // changes the buffer, so there is no event to swap in
+                // here); see `text_input_click_event`'s own doc. Checked
+                // ahead of every other `detail` arm below since it never
+                // competes with them (`ExtraBody` isn't one of their
+                // matches) and must run before the `semantic_event_for_hit`
+                // call reads `detail` too, so a later keystroke on this
+                // widget starts from the clicked position rather than
+                // wherever focus last left the cursor.
+                if !double_click && matches!(detail, HitDetail::ExtraBody) {
+                    if let UiEvent::MouseDown { position, .. } = &event {
+                        text_input_click_event(
+                            &self.hit_map.borrow(),
+                            *id,
+                            *position,
+                            quadraui::TextInputMeasure::from_metrics(&backend.measure()),
+                            &self.text_editors,
+                        );
+                    }
+                }
                 if !double_click && matches!(detail, HitDetail::SplitDivider) {
                     if let UiEvent::MouseDown { position, .. } = &event {
                         if let Some(layout) =
