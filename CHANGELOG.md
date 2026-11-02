@@ -97,6 +97,19 @@ only a push to `main` runs this workflow.
   `Reaction`s from the same event batch — the way `quadraui-py`'s click-to-focus
   combines its synthetic `FocusChanged` dispatch with the click's own —
   reuses this crate's precedence table instead of duplicating it.
+- `UiEvent` gains `MessageDialogResolved(WidgetId)`, dispatched when an
+  in-canvas message/alert/confirm `Dialog` opened via
+  `compose::MessageDialogController` is resolved — the same shape
+  `ContextMenuItemActivated` carries for a context-menu selection.
+  `compose::MessageDialogController` gains `bounds(&self, backend: &dyn
+  Backend) -> Rect`, the same `DialogLayout::bounds` `render`/`handle`
+  already compute, for a caller that tracks a `ModalStack` entry for the
+  open dialog. `quadraui-py` gains `QuiApp::show_message_dialog`, the
+  "one call" anchored-overlay surface `show_context_menu` already has:
+  it opens a `MessageDialogController` behind `InteractionEngine`, which
+  routes every event to it (and pops its `ModalStack` entry on
+  resolution) before any other UI routing runs, mirroring
+  `ctx_menu`'s own ordering.
 
 ### Changed
 - TUI: on a kitty-keyboard-capable terminal, a chord whose key is a shifted

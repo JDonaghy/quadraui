@@ -158,6 +158,16 @@ impl MessageDialogController {
         self.dialog.buttons.get(self.focused).map(|b| &b.id)
     }
 
+    /// The dialog's full on-screen bounds for this backend's current
+    /// viewport — the same [`DialogLayout::bounds`] [`Self::render`] paints
+    /// and [`Self::handle`]'s click routing hit-tests against. A caller
+    /// that tracks a [`crate::ModalStack`] entry for the open dialog (so
+    /// other modal-aware code gets the same hit-test precedence an open
+    /// context menu already has) pushes this.
+    pub fn bounds(&self, backend: &dyn Backend) -> Rect {
+        self.layout(backend).bounds
+    }
+
     // ── Layout ────────────────────────────────────────────────────────
 
     /// Compute the dialog layout from the backend's own metrics
@@ -509,6 +519,16 @@ mod tests {
     fn with_id_overrides_widget_id() {
         let controller = MessageDialogController::new(opts_two_buttons()).with_id("confirm_close");
         assert_eq!(controller.dialog().id.as_str(), "confirm_close");
+    }
+
+    #[test]
+    fn bounds_matches_the_layout_render_and_handle_both_use() {
+        let controller = MessageDialogController::new(opts_two_buttons());
+        let backend = crate::tui::backend::TuiBackend::new();
+        assert_eq!(
+            controller.bounds(&backend),
+            controller.layout(&backend).bounds
+        );
     }
 
     #[test]

@@ -123,11 +123,11 @@ use quadraui::NamedKey;
 use quadraui::{
     ActivityBar, AppLogic, Backend, BoardModel, Button, Chart, ComboBox, CommandCenter,
     CommandLine, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTable, DatePicker,
-    DiffView, Form, Image, Key, ListView, MenuBar, MessageList, Minimap, Modifiers,
-    MultiSectionView, NumberInput, Palette, Panel, PipelineView, Point, ProgressBar, RadioGroup,
-    Reaction, Rect, Scrollbar, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StatusBar,
-    Switch, TabBar, TabItem, TextDisplay, TextInput, Toolbar, TreeView, UiEvent, UserPayload,
-    WidgetId,
+    DialogButton, DialogSeverity, DiffView, Form, Image, Key, ListView, MenuBar,
+    MessageDialogButton, MessageDialogOptions, MessageList, Minimap, Modifiers, MultiSectionView,
+    NumberInput, Palette, Panel, PipelineView, Point, ProgressBar, RadioGroup, Reaction, Rect,
+    Scrollbar, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StatusBar, Switch, TabBar,
+    TabItem, TextDisplay, TextInput, Toolbar, TreeView, UiEvent, UserPayload, WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -494,6 +494,24 @@ fn record_error(pending_error: &Rc<RefCell<Option<PyErr>>>, err: PyErr) {
     }
 }
 
+/// Decodes `QuiApp::show_message_dialog`'s `severity` string into a
+/// [`DialogSeverity`]. A plain match rather than routing through
+/// `pythonize::depythonize` (as `show_message_dialog`'s `buttons` argument
+/// does) so a caller gets a friendly lowercase word instead of needing to
+/// guess `DialogSeverity`'s exact Rust variant casing.
+fn parse_dialog_severity(value: &str) -> PyResult<DialogSeverity> {
+    match value {
+        "info" => Ok(DialogSeverity::Info),
+        "question" => Ok(DialogSeverity::Question),
+        "warning" => Ok(DialogSeverity::Warning),
+        "error" => Ok(DialogSeverity::Error),
+        other => Err(InvalidDescriptorError::new_err(format!(
+            "show_message_dialog: unknown severity {other:?}; expected one of \
+            \"info\", \"question\", \"warning\", \"error\""
+        ))),
+    }
+}
+
 impl AppLogic for PyAppLogic {
     type AreaId = ();
 
@@ -515,6 +533,7 @@ impl AppLogic for PyAppLogic {
             );
             self.engine.sync_menu_bar(backend, &hits);
             self.engine.render_ctx_menu(backend);
+            self.engine.render_dialog(backend);
             self.engine.set_hits(hits);
             return;
         };
@@ -529,6 +548,7 @@ impl AppLogic for PyAppLogic {
         }
         self.engine.sync_menu_bar(backend, &hits);
         self.engine.render_ctx_menu(backend);
+        self.engine.render_dialog(backend);
         self.engine.set_hits(hits);
     }
 
@@ -3004,6 +3024,79 @@ impl QuiApp {
                 .engine
                 .ctx_menu_mut()
                 .open(menu, Point::new(position.0, position.1), backend);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Opens an in-canvas confirm/alert/prompt dialog built from `title`/
+    /// `body`/`buttons`/`severity`, painting it immediately so
+    /// `screen()`/`screen_contains()` reflect it without a separate render
+    /// step — the "one call" shape `show_context_menu` already has, reusing
+    /// the same `InteractionEngine`-owned anchored-overlay routing C3's
+    /// context menu added: `handle` checks the open dialog before any
+    /// other UI routing, so it intercepts every event while open.
+    ///
+    /// `buttons` is a list of dicts shaped like the in-canvas `Dialog`
+    /// primitive's own `buttons` field: `{"id": str, "label": str,
+    /// "is_default": bool, "is_cancel": bool}` (`is_default`/`is_cancel`
+    /// default to `False`). `severity` is one of `"info"`, `"question"`,
+    /// `"warning"`, `"error"`, or `None` for no severity tint.
+    ///
+    /// Left/Right and Tab/Shift+Tab cycle keyboard focus among the
+    /// buttons; Enter activates the focused one (seeded on the first
+    /// `is_default` button, or the first button); Escape resolves to the
+    /// first `is_cancel` button, falling back to the first `is_default`
+    /// one. Either way — and a click on any button — dispatches
+    /// `UiEvent::MessageDialogResolved(id)` to the registered handler and
+    /// closes the dialog, the same round trip
+    /// `show_context_menu_then_clicking_an_item_emits_context_menu_item_activated`
+    /// exercises for a context menu. A click anywhere else on the dialog
+    /// (or outside it) is swallowed rather than falling through to
+    /// whatever is behind it — [`Dialog`][quadraui::Dialog]'s own "modal
+    /// overlay — intercept all clicks" contract.
+    ///
+    /// Calling this again while a dialog from an earlier call is still
+    /// open replaces it with the new one silently — `MessageDialogResolved`
+    /// does not fire for the one it replaced.
+    ///
+    /// Call from top-level script code only, never from inside the
+    /// registered event handler or render callback — see
+    /// `show_context_menu`'s own doc for why (the same PyO3 runtime-borrow
+    /// wall applies here).
+    #[pyo3(signature = (title, body, buttons, severity=None))]
+    fn show_message_dialog(
+        &mut self,
+        title: String,
+        body: String,
+        buttons: &Bound<'_, PyList>,
+        severity: Option<String>,
+    ) -> PyResult<()> {
+        let buttons: Vec<DialogButton> =
+            pythonize::depythonize(buttons.as_any()).map_err(|err| {
+                InvalidDescriptorError::new_err(format!(
+                    "show_message_dialog: invalid buttons: {err}"
+                ))
+            })?;
+        let severity = severity.map(|s| parse_dialog_severity(&s)).transpose()?;
+        let opts = MessageDialogOptions {
+            title,
+            body,
+            buttons: buttons
+                .into_iter()
+                .map(|b| MessageDialogButton {
+                    id: b.id,
+                    label: b.label,
+                    is_default: b.is_default,
+                    is_cancel: b.is_cancel,
+                })
+                .collect(),
+            severity,
+        };
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            app_logic.engine.open_message_dialog(opts, backend);
             app.driver.render();
             take_pending_error(app.driver.app_mut())?;
             Ok(())
@@ -6296,6 +6389,190 @@ def handle(event):
                 .extract()
                 .expect("ContextMenuItemActivated carries the activated item's id as a string");
             assert_eq!(activated_id, "copy");
+        });
+    }
+
+    /// Builds the `(app, locals)` pair a `show_message_dialog` test drives:
+    /// a fresh `QuiApp` with a Python handler that appends every event it
+    /// receives into `locals["received"]`.
+    fn app_recording_events(py: Python<'_>) -> (QuiApp, Bound<'_, PyDict>) {
+        let locals = PyDict::new(py);
+        py.run(
+            c"received = []\ndef handle(event):\n    received.append(event)\n",
+            Some(&locals),
+            Some(&locals),
+        )
+        .expect("python source must execute");
+        let handle: Py<PyAny> = locals
+            .get_item("handle")
+            .expect("dict lookup")
+            .expect("handle must be defined")
+            .unbind();
+        let app = QuiApp::new(40, 20, Some(handle), None).expect("valid dimensions");
+        (app, locals)
+    }
+
+    /// `QuiApp::show_message_dialog` opens a painted dialog; a click on one
+    /// of its buttons closes it and dispatches
+    /// `UiEvent::MessageDialogResolved` to the registered handler — the
+    /// same round trip `show_context_menu`'s own test exercises for a
+    /// context menu.
+    #[test]
+    fn show_message_dialog_then_clicking_a_button_emits_message_dialog_resolved() {
+        Python::attach(|py| {
+            let (mut app, locals) = app_recording_events(py);
+
+            let buttons_any = py
+                .eval(
+                    c"[
+                        {'id': 'save', 'label': 'Save', 'is_default': True},
+                        {'id': 'cancel', 'label': 'Cancel', 'is_cancel': True},
+                    ]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let buttons = buttons_any
+                .cast::<PyList>()
+                .expect("literal must be a list");
+
+            app.show_message_dialog(
+                "Unsaved changes".to_string(),
+                "Do you want to save?".to_string(),
+                buttons,
+                Some("warning".to_string()),
+            )
+            .expect("show_message_dialog must open the dialog");
+            assert!(
+                app.screen_contains("Save").expect("render must not raise"),
+                "the dialog's buttons must be painted"
+            );
+
+            let button_bounds = app
+                .driver
+                .find_bounds("Save")
+                .expect("the 'Save' button must be on screen");
+
+            // Only `x` gets a fractional nudge: the dialog box is
+            // vertically centered in the (even-height) viewport against an
+            // (odd-height) box, so every row's continuous-coordinate
+            // button rect sits a half-cell above the integer row
+            // `find_bounds` reports — `button_bounds.y` itself (the rect's
+            // own top edge) is already inside it, but `+ 0.5` would land
+            // exactly on that rect's exclusive bottom edge and miss.
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(button_bounds.x + 0.5, button_bounds.y),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            app.push_event(
+                click_any
+                    .cast::<PyDict>()
+                    .expect("MouseDown must pythonize to a dict"),
+            )
+            .expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "clicking a dialog button must dispatch exactly one event"
+            );
+            let resolved = received_list
+                .get_item(0)
+                .expect("item must exist")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let resolved_id: String = resolved
+                .get_item("MessageDialogResolved")
+                .expect("dict lookup")
+                .expect("a MessageDialogResolved event must be dispatched")
+                .extract()
+                .expect("MessageDialogResolved carries the chosen button's id as a string");
+            assert_eq!(resolved_id, "save");
+
+            assert!(
+                !app.screen_contains("Save").expect("render must not raise"),
+                "resolving the dialog must dismiss it"
+            );
+        });
+    }
+
+    /// Enter activates the keyboard-focused button — seeded on the first
+    /// `is_default` button — closing the dialog the same way a click on it
+    /// does.
+    #[test]
+    fn show_message_dialog_then_pressing_enter_resolves_the_default_button() {
+        Python::attach(|py| {
+            let (mut app, locals) = app_recording_events(py);
+
+            let buttons_any = py
+                .eval(
+                    c"[
+                        {'id': 'save', 'label': 'Save', 'is_default': True},
+                        {'id': 'cancel', 'label': 'Cancel', 'is_cancel': True},
+                    ]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let buttons = buttons_any
+                .cast::<PyList>()
+                .expect("literal must be a list");
+
+            app.show_message_dialog(
+                "Unsaved changes".to_string(),
+                "Do you want to save?".to_string(),
+                buttons,
+                None,
+            )
+            .expect("show_message_dialog must open the dialog");
+
+            let enter = UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Enter),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            };
+            let enter_any = pythonize::pythonize(py, &enter).expect("UiEvent must pythonize");
+            app.push_event(
+                enter_any
+                    .cast::<PyDict>()
+                    .expect("KeyPressed must pythonize to a dict"),
+            )
+            .expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "Enter on the default button must dispatch exactly one event"
+            );
+            let resolved = received_list
+                .get_item(0)
+                .expect("item must exist")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let resolved_id: String = resolved
+                .get_item("MessageDialogResolved")
+                .expect("dict lookup")
+                .expect("a MessageDialogResolved event must be dispatched")
+                .extract()
+                .expect("MessageDialogResolved carries the chosen button's id as a string");
+            assert_eq!(resolved_id, "save");
         });
     }
 }
