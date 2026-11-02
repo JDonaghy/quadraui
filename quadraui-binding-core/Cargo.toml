@@ -1,0 +1,15 @@
+[package]
+name = "quadraui-binding-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Language-neutral interaction wiring (hit testing, semantic event synthesis, text-input/drag controllers, the retained descriptor model and render->frame assembly) shared by every native quadraui binding. Carries no language-specific dependency -- a binding crate (quadraui-py today, quadraui-node next) supplies only descriptor decode and a callback boundary around this engine."
+
+[dependencies]
+# `tui` is unconditional for the same reason `quadraui-py` pulls it in
+# unconditionally: this crate's render/paint path drives `quadraui::Backend`
+# directly and has no language-specific feature of its own to gate it behind.
+quadraui = { path = "../quadraui", features = ["tui"] }
+serde = { version = "1.0", features = ["derive"] }

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "quadraui",
+    "quadraui-binding-core",
     "quadraui-ffi",
     "quadraui-py",
     "quadraui-gallery",
