@@ -17,6 +17,33 @@ use crate::extra_paint::extra_as;
 use crate::hit::{HitDetail, PaintedHit};
 use crate::text_input::{text_input_key_event, TextCursorState};
 
+/// Up/Down navigation for a focused `DataTable`: moves the current row
+/// selection by one, clamped to `[0, total_rows - 1]` and starting at row 0
+/// when nothing is selected yet. Every other key returns `None`, leaving
+/// [`focus_scoped_key_event`] to fall through to the raw
+/// `UiEvent::KeyPressed` — `DataTable` has no focus-scoped `KeyPressed`
+/// variant of its own (unlike `Tree`/`List`/`TabBar`) because
+/// `DataTableEvent::RowSelected` already is the semantic shape arrow-key
+/// navigation needs; a widget-scoped `KeyPressed` would just be an extra
+/// hop a binding's own handler would have to unwrap before reaching the
+/// same `key` string.
+fn data_table_key_event(
+    id: WidgetId,
+    key: &Key,
+    selected_idx: Option<usize>,
+    total_rows: usize,
+) -> Option<UiEvent> {
+    if total_rows == 0 {
+        return None;
+    }
+    let idx = match key {
+        Key::Named(NamedKey::Down) => selected_idx.map_or(0, |i| (i + 1).min(total_rows - 1)),
+        Key::Named(NamedKey::Up) => selected_idx.map_or(0, |i| i.saturating_sub(1)),
+        _ => return None,
+    };
+    Some(UiEvent::DataTable(id, DataTableEvent::RowSelected { idx }))
+}
+
 /// The semantic [`UiEvent`] a click on `detail` (within primitive `id`)
 /// stands for, if any — the set the binding's own event handler synthesizes so a tab
 /// click, tab close-button click, tree-row/chevron click, list-item click,
@@ -162,11 +189,14 @@ pub fn key_to_focus_string(key: &Key) -> String {
 }
 
 /// Routes a raw `KeyPressed` to whichever leaf the `FocusManager` names as
-/// focused, wrapping it into that leaf's own semantic `KeyPressed` variant.
-/// `DataTable` and `Button` have no such variant, so a key focused on one
-/// of them passes through as the original `UiEvent::KeyPressed` unchanged;
-/// the same happens when `focused` names a leaf absent from this frame's
-/// hit map (for example a tree that scrolled out of the render).
+/// focused, wrapping it into that leaf's own semantic `KeyPressed` variant
+/// (or, for a focused `DataTable`'s Up/Down, straight into
+/// [`data_table_key_event`]'s `RowSelected`). `Button` has no semantic key
+/// variant at all, so a key focused on one passes through as the original
+/// `UiEvent::KeyPressed` unchanged; the same happens for any other key a
+/// focused `DataTable` doesn't recognize, and when `focused` names a leaf
+/// absent from this frame's hit map (for example a tree that scrolled out
+/// of the render).
 pub fn focus_scoped_key_event(
     focused: WidgetId,
     raw_key: &Key,
@@ -204,6 +234,12 @@ pub fn focus_scoped_key_event(
                     modifiers,
                 },
             )),
+            PaintedHit::DataTable {
+                id,
+                selected_idx,
+                total_rows,
+                ..
+            } if *id == focused => data_table_key_event(*id, raw_key, *selected_idx, *total_rows),
             PaintedHit::Extra { id, extra, .. } if *id == focused => {
                 if let Some(text_input) = extra_as::<TextInput>(extra) {
                     return text_input_key_event(*id, text_input, raw_key, modifiers, text_cursors);
