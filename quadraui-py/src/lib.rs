@@ -127,15 +127,16 @@ use quadraui::NamedKey;
 use quadraui::{
     mouse_down, mouse_up, Accelerator, AcceleratorId, ActivityBar, AppLogic, AppShellEvent,
     AppShellLayout, Backend, BackendCaps, BackendWidget, BoardModel, BottomPanelConfig,
-    BottomPanelEvent, BottomPanelTab, Button, Chart, Color, ColorDepth, ComboBox, CommandCenter,
-    CommandLine, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTable, DatePicker,
-    Decoration, DialogButton, DialogSeverity, DiffView, FontRole, Form, GlobalShortcutId, Image,
-    Key, ListView, MenuBar, MessageDialogButton, MessageDialogOptions, MessageList, Minimap,
-    Modifiers, MouseButton, MultiSectionView, NumberInput, Palette, Panel, PanelDefinition,
-    PipelineView, Point, ProgressBar, RadioGroup, Reaction, Rect, RgbaImage, Scrollbar, ShellApp,
-    ShellConfig, ShellContext, ShellPosition, SidebarPanel, Spinner, Split, SplitDirection,
-    SplitTree, StatusBar, StyledSpan, Switch, TabBar, TabBarSegment, TabItem, TextDisplay,
-    TextDisplayLine, TextInput, Toolbar, TreeView, UiEvent, UserPayload, WidgetId,
+    BottomPanelEvent, BottomPanelTab, Button, Canvas, Chart, Color, ColorDepth, ComboBox,
+    CommandCenter, CommandLine, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTable,
+    DatePicker, Decoration, DialogButton, DialogSeverity, DiffView, Editor, FindReplacePanel,
+    FontRole, Form, GlobalShortcutId, Image, Key, ListView, MenuBar, MessageDialogButton,
+    MessageDialogOptions, MessageList, Minimap, Modifiers, MouseButton, MultiSectionView,
+    NumberInput, Palette, Panel, PanelDefinition, PipelineView, Point, ProgressBar, RadioGroup,
+    Reaction, Rect, RgbaImage, ScrollView, Scrollbar, ShellApp, ShellConfig, ShellContext,
+    ShellPosition, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StatusBar, StyledSpan,
+    Switch, TabBar, TabBarSegment, TabItem, Terminal, TextDisplay, TextDisplayLine, TextInput,
+    Toolbar, TreeView, UiEvent, UserPayload, WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -1744,6 +1745,21 @@ const EXTRA_PRIMITIVES: &[(&str, ExtraDecoder)] = &[
     }),
     ("scrollbar", |what, dict| {
         Ok(Rc::new(decode::<Scrollbar>(what, dict)?))
+    }),
+    ("editor", |what, dict| {
+        Ok(Rc::new(decode::<Editor>(what, dict)?))
+    }),
+    ("terminal", |what, dict| {
+        Ok(Rc::new(decode::<Terminal>(what, dict)?))
+    }),
+    ("canvas", |what, dict| {
+        Ok(Rc::new(decode::<Canvas>(what, dict)?))
+    }),
+    ("scroll_view", |what, dict| {
+        Ok(Rc::new(decode::<ScrollView>(what, dict)?))
+    }),
+    ("find_replace", |what, dict| {
+        Ok(Rc::new(decode::<FindReplacePanel>(what, dict)?))
     }),
 ];
 
