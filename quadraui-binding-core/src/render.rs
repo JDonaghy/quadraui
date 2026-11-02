@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use quadraui::{
     Backend, Button, DataTable, InteractionState, ListView, Rect, Scrollbar, Split, TabBar,
-    TextDisplay, TreeView, WidgetId,
+    TextDisplay, TextRegion, TreeView, WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -226,6 +226,11 @@ fn draw_text_display_hit(
     } else {
         0.0
     };
+    // Register a selectable text region every frame so drag-select
+    // (`TextSelectionChanged`) and Ctrl-C copy (`TextCopied`) work against
+    // this `TextDisplay`. TUI reads the live cell buffer on copy, so
+    // `lines` here only matters to pixel-based backends (GTK/macOS/win).
+    backend.register_text_region(text_display_region(id, area, td));
     PaintedHit::TextDisplay {
         id,
         area,
@@ -233,6 +238,21 @@ fn draw_text_display_hit(
         body_offset,
         total_lines: td.lines.len(),
         viewport_lines,
+    }
+}
+
+/// Builds the [`TextRegion`] registered for a painted `TextDisplay`:
+/// `lines` flattens each line's spans to plain text (TUI ignores this and
+/// reads the live cell buffer instead; GTK/macOS/win extract from it).
+fn text_display_region(id: WidgetId, area: Rect, td: &TextDisplay) -> TextRegion {
+    TextRegion {
+        id,
+        bounds: area,
+        lines: td
+            .lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.text.as_str()).collect())
+            .collect(),
     }
 }
 

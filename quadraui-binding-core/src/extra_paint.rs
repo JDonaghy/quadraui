@@ -12,7 +12,7 @@ use quadraui::{
     CompletionItemMeasure, DatePicker, DiffView, Form, Image, InteractionState, MenuBar,
     MessageList, Minimap, MultiSectionView, NumberInput, Palette, PipelineView, Point, ProgressBar,
     RadioGroup, Rect, Scrollbar, Spinner, StatusBar, StatusBarHit, Switch, SwitchHit, TextInput,
-    Toolbar, WidgetId,
+    TextRegion, Toolbar, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -284,6 +284,14 @@ impl ExtraPaint for Chart {
 impl ExtraPaint for MessageList {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_message_list(area, self);
+        // Register a selectable text region every frame so drag-select and
+        // Ctrl-C copy work against the transcript. TUI ignores `lines` (it
+        // reads the live cell buffer); pixel backends extract from it.
+        backend.register_text_region(TextRegion {
+            id: self.id,
+            bounds: area,
+            lines: self.rows.iter().map(|row| row.text.clone()).collect(),
+        });
     }
 
     fn id(&self) -> WidgetId {
