@@ -19,6 +19,12 @@ Python callback raised, which passes through unchanged) is a
 ``PanicError``, ``PoisonedError``, ``InternalError``,
 ``NativeAlreadyRunError``, ``NoDisplayError``, ``NotOnMainThreadError``,
 and ``InvalidAppIdError``.
+
+``QuiApp.waker()`` returns a ``QuiAppWaker`` -- unlike ``QuiApp`` itself,
+which is pinned to the thread that created it, this handle is safe to pass
+to a background thread so it can call ``post(value)``/``wake()`` to deliver
+a value back into the app's event stream as a ``{"User": value}`` event
+and wake whichever loop currently owns it, without exiting.
 """
 
 from ._quadraui import (
@@ -34,12 +40,14 @@ from ._quadraui import (
     PoisonedError,
     QuadrauiError,
     QuiApp,
+    QuiAppWaker,
     SlotOccupiedError,
     UnknownSlotError,
 )
 
 __all__ = [
     "QuiApp",
+    "QuiAppWaker",
     "QuadrauiError",
     "InvalidDescriptorError",
     "SlotOccupiedError",
