@@ -163,6 +163,15 @@ only a push to `main` runs this workflow.
   one `shift` shape whichever protocol is negotiated — an uppercase glyph
   always carries `shift`, so `Ctrl+Shift+T` stays distinct from `Ctrl+T` and
   `<C-S-z>` redo keeps matching.
+- TUI: `Ctrl-C` with an active text selection no longer copies the focus
+  ring's border glyphs instead of the selected text, when the focused
+  widget's tab-stop rect coincides with the selection's region (true for any
+  focused `TextDisplay`/`MessageList`, whose tab stop is their whole painted
+  area). `tui::run::paint_frame` now caches the selected text via
+  `TuiBackend::apply_selection_highlight` before `TuiBackend::draw_focus_ring`
+  paints over those cells, instead of after — the on-screen result is
+  unchanged (the ring still paints last), only `Ctrl-C`'s copied text is now
+  correct.
 
 ## [0.8.0] - 2026-10-31
 ### Changed

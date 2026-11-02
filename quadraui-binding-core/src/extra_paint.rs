@@ -286,11 +286,33 @@ impl ExtraPaint for MessageList {
         backend.draw_message_list(area, self);
         // Register a selectable text region every frame so drag-select and
         // Ctrl-C copy work against the transcript. TUI ignores `lines` (it
-        // reads the live cell buffer); pixel backends extract from it.
+        // reads the live cell buffer); pixel backends extract from it, so
+        // `lines` must be the rows actually painted into `area` this frame:
+        // `rows[scroll_top..]`, clipped to how many whole rows fit in
+        // `area.height` at this frame's line height — matching
+        // `Backend::draw_message_list`'s own row walk (TUI's
+        // `draw_message_list`, GTK's `draw_message_list` free function) so
+        // row `i` of `bounds` always lines up with `lines[i]`. Each row is
+        // already one display row (wrapping happens at the call site, not
+        // in this primitive), so unlike `TextDisplay` there's no wrap/
+        // timestamp misalignment to worry about here.
+        let line_height = backend.line_height();
+        let visible_rows = if line_height > 0.0 {
+            (area.height / line_height).floor() as usize
+        } else {
+            0
+        };
+        let lines = self
+            .rows
+            .iter()
+            .skip(self.scroll_top)
+            .take(visible_rows)
+            .map(|row| row.text.clone())
+            .collect();
         backend.register_text_region(TextRegion {
             id: self.id,
             bounds: area,
-            lines: self.rows.iter().map(|row| row.text.clone()).collect(),
+            lines,
         });
     }
 

@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use quadraui::{
     Backend, Button, DataTable, InteractionState, ListView, Rect, Scrollbar, Split, TabBar,
-    TextDisplay, TextRegion, TreeView, WidgetId,
+    TextDisplay, TextDisplayLayout, TextRegion, TreeView, WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -228,9 +228,9 @@ fn draw_text_display_hit(
     };
     // Register a selectable text region every frame so drag-select
     // (`TextSelectionChanged`) and Ctrl-C copy (`TextCopied`) work against
-    // this `TextDisplay`. TUI reads the live cell buffer on copy, so
-    // `lines` here only matters to pixel-based backends (GTK/macOS/win).
-    backend.register_text_region(text_display_region(id, area, td));
+    // this `TextDisplay`. `lines` is left empty — see `text_display_region`'s
+    // doc for why a flattened `td.lines` can't stand in for it.
+    backend.register_text_region(text_display_region(id, area, body_offset, &layout));
     PaintedHit::TextDisplay {
         id,
         area,
@@ -241,18 +241,44 @@ fn draw_text_display_hit(
     }
 }
 
-/// Builds the [`TextRegion`] registered for a painted `TextDisplay`:
-/// `lines` flattens each line's spans to plain text (TUI ignores this and
-/// reads the live cell buffer instead; GTK/macOS/win extract from it).
-fn text_display_region(id: WidgetId, area: Rect, td: &TextDisplay) -> TextRegion {
+/// Builds the [`TextRegion`] registered for a painted `TextDisplay`'s body.
+///
+/// `bounds` is `area` shifted down by `body_offset` (the title row, when
+/// present) and narrowed to exclude the scrollbar gutter `layout`
+/// reserves inside `area` (when `show_scrollbar` is set) — the rect
+/// actually holding painted text, matching how every other caller
+/// registers a region (`examples/common/panel_app.rs`,
+/// `examples/common/selection_app.rs`, `quadraui-gallery`'s own
+/// `text_selection` demo all register the rendered content rect, not the
+/// whole slot). Without this, a drag that reaches the right edge of a
+/// `show_scrollbar` display inverts the gutter's track/thumb glyphs too.
+///
+/// `lines` is always empty: TUI reads its live cell buffer on Ctrl-C and
+/// never touches it, and there is no backend-portable flattening of
+/// `td.lines` to hand pixel backends (GTK/macOS/win) instead. A wrapped
+/// logical line occupies a different number of display rows under each
+/// backend's own wrap width, and `layout.resolved_scroll_offset` shifts
+/// which logical line is on top, so a flattening built against one
+/// backend's wrap/scroll state would misalign the rows another backend
+/// actually painted. Leaving `lines` empty (the documented
+/// [`TextRegion::lines`] escape hatch) makes a pixel backend's Ctrl-C copy
+/// nothing for this region instead of copying the wrong text.
+fn text_display_region(
+    id: WidgetId,
+    area: Rect,
+    body_offset: f32,
+    layout: &TextDisplayLayout,
+) -> TextRegion {
+    let gutter_width = layout.scrollbar_bounds.map(|g| g.width).unwrap_or(0.0);
     TextRegion {
         id,
-        bounds: area,
-        lines: td
-            .lines
-            .iter()
-            .map(|line| line.spans.iter().map(|s| s.text.as_str()).collect())
-            .collect(),
+        bounds: Rect::new(
+            area.x,
+            area.y + body_offset,
+            (area.width - gutter_width).max(0.0),
+            (area.height - body_offset).max(0.0),
+        ),
+        lines: Vec::new(),
     }
 }
 
