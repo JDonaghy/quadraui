@@ -64,6 +64,12 @@ pub enum PaintedHit {
         layout: DataTableLayout,
         scroll_offset: usize,
         total_rows: usize,
+        /// The table's current row selection, as painted — read by
+        /// [`crate::semantic::focus_scoped_key_event`] to compute the next
+        /// row an Up/Down arrow key should select, the same way
+        /// [`Self::Tree`]'s `row_paths` lets a key event resolve against
+        /// what was actually painted rather than re-deriving it.
+        selected_idx: Option<usize>,
     },
     TabBar {
         id: WidgetId,
@@ -218,6 +224,7 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 layout,
                 scroll_offset,
                 total_rows,
+                ..
             } => {
                 if !area.contains(point) {
                     continue;

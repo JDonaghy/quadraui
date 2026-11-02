@@ -18,9 +18,14 @@ use quadraui::compose::{
     MessageDialogController, MessageDialogEvent,
 };
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
-use quadraui::{wheel_row_delta, Backend, EditOp, MenuBar, Modifiers, Rect, UiEvent, WidgetId};
+use quadraui::{
+    wheel_row_delta, Backend, DataTableEvent, EditOp, MenuBar, Modifiers, Rect, UiEvent, WidgetId,
+};
 
-use crate::drag::{find_split_layout, tree_scroll_state, ActiveDrag, ScrollbarDrag};
+use crate::drag::{
+    find_data_table_layout, find_split_layout, tree_scroll_state, ActiveDrag, DataTableColumnDrag,
+    ScrollbarDrag,
+};
 use crate::extra_paint::extra_as;
 use crate::hit::{event_position, hit_test_painted, set_event_widget, HitDetail, PaintedHit};
 use crate::semantic::{focus_scoped_key_event, semantic_event_for_hit};
@@ -67,6 +72,14 @@ pub struct InteractionEngine {
     /// instead of forwarding the raw move, mirroring [`Self::active_drag`]'s
     /// divider-drag handling for the tree's own scrollbar thumb.
     scrollbar_drag: RefCell<Option<ScrollbarDrag>>,
+    /// Armed by a `MouseDown` landing on `HitDetail::DataTableHeaderDivider`
+    /// (per [`Self::hit_map`]'s [`PaintedHit::DataTable`] hit-testing) and
+    /// cleared on the matching `MouseUp`. While armed,
+    /// [`InteractionEngine::handle`] turns every `MouseMoved` into a
+    /// synthesized `UiEvent::DataTable(.., ColumnResized)` instead of
+    /// forwarding the raw move, mirroring [`Self::active_drag`]'s divider
+    /// handling for a `DataTable`'s own column dividers.
+    column_drag: RefCell<Option<DataTableColumnDrag>>,
     /// Per-`TextInput` cursor/selection state, keyed by `WidgetId`, that
     /// survives across keystrokes — see [`crate::text_input::apply_text_input_edit`]'s
     /// own doc for why a cache is needed at all.
@@ -295,6 +308,7 @@ impl InteractionEngine {
         if matches!(event, UiEvent::MouseUp { .. }) {
             *self.active_drag.borrow_mut() = None;
             *self.scrollbar_drag.borrow_mut() = None;
+            *self.column_drag.borrow_mut() = None;
         }
 
         // An open message dialog is modal and painted on top of everything
@@ -388,9 +402,10 @@ impl InteractionEngine {
         // checked before the hit-test below, since `MouseMoved` has no
         // `widget` field for `event_position`/`set_event_widget` to touch.
         // A move while a tree scrollbar thumb drag is armed instead becomes
-        // a `ScrollOffsetChanged`, mirroring the divider case; the two
-        // drags are mutually exclusive, so only one of these branches ever
-        // fires for a given move.
+        // a `ScrollOffsetChanged`, and a move while a `DataTable` column
+        // divider drag is armed becomes a `ColumnResized`, mirroring the
+        // divider case; all three drags are mutually exclusive, so only one
+        // of these branches ever fires for a given move.
         if let UiEvent::MouseMoved { position, .. } = &event {
             if let Some(drag) = self.active_drag.borrow().as_ref() {
                 let new_ratio = drag.ratio_at(*position);
@@ -407,6 +422,14 @@ impl InteractionEngine {
                         new_offset,
                     };
                 }
+            } else if let Some(drag) = self.column_drag.borrow().as_ref() {
+                event = UiEvent::DataTable(
+                    drag.widget,
+                    DataTableEvent::ColumnResized {
+                        col: drag.col,
+                        width: drag.width_at(*position),
+                    },
+                );
             }
         }
 
@@ -548,6 +571,26 @@ impl InteractionEngine {
                             *self.active_drag.borrow_mut() = Some(ActiveDrag { tree: *id, layout });
                         }
                     }
+                } else if !double_click
+                    && matches!(detail, HitDetail::DataTableHeaderDivider { .. })
+                {
+                    // Mirrors the `SplitDivider` arm above: arms the drag
+                    // (consumed by the `MouseMoved` branch above on later
+                    // moves) but leaves the raw `MouseDown` (and its
+                    // `"hit"` dict) to reach `sink` unchanged below, same as
+                    // a split-divider press.
+                    if let HitDetail::DataTableHeaderDivider { col } = detail {
+                        if let Some((area, layout)) =
+                            find_data_table_layout(&self.hit_map.borrow(), *id)
+                        {
+                            *self.column_drag.borrow_mut() = Some(DataTableColumnDrag {
+                                widget: *id,
+                                col: *col,
+                                area,
+                                layout,
+                            });
+                        }
+                    }
                 } else if !double_click && matches!(detail, HitDetail::TreeScrollbarThumb) {
                     // A press on the thumb itself arms a drag (consumed by
                     // the `MouseMoved` branch above on later moves) rather
@@ -630,7 +673,8 @@ mod tests {
 
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
-        AppLogic, Backend, Button, Modifiers, MouseButton, Point, Reaction, Rect, UiEvent, WidgetId,
+        AppLogic, Backend, Button, DataTable, Modifiers, MouseButton, Point, Reaction, Rect,
+        UiEvent, WidgetId,
     };
 
     use super::{EventSink, InteractionEngine};
@@ -923,6 +967,236 @@ mod tests {
             ),
             "expected MessageDialogResolved(ok), not a context-menu event: {:?}",
             dispatched[0]
+        );
+    }
+
+    /// A minimal [`AppLogic`] painting a single `DataTable`, for the
+    /// header-click/divider-drag/keyboard-nav coverage below — mirrors
+    /// [`MinimalLogic`], swapping the button band for a data-table one.
+    struct DataTableLogic {
+        data_table: DataTable,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for DataTableLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let extra = HashMap::new();
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: None,
+                    text_display: None,
+                    list: None,
+                    tree: None,
+                    data_table: Some(&self.data_table),
+                    tab_bar: None,
+                    extra: &extra,
+                },
+                &mut hits,
+            );
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Builds a two-fixed-column, three-row `DataTable` and drives it
+    /// through a [`TuiDriver`], for the header-click/divider-drag/
+    /// keyboard-nav tests below to aim a click or drag at exact geometry
+    /// (read back via [`data_table_geometry`]) rather than hardcoding
+    /// coordinates.
+    fn data_table_driver(selected_idx: Option<usize>) -> TuiDriver<DataTableLogic> {
+        use quadraui::{Column, ColumnWidth, DataRow, StyledText};
+
+        let data_table = DataTable {
+            id: WidgetId::new("table"),
+            columns: vec![
+                Column {
+                    title: "Name".to_string(),
+                    width: ColumnWidth::Fixed(8.0),
+                    align: Default::default(),
+                },
+                Column {
+                    title: "Age".to_string(),
+                    width: ColumnWidth::Fixed(8.0),
+                    align: Default::default(),
+                },
+            ],
+            rows: vec![
+                DataRow {
+                    cells: vec![StyledText::plain("Alice"), StyledText::plain("30")],
+                    decoration: Default::default(),
+                },
+                DataRow {
+                    cells: vec![StyledText::plain("Bob"), StyledText::plain("40")],
+                    decoration: Default::default(),
+                },
+                DataRow {
+                    cells: vec![StyledText::plain("Cleo"), StyledText::plain("50")],
+                    decoration: Default::default(),
+                },
+            ],
+            selected_idx,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+        };
+        let logic = DataTableLogic {
+            data_table,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 24, 8)
+    }
+
+    /// The painted `DataTable`'s own area/layout, read back from the hit
+    /// map the same way [`click_on_a_button_focuses_it_then_dispatches_the_click`]
+    /// reads a button's bounds — so a test aims at exact geometry instead
+    /// of hardcoding coordinates.
+    fn data_table_geometry(
+        driver: &TuiDriver<DataTableLogic>,
+    ) -> (Rect, quadraui::DataTableLayout) {
+        let hits = driver.app().engine.hit_map();
+        hits.iter()
+            .find_map(|hit| match hit {
+                crate::hit::PaintedHit::DataTable { area, layout, .. } => {
+                    Some((*area, layout.clone()))
+                }
+                _ => None,
+            })
+            .expect("data table should have painted a hit")
+    }
+
+    /// Clicking a column header must emit `DataTableEvent::HeaderClicked`
+    /// (the sort request a Python app toggles into ascending/descending),
+    /// never a raw `MouseDown` with a `data_table_header` hit dict left for
+    /// the handler to re-interpret itself.
+    #[test]
+    fn clicking_a_data_table_header_emits_header_clicked() {
+        use quadraui::DataTableEvent;
+
+        let mut driver = data_table_driver(None);
+        let (area, layout) = data_table_geometry(&driver);
+        let header_point = Point::new(
+            area.x + layout.columns[0].x + layout.columns[0].width / 2.0,
+            area.y + layout.header_height / 2.0,
+        );
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: header_point,
+            modifiers: Modifiers::default(),
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::DataTable(id, DataTableEvent::HeaderClicked { col: 0 })
+                    if *id == WidgetId::new("table")
+            )),
+            "expected a HeaderClicked sort request: {:?}",
+            dispatched
+        );
+    }
+
+    /// Pressing down on a header divider and dragging right must emit
+    /// `DataTableEvent::ColumnResized` for the column to its left, growing
+    /// its width as the pointer moves — the column-resize drag state
+    /// mirroring `ActiveDrag`'s split-divider handling.
+    #[test]
+    fn dragging_a_header_divider_emits_column_resized() {
+        use quadraui::DataTableEvent;
+
+        let mut driver = data_table_driver(None);
+        let (area, layout) = data_table_geometry(&driver);
+        let original_width = layout.columns[0].width;
+        let divider_y = area.y + layout.header_height / 2.0;
+        let divider_point = Point::new(area.x + layout.columns[0].x + original_width, divider_y);
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: divider_point,
+            modifiers: Modifiers::default(),
+        });
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(divider_point.x + 5.0, divider_y),
+            buttons: quadraui::ButtonMask {
+                left: true,
+                right: false,
+                middle: false,
+            },
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        let resized = dispatched.iter().find_map(|(event, _)| match event {
+            UiEvent::DataTable(id, DataTableEvent::ColumnResized { col, width })
+                if *id == WidgetId::new("table") =>
+            {
+                Some((*col, *width))
+            }
+            _ => None,
+        });
+        let (col, width) = resized
+            .unwrap_or_else(|| panic!("expected a ColumnResized event, got: {:?}", dispatched));
+        assert_eq!(col, 0, "the divider drags the column to its left");
+        assert!(
+            width > original_width,
+            "dragging right must grow the column: original={original_width}, new={width}"
+        );
+    }
+
+    /// Down-arrow navigation on a focused `DataTable` must move the row
+    /// selection by one (`DataTableEvent::RowSelected`), not fall through
+    /// as a widget-less raw `UiEvent::KeyPressed` the handler has no way to
+    /// route back to the table that actually has focus.
+    #[test]
+    fn down_arrow_on_a_focused_data_table_selects_the_next_row() {
+        use quadraui::{DataTableEvent, Key, NamedKey};
+
+        let mut driver = data_table_driver(Some(0));
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("table"))),
+                "the data table is a tab stop and must accept focus"
+            );
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Down),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::DataTable(id, DataTableEvent::RowSelected { idx: 1 })
+                    if *id == WidgetId::new("table")
+            )),
+            "expected RowSelected {{ idx: 1 }}: {:?}",
+            dispatched
         );
     }
 }

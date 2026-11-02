@@ -1,13 +1,16 @@
 //! Divider and tree-scrollbar drag state, plus the small hit-map lookups
-//! ([`find_split_layout`], [`tree_row_path`], [`tree_scroll_state`],
-//! [`tab_bar_for_right_segment`]) that arm and drive them. A binding arms
-//! [`ActiveDrag`]/[`ScrollbarDrag`] on the matching `MouseDown` and clears
-//! it on the matching `MouseUp`; while armed, every `MouseMoved` becomes a
-//! synthesized `UiEvent::SplitDividerDragged`/`ScrollOffsetChanged` instead
-//! of the raw move.
+//! ([`find_split_layout`], [`find_data_table_layout`], [`tree_row_path`],
+//! [`tree_scroll_state`], [`tab_bar_for_right_segment`]) that arm and drive
+//! them. A binding arms [`ActiveDrag`]/[`ScrollbarDrag`]/
+//! [`DataTableColumnDrag`] on the matching `MouseDown` and clears it on the
+//! matching `MouseUp`; while armed, every `MouseMoved` becomes a synthesized
+//! `UiEvent::SplitDividerDragged`/`ScrollOffsetChanged`/
+//! `UiEvent::DataTable(.., ColumnResized)` instead of the raw move.
 
 use quadraui::primitives::scrollbar::ThumbDrag;
-use quadraui::{Point, Scrollbar, SplitHit, SplitLayout, TabBarHit, TreePath, WidgetId};
+use quadraui::{
+    DataTableLayout, Point, Rect, Scrollbar, SplitHit, SplitLayout, TabBarHit, TreePath, WidgetId,
+};
 
 use crate::hit::PaintedHit;
 
@@ -62,6 +65,61 @@ pub fn find_split_layout(
             matches!(layout.hit_test(point.x, point.y), SplitHit::Divider(hit_id) if hit_id == id)
                 .then(|| layout.clone())
         }
+        _ => None,
+    })
+}
+
+/// A column-resize drag in progress: armed by the binding's own event
+/// handler on a `MouseDown` landing on `HitDetail::DataTableHeaderDivider`,
+/// and cleared on the matching `MouseUp` — mirrors [`ActiveDrag`]'s divider
+/// bookkeeping. `area`/`layout` are the `DataTable`'s own paint geometry as
+/// painted the frame the drag started, snapshotted (rather than re-read each
+/// move) for the same reason `ActiveDrag::layout` is: a drag stays anchored
+/// to the geometry the user actually grabbed even if a handler-driven
+/// re-render shifts the divider under the cursor mid-drag. `col` is the
+/// column to the LEFT of the dragged divider, per
+/// [`quadraui::DataTableHit::HeaderDivider`].
+pub struct DataTableColumnDrag {
+    pub widget: WidgetId,
+    pub col: usize,
+    pub area: Rect,
+    pub layout: DataTableLayout,
+}
+
+impl DataTableColumnDrag {
+    /// Floor a dragged column is clamped to, so a drag can never collapse it
+    /// (or, by underflow, the divider past it) to nothing.
+    const MIN_WIDTH: f32 = 4.0;
+
+    /// The width `col` should resize to for a pointer now at `point` (same
+    /// absolute frame as `area`), per the "`App should update
+    /// column_overrides[col]`" contract [`quadraui::DataTableEvent::ColumnResized`]
+    /// documents — a single column's width, not the paired
+    /// last-column-absorbs model [`DataTableLayout::drag_divider`] computes
+    /// for a Rust app driving the primitive directly.
+    pub fn width_at(&self, point: Point) -> f32 {
+        let local_x = point.x - self.area.x;
+        let content_x = local_x + self.layout.h_scroll;
+        let col_x = self.layout.columns[self.col].x;
+        (content_x - col_x).max(Self::MIN_WIDTH)
+    }
+}
+
+/// Re-finds the `(area, layout)` of the `DataTable` hit painted under id
+/// `id` this frame, so a `MouseDown` landing on
+/// `HitDetail::DataTableHeaderDivider` can snapshot it into a
+/// [`DataTableColumnDrag`].
+pub fn find_data_table_layout(
+    hit_map: &[PaintedHit],
+    id: WidgetId,
+) -> Option<(Rect, DataTableLayout)> {
+    hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::DataTable {
+            id: hit_id,
+            area,
+            layout,
+            ..
+        } if *hit_id == id => Some((*area, layout.clone())),
         _ => None,
     })
 }

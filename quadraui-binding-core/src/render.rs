@@ -140,6 +140,7 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
                 layout,
                 scroll_offset: data_table.scroll_offset,
                 total_rows: data_table.rows.len(),
+                selected_idx: data_table.selected_idx,
             });
         }
     }
@@ -407,6 +408,7 @@ pub fn paint_leaf(
                 layout,
                 scroll_offset: data_table.scroll_offset,
                 total_rows: data_table.rows.len(),
+                selected_idx: data_table.selected_idx,
             });
         }
         LeafDescriptor::TabBar(tab_bar) => {
