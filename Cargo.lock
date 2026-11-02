@@ -3278,6 +3278,7 @@ dependencies = [
  "quadraui",
  "quadraui-binding-core",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

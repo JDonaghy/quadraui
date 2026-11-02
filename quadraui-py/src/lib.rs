@@ -129,14 +129,15 @@ use quadraui::{
     AppShellLayout, Backend, BackendCaps, BackendWidget, BoardModel, BottomPanelConfig,
     BottomPanelEvent, BottomPanelTab, Button, Canvas, Chart, Color, ColorDepth, ComboBox,
     CommandCenter, CommandLine, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTable,
-    DatePicker, Decoration, DialogButton, DialogSeverity, DiffView, Editor, FindReplacePanel,
-    FontRole, Form, GlobalShortcutId, Image, Key, ListView, MenuBar, MessageDialogButton,
-    MessageDialogOptions, MessageList, Minimap, Modifiers, MouseButton, MultiSectionView,
-    NumberInput, Palette, Panel, PanelDefinition, PipelineView, Point, ProgressBar, RadioGroup,
-    Reaction, Rect, RgbaImage, ScrollView, Scrollbar, ShellApp, ShellConfig, ShellContext,
-    ShellPosition, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StatusBar, StyledSpan,
-    Switch, TabBar, TabBarSegment, TabItem, Terminal, TextDisplay, TextDisplayLine, TextInput,
-    Toolbar, TreeView, UiEvent, UserPayload, WidgetId,
+    DatePicker, Decoration, DialogButton, DialogSeverity, DiffView, Editor, EditorCursorShape,
+    FindReplacePanel, FontRole, Form, GlobalShortcutId, Image, Key, ListView, MenuBar,
+    MessageDialogButton, MessageDialogOptions, MessageList, Minimap, Modifiers, MouseButton,
+    MultiSectionView, NumberInput, Palette, Panel, PanelDefinition, PipelineView, Point,
+    ProgressBar, RadioGroup, Reaction, Rect, RgbaImage, ScrollView, Scrollbar, ShellApp,
+    ShellConfig, ShellContext, ShellPosition, SidebarPanel, Spinner, Split, SplitDirection,
+    SplitTree, StatusBar, Style, StyledSpan, Switch, TabBar, TabBarSegment, TabItem, Terminal,
+    TextDisplay, TextDisplayLine, TextInput, Theme, Toolbar, TreeView, UiEvent, UserPayload,
+    WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -393,6 +394,28 @@ struct PyAppLogic {
     /// its previous binding/scope/label wholesale, matching
     /// `QuiApp::register_accelerator`'s documented contract.
     accelerators: HashMap<AcceleratorId, Accelerator>,
+    /// Set via `QuiApp::set_theme`, replayed onto a new backend by
+    /// [`AppLogic::setup`] for the same reason `accelerators` is — a
+    /// `run_tui`/`run_native` call moves this whole `PyAppLogic` by value
+    /// into a brand-new backend, which starts back at `Theme::default()`
+    /// unless told otherwise.
+    theme: Option<Theme>,
+    /// Set via `QuiApp::set_style`; replayed the same way as `theme`.
+    style: Option<Style>,
+    /// Set via `QuiApp::set_nerd_fonts`; replayed the same way as `theme`.
+    nerd_fonts: Option<bool>,
+    /// Set via `QuiApp::set_editor_font` as `(family, size_pt)`; replayed
+    /// the same way as `theme`.
+    editor_font: Option<(String, f32)>,
+    /// Set via `QuiApp::set_ui_font`; replayed the same way as `theme`.
+    ui_font: Option<String>,
+    /// Set via `QuiApp::set_nerd_font_fallback`; replayed the same way as
+    /// `theme`.
+    nerd_font_fallback: Option<String>,
+    /// Raw font bytes handed to `QuiApp::register_font_from_memory`, kept
+    /// here so each one can be re-registered onto a new backend in
+    /// registration order, the same replay reasoning as `accelerators`.
+    registered_fonts: Vec<Vec<u8>>,
 }
 
 impl PyAppLogic {
@@ -557,6 +580,30 @@ impl AppLogic for PyAppLogic {
     fn setup(&mut self, backend: &mut dyn Backend) {
         for acc in self.accelerators.values() {
             backend.register_accelerator(acc);
+        }
+        // Theme/style/font configuration, replayed onto the freshly
+        // constructed backend for the same reason accelerators are above --
+        // see each field's own doc on `PyAppLogic`.
+        if let Some(theme) = self.theme {
+            backend.set_theme(theme);
+        }
+        if let Some(style) = self.style {
+            backend.set_style(style);
+        }
+        if let Some(enabled) = self.nerd_fonts {
+            backend.set_nerd_fonts(enabled);
+        }
+        for bytes in &self.registered_fonts {
+            backend.register_font_from_memory(bytes);
+        }
+        if let Some((family, size_pt)) = &self.editor_font {
+            backend.set_editor_font(family, *size_pt);
+        }
+        if let Some(font_desc) = &self.ui_font {
+            backend.set_ui_font(font_desc);
+        }
+        if let Some(family) = &self.nerd_font_fallback {
+            backend.set_nerd_font_fallback(family);
         }
     }
 
@@ -4605,6 +4652,299 @@ impl QuiApp {
                     InternalError::new_err(format!("unregister_all_global_shortcuts: {err:?}"))
                 })
         })
+    }
+
+    // ─── Theme, style & fonts ────────────────────────────────────────────
+
+    /// This app's active [`quadraui::Theme`] -- [`Backend::theme`] -- as a
+    /// `dict` with one entry per `Theme` field, each colour itself a
+    /// `{"r":.., "g":.., "b":.., "a":..}` dict. Pair with [`Self::set_theme`]
+    /// to read a field back after overriding only some of its neighbours.
+    fn theme(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.guarded(|app| {
+            let theme = app.driver.backend().theme();
+            pythonize::pythonize(py, &theme)
+                .map(|v| v.unbind())
+                .map_err(|err| InternalError::new_err(format!("theme: {err}")))
+        })
+    }
+
+    /// Overrides one or more [`quadraui::Theme`] fields on this app's
+    /// backend -- [`Backend::set_theme`] -- merged onto whatever the
+    /// backend's current theme already has, so a caller only needs to name
+    /// the fields it actually wants to change rather than restating all
+    /// ~70. `overrides` keys must be real `Theme` field names (raises
+    /// `InvalidDescriptorError` otherwise); each value is a
+    /// `"#rrggbb"`/`"#rrggbbaa"` hex string, an `[r, g, b[, a]]` list/tuple,
+    /// or a `{"r":.., "g":.., "b":.. [, "a":..]}` dict.
+    ///
+    /// Takes effect immediately on this app's own live backend, and is
+    /// also replayed onto whichever real backend `run_tui`/`run_native`
+    /// goes on to construct, via [`AppLogic::setup`] -- mirrors
+    /// [`Self::register_accelerator`]'s replay contract.
+    fn set_theme(&mut self, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            let theme = merge_theme_overrides("set_theme", backend.theme(), overrides)?;
+            backend.set_theme(theme);
+            app_logic.theme = Some(theme);
+            Ok(())
+        })
+    }
+
+    /// This app's active [`quadraui::Style`] -- [`Backend::style`] -- as a
+    /// `dict` with one entry per token (`focus_ring_width`, `padding`,
+    /// `corner_radius`, `border_width`, `shadow_elevation`,
+    /// `control_height`, `backdrop_opacity`).
+    fn style(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.guarded(|app| {
+            let style = app.driver.backend().style();
+            pythonize::pythonize(py, &style)
+                .map(|v| v.unbind())
+                .map_err(|err| InternalError::new_err(format!("style: {err}")))
+        })
+    }
+
+    /// Overrides one or more [`quadraui::Style`] tokens --
+    /// [`Backend::set_style`] -- merged onto the backend's current style
+    /// the same way [`Self::set_theme`] merges `Theme` fields. `overrides`
+    /// keys must be real `Style` field names. Replayed onto a later
+    /// `run_tui`/`run_native` backend the same way `set_theme` is.
+    fn set_style(&mut self, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            let style = merge_json_overrides("set_style", backend.style(), overrides, |_, val| {
+                pyany_to_json("set_style", val)
+            })?;
+            backend.set_style(style);
+            app_logic.style = Some(style);
+            Ok(())
+        })
+    }
+
+    /// Syncs the nerd-fonts flag -- [`Backend::set_nerd_fonts`] -- so
+    /// icon-bearing surfaces render `Icon::glyph` when `enabled` rather
+    /// than `Icon::fallback`. Replayed onto a later `run_tui`/`run_native`
+    /// backend the same way `set_theme` is.
+    fn set_nerd_fonts(&mut self, enabled: bool) -> PyResult<()> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            backend.set_nerd_fonts(enabled);
+            app_logic.nerd_fonts = Some(enabled);
+            Ok(())
+        })
+    }
+
+    /// Whatever was last handed to [`Self::set_nerd_fonts`] --
+    /// [`Backend::nerd_fonts_enabled`].
+    fn nerd_fonts_enabled(&mut self) -> PyResult<bool> {
+        self.guarded(|app| Ok(app.driver.backend().nerd_fonts_enabled()))
+    }
+
+    /// Overrides the font that paints editor content --
+    /// [`Backend::set_editor_font`]. No-op on the headless `TuiBackend`
+    /// (a fixed-cell backend has no font concept), but still recorded and
+    /// replayed onto a later `run_tui`/`run_native` backend the same way
+    /// `set_theme` is -- so a GTK/macOS/Win-GUI window opened afterwards
+    /// picks it up.
+    fn set_editor_font(&mut self, family: &str, size_pt: f32) -> PyResult<()> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            backend.set_editor_font(family, size_pt);
+            app_logic.editor_font = Some((family.to_string(), size_pt));
+            Ok(())
+        })
+    }
+
+    /// Overrides the font that paints chrome -- [`Backend::set_ui_font`].
+    /// Same no-op-on-TUI-but-still-replayed contract as
+    /// [`Self::set_editor_font`].
+    fn set_ui_font(&mut self, font_desc: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            backend.set_ui_font(font_desc);
+            app_logic.ui_font = Some(font_desc.to_string());
+            Ok(())
+        })
+    }
+
+    /// Registers `bytes` (raw TTF/OTF data) with the platform font manager
+    /// -- [`Backend::register_font_from_memory`]. Returns the family
+    /// name(s) it registered under, or `None` on the headless `TuiBackend`
+    /// (a fixed-cell backend has no font concept) or if `bytes` isn't a
+    /// font this backend's platform font manager can parse. Recorded and
+    /// re-registered onto a later `run_tui`/`run_native` backend the same
+    /// way `set_theme` is.
+    fn register_font_from_memory(&mut self, bytes: Vec<u8>) -> PyResult<Option<Vec<String>>> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            let families = backend.register_font_from_memory(&bytes);
+            app_logic.registered_fonts.push(bytes);
+            Ok(families)
+        })
+    }
+
+    /// Sets the fallback font family consulted when the primary font can't
+    /// cover a character -- [`Backend::set_nerd_font_fallback`]. Same
+    /// no-op-on-TUI-but-still-replayed contract as
+    /// [`Self::set_editor_font`].
+    fn set_nerd_font_fallback(&mut self, family: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            backend.set_nerd_font_fallback(family);
+            app_logic.nerd_font_fallback = Some(family.to_string());
+            Ok(())
+        })
+    }
+
+    /// Whether `family` is already installed on this platform as a system
+    /// font -- [`Backend::has_font_family`]. Always `None` on the headless
+    /// `TuiBackend` -- see that method's own doc for why `None` means
+    /// "don't know", never "false".
+    fn has_font_family(&mut self, family: &str) -> PyResult<Option<bool>> {
+        self.guarded(|app| Ok(app.driver.backend().has_font_family(family)))
+    }
+
+    /// Steers the hardware caret to `shape` (`"block"`, `"bar"`, or
+    /// `"underline"`) -- [`Backend::set_caret_shape`]. On the headless
+    /// `TuiBackend` this always writes a DECSCUSR escape sequence to real
+    /// stdout regardless of whether a real terminal is attached (see that
+    /// method's own doc) -- harmless under `pytest`'s captured stdout, but
+    /// not something a driver test can observe landing anywhere.
+    fn set_caret_shape(&mut self, shape: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            let shape = match shape {
+                "block" => EditorCursorShape::Block,
+                "bar" => EditorCursorShape::Bar,
+                "underline" => EditorCursorShape::Underline,
+                other => {
+                    return Err(InvalidDescriptorError::new_err(format!(
+                        "set_caret_shape: unknown shape {other:?}; expected \"block\", \"bar\", \
+                         or \"underline\""
+                    )))
+                }
+            };
+            app.driver.parts_mut().0.set_caret_shape(shape);
+            Ok(())
+        })
+    }
+
+    /// RGB colour painted at one headless-backend cell, read back as
+    /// `((fg_r, fg_g, fg_b), (bg_r, bg_g, bg_b))` --
+    /// [`quadraui::tui::testing::TuiDriver::style_at`]. `None` if `(x, y)`
+    /// is outside the current viewport. Exists so a test can prove
+    /// `set_theme`/`set_style` actually changed what gets painted, not
+    /// just what `theme()`/`style()` read back -- every in-tree rasteriser
+    /// paints an RGB colour via `quadraui::tui::ratatui_color`, so the
+    /// `(0, 0, 0)` fallback below is purely defensive.
+    fn cell_colors(&mut self, x: u16, y: u16) -> PyResult<Option<CellColors>> {
+        self.guarded(|app| {
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            let Some(style) = app.driver.style_at(x, y) else {
+                return Ok(None);
+            };
+            Ok(Some((ratatui_rgb(style.fg), ratatui_rgb(style.bg))))
+        })
+    }
+}
+
+/// Converts an arbitrary Python value into a [`serde_json::Value`] via
+/// `pythonize::depythonize`, raising `InvalidDescriptorError` on a shape
+/// `serde_json` can't represent. Not itself a validation of any
+/// particular target type — [`merge_json_overrides`]'s caller runs the
+/// merged value through `serde_json::from_value::<T>` afterwards, which is
+/// where a type mismatch (e.g. a string where `Style::padding` wants a
+/// number) actually surfaces.
+fn pyany_to_json(what: &str, value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
+    pythonize::depythonize(value)
+        .map_err(|err| InvalidDescriptorError::new_err(format!("{what}: invalid value: {err}")))
+}
+
+/// [`pyany_to_json`], plus a `"#rrggbb"`/`"#rrggbbaa"` hex-string
+/// convenience for one [`Theme`] colour field — every other shape (a
+/// `{"r":.., "g":.., "b":.., "a":..}` dict, or an `[r, g, b[, a]]`
+/// list/tuple, both of which [`Color`]'s derived `Deserialize` already
+/// accepts) falls through to the generic conversion unchanged.
+fn theme_color_to_json(
+    what: &str,
+    key: &str,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<serde_json::Value> {
+    if let Ok(hex) = value.extract::<String>() {
+        let color = Color::from_hex(&hex).ok_or_else(|| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: {key:?}: {hex:?} is not a valid \"#rrggbb\"/\"#rrggbbaa\" hex colour"
+            ))
+        })?;
+        return serde_json::to_value(color)
+            .map_err(|err| InternalError::new_err(format!("{what}: {err}")));
+    }
+    pyany_to_json(what, value)
+}
+
+/// Merges `overrides` onto `current`'s own JSON representation, field by
+/// field, then deserializes the merged value back into `T` --
+/// [`QuiApp::set_theme`]/[`QuiApp::set_style`]'s shared "override only the
+/// fields you name" mechanism, so a caller never has to restate every
+/// field just to change one. Raises `InvalidDescriptorError` for any
+/// `overrides` key that isn't already a field of `T` (a typo guard — `T`'s
+/// own `Deserialize` would otherwise silently ignore an extra key) or for
+/// a value `to_json` can't convert.
+fn merge_json_overrides<T, F>(
+    what: &str,
+    current: T,
+    overrides: &Bound<'_, PyDict>,
+    to_json: F,
+) -> PyResult<T>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+    F: Fn(&str, &Bound<'_, PyAny>) -> PyResult<serde_json::Value>,
+{
+    let mut value = serde_json::to_value(&current)
+        .map_err(|err| InternalError::new_err(format!("{what}: {err}")))?;
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| InternalError::new_err(format!("{what}: expected a JSON object")))?;
+    for (key, val) in overrides.iter() {
+        let key: String = key.extract()?;
+        if !obj.contains_key(&key) {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "{what}: {key:?} is not a recognized field"
+            )));
+        }
+        let json = to_json(&key, &val)?;
+        obj.insert(key, json);
+    }
+    serde_json::from_value(value)
+        .map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
+}
+
+/// [`merge_json_overrides`] specialised for [`Theme`], with
+/// [`theme_color_to_json`]'s hex-string convenience.
+fn merge_theme_overrides(
+    what: &str,
+    current: Theme,
+    overrides: &Bound<'_, PyDict>,
+) -> PyResult<Theme> {
+    merge_json_overrides(what, current, overrides, |key, val| {
+        theme_color_to_json(what, key, val)
+    })
+}
+
+/// `((fg_r, fg_g, fg_b), (bg_r, bg_g, bg_b))` -- [`QuiApp::cell_colors`]'s
+/// return shape, named so the signature doesn't trip clippy's
+/// `type_complexity` lint.
+type CellColors = ((u8, u8, u8), (u8, u8, u8));
+
+/// Extracts `(r, g, b)` from a [`quadraui::tui::testing::Color`] --
+/// `(0, 0, 0)` for any non-`Rgb` variant, which no in-tree rasteriser ever
+/// paints (every one goes through `quadraui::tui::ratatui_color`, which
+/// only ever constructs `Rgb`).
+fn ratatui_rgb(color: quadraui::tui::testing::Color) -> (u8, u8, u8) {
+    match color {
+        quadraui::tui::testing::Color::Rgb(r, g, b) => (r, g, b),
+        _ => (0, 0, 0),
     }
 }
 
