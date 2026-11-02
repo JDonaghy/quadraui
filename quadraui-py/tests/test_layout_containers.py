@@ -57,9 +57,8 @@ def test_clicking_a_panel_action_button_sets_the_click_s_widget_to_its_id():
     # The lone action button is right-aligned in the title bar -- TUI's own
     # 3-cell action width (`TUI_ACTION_BUTTON_WIDTH` in `quadraui::tui::panel`)
     # puts it at x in [37.0, 40.0), row 0 (the title bar). `quadraui-binding-core`'s
-    # `InteractionEngine` now records the panel's own chrome layout as a
-    # hit, so the raw `MouseDown` carries the action's own id as `widget`
-    # instead of being silently dropped.
+    # `InteractionEngine` records the panel's own chrome layout as a hit, so
+    # the raw `MouseDown` carries the action's own id as `widget`.
     app = QuiApp(40, 20)
 
     def render():
@@ -90,6 +89,71 @@ def test_clicking_a_panel_action_button_sets_the_click_s_widget_to_its_id():
     mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
     assert mouse_downs, received
     assert mouse_downs[0]["widget"] == "close", received
+
+
+def test_clicking_a_panel_title_bar_sets_the_click_s_widget_to_the_panel_id():
+    # Clicking the title bar away from any action button (the panel's
+    # collapse affordance -- `PanelHit::TitleBar` is the only collapse hit
+    # the primitive exposes) must set the raw `MouseDown`'s `widget` to the
+    # panel's own id, same shape as the action-button click above.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "panel": {
+                "id": "panel:outer",
+                "title": {"spans": [{"text": "Explorer", "fg": None, "bg": None}]},
+                "content": _text("text:body", "PANEL BODY"),
+            }
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.run(1)
+
+    mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
+    assert mouse_downs, received
+    assert mouse_downs[0]["widget"] == "panel:outer", received
+
+
+def test_clicking_a_sidebar_panel_toolbar_button_sets_the_click_s_widget_to_its_id():
+    # The lone toolbar button starts at the toolbar's own x=0, row 0.
+    # `quadraui-binding-core`'s `InteractionEngine` records the sidebar
+    # panel's own chrome layout as a hit, so the raw `MouseDown` carries
+    # the button's own id as `widget`.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "sidebar_panel": {
+                "id": "sidebar:outer",
+                "toolbar": {
+                    "id": "sidebar:outer:toolbar",
+                    "buttons": [{"Action": {"id": "refine", "label": "Refine"}}],
+                },
+                "content": _text("text:body", "SIDEBAR BODY"),
+            }
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.run(1)
+
+    mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
+    assert mouse_downs, received
+    assert mouse_downs[0]["widget"] == "refine", received
 
 
 def test_sidebar_panel_renders_nested_content():
@@ -131,13 +195,18 @@ def test_split_tree_renders_two_leaves_side_by_side():
 
 
 def test_dragging_a_split_tree_divider_changes_the_ratio():
-    # A 41-column viewport with the TUI's 1-cell-thick divider puts a
-    # ratio-0.5 divider's own band at x in [20.0, 21.0) -- (41 - 1) * 0.5
-    # == 20.0 -- so a `MouseDown` there arms the drag `quadraui-binding-core`'s
-    # `InteractionEngine` turns a following `MouseMoved` into
-    # `SplitDividerDragged`, same shape dragging a `DataTable` header
-    # divider turns into `ColumnResized`.
-    app = QuiApp(41, 10)
+    # A 40-column viewport -- the module's usual width, used everywhere else
+    # in this file -- rather than a width hand-picked to land the divider on
+    # an exact integer column: ratio 0.6 resolves to a fractional `position`
+    # (23.4, truncated to column 23 for painting), so the `MouseDown` below
+    # exercises the same truncate-to-painted-cell path the TUI rasteriser's
+    # own divider glyph is placed with, instead of hiding it behind a width
+    # where no truncation was ever needed. The column is read back from the
+    # rendered screen (scanning for the `'|'` divider glyph, like
+    # `test_split_honors_first_min_as_a_portable_minimum_pane_size` does)
+    # rather than hand-derived, so the test can't drift from what was
+    # actually painted.
+    app = QuiApp(40, 10)
 
     def render():
         return {
@@ -146,7 +215,7 @@ def test_dragging_a_split_tree_divider_changes_the_ratio():
                 "root": {
                     "split": {
                         "orientation": "horizontal",
-                        "ratio": 0.5,
+                        "ratio": 0.6,
                         "first": {"leaf": _text("text:left", "LEFT PANE")},
                         "second": {"leaf": _text("text:right", "RIGHT PANE")},
                     }
@@ -158,17 +227,24 @@ def test_dragging_a_split_tree_divider_changes_the_ratio():
     # Force the first paint so the tree's divider layout is on the hit map
     # before the drag below -- see the identical comment on the panel
     # action-click test above.
-    app.screen()
+    screen = app.screen()
+    divider_column = screen.splitlines()[0].index("│")
 
     received = []
     app.set_handler(lambda event: received.append(event))
     app.push_event(
-        {"MouseDown": {"button": "Left", "position": {"x": 20.0, "y": 0.0}, "modifiers": {}}}
+        {
+            "MouseDown": {
+                "button": "Left",
+                "position": {"x": float(divider_column), "y": 0.0},
+                "modifiers": {},
+            }
+        }
     )
     app.push_event(
         {
             "MouseMoved": {
-                "position": {"x": 30.0, "y": 0.0},
+                "position": {"x": float(divider_column) + 10.0, "y": 0.0},
                 "buttons": {"left": True, "right": False, "middle": False},
             }
         }
@@ -176,7 +252,11 @@ def test_dragging_a_split_tree_divider_changes_the_ratio():
     app.run(2)
 
     dragged = [event["SplitDividerDragged"] for event in received if "SplitDividerDragged" in event]
-    assert dragged == [{"tree": "tree:1", "split_index": 0, "new_ratio": 0.75}], received
+    expected_ratio = (divider_column + 10.0) / 40.0
+    assert len(dragged) == 1, received
+    assert dragged[0]["tree"] == "tree:1"
+    assert dragged[0]["split_index"] == 0
+    assert abs(dragged[0]["new_ratio"] - expected_ratio) < 0.001, received
 
 
 def test_tabs_with_empty_list_renders_without_error():

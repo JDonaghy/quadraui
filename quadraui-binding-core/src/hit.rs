@@ -407,12 +407,21 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 SplitHit::Outside => {}
             },
             PaintedHit::SplitTree { id, layout } => {
-                // Exact-band test (zero tolerance) — matches `PaintedHit::Split`'s
-                // own `divider_bounds.contains` convention: the divider's own
-                // `thickness` already IS the backend's native hit band (1 cell
-                // TUI, a few px GTK/macOS/win), so no extra forgiveness is added
-                // here.
-                if let Some(split_index) = layout.hit_test_divider(point, 0.0) {
+                // A TUI mouse event's `point` is already quantized to whole
+                // cells (`x = column as f32`), but `SplitTreeDivider::position`
+                // is the unquantized float the layout resolved — e.g. ratio
+                // 0.5 on a 40-column pane gives `position = 19.5`, which the
+                // TUI rasteriser paints at column 19 (`cell_position`
+                // truncates). A zero-tolerance band test on the raw float
+                // position misses that painted cell for every fractional
+                // position, i.e. half of all width/ratio combinations. `1.0`
+                // is the minimum tolerance that provably covers the
+                // truncation (`position - floor(position) < 1.0` always), and
+                // matches the tolerance other backends' own divider hit-tests
+                // use (`win::split_tree`, `gtk::split_tree`); `examples/common/split_tree_app.rs`
+                // and `macos::split_tree` go further and use `2.0` for a
+                // thicker visual grab target.
+                if let Some(split_index) = layout.hit_test_divider(point, 1.0) {
                     return Some((*id, HitDetail::SplitTreeDivider { split_index }));
                 }
             }
