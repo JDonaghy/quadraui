@@ -11,8 +11,8 @@ use quadraui::{
     ActivityBar, Backend, BoardModel, Chart, ComboBox, CommandCenter, CommandLine,
     CompletionItemMeasure, DatePicker, DiffView, Form, Image, InteractionState, MenuBar,
     MessageList, Minimap, MultiSectionView, NumberInput, Palette, PipelineView, Point, ProgressBar,
-    RadioGroup, Rect, Scrollbar, Spinner, StatusBar, Switch, SwitchHit, TextInput, Toolbar,
-    WidgetId,
+    RadioGroup, Rect, Scrollbar, Spinner, StatusBar, StatusBarHit, Switch, SwitchHit, TextInput,
+    Toolbar, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -56,6 +56,31 @@ pub trait ExtraPaint: std::any::Any {
     /// interactive unless overridden" default.
     fn tab_stop(&self) -> bool {
         false
+    }
+
+    /// Paints with real hover/pressed state, returning the absolute bounds
+    /// and action id of each clickable child this descriptor just painted —
+    /// a chrome bar's button ([`quadraui::Toolbar`]), segment
+    /// ([`quadraui::StatusBar`]), or item ([`quadraui::ActivityBar`]).
+    /// `crate::render::draw_bands`/`paint_leaf` call this (not
+    /// [`ExtraPaint::paint`] directly) so the returned regions can be
+    /// recorded into [`crate::hit::PaintedHit::Extra::chrome_hits`] and
+    /// hit-tested ahead of [`ExtraPaint::hit_test`] on a later click —
+    /// `hit_test`'s plain `bool` has no way to say *which* child a point
+    /// landed on.
+    ///
+    /// Default: ignores `interaction` and forwards to [`ExtraPaint::paint`]
+    /// with no clickable children — correct for every extra but the three
+    /// above, none of which have per-child click targets of their own.
+    fn paint_chrome(
+        &self,
+        backend: &mut dyn Backend,
+        area: Rect,
+        interaction: &InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        let _ = interaction;
+        self.paint(backend, area);
+        Vec::new()
     }
 }
 
@@ -317,21 +342,76 @@ impl ExtraPaint for DiffView {
 
 impl ExtraPaint for ActivityBar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_activity_bar(area, self, None);
+        self.paint_chrome(backend, area, &InteractionState::default());
     }
 
     fn id(&self) -> WidgetId {
         self.id
+    }
+
+    /// `ActivityBar` has no `InteractionState`-keyed hover of its own yet —
+    /// [`quadraui::Backend::draw_activity_bar`] takes a positional
+    /// `hovered_idx: Option<usize>` instead, so `interaction` is unused
+    /// here; only the clickable-item hit regions are new. Row spans
+    /// ([`quadraui::ActivityBarRowHit::y_start`]/`y_end`) are relative to
+    /// `area`'s own top edge, so they're shifted by `area.x`/`area.y`
+    /// before being recorded — [`crate::hit::PaintedHit::Extra::chrome_hits`]
+    /// is always in the ABSOLUTE frame [`ExtraPaint::hit_test`] uses.
+    fn paint_chrome(
+        &self,
+        backend: &mut dyn Backend,
+        area: Rect,
+        interaction: &InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        let _ = interaction;
+        backend
+            .draw_activity_bar(area, self, None)
+            .into_iter()
+            .map(|row| {
+                (
+                    Rect::new(
+                        area.x,
+                        area.y + row.y_start,
+                        area.width,
+                        row.y_end - row.y_start,
+                    ),
+                    row.id,
+                )
+            })
+            .collect()
     }
 }
 
 impl ExtraPaint for Toolbar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_toolbar_interactive(area, self, &InteractionState::default());
+        self.paint_chrome(backend, area, &InteractionState::default());
     }
 
     fn id(&self) -> WidgetId {
         self.id
+    }
+
+    /// [`quadraui::Backend::draw_toolbar_interactive`]'s own
+    /// [`quadraui::ToolbarLayout::visible_items`] is already in the
+    /// ABSOLUTE frame [`ExtraPaint::hit_test`] uses, so no translation is
+    /// needed — unlike [`ActivityBar::paint_chrome`]'s bar-relative row
+    /// spans. Disabled actions and non-action items (separators, labels)
+    /// have no `action_id` or aren't `clickable`, so they never become a
+    /// hit region, matching [`quadraui::ToolbarLayout::hit_test`]'s own
+    /// skip rule.
+    fn paint_chrome(
+        &self,
+        backend: &mut dyn Backend,
+        area: Rect,
+        interaction: &InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        backend
+            .draw_toolbar_interactive(area, self, interaction)
+            .visible_items
+            .into_iter()
+            .filter(|item| item.clickable)
+            .filter_map(|item| item.action_id.map(|id| (item.bounds, id)))
+            .collect()
     }
 }
 
@@ -347,11 +427,35 @@ impl ExtraPaint for MenuBar {
 
 impl ExtraPaint for StatusBar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_status_bar_interactive(area, self, &InteractionState::default());
+        self.paint_chrome(backend, area, &InteractionState::default());
     }
 
     fn id(&self) -> WidgetId {
         self.id
+    }
+
+    /// Unlike [`Toolbar::paint_chrome`], [`quadraui::StatusBarLayout::hit_regions`]
+    /// are bar-LOCAL (relative to `area`'s own origin — see
+    /// [`quadraui::Backend::draw_status_bar_interactive`]'s own doc), so
+    /// each region is shifted by `area.x`/`area.y` before being recorded.
+    fn paint_chrome(
+        &self,
+        backend: &mut dyn Backend,
+        area: Rect,
+        interaction: &InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        backend
+            .draw_status_bar_interactive(area, self, interaction)
+            .hit_regions
+            .into_iter()
+            .filter_map(|(rect, hit)| match hit {
+                StatusBarHit::Segment(id) => Some((
+                    Rect::new(area.x + rect.x, area.y + rect.y, rect.width, rect.height),
+                    id,
+                )),
+                StatusBarHit::Empty => None,
+            })
+            .collect()
     }
 }
 

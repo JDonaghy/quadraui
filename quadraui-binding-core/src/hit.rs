@@ -8,8 +8,8 @@ use std::rc::Rc;
 
 use quadraui::{
     ButtonHit, ButtonLayout, DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, Point,
-    PressZone, Rect, Scrollbar, SplitHit, SplitLayout, TabBarHit, TabBarLayout, TreePath,
-    TreeRowEditState, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    PressZone, Rect, Scrollbar, SplitHit, SplitLayout, TabBarHit, TabBarLayout, TextDisplayHit,
+    TextDisplayLayout, TreePath, TreeRowEditState, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -83,6 +83,20 @@ pub enum PaintedHit {
         area: Rect,
         layout: TabBarLayout,
     },
+    /// `area` is the absolute rect this display was painted into;
+    /// `layout` is in the LOCAL frame relative to `area`'s origin (same
+    /// convention as [`Self::Tree`]/[`Self::List`]/[`Self::DataTable`]).
+    /// `total_lines` and `viewport_lines` (the row capacity at a zero
+    /// scroll offset, snapshotted the same way [`Self::Tree`]'s own
+    /// `viewport_rows` is) feed the wheel-scroll `max_offset` clamp in
+    /// `InteractionEngine::handle` without re-touching the backend.
+    TextDisplay {
+        id: WidgetId,
+        area: Rect,
+        layout: TextDisplayLayout,
+        total_lines: usize,
+        viewport_lines: usize,
+    },
     /// `Split`'s layout is already in the ABSOLUTE frame, and its own
     /// `WidgetId` only matters once a hit is found — carried by
     /// `SplitHit`'s own variants, not stored here.
@@ -101,6 +115,15 @@ pub enum PaintedHit {
         id: WidgetId,
         area: Rect,
         extra: Rc<dyn ExtraPaint>,
+        /// Absolute bounds + action id of each clickable child
+        /// [`ExtraPaint::paint_chrome`] resolved this frame — empty for
+        /// every extra but `Toolbar`'s buttons, `StatusBar`'s segments, and
+        /// `ActivityBar`'s items. Checked by [`hit_test_painted`] (and
+        /// [`chrome_hover_hit`], for `MouseMoved`) ahead of
+        /// [`ExtraPaint::hit_test`], so a click on one of these children
+        /// resolves to the *child's* id rather than just "landed somewhere
+        /// on the bar".
+        chrome_hits: Vec<(Rect, WidgetId)>,
     },
 }
 
@@ -141,6 +164,12 @@ pub enum HitDetail {
     TabBarScrollLeft,
     TabBarScrollRight,
     TabBarRightSegment,
+    TextDisplayLine {
+        line: usize,
+    },
+    TextDisplayScrollbarThumb,
+    TextDisplayScrollbarTrackBefore,
+    TextDisplayScrollbarTrackAfter,
     SplitFirstPane,
     SplitSecondPane,
     SplitDivider,
@@ -165,6 +194,20 @@ pub enum HitDetail {
     /// Per-kind sub-region detail (e.g. which combo-box row) is a later,
     /// separate extension of this variant.
     ExtraBody,
+    /// Landed on one of a chrome-bar extra's clickable children
+    /// (`Toolbar`'s button, `StatusBar`'s segment, `ActivityBar`'s item).
+    /// [`hit_test_painted`] returns the CHILD's own id alongside this
+    /// detail (mirroring [`TabBarHit::RightSegment`]'s button-id-wins
+    /// convention) — a raw `MouseDown` with no semantic substitution (a
+    /// `Toolbar` button: no typed `UiEvent` exists for it) therefore gets
+    /// `widget` set to the button itself, same as a plain `Button` click.
+    /// `bar` is the enclosing bar's own id, carried here so
+    /// [`crate::semantic::semantic_event_for_hit`] can look it back up in
+    /// the hit map to build `StatusBar`'s/`ActivityBar`'s typed event
+    /// (which wraps the bar's id, not the clicked child's).
+    ExtraChrome {
+        bar: WidgetId,
+    },
 }
 
 /// Hit-tests `point` (in the backend's native absolute coordinate space,
@@ -272,16 +315,69 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                     TabBarHit::Empty => {}
                 }
             }
+            PaintedHit::TextDisplay {
+                id, area, layout, ..
+            } => {
+                if !area.contains(point) {
+                    continue;
+                }
+                match layout.hit_test(point.x - area.x, point.y - area.y) {
+                    TextDisplayHit::Line(line) => {
+                        return Some((*id, HitDetail::TextDisplayLine { line }))
+                    }
+                    TextDisplayHit::ScrollbarThumb => {
+                        return Some((*id, HitDetail::TextDisplayScrollbarThumb))
+                    }
+                    TextDisplayHit::ScrollbarTrackBefore => {
+                        return Some((*id, HitDetail::TextDisplayScrollbarTrackBefore))
+                    }
+                    TextDisplayHit::ScrollbarTrackAfter => {
+                        return Some((*id, HitDetail::TextDisplayScrollbarTrackAfter))
+                    }
+                    TextDisplayHit::Empty => {}
+                }
+            }
             PaintedHit::Split { layout } => match layout.hit_test(point.x, point.y) {
                 SplitHit::FirstPane(id) => return Some((id, HitDetail::SplitFirstPane)),
                 SplitHit::SecondPane(id) => return Some((id, HitDetail::SplitSecondPane)),
                 SplitHit::Divider(id) => return Some((id, HitDetail::SplitDivider)),
                 SplitHit::Outside => {}
             },
-            PaintedHit::Extra { id, area, extra } => {
+            PaintedHit::Extra {
+                id,
+                area,
+                extra,
+                chrome_hits,
+            } => {
+                if let Some((_, action)) = chrome_hits.iter().find(|(r, _)| r.contains(point)) {
+                    return Some((*action, HitDetail::ExtraChrome { bar: *id }));
+                }
                 if extra.hit_test(*area, point) {
                     return Some((*id, HitDetail::ExtraBody));
                 }
+            }
+        }
+    }
+    None
+}
+
+/// Hit-tests `point` against only the `chrome_hits` lists
+/// [`PaintedHit::Extra`] entries carry (`Toolbar`'s buttons, `StatusBar`'s
+/// segments, `ActivityBar`'s items) — the subset [`InteractionEngine`][crate::engine::InteractionEngine]
+/// needs on every `MouseMoved` for hover bookkeeping, which
+/// [`hit_test_painted`] never runs for: its own [`event_position`] doesn't
+/// resolve a position for that event kind (enriching `MouseMoved`'s own
+/// `widget` field isn't this module's job). Checked in reverse paint
+/// order, matching [`hit_test_painted`]'s own precedence. Returns
+/// `(bar_id, action_id)`.
+pub fn chrome_hover_hit(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetId, WidgetId)> {
+    for hit in hit_map.iter().rev() {
+        if let PaintedHit::Extra {
+            id, chrome_hits, ..
+        } = hit
+        {
+            if let Some((_, action)) = chrome_hits.iter().find(|(r, _)| r.contains(point)) {
+                return Some((*id, *action));
             }
         }
     }

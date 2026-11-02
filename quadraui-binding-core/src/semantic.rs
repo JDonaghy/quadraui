@@ -8,8 +8,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use quadraui::{
-    DataTableEvent, FormEvent, Key, ListViewEvent, Modifiers, NamedKey, Switch, SwitchEvent,
-    TabBarEvent, TextInput, TreeEvent, UiEvent, WidgetId,
+    ActivityBar, ActivityBarEvent, DataTableEvent, FormEvent, Key, ListViewEvent, Modifiers,
+    NamedKey, StatusBar, StatusBarEvent, Switch, SwitchEvent, TabBarEvent, TextDisplayEvent,
+    TextInput, TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
@@ -151,6 +152,30 @@ pub fn semantic_event_for_hit(
             }
             _ => None,
         }),
+        HitDetail::ExtraChrome { bar } => hit_map.iter().find_map(|hit| match hit {
+            PaintedHit::Extra {
+                id: hit_id, extra, ..
+            } if *hit_id == *bar => {
+                if extra_as::<StatusBar>(extra).is_some() {
+                    Some(UiEvent::StatusBar(
+                        *bar,
+                        StatusBarEvent::SegmentClicked { id },
+                    ))
+                } else if extra_as::<ActivityBar>(extra).is_some() {
+                    Some(UiEvent::ActivityBar(
+                        *bar,
+                        ActivityBarEvent::ItemClicked { id },
+                    ))
+                } else {
+                    // `Toolbar` has no typed `UiEvent` of its own — `id`
+                    // (the clicked button's own id, per `hit_test_painted`'s
+                    // `ExtraChrome` convention) stays the raw `MouseDown`'s
+                    // `widget`, same as a plain `Button` click.
+                    None
+                }
+            }
+            _ => None,
+        }),
         _ => None,
     }
 }
@@ -240,6 +265,13 @@ pub fn focus_scoped_key_event(
             PaintedHit::TabBar { id, .. } if *id == focused => Some(UiEvent::TabBar(
                 *id,
                 TabBarEvent::KeyPressed {
+                    key: key.clone(),
+                    modifiers,
+                },
+            )),
+            PaintedHit::TextDisplay { id, .. } if *id == focused => Some(UiEvent::TextDisplay(
+                *id,
+                TextDisplayEvent::KeyPressed {
                     key: key.clone(),
                     modifiers,
                 },

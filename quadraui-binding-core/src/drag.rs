@@ -176,6 +176,27 @@ pub fn tree_scroll_state(
     })
 }
 
+/// The `(total_lines, viewport_lines, scroll_offset)` of the `TextDisplay`
+/// hit painted under id `id` this frame, or `None` if that display isn't in
+/// the current hit map — mirrors [`tree_scroll_state`], minus the
+/// `Scrollbar` (a wheel notch over a `TextDisplay` scrolls it whether or not
+/// `show_scrollbar` painted one).
+pub fn text_display_scroll_state(
+    hit_map: &[PaintedHit],
+    id: WidgetId,
+) -> Option<(usize, usize, usize)> {
+    hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::TextDisplay {
+            id: hit_id,
+            layout,
+            total_lines,
+            viewport_lines,
+            ..
+        } if *hit_id == id => Some((*total_lines, *viewport_lines, layout.resolved_scroll_offset)),
+        _ => None,
+    })
+}
+
 /// The tab bar's own id for a `TabBarRightSegment` hit, given the `id` of
 /// the clicked button — `hit_test_painted` returns the button's id (the one
 /// [`TabBarHit::RightSegment`] carries), not the enclosing bar's, so this

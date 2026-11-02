@@ -606,6 +606,79 @@ def test_status_bar_renders_segment_text():
     assert app.screen_contains("main")
 
 
+def test_clicking_a_toolbar_button_sets_widget_to_the_button_id():
+    # `Toolbar` has no typed `UiEvent` of its own, so a click on one of its
+    # buttons reaches the handler as the same raw `MouseDown` a plain
+    # `Button` click would produce: `widget` is the clicked BUTTON's own
+    # id (not the toolbar's), with a `"hit"` dict naming the enclosing bar.
+    # Neither `Toolbar` nor its buttons are a tab stop, so `_click` (which
+    # asserts exactly one event) applies directly.
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "toolbar",
+        {
+            "id": "toolbar:main",
+            "buttons": [
+                {"Action": {"id": "toolbar:refresh", "label": "Refresh"}},
+            ],
+        },
+    )
+
+    event = _click(app, 1.0, 0.0)
+
+    assert event["MouseDown"]["widget"] == "toolbar:refresh"
+    assert event["hit"] == {"kind": "extra_chrome", "bar": "toolbar:main"}
+
+
+def test_clicking_a_status_bar_segment_emits_segment_clicked():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "status_bar",
+        {
+            "id": "status_bar:main",
+            "left_segments": [
+                {
+                    "text": "main",
+                    "fg": {"r": 255, "g": 255, "b": 255, "a": 255},
+                    "bg": {"r": 0, "g": 0, "b": 0, "a": 255},
+                    "action_id": "status:branch",
+                },
+            ],
+            "right_segments": [],
+        },
+    )
+
+    event = _click(app, 1.0, 0.0)
+
+    widget_id, status_event = event["StatusBar"]
+    assert widget_id == "status_bar:main"
+    assert status_event == {"SegmentClicked": {"id": "status:branch"}}
+
+
+def test_clicking_an_activity_bar_item_emits_item_clicked():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "activity_bar",
+        {
+            "id": "activity_bar:main",
+            "top_items": [
+                {
+                    "id": "activity:explorer",
+                    "icon": {"glyph": "", "fallback": "E"},
+                    "tooltip": "Explorer",
+                    "is_active": True,
+                },
+            ],
+        },
+    )
+
+    event = _click(app, 0.0, 0.0)
+
+    widget_id, activity_event = event["ActivityBar"]
+    assert widget_id == "activity_bar:main"
+    assert activity_event == {"ItemClicked": {"id": "activity:explorer"}}
+
+
 def test_command_line_renders_text():
     app = QuiApp(40, 20)
     app.insert_extra("command_line", {"id": "command_line:main", "text": ":wq"})

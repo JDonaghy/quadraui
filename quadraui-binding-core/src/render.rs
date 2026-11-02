@@ -67,8 +67,16 @@ pub struct RenderRefs<'a> {
 /// Paints each present slot top-to-bottom in a fixed-height band, skipping
 /// any slot once the viewport runs out of room. Appends a [`PaintedHit`] to
 /// `hits` for every slot painted, so a later pointer event can be routed to
-/// it.
-pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Vec<PaintedHit>) {
+/// it. `chrome_interaction` supplies the hover/pressed [`InteractionState`]
+/// a chrome-bar extra (`Toolbar`'s buttons, `StatusBar`'s segments) paints
+/// with, keyed by that extra's own id — a binding with no such bookkeeping
+/// (or a test with no extras at all) passes `&|_| InteractionState::default()`.
+pub fn draw_bands(
+    backend: &mut dyn Backend,
+    refs: RenderRefs<'_>,
+    hits: &mut Vec<PaintedHit>,
+    chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
+) {
     let viewport = backend.viewport();
     // Band heights below are given in text LINES, not raw viewport units: a
     // button is 3 lines tall, a tree 4. `viewport` and `line_height` share
@@ -101,7 +109,12 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
     }
     if let Some(text_display) = refs.text_display {
         if let Some(rect) = next_band(3.0) {
-            backend.draw_text_display(rect, text_display);
+            hits.push(draw_text_display_hit(
+                backend,
+                text_display.id,
+                rect,
+                text_display,
+            ));
         }
     }
     if let Some(list) = refs.list {
@@ -163,14 +176,55 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
     for kind in crate::extra_paint::EXTRA_PRIMITIVE_KINDS {
         if let Some(extra) = refs.extra.get(kind) {
             if let Some(rect) = next_band(3.0) {
-                extra.paint(backend, rect);
+                let interaction = chrome_interaction(extra.id());
+                let chrome_hits = extra.paint_chrome(backend, rect, &interaction);
                 hits.push(PaintedHit::Extra {
                     id: extra.id(),
                     area: rect,
                     extra: Rc::clone(extra),
+                    chrome_hits,
                 });
             }
         }
+    }
+}
+
+/// How many lines of `td` fit in `rect` at a zero scroll offset — mirrors
+/// [`tree_viewport_rows`] for the same reason: [`quadraui::TextDisplayLayout::visible_lines`]
+/// at `td`'s ACTUAL offset can be shorter near the end of a long buffer, so
+/// the wheel-scroll `max_offset` clamp needs the viewport's true line
+/// capacity instead. Paints into a scratch clone, never disturbing the
+/// real paint below.
+fn text_display_viewport_lines(backend: &mut dyn Backend, rect: Rect, td: &TextDisplay) -> usize {
+    let mut shadow = td.clone();
+    shadow.scroll_offset = 0;
+    shadow.auto_scroll = false;
+    backend
+        .text_display_layout(rect, &shadow)
+        .visible_lines
+        .len()
+}
+
+/// Paints `td` into `area` under hit-map id `id` and records its
+/// [`PaintedHit::TextDisplay`] — shared by [`draw_bands`] (which passes
+/// `td.id`) and `paint_leaf`'s `LeafDescriptor::TextDisplay` arm (which,
+/// like every other leaf, passes the leaf's own tree-address id instead),
+/// so the two paint paths can't drift apart on what gets stored.
+fn draw_text_display_hit(
+    backend: &mut dyn Backend,
+    id: WidgetId,
+    area: Rect,
+    td: &TextDisplay,
+) -> PaintedHit {
+    backend.draw_text_display(area, td);
+    let layout = backend.text_display_layout(area, td);
+    let viewport_lines = text_display_viewport_lines(backend, area, td);
+    PaintedHit::TextDisplay {
+        id,
+        area,
+        layout,
+        total_lines: td.lines.len(),
+        viewport_lines,
     }
 }
 
@@ -194,11 +248,12 @@ pub fn paint_layout(
     area: Rect,
     node: &LayoutNode,
     hits: &mut Vec<PaintedHit>,
+    chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
 ) {
     match node {
         LayoutNode::Row(children) => {
             for (child, rect) in children.iter().zip(split_rects(area, children.len(), true)) {
-                paint_layout(backend, rect, child, hits);
+                paint_layout(backend, rect, child, hits, chrome_interaction);
             }
         }
         LayoutNode::Column(children) => {
@@ -206,10 +261,10 @@ pub fn paint_layout(
                 .iter()
                 .zip(split_rects(area, children.len(), false))
             {
-                paint_layout(backend, rect, child, hits);
+                paint_layout(backend, rect, child, hits, chrome_interaction);
             }
         }
-        LayoutNode::Leaf(leaf) => paint_leaf(backend, area, leaf, hits),
+        LayoutNode::Leaf(leaf) => paint_leaf(backend, area, leaf, hits, chrome_interaction),
         LayoutNode::Split(split) => {
             // `split.split.first_min`/`second_min` are decoded as portable
             // line counts (see a binding's own split decode, e.g.
@@ -231,8 +286,20 @@ pub fn paint_layout(
             hits.push(PaintedHit::Split {
                 layout: layout.clone(),
             });
-            paint_layout(backend, layout.first_bounds, &split.first, hits);
-            paint_layout(backend, layout.second_bounds, &split.second, hits);
+            paint_layout(
+                backend,
+                layout.first_bounds,
+                &split.first,
+                hits,
+                chrome_interaction,
+            );
+            paint_layout(
+                backend,
+                layout.second_bounds,
+                &split.second,
+                hits,
+                chrome_interaction,
+            );
         }
         LayoutNode::Tabs(tabs) => {
             let strip_height = (3.0 * backend.line_height()).min(area.height);
@@ -250,12 +317,24 @@ pub fn paint_layout(
                 (area.height - strip_height).max(0.0),
             );
             if let Some(selected) = tabs.entries.get(tabs.selected) {
-                paint_layout(backend, content_rect, &selected.content, hits);
+                paint_layout(
+                    backend,
+                    content_rect,
+                    &selected.content,
+                    hits,
+                    chrome_interaction,
+                );
             }
         }
         LayoutNode::Panel(panel_node) => {
             let layout = backend.draw_panel(area, &panel_node.panel);
-            paint_layout(backend, layout.content_bounds, &panel_node.content, hits);
+            paint_layout(
+                backend,
+                layout.content_bounds,
+                &panel_node.content,
+                hits,
+                chrome_interaction,
+            );
         }
         LayoutNode::SidebarPanel(sidebar_node) => {
             let layout = backend.draw_sidebar_panel_interactive(
@@ -263,12 +342,18 @@ pub fn paint_layout(
                 &sidebar_node.sidebar_panel,
                 &InteractionState::default(),
             );
-            paint_layout(backend, layout.content_bounds, &sidebar_node.content, hits);
+            paint_layout(
+                backend,
+                layout.content_bounds,
+                &sidebar_node.content,
+                hits,
+                chrome_interaction,
+            );
         }
         LayoutNode::SplitTree(split_tree) => {
             let layout = backend.draw_split_tree(area, &split_tree.tree);
             for ((_, rect), content) in layout.leaves.iter().zip(split_tree.leaves.iter()) {
-                paint_layout(backend, *rect, content, hits);
+                paint_layout(backend, *rect, content, hits, chrome_interaction);
             }
         }
     }
@@ -375,6 +460,7 @@ pub fn paint_leaf(
     area: Rect,
     leaf: &LayoutLeaf,
     hits: &mut Vec<PaintedHit>,
+    chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
 ) {
     let id = WidgetId::new(leaf.id.clone());
     match &leaf.descriptor {
@@ -383,7 +469,7 @@ pub fn paint_leaf(
             hits.push(PaintedHit::Button { id, layout });
         }
         LeafDescriptor::TextDisplay(text_display) => {
-            backend.draw_text_display(area, text_display);
+            hits.push(draw_text_display_hit(backend, id, area, text_display));
         }
         LeafDescriptor::List(list) => {
             backend.draw_list(area, list);
@@ -424,11 +510,13 @@ pub fn paint_leaf(
             hits.push(PaintedHit::TabBar { id, area, layout });
         }
         LeafDescriptor::Extra(extra) => {
-            extra.paint(backend, area);
+            let interaction = chrome_interaction(id);
+            let chrome_hits = extra.paint_chrome(backend, area, &interaction);
             hits.push(PaintedHit::Extra {
                 id,
                 area,
                 extra: Rc::clone(extra),
+                chrome_hits,
             });
         }
     }

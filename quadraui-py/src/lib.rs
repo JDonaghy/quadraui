@@ -518,6 +518,7 @@ impl AppLogic for PyAppLogic {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut hits = Vec::new();
+        let chrome_interaction = |id: WidgetId| self.engine.chrome_interaction(id);
         let Some(callback) = self.render_callback.as_ref() else {
             draw_bands(
                 backend,
@@ -531,6 +532,7 @@ impl AppLogic for PyAppLogic {
                     extra: &self.extra_slots,
                 },
                 &mut hits,
+                &chrome_interaction,
             );
             self.engine.sync_menu_bar(backend, &hits);
             self.engine.render_ctx_menu(backend);
@@ -539,11 +541,13 @@ impl AppLogic for PyAppLogic {
             return;
         };
         match render_output_from_callback(callback, &self.pending_error) {
-            Some(RenderOutput::Flat(frame)) => draw_bands(backend, frame.as_refs(), &mut hits),
+            Some(RenderOutput::Flat(frame)) => {
+                draw_bands(backend, frame.as_refs(), &mut hits, &chrome_interaction)
+            }
             Some(RenderOutput::Tree(node)) => {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                paint_layout(backend, area, &node, &mut hits);
+                paint_layout(backend, area, &node, &mut hits, &chrome_interaction);
             }
             None => {}
         }

@@ -37,6 +37,44 @@ def test_insert_text_display():
     assert app.screen_contains("Hello")
 
 
+def test_text_display_wheel_scroll_emits_scrolled():
+    # `insert_text_display`'s own render already populated the hit map, so
+    # the display is hit-testable the moment it's inserted. Five lines into
+    # a 3-line viewport (the fixed-slot band height every `QuiApp` default
+    # render reserves) leaves two lines of scroll room; a wheel notch
+    # forward (`delta.y < 0`, per `wheel_row_delta`'s convention) must move
+    # `scroll_offset` from 0 to 1, landing on `TextDisplayEvent::Scrolled`
+    # rather than a raw `Scroll` with `widget: None`.
+    app = QuiApp(40, 20)
+    app.insert_text_display(
+        {
+            "id": "text:1",
+            "lines": [
+                {"spans": [{"text": f"Line {i}", "fg": None, "bg": None}]}
+                for i in range(5)
+            ],
+            "auto_scroll": False,
+        }
+    )
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {
+            "Scroll": {
+                "delta": {"x": 0.0, "y": -1.0},
+                "position": {"x": 1.0, "y": 1.0},
+            }
+        }
+    )
+    app.run(1)
+
+    assert len(received) == 1
+    widget_id, text_display_event = received[0]["TextDisplay"]
+    assert widget_id == "text:1"
+    assert text_display_event == {"Scrolled": {"new_offset": 1}}
+
+
 def test_insert_list():
     app = QuiApp(40, 20)
     app.insert_list(
