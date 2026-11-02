@@ -93,20 +93,23 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use pyo3::types::{PyDict, PyList};
 
+use quadraui::compose::{
+    ContextMenuController, ContextMenuOutcome, MenuDef, MenuEvent, MenuSystem,
+};
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
 use quadraui::{
     wheel_row_delta, ActivityBar, AppLogic, Backend, BoardModel, Button, ButtonHit, ButtonLayout,
-    Chart, ComboBox, CommandCenter, CommandLine, CompletionItemMeasure, DataTable, DataTableEvent,
-    DataTableHit, DataTableLayout, DatePicker, DiffView, EditOp, Form, FormEvent, Image,
-    InteractionState, Key, ListView, ListViewEvent, ListViewHit, ListViewLayout, MenuBar,
-    MessageList, Minimap, Modifiers, MultiSectionView, NamedKey, NumberInput, Palette, Panel,
-    PipelineView, Point, PressZone, ProgressBar, RadioGroup, Reaction, Rect, Scrollbar,
-    SidebarPanel, Spinner, Split, SplitDirection, SplitHit, SplitLayout, SplitTree, StatusBar,
-    Switch, SwitchEvent, SwitchHit, TabBar, TabBarEvent, TabBarHit, TabBarLayout, TabItem,
-    TextDisplay, TextEditor, TextInput, Toolbar, TreeEvent, TreePath, TreeView, TreeViewHit,
-    TreeViewLayout, UiEvent, WidgetId,
+    Chart, ComboBox, CommandCenter, CommandLine, CompletionItemMeasure, ContextMenu,
+    ContextMenuItem, ContextMenuPlacement, DataTable, DataTableEvent, DataTableHit,
+    DataTableLayout, DatePicker, DiffView, EditOp, Form, FormEvent, Image, InteractionState, Key,
+    ListView, ListViewEvent, ListViewHit, ListViewLayout, MenuBar, MessageList, Minimap, Modifiers,
+    MultiSectionView, NamedKey, NumberInput, Palette, Panel, PipelineView, Point, PressZone,
+    ProgressBar, RadioGroup, Reaction, Rect, Scrollbar, SidebarPanel, Spinner, Split,
+    SplitDirection, SplitHit, SplitLayout, SplitTree, StatusBar, Switch, SwitchEvent, SwitchHit,
+    TabBar, TabBarEvent, TabBarHit, TabBarLayout, TabItem, TextDisplay, TextEditor, TextInput,
+    Toolbar, TreeEvent, TreePath, TreeView, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
 create_exception!(
@@ -332,6 +335,25 @@ struct PyAppLogic {
     /// focused or falls out of the hit map; a stale entry for a since-shrunk
     /// `lines` is clamped back on lookup (see [`clamp_cursor`]).
     text_cursors: RefCell<HashMap<WidgetId, TextCursorState>>,
+    /// Owns the in-window dropdown behind a `"menu_bar"` extra: the
+    /// open/close/keyboard-nav/submenu state machine that turns a click on
+    /// a top-level item into an open dropdown and a selection into
+    /// `UiEvent::MenuActivated`. `RefCell` because [`AppLogic::render`]
+    /// takes `&self` but must still refresh [`MenuSystem::set_menus`] from
+    /// the current frame's `MenuBar` descriptor before painting the
+    /// dropdown overlay — the same reason [`Self::hit_map`] needs one.
+    menu_system: RefCell<MenuSystem>,
+    /// The absolute bounds of the `"menu_bar"` extra [`Self::render`] most
+    /// recently painted, read by [`handle`][AppLogic::handle] to call
+    /// [`MenuSystem::handle`] with the same `bar_rect` the paint pass used.
+    /// `None` whenever no `"menu_bar"` extra was present that frame.
+    menu_bar_rect: RefCell<Option<Rect>>,
+    /// Owns the state behind `QuiApp::show_context_menu`: which popup (if
+    /// any) is open and routes its mouse/keyboard navigation and dismissal.
+    /// A plain field (not `RefCell`) since every mutating call reaches it
+    /// through `&mut self` — [`handle`][AppLogic::handle] itself, or
+    /// `QuiApp::show_context_menu` via `TuiDriver::parts_mut`'s `&mut A`.
+    ctx_menu: ContextMenuController,
 }
 
 /// One [`TextInput`]'s cached cursor/selection, read and written by
@@ -469,6 +491,8 @@ impl AppLogic for PyAppLogic {
                 },
                 &mut hits,
             );
+            self.sync_menu_bar(backend, &hits);
+            self.ctx_menu.render(backend);
             *self.hit_map.borrow_mut() = hits;
             return;
         };
@@ -481,6 +505,8 @@ impl AppLogic for PyAppLogic {
             }
             None => {}
         }
+        self.sync_menu_bar(backend, &hits);
+        self.ctx_menu.render(backend);
         *self.hit_map.borrow_mut() = hits;
     }
 
@@ -511,6 +537,42 @@ impl AppLogic for PyAppLogic {
             return Reaction::Continue;
         };
         let render_callback_present = self.render_callback.is_some();
+
+        // A `"menu_bar"` extra's dropdown and a `QuiApp::show_context_menu`
+        // popup both own a full modal-input state machine that must see
+        // every event before the rest of this function's own routing —
+        // matching `MenuSystem::handle`/`ContextMenuController::handle`'s
+        // own doc ("call this before other UI routing"). Each reports
+        // `Ignored` immediately when nothing of theirs is open/relevant, so
+        // this is safe to run unconditionally even for an app with neither
+        // a menu bar nor an open context menu.
+        if let Some(bar_rect) = *self.menu_bar_rect.borrow() {
+            match self
+                .menu_system
+                .borrow_mut()
+                .handle(&event, backend, bar_rect)
+            {
+                MenuEvent::Activated(id) => {
+                    return self.dispatch_event(
+                        handler,
+                        &UiEvent::MenuActivated(id),
+                        None,
+                        render_callback_present,
+                    );
+                }
+                // Navigation/highlight only — nothing for Python to react
+                // to, just a repaint so the new open/selected state shows.
+                MenuEvent::StateChanged | MenuEvent::Consumed => return Reaction::Redraw,
+                MenuEvent::Ignored => {}
+            }
+        }
+        match self.ctx_menu.handle(&event, backend) {
+            ContextMenuOutcome::Event(ev) => {
+                return self.dispatch_event(handler, &ev, None, render_callback_present);
+            }
+            ContextMenuOutcome::Consumed => return Reaction::Redraw,
+            ContextMenuOutcome::Ignored => {}
+        }
 
         // A move while a divider drag is armed becomes the drag itself —
         // checked before the hit-test below, since `MouseMoved` has no
@@ -839,6 +901,46 @@ impl PyAppLogic {
                 }
             }
         })
+    }
+
+    /// Rebuilds [`Self::menu_system`]'s menu list from this frame's
+    /// `"menu_bar"` extra (if any) and paints its dropdown/submenu popups on
+    /// top of the plain bar `hits` already recorded, then remembers the
+    /// bar's absolute bounds in [`Self::menu_bar_rect`] for `handle` to
+    /// reuse. A no-op (and clears `menu_bar_rect`) when no `"menu_bar"`
+    /// extra was painted this frame. Call once per [`AppLogic::render`],
+    /// after `hits` is fully built — the extras loop in `draw_bands`/
+    /// `paint_leaf` already painted the plain, non-interactive bar via
+    /// [`MenuBar`]'s own `ExtraPaint::paint`; this repaints it with
+    /// `menu_system`'s own open/focused state (and the dropdown, when one
+    /// is open) layered on top, the same "paint after everything else"
+    /// contract [`ContextMenuController::render`] documents for itself.
+    fn sync_menu_bar(&self, backend: &mut dyn Backend, hits: &[PaintedHit]) {
+        let found = hits.iter().find_map(|hit| match hit {
+            PaintedHit::Extra { area, extra, .. } => {
+                extra_as::<MenuBar>(extra).map(|menu_bar| (*area, menu_bar))
+            }
+            _ => None,
+        });
+        let Some((area, menu_bar)) = found else {
+            *self.menu_bar_rect.borrow_mut() = None;
+            return;
+        };
+        let menus: Vec<MenuDef> = menu_bar
+            .items
+            .iter()
+            .map(|item| MenuDef {
+                id: item.id,
+                label: item.label.clone(),
+                disabled: item.disabled,
+                items: item.submenu.clone().unwrap_or_default(),
+            })
+            .collect();
+        let mut menu_system = self.menu_system.borrow_mut();
+        menu_system.set_menus(menus);
+        menu_system.render(backend, area);
+        drop(menu_system);
+        *self.menu_bar_rect.borrow_mut() = Some(area);
     }
 }
 
@@ -4557,6 +4659,60 @@ impl QuiApp {
         })
     }
 
+    /// Opens a right-click-style popup menu at `position` (view-local
+    /// coordinates) built from `items` — a list of dicts, each matching
+    /// `ContextMenuItem`'s shape (`id`, `label`, `detail`, `disabled`,
+    /// `checked`, `submenu`; see `quadraui::ContextMenuItem`'s own doc). The
+    /// popup is routed through the same `compose::ContextMenuController`
+    /// every in-window backend shares, so a click on an item, an Up/Down +
+    /// Enter, or Escape/click-outside all resolve the same way regardless
+    /// of platform (`TuiBackend::effective_menu_style` always resolves
+    /// `Custom`, so this never opens a native popup under `QuiApp`).
+    /// Re-renders immediately so `screen()`/`screen_contains()` reflect the
+    /// open popup without a separate step.
+    ///
+    /// Selecting an item surfaces as `UiEvent::ContextMenuItemActivated`
+    /// to the registered handler on a later dispatched event; dismissing
+    /// (Escape, a click outside, or a second call to this method) surfaces
+    /// as `UiEvent::ContextMenuDismissed`. Both arrive through the normal
+    /// `handle` pipeline exactly like any other `UiEvent` — there is no
+    /// separate callback for them.
+    ///
+    /// Call this from top-level script code (e.g. after `step`/`step_once`
+    /// returns, having seen a raw `MouseDown { button: Right, .. }` land
+    /// where a menu should open), never from inside the registered event
+    /// handler or render callback: both already hold this `QuiApp`'s one
+    /// mutable borrow for the whole dispatch, so a reentrant call here hits
+    /// the same PyO3 runtime-borrow wall `QuiApp.insert_*`/`slot_clear` do —
+    /// see the module doc's "cannot call back into `QuiApp`" note.
+    fn show_context_menu(
+        &mut self,
+        items: &Bound<'_, PyList>,
+        position: (f32, f32),
+    ) -> PyResult<()> {
+        let items: Vec<ContextMenuItem> =
+            pythonize::depythonize(items.as_any()).map_err(|err| {
+                InvalidDescriptorError::new_err(format!("show_context_menu: invalid items: {err}"))
+            })?;
+        let mut menu = ContextMenu {
+            id: WidgetId::new("qui-context-menu"),
+            items,
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::AnchorPoint,
+        };
+        menu.selected_idx = menu.first_selectable();
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            app_logic
+                .ctx_menu
+                .open(menu, Point::new(position.0, position.1), backend);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
     /// Empties a slot (one of the integers returned by an `insert_*` call),
     /// re-rendering so `screen()` no longer shows it. Returns whether the
     /// slot held anything. Raises `UnknownSlotError` if `slot` doesn't name
@@ -7389,6 +7545,218 @@ def handle(event):
                     "a gutter click must never dispatch a Tree (row-selection) event"
                 );
             }
+        });
+    }
+
+    /// Clicking a `"menu_bar"` extra's top-level item opens its dropdown
+    /// (no event reaches Python — a bare open/close is navigation, not an
+    /// app-level action) and a later click on one of its items closes the
+    /// dropdown and dispatches exactly one `UiEvent::MenuActivated` to the
+    /// registered handler, carrying the activated item's id.
+    #[test]
+    fn clicking_a_menu_bar_item_opens_its_dropdown_and_selecting_emits_menu_activated() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'menu_bar': {
+        'id': 'bar:main',
+        'items': [
+            {'id': 'menu:file', 'label': '&File', 'disabled': False, 'submenu': [
+                {'id': 'item:open', 'label': {'spans': [{'text': 'Open', 'fg': None, 'bg': None}]}},
+                {'id': 'item:quit', 'label': {'spans': [{'text': 'Quit', 'fg': None, 'bg': None}]}},
+            ]},
+        ],
+        'open_item': None,
+        'focused_item': None,
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("File").expect("render must not raise"),
+                "the menu bar's top-level item must be painted"
+            );
+
+            let bar_bounds = app
+                .driver
+                .find_bounds("File")
+                .expect("the File label must be on screen");
+
+            let open_click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bar_bounds.x + 0.5, bar_bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let open_click_any =
+                pythonize::pythonize(py, &open_click).expect("UiEvent must pythonize");
+            app.push_event(
+                open_click_any
+                    .cast::<PyDict>()
+                    .expect("MouseDown must pythonize to a dict"),
+            )
+            .expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                0,
+                "opening the dropdown is pure navigation: nothing reaches Python yet"
+            );
+
+            let item_bounds = app
+                .driver
+                .find_bounds("Open")
+                .expect("the open dropdown must paint its 'Open' item");
+
+            let select_click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(item_bounds.x + 0.5, item_bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let select_click_any =
+                pythonize::pythonize(py, &select_click).expect("UiEvent must pythonize");
+            app.push_event(
+                select_click_any
+                    .cast::<PyDict>()
+                    .expect("MouseDown must pythonize to a dict"),
+            )
+            .expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            assert_eq!(
+                received_list.len(),
+                1,
+                "selecting the item must dispatch exactly one event"
+            );
+            let activated = received_list
+                .get_item(0)
+                .expect("item must exist")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let activated_id: String = activated
+                .get_item("MenuActivated")
+                .expect("dict lookup")
+                .expect("a MenuActivated event must be dispatched")
+                .extract()
+                .expect("MenuActivated carries the activated item's id as a string");
+            assert_eq!(activated_id, "item:open");
+        });
+    }
+
+    /// `QuiApp::show_context_menu` opens a painted popup at the given
+    /// position; a click on one of its items closes it and dispatches
+    /// `UiEvent::ContextMenuItemActivated` to the registered handler —
+    /// the same round trip a native right-click context menu produces.
+    #[test]
+    fn show_context_menu_then_clicking_an_item_emits_context_menu_item_activated() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"received = []\ndef handle(event):\n    received.append(event)\n",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app = QuiApp::new(40, 20, Some(handle), None).expect("valid dimensions");
+
+            let items_any = py
+                .eval(
+                    c"[
+                        {'id': 'copy', 'label': {'spans': [{'text': 'Copy', 'fg': None, 'bg': None}]}},
+                        {'id': 'paste', 'label': {'spans': [{'text': 'Paste', 'fg': None, 'bg': None}]}},
+                    ]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let items = items_any.cast::<PyList>().expect("literal must be a list");
+
+            app.show_context_menu(items, (2.0, 2.0))
+                .expect("show_context_menu must open the popup");
+            assert!(
+                app.screen_contains("Copy").expect("render must not raise"),
+                "the popup's first item must be painted"
+            );
+
+            let item_bounds = app
+                .driver
+                .find_bounds("Copy")
+                .expect("the 'Copy' item must be on screen");
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(item_bounds.x + 0.5, item_bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            app.push_event(
+                click_any
+                    .cast::<PyDict>()
+                    .expect("MouseDown must pythonize to a dict"),
+            )
+            .expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "selecting a context menu item must dispatch exactly one event"
+            );
+            let activated = received_list
+                .get_item(0)
+                .expect("item must exist")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let activated_id: String = activated
+                .get_item("ContextMenuItemActivated")
+                .expect("dict lookup")
+                .expect("a ContextMenuItemActivated event must be dispatched")
+                .extract()
+                .expect("ContextMenuItemActivated carries the activated item's id as a string");
+            assert_eq!(activated_id, "copy");
         });
     }
 }
