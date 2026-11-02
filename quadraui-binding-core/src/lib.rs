@@ -23,6 +23,7 @@ pub mod layout;
 pub mod render;
 pub mod semantic;
 pub mod text_input;
+pub mod tree_edit;
 
 pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree_scroll_state};
 pub use drag::{ActiveDrag, ScrollbarDrag};
@@ -37,3 +38,4 @@ pub use render::{tree_viewport_rows, RenderFrame, RenderRefs};
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
 pub use text_input::{apply_text_input_edit, clamp_cursor, text_input_insert_event};
 pub use text_input::{text_input_key_event, TextCursorState};
+pub use tree_edit::tree_row_rename_key_event;

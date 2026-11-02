@@ -80,6 +80,21 @@ only a push to `main` runs this workflow.
   (`TreeEvent::RowToggleExpand`) and a double-click on a tree row
   (`TreeEvent::RowDoubleClicked`); the semantic-substitution pass in
   `PyAppLogic::handle` runs on `DoubleClick` as well as `MouseDown`.
+- `TreeEvent` gains `RowRenameChanged { path, text, cursor, selection_anchor }`,
+  `RowRenameCommitted { path, text }`, and `RowRenameCancelled { path }`.
+  `quadraui-binding-core`'s `tree_edit::tree_row_rename_key_event` applies a
+  key pressed while a `TreeRow::edit` is active (typing, Backspace/Delete,
+  Left/Right/Home/End with optional Shift-extend, Enter, Escape) into the
+  row's next `TreeRowEditState` instead of leaving it to every binding's own
+  handler to reimplement cursor/selection math for a tree-row rename, the
+  same way `apply_text_input_edit` already does for a standalone
+  `TextInput`.
+- `quadraui-py`'s `tabs` layout node now accepts a per-tab `"is_dirty"` and
+  `"is_preview"` (mapping to `TabItem::is_dirty`/`is_preview`) and a
+  strip-level `"scroll_offset"`, `"right_segments"`, `"active_accent"`, and
+  `"compact"` (mapping to the identically named `TabBar` fields) — the same
+  fields the standalone `tab_bar` leaf already accepted, now also honored by
+  the `tabs` container node.
 - `ShellApp` gains a `setup_shell(&mut self, ctx: &ShellContext)` hook, called
   once right after `ShellApp::setup` with a `ShellContext` already reaching
   the real `AppShell` — strictly before the first `render()`. Non-breaking:
